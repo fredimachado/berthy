@@ -19,4 +19,9 @@ class TestReport(unittest.TestCase):
     def test_nanosecond_timestamp_on_python_38(self):
         self.assertEqual(report.timestamp('2026-01-01T00:00:01.123456789Z').microsecond, 123456)
 
+    def test_missing_or_duplicate_arrival_is_not_covered(self):
+        requests = [{'request': 1, 'status': 200}, {'request': 2, 'status': 200}]
+        self.assertEqual(report.unmatched(requests, [{'request': '1'}, {'request': '1'}]), 2)
+        self.assertEqual(report.unmatched(requests, [{'request': '1'}, {'request': '2'}]), 0)
+
 if __name__ == '__main__': unittest.main()
