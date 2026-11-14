@@ -2,6 +2,11 @@
 
 package agent
 
-import "fmt"
+import (
+	"berthy/internal/metrics"
+	"fmt"
+)
 
-func hostDisk() (any, error) { return nil, fmt.Errorf("host disk is only available on Linux") }
+func hostDisk() ([]metrics.Mount, error) {
+	return nil, fmt.Errorf("host disk is only available on Linux")
+}

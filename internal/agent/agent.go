@@ -99,13 +99,17 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		var result any
 		var err error
 		switch {
+		case len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs":
+			serveLogs(w, r, e, parts[4])
+			return
 		case len(parts) == 4 && parts[3] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
 				streamStats(w, r, collector)
 				return
 			}
 			if collector == nil {
-				result = metrics.Sample{}
+				writeError(w, 503, "sample_not_ready", "sample not ready")
+				return
 			} else if value := r.URL.Query().Get("since"); value != "" {
 				d, parseErr := time.ParseDuration(value)
 				if parseErr != nil || d <= 0 || d > time.Hour {
@@ -114,7 +118,12 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 				}
 				result = collector.Since(d)
 			} else {
-				result, _ = collector.Latest()
+				var ready bool
+				result, ready = collector.Latest()
+				if !ready {
+					writeError(w, 503, "sample_not_ready", "sample not ready")
+					return
+				}
 			}
 		case len(parts) == 4 && parts[3] == "agent":
 			host, _ := os.Hostname()
@@ -157,22 +166,17 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			if dockerErr != nil {
 				status = "unavailable"
 			}
-			hostStatus := "available"
-			if diskErr != nil {
-				hostStatus = "unavailable"
-			}
+			hostStatus := diskStatus(disk, diskErr)
 			result = map[string]any{"host": disk, "host_status": hostStatus, "docker": d, "docker_status": status}
+			if diskErr != nil {
+				result.(map[string]any)["host_error"] = diskErr.Error()
+			}
 
 		case len(parts) == 4 && parts[3] == "doctor":
 			host, _ := os.Hostname()
 			checks := []api.Check{{Name: "host", OK: host != "", Critical: true, Detail: host}}
-			_, diskErr := hostDisk()
-			checks = append(checks, api.Check{Name: "disk", OK: diskErr == nil, Critical: true, Detail: func() string {
-				if diskErr != nil {
-					return "unavailable"
-				}
-				return "available"
-			}()})
+			mounts, _ := hostDisk()
+			checks = append(checks, rootDiskCheck(mounts))
 			var version struct {
 				APIVersion    string
 				MinAPIVersion string
@@ -238,6 +242,9 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		if len(parts) == 5 && parts[3] == "apps" {
 			required = "read"
 		}
+		if len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs" {
+			required = "read"
+		}
 		if required == "" {
 			writeError(w, 404, "not_found", "not found")
 			return
@@ -283,6 +290,13 @@ func compareVersion(a, b string) int {
 }
 
 func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
+	select {
+	case followSlots <- struct{}{}:
+		defer func() { <-followSlots }()
+	default:
+		writeError(w, 503, "too_many_followers", "too many followers")
+		return
+	}
 	f, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "stream_unavailable", "stream unavailable")
@@ -304,10 +318,11 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 			return false
 		}
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if _, err = fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+		if _, err = fmt.Fprintf(w, "event: stats\ndata: %s\n\n", b); err != nil {
 			return false
 		}
 		f.Flush()
+		http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		return true
 	}
 	if !send() {
@@ -327,6 +342,7 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 				return
 			}
 			f.Flush()
+			http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 	}
 }
@@ -357,4 +373,25 @@ func authorize(c Config, required string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func diskStatus(mounts []metrics.Mount, err error) string {
+	if len(mounts) == 0 {
+		return "unavailable"
+	}
+	if err != nil {
+		return "partial"
+	}
+	return "available"
+}
+func rootDiskCheck(mounts []metrics.Mount) api.Check {
+	c := api.Check{Name: "disk", Critical: true, Detail: "root mount unavailable"}
+	for _, m := range mounts {
+		if m.Path == "/" && m.Total > 0 {
+			c.OK = float64(m.Available)/float64(m.Total) > 0.1
+			c.Detail = fmt.Sprintf("root %.1f%% available", 100*float64(m.Available)/float64(m.Total))
+			break
+		}
+	}
+	return c
 }

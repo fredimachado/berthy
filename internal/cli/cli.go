@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,7 +34,7 @@ type Config struct {
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <agent|token|ps|describe|df|doctor|agent-info>")
+		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|agent-info>")
 		return 2
 	}
 	cmd := args[0]
@@ -54,7 +55,8 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	var config, env string
 	var jsonOutput, watch bool
-	var since string
+	var since, tail, grep, role, replica string
+	var follow bool
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -68,6 +70,25 @@ func Run(args []string, out, errout io.Writer) int {
 				config = args[i]
 			} else {
 				env = args[i]
+			}
+		case "--follow", "-f":
+			follow = true
+		case "--tail", "--grep", "--role", "--replica":
+			if i+1 == len(args) {
+				fmt.Fprintln(errout, "missing flag value")
+				return 2
+			}
+			flag := args[i]
+			i++
+			switch flag {
+			case "--tail":
+				tail = args[i]
+			case "--grep":
+				grep = args[i]
+			case "--role":
+				role = args[i]
+			case "--replica":
+				replica = args[i]
 			}
 		case "--watch":
 			watch = true
@@ -98,8 +119,7 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
+		ctx := context.Background()
 		eng := engine.New(c.DockerSocket)
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
@@ -157,6 +177,12 @@ func Run(args []string, out, errout io.Writer) int {
 		endpoint = "apps/" + url.PathEscape(positional[0])
 	case "stats":
 		endpoint = "stats"
+	case "logs":
+		if len(positional) != 1 {
+			fmt.Fprintln(errout, "logs requires an app")
+			return 2
+		}
+		endpoint = "apps/" + url.PathEscape(positional[0]) + "/logs"
 	case "df", "doctor":
 		endpoint = cmd
 	case "agent-info":
@@ -176,6 +202,28 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		u.RawQuery = q.Encode()
 	}
+	if cmd == "logs" {
+		q := u.Query()
+		if follow {
+			q.Set("follow", "1")
+		}
+		if tail != "" {
+			q.Set("tail", tail)
+		}
+		if since != "" {
+			q.Set("since", since)
+		}
+		if grep != "" {
+			q.Set("grep", grep)
+		}
+		if role != "" {
+			q.Set("role", role)
+		}
+		if replica != "" {
+			q.Set("replica", replica)
+		}
+		u.RawQuery = q.Encode()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -184,22 +232,22 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	if watch {
+	client := http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if watch || follow {
 		client.Timeout = 0
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintln(errout, err)
+		fmt.Fprintln(errout, "agent connection failed")
 		return 1
 	}
 	defer resp.Body.Close()
-	if watch && resp.StatusCode == 200 {
+	if (watch || follow) && resp.StatusCode == 200 {
 		return readStream(resp.Body, out, errout, jsonOutput)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		fmt.Fprintln(errout, err)
+		fmt.Fprintln(errout, "agent response could not be read")
 		return 1
 	}
 	if resp.StatusCode != 200 {
@@ -271,12 +319,25 @@ func printText(w io.Writer, v any, indent string) {
 func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 16<<20)
+	event := ""
 	for scan.Scan() {
 		line := scan.Text()
+		if strings.HasPrefix(line, "event: ") {
+			event = strings.TrimPrefix(line, "event: ")
+			continue
+		}
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
+		if event == "done" {
+			return 0
+		}
+		if event == "error" {
+			fmt.Fprintln(errout, "agent stream failed")
+			return 1
+		}
+		event = ""
 		var v any
 		dec := json.NewDecoder(strings.NewReader(data))
 		dec.UseNumber()
@@ -291,8 +352,9 @@ func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 		}
 	}
 	if err := scan.Err(); err != nil {
-		fmt.Fprintln(errout, err)
+		fmt.Fprintln(errout, "agent stream could not be read")
 		return 1
 	}
-	return 0
+	fmt.Fprintln(errout, "agent stream ended unexpectedly")
+	return 1
 }

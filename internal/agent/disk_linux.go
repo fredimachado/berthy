@@ -4,4 +4,4 @@ package agent
 
 import "berthy/internal/metrics"
 
-func hostDisk() (any, error) { return metrics.ReadMounts() }
+func hostDisk() ([]metrics.Mount, error) { return metrics.ReadMounts() }

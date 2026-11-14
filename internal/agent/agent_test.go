@@ -39,7 +39,7 @@ func TestStatsRouteRequiresAuthentication(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
 	w = httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, req)
-	if w.Code != 200 {
+	if w.Code != 503 {
 		t.Fatalf("stats: %d %s", w.Code, w.Body.String())
 	}
 }
