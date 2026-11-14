@@ -4,11 +4,11 @@ Last updated: 2026-11-14
 
 ## Summary
 
-Berthy is a small deployment and operations agent for Docker servers. It deploys two kinds of application, shows live logs and metrics, runs health checks with alerts, and backs up Postgres to object storage. People use it through a CLI and a terminal UI; AI agents use the same CLI and an MCP server.
+Berthy is a small deployment and operations agent for Docker servers. It deploys image and Compose apps, shows live logs and metrics, and runs health checks with alerts. It can run commands in app containers on a schedule and back up Docker volumes to object storage. People use the CLI or terminal UI. AI agents use the CLI or MCP server.
 
 It is built for a small team that runs a web application on its own servers: one server per environment, with an optional three-server cluster.
 
-v1 is done when an environment can be run entirely through Berthy, with deploys, monitoring, alerts and backups all handled by it.
+v1 is done when an environment can be run entirely through Berthy, with deploys, monitoring, alerts, scheduled jobs and backups all handled by it.
 
 "Berthy" is a working name.
 
@@ -23,7 +23,8 @@ v1 is deliberately small. It covers what it takes to run a web application and i
 - Live logs per app.
 - Live metrics per server and per container: CPU, memory, disk space, Docker disk usage, block I/O and network I/O.
 - Health checks with alerts to Telegram.
-- Scheduled Postgres backups to S3-compatible object storage, with a restore command.
+- Cron jobs that run commands inside image app or Compose service containers.
+- Opt-in scheduled backups of app volumes to S3-compatible object storage, with a restore command.
 - Every function available from the CLI with JSON output, and through MCP.
 - A small footprint: one binary, no database server. The target is under 30 MB of resident memory for the agent, to be measured in phase 1.
 - A deployment model that extends to a three-server cluster without redesign.
@@ -34,7 +35,6 @@ v1 is deliberately small. It covers what it takes to run a web application and i
 - Reverse proxy, domains and certificates. Berthy ships no proxy; public traffic enters through a tunnel connector or proxy that runs as an ordinary app.
 - Building images. CI builds and pushes them.
 - Database provisioning and Postgres high availability.
-- Backups of anything other than Postgres.
 - Users, teams and roles beyond token scopes.
 - Templates and preview environments.
 - A web UI.
@@ -53,7 +53,7 @@ flowchart LR
   end
 
   subgraph server["Server, one per environment"]
-    agent["Berthy agent<br/>deploys, health checks, backups<br/>API on a private address"]
+    agent["Berthy agent<br/>deploys, health checks, jobs, backups<br/>API on a private address"]
     subgraph docker["Docker"]
       image["Image apps<br/>web and worker roles, Swarm services"]
       compose["Compose apps<br/>databases and supporting services"]
@@ -62,7 +62,7 @@ flowchart LR
   end
 
   registry["Image registry<br/>pulled at deploy"]
-  storage["Object storage<br/>database backups"]
+  storage["Object storage<br/>volume backups"]
   telegram["Telegram<br/>alerts"]
   public["Public traffic"]
 
@@ -79,7 +79,7 @@ The agent is the only component clients talk to. It drives Docker and reaches th
 
 | Mode | Runs on | Job |
 | --- | --- | --- |
-| Agent | Each server, as a systemd service | Talks to Docker; runs deploys, health checks and backups; serves the API |
+| Agent | Each server, as a systemd service | Talks to Docker, runs deploys, health checks, scheduled jobs and backups, and serves the API |
 | CLI | Laptops and the CI runner | Sends commands to an agent; prints text or JSON |
 | TUI | Laptops | Live view of apps, logs and metrics |
 | MCP server | Wherever an AI agent runs | Exposes the same operations as tools |
@@ -98,11 +98,11 @@ The agent is the only component clients talk to. It drives Docker and reaches th
 
 | State | Lives in |
 | --- | --- |
-| Desired configuration: apps, checks, backup schedules | Git, as a manifest in the application's repository |
+| Desired configuration, including apps, checks, jobs and backups | Git, as a manifest in the application's repository |
 | What is running | Docker; labels mark what Berthy manages |
-| Secrets, deploy history, audit log, backup records | One SQLite file on the server, secrets encrypted |
+| Secrets, deploy history, audit log, job status and backup records | One SQLite file on the server, secrets encrypted |
 | Log and metric history | An OpenTelemetry backend, if one is configured |
-| Database backups | Object storage |
+| Volume backups | Object storage |
 
 The agent keeps a copy of the last applied manifest so schedules keep running between deploys. Git remains the source of truth.
 
@@ -274,7 +274,7 @@ Hooks are declared per app as `pre_deploy` and `post_deploy` lists. Two step typ
 
 | Step | What it does | Typical use |
 | --- | --- | --- |
-| `backup: <job>` | Runs a named backup job and waits for it | A database backup before a production deploy |
+| `backup: <job>` | Runs a named volume backup, including its preparation job if set, and waits for it | Archiving a fresh database dump before a deploy |
 | `run: <command>` | Runs the command once in a container of the new image, with the app's environment | A one-off task before traffic switches |
 
 ### Database migrations
@@ -319,7 +319,7 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 - It takes an `admin` token and is never automatic, because reverting a migration can delete data.
 - An app that declares no `revert` command cannot use it.
 
-**Last resort.** Restore the pre-deploy backup into a scratch database and recover from there. Writes made after that backup are not in it.
+**Last resort.** Restore the pre-deploy backup to a new volume, then use the app's restore procedure. For a PostgreSQL dump, load it into a scratch database first. Recovery starts from the backup's capture time.
 
 **What the app must provide.** The three commands must be runnable from the app's image. An app that migrates at startup stops doing so once Berthy runs the migration step.
 
@@ -384,7 +384,7 @@ Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed
 | Command | Purpose | Changes things |
 | --- | --- | --- |
 | `ps` | Apps, roles, replicas, health, running version | No |
-| `describe <app>` | Full detail for one app, including its last deploys | No |
+| `describe <app>` | Full detail for one app, including its last deploys and job results | No |
 | `logs <app>` | Tail or follow logs; `--since`, `--grep`, `--role` | No |
 | `stats` | Server and container metrics; `--watch` for live | No |
 | `df` | Disk space and Docker disk usage | No |
@@ -400,7 +400,8 @@ Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed
 | `exec <app> -- <command>` | Run a command in a running container | Yes |
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
-| `backup run <job>`, `restore <backup>` | Run a backup now; restore one | Yes |
+| `backup run <job>` | Run a volume backup now | Yes |
+| `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
 | `approve <id>` | Approve a pending change requested by an AI agent | Yes |
 
@@ -430,7 +431,7 @@ Actions in the TUI (restart, rollback, approve) ask for confirmation and show th
 | `list_backups` | `backup list` |
 | `wait_for_resources` | `wait` |
 | `doctor` | `doctor` |
-| `execute_resource_command` | `deploy`, `rollback`, `restart`, `backup run` |
+| `execute_resource_command` | `deploy`, `rollback`, `restart`, `backup run`, `restore` |
 
 On a protected environment, `execute_resource_command` creates a pending approval instead of acting. See Security and guardrails.
 
@@ -492,13 +493,31 @@ Agents in different environments can be named as peers. Each probes the others o
 
 It does not cover all servers failing together or an outage of the private network. Keep one external check on the application's public URL for that.
 
-## Backups and restore
+## Scheduled container commands
 
-Berthy runs scheduled Postgres backups to S3-compatible object storage. v1 backs up Postgres only.
+Declare a named command under `jobs` in the manifest. Each job can have its own five-field cron schedule in UTC.
+
+```yaml
+jobs:
+  cleanup:
+    app: api
+    role: web
+    schedule: "30 2 * * *"
+    command: ["/app/bin/cleanup"]
+```
+
+- Select the app with `app`. For a Compose app, use `service` to select the service. For an image app, use `role` to select the role. The selector can be omitted when the app has exactly one service or role.
+- At each scheduled time, Berthy runs `command` once in a running container for the target, even when the role has several replicas. It uses the container's environment and mounts. Include a shell explicitly if the command needs shell syntax.
+- Berthy records the last run time, exit status or execution error in `describe <app>`. A nonzero exit or a missing running container fails the job and raises an alert. If the job is still running at its next scheduled time, Berthy skips that occurrence and records the skip.
+- A job with no `schedule` can run on demand as preparation for a volume backup.
+
+## Volume backups and restore
+
+Any named Docker volume mounted by a managed app can have a backup. Declare a job for each volume to back up, with the source volume, an S3-compatible destination and, for automatic backups, a five-field UTC cron schedule.
 
 ### Configuration
 
-Backup jobs and their destinations are declared in the manifest. Schedules are in UTC.
+This example backs up the `uploads` volume mounted by a service in a Compose app named `files`.
 
 ```yaml
 destinations:
@@ -506,47 +525,78 @@ destinations:
     type: s3
     endpoint: https://<s3-endpoint>
     bucket: <bucket>
-    # the access key and secret are set with `berthy secret set`
+    access_key_secret: S3_ACCESS_KEY
+    secret_key_secret: S3_SECRET_KEY
 
 backups:
-  main-db:
-    app: postgres          # the Compose app
-    service: postgres      # the service inside it
-    database: <database>
-    user: postgres
-    options: ["--no-acl", "--no-owner"]
-    schedule: "0 0 * * *"  # 00:00 UTC
+  uploads:
+    app: files
+    volume: uploads
+    schedule: "0 0 * * *"
     destination: offsite
-    prefix: postgres/<database>
+    prefix: files/uploads
     retention:
       keep: all            # or a number of most recent backups
 ```
 
-- `options` are passed to `pg_dump` unchanged.
-- `retention.keep` defaults to `all`: nothing is deleted unless a number is set.
+- For a Compose app, `volume` is the key in the Compose file's top-level `volumes` block. Berthy resolves it using the app's Compose project name and any explicit volume name.
+- For an image app, `volume` is the Docker volume name mounted by one of its roles. A role declares mounts under `volumes`, with entries such as `uploads:/app/uploads`.
+- Omit `schedule` to run a backup only through `backup run` or a deploy hook.
+- `retention.keep` defaults to `all`. Set it to a number to retain that many successful backups for the job.
 
 ### How a backup runs
 
-1. The agent runs `pg_dump` in custom format inside the database container.
-2. The output streams straight into a multipart upload to object storage. No temporary file touches the server's disk.
-3. If `pg_dump` exits with an error or the stream breaks, the upload is aborted. A partial dump never appears as a backup.
-4. On success the agent records the object key, size, duration, checksum and Postgres version.
-5. Retention is applied. With keep-all, nothing is removed.
+1. If the backup names a job under `before`, the agent runs that command and waits for it to succeed. This applies to scheduled backups, manual runs and deploy hooks.
+2. The agent reads the volume through a read-only mount and streams a compressed archive to object storage. A failed archive or upload is aborted and never listed as a successful backup.
+3. On success the agent records the source volume, object key, size, duration and checksum, then applies retention.
 
-Dumping to a local file and uploading it in a later step is avoided on purpose. A dump that fails part-way can destroy the previous local copy, and a separate upload cannot tell a good dump from a broken one.
+Backups of the same volume run one at a time. If the preparation job has its own schedule, the backup waits for any active run to finish, then reserves the job until archiving finishes.
+
+A volume archive reads files as they are encountered. For apps that need a consistent set of files while writes continue, use a preparation job to write a consistent export to a dedicated volume.
 
 ### Safety checks
 
-- **Overdue backup.** If the newest good backup is older than the schedule allows, the agent alerts. The age also shows in `ps`, `doctor` and the TUI.
+- **Overdue backup.** For backups with a schedule, the agent alerts when the newest successful backup is older than the schedule allows. The age also shows in `ps`, `doctor` and the TUI.
 - **Size anomaly.** A backup under half the size of the previous one raises an alert (proposed threshold).
-- **Failure.** Any failed run alerts with the error from `pg_dump` or the upload.
+- **Failure.** Any failed run alerts with the preparation, archive or upload error.
 
 ### Restore
 
 - `berthy backup list -e prod` shows what is in object storage.
-- `berthy restore <backup> --into <scratch-database>` restores into a new scratch database. This is the default and is safe to run at any time.
-- Restoring over a live database takes `--replace <database>` and an `admin` token.
-- A dump made outside Berthy can be restored by its object key. `restore` unpacks gzip and tar wrappers around a custom-format dump.
+- `berthy restore <backup> --into <volume> -e prod` takes an `admin` token. It verifies the checksum and extracts the archive into a new Docker volume, preserving file permissions and ownership. Choose an unused volume name.
+- Inspect the restored volume before mounting it in an app. If it contains an export, use the app's own restore command to import it.
+
+### Example: PostgreSQL dump
+
+Mount a named volume with Compose key `db-dumps` at `/backups` in the `postgres` service. Give the dump command write access to that mount and pass `POSTGRES_DB` and `POSTGRES_PASSWORD` into the container through the Compose file. The backup schedule runs the dump job first and uploads the volume only after the dump succeeds. The example uses the `postgres` app from the base manifest and the `offsite` destination above.
+
+```yaml
+jobs:
+  dump-db:
+    app: postgres
+    service: postgres
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077
+        tmp=$(mktemp /backups/.latest.XXXXXX)
+        trap 'rm -f "$tmp"' EXIT
+        PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -Fc --no-acl --no-owner \
+          -U "${POSTGRES_USER:-postgres}" -d "$POSTGRES_DB" -f "$tmp"
+        mv -f "$tmp" /backups/latest.dump
+
+backups:
+  main-db:
+    app: postgres
+    volume: db-dumps
+    schedule: "0 0 * * *"
+    destination: offsite
+    prefix: postgres/myapp
+    before: dump-db
+```
+
+The command replaces `latest.dump` only after `pg_dump` succeeds. The base manifest's `backup: main-db` deploy hook uses the same sequence to take a fresh dump before migrations. To recover, restore the archive into a new volume, mount it in a recovery container and load `latest.dump` into a scratch database with `pg_restore`.
 
 ### Credentials
 
@@ -555,13 +605,12 @@ Dumping to a local file and uploading it in a later step is avoided on purpose. 
 
 ### Agent state
 
-The agent's SQLite file is uploaded to object storage daily. The key that encrypts its secrets is not in that upload; keep it off the server, for example in a password manager or the provisioning tool's vault. A server is rebuilt from its provisioning, the agent state, and a database restore.
+The agent uploads a copy of its SQLite file to object storage daily and excludes the key that encrypts its secrets. Keep a copy of the key off the server, for example in a password manager or the provisioning tool's vault. Rebuild a server from its provisioning, the agent state and the volume backups.
 
 ### Limits
 
-- These are logical dumps. A failure can lose up to one schedule interval of data.
+- Recovery starts from the latest successful backup or from the export it contains. Missed or failed runs increase the amount of data that may be lost.
 - Keep-all means storage grows without bound. A lifecycle rule on the bucket can cap it later.
-- Point-in-time recovery through write-ahead log archiving is not in v1.
 - A scheduled restore drill into a throwaway container is planned after v1.
 
 ## Security and guardrails
@@ -600,7 +649,7 @@ Each token belongs to one environment and one scope.
 - **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints.
 - **Deploy lock.** A manual lock freezes an environment for everyone, people and AI agents alike.
 - **Stateful protection.** Recreating or removing a `stateful` Compose app needs `--allow-recreate` and an `admin` token.
-- **Audit log.** Every change is recorded with time, token name, the caller's address on the private network, command, target and outcome.
+- **Audit log.** Every change is recorded with time, command, target and outcome. API requests include the token name and caller's address. Scheduled runs identify the job as the caller.
 
 ### Secrets
 
@@ -654,7 +703,7 @@ A three-server cluster is not a v1 deliverable, but nothing in v1 may block it. 
 - Run an agent on each server. Any manager accepts deploys; `ps` and `stats` query all agents and merge the answers.
 - Raise the replica count of image apps and spread them across servers, with a cap per server.
 - Run the ingress app on every server.
-- Keep Compose apps pinned to a named server with `node: <name>` in the manifest. That server's agent runs their backups.
+- Keep Compose apps pinned to a named server with `node: <name>` in the manifest. That server's agent runs their scheduled jobs and backs up their volumes.
 
 ### Known constraints
 
@@ -672,7 +721,7 @@ Berthy is built one capability at a time, and each phase is proven on a non-prod
 | --- | --- | --- |
 | 1. Read-only | Agent and CLI: `ps`, `describe`, `logs`, `stats`, `df`, `doctor`, JSON output, tokens | Numbers agree with `docker stats`; agent memory is measured |
 | 2. Image deploys | `deploy`, `rollback`, lock, hooks, migrations, timing settings, retain and prune, history, audit, adoption of an existing service | An environment has deployed from CI for two weeks, including one forced failure that rolled back |
-| 3. Compose, checks, backups | Compose apps, secrets, probes, built-in conditions, alerts, peer check, backups and restore | A backup has been restored into a scratch database; a test failure raised an alert |
+| 3. Compose, checks, jobs, backups | Compose apps, secrets, probes, built-in conditions, alerts, peer check, scheduled commands, volume backups and restore | A cron job has run in its target container, a volume backup has been restored and verified, and a test failure raised an alert |
 | 4. TUI and MCP | `berthy ui`, `berthy mcp`, agent tokens and approvals | An AI agent's request on a protected environment was held, reviewed and approved end to end |
 | 5. Multi-node (optional) | Cluster helpers, placement settings, merged views | Not scheduled |
 
@@ -704,7 +753,7 @@ Berthy can take over servers that another deployment tool already runs, one app 
 - [ ] Store the agent's encryption key off the server.
 - [ ] Set up CI access to the private network for each environment.
 - [ ] Move migrations out of application startup and make the migration commands runnable from the image.
-- [ ] Restore one Berthy backup into a scratch database, then switch off the old backup schedules.
+- [ ] Restore a Berthy backup to a new volume and verify the app can recover its data, then switch off the old backup schedules.
 - [ ] Remove the old tool and update the server provisioning to install Berthy in its place.
 
 ## Open questions
