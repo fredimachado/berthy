@@ -54,3 +54,13 @@ func TestIncompleteAndMalformedSSE(t *testing.T) {
 		}
 	}
 }
+func TestMultilineSSEOutputsOneJSONLine(t *testing.T) {
+	var out, errs bytes.Buffer
+	input := "event: log\ndata: {\"message\":\"hello\",\ndata: \"container_id\":\"abc\"}\n\nevent: done\ndata: {\"complete\":true}\n\n"
+	if readStream(strings.NewReader(input), &out, &errs, true) != 0 {
+		t.Fatal(errs.String())
+	}
+	if strings.Count(out.String(), "\n") != 1 || !strings.Contains(out.String(), `"message":"hello","container_id":"abc"`) {
+		t.Fatalf("not one compact line: %q", out.String())
+	}
+}

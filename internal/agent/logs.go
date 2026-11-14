@@ -100,11 +100,8 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		defer cancel()
 		rows, err := logs.Tail(ctx, e, ids, opts)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				writeError(w, 503, "docker_deadline", "docker deadline")
-			} else {
-				writeError(w, 503, "logs_unavailable", "logs unavailable")
-			}
+			code := logsErrorCode(err)
+			writeError(w, 503, code, strings.ReplaceAll(code, "_", " "))
 			return
 		}
 		if rows == nil {
@@ -172,10 +169,12 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		case ev := <-events:
 			if ev.done {
 				if ev.err != nil {
+					code := logsErrorCode(ev.err)
+					message := strings.ReplaceAll(code, "_", " ")
 					if !started {
-						writeError(w, 503, "logs_unavailable", "logs unavailable")
+						writeError(w, 503, code, message)
 					} else {
-						send("error", map[string]string{"code": "logs_unavailable", "message": "logs unavailable"})
+						send("error", map[string]string{"code": code, "message": message})
 					}
 				} else {
 					send("done", map[string]bool{"complete": true})
@@ -198,4 +197,11 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 			http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 	}
+}
+
+func logsErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "docker_deadline"
+	}
+	return "logs_unavailable"
 }

@@ -4,6 +4,7 @@ import (
 	"berthy/internal/metrics"
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -55,5 +56,13 @@ func TestDockerErrorCodesAndDuplicateSamples(t *testing.T) {
 	t1 := time.Now()
 	if shouldEmitSample(t1, t1) || shouldEmitSample(t1.Add(-time.Second), t1) || !shouldEmitSample(t1.Add(time.Second), t1) {
 		t.Fatal("sample order")
+	}
+}
+func TestFollowSourceDeadlineCode(t *testing.T) {
+	if got := logsErrorCode(fmt.Errorf("source: %w", context.DeadlineExceeded)); got != "docker_deadline" {
+		t.Fatalf("got %q", got)
+	}
+	if got := logsErrorCode(errors.New("source unavailable")); got != "logs_unavailable" {
+		t.Fatalf("got %q", got)
 	}
 }

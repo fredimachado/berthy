@@ -375,7 +375,12 @@ func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 				return 1
 			}
 			if jsonOutput {
-				fmt.Fprintln(out, payload)
+				var compact bytes.Buffer
+				if json.Compact(&compact, []byte(payload)) != nil {
+					fmt.Fprintln(errout, "invalid stream event")
+					return 1
+				}
+				fmt.Fprintln(out, compact.String())
 			} else {
 				printText(out, v, "")
 			}
