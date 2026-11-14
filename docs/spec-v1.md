@@ -124,6 +124,7 @@ Berthy manages two kinds of application: image apps for stateless services and C
 - **Roles.** An image app can define several roles that run the same image with different commands, such as `web` and `worker`. Each role has its own replica count, resources and health check, so web replicas can scale without multiplying job workers. An app can start with one role and split later.
 - **Stateful apps are separate.** Deploying an image app never touches a Compose app. Restarting or recreating a Compose app marked `stateful` always takes an explicit command that names it.
 - **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject mutable tags such as `latest`.
+- **Compose project names are explicit.** A Compose app runs under the project name `<project>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
 - **Adoption.** Existing services and Compose projects can be adopted by name without being recreated. See Adopting an existing deployment.
 - **One shared network.** All apps join one attachable overlay network, so the ingress app resolves them by name. Its name is set in the manifest, so an existing network can be kept.
 
@@ -141,6 +142,11 @@ The examples in this spec use two environments named `dev` and `prod`. Names and
 # berthy.yml
 project: myapp
 network: myapp
+
+registries:
+  ghcr.io:
+    username: <user>
+    password_secret: REGISTRY_TOKEN
 
 apps:
   api:
@@ -174,6 +180,11 @@ apps:
     kind: compose
     file: deploy/postgres/docker-compose.yml
     stateful: true
+    env:
+      plain:
+        POSTGRES_DB: myapp
+      secret:
+        - POSTGRES_PASSWORD
 ```
 
 ### Environments
@@ -211,6 +222,24 @@ A role's health check is a command run inside the container, with the same field
 - **Secret** values are listed in the manifest by name only. The values live in the agent's encrypted store and are set with `berthy secret set`.
 - A deploy stops before changing anything if a named secret has no value.
 - Values that differ between environments go in the overlays.
+- Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's environment file, where the Compose file reads them as `${NAME}`. Only the agent can read that file.
+- Secrets are stored per environment. Other parts of the manifest refer to them by name as well: registries, backup destinations and telemetry.
+
+### Registries
+
+Image apps pull from any OCI registry. A private registry needs a credential, declared under `registries` with its password held as a secret.
+
+```yaml
+registries:
+  ghcr.io:
+    username: <user>
+    password_secret: REGISTRY_TOKEN
+```
+
+- The credential should be read-only.
+- The agent uses it to resolve tags to digests and to pull. It hands the credential to Swarm with the service, so every server in a cluster can pull.
+- Compose apps use the same credential for images from a listed registry.
+- A registry with no entry is pulled from anonymously.
 
 ### Checking a manifest
 
@@ -335,7 +364,7 @@ An image app that sets nothing else runs with these Swarm settings.
 ### Compose app deploy
 
 1. Take the lock and validate, as above.
-2. Work out which services would be recreated and print that plan.
+2. Work out which services would be recreated and which volumes would be created, and print that plan.
 3. If a `stateful` service would be recreated, stop unless the command carries `--allow-recreate`.
 4. Write the Compose file and environment, then run `docker compose up -d --remove-orphans`.
 5. Wait for health checks, record the deploy, release the lock.
@@ -424,7 +453,11 @@ The agent shows what is happening now and raises alerts. History is kept by an O
 ```yaml
 telemetry:
   otlp_endpoint: http://<collector>:4318
+  headers_secret: OTLP_HEADERS   # optional
 ```
+
+- `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form, `name=value,name=value`. Backends that require authorization need it.
+- The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there.
 
 ### Logs
 
@@ -441,6 +474,12 @@ telemetry:
 | Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer | Alert |
 
 Proposed thresholds: disk space and Docker disk usage warn at 80% and go critical at 90%.
+
+**Where a probe runs.** The agent runs on the host, where Docker service names do not resolve and addresses on the shared overlay network cannot be reached.
+
+- A probe against a public URL, or an address the host can reach, is run by the agent itself.
+- A probe against a service name runs from a helper container that the agent keeps attached to the shared network.
+- The helper is the same Berthy binary, in an image the agent builds locally from it. Nothing is pulled, and there is one helper per server (proposed).
 
 ### Alerts
 
@@ -586,7 +625,7 @@ In v1, CI pushes deploys to the agent; the agent does not read the repository. A
 
 ### Credentials
 
-- The agent holds one read-only credential for pulling images from the container registry.
+- The agent holds one read-only credential for pulling images from the container registry, declared under `registries` in the manifest.
 - The agent holds no repository credentials in v1.
 - CI holds a Berthy `deploy` token per environment as a CI secret.
 - The token for a protected environment is stored where only that environment's deploy job can read it.
@@ -644,7 +683,8 @@ Berthy can take over servers that another deployment tool already runs, one app 
 ### How adoption works
 
 - An existing Swarm service or Compose project is adopted by name.
-- Berthy compares what is running with the manifest and prints the differences before changing anything.
+- For a Compose project, set `project_name` to the name it already runs under. Under any other name Compose creates new, empty volumes beside the existing ones, and the app starts without its data.
+- Berthy compares what is running with the manifest and prints the differences before changing anything. A volume that would be created shows in that plan.
 - The existing shared network keeps its name; set it as `network` in the manifest.
 - Adopt the least critical environment first.
 
@@ -656,7 +696,9 @@ Berthy can take over servers that another deployment tool already runs, one app 
 
 ### Checklist
 
-- [ ] Copy every environment variable from the old tool into the manifest or the secret store.
+- [ ] Read the existing Compose project names with `docker compose ls` and set each as `project_name`.
+- [ ] Copy every environment variable from the old tool into the manifest or the secret store, for image apps and Compose apps.
+- [ ] Declare a read-only registry credential if the images are private.
 - [ ] Confirm the adopted service's settings with `docker service inspect` against the differences Berthy printed.
 - [ ] Create a storage credential scoped to the backup bucket.
 - [ ] Store the agent's encryption key off the server.
@@ -672,6 +714,7 @@ These need an answer before or during phase 1.
 - [ ] Should a failed deploy ever revert the schema automatically, or is revert always a manual command? The spec assumes manual.
 - [ ] Should the agent serve TLS itself, for private networks that do not encrypt traffic?
 - [ ] Should a protected environment require anything more, such as a pre-deploy backup hook?
+- [ ] Is a helper container the right way to probe services by name, or should those checks be left to container health checks?
 
 ### Resolved
 
