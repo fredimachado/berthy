@@ -4,6 +4,7 @@ import (
 	"berthy/internal/api"
 	"berthy/internal/engine"
 	"berthy/internal/metrics"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -45,8 +47,13 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	if err = json.Unmarshal(b, &c); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err = dec.Decode(&c); err != nil {
 		return c, err
+	}
+	if err = dec.Decode(&struct{}{}); err != io.EOF {
+		return c, fmt.Errorf("invalid trailing JSON")
 	}
 	return c, c.Validate()
 }
@@ -81,26 +88,8 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
 func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
-			writeError(w, 404, "not_found", "not found")
-			return
-		}
-
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		digest := Digest(raw)
-		ok := false
-		for _, t := range c.Tokens {
-			if subtle.ConstantTimeCompare([]byte(digest), []byte(t.Digest)) == 1 && (t.Scope == "read" || t.Scope == "deploy" || t.Scope == "admin") {
-				ok = true
-			}
-		}
-		if !ok || parts[2] != c.Environment || !regexp.MustCompile(`^bty\.`+regexp.QuoteMeta(c.Environment)+`\.[0-9a-f]{64}$`).MatchString(raw) || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			writeError(w, 401, "unauthorized", "unauthorized")
-			return
-		}
 		if r.Method != "GET" {
 			writeError(w, 405, "method_not_allowed", "method not allowed")
 			return
@@ -184,29 +173,35 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 				}
 				return "available"
 			}()})
-			var info struct {
-				Swarm struct {
-					ControlAvailable bool
-					LocalNodeState   string
-				}
+			var version struct {
+				APIVersion    string
+				MinAPIVersion string
 			}
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
-				err = e.Get(ctx, "/info", &info)
+				err = e.Get(ctx, "/version", &version)
 			}
 			if err != nil {
 				checks = append(checks, api.Check{Name: "docker", Critical: true, Detail: "unavailable"})
 				err = nil
 			} else {
-				checks = append(checks, api.Check{Name: "docker", OK: true, Critical: true, Detail: "available"}, api.Check{Name: "swarm_manager", OK: info.Swarm.ControlAvailable, Critical: true, Detail: info.Swarm.LocalNodeState})
-				var version struct {
-					APIVersion    string
-					MinAPIVersion string
-				}
-				versionErr := e.Get(ctx, "/version", &version)
-				compatible := versionErr == nil && compareVersion(version.MinAPIVersion, "1.44") <= 0 && compareVersion(version.APIVersion, "1.44") >= 0
+				checks = append(checks, api.Check{Name: "docker", OK: true, Critical: true, Detail: "available"})
+				compatible := compareVersion(version.MinAPIVersion, "1.44") <= 0 && compareVersion(version.APIVersion, "1.44") >= 0
 				checks = append(checks, api.Check{Name: "docker_api", OK: compatible, Critical: true, Detail: version.MinAPIVersion + " - " + version.APIVersion})
+				if compatible {
+					var info struct {
+						Swarm struct {
+							ControlAvailable bool
+							LocalNodeState   string
+						}
+					}
+					if infoErr := e.Get(ctx, "/info", &info); infoErr != nil {
+						checks = append(checks, api.Check{Name: "swarm_manager", Critical: true, Detail: "unavailable"})
+					} else {
+						checks = append(checks, api.Check{Name: "swarm_manager", OK: info.Swarm.ControlAvailable, Critical: true, Detail: info.Swarm.LocalNodeState})
+					}
+				}
 			}
 			result = map[string]any{"checks": checks}
 		default:
@@ -225,6 +220,29 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			return
 		}
 		_ = json.NewEncoder(w).Encode(result)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
+			writeError(w, 404, "not_found", "not found")
+			return
+		}
+		required := ""
+		if len(parts) == 4 {
+			switch parts[3] {
+			case "agent", "apps", "df", "doctor", "stats":
+				required = "read"
+			}
+		}
+		if len(parts) == 5 && parts[3] == "apps" {
+			required = "read"
+		}
+		if required == "" {
+			writeError(w, 404, "not_found", "not found")
+			return
+		}
+		authorize(c, required, handler).ServeHTTP(w, r)
 	})
 }
 
@@ -311,4 +329,32 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 			f.Flush()
 		}
 	}
+}
+
+func authorize(c Config, required string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		sum := sha256.Sum256([]byte(raw))
+		scope := 0
+		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
+		for _, t := range c.Tokens {
+			digest, err := hex.DecodeString(t.Digest)
+			if err == nil && subtle.ConstantTimeCompare(sum[:], digest) == 1 {
+				if levels[t.Scope] > scope {
+					scope = levels[t.Scope]
+				}
+			}
+		}
+		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !regexp.MustCompile(`^bty\.`+regexp.QuoteMeta(c.Environment)+`\.[0-9a-f]{64}$`).MatchString(raw) || scope == 0 {
+			writeError(w, 401, "unauthorized", "unauthorized")
+			return
+		}
+		if levels[required] == 0 || scope < levels[required] {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

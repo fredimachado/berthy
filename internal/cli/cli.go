@@ -120,8 +120,14 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	var c Config
-	if err = json.Unmarshal(b, &c); err != nil {
+	decConfig := json.NewDecoder(bytes.NewReader(b))
+	decConfig.DisallowUnknownFields()
+	if err = decConfig.Decode(&c); err != nil {
 		fmt.Fprintln(errout, err)
+		return 1
+	}
+	if err = decConfig.Decode(&struct{}{}); err != io.EOF {
+		fmt.Fprintln(errout, "invalid trailing JSON")
 		return 1
 	}
 	target, ok := c.Environments[env]
@@ -197,7 +203,7 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		fmt.Fprintf(errout, "agent: %s: %s", resp.Status, body)
+		fmt.Fprintf(errout, "agent returned HTTP %d\n", resp.StatusCode)
 		return 1
 	}
 	if jsonOutput {

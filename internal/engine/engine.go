@@ -44,10 +44,14 @@ func (e *Engine) Get(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("Docker API %s: %s", path, resp.Status)
+		return &StatusError{Code: resp.StatusCode}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
+
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("Docker API status %d", e.Code) }
 
 type container struct {
 	ID, Image, State string
@@ -101,6 +105,12 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		}
 	}
 	apps := map[string]*api.App{}
+	localTasks := map[string]string{}
+	for _, c := range cs {
+		if id := c.Labels["com.docker.swarm.task.id"]; id != "" {
+			localTasks[id] = c.ID
+		}
+	}
 	for _, s := range ss {
 		a := &api.App{Ref: api.AppRef{Kind: "swarm", Name: s.Spec.Name}, Roles: []api.Role{{Name: s.Spec.Name, Replicas: []api.Replica{}}}}
 		if s.Spec.Mode.Replicated != nil {
@@ -108,14 +118,19 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		}
 		apps["swarm:"+s.Spec.Name] = a
 		for _, t := range tasks {
-			if t.ServiceID != s.ID || t.DesiredState != "running" {
+			if t.ServiceID != s.ID || (t.Status.State != "running" && t.DesiredState != "running" && t.DesiredState != "ready") || t.Status.State == "complete" || t.Status.State == "failed" || t.Status.State == "shutdown" || t.Status.State == "rejected" || t.Status.State == "orphaned" || t.Status.State == "remove" {
 				continue
 			}
 			r := api.Replica{TaskID: t.ID, ContainerID: t.Status.ContainerStatus.ContainerID, Image: t.Spec.ContainerSpec.Image, State: t.Status.State, Health: "unknown"}
+			if r.ContainerID == "" {
+				r.ContainerID = localTasks[t.ID]
+			}
 			if r.State == "running" {
 				a.Roles[0].Running++
 			}
-			e.details(ctx, &r)
+			if err := e.details(ctx, &r); err != nil {
+				return nil, err
+			}
 			a.Roles[0].Replicas = append(a.Roles[0].Replicas, r)
 		}
 	}
@@ -145,7 +160,9 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		if c.State == "running" {
 			a.Roles[i].Running++
 		}
-		e.details(ctx, &r)
+		if err := e.details(ctx, &r); err != nil {
+			return nil, err
+		}
 		a.Roles[i].Replicas = append(a.Roles[i].Replicas, r)
 	}
 	out := make([]api.App, 0, len(apps))
@@ -156,12 +173,17 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref.Kind+out[i].Ref.Name < out[j].Ref.Kind+out[j].Ref.Name })
 	return out, nil
 }
-func (e *Engine) details(ctx context.Context, r *api.Replica) {
+func (e *Engine) details(ctx context.Context, r *api.Replica) error {
 	if r.ContainerID == "" {
-		return
+		return nil
 	}
 	var d inspect
-	if e.Get(ctx, "/containers/"+url.PathEscape(r.ContainerID)+"/json", &d) == nil {
+	if err := e.Get(ctx, "/containers/"+url.PathEscape(r.ContainerID)+"/json", &d); err != nil {
+		if status, ok := err.(*StatusError); ok && status.Code == 404 {
+			return nil
+		}
+		return err
+	} else {
 		r.RestartCount = &d.RestartCount
 		r.OOMKilled = &d.State.OOMKilled
 		if d.State.Health == nil {
@@ -170,6 +192,7 @@ func (e *Engine) details(ctx context.Context, r *api.Replica) {
 			r.Health = d.State.Health.Status
 		}
 	}
+	return nil
 }
 func Select(apps []api.App, name string) (api.App, int) {
 	var found []api.App
