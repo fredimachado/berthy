@@ -213,12 +213,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			return
 		}
 		if err != nil {
-			code := "docker_unavailable"
-			if errors.Is(err, context.DeadlineExceeded) {
-				code = "docker_deadline"
-			} else if strings.Contains(err.Error(), "swarm_manager_unavailable") {
-				code = "swarm_manager_unavailable"
-			}
+			code := dockerErrorCode(err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": strings.ReplaceAll(code, "_", " ")})
 			return
@@ -308,9 +303,10 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 	defer stop()
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	var last time.Time
 	send := func() bool {
 		s, ok := c.Latest()
-		if !ok {
+		if !ok || !shouldEmitSample(s.Time, last) {
 			return true
 		}
 		b, err := json.Marshal(s)
@@ -322,6 +318,7 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 			return false
 		}
 		f.Flush()
+		last = s.Time
 		http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		return true
 	}
@@ -395,3 +392,14 @@ func rootDiskCheck(mounts []metrics.Mount) api.Check {
 	}
 	return c
 }
+
+func dockerErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "docker_deadline"
+	}
+	if strings.Contains(err.Error(), "swarm_manager_unavailable") {
+		return "swarm_manager_unavailable"
+	}
+	return "docker_unavailable"
+}
+func shouldEmitSample(current, last time.Time) bool { return last.IsZero() || current.After(last) }

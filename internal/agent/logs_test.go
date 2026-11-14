@@ -2,10 +2,12 @@ package agent
 
 import (
 	"berthy/internal/metrics"
+	"context"
 	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLogsValidationBeforeDocker(t *testing.T) {
@@ -39,5 +41,19 @@ func TestPartialMountsKeepRootHealthy(t *testing.T) {
 	}
 	if rootDiskCheck([]metrics.Mount{{Path: "/", Total: 100, Available: 5}}).OK {
 		t.Fatal("full root must fail")
+	}
+}
+func TestDockerErrorCodesAndDuplicateSamples(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{{context.DeadlineExceeded, "docker_deadline"}, {errors.New("swarm_manager_unavailable"), "swarm_manager_unavailable"}} {
+		if got := dockerErrorCode(tc.err); got != tc.want {
+			t.Fatalf("got %s", got)
+		}
+	}
+	t1 := time.Now()
+	if shouldEmitSample(t1, t1) || shouldEmitSample(t1.Add(-time.Second), t1) || !shouldEmitSample(t1.Add(time.Second), t1) {
+		t.Fatal("sample order")
 	}
 }

@@ -46,3 +46,11 @@ func (t rewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.URL.Host = u.Host
 	return http.DefaultTransport.RoundTrip(r)
 }
+func TestStatsEmptyResponseUnavailable(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{}`) }))
+	defer s.Close()
+	e := &Engine{client: &http.Client{Transport: rewriteTransport{base: s.URL}}}
+	if _, err := e.Stats(context.Background(), "stopped"); err == nil {
+		t.Fatal("empty stats accepted")
+	}
+}

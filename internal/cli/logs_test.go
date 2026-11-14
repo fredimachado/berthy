@@ -46,3 +46,11 @@ func TestLogStreamRequiresCompletion(t *testing.T) {
 		t.Fatal(errs.String())
 	}
 }
+func TestIncompleteAndMalformedSSE(t *testing.T) {
+	for _, input := range []string{"event: done\ndata: {\"complete\":true}", "event: done\ndata: {\"complete\":false}\n\n", "event: done\ndata: {\"complete\":true} junk\n\n", "event: log\ndata: {\"message\":\"x\"} junk\n\n"} {
+		var out, errout bytes.Buffer
+		if readStream(strings.NewReader(input), &out, &errout, true) == 0 {
+			t.Fatalf("accepted %q", input)
+		}
+	}
+}

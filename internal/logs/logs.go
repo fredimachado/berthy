@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,9 +66,13 @@ func validate(ids []Identity, opts Options) error {
 // Tail reads each source's requested tail and returns a bounded chronological merge.
 func Tail(ctx context.Context, source Source, ids []Identity, opts Options) ([]Record, error) {
 	var out []Record
-	size := 0
+	size := 2
 	err := readAll(ctx, source, ids, opts, false, func(r Record) error {
-		size += len(r.Message) + len(r.Role) + len(r.Replica) + len(r.ContainerID) + 64
+		encoded, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		size += len(encoded) + 1
 		if size > MaxTailBytes {
 			return errors.New("log tail exceeds response limit")
 		}

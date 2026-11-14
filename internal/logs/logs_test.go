@@ -103,3 +103,14 @@ func TestSourceErrorAndTruncatedFrame(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+func TestTailBoundsEncodedJSON(t *testing.T) {
+	line := "2026-01-01T00:00:01Z " + strings.Repeat("\x00", 200000) + "\n"
+	var data strings.Builder
+	for i := 0; i < 8; i++ {
+		data.WriteString(frame(1, line))
+	}
+	f := fakeSource{data: map[string]string{"a": data.String()}}
+	if _, err := Tail(context.Background(), f, []Identity{{ContainerID: "a"}}, Options{Tail: 8}); err == nil {
+		t.Fatal("escaped JSON exceeds limit")
+	}
+}

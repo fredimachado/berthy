@@ -225,14 +225,14 @@ func (e *Engine) Stats(ctx context.Context, id string) (metrics.RawContainer, er
 	var v struct {
 		CPUStats struct {
 			CPUUsage struct {
-				TotalUsage  uint64   `json:"total_usage"`
+				TotalUsage  *uint64  `json:"total_usage"`
 				PercpuUsage []uint64 `json:"percpu_usage"`
 			} `json:"cpu_usage"`
-			SystemCPUUsage uint64 `json:"system_cpu_usage"`
-			OnlineCPUs     uint32 `json:"online_cpus"`
+			SystemCPUUsage *uint64 `json:"system_cpu_usage"`
+			OnlineCPUs     uint32  `json:"online_cpus"`
 		} `json:"cpu_stats"`
 		MemoryStats struct {
-			Usage, Limit uint64
+			Usage, Limit *uint64
 			Stats        map[string]uint64
 		} `json:"memory_stats"`
 		Networks map[string]struct {
@@ -249,7 +249,10 @@ func (e *Engine) Stats(ctx context.Context, id string) (metrics.RawContainer, er
 	if err := e.Get(ctx, "/containers/"+url.PathEscape(id)+"/stats?stream=false&one-shot=true", &v); err != nil {
 		return metrics.RawContainer{}, err
 	}
-	r := metrics.RawContainer{CPUUsage: v.CPUStats.CPUUsage.TotalUsage, SystemUsage: v.CPUStats.SystemCPUUsage, OnlineCPUs: v.CPUStats.OnlineCPUs, PerCPUs: uint32(len(v.CPUStats.CPUUsage.PercpuUsage)), MemoryUsage: v.MemoryStats.Usage, MemoryLimit: v.MemoryStats.Limit}
+	if v.CPUStats.CPUUsage.TotalUsage == nil || v.CPUStats.SystemCPUUsage == nil || v.MemoryStats.Usage == nil || v.MemoryStats.Limit == nil {
+		return metrics.RawContainer{}, fmt.Errorf("incomplete Docker stats")
+	}
+	r := metrics.RawContainer{CPUUsage: *v.CPUStats.CPUUsage.TotalUsage, SystemUsage: *v.CPUStats.SystemCPUUsage, OnlineCPUs: v.CPUStats.OnlineCPUs, PerCPUs: uint32(len(v.CPUStats.CPUUsage.PercpuUsage)), MemoryUsage: *v.MemoryStats.Usage, MemoryLimit: *v.MemoryStats.Limit}
 	if cache, ok := v.MemoryStats.Stats["total_inactive_file"]; ok {
 		r.Cache = cache
 	} else {

@@ -5,10 +5,12 @@ import (
 	"berthy/internal/logs"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,7 +51,8 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	apps, err := e.Apps(ctx)
 	cancel()
 	if err != nil {
-		writeError(w, 503, "docker_unavailable", "docker unavailable")
+		code := dockerErrorCode(err)
+		writeError(w, 503, code, strings.ReplaceAll(code, "_", " "))
 		return
 	}
 	app, code := engine.Select(apps, name)
@@ -97,7 +100,11 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		defer cancel()
 		rows, err := logs.Tail(ctx, e, ids, opts)
 		if err != nil {
-			writeError(w, 503, "logs_unavailable", "logs unavailable")
+			if errors.Is(err, context.DeadlineExceeded) {
+				writeError(w, 503, "docker_deadline", "docker deadline")
+			} else {
+				writeError(w, 503, "logs_unavailable", "logs unavailable")
+			}
 			return
 		}
 		if rows == nil {

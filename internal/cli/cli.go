@@ -4,6 +4,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/logs"
 	"berthy/internal/metrics"
 	"bufio"
 	"bytes"
@@ -320,41 +321,90 @@ func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 16<<20)
 	event := ""
+	var data []string
+	size := 0
 	for scan.Scan() {
 		line := scan.Text()
-		if strings.HasPrefix(line, "event: ") {
-			event = strings.TrimPrefix(line, "event: ")
+		if line == "" {
+			if len(data) == 0 {
+				event = ""
+				continue
+			}
+			payload := strings.Join(data, "\n")
+			data = nil
+			size = 0
+			if !json.Valid([]byte(payload)) || len(payload) == 0 || payload[0] != '{' {
+				fmt.Fprintln(errout, "invalid stream event")
+				return 1
+			}
+			switch event {
+			case "done":
+				var v struct {
+					Complete bool `json:"complete"`
+				}
+				if json.Unmarshal([]byte(payload), &v) != nil || !v.Complete {
+					fmt.Fprintln(errout, "invalid stream event")
+					return 1
+				}
+				return 0
+			case "error":
+				fmt.Fprintln(errout, "agent stream failed")
+				return 1
+			case "log":
+				var v logs.Record
+				if json.Unmarshal([]byte(payload), &v) != nil {
+					fmt.Fprintln(errout, "invalid stream event")
+					return 1
+				}
+			case "stats":
+				var v metrics.Sample
+				if json.Unmarshal([]byte(payload), &v) != nil {
+					fmt.Fprintln(errout, "invalid stream event")
+					return 1
+				}
+			default:
+				fmt.Fprintln(errout, "invalid stream event")
+				return 1
+			}
+			event = ""
+			var v any
+			dec := json.NewDecoder(strings.NewReader(payload))
+			dec.UseNumber()
+			if dec.Decode(&v) != nil {
+				fmt.Fprintln(errout, "invalid stream event")
+				return 1
+			}
+			if jsonOutput {
+				fmt.Fprintln(out, payload)
+			} else {
+				printText(out, v, "")
+			}
 			continue
 		}
-		if !strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
-		if event == "done" {
-			return 0
+		field, value, ok := strings.Cut(line, ":")
+		if !ok {
+			value = ""
 		}
-		if event == "error" {
-			fmt.Fprintln(errout, "agent stream failed")
-			return 1
-		}
-		event = ""
-		var v any
-		dec := json.NewDecoder(strings.NewReader(data))
-		dec.UseNumber()
-		if dec.Decode(&v) != nil {
-			fmt.Fprintln(errout, "invalid stream event")
-			return 1
-		}
-		if jsonOutput {
-			fmt.Fprintln(out, data)
-		} else {
-			printText(out, v, "")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "event":
+			event = value
+		case "data":
+			size += len(value) + 1
+			if size > 16<<20 {
+				fmt.Fprintln(errout, "invalid stream event")
+				return 1
+			}
+			data = append(data, value)
 		}
 	}
-	if err := scan.Err(); err != nil {
+	if scan.Err() != nil {
 		fmt.Fprintln(errout, "agent stream could not be read")
-		return 1
+	} else {
+		fmt.Fprintln(errout, "agent stream ended unexpectedly")
 	}
-	fmt.Fprintln(errout, "agent stream ended unexpectedly")
 	return 1
 }
