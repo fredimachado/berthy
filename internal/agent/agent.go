@@ -3,6 +3,7 @@ package agent
 import (
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/metrics"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -77,6 +78,9 @@ func (c Config) Validate() error {
 	return nil
 }
 func Handler(c Config, e *engine.Engine) http.Handler {
+	return HandlerWithMetrics(c, e, nil)
+}
+func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -106,6 +110,23 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 		var result any
 		var err error
 		switch {
+		case len(parts) == 4 && parts[3] == "stats":
+			if r.URL.Query().Get("watch") == "1" && collector != nil {
+				streamStats(w, r, collector)
+				return
+			}
+			if collector == nil {
+				result = metrics.Sample{}
+			} else if value := r.URL.Query().Get("since"); value != "" {
+				d, parseErr := time.ParseDuration(value)
+				if parseErr != nil || d <= 0 || d > time.Hour {
+					writeError(w, 400, "bad_request", "invalid since duration")
+					return
+				}
+				result = collector.Since(d)
+			} else {
+				result, _ = collector.Latest()
+			}
 		case len(parts) == 4 && parts[3] == "agent":
 			host, _ := os.Hostname()
 			result = map[string]any{"environment": c.Environment, "hostname": host}
@@ -241,4 +262,53 @@ func compareVersion(a, b string) int {
 		return am - bm
 	}
 	return an - bn
+}
+
+func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
+	f, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, 500, "stream_unavailable", "stream unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	ch, stop := c.Subscribe()
+	defer stop()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	send := func() bool {
+		s, ok := c.Latest()
+		if !ok {
+			return true
+		}
+		b, err := json.Marshal(s)
+		if err != nil {
+			return false
+		}
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err = fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return false
+		}
+		f.Flush()
+		return true
+	}
+	if !send() {
+		return
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ch:
+			if !send() {
+				return
+			}
+		case <-ticker.C:
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			f.Flush()
+		}
+	}
 }

@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"berthy/internal/metrics"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuardRejectsWrongEnvironmentBeforeDocker(t *testing.T) {
@@ -21,4 +25,56 @@ func TestGuardRejectsWrongEnvironmentBeforeDocker(t *testing.T) {
 			t.Errorf("%s: got %d want %d", tc.path, w.Code, tc.want)
 		}
 	}
+}
+
+func TestStatsRouteRequiresAuthentication(t *testing.T) {
+	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	req := httptest.NewRequest("GET", "/v1/environments/lab/stats", nil)
+	w := httptest.NewRecorder()
+	Handler(c, nil).ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("got %d", w.Code)
+	}
+	req = httptest.NewRequest("GET", "/v1/environments/lab/stats", nil)
+	req.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	w = httptest.NewRecorder()
+	Handler(c, nil).ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("stats: %d %s", w.Code, w.Body.String())
+	}
+}
+func TestStatsWatchStreamsInitialSample(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := metrics.New(metrics.NewHostReader(), nilDocker{})
+	go c.Run(ctx)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, ok := c.Latest(); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no sample")
+		}
+		runtime.Gosched()
+	}
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	req := httptest.NewRequest("GET", "/v1/environments/lab/stats?watch=1", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { HandlerWithMetrics(cfg, nil, c).ServeHTTP(w, req); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+	if !strings.Contains(w.Body.String(), "data: ") {
+		t.Fatalf("missing event: %s", w.Body.String())
+	}
+}
+
+type nilDocker struct{}
+
+func (nilDocker) Containers(context.Context) ([]string, error) { return nil, nil }
+func (nilDocker) Stats(context.Context, string) (metrics.RawContainer, error) {
+	return metrics.RawContainer{}, nil
 }

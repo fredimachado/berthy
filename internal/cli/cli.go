@@ -4,7 +4,10 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/metrics"
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"runtime"
 	"sort"
@@ -49,7 +53,8 @@ func Run(args []string, out, errout io.Writer) int {
 		return 0
 	}
 	var config, env string
-	var jsonOutput bool
+	var jsonOutput, watch bool
+	var since string
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -64,6 +69,15 @@ func Run(args []string, out, errout io.Writer) int {
 			} else {
 				env = args[i]
 			}
+		case "--watch":
+			watch = true
+		case "--since":
+			if i+1 == len(args) {
+				fmt.Fprintln(errout, "missing since duration")
+				return 2
+			}
+			i++
+			since = args[i]
 		case "--json":
 			jsonOutput = true
 		default:
@@ -84,7 +98,12 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		server := http.Server{Addr: c.Listen, Handler: agent.Handler(c, engine.New(c.DockerSocket)), ReadHeaderTimeout: 5 * time.Second}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		eng := engine.New(c.DockerSocket)
+		collector := metrics.New(metrics.NewHostReader(), eng)
+		go collector.Run(ctx)
+		server := http.Server{Addr: c.Listen, Handler: agent.HandlerWithMetrics(c, eng, collector), ReadHeaderTimeout: 5 * time.Second}
 		if err = server.ListenAndServe(); err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
@@ -130,6 +149,8 @@ func Run(args []string, out, errout io.Writer) int {
 			return 2
 		}
 		endpoint = "apps/" + url.PathEscape(positional[0])
+	case "stats":
+		endpoint = "stats"
 	case "df", "doctor":
 		endpoint = cmd
 	case "agent-info":
@@ -139,19 +160,37 @@ func Run(args []string, out, errout io.Writer) int {
 		return 2
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/" + endpoint
-	req, err := http.NewRequest("GET", u.String(), nil)
+	if cmd == "stats" {
+		q := u.Query()
+		if watch {
+			q.Set("watch", "1")
+		}
+		if since != "" {
+			q.Set("since", since)
+		}
+		u.RawQuery = q.Encode()
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	client := http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if watch {
+		client.Timeout = 0
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
 	defer resp.Body.Close()
+	if watch && resp.StatusCode == 200 {
+		return readStream(resp.Body, out, errout, jsonOutput)
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -221,4 +260,33 @@ func printText(w io.Writer, v any, indent string) {
 	default:
 		fmt.Fprintln(w, x)
 	}
+}
+
+func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
+	scan := bufio.NewScanner(r)
+	scan.Buffer(make([]byte, 4096), 16<<20)
+	for scan.Scan() {
+		line := scan.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		var v any
+		dec := json.NewDecoder(strings.NewReader(data))
+		dec.UseNumber()
+		if dec.Decode(&v) != nil {
+			fmt.Fprintln(errout, "invalid stream event")
+			return 1
+		}
+		if jsonOutput {
+			fmt.Fprintln(out, data)
+		} else {
+			printText(out, v, "")
+		}
+	}
+	if err := scan.Err(); err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	return 0
 }

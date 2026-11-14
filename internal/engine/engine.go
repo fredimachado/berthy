@@ -2,6 +2,7 @@ package engine
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/metrics"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -184,4 +185,64 @@ func Select(apps []api.App, name string) (api.App, int) {
 		return api.App{}, 409
 	}
 	return found[0], 200
+}
+
+func (e *Engine) Containers(ctx context.Context) ([]string, error) {
+	var cs []struct{ ID string }
+	if err := e.Get(ctx, "/containers/json", &cs); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(cs))
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	return ids, nil
+}
+func (e *Engine) Stats(ctx context.Context, id string) (metrics.RawContainer, error) {
+	var v struct {
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage  uint64   `json:"total_usage"`
+				PercpuUsage []uint64 `json:"percpu_usage"`
+			} `json:"cpu_usage"`
+			SystemCPUUsage uint64 `json:"system_cpu_usage"`
+			OnlineCPUs     uint32 `json:"online_cpus"`
+		} `json:"cpu_stats"`
+		MemoryStats struct {
+			Usage, Limit uint64
+			Stats        map[string]uint64
+		} `json:"memory_stats"`
+		Networks map[string]struct {
+			RxBytes uint64 `json:"rx_bytes"`
+			TxBytes uint64 `json:"tx_bytes"`
+		}
+		BlkioStats struct {
+			IOServiceBytesRecursive []struct {
+				Op    string
+				Value uint64
+			} `json:"io_service_bytes_recursive"`
+		} `json:"blkio_stats"`
+	}
+	if err := e.Get(ctx, "/containers/"+url.PathEscape(id)+"/stats?stream=false&one-shot=true", &v); err != nil {
+		return metrics.RawContainer{}, err
+	}
+	r := metrics.RawContainer{CPUUsage: v.CPUStats.CPUUsage.TotalUsage, SystemUsage: v.CPUStats.SystemCPUUsage, OnlineCPUs: v.CPUStats.OnlineCPUs, PerCPUs: uint32(len(v.CPUStats.CPUUsage.PercpuUsage)), MemoryUsage: v.MemoryStats.Usage, MemoryLimit: v.MemoryStats.Limit}
+	if cache, ok := v.MemoryStats.Stats["total_inactive_file"]; ok {
+		r.Cache = cache
+	} else {
+		r.Cache = v.MemoryStats.Stats["inactive_file"]
+	}
+	for _, n := range v.Networks {
+		r.NetworkRXBytes += n.RxBytes
+		r.NetworkTXBytes += n.TxBytes
+	}
+	for _, b := range v.BlkioStats.IOServiceBytesRecursive {
+		switch strings.ToLower(b.Op) {
+		case "read":
+			r.BlockReadBytes += b.Value
+		case "write":
+			r.BlockWriteBytes += b.Value
+		}
+	}
+	return r, nil
 }
