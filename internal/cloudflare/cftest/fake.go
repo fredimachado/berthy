@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"berthy/internal/cloudflare"
 )
@@ -39,6 +40,30 @@ type Fake struct {
 	zones       map[string]cloudflare.Zone
 	zoneOrder   []string
 	records     map[string][]cloudflare.DNSRecord // by zone id, in creation order
+	writes      []Write                           // successful API changes and refused requests, in order
+}
+
+// Write is one change the API made, or one request an injected fault refused, in the order they happened. Kind is
+// tunnel_create, config_put, record_create, record_update, record_delete or injected_failure. Target names the tunnel,
+// the record or the status the change concerns.
+type Write struct {
+	Seq    int    `json:"seq"`
+	At     string `json:"at"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Target string `json:"target,omitempty"`
+}
+
+// Snapshot is the account as tests and the end-to-end control plane read it. It never holds the token.
+type Snapshot struct {
+	AccountID    string                            `json:"account_id"`
+	Tunnels      []cloudflare.Tunnel               `json:"tunnels"`
+	Configs      map[string]json.RawMessage        `json:"configs"`
+	Records      map[string][]cloudflare.DNSRecord `json:"records"` // by zone name, in creation order
+	ConfigPuts   int                               `json:"config_puts"`
+	RecordWrites int                               `json:"record_writes"`
+	Writes       []Write                           `json:"writes"`
 }
 
 // New returns an empty account that accepts only token and belongs to accountID.
@@ -66,6 +91,7 @@ func (f *Fake) Handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if status := f.faulted(r); status != 0 {
+			f.note(r, "injected_failure", fmt.Sprintf("HTTP %d", status))
 			writeFailure(w, status, 1000, "injected failure")
 			return
 		}
@@ -88,6 +114,13 @@ func (f *Fake) FailRequests(method, prefix string, status int) {
 	if status != 0 {
 		f.faults = append(f.faults, fault{method: method, prefix: prefix, status: status})
 	}
+}
+
+// ClearFailures removes every fault, so later requests reach the account again.
+func (f *Fake) ClearFailures() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults = nil
 }
 
 // faulted returns the status of the first fault that matches r, or 0 when none does. The caller must hold f.mu.
@@ -191,6 +224,63 @@ func (f *Fake) Records(zoneID string) []cloudflare.DNSRecord {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]cloudflare.DNSRecord(nil), f.records[zoneID]...)
+}
+
+// ZoneID returns the id of the zone with this name, and false when the account has no such zone.
+func (f *Fake) ZoneID(name string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range f.zoneOrder {
+		if f.zones[id].Name == name {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// HasTunnel reports whether a tunnel with this id exists, deleted or not.
+func (f *Fake) HasTunnel(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.tunnels[id]
+	return ok
+}
+
+// Snapshot returns a copy of the account's tunnels, configurations, records, write counters and write log.
+func (f *Fake) Snapshot() Snapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := Snapshot{
+		AccountID:    f.AccountID,
+		Tunnels:      []cloudflare.Tunnel{},
+		Configs:      map[string]json.RawMessage{},
+		Records:      map[string][]cloudflare.DNSRecord{},
+		ConfigPuts:   f.ConfigPuts,
+		RecordWrites: f.RecordWrites,
+		Writes:       append([]Write{}, f.writes...),
+	}
+	for _, id := range f.tunnelOrder {
+		s.Tunnels = append(s.Tunnels, f.tunnels[id])
+	}
+	for id, raw := range f.configs {
+		s.Configs[id] = append(json.RawMessage(nil), raw...)
+	}
+	for _, id := range f.zoneOrder {
+		s.Records[f.zones[id].Name] = append([]cloudflare.DNSRecord{}, f.records[id]...)
+	}
+	return s
+}
+
+// note appends one entry to the write log. The caller must hold f.mu.
+func (f *Fake) note(r *http.Request, kind, target string) {
+	f.writes = append(f.writes, Write{
+		Seq:    len(f.writes) + 1,
+		At:     time.Now().UTC().Format(time.RFC3339Nano),
+		Method: r.Method,
+		Path:   strings.TrimPrefix(r.URL.Path, "/client/v4"),
+		Kind:   kind,
+		Target: target,
+	})
 }
 
 // TunnelToken returns the deterministic token of a tunnel. A connector must be given this value.
@@ -321,6 +411,7 @@ func (f *Fake) tunnelCollection(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		t := f.tunnels[f.addTunnel(body.Name, body.ConfigSrc == "cloudflare")]
+		f.note(r, "tunnel_create", body.Name)
 		writeResult(w, t)
 	default:
 		writeMethodNotAllowed(w)
@@ -377,6 +468,7 @@ func (f *Fake) tunnelConfig(w http.ResponseWriter, r *http.Request, id string) {
 		f.configs[id] = append(json.RawMessage(nil), body.Config...)
 		f.versions[id]++
 		f.ConfigPuts++
+		f.note(r, "config_put", id)
 		writeResult(w, map[string]any{"tunnel_id": id, "version": f.versions[id], "config": f.configs[id]})
 	default:
 		writeMethodNotAllowed(w)
@@ -448,6 +540,7 @@ func (f *Fake) recordCollection(w http.ResponseWriter, r *http.Request, zoneID s
 		}
 		f.records[zoneID] = append(f.records[zoneID], rec)
 		f.RecordWrites++
+		f.note(r, "record_create", rec.Name)
 		writeResult(w, rec)
 	default:
 		writeMethodNotAllowed(w)
@@ -490,10 +583,12 @@ func (f *Fake) record(w http.ResponseWriter, r *http.Request, zoneID, id string)
 		}
 		f.records[zoneID][idx] = rec
 		f.RecordWrites++
+		f.note(r, "record_update", rec.Name)
 		writeResult(w, rec)
 	case http.MethodDelete:
 		f.records[zoneID] = append(f.records[zoneID][:idx], f.records[zoneID][idx+1:]...)
 		f.RecordWrites++
+		f.note(r, "record_delete", id)
 		writeResult(w, map[string]string{"id": id})
 	default:
 		writeMethodNotAllowed(w)
