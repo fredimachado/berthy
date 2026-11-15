@@ -25,9 +25,7 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		p.Roles = append(p.Roles, role)
 	}
 	sort.Strings(p.Roles)
-	if len(app.Hooks.PreDeploy) > 0 || len(app.Hooks.PostDeploy) > 0 || app.Migrations != nil {
-		return Plan{}, errors.New("hooks and migrations are unavailable")
-	}
+
 	if c.Engine == nil {
 		return Plan{}, errors.New("Docker unavailable")
 	}

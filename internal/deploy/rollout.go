@@ -24,7 +24,11 @@ type serviceMutator interface {
 
 func sameSpec(a, b json.RawMessage) bool {
 	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+	da := json.NewDecoder(bytes.NewReader(a))
+	da.UseNumber()
+	db := json.NewDecoder(bytes.NewReader(b))
+	db.UseNumber()
+	if da.Decode(&x) != nil || db.Decode(&y) != nil {
 		return false
 	}
 	ax, _ := json.Marshal(x)
@@ -149,4 +153,40 @@ func matchesCreatedSpec(desired, live json.RawMessage) bool {
 	db, _ := json.Marshal(d)
 	lb, _ := json.Marshal(l)
 	return sameSpec(db, lb)
+}
+
+type rolloutEngine interface {
+	serviceMutator
+	healthReader
+}
+
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int) (string, error) {
+	if err := j.RecordIntent(ctx, op, i); err != nil {
+		return "", err
+	}
+	createdID, err := e.CreateService(ctx, i.Desired, auth)
+	if err != nil || createdID == "" {
+		return "", errors.New("service create outcome uncertain")
+	}
+	live, err := e.InspectService(ctx, i.Name)
+	if err != nil || live.ID != createdID || !matchesCreatedSpec(i.Desired, live.Spec) {
+		return "", errors.New("created service cannot be verified")
+	}
+	receipt, err := json.Marshal(struct {
+		ID   string          `json:"id"`
+		Spec json.RawMessage `json:"spec"`
+	}{live.ID, live.Spec})
+	if err != nil {
+		return "", err
+	}
+	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
+		return "", err
+	}
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas); err != nil {
+		return "", err
+	}
+	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt); err != nil {
+		return "", err
+	}
+	return live.ID, nil
 }

@@ -33,6 +33,7 @@ type mutationFake struct {
 	creates    int
 	live       engine.ServiceSnapshot
 	inspectErr error
+	tasks      []engine.ServiceTask
 }
 
 func (m *mutationFake) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
@@ -40,7 +41,7 @@ func (m *mutationFake) InspectService(context.Context, string) (engine.ServiceSn
 }
 func (m *mutationFake) CreateService(context.Context, json.RawMessage, *engine.RegistryAuth) (string, error) {
 	m.creates++
-	return "created", nil
+	return "id", nil
 }
 func (m *mutationFake) UpdateService(context.Context, string, uint64, json.RawMessage, *engine.RegistryAuth) error {
 	return nil
@@ -165,5 +166,28 @@ func TestServiceSpecInheritsImageHealth(t *testing.T) {
 	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{}, "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`))
 	if err != nil || !strings.Contains(string(b), `"Healthcheck"`) {
 		t.Fatalf("image health: %s %v", b, err)
+	}
+}
+
+func TestCreateRoleJournalsAndVerifiesHealthyGeneration(t *testing.T) {
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
+	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Spec: desired}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "container", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
+	j := &journalFake{}
+	id, err := createRole(context.Background(), j, m, "op", state.Intent{Kind: "create", Name: "svc", Generation: "op", Desired: desired}, nil, 1)
+	if err != nil || id != "id" || len(j.saved) != 1 || m.creates != 1 {
+		t.Fatalf("id=%q err=%v intents=%d creates=%d", id, err, len(j.saved), m.creates)
+	}
+}
+
+func (m *mutationFake) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
+	return m.tasks, nil
+}
+func (m *mutationFake) InspectContainerHealth(context.Context, string) (string, error) {
+	return "healthy", nil
+}
+
+func TestSpecComparisonDetectsLargeIntegerDrift(t *testing.T) {
+	if sameSpec(json.RawMessage(`{"value":9007199254740992}`), json.RawMessage(`{"value":9007199254740993}`)) {
+		t.Fatal("integer drift hidden")
 	}
 }

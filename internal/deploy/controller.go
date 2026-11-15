@@ -3,9 +3,9 @@ package deploy
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
@@ -58,6 +58,9 @@ type Controller struct {
 
 // Plan performs no durable or Docker mutations.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.Kind != "" && req.Kind != "deploy" && req.Kind != "rollback" {
+		return c.planOperation(ctx, actor, req)
+	}
 	if err := req.Manifest.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -102,8 +105,10 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	sum := sha256.Sum256(b)
 	public, err := json.Marshal(struct {
-		App, Version, Commit string
-		Adopt                bool
+		App     string `json:"app"`
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		Adopt   bool   `json:"adopt"`
 	}{req.App, req.Version, req.Commit, req.Adopt})
 	if err != nil {
 		return state.Operation{}, false, err
@@ -111,26 +116,32 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if c.Store == nil {
 		return state.Operation{}, false, errors.New("state unavailable")
 	}
-	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "deploy", App: req.App, Commit: req.Commit, RequestHash: sum, PublicRequest: public})
+	kind := req.Kind
+	if kind == "" {
+		kind = "deploy"
+	}
+	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind, App: req.App, Commit: req.Commit, RequestHash: sum, PublicRequest: public})
 	if err != nil || !created {
 		return op, created, err
 	}
-	go c.execute(context.Background(), op, actor, req)
+	if kind == "deploy" {
+		go c.execute(context.Background(), op, actor, req)
+	} else {
+		go func() {
+			outcome := c.runOperation(context.Background(), op, actor, req)
+			_ = c.Store.Finish(context.Background(), op.ID, outcome)
+		}()
+	}
 	return op, true, nil
 }
-func (c *Controller) execute(ctx context.Context, op state.Operation, actor Actor, req Request) {
-	// Re-check mutable prerequisites after acquiring operation ownership.
-	_, err := c.Plan(ctx, actor, req)
-	if err == nil {
-		err = errors.New("deployment execution unavailable")
-	}
-	_ = c.Store.Finish(ctx, op.ID, state.Outcome{State: "failed", Err: fmt.Sprint(err)})
-}
 func (c *Controller) Recover(ctx context.Context) error {
-	if c.Store == nil {
-		return errors.New("state unavailable")
+	if c.Store == nil || c.Engine == nil {
+		return errors.New("recovery unavailable")
 	}
 	op, err := c.Store.Active(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -138,8 +149,21 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(intents) > 0 {
-		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "deployment requires recovery"})
+	hasHooks := false
+	for _, i := range intents {
+		if i.Kind == "oneoff" {
+			hasHooks = true
+		} else if i.Kind != "create" {
+			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "unsupported recovery step"})
+		}
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "failed", Err: "interrupted before rollout"})
+	if hasHooks {
+		if err = c.recoverHooks(ctx, op.ID); err != nil {
+			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "one-off recovery required"})
+		}
+	}
+	if err = c.compensateCreates(ctx, op.ID); err != nil {
+		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"})
+	}
+	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up"})
 }
