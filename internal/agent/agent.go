@@ -307,7 +307,7 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 				}
 			}
 			if deployment != nil && deployment.Store != nil {
-				checks = append(checks, monitoringChecks(r.Context(), deployment.Store)...)
+				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
 			}
 			result = map[string]any{"checks": checks}
 		default:

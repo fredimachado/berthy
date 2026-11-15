@@ -509,3 +509,105 @@ func (e *Engine) RemoveImageRef(ctx context.Context, ref string) error {
 	}
 	return e.jsonRequest(ctx, "DELETE", "/images/"+p, nil, nil, nil)
 }
+
+// RemoveUnusedImage removes ref, an image ID or a name:tag. It does not force the removal, so Docker refuses an image
+// that a container uses.
+func (e *Engine) RemoveUnusedImage(ctx context.Context, ref string) error {
+	p, err := refPath(ref)
+	if err != nil {
+		return err
+	}
+	return e.jsonRequest(ctx, "DELETE", "/images/"+p, nil, nil, nil)
+}
+
+// ImportImage creates the image repo:tag from archive, a tar of its root filesystem, with the Dockerfile instructions in
+// changes applied. Docker reports a failed import in its progress stream, which is read to the end.
+func (e *Engine) ImportImage(ctx context.Context, repo, tag string, changes []string, archive []byte) error {
+	if _, err := refPath(repo + ":" + tag); err != nil {
+		return err
+	}
+	q := url.Values{"fromSrc": {"-"}, "repo": {repo}, "tag": {tag}, "changes": changes}
+	resp, err := e.request(ctx, "POST", "/images/create?"+q.Encode(), archive, nil, true)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	limited := &io.LimitedReader{R: resp.Body, N: maxDockerResponse + 1}
+	d := json.NewDecoder(limited)
+	for {
+		var x struct {
+			Error       string
+			ErrorDetail struct{ Message string }
+		}
+		err = d.Decode(&x)
+		if err == io.EOF && limited.N > 0 {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("invalid Docker import response")
+		}
+		if x.Error != "" || x.ErrorDetail.Message != "" {
+			return fmt.Errorf("Docker image import failed")
+		}
+	}
+}
+
+// PortBinding is a host address and port that a container port is published on.
+type PortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+// ContainerDetail is the part of a container's inspect output that the agent checks its own containers against.
+type ContainerDetail struct {
+	ID, ImageID, User, RestartPolicy string
+	Running, ReadonlyRootfs          bool
+	CapDrop, SecurityOpt             []string
+	Memory                           int64
+	Labels                           map[string]string
+	// PortBindings are the publications asked for, and Ports the ones Docker made.
+	PortBindings map[string][]PortBinding
+	Ports        map[string][]PortBinding
+	// Networks maps each network the container is attached to by name to its ID.
+	Networks map[string]string
+}
+
+// InspectContainerDetail returns the settings of a container that the agent's own containers are checked against.
+func (e *Engine) InspectContainerDetail(ctx context.Context, id string) (ContainerDetail, error) {
+	p, err := pathID(id)
+	if err != nil {
+		return ContainerDetail{}, err
+	}
+	var x struct {
+		ID, Image string
+		Config    struct {
+			User   string
+			Labels map[string]string
+		}
+		State      struct{ Running bool }
+		HostConfig struct {
+			ReadonlyRootfs       bool
+			CapDrop, SecurityOpt []string
+			Memory               int64
+			RestartPolicy        struct{ Name string }
+			PortBindings         map[string][]PortBinding
+		}
+		NetworkSettings struct {
+			Ports    map[string][]PortBinding
+			Networks map[string]struct{ NetworkID string }
+		}
+	}
+	if err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x); err != nil {
+		return ContainerDetail{}, err
+	}
+	networks := make(map[string]string, len(x.NetworkSettings.Networks))
+	for name, n := range x.NetworkSettings.Networks {
+		networks[name] = n.NetworkID
+	}
+	return ContainerDetail{
+		ID: x.ID, ImageID: x.Image, User: x.Config.User, Labels: x.Config.Labels, Running: x.State.Running,
+		ReadonlyRootfs: x.HostConfig.ReadonlyRootfs, CapDrop: x.HostConfig.CapDrop, SecurityOpt: x.HostConfig.SecurityOpt,
+		Memory: x.HostConfig.Memory, RestartPolicy: x.HostConfig.RestartPolicy.Name, PortBindings: x.HostConfig.PortBindings,
+		Ports: x.NetworkSettings.Ports, Networks: networks,
+	}, nil
+}

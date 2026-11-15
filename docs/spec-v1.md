@@ -681,9 +681,7 @@ Proposed thresholds: disk space and Docker disk usage warn at 80% and go critica
 **Where a probe runs.** The agent runs on the host, where Docker service names do not resolve and addresses on the shared overlay network cannot be reached.
 
 - A probe against a public URL, or an address the host can reach, is run by the agent itself.
-- A probe against a service name needs an overlay-attached helper. Phase 3 will
-  decide its packaging; one option is the same Berthy binary in a locally built
-  image, with one helper per server.
+- A probe against a service name runs in the overlay helper: one container per environment on each server, built by the agent from its own static binary as `berthy-helper:<hash>` (no registry and no internet), attached to the shared network and published on 127.0.0.1 only. The agent gives it probes over a bearer token that it keeps in memory, so a restart recreates the helper with a new token, and a Compose service must join the shared network to be probed.
 
 #### Configuration
 
@@ -707,7 +705,7 @@ alerts:
 ```
 
 - A check changes state after it has failed the configured number of times in a row. One success recovers it at once. Unknown results never alert.
-- Service probes need the overlay helper, which is the next step. Until then they report unknown.
+- A service probe runs in the overlay helper. When the helper is not running, or the service cannot be named, the probe is unknown and its detail gives the reason. Its timeout is from 1s to 25s.
 - Each peer is asked for `/healthz` every 30 seconds with a 5-second timeout, and is critical after three misses. `/healthz` needs no token and answers `{"ok":true}` and nothing else.
 - Built-in conditions always run: disk and Docker disk (warning from 80%, critical from 90%), memory (warning below 10% available, critical below 5%), restart loops of the apps Berthy manages (three restarts of one replica, or three Swarm tasks that failed or were rejected, within 10 minutes, or an out-of-memory kill; shutdowns, such as a rolling update's old tasks, do not count; unmanaged Swarm services and Compose projects are not checked), and the tunnel when managed ingress is set up.
 - Disk checks cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB; smaller mounts are skipped.
@@ -1020,7 +1018,7 @@ later-phase features still need implementation and verification.
 | Schema revert on failed deploy | Never automatic; an explicit revert requires admin authorization. Migrations must remain compatible with the previous app version. |
 | TLS on the agent | v1 uses HTTP over an encrypted private network; the listen-address check cannot establish that encryption is present. |
 | Backup before protected deploy | An explicit policy or hook, not a universal requirement. A pre-migration backup is recommended where the data warrants it. |
-| Service-name probes | Container health checks gate Swarm rollouts. An attached helper remains an option for Phase 3 overlay-path alerts; its packaging is not yet decided. |
+| Service-name probes | Container health checks gate Swarm rollouts. Overlay-path alerts run in a helper built from the agent's own static binary, with no registry, one per environment on each server; see Where a probe runs. |
 | Is the CI runner on the private network? | Not assumed. The deploy job joins as a short-lived, tagged node with restricted access. |
 | Backup retention | Keep all by default. |
 | Migration rollback | Generic `version`, `apply` and `revert` commands, with the schema state recorded on every deploy. |

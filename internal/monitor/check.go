@@ -41,53 +41,61 @@ func (f Func) Run(ctx context.Context) Result {
 // probeUserAgent identifies the agent's probes to the services they check.
 const probeUserAgent = "berthy-probe"
 
-// HTTPProbe returns a probe that sends GET to url. It follows no redirects, so a 3xx is the status the probe sees. A
+// HTTPProbe returns a probe that runs ProbeHTTP against url, with timeout as its deadline.
+func HTTPProbe(name, url string, expect []int, interval, timeout time.Duration, failures int) Check {
+	return NewFunc(name, interval, failures, func(ctx context.Context) Result {
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return ProbeHTTP(pctx, url, expect)
+	})
+}
+
+// ProbeHTTP sends GET to rawURL once, within ctx's deadline. It follows no redirects, so a 3xx is the status it sees. A
 // status in expect is ok; without expect, any status from 200 to 399 is ok. Other statuses, timeouts and refused
 // connections are critical. The response body is never read or reported.
-func HTTPProbe(name, url string, expect []int, interval, timeout time.Duration, failures int) Check {
+func ProbeHTTP(ctx context.Context, rawURL string, expect []int) Result {
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout:       timeout,
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	return NewFunc(name, interval, failures, func(ctx context.Context) Result {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return Result{State: Critical, Detail: "invalid URL"}
-		}
-		req.Header.Set("User-Agent", probeUserAgent)
-		resp, err := client.Do(req)
-		if err != nil {
-			return Result{State: Critical, Detail: failureDetail(err)}
-		}
-		resp.Body.Close()
-		detail := fmt.Sprintf("HTTP %d", resp.StatusCode)
-		if statusExpected(resp.StatusCode, expect) {
-			return Result{State: OK, Detail: detail}
-		}
-		return Result{State: Critical, Detail: detail}
-	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return Result{State: Critical, Detail: "invalid URL"}
+	}
+	req.Header.Set("User-Agent", probeUserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return Result{State: Critical, Detail: failureDetail(err)}
+	}
+	resp.Body.Close()
+	detail := fmt.Sprintf("HTTP %d", resp.StatusCode)
+	if statusExpected(resp.StatusCode, expect) {
+		return Result{State: OK, Detail: detail}
+	}
+	return Result{State: Critical, Detail: detail}
 }
 
-// TCPProbe returns a probe that connects to addr (host:port) and closes the connection. A failed connection is critical.
+// TCPProbe returns a probe that runs ProbeTCP against addr, with timeout as its deadline.
 func TCPProbe(name, addr string, interval, timeout time.Duration, failures int) Check {
-	dialer := net.Dialer{Timeout: timeout}
 	return NewFunc(name, interval, failures, func(ctx context.Context) Result {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return Result{State: Critical, Detail: failureDetail(err)}
-		}
-		conn.Close()
-		return Result{State: OK, Detail: "connected"}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return ProbeTCP(pctx, addr)
 	})
 }
 
-// ServiceProbe returns the check for a probe against a service name. The agent cannot resolve service names on the
-// overlay network, so the result is unknown until the overlay helper exists.
-func ServiceProbe(name string, interval time.Duration, failures int) Check {
-	return NewFunc(name, interval, failures, func(context.Context) Result {
-		return Result{State: Unknown, Detail: "service probes need the overlay helper"}
-	})
+// ProbeTCP connects to addr (host:port) once, within ctx's deadline, and closes the connection. A failed connection is
+// critical.
+func ProbeTCP(ctx context.Context, addr string) Result {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return Result{State: Critical, Detail: failureDetail(err)}
+	}
+	conn.Close()
+	return Result{State: OK, Detail: "connected"}
 }
 
 // PeerCheck returns the check for another agent, named by its base URL. It asks the peer's /healthz every 30 seconds

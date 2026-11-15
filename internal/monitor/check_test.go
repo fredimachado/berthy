@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -274,10 +275,39 @@ func TestTCPProbe(t *testing.T) {
 	}
 }
 
-func TestServiceProbeIsUnknownUntilOverlayHelper(t *testing.T) {
-	got := ServiceProbe("probe:web", 30*time.Second, 3).Run(context.Background())
-	if got.State != Unknown || got.Detail != "service probes need the overlay helper" {
-		t.Fatalf("service probe: %+v", got)
+// fakeProbeHelper answers every probe with the same result and remembers the last request.
+type fakeProbeHelper struct {
+	ok     bool
+	detail string
+	err    error
+	last   HelperProbe
+}
+
+func (f *fakeProbeHelper) Probe(_ context.Context, req HelperProbe) (bool, string, error) {
+	f.last = req
+	return f.ok, f.detail, f.err
+}
+
+func TestServiceProbeReportsTheHelperAnswer(t *testing.T) {
+	ctx := context.Background()
+	req := HelperProbe{Kind: KindHTTP, Target: "web:8080", Path: "/health", TimeoutMS: 5000, Expect: []int{200}}
+	h := &fakeProbeHelper{ok: true, detail: "HTTP 200"}
+	if got := ServiceProbe("probe:web", 30*time.Second, 3, h, req).Run(ctx); got.State != OK || got.Detail != "HTTP 200" {
+		t.Fatalf("passing probe: %+v", got)
+	}
+	if h.last.Target != "web:8080" || h.last.Path != "/health" || h.last.TimeoutMS != 5000 || len(h.last.Expect) != 1 {
+		t.Fatalf("request sent: %+v", h.last)
+	}
+	h.ok, h.detail = false, "HTTP 503"
+	if got := ServiceProbe("probe:web", 30*time.Second, 3, h, req).Run(ctx); got.State != Critical || got.Detail != "HTTP 503" {
+		t.Fatalf("failing probe: %+v", got)
+	}
+	h.err = errors.New("probe helper unavailable: not running")
+	if got := ServiceProbe("probe:web", 30*time.Second, 3, h, req).Run(ctx); got.State != Unknown || got.Detail != "probe helper unavailable: not running" {
+		t.Fatalf("helper unavailable: %+v", got)
+	}
+	if got := ServiceProbe("probe:web", 30*time.Second, 3, nil, req).Run(ctx); got.State != Unknown || got.Detail != "probe helper unavailable: not configured" {
+		t.Fatalf("no helper: %+v", got)
 	}
 }
 

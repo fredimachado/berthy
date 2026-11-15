@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -264,8 +265,13 @@ func TestMonitoringChecksFollowTheLastAppliedManifest(t *testing.T) {
 		t.Errorf("probe settings: %v %d", c.Interval(), c.Failures())
 	}
 	if c := checks["probe:web"]; c != nil {
-		if got := c.Run(ctx); got.State != monitor.Unknown || got.Detail != "service probes need the overlay helper" {
-			t.Errorf("service probe: %+v", got)
+		// Without Docker the helper cannot run, and off Linux it never can; the reason is the probe's detail.
+		want := "probe helper unavailable: Docker unavailable"
+		if runtime.GOOS != "linux" {
+			want = "service probes need a Linux agent"
+		}
+		if got := c.Run(ctx); got.State != monitor.Unknown || got.Detail != want {
+			t.Errorf("service probe: %+v, want %q", got, want)
 		}
 	}
 	if c := checks["telegram"]; c != nil {

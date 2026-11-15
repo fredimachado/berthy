@@ -263,6 +263,48 @@ func TestPruneProtectsContainersAndRetainedReleases(t *testing.T) {
 		t.Fatalf("outcome %v removed %v", out, f.removed)
 	}
 }
+
+// TestPruneLeavesTheHelperAlone checks that prune cannot select the overlay helper: its image was never acquired by a
+// deploy, so it is not a candidate, and its container is not a journaled hook. Only the acquired image goes.
+func TestPruneLeavesTheHelperAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	deploy, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Berthy records an image only while the operation that pulled it runs.
+	if err = s.RecordImageAcquired(ctx, "old", "id-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, deploy.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "p", ActorID: "a", Kind: "prune", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{
+		{ID: "id-old", RepoDigests: []string{"old"}},
+		{ID: "id-helper", RepoTags: []string{"berthy-helper:7da690fcc280"}},
+	}, containers: []engine.InventoryContainer{
+		{ID: "helper", ImageID: "id-helper", Labels: map[string]string{"berthy.helper": "probe", "berthy.environment": "stage"}},
+	}}
+	c := Controller{Store: s, Engine: f, Environment: "stage"}
+	out := c.runOperation(ctx, op, Actor{Admin: true}, Request{Kind: "prune"})
+	if out.State != "succeeded" || len(f.removed) != 1 || f.removed[0] != "old" {
+		t.Fatalf("outcome %v removed %v", out, f.removed)
+	}
+}
+
 func TestPruneOnlyStoppedMatchingHook(t *testing.T) {
 	h := state.CompletedOneOff{ID: "one", OperationID: "op", Role: "pre_hook"}
 	good := engine.ContainerSnapshot{ID: "one", Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": "op", "berthy.oneoff": "pre_hook"}}

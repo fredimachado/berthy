@@ -12,7 +12,7 @@ import (
 )
 
 // Probe is a check the agent runs on a schedule. Exactly one of HTTP, TCP and Service is set. The agent runs HTTP and TCP
-// probes itself; a Service probe needs the overlay helper, which is not built yet, so it reports unknown.
+// probes itself; a Service probe runs from the overlay helper, on the shared network.
 type Probe struct {
 	HTTP         string        `json:"http,omitempty" yaml:"http,omitempty"`
 	TCP          string        `json:"tcp,omitempty" yaml:"tcp,omitempty"`
@@ -52,6 +52,10 @@ const (
 	// minProbeExpectStatus and maxProbeExpectStatus bound the status codes a probe may expect.
 	minProbeExpectStatus = 100
 	maxProbeExpectStatus = 599
+	// minServiceProbeTimeout is the least timeout the overlay helper accepts. maxServiceProbeTimeout keeps a service probe
+	// inside the monitor's run budget.
+	minServiceProbeTimeout = time.Second
+	maxServiceProbeTimeout = 25 * time.Second
 )
 
 // chatIDPattern accepts a numeric chat ID or a public channel's @username.
@@ -167,8 +171,12 @@ func (m *Manifest) validateProbe(name string, p Probe) error {
 			return fmt.Errorf("probe %s: expect_status entries must be from 100 to 599", name)
 		}
 	}
-	if _, _, err := probeTimes(p); err != nil {
+	_, timeout, err := probeTimes(p)
+	if err != nil {
 		return fmt.Errorf("probe %s: %w", name, err)
+	}
+	if p.Service != nil && (timeout < minServiceProbeTimeout || timeout > maxServiceProbeTimeout) {
+		return fmt.Errorf("probe %s: service probe timeout must be from 1s to 25s", name)
 	}
 	if p.Failures != nil && *p.Failures < 1 {
 		return fmt.Errorf("probe %s: failures must be at least 1", name)

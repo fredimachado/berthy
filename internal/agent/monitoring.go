@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,10 @@ type Monitoring struct {
 	deploy  *deploy.Controller
 	watch   *monitor.RestartWatch
 	mon     *monitor.Monitor
+	// helper runs the service probes from the overlay network. It is never nil.
+	helper *helperManager
+	// composeServices lists the services of a Compose project that have containers.
+	composeServices func(ctx context.Context, project string) ([]string, error)
 	// restarts holds the restart checks of the last successful inventory, kept while Docker cannot be asked.
 	restarts []monitor.Check
 	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
@@ -53,7 +58,8 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil)}
+	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), helper: newHelperManager(c.Environment, e, log)}
+	w.composeServices = w.projectServices
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
 	return w
 }
@@ -84,11 +90,32 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	if manifestErr == nil {
 		mp = &m
 	}
+	w.maintainHelper(ctx, mp)
 	out := w.builtins(ctx, ingressErr == nil, mp)
 	if mp != nil {
-		out = append(out, w.manifestChecks(*mp)...)
+		out = append(out, w.manifestChecks(ctx, *mp)...)
 	}
 	return out
+}
+
+// maintainHelper creates or repairs the overlay helper while the last applied manifest has a service probe, and removes it
+// otherwise. The probes report the outcome, so nothing is returned.
+func (w *Monitoring) maintainHelper(ctx context.Context, m *manifest.Manifest) {
+	if m != nil && hasServiceProbe(m.Probes) {
+		_ = w.helper.ensure(ctx, m.Network)
+		return
+	}
+	_ = w.helper.remove(ctx)
+}
+
+// hasServiceProbe reports whether any probe runs against a service name.
+func hasServiceProbe(probes map[string]manifest.Probe) bool {
+	for _, p := range probes {
+		if p.Service != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // builtins returns the conditions that always run: disk and memory from the host sample, Docker's data disk, restart
@@ -121,7 +148,7 @@ func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Man
 }
 
 // manifestChecks returns the probes, the peer checks, and the alert configuration of the last applied manifest.
-func (w *Monitoring) manifestChecks(m manifest.Manifest) []monitor.Check {
+func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []monitor.Check {
 	var out []monitor.Check
 	for _, name := range slices.Sorted(maps.Keys(m.Probes)) {
 		p := m.Probes[name]
@@ -133,7 +160,7 @@ func (w *Monitoring) manifestChecks(m manifest.Manifest) []monitor.Check {
 		case p.TCP != "":
 			out = append(out, monitor.TCPProbe("probe:"+name, p.TCP, interval, timeout, failures))
 		default:
-			out = append(out, monitor.ServiceProbe("probe:"+name, interval, failures))
+			out = append(out, w.serviceCheck(ctx, "probe:"+name, m, p, interval, timeout, failures))
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
@@ -144,6 +171,92 @@ func (w *Monitoring) manifestChecks(m manifest.Manifest) []monitor.Check {
 		out = append(out, monitor.AlertSecretCheck(func(ctx context.Context) bool { return w.secretStored(ctx, secret) }))
 	}
 	return out
+}
+
+// serviceCheck returns the check of a probe against a service name. The name is resolved now; when it cannot be, the check
+// reports unknown with the reason. Otherwise the probe runs in the overlay helper, as HTTP when the probe has a path.
+func (w *Monitoring) serviceCheck(ctx context.Context, name string, m manifest.Manifest, p manifest.Probe, interval, timeout time.Duration, failures int) monitor.Check {
+	s := *p.Service
+	target, err := w.serviceTarget(ctx, m, s)
+	if err != nil {
+		detail := err.Error()
+		return monitor.NewFunc(name, interval, failures, func(context.Context) monitor.Result {
+			return monitor.Result{State: monitor.Unknown, Detail: detail}
+		})
+	}
+	req := monitor.HelperProbe{Kind: monitor.KindTCP, Target: target + ":" + strconv.Itoa(s.Port), TimeoutMS: int(timeout / time.Millisecond)}
+	if s.Path != "" {
+		req.Kind, req.Path, req.Expect = monitor.KindHTTP, s.Path, p.ExpectStatus
+	}
+	return monitor.ServiceProbe(name, interval, failures, w.helper, req)
+}
+
+// serviceTarget returns the name a service probe reaches on the overlay network: the Swarm service of an image app's role,
+// or the Compose service of a Compose app. The error is the check's detail when no name is known.
+func (w *Monitoring) serviceTarget(ctx context.Context, m manifest.Manifest, s manifest.ServiceProbe) (string, error) {
+	app, ok := m.Apps[s.App]
+	if !ok {
+		return "", errors.New("probe target unknown: app not in the manifest")
+	}
+	switch app.Kind {
+	case "image":
+		role := s.Role
+		if role == "" && len(app.Roles) == 1 {
+			for r := range app.Roles {
+				role = r
+			}
+		}
+		if role == "" {
+			return "", errors.New("probe target unknown: role not named")
+		}
+		bindings, err := w.store.Bindings(ctx, s.App)
+		if err != nil {
+			return "", errors.New("probe target unknown: bindings unavailable")
+		}
+		for _, b := range bindings {
+			if b.Role == role {
+				return b.Name, nil
+			}
+		}
+		// Not deployed yet: the name the deploy gives the role's Swarm service.
+		return m.Project + "-" + s.App + "-" + role, nil
+	case "compose":
+		if s.Role != "" {
+			return s.Role, nil
+		}
+		services, err := w.composeServices(ctx, m.ComposeProject(s.App))
+		if err != nil {
+			return "", errors.New("probe target unknown: Compose services unavailable")
+		}
+		if len(services) != 1 {
+			return "", errors.New("probe target unknown: name the Compose service as role")
+		}
+		return services[0], nil
+	}
+	return "", errors.New("probe target unknown")
+}
+
+// projectServices returns the sorted names of the services of a Compose project that have containers, one-off runs
+// excepted.
+func (w *Monitoring) projectServices(ctx context.Context, project string) ([]string, error) {
+	if w.engine == nil {
+		return nil, errors.New("Docker unavailable")
+	}
+	containers, err := w.engine.InventoryContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for _, c := range containers {
+		oneOff := c.Labels["com.docker.compose.oneoff"]
+		if c.Labels["com.docker.compose.project"] != project || oneOff == "True" || oneOff == "true" {
+			continue
+		}
+		if svc := c.Labels["com.docker.compose.service"]; svc != "" {
+			names[svc] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(names)), nil
 }
 
 // restartChecks returns the restart check of every role of the apps Berthy manages. While the inventory or the task list
@@ -367,9 +480,10 @@ func alertError(w http.ResponseWriter, err error) {
 	}
 }
 
-// monitoringChecks returns the doctor's non-critical checks of the last applied manifest: one per peer, and the bot token
-// secret when alerts need it. A peer's stored state is used when the monitor has one; otherwise the peer is asked now.
-func monitoringChecks(ctx context.Context, s *state.Store) []api.Check {
+// monitoringChecks returns the doctor's non-critical checks of the last applied manifest: one per peer, the bot token
+// secret when alerts need it, and the overlay helper when a service probe needs it. A peer's stored state is used when
+// the monitor has one; otherwise the peer is asked now.
+func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, environment string) []api.Check {
 	m, _, err := s.LatestManifest(ctx)
 	if err != nil {
 		return nil
@@ -397,6 +511,10 @@ func monitoringChecks(ctx context.Context, s *state.Store) []api.Check {
 			detail = monitor.MissingTelegramSecret
 		}
 		out = append(out, api.Check{Name: "telegram", OK: present, Detail: detail})
+	}
+	if hasServiceProbe(m.Probes) {
+		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)
+		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
 	}
 	return out
 }

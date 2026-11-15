@@ -7,6 +7,8 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"berthy/internal/metrics"
+	"berthy/internal/monitor"
+	"berthy/internal/probehelper"
 	"berthy/internal/state"
 	"bufio"
 	"bytes"
@@ -25,6 +27,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -49,6 +52,10 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if cmd == "probe-helper" {
+		// Not in the usage: only the overlay helper container runs it.
+		return runProbeHelper(errout)
+	}
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout)
 	}
@@ -345,6 +352,18 @@ func Run(args []string, out, errout io.Writer) int {
 				return 1
 			}
 		}
+	}
+	return 0
+}
+
+// runProbeHelper serves the overlay helper's probes until it is stopped. Its token comes from the environment, and the
+// process never prints it.
+func runProbeHelper(errout io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := probehelper.Serve(ctx, net.JoinHostPort("0.0.0.0", strconv.Itoa(monitor.HelperPort)), os.Getenv(monitor.HelperTokenEnv)); err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
 	}
 	return 0
 }
