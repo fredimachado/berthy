@@ -31,10 +31,30 @@ func sameSpec(a, b json.RawMessage) bool {
 	if da.Decode(&x) != nil || db.Decode(&y) != nil {
 		return false
 	}
-	ax, _ := json.Marshal(x)
-	by, _ := json.Marshal(y)
+	ax, _ := json.Marshal(dropNulls(x))
+	by, _ := json.Marshal(dropNulls(y))
 	return bytes.Equal(ax, by)
 }
+
+// dropNulls removes null map fields, which Docker does not store. Array elements are kept.
+func dropNulls(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if e == nil {
+				delete(x, k)
+				continue
+			}
+			x[k] = dropNulls(e)
+		}
+	case []any:
+		for i, e := range x {
+			x[i] = dropNulls(e)
+		}
+	}
+	return v
+}
+
 func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i state.Intent, auth *engine.RegistryAuth) error {
 	if err := j.RecordIntent(ctx, op, i); err != nil {
 		return err

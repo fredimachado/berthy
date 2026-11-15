@@ -553,3 +553,21 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 		t.Fatal("adopted service was not updated")
 	}
 }
+
+func openStore(t *testing.T) *state.Store {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}

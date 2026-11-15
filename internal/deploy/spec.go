@@ -43,7 +43,10 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	if r.Replicas != nil {
 		replicas = *r.Replicas
 	}
-	container := map[string]any{"Image": image, "Env": values, "Healthcheck": health, "StopGracePeriod": int64(grace), "Labels": labels}
+	container := map[string]any{"Image": image, "Healthcheck": health, "StopGracePeriod": int64(grace), "Labels": labels}
+	if len(values) > 0 {
+		container["Env"] = values
+	}
 	if len(r.Volumes) > 0 {
 		mounts := make([]any, 0, len(r.Volumes))
 		for _, raw := range r.Volumes {

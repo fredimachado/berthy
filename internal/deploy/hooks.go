@@ -94,7 +94,7 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		Image            string            `json:"Image"`
 		Entrypoint       []string          `json:"Entrypoint"`
 		Cmd              []string          `json:"Cmd"`
-		Env              []string          `json:"Env"`
+		Env              []string          `json:"Env,omitempty"`
 		Labels           map[string]string `json:"Labels"`
 		NetworkingConfig any               `json:"NetworkingConfig"`
 	}{p.Image, argv[:1], argv[1:], p.Env, labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
