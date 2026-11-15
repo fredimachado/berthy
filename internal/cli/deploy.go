@@ -326,7 +326,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd == "exec")
 	}
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(errout, "agent returned HTTP %d\n", resp.StatusCode)
+		fmt.Fprintln(errout, agentError(resp.StatusCode, data))
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)

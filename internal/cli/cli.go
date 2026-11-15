@@ -28,6 +28,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -289,7 +291,7 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		fmt.Fprintf(errout, "agent returned HTTP %d\n", resp.StatusCode)
+		fmt.Fprintln(errout, agentError(resp.StatusCode, body))
 		return 1
 	}
 	if jsonOutput {
@@ -471,4 +473,28 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 		fmt.Fprintln(errout, "agent stream ended unexpectedly")
 	}
 	return 1
+}
+
+// agentError describes a refused agent request. The agent message is shown only when it is safe to print.
+func agentError(status int, body []byte) string {
+	var reply struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &reply) == nil && printableMessage(reply.Message) {
+		return fmt.Sprintf("agent returned HTTP %d: %s", status, reply.Message)
+	}
+	return fmt.Sprintf("agent returned HTTP %d", status)
+}
+
+// printableMessage reports whether s is at most 300 bytes of valid UTF-8 without control characters.
+func printableMessage(s string) bool {
+	if s == "" || len(s) > 300 || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

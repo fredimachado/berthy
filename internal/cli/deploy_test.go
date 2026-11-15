@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -140,5 +141,64 @@ func TestRecoveryRetryOnlyForRequired(t *testing.T) {
 	}
 	if calls.Load() < 2 {
 		t.Fatal("retried a running operation")
+	}
+}
+
+// refusingAgent answers every request with status 400 and body, and returns a CLI config that points at it.
+func refusingAgent(t *testing.T, body string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	return cfg
+}
+
+func TestAgentErrorMessageReachesOperator(t *testing.T) {
+	cfg := refusingAgent(t, `{"code":"operation_failed","message":"a newer release followed the migration; use --to"}`)
+	want := "agent returned HTTP 400: a newer release followed the migration; use --to\n"
+	var out, errs bytes.Buffer
+	if code := Run([]string{"rollback", "api", "-e", "dev", "--config", cfg, "--revert-schema"}, &out, &errs); code != 1 || errs.String() != want {
+		t.Fatalf("deploy path: exit %d: %q", code, errs.String())
+	}
+	errs.Reset()
+	if code := Run([]string{"ps", "-e", "dev", "--config", cfg}, &out, &errs); code != 1 || errs.String() != want {
+		t.Fatalf("read path: exit %d: %q", code, errs.String())
+	}
+}
+
+func TestAgentErrorDoesNotEchoControlCharacters(t *testing.T) {
+	cfg := refusingAgent(t, `{"code":"operation_failed","message":"bell\u0007here"}`)
+	var out, errs bytes.Buffer
+	if code := Run([]string{"ps", "-e", "dev", "--config", cfg}, &out, &errs); code != 1 || errs.String() != "agent returned HTTP 400\n" {
+		t.Fatalf("exit %d: %q", code, errs.String())
+	}
+}
+
+func TestAgentErrorShowsOnlySafeMessages(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	for _, tc := range []struct{ name, body, want string }{
+		{"short", `{"message":"use --to"}`, "agent returned HTTP 409: use --to"},
+		{"300 bytes", `{"message":"` + long + `"}`, "agent returned HTTP 409: " + long},
+		{"301 bytes", `{"message":"` + long + `x"}`, "agent returned HTTP 409"},
+		{"nul", `{"message":"a\u0000b"}`, "agent returned HTTP 409"},
+		{"newline", `{"message":"a\nb"}`, "agent returned HTTP 409"},
+		{"empty", `{"message":""}`, "agent returned HTTP 409"},
+		{"no message", `{"code":"x"}`, "agent returned HTTP 409"},
+		{"not json", `<html>`, "agent returned HTTP 409"},
+	} {
+		if got := agentError(409, []byte(tc.body)); got != tc.want {
+			t.Errorf("%s: %q", tc.name, got)
+		}
+	}
+	if printableMessage("bad\xffbyte") {
+		t.Error("invalid UTF-8 accepted")
 	}
 }

@@ -211,7 +211,9 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			out := make([]map[string]any, 0, len(rows))
 			for _, r := range rows {
-				out = append(out, map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created})
+				row := map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created}
+				addSchemaStates(row, r.SchemaBefore, r.SchemaAfter)
+				out = append(out, row)
 			}
 			failures, err := d.Store.DeployHistory(ctx, rest[1])
 			if err != nil {
@@ -219,7 +221,9 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				return
 			}
 			for _, op := range failures {
-				out = append(out, map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started})
+				row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
+				addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
+				out = append(out, row)
 			}
 			sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
 			json.NewEncoder(w).Encode(out)
@@ -393,6 +397,16 @@ func safeOperationError(o state.Operation) string {
 			return o.Err
 		}
 		return "operation failed"
+	}
+}
+
+// addSchemaStates adds the recorded schema states to a history row when there are any.
+func addSchemaStates(row map[string]any, before, after string) {
+	if before != "" {
+		row["schema_before"] = before
+	}
+	if after != "" {
+		row["schema_after"] = after
 	}
 }
 
