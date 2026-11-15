@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -200,5 +201,57 @@ func TestAgentErrorShowsOnlySafeMessages(t *testing.T) {
 	}
 	if printableMessage("bad\xffbyte") {
 		t.Error("invalid UTF-8 accepted")
+	}
+}
+
+func TestRecoveryResolveNeedsReason(t *testing.T) {
+	cfg := refusingAgent(t, `{"code":"operation_failed","message":"unexpected"}`)
+	var out, errs bytes.Buffer
+	if code := Run([]string{"recovery", "resolve", "op1", "-e", "dev", "--config", cfg}, &out, &errs); code != 2 || errs.String() != "recovery resolve requires -m\n" {
+		t.Fatalf("without -m: exit %d: %q", code, errs.String())
+	}
+	errs.Reset()
+	if code := Run([]string{"recovery", "status", "-e", "dev", "--config", cfg}, &out, &errs); code != 2 {
+		t.Fatalf("unknown subcommand: exit %d: %q", code, errs.String())
+	}
+}
+
+func TestRecoveryResolvePostsReason(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		extra      []string
+	}{
+		{"resolve", `{"dry_run":false,"reason":"service deleted outside berthy"}`, nil},
+		{"dry run", `{"dry_run":true,"reason":"service deleted outside berthy"}`, []string{"--dry-run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if r.Method != "POST" || r.URL.Path != "/v1/environments/dev/operations/OPID/resolve" || r.Header.Get("Authorization") != "Bearer test-token" || string(body) != tc.body {
+					t.Errorf("bad request %s %s %s", r.Method, r.URL.Path, body)
+				}
+				fmt.Fprint(w, `{"operation_id":"OPID","resolved":false}`)
+			}))
+			defer server.Close()
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+			args := append([]string{"recovery", "resolve", "OPID", "-e", "dev", "--config", cfg, "-m", "service deleted outside berthy"}, tc.extra...)
+			var out, errs bytes.Buffer
+			if code := Run(args, &out, &errs); code != 0 {
+				t.Fatalf("exit %d: %s", code, errs.String())
+			}
+		})
+	}
+}
+
+func TestRecoveryNoticeNamesResolveCommand(t *testing.T) {
+	if got := recoveryNotice("op1"); !strings.Contains(got, "berthy recovery resolve op1 -m REASON") {
+		t.Fatalf("notice with id: %q", got)
+	}
+	if got := recoveryNotice(""); !strings.Contains(got, "berthy recovery resolve OPERATION_ID -m REASON") || strings.Contains(got, "\n") {
+		t.Fatalf("notice without id: %q", got)
 	}
 }

@@ -596,6 +596,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `exec <app> -- <command>` | Run a command in a running container | Yes |
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
+| `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
 | `backup run <job>` | Run a volume backup now | Yes |
 | `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
@@ -828,7 +829,7 @@ Each token belongs to one environment and one scope.
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status` |
 | `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire` and `lock release` |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.

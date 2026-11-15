@@ -110,3 +110,103 @@ func TestHistoryShowsRecordedSchemaStates(t *testing.T) {
 		t.Fatalf("rows missing %v in %s", seen, w.Body.String())
 	}
 }
+
+func TestRecoveryResolveScopesValidationAndResult(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "stuck", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"}); err != nil {
+		t.Fatal(err)
+	}
+	readToken := "bty.lab." + strings.Repeat("a", 64)
+	deployToken := "bty.lab." + strings.Repeat("b", 64)
+	adminToken := "bty.lab." + strings.Repeat("c", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, "/v1/environments/lab"+path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	resolve := "/operations/" + op.ID + "/resolve"
+	for _, tc := range []struct {
+		name, method, token, body string
+		want                      int
+	}{
+		{"read scope", "POST", readToken, `{"reason":"service removed"}`, http.StatusForbidden},
+		{"deploy scope", "POST", deployToken, `{"reason":"service removed"}`, http.StatusForbidden},
+		{"wrong method", "GET", adminToken, ``, http.StatusMethodNotAllowed},
+		{"empty reason", "POST", adminToken, `{"reason":""}`, http.StatusBadRequest},
+		{"long reason", "POST", adminToken, `{"reason":"` + strings.Repeat("x", 201) + `"}`, http.StatusBadRequest},
+		{"unknown field", "POST", adminToken, `{"reason":"service removed","force":true}`, http.StatusBadRequest},
+	} {
+		if w := call(tc.method, resolve, tc.token, tc.body); w.Code != tc.want {
+			t.Fatalf("%s: %d %s", tc.name, w.Code, w.Body.String())
+		}
+	}
+	dry := call("POST", resolve, adminToken, `{"reason":"service removed","dry_run":true}`)
+	var preview struct {
+		Resolved bool `json:"resolved"`
+	}
+	if dry.Code != http.StatusOK || json.Unmarshal(dry.Body.Bytes(), &preview) != nil || preview.Resolved {
+		t.Fatalf("dry run: %d %s", dry.Code, dry.Body.String())
+	}
+	if _, err = s.Lock(ctx); err != nil {
+		t.Fatalf("dry run released the lock: %v", err)
+	}
+	done := call("POST", resolve, adminToken, `{"reason":"service deleted outside berthy"}`)
+	if err = json.Unmarshal(done.Body.Bytes(), &preview); done.Code != http.StatusOK || err != nil || !preview.Resolved {
+		t.Fatalf("resolve: %d %s", done.Code, done.Body.String())
+	}
+	status := call("GET", "/operations/"+op.ID, readToken, "")
+	var shown struct {
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if status.Code != http.StatusOK || json.Unmarshal(status.Body.Bytes(), &shown) != nil || shown.State != "failed" || shown.Error != "recovery resolved by admin" {
+		t.Fatalf("operation after resolve: %d %s", status.Code, status.Body.String())
+	}
+	again := call("POST", resolve, adminToken, `{"reason":"again"}`)
+	if again.Code != http.StatusBadRequest || !strings.Contains(again.Body.String(), "operation is not waiting for recovery") {
+		t.Fatalf("second resolve: %d %s", again.Code, again.Body.String())
+	}
+}
+
+func TestValidReasonBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name, s string
+		want    bool
+	}{
+		{"empty", "", false},
+		{"short", "service removed", true},
+		{"200 bytes", strings.Repeat("x", 200), true},
+		{"201 bytes", strings.Repeat("x", 201), false},
+		{"multibyte at limit", strings.Repeat("é", 100), true},
+		{"multibyte over limit", strings.Repeat("é", 101), false},
+		{"newline", "a\nb", false},
+		{"tab", "a\tb", false},
+		{"invalid utf-8", "bad\xffbyte", false},
+	} {
+		if got := validReason(tc.s); got != tc.want {
+			t.Errorf("%s: got %v", tc.name, got)
+		}
+	}
+}

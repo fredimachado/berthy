@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
@@ -88,6 +90,9 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		case len(rest) == 2 && rest[0] == "secrets":
 			required = "admin"
 			method = "DELETE"
+		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
+			required = "admin"
+			method = "POST"
 		default:
 			legacy.ServeHTTP(w, r)
 			return
@@ -184,6 +189,25 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				}
 			}
 			writeError(w, 404, "not_found", "output unavailable")
+		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
+			var req struct {
+				Reason string `json:"reason"`
+				DryRun bool   `json:"dry_run"`
+			}
+			if decodeBody(w, r, &req) != nil {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+			if !validReason(req.Reason) {
+				writeError(w, 400, "bad_request", "reason required")
+				return
+			}
+			report, err := d.ResolveRecovery(ctx, actor, rest[1], req.Reason, req.DryRun)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(report)
 		case rest[0] == "operations":
 			streamOperation(w, r, d.Store, rest[1])
 		case rest[0] == "wait":
@@ -390,7 +414,7 @@ func safeOperationError(o state.Operation) string {
 	switch o.Err {
 	case "":
 		return ""
-	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable":
+	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable", "recovery resolved by admin":
 		return o.Err
 	default:
 		if deploy.PublicMessage(o.Err) {
@@ -398,6 +422,19 @@ func safeOperationError(o state.Operation) string {
 		}
 		return "operation failed"
 	}
+}
+
+// validReason reports whether s is 1 to 200 bytes of valid UTF-8 without control characters.
+func validReason(s string) bool {
+	if s == "" || len(s) > 200 || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // addSchemaStates adds the recorded schema states to a history row when there are any.

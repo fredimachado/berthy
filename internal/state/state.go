@@ -239,7 +239,7 @@ func publicJSON(b []byte) bool {
 	}
 	for k, v := range fields {
 		switch k {
-		case "app", "version", "commit", "state", "role", "step", "status", "digest", "code", "App", "Version", "Commit":
+		case "app", "version", "commit", "state", "role", "step", "status", "digest", "code", "reason", "App", "Version", "Commit":
 			var s string
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
@@ -529,6 +529,49 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// ResolveRecovery finishes an operation stuck in recovery_required as failed and releases its lock.
+func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason string) error {
+	if actor.ID == "" {
+		return errors.New("actor required")
+	}
+	if reason == "" {
+		return errors.New("reason required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, id); err != nil {
+		return err
+	}
+	var st string
+	if err = tx.QueryRowContext(ctx, `SELECT state FROM operations WHERE environment=? AND id=?`, s.env, id).Scan(&st); err != nil {
+		return err
+	}
+	if st != "recovery_required" {
+		return ErrConflict
+	}
+	// schema_before and schema_after keep the states the operation recorded.
+	if _, err = tx.ExecContext(ctx, `UPDATE operations SET state=?,error=? WHERE environment=? AND id=?`, "failed", "recovery resolved by admin", s.env, id); err != nil {
+		return err
+	}
+	data, err := json.Marshal(map[string]string{"state": "failed", "reason": reason})
+	if err != nil {
+		return err
+	}
+	if err = eventTx(ctx, tx, id, "failed", data); err != nil {
+		return err
+	}
+	if err = auditTx(ctx, tx, s.env, id, Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "recovery_resolve"}, "succeeded"); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

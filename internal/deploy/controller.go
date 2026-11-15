@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
@@ -63,6 +64,8 @@ type Controller struct {
 	Store       *state.Store
 	Environment string
 	Protected   bool
+	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
+	recoverMu sync.Mutex
 }
 
 // ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.
@@ -175,6 +178,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	return op, true, nil
 }
 func (c *Controller) Recover(ctx context.Context) error {
+	c.recoverMu.Lock()
+	defer c.recoverMu.Unlock()
 	if c.Store == nil || c.Engine == nil {
 		return errors.New("recovery unavailable")
 	}

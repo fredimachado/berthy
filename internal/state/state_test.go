@@ -3,7 +3,9 @@ package state
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -286,5 +288,56 @@ func TestPublicDataRejectsPrivateFields(t *testing.T) {
 	}
 	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Event: []byte(`{"token":"canary"}`)}); err == nil {
 		t.Fatal("accepted private outcome")
+	}
+}
+
+func TestResolveRecoveryFinishesStuckOperation(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	admin := Actor{ID: "admin-id", Name: "admin", Remote: "10.0.0.2:4000"}
+	op, _, err := s.Admit(ctx, Admission{RequestID: "stuck", ActorID: "actor", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ResolveRecovery(ctx, admin, "missing", "service removed"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("operation without the lock resolved: %v", err)
+	}
+	if err = s.ResolveRecovery(ctx, Actor{}, op.ID, "service removed"); err == nil {
+		t.Fatal("accepted resolve without an actor")
+	}
+	if err = s.ResolveRecovery(ctx, admin, op.ID, "service removed"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running operation resolved: %v", err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "recovery_required", Err: "service recovery required", SchemaBefore: "v1", SchemaAfter: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ResolveRecovery(ctx, admin, op.ID, ""); err == nil {
+		t.Fatal("accepted resolve without a reason")
+	}
+	if err = s.ResolveRecovery(ctx, admin, op.ID, "service deleted outside berthy"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "failed" || got.Err != "recovery resolved by admin" || got.SchemaBefore != "v1" || got.SchemaAfter != "v2" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+	if _, err = s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("lock still held: %v", err)
+	}
+	audit, err := s.AuditLog(ctx, 1)
+	if err != nil || len(audit) != 1 || audit[0].Action != "recovery_resolve" || audit[0].ActorID != "admin-id" || audit[0].ActorName != "admin" || audit[0].Remote != "10.0.0.2:4000" || audit[0].OperationID != op.ID || audit[0].Outcome != "succeeded" {
+		t.Fatalf("audit %+v: %v", audit, err)
+	}
+	events, err := s.EventsAfter(ctx, op.ID, 0, 100)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("events %+v: %v", events, err)
+	}
+	last := events[len(events)-1]
+	var data map[string]string
+	if last.Kind != "failed" || json.Unmarshal(last.Data, &data) != nil || data["reason"] != "service deleted outside berthy" || data["state"] != "failed" {
+		t.Fatalf("last event %+v", last)
+	}
+	if err = s.ResolveRecovery(ctx, admin, op.ID, "again"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second resolve: %v", err)
 	}
 }

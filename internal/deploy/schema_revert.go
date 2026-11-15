@@ -23,12 +23,14 @@ const (
 	errNewerRelease     Refusal = "a newer release followed the migration; use --to"
 	errBadRevertCommand Refusal = "invalid schema revert command"
 	errAdminRequired    Refusal = "schema revert requires administrator access"
+	errNotRecovering    Refusal = "operation is not waiting for recovery"
+	errResolveAdmin     Refusal = "resolving recovery requires administrator access"
 )
 
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
-	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired:
+	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin:
 		return true
 	}
 	return false

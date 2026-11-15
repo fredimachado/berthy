@@ -148,6 +148,12 @@ func Run(args []string, out, errout io.Writer) int {
 				fmt.Fprintln(errout, "deployment recovery failed")
 				return 1
 			}
+			// Recover reports the first move into recovery_required as success, so the lock is checked as well.
+			if op, activeErr := deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {
+				fmt.Fprintln(errout, recoveryNotice(op.ID))
+			} else if errors.Is(err, deploy.ErrRecoveryPending) {
+				fmt.Fprintln(errout, recoveryNotice(""))
+			}
 			stopped := make(chan struct{})
 			go func() {
 				defer close(stopped)
@@ -344,6 +350,14 @@ func retryRecovery(ctx context.Context, interval time.Duration, active func(cont
 			done()
 		}
 	}
+}
+
+// recoveryNotice is the line printed at startup while an operation waits for recovery. id is empty when it is unknown.
+func recoveryNotice(id string) string {
+	if id == "" {
+		id = "OPERATION_ID"
+	}
+	return fmt.Sprintf(`deployment recovery required; check "berthy lock status" and resolve with "berthy recovery resolve %s -m REASON"`, id)
 }
 func printText(w io.Writer, v any, indent string) {
 	switch x := v.(type) {

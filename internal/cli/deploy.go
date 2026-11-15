@@ -25,7 +25,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "secret":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret":
 		return true
 	}
 	return false
@@ -247,6 +247,18 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "invalid lock command")
 			return 2
 		}
+	case "recovery":
+		if len(f.pos) != 2 || f.pos[0] != "resolve" || f.pos[1] == "" {
+			fmt.Fprintln(errout, "usage: recovery resolve OPERATION_ID -m REASON")
+			return 2
+		}
+		if f.message == "" {
+			fmt.Fprintln(errout, "recovery resolve requires -m")
+			return 2
+		}
+		endpoint = "operations/" + url.PathEscape(f.pos[1]) + "/resolve"
+		method = "POST"
+		body = map[string]any{"reason": f.message, "dry_run": f.dry}
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"
