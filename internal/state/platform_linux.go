@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -61,4 +62,39 @@ func lockOwner(path string) (*os.File, error) {
 		return nil, fmt.Errorf("state owner: %w", err)
 	}
 	return f, nil
+}
+
+func prepareDatabase(dir string) (bool, error) {
+	for _, name := range []string{"state.db-wal", "state.db-shm", "state.db-journal"} {
+		if err := checkPrivateFile(filepath.Join(dir, name), true); err != nil {
+			return false, err
+		}
+	}
+	path := filepath.Join(dir, "state.db")
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err == nil {
+		unix.Close(fd)
+		return true, nil
+	}
+	if !errors.Is(err, unix.EEXIST) {
+		return false, err
+	}
+	if err = checkPrivateFile(path, false); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+func checkPrivateFile(path string, optional bool) error {
+	info, err := os.Lstat(path)
+	if optional && os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 {
+		return errors.New("state file must be a private owned regular file with one link")
+	}
+	return nil
 }

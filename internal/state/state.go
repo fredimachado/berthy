@@ -105,6 +105,11 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	fresh, err := prepareDatabase(stateDir)
+	if err != nil {
+		owner.Close()
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", filepath.Join(stateDir, "state.db"))
 	if err != nil {
 		owner.Close()
@@ -113,7 +118,22 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, key: aead, env: environment, owner: owner}
 	fail := func(err error) (*Store, error) { s.Close(); return nil, err }
-	if _, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
+	if _, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;`); err != nil {
+		return fail(err)
+	}
+	var version int
+	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fail(err)
+	}
+	if !fresh && version != 1 {
+		return fail(errors.New("unsupported or uninitialized state schema"))
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, UNIQUE(environment,request_id));
@@ -125,14 +145,15 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS bindings (environment TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL UNIQUE, service_id TEXT NOT NULL UNIQUE, PRIMARY KEY(environment,app,role));
  CREATE TABLE IF NOT EXISTS secrets (environment TEXT NOT NULL, name TEXT NOT NULL, registry TEXT NOT NULL, sealed BLOB NOT NULL, PRIMARY KEY(environment,name));
  CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, operation_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, created INTEGER NOT NULL);`); err != nil {
+		tx.Rollback()
 		return fail(err)
 	}
 	var check []byte
-	err = db.QueryRow(`SELECT value FROM metadata WHERE name='key_check'`).Scan(&check)
-	if errors.Is(err, sql.ErrNoRows) {
+	err = tx.QueryRow(`SELECT value FROM metadata WHERE name='key_check'`).Scan(&check)
+	if errors.Is(err, sql.ErrNoRows) && fresh {
 		check, err = s.seal("key_check", []byte("berthy-state"))
 		if err == nil {
-			_, err = db.Exec(`INSERT INTO metadata VALUES('key_check',?)`, check)
+			_, err = tx.Exec(`INSERT INTO metadata VALUES('key_check',?)`, check)
 		}
 	} else if err == nil {
 		var plain []byte
@@ -142,7 +163,15 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		}
 	}
 	if err != nil {
+		tx.Rollback()
 		return fail(fmt.Errorf("state key: %w", err))
+	}
+	if _, err = tx.Exec(`PRAGMA user_version=1`); err != nil {
+		tx.Rollback()
+		return fail(err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fail(err)
 	}
 	return s, nil
 }
@@ -285,7 +314,11 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", []byte(`{}`))
+	receipt, err := s.seal(record+"receipt", []byte(`{}`))
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", receipt)
 	if err != nil {
 		return err
 	}
@@ -303,7 +336,11 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE intents SET phase=?,receipt=? WHERE operation_id=? AND ordinal=?`, phase, []byte(receipt), id, ordinal)
+	sealed, err := s.seal(fmt.Sprintf("intent:%s:%d:receipt", id, ordinal), receipt)
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE intents SET phase=?,receipt=? WHERE operation_id=? AND ordinal=?`, phase, sealed, id, ordinal)
 	if err != nil {
 		return err
 	}
@@ -334,6 +371,10 @@ func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
 			return nil, err
 		}
 		i.Desired, err = s.open(record+"desired", desired)
+		if err != nil {
+			return nil, err
+		}
+		i.Receipt, err = s.open(record+"receipt", i.Receipt)
 		if err != nil {
 			return nil, err
 		}
@@ -378,7 +419,7 @@ func (s *Store) EventsAfter(ctx context.Context, id string, after uint64, limit 
 	return out, rows.Err()
 }
 func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
-	if o.State != "succeeded" && o.State != "failed" && o.State != "recovery_required" {
+	if o.State != "succeeded" && o.State != "failed" && o.State != "rolled_back" && o.State != "interrupted" && o.State != "recovery_required" {
 		return errors.New("invalid outcome")
 	}
 	if len(o.Event) == 0 {
@@ -396,7 +437,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if err != nil {
 		return err
 	}
-	if o.Protected && (o.State != "succeeded" || o.Release == nil) {
+	if o.Protected && o.Release == nil {
 		return errors.New("protection requires a successful release")
 	}
 	if o.Protected {
@@ -405,7 +446,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 		}
 	}
 	if o.Release != nil {
-		if o.State != "succeeded" || o.Release.App == "" || !validJSON(o.Release.Manifest) {
+		if (o.State != "succeeded" && o.State != "failed") || o.Release.App == "" || o.Release.App != op.App || !validJSON(o.Release.Manifest) {
 			return errors.New("invalid release")
 		}
 		r := o.Release

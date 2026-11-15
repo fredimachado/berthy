@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -11,7 +12,10 @@ import (
 
 func testStore(t *testing.T) (*Store, string, string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -175,7 +179,7 @@ func TestAuditAndStickyProtection(t *testing.T) {
 	if err := s.ReleaseManual(ctx, actor); err != nil {
 		t.Fatal(err)
 	}
-	op, _, err := s.Admit(ctx, Admission{RequestID: "p", ActorID: "alice", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	op, _, err := s.Admit(ctx, Admission{RequestID: "p", ActorID: "alice", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,5 +193,65 @@ func TestAuditAndStickyProtection(t *testing.T) {
 	audit, err := s.AuditLog(ctx, 10)
 	if err != nil || len(audit) != 5 {
 		t.Fatalf("audit: %v %v", audit, err)
+	}
+}
+
+func TestOutcomeAndPrivateReceipt(t *testing.T) {
+	s, dir, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Desired: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 0, "sent", []byte(`{"token":"receipt-sensitive"}`)); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.Intents(ctx, op.ID)
+	if err != nil || string(items[0].Receipt) != `{"token":"receipt-sensitive"}` {
+		t.Fatalf("receipt: %v", err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Release: &Release{App: "other", Manifest: []byte(`{}`)}}); err == nil {
+		t.Fatal("accepted different app")
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Release: &Release{App: "api", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("receipt-sensitive")) {
+		t.Fatal("receipt exposed")
+	}
+}
+func TestExistingMissingKeyVerifierFails(t *testing.T) {
+	s, dir, key := testStore(t)
+	if _, err := s.db.Exec(`DELETE FROM metadata WHERE name='key_check'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if reopened, err := Open(dir, key, "test"); err == nil {
+		reopened.Close()
+		t.Fatal("missing verifier accepted")
+	}
+}
+func TestInterruptedAndRolledBackOutcomes(t *testing.T) {
+	for _, state := range []string{"interrupted", "rolled_back"} {
+		t.Run(state, func(t *testing.T) {
+			s, _, _ := testStore(t)
+			op, _, err := s.Admit(context.Background(), Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Finish(context.Background(), op.ID, Outcome{State: state}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

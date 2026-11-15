@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 func checkDir(path string) error {
@@ -42,4 +43,24 @@ func readKey(path string) ([]byte, error) {
 }
 func lockOwner(path string) (*os.File, error) {
 	return nil, errors.New("state ownership is supported only on Linux")
+}
+
+func prepareDatabase(dir string) (bool, error) {
+	p := filepath.Join(dir, "state.db")
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err == nil {
+		f.Close()
+		return true, nil
+	}
+	if !os.IsExist(err) {
+		return false, err
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.New("unsafe state file")
+	}
+	return false, nil
 }

@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +158,26 @@ func TestStrictJSONBoundary(t *testing.T) {
 		if _, err := DecodeJSON([]byte(input)); err == nil {
 			t.Errorf("accepted %s", input)
 		}
+	}
+}
+
+func TestSecurityBoundaries(t *testing.T) {
+	base := `{"project":"demo","network":"demo","protected":true,"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{%s}},"migrations":{"version":["v"],"apply":["a"],"revert":[%s]}}}}`
+	for _, input := range []string{
+		strings.Replace(fmt.Sprintf(base, "", `"{target}"`), `"protected":true`, `"protected":true,"Protected":false`, 1),
+		fmt.Sprintf(base, `"volumes":["/:/host"]`, `"{target}"`),
+		fmt.Sprintf(base, `"resources":{"cpu":"invalid"}`, `"{target}"`),
+		fmt.Sprintf(base, "", `"--target={target}"`),
+	} {
+		if _, err := DecodeJSON([]byte(input)); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+	m, err := DecodeJSON([]byte(fmt.Sprintf(base, "", `"{target}"`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.CheckImageDeploy("api", "ghcr.io/acme/api:latest@sha256:"+strings.Repeat("a", 64), true); err == nil {
+		t.Fatal("accepted tagged digest")
 	}
 }

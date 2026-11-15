@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -238,7 +239,11 @@ func Load(dir, env string) (*Manifest, error) {
 }
 func DecodeJSON(data []byte) (*Manifest, error) {
 	// Parse once for duplicate keys and explicit null before strict JSON decoding.
-	if _, err := parseYAML(data); err != nil {
+	node, err := parseYAML(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := exactKeys(node, reflect.TypeOf(Manifest{})); err != nil {
 		return nil, err
 	}
 	var m Manifest
@@ -252,6 +257,52 @@ func DecodeJSON(data []byte) (*Manifest, error) {
 	}
 	m.defaults()
 	return &m, nil
+}
+func exactKeys(n *yaml.Node, t reflect.Type) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		if n.Kind != yaml.MappingNode {
+			return nil
+		}
+		fields := map[string]reflect.Type{}
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				fields[name] = f.Type
+			}
+		}
+		for i := 0; i < len(n.Content); i += 2 {
+			name := n.Content[i].Value
+			ft, ok := fields[name]
+			if !ok {
+				return fmt.Errorf("unknown field %q", name)
+			}
+			if err := exactKeys(n.Content[i+1], ft); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		if n.Kind == yaml.MappingNode {
+			for i := 1; i < len(n.Content); i += 2 {
+				if err := exactKeys(n.Content[i], t.Elem()); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Slice:
+		if n.Kind == yaml.SequenceNode {
+			for _, v := range n.Content {
+				if err := exactKeys(v, t.Elem()); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 func sortedKeys[T any](m map[string]T) []string {
 	k := make([]string, 0, len(m))
@@ -331,6 +382,23 @@ func (m *Manifest) Validate() error {
 		}
 		for _, rn := range sortedKeys(a.Roles) {
 			r := a.Roles[rn]
+			for _, v := range r.Volumes {
+				if _, err := ParseMount(v); err != nil {
+					return fmt.Errorf("app %s role %s: invalid volume", name, rn)
+				}
+			}
+			if r.Resources != nil {
+				if r.Resources.CPU != "" {
+					if _, err := ParseCPU(r.Resources.CPU); err != nil {
+						return fmt.Errorf("app %s role %s: invalid CPU", name, rn)
+					}
+				}
+				if r.Resources.Memory != "" {
+					if _, err := ParseMemory(r.Resources.Memory); err != nil {
+						return fmt.Errorf("app %s role %s: invalid memory", name, rn)
+					}
+				}
+			}
 			if !identifier.MatchString(rn) || r.Service != "" && !identifier.MatchString(r.Service) || r.Replicas != nil && *r.Replicas < 1 || r.Port < 0 || r.Port > 65535 || len(r.Command) > 0 && !argv(r.Command) {
 				return fmt.Errorf("app %s role %s: invalid settings", name, rn)
 			}
@@ -351,6 +419,9 @@ func (m *Manifest) Validate() error {
 			}
 			n := 0
 			for _, s := range x.Revert {
+				if strings.Contains(s, "{target}") && s != "{target}" {
+					return fmt.Errorf("app %s: target must be a standalone argument", name)
+				}
 				n += strings.Count(s, "{target}")
 			}
 			if len(x.Revert) > 0 && n != 1 {
@@ -474,6 +545,12 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	}
 	if _, ok := selected.(reference.Canonical); (protected || m.Protected) && !ok {
 		return "", fmt.Errorf("protected environment requires a digest")
+	}
+	if _, tagged := selected.(reference.NamedTagged); (protected || m.Protected) && tagged {
+		return "", fmt.Errorf("protected environment requires digest without tag")
+	}
+	if canonical, ok := selected.(reference.Canonical); ok && !digest.MatchString(canonical.Digest().String()) {
+		return "", fmt.Errorf("image requires a sha256 digest")
 	}
 	if reference.IsNameOnly(selected) {
 		return "", fmt.Errorf("image version required")
