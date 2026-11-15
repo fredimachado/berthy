@@ -37,6 +37,19 @@ func TestSafeOperationErrorPublishesKnownTextOnly(t *testing.T) {
 		"one-off recovery required",
 		"verified release requires inspection",
 		"service recovery required",
+		"bound service unavailable",
+		"invalid bound service",
+		"bound service ownership changed",
+		"prior service health cannot be verified",
+		"prior image identity unavailable",
+		"prior image is not pinned",
+		"prior image credential unavailable",
+		"removing managed roles unavailable",
+		"role preflight failed",
+		"image inspection failed",
+		"image provenance recording failed",
+		"adoption preflight failed",
+		"migration source journal failed",
 	} {
 		if got := safeOperationError(state.Operation{Err: text}); got != text {
 			t.Fatalf("%q hidden: %q", text, got)

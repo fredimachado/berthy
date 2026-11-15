@@ -679,3 +679,264 @@ func TestRecoveryPendingDoesNotRepeatAudit(t *testing.T) {
 		t.Fatalf("audit grew from %d to %d: %v", len(before), len(after), err)
 	}
 }
+
+// boundFake answers service lookups by name or ID, as Docker does, and records the services it creates.
+type boundFake struct {
+	mu       sync.Mutex
+	services []engine.ServiceSnapshot
+	failures map[string]error // returned by InspectService for the keyed name or ID
+	created  []json.RawMessage
+}
+
+func (f *boundFake) add(id string, spec json.RawMessage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.services = append(f.services, engine.ServiceSnapshot{ID: id, Spec: spec, UpdateStatus: engine.UpdateStatus{State: "completed"}})
+}
+
+func (f *boundFake) createdSpecs() []json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]json.RawMessage(nil), f.created...)
+}
+
+func specName(spec json.RawMessage) string {
+	var s struct{ Name string }
+	_ = json.Unmarshal(spec, &s)
+	return s.Name
+}
+
+func (f *boundFake) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+func (f *boundFake) ResolveImage(context.Context, string, *engine.RegistryAuth) (string, error) {
+	return "", errors.New("unexpected resolution")
+}
+func (f *boundFake) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
+func (f *boundFake) InspectImage(context.Context, string) (engine.Image, error) {
+	return engine.Image{ID: "image"}, nil
+}
+func (f *boundFake) InspectService(_ context.Context, ref string) (engine.ServiceSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.failures[ref]; err != nil {
+		return engine.ServiceSnapshot{}, err
+	}
+	for _, s := range f.services {
+		if s.ID == ref || specName(s.Spec) == ref {
+			return s, nil
+		}
+	}
+	return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+}
+func (f *boundFake) CreateService(_ context.Context, spec json.RawMessage, _ *engine.RegistryAuth) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.services {
+		if specName(s.Spec) == specName(spec) {
+			return "", &engine.StatusError{Code: 409}
+		}
+	}
+	f.created = append(f.created, append(json.RawMessage(nil), spec...))
+	id := "new-" + strconv.Itoa(len(f.created))
+	f.services = append(f.services, engine.ServiceSnapshot{ID: id, Spec: append(json.RawMessage(nil), spec...), UpdateStatus: engine.UpdateStatus{State: "completed"}})
+	return id, nil
+}
+func (f *boundFake) UpdateService(context.Context, string, uint64, json.RawMessage, *engine.RegistryAuth) error {
+	return errors.New("unexpected update")
+}
+func (f *boundFake) DeleteService(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, s := range f.services {
+		if s.ID == id {
+			f.services = append(f.services[:i], f.services[i+1:]...)
+			return nil
+		}
+	}
+	return &engine.StatusError{Code: 404}
+}
+func (f *boundFake) ServiceTasks(_ context.Context, id string) ([]engine.ServiceTask, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.services {
+		if s.ID != id {
+			continue
+		}
+		var task struct {
+			TaskTemplate struct {
+				ContainerSpec struct{ Labels map[string]string }
+			}
+		}
+		if err := json.Unmarshal(s.Spec, &task); err != nil {
+			return nil, err
+		}
+		return []engine.ServiceTask{{ServiceID: id, ContainerID: "c-" + id, State: "running", DesiredState: "running", Slot: 1, Labels: task.TaskTemplate.ContainerSpec.Labels}}, nil
+	}
+	return nil, nil
+}
+func (f *boundFake) InspectContainerHealth(context.Context, string) (string, error) {
+	return "healthy", nil
+}
+
+// seedRelease records a succeeded deploy of app web at digest that binds the given services.
+func seedRelease(t *testing.T, s *state.Store, requestID, digest string, bindings ...state.Binding) {
+	t.Helper()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: requestID, ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(dockerManifest(nil))
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: digest, Manifest: raw, Bindings: bindings}}); err != nil {
+		t.Fatal(err)
+	}
+	// Later operations must start after this one, so the timestamps order them.
+	time.Sleep(3 * time.Millisecond)
+}
+
+// boundBinding is the binding of the web role of app web to a service.
+func boundBinding(name, serviceID string) state.Binding {
+	return state.Binding{App: "web", Role: "web", Name: name, ServiceID: serviceID}
+}
+
+// runBound admits a deploy or rollback of app web and returns the operation once it has finished.
+func runBound(t *testing.T, s *state.Store, c *Controller, req Request) state.Operation {
+	t.Helper()
+	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waitOperation(t, s, op.ID)
+}
+
+func TestBoundServiceGoneIsRecreatedUnderBoundName(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
+	f := &boundFake{}
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "recreate", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	created := f.createdSpecs()
+	if len(created) != 1 || specName(created[0]) != "legacy-web" {
+		t.Fatalf("%d services created", len(created))
+	}
+	intents, err := s.Intents(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var creates []state.Intent
+	for _, i := range intents {
+		if i.Kind == "create" {
+			creates = append(creates, i)
+		}
+	}
+	if len(creates) != 1 || creates[0].Role != "web" || creates[0].Name != "legacy-web" {
+		t.Fatalf("create intents %+v", creates)
+	}
+	bindings, err := s.Bindings(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0] != boundBinding("legacy-web", "new-1") {
+		t.Fatalf("bindings %+v", bindings)
+	}
+}
+
+func TestBoundServiceRenamedOutsideBerthyIsRefused(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
+	f := &boundFake{}
+	f.add("old-id", json.RawMessage(`{"Name":"renamed-web"}`))
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "renamed", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
+	if op.State != "failed" || op.Err != "bound service unavailable" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if n := len(f.createdSpecs()); n != 0 {
+		t.Fatalf("%d services created", n)
+	}
+}
+
+func TestBoundNameWithDifferentIDIsRefused(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
+	f := &boundFake{}
+	f.add("other-id", json.RawMessage(`{"Name":"legacy-web"}`))
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "replaced", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
+	if op.State != "failed" || op.Err != "bound service unavailable" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if n := len(f.createdSpecs()); n != 0 {
+		t.Fatalf("%d services created", n)
+	}
+}
+
+func TestBoundNameLookupErrorIsRefused(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
+	// The recorded ID is absent too, so only the failed name lookup stands between this deploy and a recreate.
+	f := &boundFake{failures: map[string]error{"legacy-web": &engine.StatusError{Code: 500}}}
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "unreachable", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
+	if op.State != "failed" || op.Err != "bound service unavailable" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if n := len(f.createdSpecs()); n != 0 {
+		t.Fatalf("%d services created", n)
+	}
+}
+
+func TestRollbackRecreatesBoundServiceGone(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64))
+	seedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), boundBinding("legacy-web", "old-id"))
+	f := &boundFake{}
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	created := f.createdSpecs()
+	if len(created) != 1 || specName(created[0]) != "legacy-web" || !strings.Contains(string(created[0]), strings.Repeat("a", 64)) {
+		t.Fatalf("%d services created", len(created))
+	}
+	bindings, err := s.Bindings(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0] != boundBinding("legacy-web", "new-1") {
+		t.Fatalf("bindings %+v", bindings)
+	}
+}
+
+func TestRecoveryRemovesUnobservedRecreateByBoundName(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "recreate", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"Name":"legacy-web","Labels":{"berthy.operation":"` + op.ID + `"},"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"` + op.ID + `"}}}}`)
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "create", Role: "web", Name: "legacy-web", Generation: op.ID, Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	// Docker created the service, but the operation never journaled its result.
+	f := &boundFake{}
+	f.add("new-1", spec)
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" {
+		t.Fatalf("state %s: %v", got.State, err)
+	}
+	var status *engine.StatusError
+	if _, err = f.InspectService(ctx, "legacy-web"); !errors.As(err, &status) || status.Code != 404 {
+		t.Fatalf("recreated service still exists: %v", err)
+	}
+}

@@ -105,76 +105,92 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if b, ok := byRole[role]; ok {
 			name = b.Name
 			live, e := c.Engine.InspectService(ctx, name)
-			if e != nil || live.ID != b.ServiceID {
-				outcome.Err = "bound service unavailable"
-				return
-			}
-			var ownership struct {
-				Labels       map[string]string
-				TaskTemplate struct {
-					ContainerSpec struct {
-						Labels map[string]string
-						Image  string
-					}
-				}
-			}
-			if json.Unmarshal(live.Spec, &ownership) != nil {
-				outcome.Err = "invalid bound service"
-				return
-			}
-			for _, labels := range []map[string]string{ownership.Labels, ownership.TaskTemplate.ContainerSpec.Labels} {
-				for key, value := range map[string]string{"berthy.environment": c.Environment, "berthy.project": req.Manifest.Project, "berthy.app": req.App, "berthy.role": role} {
-					if existing, ok := labels[key]; ok && existing != value {
-						outcome.Err = "bound service ownership changed"
-						return
-					}
-				}
-			}
-			var previous struct {
-				TaskTemplate struct {
-					ContainerSpec struct {
-						Labels map[string]string
-						Image  string
-					}
-				}
-				Mode struct{ Replicated *struct{ Replicas int } }
-			}
-			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
-				outcome.Err = "prior service health cannot be verified"
-				return
-			}
-			if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
-				ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
-				if e != nil {
-					outcome.Err = "prior image identity unavailable"
+			if e != nil {
+				gone, ge := c.boundServiceGone(ctx, b, e)
+				if ge != nil || !gone {
+					outcome.Err = "bound service unavailable"
 					return
 				}
-				if _, ok := ref.(reference.Canonical); !ok {
-					outcome.Err = "prior image is not pinned"
+				// Recreate the role under its bound name; the release re-binds it to the new service.
+				var desired map[string]any
+				if json.Unmarshal(spec, &desired) != nil {
 					return
 				}
-				if healthyImageOnce(ctx, c.Engine, live.ID, previous.TaskTemplate.ContainerSpec.Image, previous.Mode.Replicated.Replicas) != nil {
+				desired["Name"] = name
+				spec, _ = json.Marshal(desired)
+				intent = state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
+			} else {
+				if live.ID != b.ServiceID {
+					outcome.Err = "bound service unavailable"
+					return
+				}
+				var ownership struct {
+					Labels       map[string]string
+					TaskTemplate struct {
+						ContainerSpec struct {
+							Labels map[string]string
+							Image  string
+						}
+					}
+				}
+				if json.Unmarshal(live.Spec, &ownership) != nil {
+					outcome.Err = "invalid bound service"
+					return
+				}
+				for _, labels := range []map[string]string{ownership.Labels, ownership.TaskTemplate.ContainerSpec.Labels} {
+					for key, value := range map[string]string{"berthy.environment": c.Environment, "berthy.project": req.Manifest.Project, "berthy.app": req.App, "berthy.role": role} {
+						if existing, ok := labels[key]; ok && existing != value {
+							outcome.Err = "bound service ownership changed"
+							return
+						}
+					}
+				}
+				var previous struct {
+					TaskTemplate struct {
+						ContainerSpec struct {
+							Labels map[string]string
+							Image  string
+						}
+					}
+					Mode struct{ Replicated *struct{ Replicas int } }
+				}
+				if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
 					outcome.Err = "prior service health cannot be verified"
 					return
 				}
+				if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
+					ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
+					if e != nil {
+						outcome.Err = "prior image identity unavailable"
+						return
+					}
+					if _, ok := ref.(reference.Canonical); !ok {
+						outcome.Err = "prior image is not pinned"
+						return
+					}
+					if healthyImageOnce(ctx, c.Engine, live.ID, previous.TaskTemplate.ContainerSpec.Image, previous.Mode.Replicated.Replicas) != nil {
+						outcome.Err = "prior service health cannot be verified"
+						return
+					}
+				}
+				if _, e = c.operationAuth(ctx, req.App, live.Spec); e != nil {
+					outcome.Err = "prior image credential unavailable"
+					return
+				}
+				// A bound adopted role may keep a non-deterministic name.
+				var desired map[string]any
+				if json.Unmarshal(spec, &desired) != nil {
+					return
+				}
+				desired["Name"] = name
+				spec, _ = json.Marshal(desired)
+				spec, e = mergeServiceSpec(live.Spec, spec, prepared.NetworkID)
+				if e != nil {
+					outcome.Err = "unsafe or incompatible service"
+					return
+				}
+				intent = state.Intent{Ordinal: ordinal, Kind: "update", Role: role, Name: name, ServiceID: live.ID, SeenVersion: live.Version, Generation: op.ID, Before: live.Spec, Desired: spec}
 			}
-			if _, e = c.operationAuth(ctx, req.App, live.Spec); e != nil {
-				outcome.Err = "prior image credential unavailable"
-				return
-			}
-			// A bound adopted role may keep a non-deterministic name.
-			var desired map[string]any
-			if json.Unmarshal(spec, &desired) != nil {
-				return
-			}
-			desired["Name"] = name
-			spec, _ = json.Marshal(desired)
-			spec, e = mergeServiceSpec(live.Spec, spec, prepared.NetworkID)
-			if e != nil {
-				outcome.Err = "unsafe or incompatible service"
-				return
-			}
-			intent = state.Intent{Ordinal: ordinal, Kind: "update", Role: role, Name: name, ServiceID: live.ID, SeenVersion: live.Version, Generation: op.ID, Before: live.Spec, Desired: spec}
 		} else {
 			_, e = c.Engine.InspectService(ctx, name)
 			var status *engine.StatusError
@@ -317,6 +333,22 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 	}
 	return outcome
+}
+
+// boundServiceGone reports whether a bound service was removed: its name and its recorded ID are both unknown to Docker.
+func (c *Controller) boundServiceGone(ctx context.Context, b state.Binding, nameErr error) (bool, error) {
+	var status *engine.StatusError
+	if !errors.As(nameErr, &status) || status.Code != 404 {
+		return false, nil
+	}
+	_, err := c.Engine.InspectService(ctx, b.ServiceID)
+	if err == nil {
+		return false, nil
+	}
+	if errors.As(err, &status) && status.Code == 404 {
+		return true, nil
+	}
+	return false, err
 }
 
 // ensureImage inspects a pinned image and pulls it once when the engine does not hold it.
