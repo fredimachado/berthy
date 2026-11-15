@@ -190,14 +190,14 @@ func TestJSONRejectsYAMLTrailingSyntax(t *testing.T) {
 	}
 }
 
-func TestManagedIngressIsRecognizedButNotDeployed(t *testing.T) {
+func TestManagedIngressHostnamesPassImageCheck(t *testing.T) {
 	data := []byte(`{"project":"demo","network":"demo","ingress":{"cloudflare":{"account_id":"account","api_token_secret":"CF_TOKEN","image":"cloudflare/cloudflared:v1","dns":false}},"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"port":8080,"hostnames":["api.example.com"]}}},"worker":{"kind":"image","image":"ghcr.io/acme/worker","roles":{"main":{}}}}}`)
 	m, err := DecodeJSON(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = m.CheckImageDeploy("api", "v1", false); err == nil || !strings.Contains(err.Error(), "Phase 2b") {
-		t.Fatalf("missing ingress blocker: %v", err)
+	if got, err := m.CheckImageDeploy("api", "v1", false); err != nil || got != "ghcr.io/acme/api:v1" {
+		t.Fatalf("hostname app refused: %v", err)
 	}
 	if _, err = m.CheckImageDeploy("worker", "v1", false); err != nil {
 		t.Fatal(err)

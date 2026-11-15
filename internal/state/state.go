@@ -81,6 +81,18 @@ type Audit struct {
 	Time                                                     time.Time
 }
 
+// IngressState is the managed ingress configuration of one environment.
+type IngressState struct {
+	AccountID, APITokenSecret, TunnelID, TunnelName string
+	DNS                                             bool
+	Updated                                         time.Time
+}
+
+// IngressRoute is one hostname that routes through the environment's tunnel.
+type IngressRoute struct {
+	Hostname, App, Role, Service, ZoneID, DNSRecordID string // DNSRecordID is empty when Berthy manages no DNS record for the hostname
+}
+
 func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if environment == "" || stateDir == "" || keyFile == "" {
 		return nil, errors.New("state directory, key file and environment required")
@@ -130,7 +142,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -150,7 +162,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS applied (environment TEXT NOT NULL, app TEXT NOT NULL, release_id INTEGER NOT NULL REFERENCES releases(id), PRIMARY KEY(environment,app));
  CREATE TABLE IF NOT EXISTS bindings (environment TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL UNIQUE, service_id TEXT NOT NULL UNIQUE, PRIMARY KEY(environment,app,role));
  CREATE TABLE IF NOT EXISTS secrets (environment TEXT NOT NULL, name TEXT NOT NULL, registry TEXT NOT NULL, sealed BLOB NOT NULL, PRIMARY KEY(environment,name));
- CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, operation_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, created INTEGER NOT NULL);`); err != nil {
+ CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, operation_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, created INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS ingress (environment TEXT PRIMARY KEY, account_id TEXT NOT NULL, api_token_secret TEXT NOT NULL, tunnel_id TEXT NOT NULL, tunnel_name TEXT NOT NULL, dns INTEGER NOT NULL, updated INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS ingress_routes (environment TEXT NOT NULL, hostname TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, service TEXT NOT NULL, zone_id TEXT NOT NULL, dns_record_id TEXT NOT NULL, PRIMARY KEY(environment, hostname));`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -178,7 +192,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=3`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=4`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -632,6 +646,38 @@ func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, val
 	}
 	return tx.Commit()
 }
+
+// PutOperationSecret stores a secret for the operation that holds the environment lock, such as the tunnel
+// token Berthy fetches during an ingress apply. PutSecret refuses while any lock is held; this does not.
+func (s *Store) PutOperationSecret(ctx context.Context, opID, name string, value []byte) error {
+	if name == "" {
+		return errors.New("empty secret name")
+	}
+	sealed, err := s.seal("secret:"+name+"\x00", value)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	var a Admission
+	if err = tx.QueryRowContext(ctx, `SELECT actor_id,actor_name,remote FROM operations WHERE environment=? AND id=?`, s.env, opID).Scan(&a.ActorID, &a.ActorName, &a.Remote); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO secrets VALUES(?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET registry=excluded.registry,sealed=excluded.sealed`, s.env, name, "", sealed); err != nil {
+		return err
+	}
+	a.Kind = "secret_set:" + name
+	if err = auditTx(ctx, tx, s.env, opID, a, "succeeded"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *Store) Secret(ctx context.Context, name string) (SecretInfo, []byte, error) {
 	var b []byte
 	info := SecretInfo{Name: name}
@@ -785,6 +831,130 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// Ingress returns the environment's managed ingress configuration. It returns sql.ErrNoRows when there is none.
+func (s *Store) Ingress(ctx context.Context) (IngressState, error) {
+	var st IngressState
+	var dns int
+	var ms int64
+	err := s.db.QueryRowContext(ctx, `SELECT account_id,api_token_secret,tunnel_id,tunnel_name,dns,updated FROM ingress WHERE environment=?`, s.env).Scan(&st.AccountID, &st.APITokenSecret, &st.TunnelID, &st.TunnelName, &dns, &ms)
+	if err != nil {
+		return IngressState{}, err
+	}
+	st.DNS = dns != 0
+	st.Updated = time.UnixMilli(ms).UTC()
+	return st, nil
+}
+
+// SetIngress records the environment's managed ingress configuration. A zero Updated is stamped now.
+// It requires the environment lock to be held by opID.
+func (s *Store) SetIngress(ctx context.Context, opID string, st IngressState) error {
+	if st.AccountID == "" || st.APITokenSecret == "" || st.TunnelID == "" || st.TunnelName == "" {
+		return errors.New("invalid ingress state")
+	}
+	updated := now()
+	if !st.Updated.IsZero() {
+		updated = st.Updated.UnixMilli()
+	}
+	dns := 0
+	if st.DNS {
+		dns = 1
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO ingress VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment) DO UPDATE SET account_id=excluded.account_id,api_token_secret=excluded.api_token_secret,tunnel_id=excluded.tunnel_id,tunnel_name=excluded.tunnel_name,dns=excluded.dns,updated=excluded.updated`, s.env, st.AccountID, st.APITokenSecret, st.TunnelID, st.TunnelName, dns, updated)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ClearIngress removes the environment's managed ingress configuration and every route in it.
+// It requires the environment lock to be held by opID.
+func (s *Store) ClearIngress(ctx context.Context, opID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE environment=?`, s.env); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM ingress WHERE environment=?`, s.env); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// IngressRoutes returns the routes of app, or of every app when app is empty, ordered by hostname.
+func (s *Store) IngressRoutes(ctx context.Context, app string) ([]IngressRoute, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT hostname,app,role,service,zone_id,dns_record_id FROM ingress_routes WHERE environment=? AND (?='' OR app=?) ORDER BY hostname`, s.env, app, app)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IngressRoute
+	for rows.Next() {
+		var r IngressRoute
+		if err = rows.Scan(&r.Hostname, &r.App, &r.Role, &r.Service, &r.ZoneID, &r.DNSRecordID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SetIngressRoute records a route, replacing the route for the same hostname.
+// It requires the environment lock to be held by opID.
+func (s *Store) SetIngressRoute(ctx context.Context, opID string, r IngressRoute) error {
+	if r.Hostname == "" || r.App == "" || r.Role == "" || r.Service == "" {
+		return errors.New("invalid ingress route")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO ingress_routes VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment,hostname) DO UPDATE SET app=excluded.app,role=excluded.role,service=excluded.service,zone_id=excluded.zone_id,dns_record_id=excluded.dns_record_id`, s.env, r.Hostname, r.App, r.Role, r.Service, r.ZoneID, r.DNSRecordID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteIngressRoute removes the route for hostname. It returns sql.ErrNoRows when there is none.
+// It requires the environment lock to be held by opID.
+func (s *Store) DeleteIngressRoute(ctx context.Context, opID, hostname string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE environment=? AND hostname=?`, s.env, hostname)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Protected(ctx context.Context) (bool, error) {

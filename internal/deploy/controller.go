@@ -118,6 +118,18 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	return c.prepare(ctx, req, image)
 }
 
+// publishingRefusal is returned for apps with hostnames until deploys publish routes and DNS records.
+const publishingRefusal = "managed ingress publishing is not supported"
+
+func hasHostnames(app manifest.App) bool {
+	for _, role := range app.Roles {
+		if len(role.Hostnames) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Admit durably claims the environment before an agent-owned worker starts.
 func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state.Operation, bool, error) {
 	if req.DryRun {
@@ -135,6 +147,10 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
+		}
+		// Refuse before the environment lock is taken, so no operation is recorded for a deploy that cannot run.
+		if app, ok := req.Manifest.Apps[req.App]; ok && hasHostnames(app) {
+			return state.Operation{}, false, Refusal(publishingRefusal)
 		}
 	}
 	copyReq := req

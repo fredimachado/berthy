@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 )
 
@@ -50,7 +52,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -153,6 +155,51 @@ func TestUpgradeVersionTwoPreservesProvenance(t *testing.T) {
 		t.Fatalf("lost provenance: %v %v", images, err)
 	}
 }
+func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	if err := s.PutSecret(ctx, Actor{ID: "a"}, SecretInfo{Name: "KEPT"}, []byte("kept-value")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE ingress_routes; DROP TABLE ingress; PRAGMA user_version=3`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var version int
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
+		t.Fatalf("migration: %d %v", version, err)
+	}
+	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
+		t.Fatalf("secret lost in upgrade: %q %v", value, err)
+	}
+	if _, err = upgraded.Ingress(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ingress after upgrade: %v", err)
+	}
+	op, _, err := upgraded.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "ingress", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = upgraded.SetIngress(ctx, op.ID, IngressState{AccountID: "acct", APITokenSecret: "CLOUDFLARE_API_TOKEN", TunnelID: "t", TunnelName: "demo-prod"}); err != nil {
+		t.Fatalf("new table unusable after upgrade: %v", err)
+	}
+}
+
+func TestUnknownSchemaVersionIsRefused(t *testing.T) {
+	s, dir, key := testStore(t)
+	if _, err := s.db.Exec(`PRAGMA user_version=5`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if _, err := Open(dir, key, "test"); err == nil {
+		t.Fatal("opened a newer schema")
+	}
+}
+
 func TestLatestMigrationPicksNewestRecordedDeploy(t *testing.T) {
 	s, _, _ := testStore(t)
 	ctx := context.Background()

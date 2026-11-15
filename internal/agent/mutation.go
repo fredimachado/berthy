@@ -20,6 +20,7 @@ import (
 
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/state"
 )
@@ -324,6 +325,10 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			if req.Name == "" {
 				writeError(w, 400, "bad_request", "name required")
+				return
+			}
+			if req.Name == manifest.TunnelTokenSecret {
+				writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
 				return
 			}
 			if req.DryRun {

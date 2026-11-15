@@ -24,6 +24,48 @@ func TestProtectedPlanRejectsTagBeforeEngineAccess(t *testing.T) {
 	}
 }
 
+func hostnameManifest() manifest.Manifest {
+	return manifest.Manifest{
+		Project: "example",
+		Network: "private",
+		Ingress: &manifest.Ingress{Cloudflare: &manifest.Cloudflare{AccountID: "acct", APITokenSecret: "CF_TOKEN", Image: "cloudflare/cloudflared:2026.11.0"}},
+		Apps:    map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {Port: 8080, Hostnames: []string{"web.example.com"}}}}},
+	}
+}
+
+func TestPlanRefusesHostnamesUntilPublishingIsWired(t *testing.T) {
+	c := Controller{}
+	_, err := c.Plan(context.Background(), Actor{}, Request{App: "web", Version: "v1", Manifest: hostnameManifest()})
+	if err == nil || !strings.Contains(err.Error(), "managed ingress publishing is not supported") {
+		t.Fatalf("deploy with hostnames planned: %v", err)
+	}
+}
+
+func TestAdmitRefusesHostnamesBeforeLocking(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := Controller{Store: s, Environment: "test"}
+	_, _, err = c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "hostnames", App: "web", Version: "v1", Manifest: hostnameManifest()})
+	var refusal Refusal
+	if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "managed ingress publishing is not supported") {
+		t.Fatalf("admitted a deploy with hostnames: %v", err)
+	}
+	if lock, err := s.Lock(context.Background()); err == nil {
+		t.Fatalf("refused deploy took the environment lock: %+v", lock)
+	}
+}
+
 func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {

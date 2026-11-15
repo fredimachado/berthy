@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,15 @@ import (
 )
 
 const maxInput = 1 << 20
+
+// TunnelTokenSecret is the reserved secret name for the tunnel token Berthy fetches for the connector.
+const TunnelTokenSecret = "TUNNEL_TOKEN"
+
+// ConnectorAppName is the app Berthy runs for the managed ingress connector.
+const ConnectorAppName = "ingress"
+
+// ConnectorMetricsPort is the port the connector serves metrics and its readiness check on, inside its container.
+const ConnectorMetricsPort = 20241
 
 // Manifest is the complete desired configuration sent to an agent.
 type Manifest struct {
@@ -353,8 +363,15 @@ func (m *Manifest) Validate() error {
 		if c == nil || c.AccountID == "" || !envName.MatchString(c.APITokenSecret) || c.Image == "" || c.Replicas != nil && *c.Replicas < 1 || c.Tunnel != "" && !identifier.MatchString(c.Tunnel) {
 			return fmt.Errorf("invalid Cloudflare ingress")
 		}
-		if _, err := reference.ParseNormalizedNamed(c.Image); err != nil {
+		if c.APITokenSecret == TunnelTokenSecret {
+			return fmt.Errorf("%s is reserved for managed ingress", TunnelTokenSecret)
+		}
+		ref, err := reference.ParseNormalizedNamed(c.Image)
+		if err != nil {
 			return fmt.Errorf("invalid Cloudflare image")
+		}
+		if reference.IsNameOnly(ref) {
+			return fmt.Errorf("invalid Cloudflare image: a tag or digest is required")
 		}
 	}
 	hostnames := map[string]bool{}
@@ -366,6 +383,9 @@ func (m *Manifest) Validate() error {
 	}
 	for _, name := range sortedKeys(m.Registries) {
 		r := m.Registries[name]
+		if r.PasswordSecret == TunnelTokenSecret {
+			return fmt.Errorf("registry %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+		}
 		if name == "" || strings.ContainsAny(name, "/ @") || r.Username == "" || !envName.MatchString(r.PasswordSecret) {
 			return fmt.Errorf("invalid registry %q", name)
 		}
@@ -374,6 +394,9 @@ func (m *Manifest) Validate() error {
 		a := m.Apps[name]
 		if !identifier.MatchString(name) {
 			return fmt.Errorf("invalid app %q", name)
+		}
+		if m.Ingress != nil && name == ConnectorAppName {
+			return fmt.Errorf("app name %s is reserved for the managed ingress connector", ConnectorAppName)
 		}
 		if a.ProjectName != "" && !identifier.MatchString(a.ProjectName) {
 			return fmt.Errorf("app %s: invalid project name", name)
@@ -390,12 +413,18 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("app %s: invalid compose file", name)
 		}
 		for _, k := range sortedKeys(a.Env.Plain) {
+			if k == TunnelTokenSecret {
+				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+			}
 			if !envName.MatchString(k) || strings.ContainsRune(a.Env.Plain[k], 0) {
 				return fmt.Errorf("app %s: invalid environment name or value", name)
 			}
 		}
 		seen := map[string]bool{}
 		for _, s := range a.Env.Secret {
+			if s == TunnelTokenSecret && name != ConnectorAppName {
+				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+			}
 			if !envName.MatchString(s) || seen[s] {
 				return fmt.Errorf("app %s: invalid secret", name)
 			}
@@ -473,6 +502,9 @@ func (m *Manifest) Validate() error {
 	}
 	for _, name := range sortedKeys(m.Destinations) {
 		d := m.Destinations[name]
+		if d.AccessKeySecret == TunnelTokenSecret || d.SecretKeySecret == TunnelTokenSecret {
+			return fmt.Errorf("destination %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+		}
 		if !identifier.MatchString(name) || d.Type != "s3" || d.Bucket == "" || !envName.MatchString(d.AccessKeySecret) || !envName.MatchString(d.SecretKeySecret) {
 			return fmt.Errorf("invalid destination %q", name)
 		}
@@ -507,6 +539,9 @@ func (m *Manifest) Validate() error {
 				return fmt.Errorf("backup %s: invalid retention", name)
 			}
 		}
+	}
+	if m.Telemetry != nil && m.Telemetry.HeadersSecret == TunnelTokenSecret {
+		return fmt.Errorf("telemetry: %s is reserved for managed ingress", TunnelTokenSecret)
 	}
 	if m.Telemetry != nil && (m.Telemetry.OTLPEndpoint == "" || m.Telemetry.HeadersSecret != "" && !envName.MatchString(m.Telemetry.HeadersSecret)) {
 		return fmt.Errorf("invalid telemetry")
@@ -555,11 +590,6 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	if !ok || a.Kind != "image" {
 		return "", fmt.Errorf("app %q is not an image app", app)
 	}
-	for _, r := range a.Roles {
-		if len(r.Hostnames) > 0 {
-			return "", fmt.Errorf("managed ingress is unavailable until Phase 2b")
-		}
-	}
 	for _, h := range append(append([]Hook{}, a.Hooks.PreDeploy...), a.Hooks.PostDeploy...) {
 		if h.Backup != "" {
 			return "", fmt.Errorf("backup hooks are not supported yet")
@@ -594,6 +624,60 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 		return "", fmt.Errorf("image version required")
 	}
 	return selected.String(), nil
+}
+
+// TunnelName is the tunnel's name in Cloudflare: the configured name, or <project>-<environment>.
+func (m *Manifest) TunnelName(environment string) string {
+	if m.Ingress != nil && m.Ingress.Cloudflare != nil && m.Ingress.Cloudflare.Tunnel != "" {
+		return m.Ingress.Cloudflare.Tunnel
+	}
+	return m.Project + "-" + environment
+}
+
+// ConnectorApp returns the image app that runs the managed ingress connector, and the version to deploy:
+// the connector image's digest when it is pinned by digest, otherwise its tag.
+func (m *Manifest) ConnectorApp() (App, string, error) {
+	if m.Ingress == nil || m.Ingress.Cloudflare == nil {
+		return App{}, "", errors.New("managed ingress is not configured")
+	}
+	c := m.Ingress.Cloudflare
+	ref, err := reference.ParseNormalizedNamed(c.Image)
+	if err != nil {
+		return App{}, "", errors.New("invalid Cloudflare image")
+	}
+	var version string
+	switch v := ref.(type) {
+	case reference.Canonical:
+		version = v.Digest().String()
+	case reference.NamedTagged:
+		version = v.Tag()
+	default:
+		return App{}, "", errors.New("invalid Cloudflare image: a tag or digest is required")
+	}
+	replicas := 1
+	if c.Replicas != nil {
+		replicas = *c.Replicas
+	}
+	retries := 3
+	retain := 3
+	app := App{
+		Kind:  "image",
+		Image: reference.TrimNamed(ref).String(),
+		Roles: map[string]Role{"connector": {
+			Replicas: &replicas,
+			Command:  []string{"tunnel", "--no-autoupdate", "--metrics", fmt.Sprintf("0.0.0.0:%d", ConnectorMetricsPort), "run"},
+			Health: &Health{
+				Test:        []string{"CMD", "cloudflared", "tunnel", "--metrics", fmt.Sprintf("127.0.0.1:%d", ConnectorMetricsPort), "ready"},
+				Interval:    "10s",
+				Timeout:     "5s",
+				StartPeriod: "30s",
+				Retries:     &retries,
+			},
+		}},
+		Env:    Env{Secret: []string{TunnelTokenSecret}},
+		Deploy: Deploy{DeployTimeout: "180s", DrainTimeout: "30s", Retain: &retain},
+	}
+	return app, version, nil
 }
 
 // Link SHA-256 so reference can validate sha256 digests.

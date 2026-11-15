@@ -23,6 +23,10 @@ type preparedPlan struct {
 func (c *Controller) prepare(ctx context.Context, req Request, image string) (Plan, error) {
 	p := Plan{App: req.App, Image: image}
 	app := req.Manifest.Apps[req.App]
+	// Publishing routes and DNS records is not wired into deploys yet, so a deploy must not skip it silently.
+	if hasHostnames(app) {
+		return Plan{}, Refusal(publishingRefusal)
+	}
 	for role := range app.Roles {
 		p.Roles = append(p.Roles, role)
 	}
@@ -119,10 +123,8 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 	if !ok || app.Kind != "image" {
 		return Plan{}, nil, errors.New("image app required")
 	}
-	for _, role := range app.Roles {
-		if len(role.Hostnames) > 0 {
-			return Plan{}, nil, errors.New("managed ingress publishing is not supported")
-		}
+	if hasHostnames(app) {
+		return Plan{}, nil, Refusal(publishingRefusal)
 	}
 	if c.Engine == nil {
 		return Plan{}, nil, errors.New("Docker unavailable")
