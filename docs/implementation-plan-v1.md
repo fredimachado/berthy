@@ -19,12 +19,22 @@ Deliver v1 on one Linux Docker server per environment. Use the same non-producti
 
 **Done when** CI has deployed to a non-production environment for two weeks. A deliberately unhealthy release rolls back while the previous version keeps serving. A failed pre-deploy command blocks the rollout, and pruning preserves the volumes and images needed for recovery.
 
+## Phase 2b · Managed ingress
+
+Starts once Phase 2's image deploys work, because the connector is an image app and publishing is a step of an image deploy. It does not change Phase 2's own acceptance check.
+
+- Add the `ingress.cloudflare` block and per-role `hostnames` to the manifest. Find or create the remotely managed tunnel through Cloudflare's API, fetch its token into the secret store, and run the connector as a health-gated Swarm service on the shared network.
+- Sync routes and proxied DNS records from the manifest, in `ingress apply` and as the publish step of an image deploy. Keep every rule and record Berthy did not create, and stop on a conflict unless an admin replaces it. Add `ingress status` and the `doctor` check.
+- Confirm the connector's readiness command against the pinned connector version before relying on it as a health check.
+
+**Done when** a new app is published on a new hostname by a manifest change and a deploy alone. An existing tunnel is adopted with its routes unchanged and no dropped requests while the hand-started connector is replaced. A hostname already used by another record stops the deploy before anything changes, and removing a hostname removes only what Berthy created.
+
 ## Phase 3 · Compose, monitoring and data protection
 
 ### 3a · Compose and alerting
 
 - Deploy and adopt Compose projects by name. Reuse the manifest, secret and registry handling. Preview service and volume changes and enforce the stateful recreation guard.
-- Add scheduled HTTP and TCP probes, built-in checks, peer checks and Telegram alerts. Wire up optional OpenTelemetry export. Verify that probes against service names can reach their targets on the shared network.
+- Add scheduled HTTP and TCP probes, built-in checks, peer checks and Telegram alerts. Include the unhealthy-tunnel check for environments with managed ingress. Wire up optional OpenTelemetry export. Verify that probes against service names can reach their targets on the shared network.
 
 **Done when** Berthy adopts a running Compose project with its existing data, blocks an unauthorized stateful recreation, and sends failure and recovery alerts for a test probe.
 
@@ -49,8 +59,15 @@ Deliver v1 on one Linux Docker server per environment. Use the same non-producti
 
 **Done when** an AI agent can inspect a protected environment and request a change. The environment stays untouched until a person approves the reviewed plan, and the result appears in the audit log. An expired request cannot run.
 
+## Phase 5 · Server setup
+
+- Add `berthy setup`, over SSH and with `--local`. It checks the server, installs Docker when missing, turns on Swarm mode, creates the shared network, installs or upgrades the agent under systemd and creates the first `admin` token. It supports `--dry-run`, can be run again safely and deploys nothing.
+- Until this phase, the agent is installed by hand from the systemd unit in the repository.
+
+**Done when** `berthy setup` alone has brought a fresh server to a passing `doctor`, and a second run changed nothing. A run against a server with running apps added only the agent, and a run with a saved encryption key let the rebuilt agent read its restored state.
+
 ## v1 release gate
 
-Run the adoption and recovery checklist on the least critical environment. Hand over automatic deploys app by app, and keep the old backups running until a Berthy backup has been restored and verified. Rebuild a test host from provisioning, the saved agent state and the volume backups. Verify the recovered apps and confirm deploys, monitoring, alerts, scheduled commands and backups work end to end.
+Run the adoption and recovery checklist on the least critical environment. Hand over automatic deploys app by app, and keep the old backups running until a Berthy backup has been restored and verified. Rebuild a test host from provisioning, `berthy setup` with the saved encryption key, the saved agent state and the volume backups. Verify the recovered apps and confirm deploys, monitoring, alerts, scheduled commands and backups work end to end.
 
 Multi-node operation remains an optional follow-on.
