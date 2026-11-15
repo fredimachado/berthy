@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -42,6 +44,9 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if isDeploymentCommand(cmd) {
+		return runDeployment(cmd, args, out, errout)
+	}
 	if cmd == "agent" && len(args) == 3 && args[0] == "token" && args[1] == "-e" {
 		if !envPattern.MatchString(args[2]) {
 			fmt.Fprintln(errout, "invalid environment")
@@ -122,12 +127,31 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		ctx := context.Background()
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
 		eng := engine.New(c.DockerSocket)
+		deployment, err := agent.OpenDeployment(c, eng)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		if deployment != nil {
+			defer deployment.Store.Close()
+			if err = deployment.Recover(ctx); err != nil {
+				fmt.Fprintln(errout, "deployment recovery failed")
+				return 1
+			}
+		}
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
-		server := http.Server{Addr: c.Listen, Handler: agent.HandlerWithMetrics(c, eng, collector), ReadHeaderTimeout: 5 * time.Second}
-		if err = server.ListenAndServe(); err != nil {
+		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandler(c, eng, collector, deployment), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+			defer done()
+			_ = server.Shutdown(shutdownCtx)
+		}()
+		if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
