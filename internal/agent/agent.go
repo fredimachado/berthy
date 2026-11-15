@@ -2,6 +2,7 @@ package agent
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/metrics"
 	"bytes"
@@ -108,6 +109,9 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
 func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
+	return handlerWithState(c, e, collector, nil)
+}
+func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if r.Method != "GET" {
@@ -120,7 +124,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		var err error
 		switch {
 		case len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs":
-			serveLogs(w, r, e, parts[4])
+			serveLogs(w, r, e, parts[4], deployment)
 			return
 		case len(parts) == 4 && parts[3] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
