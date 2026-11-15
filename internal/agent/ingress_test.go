@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -188,23 +189,38 @@ func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
 }
 
 func TestLoadRejectsPlainHTTPCloudflareURL(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.json")
-	body := func(url string) []byte {
-		return []byte(`{"environment":"lab","listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","tokens":[{"digest":"` + Digest("bty.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}`)
+	// The URL rule lives in Validate, which Load calls, so the allow and deny cases run on every platform.
+	base := Config{Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	for raw, ok := range map[string]bool{"http://example.com": false, "http://127.0.0.1:9999": true} {
+		c := base
+		c.CloudflareAPIURL = raw
+		if err := c.Validate(); (err == nil) != ok {
+			t.Fatalf("%s: valid=%v err=%v", raw, ok, err)
+		}
 	}
-	if err := os.WriteFile(path, body("http://example.com"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("plain HTTP to a public host accepted")
-	}
-	if err := os.WriteFile(path, body("http://127.0.0.1:9999"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err != nil {
-		t.Fatalf("loopback fake refused: %v", err)
-	}
+	t.Run("load round trip", func(t *testing.T) {
+		// Load checks the Unix permission bits of the file, which Windows does not report.
+		if runtime.GOOS == "windows" {
+			t.Skip("Load checks Unix permission bits, which Windows does not report")
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.json")
+		body := func(url string) []byte {
+			return []byte(`{"environment":"lab","listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","tokens":[{"digest":"` + Digest("bty.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}`)
+		}
+		if err := os.WriteFile(path, body("http://example.com"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("plain HTTP to a public host accepted")
+		}
+		if err := os.WriteFile(path, body("http://127.0.0.1:9999"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err != nil {
+			t.Fatalf("loopback fake refused: %v", err)
+		}
+	})
 }
 
 func TestIngressFailureMessagesReachOperators(t *testing.T) {
