@@ -2,11 +2,18 @@ package agent
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/deploy"
+	"berthy/internal/engine"
+	"berthy/internal/logs"
 	"berthy/internal/metrics"
+	"berthy/internal/state"
 	"context"
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +131,84 @@ func TestLogSourcesSkipsNonLocalReplicas(t *testing.T) {
 	}
 	if _, status, message = logSources(app, "missing", ""); status != 404 || message != "role or replica not found" {
 		t.Fatalf("missing role: %d %q", status, message)
+	}
+}
+
+func TestRedactionBeforeFiltering(t *testing.T) {
+	rows := []logs.Record{{Message: "old-value and new-value"}, {Message: "public"}}
+	got := redactRecords(rows, []string{"old-value", "new-value"}, regexp.MustCompile("old-value"))
+	if len(got) != 0 {
+		t.Fatal("matched secret before redaction")
+	}
+	got = redactRecords(rows, []string{"old-value", "new-value"}, regexp.MustCompile("REDACTED"))
+	if len(got) != 1 || strings.Contains(got[0].Message, "value") {
+		t.Fatalf("leaked value: %+v", got)
+	}
+}
+
+type fakeManagedLogs struct {
+	service engine.ServiceSnapshot
+	env     []string
+	envErr  error
+}
+
+func (f fakeManagedLogs) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	return f.service, nil
+}
+func (f fakeManagedLogs) ContainerEnv(context.Context, string) ([]string, error) {
+	return f.env, f.envErr
+}
+func TestManagedLogSecretsIncludeRotatedContainerValues(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := []byte(`{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"alpine","roles":{"web":{}},"env":{"secret":["PASSWORD"]}}}}`)
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Manifest: m, Bindings: []state.Binding{{App: "api", Role: "web", Name: "demo-api-web", ServiceID: "service1"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PutSecret(ctx, state.Actor{ID: "admin"}, state.SecretInfo{Name: "PASSWORD"}, []byte("new-value")); err != nil {
+		t.Fatal(err)
+	}
+	d := &deploy.Controller{Store: s}
+	app := api.App{Ref: api.AppRef{Kind: "swarm", Name: "demo-api-web"}}
+	source := fakeManagedLogs{service: engine.ServiceSnapshot{ID: "service1", Spec: []byte(`{}`)}, env: []string{"PASSWORD=old-value"}}
+	ids := []logs.Identity{{ContainerID: "c1"}}
+	secret, err := managedLogSecrets(ctx, d, source, app, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacted := redactRecords([]logs.Record{{Message: "old-value new-value"}}, secret, nil)
+	if strings.Contains(redacted[0].Message, "value") {
+		t.Fatal("rotated secret leaked")
+	}
+	logical := api.App{Ref: api.AppRef{Kind: "image", Name: "api"}}
+	ids[0].Role = "web"
+	logicalSecrets, err := managedLogSecrets(ctx, d, source, logical, ids)
+	if err != nil || len(logicalSecrets) < 2 {
+		t.Fatalf("logical app did not redact secrets: %v", err)
+	}
+	source.envErr = errors.New("private failure")
+	if _, err = managedLogSecrets(ctx, d, source, app, ids); err == nil {
+		t.Fatal("unreadable managed container accepted")
+	}
+	source.envErr = nil
+	source.service.ID = "wrong"
+	if _, err = managedLogSecrets(ctx, d, source, app, ids); err == nil {
+		t.Fatal("mismatched managed identity accepted")
 	}
 }

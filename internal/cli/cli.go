@@ -3,15 +3,18 @@ package cli
 import (
 	"berthy/internal/agent"
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"berthy/internal/metrics"
+	"berthy/internal/state"
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,7 +26,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -42,6 +48,9 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if isDeploymentCommand(cmd) {
+		return runDeployment(cmd, args, out, errout)
+	}
 	if cmd == "agent" && len(args) == 3 && args[0] == "token" && args[1] == "-e" {
 		if !envPattern.MatchString(args[2]) {
 			fmt.Fprintln(errout, "invalid environment")
@@ -122,12 +131,46 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		ctx := context.Background()
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
 		eng := engine.New(c.DockerSocket)
+		deployment, err := agent.OpenDeployment(c, eng)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		if deployment != nil {
+			defer deployment.Store.Close()
+			recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
+			err = deployment.Recover(recoveryCtx)
+			done()
+			if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
+				fmt.Fprintln(errout, "deployment recovery failed")
+				return 1
+			}
+			// Recover reports the first move into recovery_required as success, so the lock is checked as well.
+			if op, activeErr := deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {
+				fmt.Fprintln(errout, recoveryNotice(op.ID))
+			} else if errors.Is(err, deploy.ErrRecoveryPending) {
+				fmt.Fprintln(errout, recoveryNotice(""))
+			}
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				retryRecovery(ctx, 10*time.Second, deployment.Store.Active, deployment.Recover)
+			}()
+			defer func() { cancel(); <-stopped }()
+		}
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
-		server := http.Server{Addr: c.Listen, Handler: agent.HandlerWithMetrics(c, eng, collector), ReadHeaderTimeout: 5 * time.Second}
-		if err = server.ListenAndServe(); err != nil {
+		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandler(c, eng, collector, deployment), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+			defer done()
+			_ = server.Shutdown(shutdownCtx)
+		}()
+		if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
@@ -254,7 +297,7 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		fmt.Fprintf(errout, "agent returned HTTP %d\n", resp.StatusCode)
+		fmt.Fprintln(errout, agentError(resp.StatusCode, body))
 		return 1
 	}
 	if jsonOutput {
@@ -289,6 +332,32 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func retryRecovery(ctx context.Context, interval time.Duration, active func(context.Context) (state.Operation, error), recover func(context.Context) error) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			attempt, done := context.WithTimeout(ctx, 30*time.Second)
+			op, err := active(attempt)
+			if err == nil && op.State == "recovery_required" {
+				_ = recover(attempt)
+			}
+			done()
+		}
+	}
+}
+
+// recoveryNotice is the line printed at startup while an operation waits for recovery. id is empty when it is unknown.
+func recoveryNotice(id string) string {
+	if id == "" {
+		id = "OPERATION_ID"
+	}
+	return fmt.Sprintf(`deployment recovery required; check "berthy lock status" and resolve with "berthy recovery resolve %s -m REASON"`, id)
 }
 func printText(w io.Writer, v any, indent string) {
 	switch x := v.(type) {
@@ -418,4 +487,28 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 		fmt.Fprintln(errout, "agent stream ended unexpectedly")
 	}
 	return 1
+}
+
+// agentError describes a refused agent request. The agent message is shown only when it is safe to print.
+func agentError(status int, body []byte) string {
+	var reply struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &reply) == nil && printableMessage(reply.Message) {
+		return fmt.Sprintf("agent returned HTTP %d: %s", status, reply.Message)
+	}
+	return fmt.Sprintf("agent returned HTTP %d", status)
+}
+
+// printableMessage reports whether s is at most 300 bytes of valid UTF-8 without control characters.
+func printableMessage(s string) bool {
+	if s == "" || len(s) > 300 || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

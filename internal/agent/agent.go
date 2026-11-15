@@ -2,6 +2,7 @@ package agent
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/metrics"
 	"bytes"
@@ -23,6 +24,7 @@ import (
 )
 
 type Token struct {
+	Name   string `json:"name,omitempty"`
 	Digest string `json:"digest"`
 	Scope  string `json:"scope"`
 }
@@ -30,6 +32,9 @@ type Config struct {
 	Environment  string  `json:"environment"`
 	Listen       string  `json:"listen"`
 	DockerSocket string  `json:"docker_socket"`
+	StateDir     string  `json:"state_dir,omitempty"`
+	KeyFile      string  `json:"key_file,omitempty"`
+	Protected    bool    `json:"protected,omitempty"`
 	Tokens       []Token `json:"tokens"`
 }
 
@@ -83,7 +88,16 @@ func (c Config) Validate() error {
 	if len(c.Tokens) == 0 {
 		return fmt.Errorf("at least one token is required")
 	}
+	if (c.StateDir == "") != (c.KeyFile == "") {
+		return fmt.Errorf("state_dir and key_file must be configured together")
+	}
+	seen := map[string]bool{}
 	for _, t := range c.Tokens {
+		digestKey := strings.ToLower(t.Digest)
+		if seen[digestKey] {
+			return fmt.Errorf("duplicate token digest")
+		}
+		seen[digestKey] = true
 		b, e := hex.DecodeString(t.Digest)
 		if e != nil || len(b) != 32 || (t.Scope != "read" && t.Scope != "deploy" && t.Scope != "admin") {
 			return fmt.Errorf("invalid token digest or scope")
@@ -95,6 +109,9 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
 func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
+	return handlerWithState(c, e, collector, nil)
+}
+func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if r.Method != "GET" {
@@ -107,7 +124,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		var err error
 		switch {
 		case len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs":
-			serveLogs(w, r, e, parts[4])
+			serveLogs(w, r, e, parts[4], deployment)
 			return
 		case len(parts) == 4 && parts[3] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
@@ -139,21 +156,21 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
-				result, err = e.Apps(ctx)
+				result, err = appInventory(ctx, e, deployment)
 			}
 		case len(parts) == 5 && parts[3] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
 				var apps []api.App
-				apps, err = e.Apps(ctx)
+				apps, err = appInventory(ctx, e, deployment)
 				if err == nil {
 					var code int
 					result, code = engine.Select(apps, parts[4])
 					if code != 200 {
 						message := http.StatusText(code)
 						if code == 409 {
-							message = "ambiguous app; use swarm:" + parts[4] + " or compose:" + parts[4]
+							message = "ambiguous app; use image:" + parts[4] + ", swarm:" + parts[4] + " or compose:" + parts[4]
 						}
 						writeError(w, code, strings.ToLower(strings.ReplaceAll(http.StatusText(code), " ", "_")), message)
 						return

@@ -1,6 +1,6 @@
 # Berthy v1 spec
 
-Last updated: 2026-11-14
+Last updated: 2026-11-15
 
 ## Summary
 
@@ -19,6 +19,8 @@ v1 is deliberately small. It covers what it takes to run a web application and i
 **In scope**
 
 - Deploy Docker image apps and Compose apps to one server per environment.
+- Preparing a server with one command: `berthy setup` checks or installs Docker, turns on Swarm mode and installs the agent, over SSH or on the server itself.
+- Optional managed ingress through Cloudflare Tunnel: Berthy creates the tunnel, runs its connector, and keeps public hostnames and DNS records in step with the manifest.
 - Image deploys with no downtime: new version starts first, must pass its health check, and rolls back automatically if it does not.
 - Live logs per app.
 - Live metrics per server and per container: CPU, memory, disk space, Docker disk usage, block I/O and network I/O.
@@ -32,14 +34,15 @@ v1 is deliberately small. It covers what it takes to run a web application and i
 
 **Out of scope for v1**
 
-- Reverse proxy, domains and certificates. Berthy ships no proxy; public traffic enters through a tunnel connector or proxy that runs as an ordinary app.
-- Building images. CI builds and pushes them.
+- A reverse proxy and certificates. Berthy ships no proxy; public traffic enters through a tunnel connector or proxy that runs as an app. Berthy can manage a Cloudflare Tunnel for this, and Cloudflare serves the certificates. Any other ingress is an ordinary app you configure yourself.
+- Cloudflare settings beyond the tunnel, its hostnames and their DNS records, such as access policies and firewall rules.
+- Building and pushing images. CI does both; Berthy deploys only images that already exist in a registry.
 - Database provisioning and Postgres high availability.
 - Users, teams and roles beyond token scopes.
 - Templates and preview environments.
 - A web UI.
 - Long-term storage of logs and metrics. Berthy exports them over OpenTelemetry to a backend of your choice.
-- Server provisioning and hardening.
+- Server provisioning and hardening beyond what `berthy setup` does. Creating the server, its users, its firewall and its private network stays with your provisioning.
 
 ## Architecture
 
@@ -64,18 +67,23 @@ flowchart LR
   registry["Image registry<br/>pulled at deploy"]
   storage["Object storage<br/>volume backups"]
   telegram["Telegram<br/>alerts"]
+  cloudflare["Cloudflare API<br/>tunnel, hostnames, DNS"]
   public["Public traffic"]
 
   laptop --> agent
+  laptop -. "setup, over SSH" .-> server
   ci --> agent
   agent -- manages --> docker
   agent --> registry
   agent --> storage
   agent --> telegram
+  agent -. "managed ingress" .-> cloudflare
   public --> ingress
 ```
 
 The agent is the only component clients talk to. It drives Docker and reaches the registry, object storage and Telegram itself; public traffic enters only through the ingress app.
+
+The one exception is `berthy setup`. It reaches a server over SSH to install the agent, because there is no agent to talk to yet. See Server setup.
 
 | Mode | Runs on | Job |
 | --- | --- | --- |
@@ -89,8 +97,9 @@ The agent is the only component clients talk to. It drives Docker and reaches th
 - **One agent per server, no gateway.** Each environment's agent is self-sufficient. The CLI keeps one named context per environment and talks to the right agent directly.
 - **Swarm mode is always on, even with one node.** Image apps run as Swarm services, which gives rolling updates and rollback for free, and the same model extends to a cluster.
 - **Private network only.** The agent listens on one configured address, which should belong to a private network such as a WireGuard-based VPN. It never listens on all interfaces.
-- **No bundled proxy.** Ingress is an ordinary app on the shared Docker network that routes to other apps by service name.
-- **A systemd service, not a container.** The agent keeps reporting when Docker itself is unhealthy.
+- **No bundled proxy.** Ingress is an app on the shared Docker network that routes to other apps by service name. With managed ingress, Berthy runs a Cloudflare Tunnel connector as that app and configures its routes; see Managed ingress with Cloudflare Tunnel.
+- **A systemd service, not a container.** The agent keeps reporting when Docker itself is unhealthy. `berthy setup` installs it.
+- **SSH for setup only.** Installing the agent is the single operation that uses SSH. Every other command goes through the agent's API, so Berthy stores no SSH credentials and day-to-day access needs no shell on the server.
 - **HTTP and JSON API.** Streams (logs, metrics, deploy progress) use server-sent events, so `curl` and AI agents can read them without a client library.
 - **Go.** Docker's client library, the Compose tooling and the strongest terminal UI libraries are all written in it.
 
@@ -103,6 +112,7 @@ The agent is the only component clients talk to. It drives Docker and reaches th
 | Secrets, deploy history, audit log, job status and backup records | One SQLite file on the server, secrets encrypted |
 | Log and metric history | An OpenTelemetry backend, if one is configured |
 | Volume backups | Object storage |
+| Tunnel, public hostnames and DNS records, with managed ingress | Cloudflare; the manifest says what they should be |
 
 The agent keeps a copy of the last applied manifest so schedules keep running between deploys. Git remains the source of truth.
 
@@ -126,7 +136,8 @@ Berthy manages two kinds of application: image apps for stateless services and C
 - **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject mutable tags such as `latest`.
 - **Compose project names are explicit.** A Compose app runs under the project name `<project>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
 - **Adoption.** Existing services and Compose projects can be adopted by name without being recreated. See Adopting an existing deployment.
-- **One shared network.** All apps join one attachable overlay network, so the ingress app resolves them by name. Its name is set in the manifest, so an existing network can be kept.
+- **Services deleted outside Berthy.** If a role's service is gone under both its bound name and its recorded ID, the next deploy or rollback recreates it under that name and binds the new service to the role. A service that carries the bound name under a different ID, or that still exists under its ID after a rename, is refused before any service changes.
+- **One shared network.** All apps join one attachable overlay network, so the ingress app resolves them by name. Its name is set in the manifest, so an existing network can be kept. `berthy setup` creates it when it does not exist.
 
 ## Configuration
 
@@ -246,6 +257,186 @@ registries:
 - `berthy config validate -e prod` checks the merged manifest without contacting a server.
 - `berthy config show -e prod` prints the merged result with secret values hidden.
 
+## Server setup
+
+`berthy setup` takes a Linux server from a bare operating system to a running agent in one command, and deploys nothing.
+
+```sh
+berthy setup -e prod --host <user>@<server> --listen <private address>:<port>
+```
+
+It works in one of two ways.
+
+| Where it runs | How | Used for |
+| --- | --- | --- |
+| From a laptop | `--host <user>@<server>` connects over SSH | Setting up a remote server by hand |
+| On the server | `--local` runs the same steps directly | Provisioning tools and images that already carry the binary |
+
+### What it does
+
+1. **Connect.** Over SSH, or locally. The account must be root or able to use `sudo`.
+2. **Check the server.** Linux with systemd, a supported CPU architecture, and the `--listen` address already assigned to the server. A server that already runs an agent for a different environment stops the run.
+3. **Docker.** Confirm Docker Engine is installed, at a supported version, enabled at boot and running. If Docker is missing, install it with Docker's official install script. If it is stopped, start it.
+4. **Swarm.** Turn on Swarm mode with the private address as the advertise address, unless the server is already a manager.
+5. **Network.** Create the shared attachable overlay network named in the manifest, unless it exists.
+6. **Agent.** Install the binary, create the `berthy` system user with access to Docker, write the agent's configuration, create the state directory and the encryption key, then install, enable and start the systemd service.
+7. **First token.** Create one `admin` token and print it once. Add the environment to the CLI's configuration with the agent's address.
+8. **Verify.** Call the new agent and run `doctor`. If the laptop cannot reach the private address, setup says so and runs the same check on the server instead.
+
+It ends by printing the next steps: store a copy of the encryption key off the server, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
+
+### Rules
+
+- **It deploys nothing.** Setup never builds, pushes, pulls or starts an app. The first deploy is a separate `berthy deploy`, after the secrets are set.
+- **Safe to run again.** Each step checks before it acts. A second run repairs what is missing and changes nothing else. It never replaces the encryption key, the tokens or the agent's state, and it never touches a running app.
+- **It upgrades the agent.** Running setup with a newer CLI replaces the agent binary and restarts the service. Apps keep running while the agent restarts.
+- **Existing Docker is left alone.** Setup does not upgrade or reconfigure a Docker installation it did not make. Docker older than the minimum supported version stops the run with a message. The minimum is Docker Engine 25.
+- **Existing Swarm and network are kept.** A server that is already a manager keeps its Swarm. An existing network with the right name is used as it is; if it is not an attachable overlay, setup stops. A server that is a worker in another Swarm stops the run.
+- **Same version as the CLI.** Setup installs the version of Berthy that runs it. A Linux CLI of the server's architecture uploads itself. Otherwise the server downloads the matching release and verifies its checksum. `--binary <path>` supplies a local build instead.
+- **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything.
+- **Scriptable.** `--json` reports each step and its result. A failed step exits non-zero and names the step.
+
+### What it reads from the manifest
+
+Run from the application's repository, setup reads two values from the merged manifest for the environment.
+
+| Value | Used for | Without a manifest |
+| --- | --- | --- |
+| `network` | The shared network to create | `--network <name>` |
+| `protected` | Marking the agent's environment as protected from its first start | `--protected` |
+
+### Options
+
+| Option | Meaning |
+| --- | --- |
+| `--host <user>@<server>` | Set up a remote server over SSH |
+| `--local` | Set up the server the command runs on |
+| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. |
+| `--no-install-docker` | Stop if Docker is missing instead of installing it |
+| `--binary <path>` | Install this Linux build of Berthy instead of the release that matches the CLI |
+| `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
+| `--new-token` | Add another `admin` token, for when the first one is lost |
+
+### What it leaves on the server
+
+| Item | Location |
+| --- | --- |
+| Binary | `/usr/local/bin/berthy` |
+| Agent configuration | `/etc/berthy/agent.json`, readable only by the agent's user |
+| State and encryption key | `/var/lib/berthy`, readable only by the agent's user |
+| Service | `berthy.service`, running as the `berthy` user in the `docker` group |
+
+### What it does not do
+
+- It does not create the server, its users, its firewall rules or its private network. The private address must exist before setup runs.
+- It does not install or configure the VPN.
+- It does not configure Docker's log rotation, storage driver or daemon options.
+- It does not write a manifest. Start from the example in Configuration and check it with `berthy config validate`.
+
+## Managed ingress with Cloudflare Tunnel
+
+Berthy can own the whole path from a public hostname to an app: the tunnel, the connector that runs on the server, the hostname routes and the DNS records. It is optional, and it uses Cloudflare's API throughout.
+
+Without it, publishing a new app means creating a tunnel in Cloudflare's dashboard, copying a command with a token to the server, then returning to the dashboard to point a hostname at the app's Docker service. With it, the hostname is one line in the manifest.
+
+### Configuration
+
+The base manifest turns managed ingress on. Hostnames usually differ by environment, so they go in the overlays.
+
+```yaml
+# berthy.yml
+ingress:
+  cloudflare:
+    account_id: <account id>
+    api_token_secret: CLOUDFLARE_API_TOKEN
+    image: cloudflare/cloudflared:<version>
+    replicas: 1
+```
+
+```yaml
+# berthy.prod.yml
+ingress:
+  cloudflare:
+    tunnel: myapp-prod
+
+apps:
+  api:
+    roles:
+      web:
+        hostnames:
+          - api.example.com
+```
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `account_id` | The Cloudflare account that owns the tunnel | Required |
+| `api_token_secret` | Name of the secret that holds the Cloudflare API token | Required |
+| `image` | The connector image, pinned by digest at deploy like any image app | Required |
+| `replicas` | Number of connectors | 1 |
+| `tunnel` | The tunnel's name in Cloudflare | `<project>-<environment>` |
+| `dns` | Whether Berthy creates DNS records | `true` |
+| `hostnames`, on a role | Public hostnames that route to that role's `port` | None |
+
+- **One tunnel per environment.** Every published app in the environment shares it.
+- **A hostname belongs to one role.** The same hostname on two roles fails validation.
+- **The target is worked out for you.** A hostname routes to `http://<project>-<app>-<role>:<port>`, the role's service name on the shared network. Swarm spreads requests across the role's healthy replicas.
+- **The domain must already be in the Cloudflare account.** Berthy finds the zone from the hostname and does not add domains.
+
+### What Berthy manages
+
+| Item | How |
+| --- | --- |
+| Tunnel | Found by name, or created as a remotely managed tunnel |
+| Connector | Run as a Swarm service on the shared network, with the tunnel's token as a secret. It appears in `ps` as `ingress`, and `logs` and `restart` work on it. |
+| Routes | One rule per hostname in the tunnel's configuration |
+| DNS | One proxied `CNAME` record per hostname, pointing at the tunnel |
+
+The connector publishes no port. It makes outbound connections to Cloudflare only, on port 7844.
+
+### When changes are applied
+
+- **`berthy ingress apply -e prod`** creates or repairs the tunnel, deploys the connector, and brings every route and DNS record in line with the manifest. Run it once per environment, and again to change the connector's image or replicas.
+- **`berthy deploy <app>`** updates that app's routes and DNS records as the last step of the deploy, once the new version is healthy. A new hostname goes live only after the app can answer it.
+- **`berthy ingress status -e prod`** shows the tunnel's health as Cloudflare reports it, the connectors, and each hostname with its target and DNS record.
+- **Removing a hostname** from the manifest removes its route and DNS record at the next apply or deploy of that app.
+- **Checks run first.** The check step of a deploy confirms the API token works, each hostname's zone is in the account, and no hostname is taken. A problem stops the deploy before anything changes.
+- **Dry run.** `--dry-run` prints the routes and DNS records that would be added, changed or removed.
+
+### Rules
+
+- **Berthy only touches what it created.** A tunnel's routes are stored as one document, so Berthy reads it, changes its own rules and writes it back with every other rule kept. It marks the DNS records it creates and never edits or deletes one without that mark.
+- **An existing route or record stops the run.** If a hostname is already routed to a different target, or its DNS name is already used by a record Berthy did not create, the run stops and reports it. `--replace-existing` takes it over and needs an `admin` token. A route or record that already matches is adopted with no change.
+- **Berthy's rules come first.** They are placed ahead of rules it did not write, and the tunnel's final catch-all rule stays last.
+- **One writer.** Edit a managed hostname in the manifest, not in the dashboard. A dashboard edit to a managed route is overwritten at the next apply and shown in the dry run first.
+- **Nothing is deleted with the tunnel.** Berthy never deletes a tunnel. Removing managed ingress from the manifest removes the routes and records Berthy created and stops the connector.
+- **Image apps only.** Hostnames can be declared on image app roles. A Compose service is published by a rule added in Cloudflare, which Berthy keeps.
+
+### Credentials
+
+- The API token needs two permissions: Cloudflare Tunnel edit on the account, and DNS edit on the zones that hold the hostnames. Limit it to those zones.
+- It is stored in the agent's secret store like any other secret, and set with `berthy secret set CLOUDFLARE_API_TOKEN -e prod`.
+- The agent calls Cloudflare itself, so the server needs outbound HTTPS to Cloudflare's API.
+- The tunnel's token is fetched from the API, stored as a secret, and passed to the connector in its environment. It is never printed.
+- **DNS edit is the larger risk.** A token with it can repoint any record in those zones. To avoid granting it, create one wildcard record that points at the tunnel by hand and set `dns: false`; Berthy then manages routes only.
+
+### Health
+
+- The connector's health check runs the connector's own readiness command, so its rolling update is gated like any other image app. Confirm the command against the pinned connector version.
+- A second connector can run beside the first, so a connector update starts the new one before it stops the old one.
+- `doctor` reports the tunnel's status as Cloudflare sees it. A tunnel that Cloudflare reports as degraded or down raises an alert.
+
+### Adopting an existing tunnel
+
+- Set `tunnel` to the existing tunnel's name. `ingress apply --dry-run` then shows what would change; existing routes and records that already match the manifest are adopted as they are.
+- Only a remotely managed tunnel can be adopted: one created in the dashboard and run with a token. A tunnel configured by a file on the server has to be migrated in Cloudflare first.
+- A connector started by hand keeps working next to Berthy's. Remove it once `ingress status` shows Berthy's connector as healthy, so traffic never drops.
+
+### Limits
+
+- Cloudflare's standard certificate covers one level of subdomain, such as `api.example.com`. A deeper name such as `api.dev.example.com` needs an advanced certificate, which Berthy does not order.
+- Rotating the tunnel's token is done in Cloudflare's dashboard, followed by `ingress apply` to pick up the new one.
+- Cloudflare is the only provider in v1.
+
 ## Deploy lifecycle
 
 A deploy either finishes healthy or leaves the previous version running; it never leaves an app half-updated.
@@ -257,8 +448,9 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 3. **Pre-deploy hooks.** Run them in order. A failure stops the deploy with nothing changed.
 4. **Start new.** Start the new version beside the old one. It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count.
 5. **Switch and drain.** Route traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
-6. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
-7. **Record and tidy.** Write the deploy record, prune old images, release the lock.
+6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
+7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
+8. **Record and tidy.** Write the deploy record, prune old images, release the lock.
 
 If step 4 fails, the agent rolls back to the previous digest, records the deploy as failed, and sends an alert.
 
@@ -381,6 +573,8 @@ The CLI is the complete interface; the TUI and the MCP server are two other ways
 
 Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero.
 
+Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool.
+
 | Command | Purpose | Changes things |
 | --- | --- | --- |
 | `ps` | Apps, roles, replicas, health, running version | No |
@@ -390,16 +584,20 @@ Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed
 | `df` | Disk space and Docker disk usage | No |
 | `history <app>` | Deploy records | No |
 | `wait <app> --healthy` | Block until an app is healthy or a timeout passes | No |
-| `doctor` | Checks the agent, Docker, disk, backups, lock and peers | No |
+| `doctor` | Checks the agent and its version, Docker, Swarm, the shared network, disk, backups, lock and peers | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
 | `backup list` | Backups in object storage with size, age and status | No |
+| `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
+| `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
+| `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app or a Compose app | Yes |
 | `rollback <app>` | Return to a previous deploy | Yes |
 | `restart <app>`, `scale <app>` | Restart or change replica count | Yes |
 | `exec <app> -- <command>` | Run a command in a running container | Yes |
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
+| `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
 | `backup run <job>` | Run a volume backup now | Yes |
 | `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
@@ -472,7 +670,7 @@ telemetry:
 | --- | --- | --- |
 | Container health check | The check declared for a role in the manifest | Gates deploys; an unhealthy container is replaced |
 | Probe | An HTTP or TCP check the agent runs on a schedule, against a service name or a public URL | Alert |
-| Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer | Alert |
+| Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer, unhealthy tunnel with managed ingress | Alert |
 
 Proposed thresholds: disk space and Docker disk usage warn at 80% and go critical at 90%.
 
@@ -606,7 +804,7 @@ The command replaces `latest.dump` only after `pg_dump` succeeds. The base manif
 
 ### Agent state
 
-The agent uploads a copy of its SQLite file to object storage daily and excludes the key that encrypts its secrets. Keep a copy of the key off the server, for example in a password manager or the provisioning tool's vault. Rebuild a server from its provisioning, the agent state and the volume backups.
+The agent uploads a copy of its SQLite file to object storage daily and excludes the key that encrypts its secrets. Keep a copy of the key off the server, for example in a password manager or the provisioning tool's vault. Rebuild a server from its provisioning, `berthy setup --key-file <saved key>`, the agent state and the volume backups.
 
 ### Limits
 
@@ -630,12 +828,24 @@ Each token belongs to one environment and one scope.
 
 | Scope | Allows |
 | --- | --- |
-| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list` |
-| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `lock acquire` and `lock release` |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, recreating stateful apps, and token management |
+| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status` |
+| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire` and `lock release` |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.
+- `berthy setup` creates the first `admin` token. The agent stores only its digest, so the value is shown once and cannot be read back.
+- The CLI's configuration stores each agent's address and the name of the environment variable that holds the token, never the token itself.
+
+### Setup access
+
+`berthy setup` is the only command that needs a shell on the server, so it is held to the server's own access controls instead of Berthy's tokens.
+
+- It uses the operator's own SSH client and configuration. Keys, SSH agents, jump hosts and host key checks behave as they do for `ssh`.
+- Berthy never stores an SSH key, a password or a `sudo` credential.
+- It needs root or `sudo` on the server. No Berthy token can run it, and it is not available through the API or MCP.
+- The agent's audit log does not record it, because it runs outside the agent. The server's SSH and `sudo` logs do.
+- The Docker install script and a downloaded Berthy release are fetched over HTTPS from their publishers. The release is checked against its published checksum before it is installed.
 
 ### Approval for AI agents on protected environments
 
@@ -700,10 +910,10 @@ A three-server cluster is not a v1 deliverable, but nothing in v1 may block it. 
 
 ### What it takes
 
-- Join two more servers as managers. Three managers keep the cluster working with one server down.
-- Run an agent on each server. Any manager accepts deploys; `ps` and `stats` query all agents and merge the answers.
+- Join two more servers as managers. Three managers keep the cluster working with one server down. In v1, `berthy setup` only starts a single-server Swarm; joining servers is done by hand until the multi-node phase adds it to setup.
+- Run an agent on each server, installed with `berthy setup`. Any manager accepts deploys; `ps` and `stats` query all agents and merge the answers.
 - Raise the replica count of image apps and spread them across servers, with a cap per server.
-- Run the ingress app on every server.
+- Run the ingress app on every server. With managed ingress, raise the connector's `replicas`.
 - Keep Compose apps pinned to a named server with `node: <name>` in the manifest. That server's agent runs their scheduled jobs and backs up their volumes.
 
 ### Known constraints
@@ -724,9 +934,13 @@ See the [v1 implementation plan](implementation-plan-v1.md) for dependencies and
 | --- | --- | --- |
 | 1. Read-only | Agent and CLI: `ps`, `describe`, `logs`, `stats`, `df`, `doctor`, JSON output, tokens | Numbers agree with `docker stats`; agent memory is measured |
 | 2. Image deploys | Manifest validation, secrets, registry credentials, `deploy`, `rollback`, lock, command hooks, migrations, timing settings, retain and prune, history, audit, adoption of an existing service | An environment has deployed from CI for two weeks, including one forced failure that rolled back |
+| 2b. Managed ingress | Cloudflare Tunnel: tunnel creation and adoption, connector, `hostnames`, routes, DNS records, `ingress apply`, `ingress status`. The unhealthy-tunnel alert follows with alerting in phase 3. | A new app was published on a new hostname by a manifest change and a deploy, with no visit to Cloudflare's dashboard |
 | 3. Compose, checks, jobs, backups | Compose apps, probes, built-in conditions, alerts, peer check, scheduled commands, volume backups, backup hooks and restore | A cron job has run in its target container, a volume backup has been restored and verified, and a test failure raised an alert |
 | 4. TUI and MCP | `berthy ui`, `berthy mcp`, agent tokens and approvals | An AI agent's request on a protected environment was held, reviewed and approved end to end |
-| 5. Multi-node (optional) | Cluster helpers, placement settings, merged views | Not scheduled |
+| 5. Server setup | `berthy setup` over SSH and locally: Docker check and install, Swarm, shared network, agent install and upgrade, first token | A fresh server has been brought to a passing `doctor` by `berthy setup` alone, and a second run changed nothing |
+| 6. Multi-node (optional) | Cluster helpers, placement settings, merged views | Not scheduled |
+
+Until phase 5, the agent is installed by hand from the systemd unit in the repository.
 
 ## Adopting an existing deployment
 
@@ -738,6 +952,7 @@ Berthy can take over servers that another deployment tool already runs, one app 
 - For a Compose project, set `project_name` to the name it already runs under. Under any other name Compose creates new, empty volumes beside the existing ones, and the app starts without its data.
 - Berthy compares what is running with the manifest and prints the differences before changing anything. A volume that would be created shows in that plan.
 - The existing shared network keeps its name; set it as `network` in the manifest.
+- `berthy setup` is safe on a server that already runs apps. It leaves the existing Docker installation, Swarm and network as they are and only adds the agent.
 - Adopt the least critical environment first.
 
 ### Rules during the transition
@@ -748,21 +963,23 @@ Berthy can take over servers that another deployment tool already runs, one app 
 
 ### Checklist
 
+- [ ] Run `berthy setup --dry-run` against the server and confirm it would change nothing but the agent.
 - [ ] Read the existing Compose project names with `docker compose ls` and set each as `project_name`.
 - [ ] Copy every environment variable from the old tool into the manifest or the secret store, for image apps and Compose apps.
 - [ ] Declare a read-only registry credential if the images are private.
 - [ ] Confirm the adopted service's settings with `docker service inspect` against the differences Berthy printed.
+- [ ] If the server uses a Cloudflare Tunnel, set `tunnel` to its name, review `berthy ingress apply --dry-run`, and remove the hand-started connector once Berthy's is healthy.
 - [ ] Create a storage credential scoped to the backup bucket.
 - [ ] Store the agent's encryption key off the server.
 - [ ] Set up CI access to the private network for each environment.
 - [ ] Move migrations out of application startup and make the migration commands runnable from the image.
 - [ ] Restore a Berthy backup to a new volume and verify the app can recover its data, then switch off the old backup schedules.
-- [ ] Remove the old tool and update the server provisioning to install Berthy in its place.
+- [ ] Remove the old tool and update the server provisioning to run `berthy setup --local` in its place.
 
 ## Open questions
 
-Phase 1 resolved the questions below; the corresponding later-phase features
-still need implementation and verification.
+The questions below are resolved, most of them in Phase 1; the corresponding
+later-phase features still need implementation and verification.
 
 ### Resolved
 
@@ -782,3 +999,10 @@ still need implementation and verification.
 | Alert channel | Telegram only in v1. |
 | Secret values | Kept in the agent's store for now. |
 | Implementation language | Go. |
+| How the agent gets onto a server | `berthy setup`, over SSH or on the server. It installs Docker when missing, turns on Swarm mode, creates the shared network and installs the agent. |
+| Does setup deploy anything? | No. Images are built and pushed by CI, and the first deploy is a separate command after the secrets are set. |
+| First token | Created by setup and shown once. |
+| Automating the Cloudflare Tunnel | Through Cloudflare's API, from the agent. The `cloudflared` command line creates tunnels configured by a file on the server and needs a browser login, so it is not used. |
+| Which tunnels Berthy can manage | Remotely managed ones only. Their routes can be read and written through the API. |
+| Who owns a tunnel's routes | Berthy owns the hostnames in the manifest and keeps every other rule and record. |
+| A command that writes starter manifests | None in v1. The example manifest in this spec is the starting point, and `config validate` checks it without a server. |

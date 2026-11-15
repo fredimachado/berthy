@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +158,48 @@ func TestStrictJSONBoundary(t *testing.T) {
 		if _, err := DecodeJSON([]byte(input)); err == nil {
 			t.Errorf("accepted %s", input)
 		}
+	}
+}
+
+func TestSecurityBoundaries(t *testing.T) {
+	base := `{"project":"demo","network":"demo","protected":true,"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{%s}},"migrations":{"version":["v"],"apply":["a"],"revert":[%s]}}}}`
+	for _, input := range []string{
+		strings.Replace(fmt.Sprintf(base, "", `"{target}"`), `"protected":true`, `"protected":true,"Protected":false`, 1),
+		fmt.Sprintf(base, `"volumes":["/:/host"]`, `"{target}"`),
+		fmt.Sprintf(base, `"resources":{"cpu":"invalid"}`, `"{target}"`),
+		fmt.Sprintf(base, "", `"--target={target}"`),
+	} {
+		if _, err := DecodeJSON([]byte(input)); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+	m, err := DecodeJSON([]byte(fmt.Sprintf(base, "", `"{target}"`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.CheckImageDeploy("api", "ghcr.io/acme/api:latest@sha256:"+strings.Repeat("a", 64), true); err == nil {
+		t.Fatal("accepted tagged digest")
+	}
+}
+
+func TestJSONRejectsYAMLTrailingSyntax(t *testing.T) {
+	for _, data := range []string{`{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"x","roles":{"web":{}}}}} # comment`, "{\"project\":\"demo\",\"network\":\"demo\",\"apps\":{\"api\":{\"kind\":\"image\",\"image\":\"x\",\"roles\":{\"web\":{}}}}}\n...\n"} {
+		if _, err := DecodeJSON([]byte(data)); err == nil {
+			t.Fatalf("accepted trailing YAML syntax %q", data)
+		}
+	}
+}
+
+func TestManagedIngressIsRecognizedButNotDeployed(t *testing.T) {
+	data := []byte(`{"project":"demo","network":"demo","ingress":{"cloudflare":{"account_id":"account","api_token_secret":"CF_TOKEN","image":"cloudflare/cloudflared:v1","dns":false}},"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"port":8080,"hostnames":["api.example.com"]}}},"worker":{"kind":"image","image":"ghcr.io/acme/worker","roles":{"main":{}}}}}`)
+	m, err := DecodeJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.CheckImageDeploy("api", "v1", false); err == nil || !strings.Contains(err.Error(), "Phase 2b") {
+		t.Fatalf("missing ingress blocker: %v", err)
+	}
+	if _, err = m.CheckImageDeploy("worker", "v1", false); err != nil {
+		t.Fatal(err)
 	}
 }

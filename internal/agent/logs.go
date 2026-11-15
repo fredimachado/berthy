@@ -2,6 +2,7 @@ package agent
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"context"
@@ -17,7 +18,7 @@ import (
 
 var followSlots = make(chan struct{}, 16)
 
-func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name string) {
+func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name string, deployment *deploy.Controller) {
 	q := r.URL.Query()
 	tail := 100
 	var err error
@@ -49,7 +50,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	apps, err := e.Apps(ctx)
+	apps, err := appInventory(ctx, e, deployment)
 	cancel()
 	if err != nil {
 		code := dockerErrorCode(err)
@@ -59,7 +60,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	app, code := engine.Select(apps, name)
 	if code != 200 {
 		if code == 409 {
-			writeError(w, code, "conflict", "ambiguous app; use swarm: or compose:")
+			writeError(w, code, "conflict", "ambiguous app; use image:, swarm: or compose:")
 		} else {
 			writeError(w, code, "not_found", "app not found")
 		}
@@ -74,7 +75,14 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		writeError(w, 400, "bad_request", "too many sources")
 		return
 	}
-	opts := logs.Options{Tail: tail, Since: since, Grep: re}
+	ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
+	secrets, err := managedLogSecrets(ctx, deployment, e, app, ids)
+	cancel()
+	if err != nil {
+		writeError(w, 503, "logs_unavailable", "logs unavailable")
+		return
+	}
+	opts := logs.Options{Tail: tail, Since: since}
 	if q.Get("follow") != "1" {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -84,6 +92,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 			writeError(w, 503, code, strings.ReplaceAll(code, "_", " "))
 			return
 		}
+		rows = redactRecords(rows, secrets, re)
 		if rows == nil {
 			rows = []logs.Record{}
 		}
@@ -112,8 +121,12 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	events := make(chan event)
 	go func() {
 		err := logs.Follow(ctx, e, ids, opts, func(record logs.Record) error {
+			filtered := redactRecords([]logs.Record{record}, secrets, re)
+			if len(filtered) == 0 {
+				return nil
+			}
 			select {
-			case events <- event{record: record}:
+			case events <- event{record: filtered[0]}:
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
