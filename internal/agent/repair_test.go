@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestScopeGuard(t *testing.T) {
 	token := "bty.lab." + strings.Repeat("a", 64)
 	c := Config{Environment: "lab", Tokens: []Token{{Digest: strings.ToUpper(Digest(token)), Scope: "read"}}}
 	called := false
-	h := authorize(c, "deploy", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	h := authorize(c, regexp.MustCompile(`^bty\.`+regexp.QuoteMeta(c.Environment)+`\.[0-9a-f]{64}$`), "deploy", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	r := httptest.NewRequest("GET", "/v1/environments/lab/apps", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()

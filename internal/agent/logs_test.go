@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"berthy/internal/api"
 	"berthy/internal/metrics"
 	"context"
 	"errors"
@@ -64,5 +65,58 @@ func TestFollowSourceDeadlineCode(t *testing.T) {
 	}
 	if got := logsErrorCode(errors.New("source unavailable")); got != "logs_unavailable" {
 		t.Fatalf("got %q", got)
+	}
+}
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		value string
+		want  time.Time
+	}{
+		{"10m", now.Add(-10 * time.Minute)},
+		{"2025-12-31T23:00:00Z", time.Date(2025, 12, 31, 23, 0, 0, 0, time.UTC)},
+		{"2025-12-31T23:00:00.5Z", time.Date(2025, 12, 31, 23, 0, 0, 500000000, time.UTC)},
+	} {
+		got, err := parseSince(tc.value, now)
+		if err != nil || !got.Equal(tc.want) {
+			t.Errorf("%q: got %v, %v", tc.value, got, err)
+		}
+	}
+	for _, value := range []string{"0s", "-5m", "abc", ""} {
+		if _, err := parseSince(value, now); err == nil {
+			t.Errorf("accepted %q", value)
+		}
+	}
+}
+func TestLogSourcesSkipsNonLocalReplicas(t *testing.T) {
+	restarts := func(n int) *int { return &n }
+	app := api.App{Roles: []api.Role{{Name: "web", Replicas: []api.Replica{
+		{TaskID: "task-local", ContainerID: "c-local", RestartCount: restarts(0)},
+		{TaskID: "task-remote", ContainerID: "c-remote"},
+		{ContainerID: "c-compose", RestartCount: restarts(0)},
+		{ContainerID: "c-compose-remote"},
+	}}}}
+	ids, status, message := logSources(app, "", "")
+	if status != 200 || len(ids) != 2 || ids[0].ContainerID != "c-local" || ids[1].ContainerID != "c-compose" {
+		t.Fatalf("all replicas: %d %q %+v", status, message, ids)
+	}
+	ids, status, message = logSources(app, "", "task-remote")
+	if status != 404 || message != "replica not on this node" || len(ids) != 0 {
+		t.Fatalf("remote replica: %d %q %+v", status, message, ids)
+	}
+	ids, status, message = logSources(app, "web", "task-local")
+	if status != 200 || len(ids) != 1 || ids[0].Replica != "task-local" {
+		t.Fatalf("local replica: %d %q %+v", status, message, ids)
+	}
+	ids, status, message = logSources(app, "", "c-compose-remote")
+	if status != 404 || message != "replica not on this node" || len(ids) != 0 {
+		t.Fatalf("remote compose replica: %d %q %+v", status, message, ids)
+	}
+	remoteOnly := api.App{Roles: []api.Role{{Name: "web", Replicas: []api.Replica{{TaskID: "task-x", ContainerID: "c-x"}}}}}
+	if ids, status, message = logSources(remoteOnly, "", ""); status != 200 || len(ids) != 0 || message != "" {
+		t.Fatalf("role-only all remote: %d %q %+v", status, message, ids)
+	}
+	if _, status, message = logSources(app, "missing", ""); status != 404 || message != "role or replica not found" {
+		t.Fatalf("missing role: %d %q", status, message)
 	}
 }

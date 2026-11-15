@@ -33,6 +33,8 @@ type Config struct {
 	} `json:"environments"`
 }
 
+var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|agent-info>")
@@ -41,7 +43,7 @@ func Run(args []string, out, errout io.Writer) int {
 	cmd := args[0]
 	args = args[1:]
 	if cmd == "agent" && len(args) == 3 && args[0] == "token" && args[1] == "-e" {
-		if !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(args[2]) {
+		if !envPattern.MatchString(args[2]) {
 			fmt.Fprintln(errout, "invalid environment")
 			return 2
 		}
@@ -244,7 +246,7 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	defer resp.Body.Close()
 	if (watch || follow) && resp.StatusCode == 200 {
-		return readStream(resp.Body, out, errout, jsonOutput)
+		return readStream(ctx, resp.Body, out, errout, jsonOutput)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
@@ -317,7 +319,7 @@ func printText(w io.Writer, v any, indent string) {
 	}
 }
 
-func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
+func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 16<<20)
 	event := ""
@@ -405,6 +407,10 @@ func readStream(r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 			}
 			data = append(data, value)
 		}
+	}
+	if ctx.Err() != nil {
+		// The user interrupted (Ctrl-C) and the request context was canceled: a normal exit.
+		return 0
 	}
 	if scan.Err() != nil {
 		fmt.Fprintln(errout, "agent stream could not be read")

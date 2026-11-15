@@ -3,6 +3,7 @@ package logs
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -171,7 +172,7 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 	consume := func(stream byte, data []byte) error {
 		p := pending[stream]
 		for len(data) > 0 {
-			i := strings.IndexByte(string(data), '\n')
+			i := bytes.IndexByte(data, '\n')
 			if i < 0 {
 				if len(p)+len(data) > MaxLineBytes {
 					return errors.New("log line exceeds limit")
@@ -227,8 +228,8 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			}
 		}
 	} else {
+		h := make([]byte, 8)
 		for {
-			h := make([]byte, 8)
 			_, err := io.ReadFull(br, h)
 			if err == io.EOF {
 				break
@@ -254,7 +255,7 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 	}
 	for _, stream := range []byte{1, 2} {
 		if len(pending[stream]) > 0 {
-			if err := consume(stream, []byte{"\n"[0]}); err != nil {
+			if err := consume(stream, []byte{'\n'}); err != nil {
 				return err
 			}
 		}

@@ -33,6 +33,8 @@ type Config struct {
 	Tokens       []Token `json:"tokens"`
 }
 
+var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
 func Digest(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
 func Load(path string) (Config, error) {
 	var c Config
@@ -58,7 +60,7 @@ func Load(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
-	if !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(c.Environment) {
+	if !envPattern.MatchString(c.Environment) {
 		return fmt.Errorf("invalid environment")
 	}
 	host, port, err := net.SplitHostPort(c.Listen)
@@ -220,6 +222,12 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		}
 		_ = json.NewEncoder(w).Encode(result)
 	})
+	// Compile the token pattern once per handler and build one authorizer per scope level.
+	tokenPattern := regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(c.Environment) + `\.[0-9a-f]{64}$`)
+	authorized := map[string]http.Handler{}
+	for _, level := range []string{"read", "deploy", "admin"} {
+		authorized[level] = authorize(c, tokenPattern, level, handler)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -244,7 +252,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			writeError(w, 404, "not_found", "not found")
 			return
 		}
-		authorize(c, required, handler).ServeHTTP(w, r)
+		authorized[required].ServeHTTP(w, r)
 	})
 }
 
@@ -344,14 +352,14 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 	}
 }
 
-func authorize(c Config, required string, next http.Handler) http.Handler {
+func authorize(c Config, tokenPattern *regexp.Regexp, required string, next http.Handler) http.Handler {
+	levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		sum := sha256.Sum256([]byte(raw))
 		scope := 0
-		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 		for _, t := range c.Tokens {
 			digest, err := hex.DecodeString(t.Digest)
 			if err == nil && subtle.ConstantTimeCompare(sum[:], digest) == 1 {
@@ -360,7 +368,7 @@ func authorize(c Config, required string, next http.Handler) http.Handler {
 				}
 			}
 		}
-		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !regexp.MustCompile(`^bty\.`+regexp.QuoteMeta(c.Environment)+`\.[0-9a-f]{64}$`).MatchString(raw) || scope == 0 {
+		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !tokenPattern.MatchString(raw) || scope == 0 {
 			writeError(w, 401, "unauthorized", "unauthorized")
 			return
 		}

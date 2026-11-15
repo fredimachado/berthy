@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"berthy/internal/api"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"context"
@@ -29,9 +30,9 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	}
 	var since time.Time
 	if q.Get("since") != "" {
-		since, err = time.Parse(time.RFC3339Nano, q.Get("since"))
+		since, err = parseSince(q.Get("since"), time.Now())
 		if err != nil {
-			writeError(w, 400, "bad_request", "invalid since timestamp")
+			writeError(w, 400, "bad_request", "invalid since")
 			return
 		}
 	}
@@ -64,30 +65,9 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		}
 		return
 	}
-	var ids []logs.Identity
-	roleFound := q.Get("role") == ""
-	replicaFound := q.Get("replica") == ""
-	for _, role := range app.Roles {
-		if q.Get("role") != "" && q.Get("role") != role.Name {
-			continue
-		}
-		roleFound = true
-		for _, rep := range role.Replicas {
-			identity := rep.ContainerID
-			if rep.TaskID != "" {
-				identity = rep.TaskID
-			}
-			if q.Get("replica") != "" && q.Get("replica") != identity && q.Get("replica") != rep.ContainerID {
-				continue
-			}
-			replicaFound = true
-			if rep.ContainerID != "" {
-				ids = append(ids, logs.Identity{Role: role.Name, Replica: identity, ContainerID: rep.ContainerID})
-			}
-		}
-	}
-	if !roleFound || !replicaFound {
-		writeError(w, 404, "not_found", "role or replica not found")
+	ids, status, message := logSources(app, q.Get("role"), q.Get("replica"))
+	if status != 200 {
+		writeError(w, status, "not_found", message)
 		return
 	}
 	if len(ids) > logs.MaxSources {
@@ -197,6 +177,61 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 			http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 	}
+}
+
+// parseSince accepts an RFC3339 timestamp or a positive Go duration, which is
+// subtracted from now.
+func parseSince(value string, now time.Time) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return time.Time{}, fmt.Errorf("invalid since")
+	}
+	return now.Add(-d), nil
+}
+
+// logSources returns the containers this node can read for the role and
+// replica filters. A replica without a local inspect (RestartCount nil) is not on
+// this node: it still counts as found, but it is not a log source.
+func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity, status int, message string) {
+	roleFound := wantRole == ""
+	replicaFound := wantReplica == ""
+	replicaRemote := false
+	for _, role := range app.Roles {
+		if wantRole != "" && wantRole != role.Name {
+			continue
+		}
+		roleFound = true
+		for _, rep := range role.Replicas {
+			identity := rep.ContainerID
+			if rep.TaskID != "" {
+				identity = rep.TaskID
+			}
+			if wantReplica != "" && wantReplica != identity && wantReplica != rep.ContainerID {
+				continue
+			}
+			replicaFound = true
+			if rep.ContainerID == "" {
+				continue
+			}
+			if rep.RestartCount == nil {
+				if wantReplica != "" {
+					replicaRemote = true
+				}
+				continue
+			}
+			ids = append(ids, logs.Identity{Role: role.Name, Replica: identity, ContainerID: rep.ContainerID})
+		}
+	}
+	if !roleFound || !replicaFound {
+		return nil, 404, "role or replica not found"
+	}
+	if replicaRemote && len(ids) == 0 {
+		return nil, 404, "replica not on this node"
+	}
+	return ids, 200, ""
 }
 
 func logsErrorCode(err error) string {

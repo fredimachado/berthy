@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -118,7 +119,7 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		}
 		apps["swarm:"+s.Spec.Name] = a
 		for _, t := range tasks {
-			if t.ServiceID != s.ID || (t.Status.State != "running" && t.DesiredState != "running" && t.DesiredState != "ready") || t.Status.State == "complete" || t.Status.State == "failed" || t.Status.State == "shutdown" || t.Status.State == "rejected" || t.Status.State == "orphaned" || t.Status.State == "remove" {
+			if t.ServiceID != s.ID || !activeTask(t) {
 				continue
 			}
 			r := api.Replica{TaskID: t.ID, ContainerID: t.Status.ContainerStatus.ContainerID, Image: t.Spec.ContainerSpec.Image, State: t.Status.State, Health: "unknown"}
@@ -127,9 +128,6 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 			}
 			if r.State == "running" {
 				a.Roles[0].Running++
-			}
-			if err := e.details(ctx, &r); err != nil {
-				return nil, err
 			}
 			a.Roles[0].Replicas = append(a.Roles[0].Replicas, r)
 		}
@@ -160,10 +158,19 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		if c.State == "running" {
 			a.Roles[i].Running++
 		}
-		if err := e.details(ctx, &r); err != nil {
-			return nil, err
-		}
 		a.Roles[i].Replicas = append(a.Roles[i].Replicas, r)
+	}
+	// Pointers are taken only now, after every append, so they cannot go stale.
+	var targets []*api.Replica
+	for _, a := range apps {
+		for ri := range a.Roles {
+			for pi := range a.Roles[ri].Replicas {
+				targets = append(targets, &a.Roles[ri].Replicas[pi])
+			}
+		}
+	}
+	if err := e.fillDetails(ctx, targets); err != nil {
+		return nil, err
 	}
 	out := make([]api.App, 0, len(apps))
 	for _, a := range apps {
@@ -172,6 +179,51 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref.Kind+out[i].Ref.Name < out[j].Ref.Kind+out[j].Ref.Name })
 	return out, nil
+}
+
+// activeTask keeps tasks that are running (even if being retired during a rollout) or about to run.
+func activeTask(t task) bool {
+	switch t.Status.State {
+	case "complete", "failed", "shutdown", "rejected", "orphaned", "remove":
+		return false
+	}
+	return t.Status.State == "running" || t.DesiredState == "running" || t.DesiredState == "ready"
+}
+
+// fillDetails inspects every target with a fixed pool of workers. Each worker
+// writes only the replica it was handed, so no locking is needed. The first
+// error wins and cancels the inspects still in flight. Targets are still handed
+// out after a failure or a dead context: details then fails fast in e.Get, so a
+// parent deadline is reported as an error instead of being skipped.
+func (e *Engine) fillDetails(ctx context.Context, targets []*api.Replica) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan *api.Replica)
+	var (
+		wg       sync.WaitGroup
+		once     sync.Once
+		firstErr error
+	)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range jobs {
+				if err := e.details(ctx, r); err != nil {
+					once.Do(func() {
+						firstErr = err
+						cancel()
+					})
+				}
+			}
+		}()
+	}
+	for _, r := range targets {
+		jobs <- r
+	}
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 func (e *Engine) details(ctx context.Context, r *api.Replica) error {
 	if r.ContainerID == "" {

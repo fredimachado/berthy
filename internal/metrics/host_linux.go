@@ -6,10 +6,13 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 type LinuxHost struct {
@@ -93,51 +96,18 @@ func (h *LinuxHost) Read(ctx context.Context) Host {
 		return nil
 	})
 	read("/proc/diskstats", func(lines []string) error {
-		var rd, wr uint64
-		for _, line := range lines {
-			f := strings.Fields(line)
-			if len(f) < 14 {
-				continue
-			} // Count whole devices only; partitions duplicate their parent counters.
-			if _, e := os.Stat("/sys/class/block/" + f[2] + "/partition"); e == nil {
-				continue
-			}
-			a, e := strconv.ParseUint(f[5], 10, 64)
-			if e != nil {
-				return e
-			}
-			b, e := strconv.ParseUint(f[9], 10, 64)
-			if e != nil {
-				return e
-			}
-			rd += a * 512
-			wr += b * 512
+		rd, wr, err := sumDiskstats(lines, isPartitionDevice)
+		if err != nil {
+			return err
 		}
 		out.DiskReadBytes = ptr(rd)
 		out.DiskWriteBytes = ptr(wr)
 		return nil
 	})
 	read("/proc/net/dev", func(lines []string) error {
-		var rx, tx uint64
-		for _, line := range lines {
-			_, v, ok := strings.Cut(line, ":")
-			if !ok {
-				continue
-			}
-			f := strings.Fields(v)
-			if len(f) < 16 {
-				return fmt.Errorf("invalid interface counters")
-			}
-			a, e := strconv.ParseUint(f[0], 10, 64)
-			if e != nil {
-				return e
-			}
-			b, e := strconv.ParseUint(f[8], 10, 64)
-			if e != nil {
-				return e
-			}
-			rx += a
-			tx += b
+		rx, tx, err := sumNetDevCounters(lines, physicalInterface)
+		if err != nil {
+			return err
 		}
 		out.NetworkRXBytes = ptr(rx)
 		out.NetworkTXBytes = ptr(tx)
@@ -150,35 +120,276 @@ func (h *LinuxHost) Read(ctx context.Context) Host {
 	}
 	return out
 }
+
+// sumDiskstats totals sectors read and written (512 bytes each) over whole physical
+// disks in /proc/diskstats lines. Virtual devices are skipped because they re-report I/O
+// already counted on their backing disks, and partitions are skipped because they
+// duplicate their parent's counters.
+func sumDiskstats(lines []string, isPartition func(name string) bool) (rd, wr uint64, err error) {
+	for _, line := range lines {
+		f := strings.Fields(line)
+		if len(f) < 14 {
+			continue
+		}
+		name := f[2]
+		if skipDiskName(name) || isPartition(name) {
+			continue
+		}
+		a, e := strconv.ParseUint(f[5], 10, 64)
+		if e != nil {
+			return 0, 0, e
+		}
+		b, e := strconv.ParseUint(f[9], 10, 64)
+		if e != nil {
+			return 0, 0, e
+		}
+		rd += a * 512
+		wr += b * 512
+	}
+	return rd, wr, nil
+}
+
+var virtualDiskPrefixes = []string{"dm-", "md", "loop", "ram", "zram", "nbd", "sr", "fd"}
+
+func skipDiskName(name string) bool {
+	for _, p := range virtualDiskPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPartitionDevice reports whether a /proc/diskstats device is a partition according to sysfs.
+func isPartitionDevice(name string) bool {
+	_, err := os.Stat(sysBlockPartitionPath(name))
+	return err == nil
+}
+
+// sysBlockPartitionPath maps a /proc/diskstats name to its sysfs partition marker. The
+// kernel writes '/' as '!' in sysfs names, so cciss/c0d0 becomes cciss!c0d0.
+func sysBlockPartitionPath(name string) string {
+	return "/sys/class/block/" + strings.ReplaceAll(name, "/", "!") + "/partition"
+}
+
+// sumNetDev totals received and transmitted bytes over the interfaces for which physical
+// reports true, and returns how many interfaces it counted. lines are the lines of
+// /proc/net/dev; header lines have no "name:" prefix and are skipped.
+func sumNetDev(lines []string, physical func(iface string) bool) (rx, tx uint64, included int, err error) {
+	for _, line := range lines {
+		name, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(v)
+		if len(f) < 16 {
+			return 0, 0, 0, fmt.Errorf("invalid interface counters")
+		}
+		if !physical(strings.TrimSpace(name)) {
+			continue
+		}
+		a, e := strconv.ParseUint(f[0], 10, 64)
+		if e != nil {
+			return 0, 0, 0, e
+		}
+		b, e := strconv.ParseUint(f[8], 10, 64)
+		if e != nil {
+			return 0, 0, 0, e
+		}
+		rx += a
+		tx += b
+		included++
+	}
+	return rx, tx, included, nil
+}
+
+// sumNetDevCounters counts the interfaces that physical accepts. Containers and some VMs
+// expose NICs with no sysfs device link, so when that accepts none, it counts by name.
+func sumNetDevCounters(lines []string, physical func(iface string) bool) (rx, tx uint64, err error) {
+	rx, tx, n, err := sumNetDev(lines, physical)
+	if err != nil || n > 0 {
+		return rx, tx, err
+	}
+	rx, tx, _, err = sumNetDev(lines, func(iface string) bool { return !virtualInterfaceName(iface) })
+	return rx, tx, err
+}
+
+// physicalInterface reports whether a network interface is backed by hardware. A physical
+// NIC has a device link in sysfs. When /sys/class/net is unavailable, the name rules decide.
+func physicalInterface(name string) bool {
+	if _, err := os.Stat("/sys/class/net/" + name + "/device"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/sys/class/net"); err != nil {
+		return !virtualInterfaceName(name)
+	}
+	return false
+}
+
+var virtualInterfacePrefixes = []string{"veth", "docker", "br-", "virbr", "cni", "flannel", "cali", "vxlan", "tun", "tap", "wg"}
+
+func virtualInterfaceName(name string) bool {
+	if name == "lo" {
+		return true
+	}
+	for _, p := range virtualInterfacePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// mountEntry is the part of a /proc/self/mountinfo line that the filters need.
+type mountEntry struct{ Path, FSType string }
+
+var mountPathEscapes = strings.NewReplacer("\\040", " ", "\\011", "\t", "\\012", "\n", "\\134", "\\")
+
+// parseMountinfo reads /proc/self/mountinfo. The mount point is field 4. The filesystem
+// type is the field after the "-" separator, which is searched for from field 6 because
+// the number of optional fields varies. Malformed lines are skipped. Repeated paths are
+// all returned, in mountinfo order, for selectMounts to resolve.
+func parseMountinfo(r io.Reader) ([]mountEntry, error) {
+	var out []mountEntry
+	scan := bufio.NewScanner(r)
+	for scan.Scan() {
+		f := strings.Fields(scan.Text())
+		if len(f) < 5 {
+			continue
+		}
+		sep := -1
+		for i := 6; i < len(f); i++ {
+			if f[i] == "-" {
+				sep = i
+				break
+			}
+		}
+		if sep < 0 || sep+1 >= len(f) {
+			continue
+		}
+		out = append(out, mountEntry{Path: mountPathEscapes.Replace(f[4]), FSType: f[sep+1]})
+	}
+	return out, scan.Err()
+}
+
+// networkFSTypes can block indefinitely when their server is unreachable. They are skipped
+// everywhere, including the root mount.
+var networkFSTypes = map[string]bool{
+	"nfs": true, "nfs4": true, "cifs": true, "smb3": true, "smbfs": true,
+	"sshfs": true, "9p": true, "ceph": true, "glusterfs": true, "fuse": true,
+}
+
+func networkFSType(fstype string) bool {
+	return networkFSTypes[fstype] || strings.HasPrefix(fstype, "fuse.")
+}
+
+// skipFSTypes are pseudo and virtual filesystems. Their statfs results are meaningless for
+// disk usage.
+var skipFSTypes = map[string]bool{
+	"proc": true, "sysfs": true, "cgroup": true, "cgroup2": true, "devpts": true, "devtmpfs": true,
+	"mqueue": true, "debugfs": true, "tracefs": true, "securityfs": true, "pstore": true, "bpf": true,
+	"configfs": true, "fusectl": true, "hugetlbfs": true, "autofs": true, "binfmt_misc": true,
+	"rpc_pipefs": true, "nsfs": true, "overlay": true, "squashfs": true, "tmpfs": true, "ramfs": true,
+	"efivarfs": true,
+}
+
+var skipMountPrefixes = []string{"/var/lib/docker/", "/run/docker/", "/proc/", "/sys/", "/dev/"}
+
+var skipMountExact = map[string]bool{"/proc": true, "/sys": true, "/dev": true}
+
+// skipMount reports whether a mount should be left out of the disk list. The root mount is
+// kept whatever its type, because a container or live host often reports "/" as overlay or
+// tmpfs, and the root disk check depends on it. Only network types are skipped there.
+func skipMount(m mountEntry) bool {
+	if m.Path == "/" {
+		return networkFSType(m.FSType)
+	}
+	if networkFSType(m.FSType) || skipFSTypes[m.FSType] {
+		return true
+	}
+	if skipMountExact[m.Path] {
+		return true
+	}
+	for _, p := range skipMountPrefixes {
+		if strings.HasPrefix(m.Path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// selectMounts keeps, for each path, only the last entry in mountinfo order, since later
+// entries are mounted on top and are what statfs reports. If that top mount is a skipped
+// type, the path is dropped entirely.
+func selectMounts(entries []mountEntry) []mountEntry {
+	last := make(map[string]int, len(entries))
+	for i, m := range entries {
+		last[m.Path] = i
+	}
+	var out []mountEntry
+	for i, m := range entries {
+		if last[m.Path] == i && !skipMount(m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+const mountStatfsDeadline = 2 * time.Second
+
+// statfsFunc is the statfs call used by statfsTimeout. Tests replace it.
+var statfsFunc = syscall.Statfs
+
+// statfsInflight holds the paths whose statfs call has not yet returned.
+var statfsInflight sync.Map
+
+// statfsTimeout runs statfs in a goroutine so a hung mount cannot block the caller. A path
+// whose previous call is still pending fails at once and starts no new goroutine, so a
+// hung mount holds at most one goroutine in total. The buffered channel lets the goroutine
+// finish without blocking after the caller has timed out.
+func statfsTimeout(path string, d time.Duration) (syscall.Statfs_t, error) {
+	if _, busy := statfsInflight.LoadOrStore(path, struct{}{}); busy {
+		return syscall.Statfs_t{}, fmt.Errorf("previous statfs still pending")
+	}
+	type res struct {
+		st  syscall.Statfs_t
+		err error
+	}
+	ch := make(chan res, 1)
+	fn := statfsFunc
+	go func() {
+		var st syscall.Statfs_t
+		err := fn(path, &st)
+		statfsInflight.Delete(path)
+		ch <- res{st, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.st, r.err
+	case <-time.After(d):
+		return syscall.Statfs_t{}, fmt.Errorf("timeout")
+	}
+}
+
 func ReadMounts() ([]Mount, error) {
 	f, e := os.Open("/proc/self/mountinfo")
 	if e != nil {
 		return nil, e
 	}
 	defer f.Close()
+	entries, scanErr := parseMountinfo(f)
 	var mounts []Mount
 	var failures []string
-	scan := bufio.NewScanner(f)
-	seen := map[string]bool{}
-	for scan.Scan() {
-		fields := strings.Fields(scan.Text())
-		if len(fields) < 5 {
+	for _, m := range selectMounts(entries) {
+		st, e := statfsTimeout(m.Path, mountStatfsDeadline)
+		if e != nil {
+			failures = append(failures, "mount "+m.Path+": "+e.Error())
 			continue
 		}
-		path := strings.NewReplacer("\\040", " ", "\\011", "\t", "\\012", "\n", "\\134", "\\").Replace(fields[4])
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		var st syscall.Statfs_t
-		if e := syscall.Statfs(path, &st); e != nil {
-			failures = append(failures, "mount "+path+": "+e.Error())
-			continue
-		}
-		mounts = append(mounts, Mount{path, st.Blocks * uint64(st.Bsize), st.Bavail * uint64(st.Bsize)})
+		mounts = append(mounts, Mount{m.Path, st.Blocks * uint64(st.Bsize), st.Bavail * uint64(st.Bsize)})
 	}
-	if e := scan.Err(); e != nil {
-		failures = append(failures, e.Error())
+	if scanErr != nil {
+		failures = append(failures, scanErr.Error())
 	}
 	if len(failures) > 0 {
 		return mounts, fmt.Errorf("%s", strings.Join(failures, "; "))
