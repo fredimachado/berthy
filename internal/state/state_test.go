@@ -255,3 +255,36 @@ func TestInterruptedAndRolledBackOutcomes(t *testing.T) {
 		})
 	}
 }
+
+func TestDatabasePathRejectsDSNDelimiters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state#redirect")
+	key := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(dir, key, "test"); err == nil {
+		s.Close()
+		t.Fatal("accepted ambiguous SQLite path")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("created ambiguous state path")
+	}
+}
+
+func TestPublicDataRejectsPrivateFields(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Admit(ctx, Admission{RequestID: "bad", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{"token":"canary"}`)}); err == nil {
+		t.Fatal("accepted private request")
+	}
+	op, _, err := s.Admit(ctx, Admission{RequestID: "good", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{"app":"api"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AppendEvent(ctx, op.ID, Event{Kind: "step", Data: []byte(`{"token":"canary"}`)}); err == nil {
+		t.Fatal("accepted private event")
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Event: []byte(`{"token":"canary"}`)}); err == nil {
+		t.Fatal("accepted private outcome")
+	}
+}

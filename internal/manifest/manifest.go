@@ -31,6 +31,18 @@ type Manifest struct {
 	Backups      map[string]Backup      `json:"backups,omitempty" yaml:"backups,omitempty"`
 	Destinations map[string]Destination `json:"destinations,omitempty" yaml:"destinations,omitempty"`
 	Telemetry    *Telemetry             `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
+}
+type Ingress struct {
+	Cloudflare *Cloudflare `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
+}
+type Cloudflare struct {
+	AccountID      string `json:"account_id" yaml:"account_id"`
+	APITokenSecret string `json:"api_token_secret" yaml:"api_token_secret"`
+	Image          string `json:"image" yaml:"image"`
+	Replicas       *int   `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	Tunnel         string `json:"tunnel,omitempty" yaml:"tunnel,omitempty"`
+	DNS            *bool  `json:"dns,omitempty" yaml:"dns,omitempty"`
 }
 type Registry struct {
 	Username       string `json:"username" yaml:"username"`
@@ -56,6 +68,7 @@ type Role struct {
 	Health    *Health    `json:"health,omitempty" yaml:"health,omitempty"`
 	Volumes   []string   `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 	Resources *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
+	Hostnames []string   `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
 }
 type Resources struct {
 	CPU    string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
@@ -123,6 +136,7 @@ type Telemetry struct {
 }
 
 var identifier = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+var hostnamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
@@ -238,6 +252,9 @@ func Load(dir, env string) (*Manifest, error) {
 	return DecodeJSON(data)
 }
 func DecodeJSON(data []byte) (*Manifest, error) {
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("invalid JSON manifest")
+	}
 	// Parse once for duplicate keys and explicit null before strict JSON decoding.
 	node, err := parseYAML(data)
 	if err != nil {
@@ -331,6 +348,16 @@ func duration(s string, zero bool) bool {
 	return e == nil && (d > 0 || zero && d == 0)
 }
 func (m *Manifest) Validate() error {
+	if m.Ingress != nil {
+		c := m.Ingress.Cloudflare
+		if c == nil || c.AccountID == "" || !envName.MatchString(c.APITokenSecret) || c.Image == "" || c.Replicas != nil && *c.Replicas < 1 || c.Tunnel != "" && !identifier.MatchString(c.Tunnel) {
+			return fmt.Errorf("invalid Cloudflare ingress")
+		}
+		if _, err := reference.ParseNormalizedNamed(c.Image); err != nil {
+			return fmt.Errorf("invalid Cloudflare image")
+		}
+	}
+	hostnames := map[string]bool{}
 	if !identifier.MatchString(m.Project) || !identifier.MatchString(m.Network) {
 		return fmt.Errorf("invalid project or network")
 	}
@@ -382,6 +409,12 @@ func (m *Manifest) Validate() error {
 		}
 		for _, rn := range sortedKeys(a.Roles) {
 			r := a.Roles[rn]
+			for _, host := range r.Hostnames {
+				if a.Kind != "image" || m.Ingress == nil || r.Port == 0 || len(host) > 253 || !hostnamePattern.MatchString(host) || hostnames[host] {
+					return fmt.Errorf("app %s role %s: invalid or duplicate hostname", name, rn)
+				}
+				hostnames[host] = true
+			}
 			for _, v := range r.Volumes {
 				if _, err := ParseMount(v); err != nil {
 					return fmt.Errorf("app %s role %s: invalid volume", name, rn)
@@ -521,6 +554,11 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	a, ok := m.Apps[app]
 	if !ok || a.Kind != "image" {
 		return "", fmt.Errorf("app %q is not an image app", app)
+	}
+	for _, r := range a.Roles {
+		if len(r.Hostnames) > 0 {
+			return "", fmt.Errorf("managed ingress is unavailable until Phase 2b")
+		}
 	}
 	for _, h := range append(append([]Hook{}, a.Hooks.PreDeploy...), a.Hooks.PostDeploy...) {
 		if h.Backup != "" {

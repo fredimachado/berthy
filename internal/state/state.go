@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -82,6 +83,9 @@ type Audit struct {
 func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if environment == "" || stateDir == "" || keyFile == "" {
 		return nil, errors.New("state directory, key file and environment required")
+	}
+	if strings.ContainsAny(stateDir, "?#") {
+		return nil, errors.New("ambiguous state directory")
 	}
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, err
@@ -217,8 +221,39 @@ func randomID() (string, error) {
 }
 func now() int64              { return time.Now().UTC().UnixMilli() }
 func validJSON(b []byte) bool { return len(b) > 0 && json.Valid(b) }
+func publicJSON(b []byte) bool {
+	if len(b) == 0 || len(b) > 16384 || !json.Valid(b) {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(b, &fields) != nil || fields == nil {
+		return false
+	}
+	for k, v := range fields {
+		switch k {
+		case "app", "version", "commit", "state", "role", "step", "status", "digest", "code", "App", "Version", "Commit":
+			var s string
+			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
+				return false
+			}
+		case "adopt", "Adopt":
+			var x bool
+			if json.Unmarshal(v, &x) != nil {
+				return false
+			}
+		case "exit_code", "exit_status":
+			var x int
+			if json.Unmarshal(v, &x) != nil {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
 func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error) {
-	if a.RequestID == "" || a.ActorID == "" || a.Kind == "" || !validJSON(a.PublicRequest) {
+	if a.RequestID == "" || a.ActorID == "" || a.Kind == "" || !publicJSON(a.PublicRequest) {
 		return Operation{}, false, errors.New("invalid admission")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -275,7 +310,7 @@ func (s *Store) Active(ctx context.Context) (Operation, error) {
 	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
 }
 func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMessage) error {
-	if !validJSON(data) {
+	if !publicJSON(data) {
 		return errors.New("invalid event")
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO events(operation_id,kind,data,created) VALUES(?,?,?,?)`, id, kind, []byte(data), now())
