@@ -6,6 +6,7 @@ docker=${DOCKER_BIN:-docker}
 go=${GO_BIN:-go}
 : "${DOCKER_HOST:?Set DOCKER_HOST to the dedicated test daemon unix socket}"
 [[ $DOCKER_HOST == unix:///* ]] || { echo 'DOCKER_HOST must name an explicit local unix socket' >&2; exit 1; }
+unset DOCKER_CONTEXT
 root=$(cd "$(dirname "$0")/../.." && pwd)
 name="berthy-ingress-$(date +%s)-$$"
 trace="/var/tmp/$name"
