@@ -1,10 +1,12 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"berthy/internal/cloudflare"
 	"berthy/internal/engine"
@@ -116,14 +118,87 @@ func (c *Controller) tokenStored(ctx context.Context) bool {
 	return err == nil
 }
 
-// storeTunnelToken stores the connector's tunnel token for the operation that holds the lock, unless the stored value
-// already matches. The token is never printed.
-func (c *Controller) storeTunnelToken(ctx context.Context, opID, token string) error {
+// tokenMatches reports whether the stored tunnel token is token. The stored value is never returned.
+func (c *Controller) tokenMatches(ctx context.Context, token string) bool {
 	_, value, err := c.Store.Secret(ctx, manifest.TunnelTokenSecret)
-	if err == nil && string(value) == token {
-		return nil
+	return err == nil && string(value) == token
+}
+
+// storeTunnelToken stores the connector's tunnel token for the operation that holds the lock, unless the stored value
+// already matches. It reports whether it stored a different value. The token is never printed.
+func (c *Controller) storeTunnelToken(ctx context.Context, opID, token string) (bool, error) {
+	if c.tokenMatches(ctx, token) {
+		return false, nil
 	}
-	return c.Store.PutOperationSecret(ctx, opID, manifest.TunnelTokenSecret, []byte(token))
+	if err := c.Store.PutOperationSecret(ctx, opID, manifest.TunnelTokenSecret, []byte(token)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// connectorCurrent reports whether the running connector already matches what this apply would deploy, so the rollout
+// can be skipped. It requires the same pinned image as the connector's applied release, the same manifest that release
+// stored (connector app, registries, network, project and protection), the tunnel token unchanged in this run, and for
+// every bound role: the live service is still the bound one, runs the role's replicas, and was started with the stored
+// tunnel token. Health is not checked here; status and doctor report it. Anything that cannot be read counts as not
+// current, so the rollout runs. It changes nothing.
+func (c *Controller) connectorCurrent(ctx context.Context, creq Request, image string, tokenChanged bool) bool {
+	if tokenChanged || c.Engine == nil {
+		return false
+	}
+	rel, err := c.Store.Applied(ctx, manifest.ConnectorAppName)
+	if err != nil || rel.Digest != image {
+		return false
+	}
+	prev, err := manifest.DecodeRelease(rel.Manifest, true)
+	if err != nil {
+		return false
+	}
+	stored, err := json.Marshal(prev)
+	if err != nil {
+		return false
+	}
+	wanted, err := json.Marshal(creq.Manifest)
+	if err != nil || !bytes.Equal(stored, wanted) {
+		return false
+	}
+	app := creq.Manifest.Apps[manifest.ConnectorAppName]
+	bindings, err := c.Store.Bindings(ctx, manifest.ConnectorAppName)
+	if err != nil || len(bindings) != len(app.Roles) {
+		return false
+	}
+	_, token, err := c.Store.Secret(ctx, manifest.TunnelTokenSecret)
+	if err != nil {
+		return false
+	}
+	environment := manifest.TunnelTokenSecret + "=" + string(token)
+	for _, b := range bindings {
+		role, ok := app.Roles[b.Role]
+		if !ok {
+			return false
+		}
+		live, err := c.Engine.InspectService(ctx, b.Name)
+		if err != nil || live.ID != b.ServiceID {
+			return false
+		}
+		var spec struct {
+			TaskTemplate struct {
+				ContainerSpec struct{ Env []string }
+			}
+			Mode struct{ Replicated *struct{ Replicas int } }
+		}
+		if json.Unmarshal(live.Spec, &spec) != nil || spec.Mode.Replicated == nil {
+			return false
+		}
+		replicas := 1
+		if role.Replicas != nil {
+			replicas = *role.Replicas
+		}
+		if spec.Mode.Replicated.Replicas != replicas || !slices.Contains(spec.TaskTemplate.ContainerSpec.Env, environment) {
+			return false
+		}
+	}
+	return true
 }
 
 // recordConflicts appends an event for each conflict, so the operator can see why the run stopped.
@@ -180,14 +255,21 @@ func ownedBy(app string) func(state.IngressRoute) bool {
 
 // publishSync returns the sync engine for a deploy's publish. It reads the stored ingress configuration, not the
 // manifest's, so a deploy still reaches its app's routes after the manifest has dropped managed ingress. A manifest that
-// names ingress must name the account it was applied to. It reads Cloudflare and changes nothing.
-func (c *Controller) publishSync(ctx context.Context, m manifest.Manifest, opID string) (*ingressSync, error) {
+// names ingress must name the account it was applied to. When adds is true the publish adds or keeps routes, which only
+// a running connector can serve, so the connector app must have an applied release. A publish that only removes routes
+// needs no connector, so routes can always be taken down. It reads Cloudflare and changes nothing.
+func (c *Controller) publishSync(ctx context.Context, m manifest.Manifest, opID string, adds bool) (*ingressSync, error) {
 	st, err := c.Store.Ingress(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errIngressNotApplied
 	}
 	if err != nil {
 		return nil, err
+	}
+	if adds {
+		if _, err = c.Store.Applied(ctx, manifest.ConnectorAppName); err != nil {
+			return nil, errIngressNotApplied
+		}
 	}
 	if m.Ingress != nil && m.Ingress.Cloudflare != nil && m.Ingress.Cloudflare.AccountID != st.AccountID {
 		return nil, errIngressChanged
@@ -210,7 +292,7 @@ func (c *Controller) publishCheck(ctx context.Context, opID string, m manifest.M
 	if err != nil || !publishes {
 		return nil, err
 	}
-	sy, err := c.publishSync(ctx, m, opID)
+	sy, err := c.publishSync(ctx, m, opID, len(wants) > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +332,7 @@ func (c *Controller) dryRunPublish(ctx context.Context, plan *Plan, m manifest.M
 	if err != nil || !publishes {
 		return err
 	}
-	sy, err := c.publishSync(ctx, m, "")
+	sy, err := c.publishSync(ctx, m, "", len(wants) > 0)
 	var ip IngressPlan
 	if err == nil {
 		ip, _, _, err = sy.plan(ctx, wants, ownedBy(app), replace)
@@ -303,6 +385,18 @@ func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) 
 		}
 		p.Roles, p.Image = cp.Roles, cp.Image
 		ip.Connector = &cp
+		// The token is compared, never shown: an apply would store it only if it differs. A tunnel that does not exist
+		// yet gets a new token, and a token that cannot be read stops the apply, so both count as a change.
+		tokenChanged := true
+		if t.tunnel != nil {
+			token, err := t.cf.TunnelToken(ctx, t.account, t.tunnel.ID)
+			if err != nil {
+				p.Blockers = append(p.Blockers, errTunnelToken.Error())
+			} else {
+				tokenChanged = !c.tokenMatches(ctx, token)
+			}
+		}
+		ip.ConnectorUnchanged = c.connectorCurrent(ctx, creq, cp.Image, tokenChanged)
 	}
 	p.Ingress = &ip
 	return p, nil
@@ -346,7 +440,8 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return fail(err)
 	}
-	if _, err = c.Plan(ctx, actor, preflight); err != nil {
+	cp, err := c.Plan(ctx, actor, preflight)
+	if err != nil {
 		return state.Outcome{State: "failed", Err: "deployment preflight failed"}
 	}
 	tunnel := t.tunnel
@@ -366,16 +461,23 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return fail(errTunnelToken)
 	}
-	if err = c.storeTunnelToken(ctx, op.ID, token); err != nil {
+	changed, err := c.storeTunnelToken(ctx, op.ID, token)
+	if err != nil {
 		return fail(errTunnelToken)
 	}
 	connector, err := connectorRequest(m, req.Commit, true)
 	if err != nil {
 		return fail(err)
 	}
-	outcome := c.runDeploy(ctx, op, actor, connector, false)
-	if outcome.State != "succeeded" {
-		return outcome
+	// A connector that already matches is left running, so a repeat apply does not restart it. Otherwise it is rolled out.
+	outcome := state.Outcome{State: "succeeded"}
+	if c.connectorCurrent(ctx, connector, cp.Image, changed) {
+		_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: json.RawMessage(`{"step":"connector unchanged"}`)})
+	} else {
+		outcome = c.runDeploy(ctx, op, actor, connector, false)
+		if outcome.State != "succeeded" {
+			return outcome
+		}
 	}
 	// The connector is running, so the routes can point at it. Plan again from fresh reads, then write.
 	plan, cfg, steps, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
@@ -488,13 +590,19 @@ type RouteStatus struct {
 	DNS      string `json:"dns,omitempty"`
 }
 
-// IngressStatus is what ingress status shows.
+// problemConnectorNotDeployed is the problem status reports when managed ingress is configured but the connector app has
+// no applied release, so no connector runs for the tunnel.
+const problemConnectorNotDeployed = "connector not deployed; run ingress apply"
+
+// IngressStatus is what ingress status shows. Connector lists the bound connector roles, and is empty while the connector
+// has no applied release; Problems then says why.
 type IngressStatus struct {
 	Configured bool          `json:"configured"`
 	Tunnel     *TunnelStatus `json:"tunnel,omitempty"`
 	Cloudflare string        `json:"cloudflare,omitempty"`
-	Connector  []RoleStatus  `json:"connector,omitempty"`
+	Connector  []RoleStatus  `json:"connector"`
 	Routes     []RouteStatus `json:"routes"`
+	Problems   []string      `json:"problems,omitempty"`
 }
 
 // IngressStatus reports the tunnel as Cloudflare sees it, the connector's replicas and every stored route. A Cloudflare
@@ -503,7 +611,7 @@ func (c *Controller) IngressStatus(ctx context.Context) (IngressStatus, error) {
 	if c.Store == nil {
 		return IngressStatus{}, errors.New("state unavailable")
 	}
-	out := IngressStatus{Routes: []RouteStatus{}}
+	out := IngressStatus{Connector: []RoleStatus{}, Routes: []RouteStatus{}}
 	st, err := c.Store.Ingress(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
@@ -526,16 +634,24 @@ func (c *Controller) IngressStatus(ctx context.Context) (IngressStatus, error) {
 	if reachable {
 		out.Cloudflare = "available"
 	}
-	bindings, err := c.Store.Bindings(ctx, manifest.ConnectorAppName)
-	if err != nil {
+	_, err = c.Store.Applied(ctx, manifest.ConnectorAppName)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		out.Problems = append(out.Problems, problemConnectorNotDeployed)
+	case err != nil:
 		return IngressStatus{}, err
-	}
-	for _, b := range bindings {
-		running, desired, err := c.serviceReplicas(ctx, b)
+	default:
+		bindings, err := c.Store.Bindings(ctx, manifest.ConnectorAppName)
 		if err != nil {
 			return IngressStatus{}, err
 		}
-		out.Connector = append(out.Connector, RoleStatus{Role: b.Role, Service: b.Name, Running: running, Desired: desired})
+		for _, b := range bindings {
+			running, desired, err := c.serviceReplicas(ctx, b)
+			if err != nil {
+				return IngressStatus{}, err
+			}
+			out.Connector = append(out.Connector, RoleStatus{Role: b.Role, Service: b.Name, Running: running, Desired: desired})
+		}
 	}
 	routes, err := c.Store.IngressRoutes(ctx, "")
 	if err != nil {

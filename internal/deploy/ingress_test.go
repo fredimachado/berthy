@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/cloudflare"
@@ -181,7 +183,13 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 // extra is appended to the cloudflare block, for example `,"dns":false`.
 func ingressManifest(t *testing.T, extra string) manifest.Manifest {
 	t.Helper()
-	input := `{"project":"demo","network":"overlay","ingress":{"cloudflare":{"account_id":"acct","api_token_secret":"CF_TOKEN","image":"cloudflare/cloudflared@sha256:` + strings.Repeat("c", 64) + `"` + extra + `}},` + apiApp(true) + `}`
+	return ingressManifestImage(t, "cloudflare/cloudflared@sha256:"+strings.Repeat("c", 64), extra)
+}
+
+// ingressManifestImage is ingressManifest with the connector image set to image, a pinned reference.
+func ingressManifestImage(t *testing.T, image, extra string) manifest.Manifest {
+	t.Helper()
+	input := `{"project":"demo","network":"overlay","ingress":{"cloudflare":{"account_id":"acct","api_token_secret":"CF_TOKEN","image":"` + image + `"` + extra + `}},` + apiApp(true) + `}`
 	m, err := manifest.DecodeJSON([]byte(input))
 	if err != nil {
 		t.Fatal(err)
@@ -652,6 +660,336 @@ func TestIngressApplyCreatesTunnelConnectorRouteAndRecord(t *testing.T) {
 	}
 }
 
+// connectorService returns the live connector service of the environment, or fails the test.
+func (f *ingressFixture) connectorService() engine.ServiceSnapshot {
+	f.t.Helper()
+	svc, err := f.docker.InspectService(context.Background(), "demo-ingress-connector")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return svc
+}
+
+// connectorEnv returns the environment the connector service runs with, as Docker reports it.
+func (f *ingressFixture) connectorEnv() []string {
+	f.t.Helper()
+	var spec struct {
+		TaskTemplate struct {
+			ContainerSpec struct{ Env []string }
+		}
+	}
+	if err := json.Unmarshal(f.connectorService().Spec, &spec); err != nil {
+		f.t.Fatal(err)
+	}
+	return spec.TaskTemplate.ContainerSpec.Env
+}
+
+// connectorReleases returns how many releases the connector app has.
+func (f *ingressFixture) connectorReleases() int {
+	f.t.Helper()
+	history, err := f.store.History(context.Background(), manifest.ConnectorAppName)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return len(history)
+}
+
+// outageEngine fails the connector's service writes while down is set, as Docker would when the connector cannot be
+// started or updated. Everything else reaches the wrapped engine.
+type outageEngine struct {
+	Engine
+	down *atomic.Bool
+}
+
+func (e outageEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
+	if e.down.Load() && specName(spec) == "demo-ingress-connector" {
+		return "", &engine.StatusError{Code: 500}
+	}
+	return e.Engine.CreateService(ctx, spec, auth)
+}
+
+func (e outageEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	if e.down.Load() && specName(spec) == "demo-ingress-connector" {
+		return &engine.StatusError{Code: 500}
+	}
+	return e.Engine.UpdateService(ctx, id, version, spec, auth)
+}
+
+// connectorOutage makes the fixture's connector writes fail while the returned switch is set. Call it before the
+// fixture runs anything.
+func connectorOutage(f *ingressFixture) *atomic.Bool {
+	down := &atomic.Bool{}
+	f.ctrl.Engine = outageEngine{Engine: f.ctrl.Engine, down: down}
+	return down
+}
+
+// operationSteps returns the data of each step event an operation recorded, in order.
+func operationSteps(t *testing.T, s *state.Store, opID string) []string {
+	t.Helper()
+	events, err := s.EventsAfter(context.Background(), opID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, ev := range events {
+		if ev.Kind == "step" {
+			out = append(out, string(ev.Data))
+		}
+	}
+	return out
+}
+
+func TestRepeatIngressApplyLeavesTheConnectorRunning(t *testing.T) {
+	f := newIngressFixture(t)
+	seedDeployed(t, f.store, "api", apiBinding())
+	m := ingressManifest(t, "")
+	f.applyIngress("apply-1", m)
+	tunnelID := f.tunnel().ID
+	service, releases := f.connectorService().ID, f.connectorReleases()
+
+	f.calls.reset()
+	repeat := f.run(Request{RequestID: "apply-2", Kind: "ingress", Commit: "c2", Manifest: m})
+	if repeat.State != "succeeded" {
+		t.Fatalf("repeat apply %s: %s", repeat.State, repeat.Err)
+	}
+	if calls := f.calls.all(); len(calls) != 0 {
+		t.Fatalf("a repeat apply with nothing to change wrote: %v", calls)
+	}
+	if got := f.connectorService().ID; got != service {
+		t.Fatalf("connector service replaced: %s -> %s", service, got)
+	}
+	if n := f.connectorReleases(); n != releases {
+		t.Fatalf("repeat apply recorded a connector release: %d -> %d", releases, n)
+	}
+	if steps := operationSteps(t, f.store, repeat.ID); !reflect.DeepEqual(steps, []string{`{"step":"connector unchanged"}`}) {
+		t.Fatalf("steps %v", steps)
+	}
+
+	// Routes are still synced on a repeat apply: a rule that Cloudflare lost is written back, and the connector is untouched.
+	f.cf.SetConfig(tunnelID, json.RawMessage(`{"ingress":[{"service":"http_status:404"}]}`))
+	f.calls.reset()
+	f.applyIngress("apply-3", m)
+	if got := describeRules(f.tunnelConfig(tunnelID)); !reflect.DeepEqual(got, []string{"api.example.com||" + apiTarget, "||http_status:404"}) {
+		t.Fatalf("rules after the repeat apply %v", got)
+	}
+	if n := f.calls.count("service "); n != 0 {
+		t.Fatalf("connector touched by a route sync: %v", f.calls.all())
+	}
+}
+
+func TestChangedConnectorImageRollsTheConnector(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	seedDeployed(t, f.store, "api", apiBinding())
+	f.applyIngress("apply-1", ingressManifest(t, ""))
+	releases := f.connectorReleases()
+
+	f.calls.reset()
+	digest := strings.Repeat("f", 64)
+	f.applyIngress("apply-2", ingressManifest(t, "")) // nothing changed, so the connector must stay as it is
+	if n := f.calls.count("service "); n != 0 {
+		t.Fatalf("baseline apply touched the connector: %v", f.calls.all())
+	}
+	f.calls.reset()
+	f.applyIngress("apply-3", ingressManifestImage(t, "cloudflare/cloudflared@sha256:"+digest, ""))
+	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
+	}
+	if n := f.connectorReleases(); n != releases+1 {
+		t.Fatalf("connector releases %d, want %d", n, releases+1)
+	}
+	if rel, err := f.store.Applied(ctx, manifest.ConnectorAppName); err != nil || !strings.HasSuffix(rel.Digest, digest) {
+		t.Fatalf("applied connector %+v: %v", rel, err)
+	}
+	if env := f.connectorEnv(); !slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(f.tunnel().ID)) {
+		t.Fatal("rolled connector lost the tunnel token")
+	}
+}
+
+func TestChangedTunnelTokenRollsTheConnector(t *testing.T) {
+	f := newIngressFixture(t)
+	seedDeployed(t, f.store, "api", apiBinding())
+	m := ingressManifest(t, "")
+	f.applyIngress("apply-1", m)
+	f.cf.DeleteTunnel(f.tunnel().ID)
+	// A tunnel created under the same name has a new token. The apply must store it and roll the connector onto it.
+	fresh := f.cf.AddTunnel(ingressTunnel, true)
+
+	f.calls.reset()
+	f.applyIngress("apply-2", m)
+	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
+	}
+	if env := f.connectorEnv(); !slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(fresh)) {
+		t.Fatal("connector does not run with the new tunnel token")
+	}
+	if got := describeRules(f.tunnelConfig(fresh)); !reflect.DeepEqual(got, []string{"api.example.com||" + apiTarget, "||http_status:404"}) {
+		t.Fatalf("rules on the new tunnel %v", got)
+	}
+}
+
+// A rollout that fails after the new token is stored leaves the old connector running. The next apply sees the stored
+// token as unchanged, so only the connector's own environment shows that it must roll.
+func TestConnectorStillOnAnOldTokenIsRolledOnTheNextApply(t *testing.T) {
+	f := newIngressFixture(t)
+	seedDeployed(t, f.store, "api", apiBinding())
+	down := connectorOutage(f)
+	m := ingressManifest(t, "")
+	f.applyIngress("apply-1", m)
+	f.cf.DeleteTunnel(f.tunnel().ID)
+	fresh := f.cf.AddTunnel(ingressTunnel, true)
+
+	down.Store(true)
+	if op := f.run(Request{RequestID: "apply-2", Kind: "ingress", Manifest: m}); op.State == "succeeded" {
+		t.Fatal("apply succeeded while the connector could not be updated")
+	}
+	down.Store(false)
+	if env := f.connectorEnv(); slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(fresh)) {
+		t.Fatal("the failed rollout already runs the new token")
+	}
+
+	f.calls.reset()
+	f.applyIngress("apply-3", m)
+	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
+	}
+	if env := f.connectorEnv(); !slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(fresh)) {
+		t.Fatal("connector still runs an old token")
+	}
+}
+
+func TestConnectorServiceDeletedOutsideBerthyIsRecreated(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	seedDeployed(t, f.store, "api", apiBinding())
+	m := ingressManifest(t, "")
+	f.applyIngress("apply-1", m)
+	gone := f.connectorService()
+	if err := f.docker.DeleteService(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	f.calls.reset()
+	f.applyIngress("apply-2", m)
+	if n := f.calls.count("service create demo-ingress-connector"); n != 1 {
+		t.Fatalf("connector creates %d, want 1: %v", n, f.calls.all())
+	}
+	recreated := f.connectorService()
+	if recreated.ID == gone.ID {
+		t.Fatal("connector service was not recreated")
+	}
+	bindings, err := f.store.Bindings(ctx, manifest.ConnectorAppName)
+	if err != nil || len(bindings) != 1 || bindings[0].ServiceID != recreated.ID {
+		t.Fatalf("bindings %+v: %v", bindings, err)
+	}
+}
+
+func TestStoreTunnelTokenReportsOnlyChanges(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	op := openIngressPlan(t, f.store)
+	for _, tc := range []struct {
+		token   string
+		changed bool
+	}{{"first", true}, {"first", false}, {"second", true}, {"second", false}} {
+		changed, err := f.ctrl.storeTunnelToken(ctx, op.ID, tc.token)
+		if err != nil || changed != tc.changed {
+			t.Fatalf("store %q: changed %v, want %v: %v", tc.token, changed, tc.changed, err)
+		}
+	}
+	if _, value, err := f.store.Secret(ctx, manifest.TunnelTokenSecret); err != nil || string(value) != "second" {
+		t.Fatalf("stored token: %v", err)
+	}
+}
+
+// scaleService sets the replica count of a fake service, as an operator scaling it outside Berthy would.
+func (f *boundFake) scaleService(t *testing.T, name string, replicas int) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.services {
+		if specName(f.services[i].Spec) != name {
+			continue
+		}
+		var spec map[string]any
+		if err := json.Unmarshal(f.services[i].Spec, &spec); err != nil {
+			t.Fatal(err)
+		}
+		spec["Mode"] = map[string]any{"Replicated": map[string]any{"Replicas": replicas}}
+		raw, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.services[i].Spec = raw
+		return
+	}
+	t.Fatalf("no service %s", name)
+}
+
+func TestConnectorScaledOutsideBerthyIsRolledBack(t *testing.T) {
+	f := newIngressFixture(t)
+	seedDeployed(t, f.store, "api", apiBinding())
+	m := ingressManifest(t, "")
+	f.applyIngress("apply-1", m)
+	f.bound.scaleService(t, "demo-ingress-connector", 2)
+
+	f.calls.reset()
+	f.applyIngress("apply-2", m)
+	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
+	}
+	var spec struct {
+		Mode struct{ Replicated *struct{ Replicas int } }
+	}
+	if err := json.Unmarshal(f.connectorService().Spec, &spec); err != nil || spec.Mode.Replicated == nil || spec.Mode.Replicated.Replicas != 1 {
+		t.Fatalf("connector replicas after the apply %+v: %v", spec, err)
+	}
+}
+
+func TestDryRunReportsAnUnchangedConnector(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	seedDeployed(t, f.store, "api", apiBinding())
+	m := ingressManifest(t, "")
+	admin := Actor{ID: "admin", Admin: true}
+	dryRun := func() IngressPlan {
+		t.Helper()
+		p, err := f.ctrl.Plan(ctx, admin, Request{Kind: "ingress", Manifest: m})
+		if err != nil || p.Ingress == nil {
+			t.Fatalf("dry run: %v", err)
+		}
+		return *p.Ingress
+	}
+	if dryRun().ConnectorUnchanged {
+		t.Fatal("no connector yet, but the dry run reports it unchanged")
+	}
+
+	f.applyIngress("apply-1", m)
+	f.calls.reset()
+	puts, writes := f.cf.ConfigPuts, f.cf.RecordWrites
+	plan := dryRun()
+	if !plan.ConnectorUnchanged {
+		t.Fatalf("plan %+v", plan)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil || !strings.Contains(string(raw), `"connector_unchanged":true`) {
+		t.Fatalf("plan JSON %s: %v", raw, err)
+	}
+	if calls := f.calls.all(); len(calls) != 0 || f.cf.ConfigPuts != puts || f.cf.RecordWrites != writes {
+		t.Fatalf("dry run wrote: %v", calls)
+	}
+
+	// A token that differs from the stored one is a change. The dry run reports it and prints neither token.
+	f.cf.DeleteTunnel(f.tunnel().ID)
+	f.cf.AddTunnel(ingressTunnel, true)
+	if dryRun().ConnectorUnchanged {
+		t.Fatal("a new tunnel token reported as unchanged")
+	}
+	if calls := f.calls.all(); len(calls) != 0 {
+		t.Fatalf("dry run wrote: %v", calls)
+	}
+}
+
 func TestIngressConflictStopsBeforeAnyChange(t *testing.T) {
 	f := newIngressFixture(t)
 	seedDeployed(t, f.store, "api", apiBinding())
@@ -877,5 +1215,26 @@ func TestIngressStatusAndTunnelHealth(t *testing.T) {
 	unavailable, err := f.ctrl.IngressStatus(ctx)
 	if err != nil || unavailable.Cloudflare != "unavailable" || len(unavailable.Routes) != 1 || unavailable.Routes[0].DNS != "" {
 		t.Fatalf("status without the token %+v %v", unavailable, err)
+	}
+}
+
+func TestIngressStatusReportsAConnectorWithoutARelease(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	down := failedConnectorApply(t, f)
+	status, err := f.ctrl.IngressStatus(ctx)
+	if err != nil || !status.Configured || len(status.Connector) != 0 || !reflect.DeepEqual(status.Problems, []string{"connector not deployed; run ingress apply"}) {
+		t.Fatalf("status %+v: %v", status, err)
+	}
+	raw, err := json.Marshal(status)
+	if err != nil || !strings.Contains(string(raw), `"connector":[]`) {
+		t.Fatalf("status JSON %s: %v", raw, err)
+	}
+
+	down.Store(false)
+	f.applyIngress("apply-2", ingressManifest(t, ""))
+	status, err = f.ctrl.IngressStatus(ctx)
+	if err != nil || len(status.Problems) != 0 || len(status.Connector) != 1 {
+		t.Fatalf("status after a successful apply %+v: %v", status, err)
 	}
 }

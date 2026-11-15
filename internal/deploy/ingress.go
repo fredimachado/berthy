@@ -32,14 +32,15 @@ type IngressChange struct {
 
 // IngressPlan is what an ingress apply would change. Building it writes nothing.
 type IngressPlan struct {
-	Tunnel          string          `json:"tunnel"`
-	TunnelID        string          `json:"tunnel_id,omitempty"`
-	CreateTunnel    bool            `json:"create_tunnel,omitempty"`
-	DNS             bool            `json:"dns"`
-	Connector       *Plan           `json:"connector,omitempty"`
-	RemoveConnector bool            `json:"remove_connector,omitempty"`
-	Changes         []IngressChange `json:"changes"`
-	Conflicts       []string        `json:"conflicts,omitempty"`
+	Tunnel             string          `json:"tunnel"`
+	TunnelID           string          `json:"tunnel_id,omitempty"`
+	CreateTunnel       bool            `json:"create_tunnel,omitempty"`
+	DNS                bool            `json:"dns"`
+	Connector          *Plan           `json:"connector,omitempty"`
+	ConnectorUnchanged bool            `json:"connector_unchanged,omitempty"`
+	RemoveConnector    bool            `json:"remove_connector,omitempty"`
+	Changes            []IngressChange `json:"changes"`
+	Conflicts          []string        `json:"conflicts,omitempty"`
 }
 
 // dnsStep is the DNS work for one hostname. A step with remove set deletes the record of a hostname that is leaving

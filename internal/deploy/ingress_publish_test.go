@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/cloudflare"
@@ -333,6 +334,18 @@ func TestDryRunReportsWhatWouldStopThePublish(t *testing.T) {
 			t.Fatalf("blockers %v", p.Blockers)
 		}
 	})
+
+	t.Run("connector not applied", func(t *testing.T) {
+		f := newIngressFixture(t)
+		failedConnectorApply(t, f)
+		p, err := f.ctrl.Plan(context.Background(), admin, dry)
+		if err != nil {
+			t.Fatalf("dry run failed: %v", err)
+		}
+		if !reflect.DeepEqual(p.Blockers, []string{"managed ingress is not applied; run ingress apply"}) {
+			t.Fatalf("plan %+v", p)
+		}
+	})
 }
 
 func TestAdoptionPublishesAfterBinding(t *testing.T) {
@@ -474,5 +487,99 @@ func TestDeployCannotTakeAnotherAppsRoute(t *testing.T) {
 	routes, err := f.store.IngressRoutes(ctx, "admin")
 	if err != nil || len(routes) != 1 || routes[0].Hostname != "api.example.com" || routes[0].Service != "http://demo-admin-web:9000" {
 		t.Fatalf("admin routes %+v %v", routes, err)
+	}
+}
+
+// failedConnectorApply runs an ingress apply while the connector cannot start. The tunnel, its stored token and the
+// ingress state remain, but the connector has no applied release. It returns the switch that lets later runs start it.
+func failedConnectorApply(t *testing.T, f *ingressFixture) *atomic.Bool {
+	t.Helper()
+	down := connectorOutage(f)
+	down.Store(true)
+	op := f.run(Request{RequestID: "apply-broken", Kind: "ingress", Manifest: ingressManifest(t, "")})
+	if op.State != "failed" || op.Err != "rollout failed and was cleaned up" {
+		t.Fatalf("apply %s: %s", op.State, op.Err)
+	}
+	return down
+}
+
+// seedOwnedRoute records a route Berthy owns, as an earlier publish would have, under an operation that finishes at once,
+// so the environment is free for the test's next run.
+func seedOwnedRoute(t *testing.T, f *ingressFixture, route state.IngressRoute) {
+	t.Helper()
+	ctx := context.Background()
+	op, _, err := f.store.Admit(ctx, state.Admission{RequestID: "seed-route-" + route.Hostname, ActorID: "admin", Kind: "ingress", App: "ingress", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.store.SetIngressRoute(ctx, op.ID, route); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.store.Finish(ctx, op.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailedConnectorRolloutBlocksPublishingUntilItIsApplied(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	down := failedConnectorApply(t, f)
+	if _, err := f.store.Ingress(ctx); err != nil {
+		t.Fatalf("ingress state lost: %v", err)
+	}
+	if _, _, err := f.store.Secret(ctx, manifest.TunnelTokenSecret); err != nil {
+		t.Fatalf("tunnel token lost: %v", err)
+	}
+
+	f.calls.reset()
+	puts, writes := f.cf.ConfigPuts, f.cf.RecordWrites
+	op := f.deploy("publish-early", "api", apiFirst, ingressManifest(t, ""))
+	if op.State != "failed" || op.Err != "managed ingress is not applied; run ingress apply" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if calls := f.calls.all(); len(calls) != 0 || f.cf.ConfigPuts != puts || f.cf.RecordWrites != writes {
+		t.Fatalf("changes before the refusal: %v", calls)
+	}
+	if _, err := f.store.Applied(ctx, "api"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("release recorded: %v", err)
+	}
+	if routes, err := f.store.IngressRoutes(ctx, ""); err != nil || len(routes) != 0 {
+		t.Fatalf("routes %+v %v", routes, err)
+	}
+
+	// Once the connector runs, the same deploy publishes its route.
+	down.Store(false)
+	f.applyIngress("apply-2", ingressManifest(t, ""))
+	if op := f.deploy("publish-later", "api", apiFirst, ingressManifest(t, "")); op.State != "succeeded" {
+		t.Fatalf("deploy after the apply %s: %s", op.State, op.Err)
+	}
+	if got := describeRules(f.tunnelConfig(f.tunnel().ID)); !reflect.DeepEqual(got, []string{"api.example.com||" + apiTarget, "||http_status:404"}) {
+		t.Fatalf("tunnel rules %v", got)
+	}
+}
+
+// A route is seeded directly here: a normal flow records a route only with a connector release behind it. The test checks
+// that removing the app's last hostname does not need that release.
+func TestRemovalStillPublishesWithoutAConnector(t *testing.T) {
+	f := newIngressFixture(t)
+	ctx := context.Background()
+	failedConnectorApply(t, f)
+	tunnelID := f.tunnel().ID
+	record := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: cloudflare.TunnelTarget(tunnelID), Proxied: true, Comment: cloudflare.RecordComment(ingressEnv)})
+	f.cf.SetConfig(tunnelID, json.RawMessage(`{"ingress":[{"hostname":"api.example.com","service":"`+apiTarget+`"},{"service":"http_status:404"}]}`))
+	seedOwnedRoute(t, f, state.IngressRoute{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: record})
+
+	// The app's last hostname goes. Its route and record are its own, so the removal publishes with no connector.
+	if op := f.deploy("drop", "api", apiFirst, withIngress(t, apiApps(webRole(), ""))); op.State != "succeeded" {
+		t.Fatalf("removal deploy %s: %s", op.State, op.Err)
+	}
+	if got := describeRules(f.tunnelConfig(tunnelID)); !reflect.DeepEqual(got, []string{"||http_status:404"}) {
+		t.Fatalf("tunnel rules after the removal %v", got)
+	}
+	if records := f.cf.Records(f.zone); len(records) != 0 {
+		t.Fatalf("records after the removal %+v", records)
+	}
+	if routes, err := f.store.IngressRoutes(ctx, "api"); err != nil || len(routes) != 0 {
+		t.Fatalf("routes after the removal %+v %v", routes, err)
 	}
 }
