@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/schedule"
+
 	"github.com/distribution/reference"
 	"go.yaml.in/yaml/v3"
 )
@@ -126,7 +128,27 @@ type Job struct {
 	Service  string   `json:"service,omitempty" yaml:"service,omitempty"`
 	Schedule string   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	Command  []string `json:"command" yaml:"command"`
+	Timeout  string   `json:"timeout,omitempty" yaml:"timeout,omitempty"` // default "1h"; from 1s to 24h
 }
+
+// Job timeouts: a job that sets none gets defaultJobTimeout, which stored manifests show. A timeout runs from
+// minJobTimeout to maxJobTimeout.
+const (
+	defaultJobTimeout = "1h"
+	minJobTimeout     = time.Second
+	maxJobTimeout     = 24 * time.Hour
+)
+
+// TimeoutDuration returns the job's timeout. The manifest is validated and defaulted before use, so the fallback only
+// covers a Job built in code.
+func (j Job) TimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(j.Timeout)
+	if err != nil {
+		d, _ = time.ParseDuration(defaultJobTimeout)
+	}
+	return d
+}
+
 type Backup struct {
 	App         string     `json:"app" yaml:"app"`
 	Volume      string     `json:"volume" yaml:"volume"`
@@ -515,8 +537,8 @@ func (m *Manifest) Validate() error {
 		if !identifier.MatchString(name) || !identifier.MatchString(j.App) || !argv(j.Command) || j.Role != "" && !identifier.MatchString(j.Role) || j.Service != "" && !identifier.MatchString(j.Service) || j.Role != "" && j.Service != "" {
 			return fmt.Errorf("invalid job %q", name)
 		}
-		if _, ok := m.Apps[j.App]; !ok {
-			return fmt.Errorf("job %s: unknown app", name)
+		if err := m.validateJob(name, j); err != nil {
+			return err
 		}
 	}
 	for _, name := range sortedKeys(m.Destinations) {
@@ -567,8 +589,61 @@ func (m *Manifest) Validate() error {
 	}
 	return m.validateMonitoring()
 }
+
+// validateJob checks a job's schedule, timeout and target. An image app's job names a role, which may be left out when
+// the app has one role. A Compose job names a service, which the manifest cannot check, so only its shape is checked.
+func (m *Manifest) validateJob(name string, j Job) error {
+	if m.Ingress != nil && j.App == ConnectorAppName {
+		return fmt.Errorf("job %s: app %s is reserved for the managed ingress connector", name, ConnectorAppName)
+	}
+	app, ok := m.Apps[j.App]
+	if !ok {
+		return fmt.Errorf("job %s: unknown app", name)
+	}
+	if j.Schedule != "" {
+		if _, err := schedule.Parse(j.Schedule); err != nil {
+			return fmt.Errorf("job %s: invalid schedule: %w", name, err)
+		}
+	}
+	if !validJobTimeout(j.Timeout) {
+		return fmt.Errorf("job %s: invalid timeout", name)
+	}
+	if app.Kind != "image" {
+		if j.Role != "" {
+			return fmt.Errorf("job %s: use service for a Compose app", name)
+		}
+		return nil
+	}
+	switch {
+	case j.Service != "":
+		return fmt.Errorf("job %s: use role for an image app", name)
+	case j.Role != "":
+		if _, known := app.Roles[j.Role]; !known {
+			return fmt.Errorf("job %s: role is not a role of the app", name)
+		}
+	case len(app.Roles) != 1:
+		return fmt.Errorf("job %s: role required for an app with several roles", name)
+	}
+	return nil
+}
+
+// validJobTimeout accepts an empty timeout, which takes the default, or a duration from minJobTimeout to maxJobTimeout.
+func validJobTimeout(s string) bool {
+	if s == "" {
+		return true
+	}
+	d, err := time.ParseDuration(s)
+	return err == nil && d >= minJobTimeout && d <= maxJobTimeout
+}
+
 func (m *Manifest) defaults() {
 	m.defaultsMonitoring()
+	for name, j := range m.Jobs {
+		if j.Timeout == "" {
+			j.Timeout = defaultJobTimeout
+		}
+		m.Jobs[name] = j
+	}
 	for k, a := range m.Apps {
 		if a.Deploy.DeployTimeout == "" {
 			a.Deploy.DeployTimeout = "120s"
