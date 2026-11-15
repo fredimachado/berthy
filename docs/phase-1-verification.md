@@ -1,7 +1,7 @@
 # Phase 1 verification
 
-This page records observations, not a claim that every Phase 1 acceptance check
-has finished. Production ingress and VPN behavior require their own checks.
+This page records Phase 1 verification results and their scope. Production
+ingress and VPN behavior require their own checks.
 
 ## Environment and setup
 
@@ -20,6 +20,13 @@ seconds with increasing timestamps, history, unauthorized requests and invalid
 bind configuration. A Windows-built CLI authenticated to that same agent at
 `172.21.112.66:17944` and listed both Swarm services and both Compose projects.
 This WSL address test does not measure a production VPN.
+
+The final product build, `31933f2`, was also confirmed as a static Linux
+binary with `file`. Its full systemd CLI smoke check passed, and the native
+Windows CLI reached the WSL private address and returned exactly four apps.
+The Go tests and vet, Linux race tests, and ingress classifier and context
+checks passed. The changes after this product build affected documentation and
+the verification harness.
 
 Build on Linux with `CGO_ENABLED=0 go build -o "$PWD/berthy" ./cmd/berthy` as
 the checkout owner; a root build on a mounted checkout may need `-buildvcs=false`.
@@ -133,6 +140,16 @@ The same test daemon was started again with `systemd-run`. Doctor, inventory
 and stats recovered without a change to the agent's MainPID. Swarm converged on
 its own; the Compose fixtures had no restart policy and were brought back with
 `compose up -d` before the CLI reconnected.
+
+The outage and recovery check was repeated with product build `31933f2`.
+During the outage, `doctor`, `ps` and an active log stream each exited with
+status 1, while host metrics remained available. App inventory, Compose log
+tail and stats recovered after the daemon returned, and the agent's systemd
+MainPID remained 1478. A separate systemd agent also started with a configured
+nonexistent Unix socket: authenticated `agent-info` worked, `doctor` reported
+Docker failure with a healthy root check, and host stats remained available
+with `containers_fresh: false`. Its listener was bound only to
+`127.0.0.1:17945`.
 
 ## Swarm ingress
 
