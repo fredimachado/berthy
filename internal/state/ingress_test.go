@@ -167,6 +167,47 @@ func TestPutOperationSecretNeedsTheLockAndAudits(t *testing.T) {
 	}
 }
 
+func TestDeleteOperationSecretNeedsTheLockAndAudits(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	if err := s.DeleteOperationSecret(ctx, "missing", "TUNNEL_TOKEN"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unlocked secret delete: %v", err)
+	}
+	op := openIngressOp(t, s, "remove")
+	if err := s.PutOperationSecret(ctx, op.ID, "TUNNEL_TOKEN", []byte("token-value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOperationSecret(ctx, op.ID, "TUNNEL_TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Secret(ctx, "TUNNEL_TOKEN"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("secret after delete: %v", err)
+	}
+	if err := s.DeleteOperationSecret(ctx, op.ID, "TUNNEL_TOKEN"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second delete: %v", err)
+	}
+	audit, err := s.AuditLog(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range audit {
+		if a.Action == "secret_delete:TUNNEL_TOKEN" {
+			found = a.OperationID == op.ID && a.ActorID == "admin" && a.ActorName == "ops" && a.Outcome == "succeeded"
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no audit row for the secret delete: %+v", audit)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DeleteOperationSecret(ctx, op.ID, "TUNNEL_TOKEN"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete after the operation finished: %v", err)
+	}
+}
+
 func TestForgetAppNeedsTheLockAndKeepsHistory(t *testing.T) {
 	s, _, _ := testStore(t)
 	ctx := context.Background()

@@ -84,12 +84,17 @@ func mergeRoutes(cfg cloudflare.TunnelConfig, wants []RouteWant, owned map[strin
 	resolved := map[string]bool{}
 	for _, w := range sorted {
 		existing := rulesFor(rules, w.Hostname)
-		_, isOwned := owned[w.Hostname]
+		owner, isOwned := owned[w.Hostname]
 		single := len(existing) == 1
 		exact := single && existing[0].Path == "" && existing[0].Service == w.Service
 		ch := IngressChange{Hostname: w.Hostname, App: w.App, Role: w.Role, Target: w.Service}
 		rule := cloudflare.Rule{Hostname: w.Hostname, Service: w.Service}
 		switch {
+		case isOwned && owner.App != w.App && !replace && !exact:
+			// A route Berthy created for another app that differs from the want stops the run. One that matches is adopted,
+			// and an admin's replace hands any of them over.
+			conflicts = append(conflicts, "route "+w.Hostname+" belongs to app "+owner.App)
+			continue
 		case len(existing) == 0:
 			ch.Route = "add"
 		case isOwned && exact:
@@ -368,34 +373,45 @@ func (s *ingressSync) record(hostname, target string) cloudflare.DNSRecord {
 	return cloudflare.DNSRecord{Type: "CNAME", Name: hostname, Content: target, Proxied: true, TTL: 1, Comment: cloudflare.RecordComment(s.c.Environment)}
 }
 
-// routeWants lists the routes of the given image apps: one for every hostname of every role. A role routes to its bound
-// service when it is bound, and to <project>-<app>-<role> otherwise.
+// routeWants lists the routes of the given image apps from their current bindings. An app that was never deployed has
+// none, so its first deploy can ask for its routes before its release is recorded.
 func (c *Controller) routeWants(ctx context.Context, m manifest.Manifest, apps []string) ([]RouteWant, error) {
+	if c.Store == nil {
+		return nil, errors.New("state unavailable")
+	}
 	var out []RouteWant
 	for _, name := range apps {
 		app, ok := m.Apps[name]
 		if !ok || app.Kind != "image" {
 			continue
 		}
-		release, err := c.Store.Applied(ctx, name)
+		bindings, err := c.Store.Bindings(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		bound := map[string]string{}
-		for _, b := range release.Bindings {
-			bound[b.Role] = b.Name
-		}
-		for role, r := range app.Roles {
-			service := bound[role]
-			if service == "" {
-				service = m.Project + "-" + name + "-" + role
-			}
-			for _, host := range r.Hostnames {
-				out = append(out, RouteWant{Hostname: host, App: name, Role: role, Service: fmt.Sprintf("http://%s:%d", service, r.Port)})
-			}
-		}
+		out = append(out, appRouteWants(m, name, bindings)...)
 	}
 	return sortedWants(out), nil
+}
+
+// appRouteWants lists the routes of one image app for the bindings its release holds: one for every hostname of every
+// role. A role routes to its bound service when it is bound, and to <project>-<app>-<role> otherwise.
+func appRouteWants(m manifest.Manifest, name string, bindings []state.Binding) []RouteWant {
+	bound := map[string]string{}
+	for _, b := range bindings {
+		bound[b.Role] = b.Name
+	}
+	var out []RouteWant
+	for role, r := range m.Apps[name].Roles {
+		service := bound[role]
+		if service == "" {
+			service = m.Project + "-" + name + "-" + role
+		}
+		for _, host := range r.Hostnames {
+			out = append(out, RouteWant{Hostname: host, App: name, Role: role, Service: fmt.Sprintf("http://%s:%d", service, r.Port)})
+		}
+	}
+	return out
 }
 
 // deployedApps lists the image apps that have an applied release, in name order. An app that was never deployed is

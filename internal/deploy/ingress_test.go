@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"berthy/internal/cloudflare"
@@ -42,11 +44,107 @@ func (f updatableFake) UpdateService(_ context.Context, id string, _ uint64, spe
 	return &engine.StatusError{Code: 404}
 }
 
-// ingressFixture is one environment: a store, a Docker fake, and a Cloudflare account with one zone.
+// callLog records, in order, the writes a test may need to order: Docker's service and one-off changes, and Cloudflare's
+// requests that are not reads.
+type callLog struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (l *callLog) add(entry string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, entry)
+}
+
+func (l *callLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.entries...)
+}
+
+func (l *callLog) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = nil
+}
+
+// index returns the position of the first entry that starts with prefix, or -1.
+func (l *callLog) index(prefix string) int {
+	for i, e := range l.all() {
+		if strings.HasPrefix(e, prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
+// count returns how many entries start with prefix.
+func (l *callLog) count(prefix string) int {
+	n := 0
+	for _, e := range l.all() {
+		if strings.HasPrefix(e, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// loggedEngine is updatableFake that records service writes and one-off containers in the call log. Every one-off
+// container exits with exit.
+type loggedEngine struct {
+	updatableFake
+	calls *callLog
+	exit  int
+}
+
+func (e *loggedEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
+	e.calls.add("service create " + specName(spec))
+	return e.updatableFake.CreateService(ctx, spec, auth)
+}
+
+func (e *loggedEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	e.calls.add("service update " + specName(spec))
+	return e.updatableFake.UpdateService(ctx, id, version, spec, auth)
+}
+
+func (e *loggedEngine) CreateContainer(_ context.Context, name string, _ json.RawMessage) (string, error) {
+	e.calls.add("one-off " + name)
+	return name, nil
+}
+
+func (e *loggedEngine) StartContainer(context.Context, string) error { return nil }
+
+func (e *loggedEngine) WaitContainer(context.Context, string) (int, error) { return e.exit, nil }
+
+func (e *loggedEngine) ContainerLogs(context.Context, string) ([]byte, error) {
+	return []byte("v1\n"), nil
+}
+
+func (e *loggedEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
+}
+
+func (e *loggedEngine) StopContainer(context.Context, string, int) error { return nil }
+
+// logRequests records each Cloudflare request that is not a read, before the fake answers it.
+func logRequests(calls *callLog, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			calls.add("cloudflare " + r.Method + " " + strings.TrimPrefix(r.URL.Path, "/client/v4"))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ingressFixture is one environment: a store, a Docker fake, and a Cloudflare account with one zone. calls records the
+// writes to either.
 type ingressFixture struct {
 	t      *testing.T
 	store  *state.Store
-	docker updatableFake
+	docker *loggedEngine
+	bound  *boundFake
+	calls  *callLog
 	cf     *cftest.Fake
 	api    *cloudflare.Client
 	zone   string
@@ -60,14 +158,18 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 		t.Fatal(err)
 	}
 	fake := cftest.New(ingressToken, ingressAccount)
-	srv := httptest.NewServer(fake.Handler())
+	calls := &callLog{}
+	srv := httptest.NewServer(logRequests(calls, fake.Handler()))
 	t.Cleanup(srv.Close)
-	docker := updatableFake{&boundFake{}}
+	bound := &boundFake{}
+	docker := &loggedEngine{updatableFake: updatableFake{bound}, calls: calls}
 	ctrl := &Controller{Engine: docker, Store: s, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4"}
 	return &ingressFixture{
 		t:      t,
 		store:  s,
 		docker: docker,
+		bound:  bound,
+		calls:  calls,
 		cf:     fake,
 		api:    &cloudflare.Client{BaseURL: srv.URL + "/client/v4", Token: ingressToken},
 		zone:   fake.AddZone("example.com"),
@@ -103,7 +205,7 @@ func apiApp(publish bool) string {
 	if publish {
 		hosts = `,"hostnames":["api.example.com"]`
 	}
-	return `"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"port":8080` + hosts + `}}}}`
+	return `"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"port":8080,"health":{"test":["CMD","true"]}` + hosts + `}}}}`
 }
 
 // seedDeployed records a succeeded deploy of app, bound to the given services, so the app counts as deployed.
@@ -263,6 +365,32 @@ func TestMergeRoutesPlacesBerthyFirstAndKeepsTheRest(t *testing.T) {
 			want:   []string{"api.example.com||" + apiTarget, "||http_status:404"},
 			routes: map[string]string{},
 		},
+		{
+			name:   "a route Berthy created for another app that already matches is adopted",
+			cfg:    rulesOf(rule("api.example.com", apiTarget), rule("", "http_status:404")),
+			wants:  apiWant,
+			owned:  map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "admin", Role: "web", Service: apiTarget}},
+			want:   []string{"api.example.com||" + apiTarget, "||http_status:404"},
+			routes: map[string]string{"api.example.com": "keep"},
+		},
+		{
+			name:      "a route Berthy created for another app with another target is a conflict",
+			cfg:       rulesOf(rule("api.example.com", "http://old:80"), rule("", "http_status:404")),
+			wants:     apiWant,
+			owned:     map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "admin", Role: "web", Service: "http://old:80"}},
+			want:      []string{"api.example.com||http://old:80", "||http_status:404"},
+			routes:    map[string]string{},
+			conflicts: 1,
+		},
+		{
+			name:    "replace hands a route Berthy created for another app over",
+			cfg:     rulesOf(rule("api.example.com", "http://old:80"), rule("", "http_status:404")),
+			wants:   apiWant,
+			owned:   map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "admin", Role: "web", Service: "http://old:80"}},
+			replace: true,
+			want:    []string{"api.example.com||" + apiTarget, "||http_status:404"},
+			routes:  map[string]string{"api.example.com": "change"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -288,7 +416,7 @@ func TestMergeRoutesReportsPreviousAndKeepsExtra(t *testing.T) {
 	origin := json.RawMessage(`{"connectTimeout":"9s"}`)
 	cfg := rulesOf(cloudflare.Rule{Hostname: "api.example.com", Service: "http://old:80", Extra: map[string]json.RawMessage{"originRequest": origin}}, rule("", "http_status:404"))
 	want := []RouteWant{{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget}}
-	owned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", Service: "http://old:80"}}
+	owned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "api", Role: "web", Service: "http://old:80"}}
 	merged, changes, conflicts := mergeRoutes(cfg, want, owned, nil, false)
 	if len(conflicts) != 0 || len(changes) != 1 || changes[0].Previous != "http://old:80" || changes[0].Target != apiTarget {
 		t.Fatalf("changes %+v conflicts %v", changes, conflicts)

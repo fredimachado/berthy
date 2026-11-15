@@ -23,10 +23,6 @@ type preparedPlan struct {
 func (c *Controller) prepare(ctx context.Context, req Request, image string) (Plan, error) {
 	p := Plan{App: req.App, Image: image}
 	app := req.Manifest.Apps[req.App]
-	// Publishing routes and DNS records is not wired into deploys yet, so a deploy must not skip it silently.
-	if hasHostnames(app) {
-		return Plan{}, Refusal(publishingRefusal)
-	}
 	for role := range app.Roles {
 		p.Roles = append(p.Roles, role)
 	}
@@ -78,6 +74,15 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		}
 		p.Image = pinned.String()
 	}
+	if req.DryRun {
+		wants, err := c.routeWants(ctx, req.Manifest, []string{req.App})
+		if err != nil {
+			return Plan{}, err
+		}
+		if err = c.dryRunPublish(ctx, &p, req.Manifest, req.App, wants, req.ReplaceExisting); err != nil {
+			return Plan{}, err
+		}
+	}
 	return p, nil
 }
 
@@ -122,9 +127,6 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 	app, ok := req.Manifest.Apps[req.App]
 	if !ok || app.Kind != "image" {
 		return Plan{}, nil, errors.New("image app required")
-	}
-	if hasHostnames(app) {
-		return Plan{}, nil, Refusal(publishingRefusal)
 	}
 	if c.Engine == nil {
 		return Plan{}, nil, errors.New("Docker unavailable")

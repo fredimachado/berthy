@@ -35,15 +35,19 @@ const (
 	errIngressPublish        Refusal = "ingress publish failed"
 	errIngressNotConfigured  Refusal = "managed ingress is not configured"
 	errTunnelToken           Refusal = "tunnel token unavailable"
+	errTunnelTokenRemoval    Refusal = "tunnel token removal failed"
 	errConnectorRemoval      Refusal = "connector removal failed"
 	errIngressState          Refusal = "ingress state recording failed"
+	errIngressNotApplied     Refusal = "managed ingress is not applied; run ingress apply"
+	errIngressChanged        Refusal = "managed ingress changed; run ingress apply"
 )
 
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
 	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
-		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errConnectorRemoval, errIngressState:
+		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
+		errIngressNotApplied, errIngressChanged:
 		return true
 	}
 	return false

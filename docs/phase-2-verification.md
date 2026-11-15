@@ -96,10 +96,11 @@ progress and exits successfully only for a successful terminal outcome.
 
 Image roles have no host-published ports. An ordinary ingress service on the
 shared overlay can route to them by service name. Managed Cloudflare ingress
-is Phase 2b: manifests may describe it, but an image deployment with
-`hostnames` on a selected role stops before Docker writes until it is
-implemented. An unrelated unpublished image app in the same manifest can
-still be selected.
+is Phase 2b: an image deployment with `hostnames` on a selected role checks
+Cloudflare before Docker writes, then publishes its routes and DNS records
+once the new version is healthy. A failed publish leaves the new version
+running and exits non-zero. An unrelated unpublished image app in the same
+manifest can still be selected.
 
 The CLI also exposes `history APP`, `audit`, `lock status`, `lock acquire -m
 MESSAGE`, `lock release`, `secret list`, and `secret delete NAME`. Mutating

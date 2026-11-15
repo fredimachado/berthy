@@ -678,6 +678,40 @@ func (s *Store) PutOperationSecret(ctx context.Context, opID, name string, value
 	}
 	return tx.Commit()
 }
+
+// DeleteOperationSecret removes a secret for the operation that holds the environment lock, such as the tunnel token
+// once the connector is gone. It returns sql.ErrNoRows when there is no such secret. DeleteSecret refuses while any lock
+// is held; this does not.
+func (s *Store) DeleteOperationSecret(ctx context.Context, opID, name string) error {
+	if name == "" {
+		return errors.New("empty secret name")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	var a Admission
+	if err = tx.QueryRowContext(ctx, `SELECT actor_id,actor_name,remote FROM operations WHERE environment=? AND id=?`, s.env, opID).Scan(&a.ActorID, &a.ActorName, &a.Remote); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM secrets WHERE environment=? AND name=?`, s.env, name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	a.Kind = "secret_delete:" + name
+	if err = auditTx(ctx, tx, s.env, opID, a, "succeeded"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *Store) Secret(ctx context.Context, name string) (SecretInfo, []byte, error) {
 	var b []byte
 	info := SecretInfo{Name: name}

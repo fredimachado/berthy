@@ -88,8 +88,17 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		if !actor.Admin {
 			return Plan{}, errors.New("adoption requires administrator access")
 		}
-		plan, _, err := c.planAdoption(ctx, req)
-		return plan, err
+		plan, bindings, err := c.planAdoption(ctx, req)
+		if err != nil {
+			return Plan{}, err
+		}
+		if req.DryRun {
+			// The routes an adoption publishes follow its bindings, which the plan does not yet record.
+			if err = c.dryRunPublish(ctx, &plan, req.Manifest, req.App, appRouteWants(req.Manifest, req.App, bindings), req.ReplaceExisting); err != nil {
+				return Plan{}, err
+			}
+		}
+		return plan, nil
 	}
 	if req.Kind == "rollback" && req.RevertSchema {
 		return c.planSchemaRevert(ctx, actor, req)
@@ -129,9 +138,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	return c.prepare(ctx, req, image)
 }
 
-// publishingRefusal is returned for apps with hostnames until deploys publish routes and DNS records.
-const publishingRefusal = "managed ingress publishing is not supported"
-
+// hasHostnames reports whether the app declares a public hostname on any role.
 func hasHostnames(app manifest.App) bool {
 	for _, role := range app.Roles {
 		if len(role.Hostnames) > 0 {
@@ -167,10 +174,6 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
-		}
-		// Refuse before the environment lock is taken, so no operation is recorded for a deploy that cannot run.
-		if app, ok := req.Manifest.Apps[req.App]; ok && hasHostnames(app) {
-			return state.Operation{}, false, Refusal(publishingRefusal)
 		}
 	}
 	copyReq := req

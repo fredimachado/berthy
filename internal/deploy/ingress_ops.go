@@ -149,6 +149,125 @@ func ingressFailure(err error, fallback Refusal) string {
 	return string(fallback)
 }
 
+// publishScope reports whether a deploy of app must publish: the app declares hostnames, or Berthy owns routes for it,
+// which may need removing. The connector app never publishes. It also returns the routes Berthy owns for app.
+func (c *Controller) publishScope(ctx context.Context, m manifest.Manifest, app string) (bool, []state.IngressRoute, error) {
+	if app == manifest.ConnectorAppName {
+		return false, nil, nil
+	}
+	if c.Store == nil {
+		return false, nil, errors.New("state unavailable")
+	}
+	owned, err := c.Store.IngressRoutes(ctx, app)
+	if err != nil {
+		return false, nil, err
+	}
+	return hasHostnames(m.Apps[app]) || len(owned) > 0, owned, nil
+}
+
+// ingressPublish is the publish step of one deploy: the sync engine for the environment's tunnel, the routes the release
+// wants, and the routes it may remove, which are the app's own.
+type ingressPublish struct {
+	sync      *ingressSync
+	wants     []RouteWant
+	removable func(state.IngressRoute) bool
+}
+
+// ownedBy lets a deploy of app remove the routes Berthy created for that app, and no other.
+func ownedBy(app string) func(state.IngressRoute) bool {
+	return func(r state.IngressRoute) bool { return r.App == app }
+}
+
+// publishSync returns the sync engine for a deploy's publish. It reads the stored ingress configuration, not the
+// manifest's, so a deploy still reaches its app's routes after the manifest has dropped managed ingress. A manifest that
+// names ingress must name the account it was applied to. It reads Cloudflare and changes nothing.
+func (c *Controller) publishSync(ctx context.Context, m manifest.Manifest, opID string) (*ingressSync, error) {
+	st, err := c.Store.Ingress(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errIngressNotApplied
+	}
+	if err != nil {
+		return nil, err
+	}
+	if m.Ingress != nil && m.Ingress.Cloudflare != nil && m.Ingress.Cloudflare.AccountID != st.AccountID {
+		return nil, errIngressChanged
+	}
+	cf, err := c.cloudflareClient(ctx, st.APITokenSecret)
+	if err != nil {
+		return nil, err
+	}
+	if err = cf.VerifyToken(ctx, st.AccountID); err != nil {
+		return nil, errCloudflareToken
+	}
+	return &ingressSync{c: c, cf: cf, opID: opID, st: st}, nil
+}
+
+// publishCheck is the check step of a deploy. When the deploy publishes, it confirms before anything changes that managed
+// ingress is applied, that the token works, and that the routes and records the release wants are free. A conflict is
+// recorded on the operation and stops the deploy. It returns nil when the deploy publishes nothing.
+func (c *Controller) publishCheck(ctx context.Context, opID string, m manifest.Manifest, app string, wants []RouteWant, replace bool) (*ingressPublish, error) {
+	publishes, _, err := c.publishScope(ctx, m, app)
+	if err != nil || !publishes {
+		return nil, err
+	}
+	sy, err := c.publishSync(ctx, m, opID)
+	if err != nil {
+		return nil, err
+	}
+	ing := &ingressPublish{sync: sy, wants: wants, removable: ownedBy(app)}
+	plan, _, _, err := sy.plan(ctx, wants, ing.removable, replace)
+	if err != nil {
+		return nil, err
+	}
+	if len(plan.Conflicts) > 0 {
+		c.recordConflicts(ctx, opID, plan.Conflicts)
+		return nil, errIngressConflict
+	}
+	return ing, nil
+}
+
+// publishIngress is the publish step of a deploy. It runs once the new version is healthy. It plans again from fresh
+// reads, then writes the routes and records. A nil publish does nothing.
+func (c *Controller) publishIngress(ctx context.Context, opID string, ing *ingressPublish, replace bool) error {
+	if ing == nil {
+		return nil
+	}
+	plan, cfg, steps, err := ing.sync.plan(ctx, ing.wants, ing.removable, replace)
+	if err != nil {
+		return err
+	}
+	if len(plan.Conflicts) > 0 {
+		c.recordConflicts(ctx, opID, plan.Conflicts)
+		return errIngressConflict
+	}
+	return ing.sync.apply(ctx, plan, cfg, steps)
+}
+
+// dryRunPublish adds to plan the routes and records that a deploy's publish would change, when the deploy publishes.
+// Nothing is written. A refusal that would stop the real publish becomes a blocker of the plan, not an error.
+func (c *Controller) dryRunPublish(ctx context.Context, plan *Plan, m manifest.Manifest, app string, wants []RouteWant, replace bool) error {
+	publishes, _, err := c.publishScope(ctx, m, app)
+	if err != nil || !publishes {
+		return err
+	}
+	sy, err := c.publishSync(ctx, m, "")
+	var ip IngressPlan
+	if err == nil {
+		ip, _, _, err = sy.plan(ctx, wants, ownedBy(app), replace)
+	}
+	if err != nil {
+		var r Refusal
+		if errors.As(err, &r) {
+			plan.Blockers = append(plan.Blockers, string(r))
+			return nil
+		}
+		return err
+	}
+	plan.Ingress = &ip
+	plan.Blockers = append(plan.Blockers, ip.Conflicts...)
+	return nil
+}
+
 // planIngress describes an ingress apply, or the removal of managed ingress, without writing anything. No tunnel is
 // created, no route or record is written, and no connector is deployed.
 func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) (Plan, error) {
@@ -298,6 +417,10 @@ func (c *Controller) runIngressRemoval(ctx context.Context, op state.Operation, 
 	}
 	if err = c.Store.ForgetApp(ctx, op.ID, manifest.ConnectorAppName); err != nil {
 		return fail(errIngressState)
+	}
+	// The tunnel token goes before the ingress state is cleared, so a failure here leaves the removal to be retried.
+	if err = c.Store.DeleteOperationSecret(ctx, op.ID, manifest.TunnelTokenSecret); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fail(errTunnelTokenRemoval)
 	}
 	if err = c.Store.ClearIngress(ctx, op.ID); err != nil {
 		return fail(errIngressState)

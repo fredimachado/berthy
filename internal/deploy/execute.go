@@ -53,7 +53,26 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if e != nil {
 			return
 		}
+		ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, appRouteWants(req.Manifest, req.App, bindings), req.ReplaceExisting)
+		if err != nil {
+			outcome.Err = ingressFailure(err, errIngressPublish)
+			return
+		}
 		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Manifest: raw, Bindings: bindings}}
+		if ing == nil {
+			return
+		}
+		// Adoption starts no service, so its routes follow its bindings at once. The barrier keeps the release if the
+		// process stops during the publish, as it does for a deploy.
+		barrier, e := json.Marshal(outcome)
+		if e != nil || c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: time.Now()}) != nil {
+			outcome = state.Outcome{State: "failed", Err: "verification barrier unavailable"}
+			return
+		}
+		if err = c.publishIngress(ctx, op.ID, ing, req.ReplaceExisting); err != nil {
+			outcome.State = "failed"
+			outcome.Err = ingressFailure(err, errIngressPublish)
+		}
 		return
 	}
 	prepared, err := c.prepareExecution(ctx, req, p)
@@ -205,6 +224,17 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 		work = append(work, roleWork{intent: intent, replicas: replicas})
 	}
+	// The check step of a publishing deploy confirms, before anything changes, that its routes and records can be published.
+	wants, err := c.routeWants(ctx, req.Manifest, []string{req.App})
+	if err != nil {
+		outcome.Err = ingressFailure(err, errIngressPublish)
+		return
+	}
+	ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, wants, req.ReplaceExisting)
+	if err != nil {
+		outcome.Err = ingressFailure(err, errIngressPublish)
+		return
+	}
 	if !rollback && app.Migrations != nil {
 		source, e := json.Marshal(struct {
 			Manifest manifest.Manifest `json:"manifest"`
@@ -317,20 +347,26 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = "verification barrier unavailable"
 		return
 	}
+	// The publish follows the barrier. A crash during it leaves the operation to recovery, which keeps the release. The
+	// next deploy or ingress apply brings any route or record it missed in line.
+	publishErr := c.publishIngress(ctx, op.ID, ing, req.ReplaceExisting)
 	if !rollback {
 		err = c.runPost(ctx, op.ID, prepared)
 	} else {
 		err = nil
 	}
-	if err != nil {
-		if errors.Is(err, ErrOneOffUncertain) {
-			outcome.State = "recovery_required"
-			outcome.Release = nil
-			outcome.Err = "post-deploy command outcome uncertain"
-		} else {
-			outcome.State = "failed"
-			outcome.Err = "post-deploy command failed"
-		}
+	switch {
+	case err != nil && errors.Is(err, ErrOneOffUncertain):
+		outcome.State = "recovery_required"
+		outcome.Release = nil
+		outcome.Err = "post-deploy command outcome uncertain"
+	case err != nil:
+		outcome.State = "failed"
+		outcome.Err = "post-deploy command failed"
+	case publishErr != nil:
+		// The new version runs and its release is recorded. Only its routes are missing.
+		outcome.State = "failed"
+		outcome.Err = ingressFailure(publishErr, errIngressPublish)
 	}
 	return outcome
 }

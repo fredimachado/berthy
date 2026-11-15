@@ -30,6 +30,7 @@ type Fake struct {
 	RecordWrites int
 
 	mu          sync.Mutex
+	faults      []fault // checked in order before each request, under mu
 	seq         int
 	tunnels     map[string]cloudflare.Tunnel
 	tunnelOrder []string
@@ -53,13 +54,51 @@ func New(token, accountID string) *Fake {
 	}
 }
 
+// fault answers requests that match a method and a path prefix with a status.
+type fault struct {
+	method, prefix string
+	status         int
+}
+
 // Handler serves the Cloudflare API. Request paths may include the /client/v4 prefix or omit it.
 func (f *Fake) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if status := f.faulted(r); status != 0 {
+			writeFailure(w, status, 1000, "injected failure")
+			return
+		}
 		f.serve(w, r)
 	})
+}
+
+// FailRequests answers later requests whose method is method and whose path, without the /client/v4 prefix, starts
+// with prefix, with status. It runs before the account is consulted, so the request changes nothing. A zero status
+// removes the fault. For example, FailRequests("PUT", "/accounts/", 500) fails every tunnel configuration write.
+func (f *Fake) FailRequests(method, prefix string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, ft := range f.faults {
+		if ft.method == method && ft.prefix == prefix {
+			f.faults = append(f.faults[:i], f.faults[i+1:]...)
+			break
+		}
+	}
+	if status != 0 {
+		f.faults = append(f.faults, fault{method: method, prefix: prefix, status: status})
+	}
+}
+
+// faulted returns the status of the first fault that matches r, or 0 when none does. The caller must hold f.mu.
+func (f *Fake) faulted(r *http.Request) int {
+	path := strings.TrimPrefix(r.URL.Path, "/client/v4")
+	for _, ft := range f.faults {
+		if r.Method == ft.method && strings.HasPrefix(path, ft.prefix) {
+			return ft.status
+		}
+	}
+	return 0
 }
 
 // AddZone adds an active zone to the account and returns its id.
