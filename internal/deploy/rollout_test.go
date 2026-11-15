@@ -30,10 +30,11 @@ func (j *journalFake) MarkStep(context.Context, string, int, string, json.RawMes
 }
 
 type mutationFake struct {
-	creates    int
-	live       engine.ServiceSnapshot
-	inspectErr error
-	tasks      []engine.ServiceTask
+	creates       int
+	updateVersion uint64
+	live          engine.ServiceSnapshot
+	inspectErr    error
+	tasks         []engine.ServiceTask
 }
 
 func (m *mutationFake) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
@@ -43,7 +44,9 @@ func (m *mutationFake) CreateService(context.Context, json.RawMessage, *engine.R
 	m.creates++
 	return "id", nil
 }
-func (m *mutationFake) UpdateService(context.Context, string, uint64, json.RawMessage, *engine.RegistryAuth) error {
+func (m *mutationFake) UpdateService(_ context.Context, _ string, version uint64, spec json.RawMessage, _ *engine.RegistryAuth) error {
+	m.updateVersion = version
+	m.live.Spec = spec
 	return nil
 }
 func (m *mutationFake) DeleteService(context.Context, string) error { return nil }
@@ -189,5 +192,33 @@ func (m *mutationFake) InspectContainerHealth(context.Context, string) (string, 
 func TestSpecComparisonDetectsLargeIntegerDrift(t *testing.T) {
 	if sameSpec(json.RawMessage(`{"value":9007199254740992}`), json.RawMessage(`{"value":9007199254740993}`)) {
 		t.Fatal("integer drift hidden")
+	}
+}
+
+func TestUpdateRejectsInheritedHostMount(t *testing.T) {
+	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"old","Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
+	if _, err := mergeServiceSpec(live, desired, "net"); err == nil {
+		t.Fatal("host bind accepted")
+	}
+}
+
+func TestUpdateRoleUsesCurrentVersion(t *testing.T) {
+	before := json.RawMessage(`{"Name":"svc","version":"old"}`)
+	desired := json.RawMessage(`{"Name":"svc","version":"new"}`)
+	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
+	j := &journalFake{}
+	err := updateRole(context.Background(), j, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1)
+	if err != nil || m.updateVersion != 9 {
+		t.Fatalf("update version %d: %v", m.updateVersion, err)
+	}
+}
+
+func TestDrainWaitsForRetiringTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	e := healthFake{tasks: []engine.ServiceTask{{ServiceID: "s", State: "running", Labels: map[string]string{"berthy.operation": "old"}}}}
+	if waitDrain(ctx, e, "s", "new") == nil {
+		t.Fatal("old task still running")
 	}
 }

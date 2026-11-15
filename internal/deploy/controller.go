@@ -58,6 +58,14 @@ type Controller struct {
 
 // Plan performs no durable or Docker mutations.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.Kind == "rollback" {
+		resolved, err := c.rollbackRequest(ctx, req)
+		if err != nil {
+			return Plan{}, err
+		}
+		resolved.Kind = "deploy"
+		return c.Plan(ctx, actor, resolved)
+	}
 	if req.Kind != "" && req.Kind != "deploy" && req.Kind != "rollback" {
 		return c.planOperation(ctx, actor, req)
 	}
@@ -124,7 +132,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if err != nil || !created {
 		return op, created, err
 	}
-	if kind == "deploy" {
+	if kind == "deploy" || kind == "rollback" {
 		go c.execute(context.Background(), op, actor, req)
 	} else {
 		go func() {
@@ -153,7 +161,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 	for _, i := range intents {
 		if i.Kind == "oneoff" {
 			hasHooks = true
-		} else if i.Kind != "create" {
+		} else if i.Kind != "create" && i.Kind != "update" {
 			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "unsupported recovery step"})
 		}
 	}
@@ -162,8 +170,49 @@ func (c *Controller) Recover(ctx context.Context) error {
 			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "one-off recovery required"})
 		}
 	}
-	if err = c.compensateCreates(ctx, op.ID); err != nil {
+	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
 		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"})
 	}
 	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up"})
+}
+
+func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request, error) {
+	if c.Store == nil || req.App == "" {
+		return Request{}, errors.New("rollback history unavailable")
+	}
+	if req.RevertSchema {
+		return Request{}, errors.New("schema revert unavailable")
+	}
+	current, err := c.Store.Applied(ctx, req.App)
+	if err != nil {
+		return Request{}, errors.New("applied release unavailable")
+	}
+	history, err := c.Store.History(ctx, req.App)
+	if err != nil {
+		return Request{}, err
+	}
+	var chosen *state.Release
+	for idx := range history {
+		r := &history[idx]
+		if req.TargetRelease != 0 {
+			if r.ID == req.TargetRelease {
+				chosen = r
+				break
+			}
+		} else if r.ID < current.ID {
+			chosen = r
+			break
+		}
+	}
+	if chosen == nil {
+		return Request{}, errors.New("rollback release unavailable")
+	}
+	var m manifest.Manifest
+	if json.Unmarshal(chosen.Manifest, &m) != nil {
+		return Request{}, errors.New("saved release invalid")
+	}
+	req.Manifest = m
+	req.Version = chosen.Digest
+	req.Commit = chosen.Commit
+	return req, nil
 }
