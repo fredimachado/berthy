@@ -122,6 +122,29 @@ func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	}
 }
 
+func TestScaleRefusesReplicasBelowOneBeforeAnyRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request sent for an invalid replica count: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	cases := map[string]string{
+		"0":  "invalid --replicas: must be at least 1",
+		"-1": "invalid --replicas: must be at least 1",
+		"x":  "invalid --replicas",
+	}
+	for replicas, want := range cases {
+		var out, errs bytes.Buffer
+		got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", replicas}, &out, &errs)
+		if got != 2 || strings.TrimSpace(errs.String()) != want {
+			t.Fatalf("--replicas %s: exit %d, message %q, want exit 2 and %q", replicas, got, strings.TrimSpace(errs.String()), want)
+		}
+	}
+}
+
 func TestRecoveryRetryOnlyForRequired(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
