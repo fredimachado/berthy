@@ -258,7 +258,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt", "revert_schema":
+		case "adopt", "Adopt", "revert_schema", "replace_existing":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -891,6 +891,29 @@ func (s *Store) ClearIngress(ctx context.Context, opID string) error {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM ingress WHERE environment=?`, s.env); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ForgetApp removes an app's bindings and applied release, and keeps its release history. Removing managed ingress
+// uses it for the connector app. It requires the environment lock to be held by opID.
+func (s *Store) ForgetApp(ctx context.Context, opID, app string) error {
+	if app == "" {
+		return errors.New("app required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM applied WHERE environment=? AND app=?`, s.env, app); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM bindings WHERE environment=? AND app=?`, s.env, app); err != nil {
 		return err
 	}
 	return tx.Commit()

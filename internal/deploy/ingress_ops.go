@@ -1,0 +1,510 @@
+package deploy
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+
+	"berthy/internal/cloudflare"
+	"berthy/internal/engine"
+	"berthy/internal/manifest"
+	"berthy/internal/state"
+)
+
+// maxConflictEvents bounds how many conflicts an operation records as events.
+const maxConflictEvents = 10
+
+// cloudflareClient builds an API client from the named workload secret.
+func (c *Controller) cloudflareClient(ctx context.Context, tokenSecret string) (*cloudflare.Client, error) {
+	if c.Store == nil {
+		return nil, errCloudflareSecret
+	}
+	info, value, err := c.Store.Secret(ctx, tokenSecret)
+	if err != nil || info.Registry != "" || len(value) == 0 {
+		return nil, errCloudflareSecret
+	}
+	return &cloudflare.Client{BaseURL: c.CloudflareURL, Token: string(value)}, nil
+}
+
+// ingressTarget is the configuration an ingress run acts on: the manifest's, or the stored one when the run removes
+// managed ingress.
+type ingressTarget struct {
+	removal    bool
+	account    string
+	secret     string
+	tunnelName string
+	dns        bool
+	cf         *cloudflare.Client
+	tunnel     *cloudflare.Tunnel // nil when the tunnel does not exist yet
+}
+
+// ingressTargetFor reads the Cloudflare side of an ingress run and checks it: the token works, and the tunnel with the
+// configured name, when it exists, is remotely managed. It changes nothing.
+func (c *Controller) ingressTargetFor(ctx context.Context, m manifest.Manifest) (ingressTarget, error) {
+	if c.Store == nil {
+		return ingressTarget{}, errors.New("state unavailable")
+	}
+	var t ingressTarget
+	if m.Ingress == nil {
+		st, err := c.Store.Ingress(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			return t, errIngressNotConfigured
+		}
+		if err != nil {
+			return t, errIngressPublish
+		}
+		t.removal = true
+		t.account, t.secret, t.tunnelName, t.dns = st.AccountID, st.APITokenSecret, st.TunnelName, st.DNS
+	} else {
+		cfg := m.Ingress.Cloudflare
+		t.account, t.secret, t.tunnelName = cfg.AccountID, cfg.APITokenSecret, m.TunnelName(c.Environment)
+		t.dns = cfg.DNS == nil || *cfg.DNS
+	}
+	cf, err := c.cloudflareClient(ctx, t.secret)
+	if err != nil {
+		return t, err
+	}
+	t.cf = cf
+	if err = cf.VerifyToken(ctx, t.account); err != nil {
+		return t, errCloudflareToken
+	}
+	tunnel, err := cf.FindTunnel(ctx, t.account, t.tunnelName)
+	if err != nil {
+		return t, errCloudflareUnavailable
+	}
+	if tunnel != nil && !tunnel.RemoteConfig {
+		return t, errTunnelNotRemote
+	}
+	t.tunnel = tunnel
+	return t, nil
+}
+
+// newIngressSync returns the sync engine for an ingress run. tunnelID is empty while the tunnel does not exist.
+func (c *Controller) newIngressSync(t ingressTarget, opID, tunnelID string) *ingressSync {
+	return &ingressSync{c: c, cf: t.cf, opID: opID, st: state.IngressState{AccountID: t.account, APITokenSecret: t.secret, TunnelID: tunnelID, TunnelName: t.tunnelName, DNS: t.dns}}
+}
+
+// tunnelIDOf returns the tunnel's ID, or "" when there is no tunnel.
+func tunnelIDOf(t *cloudflare.Tunnel) string {
+	if t == nil {
+		return ""
+	}
+	return t.ID
+}
+
+// everyRoute lets a run remove any route Berthy owns that the manifest no longer asks for.
+func everyRoute(state.IngressRoute) bool { return true }
+
+// connectorRequest is the deploy request that runs the connector app. withToken is false only before the tunnel token
+// is stored, so the connector can still be planned.
+func connectorRequest(m manifest.Manifest, commit string, withToken bool) (Request, error) {
+	app, version, err := m.ConnectorApp()
+	if err != nil {
+		return Request{}, err
+	}
+	if !withToken {
+		app.Env.Secret = nil
+	}
+	synth := manifest.Manifest{Project: m.Project, Network: m.Network, Protected: m.Protected, Registries: m.Registries, Apps: map[string]manifest.App{manifest.ConnectorAppName: app}, Connector: true}
+	return Request{App: manifest.ConnectorAppName, Version: version, Commit: commit, Manifest: synth, Kind: "deploy"}, nil
+}
+
+// tokenStored reports whether the connector's tunnel token is already in the secret store.
+func (c *Controller) tokenStored(ctx context.Context) bool {
+	_, _, err := c.Store.Secret(ctx, manifest.TunnelTokenSecret)
+	return err == nil
+}
+
+// storeTunnelToken stores the connector's tunnel token for the operation that holds the lock, unless the stored value
+// already matches. The token is never printed.
+func (c *Controller) storeTunnelToken(ctx context.Context, opID, token string) error {
+	_, value, err := c.Store.Secret(ctx, manifest.TunnelTokenSecret)
+	if err == nil && string(value) == token {
+		return nil
+	}
+	return c.Store.PutOperationSecret(ctx, opID, manifest.TunnelTokenSecret, []byte(token))
+}
+
+// recordConflicts appends an event for each conflict, so the operator can see why the run stopped.
+func (c *Controller) recordConflicts(ctx context.Context, opID string, conflicts []string) {
+	for i, msg := range conflicts {
+		if i == maxConflictEvents {
+			break
+		}
+		data, err := json.Marshal(map[string]string{"reason": msg})
+		if err != nil {
+			continue
+		}
+		_ = c.Store.AppendEvent(ctx, opID, state.Event{Kind: "conflict", Data: data})
+	}
+}
+
+// ingressFailure is the text an operation records for err: a public refusal as it is, anything else as fallback.
+func ingressFailure(err error, fallback Refusal) string {
+	var r Refusal
+	if errors.As(err, &r) {
+		return string(r)
+	}
+	return string(fallback)
+}
+
+// planIngress describes an ingress apply, or the removal of managed ingress, without writing anything. No tunnel is
+// created, no route or record is written, and no connector is deployed.
+func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	m := req.Manifest
+	if err := m.Validate(); err != nil {
+		return Plan{}, err
+	}
+	t, err := c.ingressTargetFor(ctx, m)
+	if err != nil {
+		return Plan{}, err
+	}
+	wants, err := c.wantsFor(ctx, m)
+	if err != nil {
+		return Plan{}, err
+	}
+	ing := c.newIngressSync(t, "", tunnelIDOf(t.tunnel))
+	ip, _, _, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	if err != nil {
+		return Plan{}, err
+	}
+	ip.CreateTunnel = !t.removal && t.tunnel == nil
+	p := Plan{App: manifest.ConnectorAppName, Roles: []string{}, Blockers: ip.Conflicts}
+	if t.removal {
+		ip.RemoveConnector = true
+	} else {
+		creq, err := connectorRequest(m, req.Commit, c.tokenStored(ctx))
+		if err != nil {
+			return Plan{}, err
+		}
+		cp, err := c.Plan(ctx, actor, creq)
+		if err != nil {
+			return Plan{}, err
+		}
+		p.Roles, p.Image = cp.Roles, cp.Image
+		ip.Connector = &cp
+	}
+	p.Ingress = &ip
+	return p, nil
+}
+
+// runIngress applies managed ingress to the environment, or removes it when the manifest has no ingress block. The
+// checks run first, and nothing changes until they pass.
+func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+	fail := func(err error) state.Outcome {
+		return state.Outcome{State: "failed", Err: ingressFailure(err, errIngressPublish)}
+	}
+	if req.ReplaceExisting && !actor.Admin {
+		return fail(errReplaceAdmin)
+	}
+	m := req.Manifest
+	if err := m.Validate(); err != nil {
+		return fail(err)
+	}
+	if m.Ingress == nil {
+		return c.runIngressRemoval(ctx, op, req)
+	}
+	t, err := c.ingressTargetFor(ctx, m)
+	if err != nil {
+		return fail(err)
+	}
+	wants, err := c.wantsFor(ctx, m)
+	if err != nil {
+		return fail(err)
+	}
+	ing := c.newIngressSync(t, op.ID, tunnelIDOf(t.tunnel))
+	plan, _, _, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	if err != nil {
+		return fail(err)
+	}
+	if len(plan.Conflicts) > 0 {
+		c.recordConflicts(ctx, op.ID, plan.Conflicts)
+		return fail(errIngressConflict)
+	}
+	// The connector must be deployable before anything is created in Cloudflare.
+	preflight, err := connectorRequest(m, req.Commit, c.tokenStored(ctx))
+	if err != nil {
+		return fail(err)
+	}
+	if _, err = c.Plan(ctx, actor, preflight); err != nil {
+		return state.Outcome{State: "failed", Err: "deployment preflight failed"}
+	}
+	tunnel := t.tunnel
+	if tunnel == nil {
+		created, err := t.cf.CreateTunnel(ctx, t.account, t.tunnelName)
+		if err != nil {
+			return fail(errIngressPublish)
+		}
+		tunnel = &created
+	}
+	st := state.IngressState{AccountID: t.account, APITokenSecret: t.secret, TunnelID: tunnel.ID, TunnelName: t.tunnelName, DNS: t.dns}
+	if err = c.Store.SetIngress(ctx, op.ID, st); err != nil {
+		return fail(errIngressState)
+	}
+	ing.st = st
+	token, err := t.cf.TunnelToken(ctx, t.account, tunnel.ID)
+	if err != nil {
+		return fail(errTunnelToken)
+	}
+	if err = c.storeTunnelToken(ctx, op.ID, token); err != nil {
+		return fail(errTunnelToken)
+	}
+	connector, err := connectorRequest(m, req.Commit, true)
+	if err != nil {
+		return fail(err)
+	}
+	outcome := c.runDeploy(ctx, op, actor, connector, false)
+	if outcome.State != "succeeded" {
+		return outcome
+	}
+	// The connector is running, so the routes can point at it. Plan again from fresh reads, then write.
+	plan, cfg, steps, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	if err == nil && len(plan.Conflicts) > 0 {
+		c.recordConflicts(ctx, op.ID, plan.Conflicts)
+		err = errIngressConflict
+	}
+	if err == nil {
+		err = ing.apply(ctx, plan, cfg, steps)
+	}
+	if err != nil {
+		// The release stays. The connector is running, and the next apply repairs the routes.
+		outcome.State = "failed"
+		outcome.Err = ingressFailure(err, errIngressPublish)
+	}
+	return outcome
+}
+
+// runIngressRemoval removes the routes and records Berthy created, deletes the connector and forgets the stored
+// ingress. It never deletes the tunnel.
+func (c *Controller) runIngressRemoval(ctx context.Context, op state.Operation, req Request) state.Outcome {
+	fail := func(err error) state.Outcome {
+		return state.Outcome{State: "failed", Err: ingressFailure(err, errIngressPublish)}
+	}
+	t, err := c.ingressTargetFor(ctx, req.Manifest)
+	if err != nil {
+		return fail(err)
+	}
+	ing := c.newIngressSync(t, op.ID, tunnelIDOf(t.tunnel))
+	plan, cfg, steps, err := ing.plan(ctx, nil, everyRoute, false)
+	if err != nil {
+		return fail(err)
+	}
+	if err = ing.apply(ctx, plan, cfg, steps); err != nil {
+		return fail(err)
+	}
+	if err = c.removeConnector(ctx); err != nil {
+		return fail(errConnectorRemoval)
+	}
+	if err = c.Store.ForgetApp(ctx, op.ID, manifest.ConnectorAppName); err != nil {
+		return fail(errIngressState)
+	}
+	if err = c.Store.ClearIngress(ctx, op.ID); err != nil {
+		return fail(errIngressState)
+	}
+	return state.Outcome{State: "succeeded"}
+}
+
+// removeConnector deletes the services bound to the connector app. Each must still carry Berthy's labels for this
+// environment. A service that is already gone counts as removed.
+func (c *Controller) removeConnector(ctx context.Context) error {
+	bindings, err := c.Store.Bindings(ctx, manifest.ConnectorAppName)
+	if err != nil {
+		return err
+	}
+	if len(bindings) > 0 && c.Engine == nil {
+		return errors.New("Docker unavailable")
+	}
+	for _, b := range bindings {
+		live, err := c.Engine.InspectService(ctx, b.Name)
+		if serviceMissing(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var owner struct{ Labels map[string]string }
+		if json.Unmarshal(live.Spec, &owner) != nil || owner.Labels["berthy.environment"] != c.Environment || owner.Labels["berthy.app"] != manifest.ConnectorAppName {
+			return errors.New("connector service ownership changed")
+		}
+		if err = c.Engine.DeleteService(ctx, live.ID); err != nil && !serviceMissing(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// serviceMissing reports whether err is Docker's answer that the service does not exist.
+func serviceMissing(err error) bool {
+	var status *engine.StatusError
+	return errors.As(err, &status) && status.Code == 404
+}
+
+// TunnelStatus is the tunnel as Cloudflare reports it.
+type TunnelStatus struct {
+	Name        string `json:"name"`
+	ID          string `json:"id"`
+	Status      string `json:"status,omitempty"`
+	Connections int    `json:"connections"`
+}
+
+// RoleStatus is one bound connector role: its service, and how many of its replicas run healthy.
+type RoleStatus struct {
+	Role    string `json:"role"`
+	Service string `json:"service"`
+	Running int    `json:"running"`
+	Desired int    `json:"desired"`
+}
+
+// RouteStatus is one stored route. DNS is managed, missing or off, and empty when Cloudflare could not be asked.
+type RouteStatus struct {
+	Hostname string `json:"hostname"`
+	App      string `json:"app"`
+	Role     string `json:"role"`
+	Target   string `json:"target"`
+	DNS      string `json:"dns,omitempty"`
+}
+
+// IngressStatus is what ingress status shows.
+type IngressStatus struct {
+	Configured bool          `json:"configured"`
+	Tunnel     *TunnelStatus `json:"tunnel,omitempty"`
+	Cloudflare string        `json:"cloudflare,omitempty"`
+	Connector  []RoleStatus  `json:"connector,omitempty"`
+	Routes     []RouteStatus `json:"routes"`
+}
+
+// IngressStatus reports the tunnel as Cloudflare sees it, the connector's replicas and every stored route. A Cloudflare
+// failure is reported in the result, not returned as an error.
+func (c *Controller) IngressStatus(ctx context.Context) (IngressStatus, error) {
+	if c.Store == nil {
+		return IngressStatus{}, errors.New("state unavailable")
+	}
+	out := IngressStatus{Routes: []RouteStatus{}}
+	st, err := c.Store.Ingress(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return IngressStatus{}, err
+	}
+	out.Configured = true
+	out.Tunnel = &TunnelStatus{Name: st.TunnelName, ID: st.TunnelID}
+	cf, clientErr := c.cloudflareClient(ctx, st.APITokenSecret)
+	reachable := clientErr == nil
+	if reachable {
+		tunnel, err := cf.GetTunnel(ctx, st.AccountID, st.TunnelID)
+		reachable = err == nil
+		if reachable {
+			out.Tunnel.Status, out.Tunnel.Connections = tunnel.Status, len(tunnel.Connections)
+		}
+	}
+	out.Cloudflare = "unavailable"
+	if reachable {
+		out.Cloudflare = "available"
+	}
+	bindings, err := c.Store.Bindings(ctx, manifest.ConnectorAppName)
+	if err != nil {
+		return IngressStatus{}, err
+	}
+	for _, b := range bindings {
+		running, desired, err := c.serviceReplicas(ctx, b)
+		if err != nil {
+			return IngressStatus{}, err
+		}
+		out.Connector = append(out.Connector, RoleStatus{Role: b.Role, Service: b.Name, Running: running, Desired: desired})
+	}
+	routes, err := c.Store.IngressRoutes(ctx, "")
+	if err != nil {
+		return IngressStatus{}, err
+	}
+	for _, r := range routes {
+		row := RouteStatus{Hostname: r.Hostname, App: r.App, Role: r.Role, Target: r.Service}
+		switch {
+		case !st.DNS:
+			row.DNS = "off"
+		case clientErr == nil:
+			row.DNS = c.recordState(ctx, cf, r)
+		}
+		out.Routes = append(out.Routes, row)
+	}
+	return out, nil
+}
+
+// recordState reports whether the DNS record of a route is still there: managed, or missing. It is empty when
+// Cloudflare cannot be asked.
+func (c *Controller) recordState(ctx context.Context, cf *cloudflare.Client, r state.IngressRoute) string {
+	if r.DNSRecordID == "" {
+		return "missing"
+	}
+	records, err := cf.DNSRecords(ctx, r.ZoneID, r.Hostname)
+	if err != nil {
+		return ""
+	}
+	for _, rec := range records {
+		if rec.ID == r.DNSRecordID && cloudflare.IsManaged(rec, c.Environment) {
+			return "managed"
+		}
+	}
+	return "missing"
+}
+
+// serviceReplicas returns how many replicas of a bound service run healthy on its current generation, and how many it
+// should run.
+func (c *Controller) serviceReplicas(ctx context.Context, b state.Binding) (int, int, error) {
+	if c.Engine == nil {
+		return 0, 0, errors.New("Docker unavailable")
+	}
+	live, err := c.Engine.InspectService(ctx, b.Name)
+	if err != nil || live.ID != b.ServiceID {
+		return 0, 0, errors.New("bound service unavailable")
+	}
+	var spec struct {
+		TaskTemplate struct {
+			ContainerSpec struct{ Labels map[string]string }
+		}
+		Mode struct{ Replicated *struct{ Replicas int } }
+	}
+	if json.Unmarshal(live.Spec, &spec) != nil || spec.Mode.Replicated == nil {
+		return 0, 0, errors.New("invalid bound service")
+	}
+	generation := spec.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
+	tasks, err := c.Engine.ServiceTasks(ctx, live.ID)
+	if err != nil {
+		return 0, 0, errors.New("task inspection failed")
+	}
+	slots := map[uint64]bool{}
+	for _, t := range tasks {
+		if t.ServiceID != live.ID || t.DesiredState != "running" || t.State != "running" || t.Labels["berthy.operation"] != generation || t.Slot == 0 || t.ContainerID == "" {
+			continue
+		}
+		if health, err := c.Engine.InspectContainerHealth(ctx, t.ContainerID); err == nil && health == "healthy" {
+			slots[t.Slot] = true
+		}
+	}
+	return len(slots), spec.Mode.Replicated.Replicas, nil
+}
+
+// TunnelHealth reports whether managed ingress is configured and, if it is, the tunnel's status as Cloudflare reports
+// it. The status is "unavailable" when Cloudflare cannot be asked.
+func (c *Controller) TunnelHealth(ctx context.Context) (bool, string) {
+	if c.Store == nil {
+		return false, ""
+	}
+	st, err := c.Store.Ingress(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ""
+	}
+	if err != nil {
+		return true, "unavailable"
+	}
+	cf, err := c.cloudflareClient(ctx, st.APITokenSecret)
+	if err != nil {
+		return true, "unavailable"
+	}
+	tunnel, err := cf.GetTunnel(ctx, st.AccountID, st.TunnelID)
+	if err != nil || tunnel.Status == "" {
+		return true, "unavailable"
+	}
+	return true, tunnel.Status
+}

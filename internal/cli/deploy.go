@@ -25,7 +25,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress":
 		return true
 	}
 	return false
@@ -33,7 +33,7 @@ func isDeploymentCommand(s string) bool {
 
 type commandFlags struct {
 	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas string
-	json, dry, adopt, healthy, revert                                                     bool
+	json, dry, adopt, healthy, revert, replace                                            bool
 	pos, command                                                                          []string
 }
 
@@ -54,6 +54,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.adopt = true
 		case "--healthy":
 			f.healthy = true
+		case "--replace-existing":
+			f.replace = true
 		case "--revert-schema":
 			f.revert = true
 		case "-e", "--config", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
@@ -168,6 +170,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.Adopt = f.adopt
 		req.Role = f.role
 		req.RevertSchema = f.revert
+		req.ReplaceExisting = f.replace
 		req.Command = f.command
 		if cmd == "deploy" && f.version == "" {
 			fmt.Fprintln(errout, "deploy requires --version")
@@ -259,6 +262,31 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		endpoint = "operations/" + url.PathEscape(f.pos[1]) + "/resolve"
 		method = "POST"
 		body = map[string]any{"reason": f.message, "dry_run": f.dry}
+	case "ingress":
+		if len(f.pos) != 1 || (f.pos[0] != "apply" && f.pos[0] != "status") {
+			fmt.Fprintln(errout, "usage: ingress apply|status")
+			return 2
+		}
+		if f.pos[0] == "status" {
+			endpoint = "ingress/status"
+		} else {
+			m, e := manifest.Load(f.dir, f.env)
+			if e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
+			if req.RequestID == "" {
+				var random [16]byte
+				if _, err = rand.Read(random[:]); err != nil {
+					return 1
+				}
+				req.RequestID = hex.EncodeToString(random[:])
+			}
+			method = "POST"
+			endpoint = "ingress/apply"
+			body = req
+		}
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"

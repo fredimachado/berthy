@@ -88,7 +88,7 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 	}
 	names := map[string]bool{}
 	for _, release := range history {
-		m, err := manifest.DecodeJSON(release.Manifest)
+		m, err := manifest.DecodeRelease(release.Manifest, bindingApp == manifest.ConnectorAppName)
 		if err != nil {
 			return nil, errors.New("managed configuration unavailable")
 		}

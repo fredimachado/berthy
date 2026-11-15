@@ -42,6 +42,9 @@ type Manifest struct {
 	Destinations map[string]Destination `json:"destinations,omitempty" yaml:"destinations,omitempty"`
 	Telemetry    *Telemetry             `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
+
+	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
+	Connector bool `json:"-" yaml:"-"`
 }
 type Ingress struct {
 	Cloudflare *Cloudflare `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
@@ -261,7 +264,19 @@ func Load(dir, env string) (*Manifest, error) {
 	}
 	return DecodeJSON(data)
 }
+
+// DecodeJSON decodes and validates a manifest sent to the agent. It never sets the connector flag.
 func DecodeJSON(data []byte) (*Manifest, error) {
+	return decodeManifest(data, false)
+}
+
+// DecodeRelease decodes and validates a manifest that Berthy stored with a release. connector is true only for the
+// connector's own release, the one manifest that may carry the tunnel token.
+func DecodeRelease(data []byte, connector bool) (*Manifest, error) {
+	return decodeManifest(data, connector)
+}
+
+func decodeManifest(data []byte, connector bool) (*Manifest, error) {
 	if !json.Valid(data) {
 		return nil, fmt.Errorf("invalid JSON manifest")
 	}
@@ -276,6 +291,7 @@ func DecodeJSON(data []byte) (*Manifest, error) {
 	var m Manifest
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
+	m.Connector = connector
 	if err := d.Decode(&m); err != nil {
 		return nil, err
 	}
@@ -422,7 +438,7 @@ func (m *Manifest) Validate() error {
 		}
 		seen := map[string]bool{}
 		for _, s := range a.Env.Secret {
-			if s == TunnelTokenSecret && name != ConnectorAppName {
+			if s == TunnelTokenSecret && !(m.Connector && name == ConnectorAppName) {
 				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
 			}
 			if !envName.MatchString(s) || seen[s] {

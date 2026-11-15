@@ -28,6 +28,8 @@ type Request struct {
 	Replicas      *int              `json:"replicas,omitempty"`
 	RevertSchema  bool              `json:"revert_schema,omitempty"`
 	Command       []string          `json:"command,omitempty"`
+	// ReplaceExisting takes over routes and DNS records that Berthy did not create. It needs administrator access.
+	ReplaceExisting bool `json:"replace_existing,omitempty"`
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -39,6 +41,7 @@ type Plan struct {
 	Roles        []string             `json:"roles"`
 	Blockers     []string             `json:"blockers,omitempty"`
 	SchemaRevert *SchemaRevertSummary `json:"schema_revert,omitempty"`
+	Ingress      *IngressPlan         `json:"ingress,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -64,6 +67,8 @@ type Controller struct {
 	Store       *state.Store
 	Environment string
 	Protected   bool
+	// CloudflareURL is the Cloudflare API base URL. Empty means the production API.
+	CloudflareURL string
 	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
 	recoverMu sync.Mutex
 }
@@ -73,6 +78,12 @@ var ErrRecoveryPending = errors.New("recovery still required")
 
 // Plan performs no durable or Docker mutations.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.ReplaceExisting && !actor.Admin {
+		return Plan{}, errReplaceAdmin
+	}
+	if req.Kind == "ingress" {
+		return c.planIngress(ctx, actor, req)
+	}
 	if req.Adopt {
 		if !actor.Admin {
 			return Plan{}, errors.New("adoption requires administrator access")
@@ -144,6 +155,15 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.RevertSchema && !actor.Admin {
 		return state.Operation{}, false, errors.New("schema revert requires administrator access")
 	}
+	if req.ReplaceExisting && !actor.Admin {
+		return state.Operation{}, false, errReplaceAdmin
+	}
+	if req.Kind == "ingress" {
+		req.App = manifest.ConnectorAppName
+		if err := req.Manifest.Validate(); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
@@ -162,13 +182,14 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	sum := sha256.Sum256(b)
 	public, err := json.Marshal(struct {
-		App           string `json:"app"`
-		Version       string `json:"version"`
-		Commit        string `json:"commit"`
-		Adopt         bool   `json:"adopt"`
-		RevertSchema  bool   `json:"revert_schema,omitempty"`
-		TargetRelease int64  `json:"target_release,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease})
+		App             string `json:"app"`
+		Version         string `json:"version"`
+		Commit          string `json:"commit"`
+		Adopt           bool   `json:"adopt"`
+		RevertSchema    bool   `json:"revert_schema,omitempty"`
+		TargetRelease   int64  `json:"target_release,omitempty"`
+		ReplaceExisting bool   `json:"replace_existing,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -183,9 +204,15 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if err != nil || !created {
 		return op, created, err
 	}
-	if kind == "deploy" || kind == "rollback" {
+	switch kind {
+	case "deploy", "rollback":
 		go c.execute(context.Background(), op, actor, req)
-	} else {
+	case "ingress":
+		go func() {
+			outcome := c.runIngress(context.Background(), op, actor, req)
+			_ = c.Store.Finish(context.Background(), op.ID, outcome)
+		}()
+	default:
 		go func() {
 			outcome := c.runOperation(context.Background(), op, actor, req)
 			_ = c.Store.Finish(context.Background(), op.ID, outcome)
@@ -299,6 +326,7 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	if json.Unmarshal(chosen.Manifest, &m) != nil {
 		return Request{}, errors.New("saved release invalid")
 	}
+	m.Connector = req.App == manifest.ConnectorAppName
 	req.Manifest = m
 	req.Version = chosen.Digest
 	req.Commit = chosen.Commit

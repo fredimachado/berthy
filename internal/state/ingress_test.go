@@ -166,3 +166,45 @@ func TestPutOperationSecretNeedsTheLockAndAudits(t *testing.T) {
 		t.Fatalf("secret write after the operation finished: %v", err)
 	}
 }
+
+func TestForgetAppNeedsTheLockAndKeepsHistory(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	deployed, _, err := s.Admit(ctx, Admission{RequestID: "deployed", ActorID: "a", Kind: "deploy", App: "ingress", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, deployed.ID, Outcome{State: "succeeded", Release: &Release{App: "ingress", Digest: "digest-1", Manifest: []byte(`{}`), Bindings: []Binding{{App: "ingress", Role: "connector", Name: "demo-ingress-connector", ServiceID: "svc-1"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ForgetApp(ctx, "missing", "ingress"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unlocked forget: %v", err)
+	}
+	op := openIngressOp(t, s, "remove")
+	if err = s.ForgetApp(ctx, op.ID, "ingress"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Applied(ctx, "ingress"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("applied after forget: %v", err)
+	}
+	if bindings, err := s.Bindings(ctx, "ingress"); err != nil || len(bindings) != 0 {
+		t.Fatalf("bindings after forget: %+v %v", bindings, err)
+	}
+	if history, err := s.History(ctx, "ingress"); err != nil || len(history) != 1 {
+		t.Fatalf("history after forget: %d %v", len(history), err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplaceExistingIsAPublicBoolean(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Admit(ctx, Admission{RequestID: "replace", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{"app":"api","replace_existing":true}`)}); err != nil {
+		t.Fatalf("boolean refused: %v", err)
+	}
+	if _, _, err := s.Admit(ctx, Admission{RequestID: "replace-text", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{"replace_existing":"yes"}`)}); err == nil {
+		t.Fatal("string accepted for a boolean")
+	}
+}

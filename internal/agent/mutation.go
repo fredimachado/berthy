@@ -33,7 +33,7 @@ func OpenDeployment(c Config, e *engine.Engine) (*deploy.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	controller := &deploy.Controller{Store: s, Environment: c.Environment, Protected: c.Protected}
+	controller := &deploy.Controller{Store: s, Environment: c.Environment, Protected: c.Protected, CloudflareURL: c.CloudflareAPIURL}
 	if e != nil {
 		controller.Engine = e
 	}
@@ -94,6 +94,12 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
 			required = "admin"
 			method = "POST"
+		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
+			required = "deploy"
+			method = "POST"
+		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
+			required = "read"
+			method = "GET"
 		default:
 			legacy.ServeHTTP(w, r)
 			return
@@ -131,7 +137,7 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			} else {
 				req.Kind = rest[0]
 			}
-			if (req.Adopt || req.RevertSchema) && !actor.Admin {
+			if (req.Adopt || req.RevertSchema || req.ReplaceExisting) && !actor.Admin {
 				writeError(w, 403, "forbidden", "forbidden")
 				return
 			}
@@ -153,6 +159,43 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			w.Header().Set("Location", path)
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
+			var req deploy.Request
+			if err := decodeBody(w, r, &req); err != nil {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+			req.Kind = "ingress"
+			req.App = manifest.ConnectorAppName
+			if req.ReplaceExisting && !actor.Admin {
+				writeError(w, 403, "forbidden", "forbidden")
+				return
+			}
+			if req.DryRun {
+				plan, err := d.Plan(ctx, actor, req)
+				if err != nil {
+					operationError(w, err)
+					return
+				}
+				json.NewEncoder(w).Encode(plan)
+				return
+			}
+			op, _, err := d.Admit(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			path := "/v1/environments/" + c.Environment + "/operations/" + op.ID + "/events"
+			w.Header().Set("Location", path)
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
+			status, err := d.IngressStatus(ctx)
+			if err != nil {
+				writeError(w, 503, "unavailable", "ingress status unavailable")
+				return
+			}
+			json.NewEncoder(w).Encode(status)
 		case rest[0] == "operations" && len(rest) == 2:
 			op, err := d.Store.Operation(ctx, rest[1])
 			if err != nil {
@@ -419,7 +462,7 @@ func safeOperationError(o state.Operation) string {
 	switch o.Err {
 	case "":
 		return ""
-	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable", "recovery resolved by admin", "bound service unavailable", "invalid bound service", "bound service ownership changed", "prior service health cannot be verified", "prior image identity unavailable", "prior image is not pinned", "prior image credential unavailable", "removing managed roles unavailable", "role preflight failed", "image inspection failed", "image provenance recording failed", "adoption preflight failed", "migration source journal failed":
+	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable", "recovery resolved by admin", "bound service unavailable", "invalid bound service", "bound service ownership changed", "prior service health cannot be verified", "prior image identity unavailable", "prior image is not pinned", "prior image credential unavailable", "removing managed roles unavailable", "role preflight failed", "image inspection failed", "image provenance recording failed", "adoption preflight failed", "migration source journal failed", "Cloudflare API token secret unavailable", "Cloudflare token check failed", "Cloudflare unavailable", "tunnel is not remotely managed", "ingress hostname conflict", "ingress publish failed", "managed ingress is not configured", "tunnel token unavailable", "connector removal failed", "ingress state recording failed":
 		return o.Err
 	default:
 		if deploy.PublicMessage(o.Err) {

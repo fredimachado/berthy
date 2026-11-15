@@ -2,6 +2,8 @@ package manifest
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -74,9 +76,50 @@ func requireConnectorValid(t *testing.T, m *Manifest, app App) {
 	t.Helper()
 	cp := *m
 	cp.Ingress = nil
+	cp.Connector = true
 	cp.Apps = map[string]App{ConnectorAppName: app, "api": m.Apps["api"]}
 	if err := cp.Validate(); err != nil {
 		t.Fatalf("connector app fails validation: %v", err)
+	}
+}
+
+func TestConnectorAppNeedsTheConnectorFlag(t *testing.T) {
+	m := connectorManifest(t, "cloudflare/cloudflared:2026.11.0", "")
+	app, _, err := m.ConnectorApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := *m
+	cp.Ingress = nil
+	cp.Apps = map[string]App{ConnectorAppName: app, "api": m.Apps["api"]}
+	if err = cp.Validate(); err == nil || !strings.Contains(err.Error(), reservedMessage) {
+		t.Fatalf("connector app without the flag: %v", err)
+	}
+}
+
+func TestUserManifestCannotRequestTunnelToken(t *testing.T) {
+	input := `{"project":"demo","network":"demo","apps":{"ingress":{"kind":"image","image":"ghcr.io/acme/edge","roles":{"web":{}},"env":{"secret":["TUNNEL_TOKEN"]}}}}`
+	if _, err := DecodeJSON([]byte(input)); err == nil || !strings.Contains(err.Error(), reservedMessage) {
+		t.Fatalf("user manifest without ingress asked for the tunnel token: %v", err)
+	}
+}
+
+func TestConnectorFlagIsNeverReadFromInput(t *testing.T) {
+	for _, input := range []string{
+		`{"project":"demo","network":"demo","connector":true,` + webApp + `}`,
+		`{"project":"demo","network":"demo","Connector":true,` + webApp + `}`,
+	} {
+		if _, err := DecodeJSON([]byte(input)); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+	dir := t.TempDir()
+	yml := "project: demo\nnetwork: demo\nconnector: true\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(yml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "dev"); err == nil {
+		t.Fatal("YAML connector flag accepted")
 	}
 }
 

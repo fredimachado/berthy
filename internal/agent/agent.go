@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -29,13 +30,15 @@ type Token struct {
 	Scope  string `json:"scope"`
 }
 type Config struct {
-	Environment  string  `json:"environment"`
-	Listen       string  `json:"listen"`
-	DockerSocket string  `json:"docker_socket"`
-	StateDir     string  `json:"state_dir,omitempty"`
-	KeyFile      string  `json:"key_file,omitempty"`
-	Protected    bool    `json:"protected,omitempty"`
-	Tokens       []Token `json:"tokens"`
+	Environment  string `json:"environment"`
+	Listen       string `json:"listen"`
+	DockerSocket string `json:"docker_socket"`
+	StateDir     string `json:"state_dir,omitempty"`
+	KeyFile      string `json:"key_file,omitempty"`
+	Protected    bool   `json:"protected,omitempty"`
+	// CloudflareAPIURL overrides the Cloudflare API base URL. https is required, except for a loopback host, which tests use.
+	CloudflareAPIURL string  `json:"cloudflare_api_url,omitempty"`
+	Tokens           []Token `json:"tokens"`
 }
 
 var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -91,6 +94,11 @@ func (c Config) Validate() error {
 	if (c.StateDir == "") != (c.KeyFile == "") {
 		return fmt.Errorf("state_dir and key_file must be configured together")
 	}
+	if c.CloudflareAPIURL != "" {
+		if err := validateCloudflareURL(c.CloudflareAPIURL); err != nil {
+			return err
+		}
+	}
 	seen := map[string]bool{}
 	for _, t := range c.Tokens {
 		digestKey := strings.ToLower(t.Digest)
@@ -105,6 +113,26 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+// validateCloudflareURL accepts an https base URL, or http for a loopback host, which the in-memory Cloudflare fake uses.
+// It rejects userinfo, queries and fragments, so the API token is never sent to an address with credentials in it.
+func validateCloudflareURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("invalid cloudflare_api_url")
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		switch u.Hostname() {
+		case "127.0.0.1", "localhost", "::1":
+			return nil
+		}
+	}
+	return fmt.Errorf("cloudflare_api_url must use https, or http on a loopback host")
+}
+
 func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
@@ -229,6 +257,14 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 					} else {
 						checks = append(checks, api.Check{Name: "swarm_manager", OK: info.Swarm.ControlAvailable, Critical: true, Detail: info.Swarm.LocalNodeState})
 					}
+				}
+			}
+			if deployment != nil {
+				ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
+				configured, status := deployment.TunnelHealth(ingressCtx)
+				cancelIngress()
+				if configured {
+					checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
 				}
 			}
 			result = map[string]any{"checks": checks}

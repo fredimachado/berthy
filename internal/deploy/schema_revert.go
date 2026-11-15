@@ -25,12 +25,25 @@ const (
 	errAdminRequired    Refusal = "schema revert requires administrator access"
 	errNotRecovering    Refusal = "operation is not waiting for recovery"
 	errResolveAdmin     Refusal = "resolving recovery requires administrator access"
+
+	errReplaceAdmin          Refusal = "replacing existing routes or records requires administrator access"
+	errCloudflareSecret      Refusal = "Cloudflare API token secret unavailable"
+	errCloudflareToken       Refusal = "Cloudflare token check failed"
+	errCloudflareUnavailable Refusal = "Cloudflare unavailable"
+	errTunnelNotRemote       Refusal = "tunnel is not remotely managed"
+	errIngressConflict       Refusal = "ingress hostname conflict"
+	errIngressPublish        Refusal = "ingress publish failed"
+	errIngressNotConfigured  Refusal = "managed ingress is not configured"
+	errTunnelToken           Refusal = "tunnel token unavailable"
+	errConnectorRemoval      Refusal = "connector removal failed"
+	errIngressState          Refusal = "ingress state recording failed"
 )
 
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
-	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin:
+	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
+		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errConnectorRemoval, errIngressState:
 		return true
 	}
 	return false

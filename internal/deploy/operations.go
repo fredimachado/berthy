@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -413,13 +414,20 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 	retains := map[string]int{}
 	for _, r := range history {
 		if _, ok := retains[r.App]; !ok {
+			// An app that was removed, such as the connector once managed ingress is gone, keeps its history but has
+			// no applied release. Its newest release sets the retention, and none of its releases is current.
+			manifestJSON := r.Manifest
 			current, e := c.Store.Applied(ctx, r.App)
-			if e != nil {
+			switch {
+			case e == nil:
+				refs[current.Digest] = true
+				manifestJSON = current.Manifest
+			case errors.Is(e, sql.ErrNoRows):
+			default:
 				return nil, errors.New("applied release unavailable")
 			}
-			refs[current.Digest] = true
 			var m manifest.Manifest
-			if json.Unmarshal(current.Manifest, &m) != nil {
+			if json.Unmarshal(manifestJSON, &m) != nil {
 				return nil, errors.New("applied manifest unavailable")
 			}
 			app, ok := m.Apps[r.App]
