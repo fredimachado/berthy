@@ -62,6 +62,9 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		case len(rest) == 2 && rest[0] == "operations":
 			required = "read"
 			method = "GET"
+		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "output":
+			required = "admin"
+			method = "GET"
 		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "events":
 			required = "read"
 			method = "GET"
@@ -150,6 +153,36 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				return
 			}
 			json.NewEncoder(w).Encode(publicOperation(op))
+		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "output":
+			op, err := d.Store.Operation(ctx, rest[1])
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			if op.Kind != "exec" {
+				writeError(w, 404, "not_found", "not found")
+				return
+			}
+			intents, err := d.Store.Intents(ctx, op.ID)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			for _, i := range intents {
+				if i.Kind == "exec" && i.Phase == "finished" {
+					var output struct {
+						Output   string `json:"output"`
+						ExitCode int    `json:"exit_code"`
+					}
+					if json.Unmarshal(i.Receipt, &output) != nil {
+						writeError(w, 503, "unavailable", "output unavailable")
+						return
+					}
+					json.NewEncoder(w).Encode(output)
+					return
+				}
+			}
+			writeError(w, 404, "not_found", "output unavailable")
 		case rest[0] == "operations":
 			streamOperation(w, r, d.Store, rest[1])
 		case rest[0] == "wait":

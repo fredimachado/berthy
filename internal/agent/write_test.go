@@ -147,3 +147,44 @@ func TestWaitRejectsUnboundedTimeout(t *testing.T) {
 		t.Fatalf("got %d %s", w.Code, w.Body.String())
 	}
 }
+func TestExecOutputIsAdminOnly(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "exec", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 30000, Kind: "exec", Desired: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 30000, "finished", []byte(`{"output":"safe","exit_code":3}`)); err != nil {
+		t.Fatal(err)
+	}
+	read := "bty.lab." + strings.Repeat("a", 64)
+	admin := "bty.lab." + strings.Repeat("b", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(admin), Scope: "admin"}}}
+	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
+	for _, tc := range []struct {
+		token string
+		code  int
+	}{{read, 403}, {admin, 200}} {
+		r := httptest.NewRequest("GET", "/v1/environments/lab/operations/"+op.ID+"/output", nil)
+		r.Header.Set("Authorization", "Bearer "+tc.token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.code {
+			t.Fatalf("%d: %s", w.Code, w.Body.String())
+		}
+		if tc.code == 200 && !strings.Contains(w.Body.String(), `"exit_code":3`) {
+			t.Fatal(w.Body.String())
+		}
+	}
+}
