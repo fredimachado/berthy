@@ -26,13 +26,17 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 		}
 	} else {
 		health["Test"] = r.Health.Test
+		// Docker keeps no zero duration in a health check. A zero one, such as the default start period, is left out
+		// rather than written, so the created service matches what Docker stores.
 		for key, value := range map[string]string{"Interval": r.Health.Interval, "Timeout": r.Health.Timeout, "StartPeriod": r.Health.StartPeriod, "StartInterval": r.Health.StartInterval} {
 			if value != "" {
 				d, e := time.ParseDuration(value)
 				if e != nil {
 					return nil, e
 				}
-				health[key] = int64(d)
+				if d != 0 {
+					health[key] = int64(d)
+				}
 			}
 		}
 		if r.Health.Retries != nil {

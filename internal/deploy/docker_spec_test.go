@@ -13,7 +13,8 @@ import (
 	"berthy/internal/state"
 )
 
-// storedAsDocker returns a service spec as Docker keeps it: null fields are not stored.
+// storedAsDocker returns a service spec as Docker keeps it: null fields are not stored, and neither are zero durations in
+// the health check (Docker's HealthConfig omits them, so a zero start period never comes back).
 func storedAsDocker(s json.RawMessage) json.RawMessage {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(s))
@@ -21,8 +22,23 @@ func storedAsDocker(s json.RawMessage) json.RawMessage {
 	if dec.Decode(&v) != nil {
 		return s
 	}
-	out, _ := json.Marshal(dropNulls(v))
+	v = dropNulls(v)
+	dropZeroHealthDurations(v)
+	out, _ := json.Marshal(v)
 	return out
+}
+
+// dropZeroHealthDurations removes the zero-valued fields of a service spec's health check, as Docker does.
+func dropZeroHealthDurations(v any) {
+	spec, _ := v.(map[string]any)
+	task, _ := spec["TaskTemplate"].(map[string]any)
+	container, _ := task["ContainerSpec"].(map[string]any)
+	health, _ := container["Healthcheck"].(map[string]any)
+	for key, value := range health {
+		if value == json.Number("0") {
+			delete(health, key)
+		}
+	}
 }
 
 // dockerSpecs is positiveEngine with service specs stored the way Docker stores them.
@@ -159,5 +175,60 @@ func TestServiceSpecOmitsEmptyEnv(t *testing.T) {
 	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "10s", nil)
 	if err != nil || strings.Contains(string(b), `"Env"`) {
 		t.Fatalf("spec %s: %v", b, err)
+	}
+}
+
+// TestRoleHealthWithoutStartPeriodDeploys: a role whose health check omits start_period gets the manifest default "0s".
+// Docker does not store a zero start period, so the created service must still verify and the deploy must succeed.
+func TestRoleHealthWithoutStartPeriodDeploys(t *testing.T) {
+	m, err := manifest.DecodeJSON([]byte(`{"project":"proj","network":"overlay","apps":{"web":{"kind":"image","image":"example/web","deploy":{"deploy_timeout":"2s","drain_timeout":"1s"},"roles":{"web":{"health":{"test":["CMD","true"],"interval":"5s","timeout":"2s","retries":3}}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Apps["web"].Roles["web"].Health.StartPeriod; got != "0s" {
+		t.Fatalf("default start period %q", got)
+	}
+	s := openStore(t)
+	c := Controller{Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
+	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-start-period", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: *m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitOperation(t, s, op.ID); got.State != "succeeded" {
+		t.Fatalf("state %s: %s", got.State, got.Err)
+	}
+}
+
+// TestServiceSpecWritesOnlyNonZeroHealthDurations: a zero start period is left out of the health check, a non-zero one is
+// written in nanoseconds, and the other durations are written as configured.
+func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
+	retries := 3
+	for _, tc := range []struct {
+		start   string
+		present bool
+	}{{"0s", false}, {"1s", true}} {
+		role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}, Interval: "5s", Timeout: "2s", StartPeriod: tc.start, Retries: &retries}}
+		b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, role, "10s", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var spec struct {
+			TaskTemplate struct {
+				ContainerSpec struct {
+					Healthcheck map[string]any
+				}
+			}
+		}
+		if err := json.Unmarshal(b, &spec); err != nil {
+			t.Fatal(err)
+		}
+		health := spec.TaskTemplate.ContainerSpec.Healthcheck
+		got, present := health["StartPeriod"]
+		if present != tc.present || present && got != float64(time.Second) {
+			t.Fatalf("start period %s: %v (present %v)", tc.start, got, present)
+		}
+		if health["Interval"] != float64(5*time.Second) || health["Timeout"] != float64(2*time.Second) || health["Retries"] != float64(3) {
+			t.Fatalf("health check %v", health)
+		}
 	}
 }
