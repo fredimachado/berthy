@@ -479,8 +479,9 @@ Proposed thresholds: disk space and Docker disk usage warn at 80% and go critica
 **Where a probe runs.** The agent runs on the host, where Docker service names do not resolve and addresses on the shared overlay network cannot be reached.
 
 - A probe against a public URL, or an address the host can reach, is run by the agent itself.
-- A probe against a service name runs from a helper container that the agent keeps attached to the shared network.
-- The helper is the same Berthy binary, in an image the agent builds locally from it. Nothing is pulled, and there is one helper per server (proposed).
+- A probe against a service name needs an overlay-attached helper. Phase 3 will
+  decide its packaging; one option is the same Berthy binary in a locally built
+  image, with one helper per server.
 
 ### Alerts
 
@@ -717,11 +718,13 @@ A three-server cluster is not a v1 deliverable, but nothing in v1 may block it. 
 
 Berthy is built one capability at a time, and each phase is proven on a non-production environment before the next one starts.
 
+See the [v1 implementation plan](implementation-plan-v1.md) for dependencies and acceptance checks.
+
 | Phase | Delivers | Done when |
 | --- | --- | --- |
 | 1. Read-only | Agent and CLI: `ps`, `describe`, `logs`, `stats`, `df`, `doctor`, JSON output, tokens | Numbers agree with `docker stats`; agent memory is measured |
-| 2. Image deploys | `deploy`, `rollback`, lock, hooks, migrations, timing settings, retain and prune, history, audit, adoption of an existing service | An environment has deployed from CI for two weeks, including one forced failure that rolled back |
-| 3. Compose, checks, jobs, backups | Compose apps, secrets, probes, built-in conditions, alerts, peer check, scheduled commands, volume backups and restore | A cron job has run in its target container, a volume backup has been restored and verified, and a test failure raised an alert |
+| 2. Image deploys | Manifest validation, secrets, registry credentials, `deploy`, `rollback`, lock, command hooks, migrations, timing settings, retain and prune, history, audit, adoption of an existing service | An environment has deployed from CI for two weeks, including one forced failure that rolled back |
+| 3. Compose, checks, jobs, backups | Compose apps, probes, built-in conditions, alerts, peer check, scheduled commands, volume backups, backup hooks and restore | A cron job has run in its target container, a volume backup has been restored and verified, and a test failure raised an alert |
 | 4. TUI and MCP | `berthy ui`, `berthy mcp`, agent tokens and approvals | An AI agent's request on a protected environment was held, reviewed and approved end to end |
 | 5. Multi-node (optional) | Cluster helpers, placement settings, merged views | Not scheduled |
 
@@ -758,17 +761,17 @@ Berthy can take over servers that another deployment tool already runs, one app 
 
 ## Open questions
 
-These need an answer before or during phase 1.
-
-- [ ] Should a failed deploy ever revert the schema automatically, or is revert always a manual command? The spec assumes manual.
-- [ ] Should the agent serve TLS itself, for private networks that do not encrypt traffic?
-- [ ] Should a protected environment require anything more, such as a pre-deploy backup hook?
-- [ ] Is a helper container the right way to probe services by name, or should those checks be left to container health checks?
+Phase 1 resolved the questions below; the corresponding later-phase features
+still need implementation and verification.
 
 ### Resolved
 
 | Question | Decision |
 | --- | --- |
+| Schema revert on failed deploy | Never automatic; an explicit revert requires admin authorization. Migrations must remain compatible with the previous app version. |
+| TLS on the agent | v1 uses HTTP over an encrypted private network; the listen-address check cannot establish that encryption is present. |
+| Backup before protected deploy | An explicit policy or hook, not a universal requirement. A pre-migration backup is recommended where the data warrants it. |
+| Service-name probes | Container health checks gate Swarm rollouts. An attached helper remains an option for Phase 3 overlay-path alerts; its packaging is not yet decided. |
 | Is the CI runner on the private network? | Not assumed. The deploy job joins as a short-lived, tagged node with restricted access. |
 | Backup retention | Keep all by default. |
 | Migration rollback | Generic `version`, `apply` and `revert` commands, with the schema state recorded on every deploy. |

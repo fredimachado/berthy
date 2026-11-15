@@ -1,0 +1,15 @@
+[Unit]
+Description=Berthy read-only agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=berthy
+Group=berthy
+SupplementaryGroups=docker
+ExecStart=/usr/local/bin/berthy agent --config /etc/berthy/agent.json
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

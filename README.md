@@ -10,9 +10,12 @@ the same CLI and an MCP server.
 
 ## Status
 
-Design phase. There is no code yet.
+Phase 1 provides a read-only agent and CLI. Later deployment, backup and TUI
+features remain planned. See [Phase 1 verification](docs/phase-1-verification.md)
+for the current evidence and a safe way to reproduce the checks.
 
 ## Documents
 
 - [v1 spec](docs/spec-v1.md): scope, architecture, deploy lifecycle, backups,
   guardrails, rollout plan and open questions.
+- [Implementation plan](docs/implementation-plan-v1.md): phase boundaries and acceptance checks.
