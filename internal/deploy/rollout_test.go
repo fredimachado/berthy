@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,7 +75,7 @@ func TestCompensationRefusesForeignCreate(t *testing.T) {
 func TestNewServiceUsesStartFirstAndPinnedImage(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	b, err := serviceSpec("env", "proj", "app", "web", "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, r, "10s")
+	b, err := serviceSpec("env", "proj", "app", "web", "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, r, "10s", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,5 +119,51 @@ func TestHealthWaitHonorsDeadline(t *testing.T) {
 	defer cancel()
 	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1); err == nil {
 		t.Fatal("unhealthy service passed")
+	}
+}
+
+func TestCreatedSpecRejectsHostPrivileges(t *testing.T) {
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
+	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"},"Privileges":{"CredentialSpec":{"File":"evil"}}}}}`)
+	if matchesCreatedSpec(desired, live) {
+		t.Fatal("host privilege accepted")
+	}
+}
+
+func TestCreatedSpecAcceptsEngineDefaults(t *testing.T) {
+	d := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x"}}}`)
+	l := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Isolation":"default"},"Runtime":"container","ForceUpdate":0}}`)
+	if !matchesCreatedSpec(d, l) {
+		t.Fatal("engine defaults differ")
+	}
+}
+
+func TestServiceSpecUsesNamedVolumesAndResourceLimits(t *testing.T) {
+	one := 1
+	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data:ro"}, Resources: &manifest.Resources{CPU: "0.5", Memory: "64MiB"}, Port: 8080}
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, r, "10s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec map[string]any
+	if err = json.Unmarshal(b, &spec); err != nil {
+		t.Fatal(err)
+	}
+	task := spec["TaskTemplate"].(map[string]any)
+	container := task["ContainerSpec"].(map[string]any)
+	mount := container["Mounts"].([]any)[0].(map[string]any)
+	if mount["Type"] != "volume" || mount["ReadOnly"] != true {
+		t.Fatalf("mount: %v", mount)
+	}
+	limits := task["Resources"].(map[string]any)["Limits"].(map[string]any)
+	if limits["NanoCPUs"] != float64(500000000) || limits["MemoryBytes"] != float64(67108864) {
+		t.Fatalf("limits: %v", limits)
+	}
+}
+
+func TestServiceSpecInheritsImageHealth(t *testing.T) {
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{}, "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`))
+	if err != nil || !strings.Contains(string(b), `"Healthcheck"`) {
+		t.Fatalf("image health: %s %v", b, err)
 	}
 }

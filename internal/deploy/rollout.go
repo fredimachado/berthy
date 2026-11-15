@@ -127,3 +127,26 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 		}
 	}
 }
+
+// Docker adds these defaults when it stores a newly created service.
+func matchesCreatedSpec(desired, live json.RawMessage) bool {
+	var d, l map[string]any
+	if json.Unmarshal(desired, &d) != nil || json.Unmarshal(live, &l) != nil {
+		return false
+	}
+	task, ok := l["TaskTemplate"].(map[string]any)
+	if ok {
+		if task["Runtime"] == "container" {
+			delete(task, "Runtime")
+		}
+		if task["ForceUpdate"] == float64(0) {
+			delete(task, "ForceUpdate")
+		}
+		if c, ok := task["ContainerSpec"].(map[string]any); ok && c["Isolation"] == "default" {
+			delete(c, "Isolation")
+		}
+	}
+	db, _ := json.Marshal(d)
+	lb, _ := json.Marshal(l)
+	return sameSpec(db, lb)
+}
