@@ -17,7 +17,7 @@ cleanup() {
   [[ ${events_pid:-0} == 0 ]] || kill "$events_pid" 2>/dev/null || true
   "$docker" rm -f "$name-proxy" >/dev/null 2>&1 || true
   "$docker" service rm "$name" >/dev/null 2>&1 || true
-  for i in {1..30}; do "$docker" network rm "$name" >/dev/null 2>&1 && break; sleep 1; done
+  for _ in {1..30}; do "$docker" network rm "$name" >/dev/null 2>&1 && break; sleep 1; done
 }
 trap cleanup EXIT
 CGO_ENABLED=0 "$go" build -o "$trace/fixture" "$root/test/phase1/ingress.go"
@@ -31,7 +31,7 @@ EOF
 "$docker" network create --driver overlay --attachable "$name" >/dev/null
 "$docker" events --format '{{json .}}' > "$trace/events.jsonl" & events_pid=$!
 "$docker" service create --name "$name" --network "$name" --replicas 1 --update-order start-first --update-parallelism 1 --update-max-failure-ratio 0 --update-failure-action rollback --update-monitor 20s --rollback-order start-first --rollback-parallelism 1 --health-cmd 'wget -q -O /dev/null http://127.0.0.1:8080/health' --health-interval 2s --health-timeout 1s --health-retries 2 --health-start-period 10s --mount "type=bind,src=$trace,dst=/trace" --env REVISION=old alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc /trace/fixture serve > "$trace/create.txt"
-for i in {1..60}; do
+for _ in {1..60}; do
   id=$("$docker" ps -q --filter "label=com.docker.swarm.service.name=$name" | head -1)
   if [[ -n $id ]] && [[ $("$docker" inspect -f '{{.State.Health.Status}}' "$id") == healthy ]]; then break; fi
   sleep 1
@@ -47,7 +47,7 @@ date -u +%FT%T.%NZ > "$trace/delayed-end"
 sleep 3
 date -u +%FT%T.%NZ > "$trace/bad-start"
 "$docker" service update --env-add REVISION=bad "$name" > "$trace/bad-update.txt" 2>&1 & update_pid=$!
-for i in {1..30}; do
+for _ in {1..30}; do
   for candidate in $("$docker" ps -q --filter "label=com.docker.swarm.service.name=$name"); do
     if [[ $("$docker" inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$candidate" | grep -c '^REVISION=bad$') == 1 ]]; then
       "$docker" exec "$candidate" wget -q -O - http://127.0.0.1:8080/ > "$trace/direct.txt" && break 2
