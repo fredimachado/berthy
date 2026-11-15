@@ -23,6 +23,7 @@ import (
 )
 
 type Token struct {
+	Name   string `json:"name,omitempty"`
 	Digest string `json:"digest"`
 	Scope  string `json:"scope"`
 }
@@ -30,6 +31,9 @@ type Config struct {
 	Environment  string  `json:"environment"`
 	Listen       string  `json:"listen"`
 	DockerSocket string  `json:"docker_socket"`
+	StateDir     string  `json:"state_dir,omitempty"`
+	KeyFile      string  `json:"key_file,omitempty"`
+	Protected    bool    `json:"protected,omitempty"`
 	Tokens       []Token `json:"tokens"`
 }
 
@@ -83,7 +87,16 @@ func (c Config) Validate() error {
 	if len(c.Tokens) == 0 {
 		return fmt.Errorf("at least one token is required")
 	}
+	if (c.StateDir == "") != (c.KeyFile == "") {
+		return fmt.Errorf("state_dir and key_file must be configured together")
+	}
+	seen := map[string]bool{}
 	for _, t := range c.Tokens {
+		digestKey := strings.ToLower(t.Digest)
+		if seen[digestKey] {
+			return fmt.Errorf("duplicate token digest")
+		}
+		seen[digestKey] = true
 		b, e := hex.DecodeString(t.Digest)
 		if e != nil || len(b) != 32 || (t.Scope != "read" && t.Scope != "deploy" && t.Scope != "admin") {
 			return fmt.Errorf("invalid token digest or scope")
