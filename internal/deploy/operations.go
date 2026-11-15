@@ -123,6 +123,9 @@ func (c *Controller) inspectOperation(ctx context.Context, req Request, operatio
 	if err != nil || live.ID != b.ServiceID {
 		return b, live, nil, 0, errors.New("bound service unavailable")
 	}
+	if err = validateInheritedRuntime(live.Spec); err != nil {
+		return b, live, nil, 0, err
+	}
 	desired, n, err := runtimeSpec(live.Spec, b, c.Environment, operation, req.Kind, req.Replicas)
 	return b, live, desired, n, err
 }
@@ -141,6 +144,9 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 			return Plan{}, errors.New("administrator required")
 		}
 		if _, err := c.prunePlan(ctx); err != nil {
+			return Plan{}, err
+		}
+		if _, err := c.prunableHooks(ctx); err != nil {
 			return Plan{}, err
 		}
 		return Plan{}, nil
@@ -200,6 +206,30 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 		if err != nil {
 			return state.Outcome{State: "failed", Err: "image inventory unavailable"}
 		}
+		hooks, err := c.prunableHooks(ctx)
+		if err != nil {
+			return state.Outcome{State: "failed", Err: "hook inventory unavailable"}
+		}
+		if len(hooks) > 0 {
+			he := c.Engine.(hookPruner)
+			for _, h := range hooks {
+				container, e := he.InspectContainer(ctx, h.ID)
+				if e != nil {
+					var status *engine.StatusError
+					if errors.As(e, &status) && status.Code == 404 {
+						continue
+					}
+					return state.Outcome{State: "failed", Err: "hook inspection failed"}
+				}
+				if !ownedFinishedHook(container, h, c.Environment) {
+					continue
+				}
+				if e = he.RemoveContainer(ctx, h.ID); e != nil {
+					return state.Outcome{State: "failed", Err: "hook removal failed"}
+				}
+			}
+		}
+
 		e := c.Engine.(inventoryEngine)
 		for _, i := range candidates {
 			current, err := c.Engine.InspectImage(ctx, i.Ref)
@@ -244,33 +274,53 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	return state.Outcome{State: "succeeded"}
 }
 func (c *Controller) Wait(ctx context.Context, app, role string) error {
-	b, err := c.operationBinding(ctx, app, role)
+	if _, ok := ctx.Deadline(); !ok {
+		return errors.New("wait requires a deadline")
+	}
+	if c.Store == nil || c.Engine == nil || app == "" {
+		return errors.New("managed app unavailable")
+	}
+	bindings, err := c.Store.Bindings(ctx, app)
 	if err != nil {
 		return err
 	}
-	live, err := c.Engine.InspectService(ctx, b.Name)
-	if err != nil || live.ID != b.ServiceID {
-		return errors.New("bound service unavailable")
+	if len(bindings) == 0 {
+		return errors.New("managed app unavailable")
 	}
-	var v struct {
-		Name         string
-		TaskTemplate struct {
-			ContainerSpec struct{ Labels map[string]string }
+	matched := false
+	for _, b := range bindings {
+		if role != "" && b.Role != role {
+			continue
 		}
-		Mode struct{ Replicated *struct{ Replicas int } }
+		matched = true
+		live, err := c.Engine.InspectService(ctx, b.Name)
+		if err != nil || live.ID != b.ServiceID {
+			return errors.New("bound service unavailable")
+		}
+		var v struct {
+			Name         string
+			TaskTemplate struct {
+				ContainerSpec struct{ Labels map[string]string }
+			}
+			Mode struct{ Replicated *struct{ Replicas int } }
+		}
+		if json.Unmarshal(live.Spec, &v) != nil || v.Name != b.Name || v.Mode.Replicated == nil || v.Mode.Replicated.Replicas < 1 {
+			return errors.New("invalid bound service")
+		}
+		generation := v.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
+		if generation == "" {
+			return errors.New("service generation unavailable")
+		}
+		if err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas); err != nil {
+			return err
+		}
 	}
-	if json.Unmarshal(live.Spec, &v) != nil || v.Name != b.Name || v.Mode.Replicated == nil || v.Mode.Replicated.Replicas < 1 {
-		return errors.New("invalid bound service")
+	if !matched {
+		return errors.New("role not found")
 	}
-	generation := v.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
-	if generation == "" {
-		return errors.New("service generation unavailable")
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		return fmt.Errorf("wait requires a deadline")
-	}
-	return waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas)
+	return nil
 }
+
 func redactOutput(output []byte, secrets [][]byte) string {
 	for _, secret := range secrets {
 		if len(secret) > 0 {
@@ -416,6 +466,9 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, error
 	if err != nil || live.ID != b.ServiceID {
 		return "", errors.New("bound service unavailable")
 	}
+	if err = validateInheritedRuntime(live.Spec); err != nil {
+		return "", err
+	}
 	var spec struct {
 		Name         string
 		TaskTemplate struct {
@@ -506,4 +559,42 @@ func (c *Controller) runExec(ctx context.Context, op state.Operation, actor Acto
 		return state.Outcome{State: "failed", Err: "exec returned nonzero"}
 	}
 	return state.Outcome{State: "succeeded"}
+}
+
+type hookPruner interface {
+	InspectContainer(context.Context, string) (engine.ContainerSnapshot, error)
+	RemoveContainer(context.Context, string) error
+}
+
+func ownedFinishedHook(c engine.ContainerSnapshot, h state.CompletedOneOff, environment string) bool {
+	return !c.Running && c.ID == h.ID && c.Labels["berthy.environment"] == environment && c.Labels["berthy.operation"] == h.OperationID && c.Labels["berthy.oneoff"] == h.Role
+}
+
+func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff, error) {
+	hooks, err := c.Store.CompletedOneOffs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(hooks) == 0 {
+		return nil, nil
+	}
+	e, ok := c.Engine.(hookPruner)
+	if !ok {
+		return nil, errors.New("hook inventory unavailable")
+	}
+	var out []state.CompletedOneOff
+	for _, h := range hooks {
+		container, err := e.InspectContainer(ctx, h.ID)
+		if err != nil {
+			var status *engine.StatusError
+			if errors.As(err, &status) && status.Code == 404 {
+				continue
+			}
+			return nil, errors.New("hook inspection failed")
+		}
+		if ownedFinishedHook(container, h, c.Environment) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
 }

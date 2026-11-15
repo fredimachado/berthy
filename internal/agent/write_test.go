@@ -188,3 +188,39 @@ func TestExecOutputIsAdminOnly(t *testing.T) {
 		}
 	}
 }
+func TestHistoryIncludesFailuresWithoutPrivateErrors(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "failed", Err: "private-canary"}); err != nil {
+		t.Fatal(err)
+	}
+	token := "bty.lab." + strings.Repeat("a", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), `"state":"failed"`) || strings.Contains(w.Body.String(), "private-canary") {
+		t.Fatal(w.Body.String())
+	}
+}
+func TestOperationErrorProjectionAllowsKnownTextOnly(t *testing.T) {
+	if got := safeOperationError(state.Operation{Err: "pre-deploy command failed"}); got != "pre-deploy command failed" {
+		t.Fatal(got)
+	}
+	if got := safeOperationError(state.Operation{Err: "private secret"}); got != "operation failed" {
+		t.Fatal(got)
+	}
+}

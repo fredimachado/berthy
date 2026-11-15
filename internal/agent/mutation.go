@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func HandlerWithRuntime(c Config, e *engine.Engine, col *metrics.Collector, d *d
 	return NewDeploymentHandler(c, e, col, d)
 }
 func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller) http.Handler {
-	legacy := HandlerWithMetrics(c, e, col)
+	legacy := handlerWithState(c, e, col, d)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
@@ -212,6 +213,15 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			for _, r := range rows {
 				out = append(out, map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created})
 			}
+			failures, err := d.Store.DeployHistory(ctx, rest[1])
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			for _, op := range failures {
+				out = append(out, map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started})
+			}
+			sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
 			json.NewEncoder(w).Encode(out)
 		case rest[0] == "audit":
 			rows, err := d.Store.AuditLog(ctx, 100)
@@ -368,10 +378,14 @@ func publicOperation(o state.Operation) any {
 }
 
 func safeOperationError(o state.Operation) string {
-	if o.Err != "" {
+	switch o.Err {
+	case "":
+		return ""
+	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable":
+		return o.Err
+	default:
 		return "operation failed"
 	}
-	return ""
 }
 
 var operationWatchers = make(chan struct{}, 16)

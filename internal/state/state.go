@@ -56,11 +56,12 @@ type Event struct {
 }
 type Binding struct{ App, Role, Name, ServiceID string }
 type Release struct {
-	ID                  int64
-	App, Digest, Commit string
-	Manifest            json.RawMessage
-	Created             time.Time
-	Bindings            []Binding
+	ID                                     int64
+	App, Digest, Commit                    string
+	OperationID, SchemaBefore, SchemaAfter string
+	Manifest                               json.RawMessage
+	Created                                time.Time
+	Bindings                               []Binding
 }
 type Actor struct{ ID, Name, Remote string }
 type SecretInfo struct{ Name, Registry string }
@@ -129,7 +130,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 {
+	if !fresh && version != 1 && version != 2 && version != 3 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -171,7 +172,13 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(fmt.Errorf("state key: %w", err))
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=2`); err != nil {
+	if version < 3 {
+		if _, err = tx.Exec(`ALTER TABLE releases ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_before TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_after TEXT NOT NULL DEFAULT ''`); err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
+	if _, err = tx.Exec(`PRAGMA user_version=3`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -486,7 +493,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			return errors.New("invalid release")
 		}
 		r := o.Release
-		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created) VALUES(?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now())
+		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after) VALUES(?,?,?,?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now(), id, o.SchemaBefore, o.SchemaAfter)
 		if e != nil {
 			return e
 		}
@@ -526,7 +533,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	return tx.Commit()
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +542,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 	for rows.Next() {
 		var r Release
 		var ms int64
-		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms); err != nil {
+		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter); err != nil {
 			return nil, err
 		}
 		r.Created = time.UnixMilli(ms).UTC()
@@ -691,7 +698,7 @@ func (s *Store) Lock(ctx context.Context) (Lock, error) {
 func (s *Store) Applied(ctx context.Context, app string) (Release, error) {
 	var r Release
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms)
+	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter)
 	r.Created = time.UnixMilli(ms).UTC()
 	if err != nil {
 		return r, err

@@ -40,7 +40,7 @@ func TestImageProvenanceReopenAndOwnership(t *testing.T) {
 }
 func TestUpgradeVersionOne(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`DROP TABLE acquired_images; PRAGMA user_version=1`); err != nil {
+	if _, err := s.db.Exec(`DROP TABLE acquired_images; ALTER TABLE releases DROP COLUMN operation_id; ALTER TABLE releases DROP COLUMN schema_before; ALTER TABLE releases DROP COLUMN schema_after; PRAGMA user_version=1`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -50,10 +50,121 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+func TestCompletedOneOffsExcludeRecovery(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: 10000, Kind: "oneoff", Role: "pre_hook", Name: "task", Desired: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 10000, "finished", []byte(`{"id":"container","exit":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := s.CompletedOneOffs(ctx)
+	if err != nil || len(steps) != 0 {
+		t.Fatalf("active steps: %v %v", steps, err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "recovery_required"}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err = s.CompletedOneOffs(ctx)
+	if err != nil || len(steps) != 0 {
+		t.Fatalf("recovery steps: %v %v", steps, err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err = s.CompletedOneOffs(ctx)
+	if err != nil || len(steps) != 1 || steps[0].ID != "container" {
+		t.Fatalf("finished steps: %v %v", steps, err)
+	}
+}
+func TestDeployHistoryShowsFailedOnly(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "private", Kind: "deploy", App: "app", Commit: "abc", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Err: "private error"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.DeployHistory(ctx, "app")
+	if err != nil || len(rows) != 1 || rows[0].State != "failed" || rows[0].OperationID != op.ID {
+		t.Fatalf("history %v %v", rows, err)
+	}
+}
+func TestReleaseRecordsSchemaAndOperation(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "release", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded", SchemaBefore: "v1", SchemaAfter: "v2", Release: &Release{App: "app", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	release, err := s.Applied(ctx, "app")
+	if err != nil || release.SchemaBefore != "v1" || release.SchemaAfter != "v2" || release.OperationID != op.ID {
+		t.Fatalf("release %v %v", release, err)
+	}
+	history, err := s.History(ctx, "app")
+	if err != nil || len(history) != 1 || history[0].SchemaAfter != "v2" {
+		t.Fatalf("history %v %v", history, err)
+	}
+}
+func TestUpgradeVersionTwoPreservesProvenance(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	_, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordImageAcquired(ctx, "image@sha256:old", "sha256:id"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec(`ALTER TABLE releases DROP COLUMN operation_id; ALTER TABLE releases DROP COLUMN schema_before; ALTER TABLE releases DROP COLUMN schema_after; PRAGMA user_version=2`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	images, err := s.AcquiredImages(ctx)
+	if err != nil || len(images) != 1 {
+		t.Fatalf("lost provenance: %v %v", images, err)
+	}
+}
+func TestLatestFailedMigration(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", SchemaBefore: "v1", SchemaAfter: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := s.LatestFailedMigration(ctx, "app")
+	if err != nil || found.ID != op.ID || found.SchemaBefore != "v1" {
+		t.Fatalf("failed migration %v %v", found, err)
 	}
 }

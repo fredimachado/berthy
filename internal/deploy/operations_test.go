@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimeChangePreservesSpecAndSetsGeneration(t *testing.T) {
@@ -260,5 +261,97 @@ func TestPruneProtectsContainersAndRetainedReleases(t *testing.T) {
 	out := c.runOperation(ctx, op, Actor{Admin: true}, Request{Kind: "prune"})
 	if out.State != "succeeded" || len(f.removed) != 1 || f.removed[0] != "old" {
 		t.Fatalf("outcome %v removed %v", out, f.removed)
+	}
+}
+func TestPruneOnlyStoppedMatchingHook(t *testing.T) {
+	h := state.CompletedOneOff{ID: "one", OperationID: "op", Role: "pre_hook"}
+	good := engine.ContainerSnapshot{ID: "one", Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": "op", "berthy.oneoff": "pre_hook"}}
+	if !ownedFinishedHook(good, h, "stage") {
+		t.Fatal("owned stopped hook rejected")
+	}
+	good.Running = true
+	if ownedFinishedHook(good, h, "stage") {
+		t.Fatal("running hook accepted")
+	}
+	good.Running = false
+	good.ID = "other"
+	if ownedFinishedHook(good, h, "stage") {
+		t.Fatal("foreign container accepted")
+	}
+}
+
+type hookPruneEngine struct {
+	*pruneEngine
+	container engine.ContainerSnapshot
+	deleted   []string
+}
+
+func (f *hookPruneEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return f.container, nil
+}
+func (f *hookPruneEngine) RemoveContainer(_ context.Context, id string) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+func TestPruneRemovesOnlyJournaledStoppedHook(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	previous, _, err := s.Admit(ctx, state.Admission{RequestID: "h", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, previous.ID, state.Intent{Ordinal: 10000, Kind: "oneoff", Role: "pre_hook", Name: "owned", Desired: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, previous.ID, 10000, "finished", []byte(`{"id":"hook","exit":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, previous.ID, state.Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "p", ActorID: "a", Kind: "prune", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &hookPruneEngine{pruneEngine: &pruneEngine{runtimeEngine: &runtimeEngine{}}, container: engine.ContainerSnapshot{ID: "hook", Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": previous.ID, "berthy.oneoff": "pre_hook"}}}
+	c := Controller{Store: s, Engine: f, Environment: "stage"}
+	out := c.runOperation(ctx, op, Actor{Admin: true}, Request{Kind: "prune"})
+	if out.State != "succeeded" || len(f.deleted) != 1 || f.deleted[0] != "hook" {
+		t.Fatalf("outcome %v deleted %v", out, f.deleted)
+	}
+}
+func TestWaitWithoutRoleChecksAllBindings(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := []state.Binding{{App: "app", Role: "a", Name: "one", ServiceID: "id"}, {App: "app", Role: "b", Name: "two", ServiceID: "id2"}}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: bindings}}); err != nil {
+		t.Fatal(err)
+	}
+	fake := &runtimeEngine{op: "generation", spec: []byte(`{"Name":"one","TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"generation"}}},"Mode":{"Replicated":{"Replicas":1}}}`)}
+	c := Controller{Store: s, Engine: fake}
+	deadline, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if err = c.Wait(deadline, "app", ""); err == nil || strings.Contains(err.Error(), "role required") {
+		t.Fatalf("did not inspect each role: %v", err)
 	}
 }

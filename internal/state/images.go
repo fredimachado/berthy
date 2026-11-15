@@ -3,7 +3,10 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 )
 
 type AcquiredImage struct{ Ref, ID string }
@@ -72,4 +75,63 @@ func (s *Store) ForgetImage(ctx context.Context, ref, id string) error {
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+type CompletedOneOff struct{ OperationID, ID, Name, Role string }
+
+func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND i.phase='finished' AND i.role IN ('pre_hook','post_hook') ORDER BY i.operation_id,i.ordinal`, s.env)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CompletedOneOff
+	for rows.Next() {
+		var x CompletedOneOff
+		var ordinal int
+		var sealed []byte
+		if err = rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &sealed); err != nil {
+			return nil, err
+		}
+		plain, e := s.open(fmt.Sprintf("intent:%s:%d:receipt", x.OperationID, ordinal), sealed)
+		if e != nil {
+			return nil, e
+		}
+		var receipt struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(plain, &receipt) != nil || receipt.ID == "" {
+			return nil, errors.New("invalid one-off receipt")
+		}
+		x.ID = receipt.ID
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+type HistoryOperation struct {
+	OperationID, Kind, App, Commit, State string
+	Started                               time.Time
+}
+
+func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HistoryOperation
+	for rows.Next() {
+		var o HistoryOperation
+		var ms int64
+		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms); err != nil {
+			return nil, err
+		}
+		o.Started = time.UnixMilli(ms).UTC()
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+func (s *Store) LatestFailedMigration(ctx context.Context, app string) (Operation, error) {
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted','recovery_required') AND schema_before<>'' ORDER BY started DESC,rowid DESC LIMIT 1`, s.env, app))
 }
