@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -151,6 +152,23 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			json.NewEncoder(w).Encode(publicOperation(op))
 		case rest[0] == "operations":
 			streamOperation(w, r, d.Store, rest[1])
+		case rest[0] == "wait":
+			timeout := 2 * time.Minute
+			if raw := r.URL.Query().Get("timeout"); raw != "" {
+				var err error
+				timeout, err = time.ParseDuration(raw)
+				if err != nil || timeout <= 0 || timeout > 10*time.Minute {
+					writeError(w, 400, "bad_request", "invalid wait timeout")
+					return
+				}
+			}
+			waitCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			if err := d.Wait(waitCtx, rest[1], r.URL.Query().Get("role")); err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 		case rest[0] == "history":
 			rows, err := d.Store.History(ctx, rest[1])
 			if err != nil {

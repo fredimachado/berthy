@@ -127,3 +127,23 @@ func TestTerminalStreamCarriesStatus(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 }
+func TestWaitRejectsUnboundedTimeout(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	token := "bty.lab." + strings.Repeat("a", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/environments/lab/wait/app?timeout=24h", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
+	if w.Code != 400 {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+}
