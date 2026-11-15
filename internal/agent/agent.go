@@ -35,6 +35,11 @@ type Config struct {
 
 var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// tokenPattern matches a bearer token issued for env: bty.<env>.<64 hex>.
+func tokenPattern(env string) *regexp.Regexp {
+	return regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(env) + `\.[0-9a-f]{64}$`)
+}
+
 func Digest(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
 func Load(path string) (Config, error) {
 	var c Config
@@ -222,12 +227,8 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 		}
 		_ = json.NewEncoder(w).Encode(result)
 	})
-	// Compile the token pattern once per handler and build one authorizer per scope level.
-	tokenPattern := regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(c.Environment) + `\.[0-9a-f]{64}$`)
-	authorized := map[string]http.Handler{}
-	for _, level := range []string{"read", "deploy", "admin"} {
-		authorized[level] = authorize(c, tokenPattern, level, handler)
-	}
+	// Every route the router accepts requires read scope, so one authorizer is built once.
+	readAuthorized := authorize(c, tokenPattern(c.Environment), "read", handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -235,24 +236,24 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 			writeError(w, 404, "not_found", "not found")
 			return
 		}
-		required := ""
+		routed := false
 		if len(parts) == 4 {
 			switch parts[3] {
 			case "agent", "apps", "df", "doctor", "stats":
-				required = "read"
+				routed = true
 			}
 		}
 		if len(parts) == 5 && parts[3] == "apps" {
-			required = "read"
+			routed = true
 		}
 		if len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs" {
-			required = "read"
+			routed = true
 		}
-		if required == "" {
+		if !routed {
 			writeError(w, 404, "not_found", "not found")
 			return
 		}
-		authorized[required].ServeHTTP(w, r)
+		readAuthorized.ServeHTTP(w, r)
 	})
 }
 
@@ -352,7 +353,7 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 	}
 }
 
-func authorize(c Config, tokenPattern *regexp.Regexp, required string, next http.Handler) http.Handler {
+func authorize(c Config, pattern *regexp.Regexp, required string, next http.Handler) http.Handler {
 	levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -368,7 +369,7 @@ func authorize(c Config, tokenPattern *regexp.Regexp, required string, next http
 				}
 			}
 		}
-		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !tokenPattern.MatchString(raw) || scope == 0 {
+		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !pattern.MatchString(raw) || scope == 0 {
 			writeError(w, 401, "unauthorized", "unauthorized")
 			return
 		}

@@ -214,16 +214,12 @@ func sumNetDevCounters(lines []string, physical func(iface string) bool) (rx, tx
 	return rx, tx, err
 }
 
-// physicalInterface reports whether a network interface is backed by hardware. A physical
-// NIC has a device link in sysfs. When /sys/class/net is unavailable, the name rules decide.
+// physicalInterface reports whether a network interface is backed by hardware, which shows as
+// a device link in sysfs. Hosts without that link are handled by the name-rule fallback in
+// sumNetDevCounters, not here.
 func physicalInterface(name string) bool {
-	if _, err := os.Stat("/sys/class/net/" + name + "/device"); err == nil {
-		return true
-	}
-	if _, err := os.Stat("/sys/class/net"); err != nil {
-		return !virtualInterfaceName(name)
-	}
-	return false
+	_, err := os.Stat("/sys/class/net/" + name + "/device")
+	return err == nil
 }
 
 var virtualInterfacePrefixes = []string{"veth", "docker", "br-", "virbr", "cni", "flannel", "cali", "vxlan", "tun", "tap", "wg"}
@@ -340,35 +336,74 @@ const mountStatfsDeadline = 2 * time.Second
 // statfsFunc is the statfs call used by statfsTimeout. Tests replace it.
 var statfsFunc = syscall.Statfs
 
-// statfsInflight holds the paths whose statfs call has not yet returned.
-var statfsInflight sync.Map
+// statfsCall is one statfs in progress. Concurrent callers for the same path wait on it
+// instead of starting another, so a hung mount holds at most one goroutine.
+type statfsCall struct {
+	done chan struct{}
+	st   syscall.Statfs_t
+	err  error
+}
 
-// statfsTimeout runs statfs in a goroutine so a hung mount cannot block the caller. A path
-// whose previous call is still pending fails at once and starts no new goroutine, so a
-// hung mount holds at most one goroutine in total. The buffered channel lets the goroutine
-// finish without blocking after the caller has timed out.
+var (
+	statfsMu    sync.Mutex
+	statfsCalls = map[string]*statfsCall{}
+)
+
+// statfsTimeout runs statfs in a goroutine so a hung mount cannot block the caller. A caller
+// for a path that already has a statfs in progress waits on that call rather than starting
+// another, so a hung mount holds at most one goroutine in total. A caller that reaches its
+// deadline returns "timeout" and leaves the call running for later callers to share.
 func statfsTimeout(path string, d time.Duration) (syscall.Statfs_t, error) {
-	if _, busy := statfsInflight.LoadOrStore(path, struct{}{}); busy {
-		return syscall.Statfs_t{}, fmt.Errorf("previous statfs still pending")
+	statfsMu.Lock()
+	c, ok := statfsCalls[path]
+	if !ok {
+		c = &statfsCall{done: make(chan struct{})}
+		statfsCalls[path] = c
+		fn := statfsFunc
+		go func() {
+			c.err = fn(path, &c.st)
+			statfsMu.Lock()
+			delete(statfsCalls, path)
+			statfsMu.Unlock()
+			close(c.done)
+		}()
 	}
-	type res struct {
-		st  syscall.Statfs_t
-		err error
-	}
-	ch := make(chan res, 1)
-	fn := statfsFunc
-	go func() {
-		var st syscall.Statfs_t
-		err := fn(path, &st)
-		statfsInflight.Delete(path)
-		ch <- res{st, err}
-	}()
+	statfsMu.Unlock()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case r := <-ch:
-		return r.st, r.err
-	case <-time.After(d):
+	case <-c.done:
+		return c.st, c.err
+	case <-timer.C:
 		return syscall.Statfs_t{}, fmt.Errorf("timeout")
 	}
+}
+
+// statMounts runs statfs on every entry concurrently, so the whole call takes at most about one deadline.
+func statMounts(entries []mountEntry, d time.Duration) (mounts []Mount, failures []string) {
+	results := make([]struct {
+		m   Mount
+		err error
+	}, len(entries))
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st, err := statfsTimeout(e.Path, d)
+			results[i].err = err
+			results[i].m = Mount{e.Path, st.Blocks * uint64(st.Bsize), st.Bavail * uint64(st.Bsize)}
+		}()
+	}
+	wg.Wait()
+	for i, r := range results {
+		if r.err != nil {
+			failures = append(failures, "mount "+entries[i].Path+": "+r.err.Error())
+			continue
+		}
+		mounts = append(mounts, r.m)
+	}
+	return mounts, failures
 }
 
 func ReadMounts() ([]Mount, error) {
@@ -378,16 +413,7 @@ func ReadMounts() ([]Mount, error) {
 	}
 	defer f.Close()
 	entries, scanErr := parseMountinfo(f)
-	var mounts []Mount
-	var failures []string
-	for _, m := range selectMounts(entries) {
-		st, e := statfsTimeout(m.Path, mountStatfsDeadline)
-		if e != nil {
-			failures = append(failures, "mount "+m.Path+": "+e.Error())
-			continue
-		}
-		mounts = append(mounts, Mount{m.Path, st.Blocks * uint64(st.Bsize), st.Bavail * uint64(st.Bsize)})
-	}
+	mounts, failures := statMounts(selectMounts(entries), mountStatfsDeadline)
 	if scanErr != nil {
 		failures = append(failures, scanErr.Error())
 	}

@@ -91,14 +91,20 @@ func TestParseSince(t *testing.T) {
 func TestLogSourcesSkipsNonLocalReplicas(t *testing.T) {
 	restarts := func(n int) *int { return &n }
 	app := api.App{Roles: []api.Role{{Name: "web", Replicas: []api.Replica{
-		{TaskID: "task-local", ContainerID: "c-local", RestartCount: restarts(0)},
+		{TaskID: "task-local", ContainerID: "c-local", RestartCount: restarts(0), Local: true},
 		{TaskID: "task-remote", ContainerID: "c-remote"},
-		{ContainerID: "c-compose", RestartCount: restarts(0)},
+		{ContainerID: "c-compose", RestartCount: restarts(0), Local: true},
 		{ContainerID: "c-compose-remote"},
+		// RestartCount alone does not make a replica local: only Local decides.
+		{TaskID: "task-stale", ContainerID: "c-stale", RestartCount: restarts(3)},
 	}}}}
 	ids, status, message := logSources(app, "", "")
 	if status != 200 || len(ids) != 2 || ids[0].ContainerID != "c-local" || ids[1].ContainerID != "c-compose" {
 		t.Fatalf("all replicas: %d %q %+v", status, message, ids)
+	}
+	ids, status, message = logSources(app, "", "task-stale")
+	if status != 404 || message != "replica not on this node" || len(ids) != 0 {
+		t.Fatalf("stale replica with restart count: %d %q %+v", status, message, ids)
 	}
 	ids, status, message = logSources(app, "", "task-remote")
 	if status != 404 || message != "replica not on this node" || len(ids) != 0 {

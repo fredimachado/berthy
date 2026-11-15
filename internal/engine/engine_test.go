@@ -3,6 +3,7 @@ package engine
 import (
 	"berthy/internal/api"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,9 @@ func TestAppsFillsDetailsForManyContainers(t *testing.T) {
 		if rep.OOMKilled == nil || *rep.OOMKilled != (i%2 == 1) {
 			t.Fatalf("%s oom killed %v", rep.ContainerID, rep.OOMKilled)
 		}
+		if !rep.Local {
+			t.Fatalf("%s not marked local", rep.ContainerID)
+		}
 		if rep.Health != "none" {
 			t.Fatalf("%s health %q, want none", rep.ContainerID, rep.Health)
 		}
@@ -179,5 +183,64 @@ func TestAppsStopsAfterContextEndsDuringInspect(t *testing.T) {
 	})
 	if apps, err := e.Apps(ctx); err == nil || apps != nil {
 		t.Fatalf("apps %#v err %v", apps, err)
+	}
+}
+
+func TestAppsMarksUninspectableReplicaNotLocal(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/v1.44/containers/json":
+			return response(200, composeList(2)), nil
+		case "/v1.44/services":
+			return response(200, `[]`), nil
+		case "/v1.44/containers/c0/json":
+			return response(200, `{"RestartCount":1,"State":{}}`), nil
+		case "/v1.44/containers/c1/json":
+			return response(404, `{}`), nil
+		}
+		return response(404, `{}`), nil
+	})
+	apps, err := e.Apps(context.Background())
+	if err != nil || len(apps) != 1 || len(apps[0].Roles) != 1 {
+		t.Fatalf("apps %#v err %v", apps, err)
+	}
+	byID := map[string]api.Replica{}
+	for _, rep := range apps[0].Roles[0].Replicas {
+		byID[rep.ContainerID] = rep
+	}
+	c0, ok0 := byID["c0"]
+	c1, ok1 := byID["c1"]
+	if len(byID) != 2 || !ok0 || !ok1 {
+		t.Fatalf("replicas %+v", byID)
+	}
+	if !c0.Local || c0.RestartCount == nil || *c0.RestartCount != 1 {
+		t.Fatalf("c0 %+v", c0)
+	}
+	if c1.Local || c1.RestartCount != nil {
+		t.Fatalf("c1 %+v", c1)
+	}
+}
+
+func TestNewTransportKeepsIdleConnections(t *testing.T) {
+	e := New("/nonexistent.sock")
+	tr, ok := e.client.Transport.(*http.Transport)
+	if !ok || tr.MaxIdleConnsPerHost != inspectWorkers {
+		t.Fatalf("transport %#v, want *http.Transport with MaxIdleConnsPerHost %d", e.client.Transport, inspectWorkers)
+	}
+}
+
+func TestReplicaJSONOmitsLocal(t *testing.T) {
+	b, err := json.Marshal(api.Replica{ContainerID: "c", Local: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for key := range fields {
+		if strings.EqualFold(key, "local") {
+			t.Fatalf("Local leaked into JSON: %s", b)
+		}
 	}
 }

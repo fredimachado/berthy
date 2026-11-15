@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -106,40 +107,131 @@ func TestStatfsTimeoutReturnsSuccessfulResult(t *testing.T) {
 	}
 }
 
-func TestStatfsTimeoutGatesHungPath(t *testing.T) {
+func TestStatfsTimeoutSharesInFlightCall(t *testing.T) {
+	const path = "/berthy-test/shared"
 	release := make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
 	orig := statfsFunc
 	t.Cleanup(func() { statfsFunc = orig })
 	t.Cleanup(unblock)
+	var calls atomic.Int32
+	statfsFunc = func(_ string, st *syscall.Statfs_t) error {
+		calls.Add(1)
+		<-release
+		st.Bsize = 4096
+		return nil
+	}
+
+	type result struct {
+		st  syscall.Statfs_t
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			st, err := statfsTimeout(path, 5*time.Second)
+			results <- result{st, err}
+		}()
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("statfs never started; calls = %d", calls.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // let the second caller join the call
+	unblock()
+	for range 2 {
+		r := <-results
+		if r.err != nil || r.st.Bsize != 4096 {
+			t.Errorf("caller got st.Bsize=%d err=%v, want 4096 and nil", r.st.Bsize, r.err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("statfs called %d times, want 1", got)
+	}
+}
+
+func TestStatfsTimeoutHungPathStartsOneCall(t *testing.T) {
+	const path = "/berthy-test/hung-mount"
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	orig := statfsFunc
+	t.Cleanup(func() { statfsFunc = orig })
+	t.Cleanup(unblock)
+	var calls atomic.Int32
 	statfsFunc = func(string, *syscall.Statfs_t) error {
+		calls.Add(1)
 		<-release
 		return nil
 	}
-	const path = "/berthy-test/hung-mount"
 
-	if _, err := statfsTimeout(path, 50*time.Millisecond); err == nil || err.Error() != "timeout" {
-		t.Fatalf("first call: err = %v, want timeout", err)
+	for i := range 2 {
+		if _, err := statfsTimeout(path, 50*time.Millisecond); err == nil || err.Error() != "timeout" {
+			t.Fatalf("call %d: err = %v, want timeout", i+1, err)
+		}
 	}
-	start := time.Now()
-	if _, err := statfsTimeout(path, 5*time.Second); err == nil || err.Error() != "previous statfs still pending" {
-		t.Fatalf("second call: err = %v, want previous statfs still pending", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("second call took %v; it should return immediately", elapsed)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("statfs called %d times while hung, want 1", got)
 	}
 
 	unblock()
+	// Wait for the hung call to leave the in-flight table first. Otherwise the next caller
+	// could join the old call, which returns nil without starting a new statfs.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		_, err := statfsTimeout(path, time.Second)
-		if err == nil {
+		statfsMu.Lock()
+		_, pending := statfsCalls[path]
+		statfsMu.Unlock()
+		if !pending {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("path still gated after unblock: %v", err)
+			t.Fatal("hung statfs still pending after release")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := statfsTimeout(path, time.Second); err != nil {
+		t.Fatalf("after release: err = %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("statfs called %d times after release, want 2", got)
+	}
+}
+
+func TestStatMountsRunsConcurrently(t *testing.T) {
+	orig := statfsFunc
+	t.Cleanup(func() { statfsFunc = orig })
+	statfsFunc = func(path string, st *syscall.Statfs_t) error {
+		if path == "/bad" {
+			return syscall.EIO
+		}
+		time.Sleep(200 * time.Millisecond)
+		st.Bsize = 4096
+		st.Blocks = 10
+		st.Bavail = 4
+		return nil
+	}
+	entries := []mountEntry{{"/a", "ext4"}, {"/bad", "ext4"}, {"/b", "ext4"}, {"/c", "ext4"}}
+
+	start := time.Now()
+	mounts, failures := statMounts(entries, time.Second)
+	// Run serially, the three 200ms calls would take at least 600ms.
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("statMounts took %v; statfs calls ran serially", elapsed)
+	}
+	wantMounts := []Mount{
+		{"/a", 10 * 4096, 4 * 4096},
+		{"/b", 10 * 4096, 4 * 4096},
+		{"/c", 10 * 4096, 4 * 4096},
+	}
+	if !reflect.DeepEqual(mounts, wantMounts) {
+		t.Fatalf("mounts:\n got %+v\nwant %+v", mounts, wantMounts)
+	}
+	wantFailures := []string{"mount /bad: " + syscall.EIO.Error()}
+	if !reflect.DeepEqual(failures, wantFailures) {
+		t.Fatalf("failures = %q, want %q", failures, wantFailures)
 	}
 }
 

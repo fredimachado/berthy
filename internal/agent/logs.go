@@ -193,8 +193,8 @@ func parseSince(value string, now time.Time) (time.Time, error) {
 }
 
 // logSources returns the containers this node can read for the role and
-// replica filters. A replica without a local inspect (RestartCount nil) is not on
-// this node: it still counts as found, but it is not a log source.
+// replica filters. A replica not inspected on this node (Local false) still
+// counts as found but is not a log source.
 func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity, status int, message string) {
 	roleFound := wantRole == ""
 	replicaFound := wantReplica == ""
@@ -216,7 +216,7 @@ func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity,
 			if rep.ContainerID == "" {
 				continue
 			}
-			if rep.RestartCount == nil {
+			if !rep.Local {
 				if wantReplica != "" {
 					replicaRemote = true
 				}

@@ -20,11 +20,16 @@ type Engine struct {
 	socket string
 }
 
+// inspectWorkers is the number of concurrent container inspects in fillDetails.
+// It also sizes the idle connection pool per host so each worker can reuse a
+// connection. The metrics collector's four concurrent stats calls fit within it too.
+const inspectWorkers = 8
+
 func New(socket string) *Engine {
 	if socket == "" {
 		socket = "/var/run/docker.sock"
 	}
-	tr := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	tr := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: inspectWorkers, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
 	return &Engine{client: &http.Client{Transport: tr, Timeout: 5 * time.Second}, socket: socket}
@@ -204,7 +209,7 @@ func (e *Engine) fillDetails(ctx context.Context, targets []*api.Replica) error 
 		once     sync.Once
 		firstErr error
 	)
-	for i := 0; i < 8; i++ {
+	for i := 0; i < inspectWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -236,6 +241,7 @@ func (e *Engine) details(ctx context.Context, r *api.Replica) error {
 		}
 		return err
 	} else {
+		r.Local = true
 		r.RestartCount = &d.RestartCount
 		r.OOMKilled = &d.State.OOMKilled
 		if d.State.Health == nil {
