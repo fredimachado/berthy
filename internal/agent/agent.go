@@ -5,6 +5,7 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/metrics"
+	"berthy/internal/telemetry"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -168,9 +169,9 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
 func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
-	return handlerWithState(c, e, collector, nil)
+	return handlerWithState(c, e, collector, nil, nil)
 }
-func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller) http.Handler {
+func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if r.Method != "GET" {
@@ -308,6 +309,11 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			}
 			if deployment != nil && deployment.Store != nil {
 				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
+			}
+			if tel != nil {
+				if check, ok := telemetryDoctorCheck(tel, time.Now()); ok {
+					checks = append(checks, check)
+				}
 			}
 			result = map[string]any{"checks": checks}
 		default:

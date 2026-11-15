@@ -180,7 +180,17 @@ func Run(args []string, out, errout io.Writer) int {
 			// Registered after the store's Close, so it runs first: the monitor stops before the store closes.
 			defer func() { cancel(); <-monitorDone }()
 		}
-		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandler(c, eng, collector, deployment), ReadHeaderTimeout: 5 * time.Second}
+		exporter := agent.NewTelemetry(c, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
+		if exporter != nil {
+			exportDone := make(chan struct{})
+			go func() {
+				defer close(exportDone)
+				exporter.Run(ctx)
+			}()
+			// Registered after the monitor's stop, so the last export is flushed before the store closes.
+			defer func() { cancel(); <-exportDone }()
+		}
+		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandlerWithTelemetry(c, eng, collector, deployment, exporter), ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)

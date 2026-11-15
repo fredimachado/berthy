@@ -23,6 +23,7 @@ import (
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/state"
+	"berthy/internal/telemetry"
 )
 
 func OpenDeployment(c Config, e *engine.Engine) (*deploy.Controller, error) {
@@ -44,7 +45,13 @@ func HandlerWithRuntime(c Config, e *engine.Engine, col *metrics.Collector, d *d
 	return NewDeploymentHandler(c, e, col, d)
 }
 func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller) http.Handler {
-	legacy := handlerWithState(c, e, col, d)
+	return NewDeploymentHandlerWithTelemetry(c, e, col, d, nil)
+}
+
+// NewDeploymentHandlerWithTelemetry is NewDeploymentHandler for an agent that exports telemetry, so that the doctor reports
+// the export. tel may be nil.
+func NewDeploymentHandlerWithTelemetry(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter) http.Handler {
+	legacy := handlerWithState(c, e, col, d, tel)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
