@@ -22,36 +22,58 @@ type managedLogEngine interface {
 }
 
 func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEngine, app api.App, ids []logs.Identity) ([]string, error) {
-	if d == nil || d.Store == nil || app.Ref.Kind != "swarm" {
+	if d == nil || d.Store == nil || (app.Ref.Kind != "swarm" && app.Ref.Kind != "image") {
 		return nil, nil
 	}
 	bindings, err := d.Store.Bindings(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	live, err := e.InspectService(ctx, app.Ref.Name)
-	if err != nil {
-		return nil, err
-	}
 	var bindingApp string
-	for _, b := range bindings {
-		if b.Name == app.Ref.Name || b.ServiceID == live.ID {
-			if b.Name != app.Ref.Name || b.ServiceID != live.ID {
-				return nil, errors.New("managed identity mismatch")
+	if app.Ref.Kind == "image" {
+		roles := map[string]bool{}
+		for _, b := range bindings {
+			if b.App == app.Ref.Name {
+				live, err := e.InspectService(ctx, b.Name)
+				if err != nil || live.ID != b.ServiceID {
+					return nil, errors.New("managed identity mismatch")
+				}
+				roles[b.Role] = true
 			}
-			bindingApp = b.App
-			break
 		}
-	}
-	if bindingApp == "" {
-		var spec struct{ Labels map[string]string }
-		if json.Unmarshal(live.Spec, &spec) != nil {
-			return nil, errors.New("service identity unavailable")
+		if len(roles) == 0 {
+			return nil, errors.New("managed identity unavailable")
 		}
-		if spec.Labels["berthy.environment"] != "" || spec.Labels["berthy.app"] != "" {
-			return nil, errors.New("unbound managed service")
+		for _, id := range ids {
+			if !roles[id.Role] {
+				return nil, errors.New("managed role unavailable")
+			}
 		}
-		return nil, nil
+		bindingApp = app.Ref.Name
+	} else {
+		live, err := e.InspectService(ctx, app.Ref.Name)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range bindings {
+			if b.Name == app.Ref.Name || b.ServiceID == live.ID {
+				if b.Name != app.Ref.Name || b.ServiceID != live.ID {
+					return nil, errors.New("managed identity mismatch")
+				}
+				bindingApp = b.App
+				break
+			}
+		}
+		if bindingApp == "" {
+			var spec struct{ Labels map[string]string }
+			if json.Unmarshal(live.Spec, &spec) != nil {
+				return nil, errors.New("service identity unavailable")
+			}
+			if spec.Labels["berthy.environment"] != "" || spec.Labels["berthy.app"] != "" {
+				return nil, errors.New("unbound managed service")
+			}
+			return nil, nil
+		}
 	}
 	active, err := d.Store.Active(ctx)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

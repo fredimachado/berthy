@@ -50,7 +50,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	apps, err := e.Apps(ctx)
+	apps, err := appInventory(ctx, e, deployment)
 	cancel()
 	if err != nil {
 		code := dockerErrorCode(err)
@@ -60,7 +60,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	app, code := engine.Select(apps, name)
 	if code != 200 {
 		if code == 409 {
-			writeError(w, code, "conflict", "ambiguous app; use swarm: or compose:")
+			writeError(w, code, "conflict", "ambiguous app; use image:, swarm: or compose:")
 		} else {
 			writeError(w, code, "not_found", "app not found")
 		}

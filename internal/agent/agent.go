@@ -156,21 +156,21 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
-				result, err = e.Apps(ctx)
+				result, err = appInventory(ctx, e, deployment)
 			}
 		case len(parts) == 5 && parts[3] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
 				var apps []api.App
-				apps, err = e.Apps(ctx)
+				apps, err = appInventory(ctx, e, deployment)
 				if err == nil {
 					var code int
 					result, code = engine.Select(apps, parts[4])
 					if code != 200 {
 						message := http.StatusText(code)
 						if code == 409 {
-							message = "ambiguous app; use swarm:" + parts[4] + " or compose:" + parts[4]
+							message = "ambiguous app; use image:" + parts[4] + ", swarm:" + parts[4] + " or compose:" + parts[4]
 						}
 						writeError(w, code, strings.ToLower(strings.ReplaceAll(http.StatusText(code), " ", "_")), message)
 						return

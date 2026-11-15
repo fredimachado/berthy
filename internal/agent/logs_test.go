@@ -196,6 +196,12 @@ func TestManagedLogSecretsIncludeRotatedContainerValues(t *testing.T) {
 	if strings.Contains(redacted[0].Message, "value") {
 		t.Fatal("rotated secret leaked")
 	}
+	logical := api.App{Ref: api.AppRef{Kind: "image", Name: "api"}}
+	ids[0].Role = "web"
+	logicalSecrets, err := managedLogSecrets(ctx, d, source, logical, ids)
+	if err != nil || len(logicalSecrets) < 2 {
+		t.Fatalf("logical app did not redact secrets: %v", err)
+	}
 	source.envErr = errors.New("private failure")
 	if _, err = managedLogSecrets(ctx, d, source, app, ids); err == nil {
 		t.Fatal("unreadable managed container accepted")
