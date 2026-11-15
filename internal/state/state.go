@@ -129,7 +129,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 {
+	if !fresh && version != 1 && version != 2 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -138,6 +138,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec(`
+ CREATE TABLE IF NOT EXISTS acquired_images (environment TEXT NOT NULL, ref TEXT NOT NULL, image_id TEXT NOT NULL, PRIMARY KEY(environment,ref));
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, UNIQUE(environment,request_id));
@@ -170,7 +171,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(fmt.Errorf("state key: %w", err))
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=1`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=2`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
