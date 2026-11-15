@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"berthy/internal/state"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestConfigValidateOffline(t *testing.T) {
@@ -113,5 +117,28 @@ func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", "2", "--dry-run"}, &out, &errs)
 	if got != 0 {
 		t.Fatalf("exit %d: %s", got, errs.String())
+	}
+}
+
+func TestRecoveryRetryOnlyForRequired(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	done := make(chan struct{})
+	active := func(context.Context) (state.Operation, error) {
+		if calls.Add(1) == 1 {
+			return state.Operation{State: "running"}, nil
+		}
+		return state.Operation{State: "recovery_required"}, nil
+	}
+	recover := func(context.Context) error { close(done); cancel(); return nil }
+	go retryRecovery(ctx, time.Millisecond, active, recover)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recovery not retried")
+	}
+	if calls.Load() < 2 {
+		t.Fatal("retried a running operation")
 	}
 }

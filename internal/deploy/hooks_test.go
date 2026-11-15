@@ -159,3 +159,16 @@ func TestOneOffRunsExactArgv(t *testing.T) {
 		t.Fatalf("entrypoint and args: %+v", spec)
 	}
 }
+func TestSchemaVersionIsJournaledWithOneOff(t *testing.T) {
+	c, f, id, p := hookFixture(t)
+	f.exits = []int{0}
+	f.logs = [][]byte{[]byte("v7\n")}
+	v, err := c.runOneOff(context.Background(), id, p, 10000, "schema_before", []string{"version"}, true)
+	if err != nil || v != "v7" {
+		t.Fatalf("version %q: %v", v, err)
+	}
+	steps, err := c.Store.Intents(context.Background(), id)
+	if err != nil || len(steps) != 1 || !strings.Contains(string(steps[0].Receipt), `"version":"v7"`) {
+		t.Fatalf("receipt %v: %v", steps, err)
+	}
+}

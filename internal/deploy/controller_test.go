@@ -571,3 +571,80 @@ func openStore(t *testing.T) *state.Store {
 	t.Cleanup(func() { s.Close() })
 	return s
 }
+
+func TestRecoveryKeepsRecordedSchemaStates(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "held", SchemaBefore: "v1", SchemaAfter: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Engine: &positiveEngine{}, Store: s}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" || got.SchemaBefore != "v1" || got.SchemaAfter != "v2" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+}
+
+// absentContainers reports every one-off container as already removed.
+type absentContainers struct{ *hookEngine }
+
+func (absentContainers) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
+}
+
+func TestRecoveryRestoresSchemaFromOneOffReceipt(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 10000, Kind: "oneoff", Role: "schema_before", Name: "berthy-probe", Desired: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 10000, "finished", json.RawMessage(`{"id":"container","exit":0,"version":"v1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Engine: absentContainers{&hookEngine{}}, Store: s}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" || got.SchemaBefore != "v1" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+}
+
+func TestRecoveryPendingDoesNotRepeatAudit(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Before: json.RawMessage(`{"Name":"old"}`), Desired: json.RawMessage(`{"Name":"new"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Engine: &positiveEngine{spec: json.RawMessage(`{"Name":"foreign"}`)}, Store: s}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.AuditLog(ctx, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Recover(ctx); !errors.Is(err, ErrRecoveryPending) {
+		t.Fatalf("second recovery: %v", err)
+	}
+	after, err := s.AuditLog(ctx, 1000)
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("audit grew from %d to %d: %v", len(before), len(after), err)
+	}
+}

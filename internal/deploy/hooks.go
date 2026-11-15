@@ -144,7 +144,20 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 	if err != nil {
 		return "", errors.New("schema version unavailable")
 	}
-	return safeVersion(output, p)
+	v, err := safeVersion(output, p)
+	if err != nil {
+		return "", err
+	}
+	// Journal the version so recovery keeps the schema state even if this process never returns it.
+	receipt, _ = json.Marshal(struct {
+		ID      string `json:"id"`
+		Exit    int    `json:"exit"`
+		Version string `json:"version"`
+	}{id, exit, v})
+	if err = c.Store.MarkStep(ctx, opID, ordinal, "finished", receipt); err != nil {
+		return "", ErrOneOffUncertain
+	}
+	return v, nil
 }
 func safeVersion(output []byte, p preparedPlan) (string, error) {
 	if len(output) > 1024 || !utf8.Valid(output) {

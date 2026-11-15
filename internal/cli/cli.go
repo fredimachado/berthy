@@ -3,9 +3,11 @@ package cli
 import (
 	"berthy/internal/agent"
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"berthy/internal/metrics"
+	"berthy/internal/state"
 	"bufio"
 	"bytes"
 	"context"
@@ -137,10 +139,19 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		if deployment != nil {
 			defer deployment.Store.Close()
-			if err = deployment.Recover(ctx); err != nil {
+			recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
+			err = deployment.Recover(recoveryCtx)
+			done()
+			if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
 				fmt.Fprintln(errout, "deployment recovery failed")
 				return 1
 			}
+			stopped := make(chan struct{})
+			go func() {
+				defer close(stopped)
+				retryRecovery(ctx, 10*time.Second, deployment.Store.Active, deployment.Recover)
+			}()
+			defer func() { cancel(); <-stopped }()
 		}
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
@@ -313,6 +324,24 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func retryRecovery(ctx context.Context, interval time.Duration, active func(context.Context) (state.Operation, error), recover func(context.Context) error) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			attempt, done := context.WithTimeout(ctx, 30*time.Second)
+			op, err := active(attempt)
+			if err == nil && op.State == "recovery_required" {
+				_ = recover(attempt)
+			}
+			done()
+		}
+	}
 }
 func printText(w io.Writer, v any, indent string) {
 	switch x := v.(type) {

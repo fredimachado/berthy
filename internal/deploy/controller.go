@@ -56,6 +56,9 @@ type Controller struct {
 	Protected   bool
 }
 
+// ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.
+var ErrRecoveryPending = errors.New("recovery still required")
+
 // Plan performs no durable or Docker mutations.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
 	if req.Adopt {
@@ -172,6 +175,14 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	before, after := recordedSchema(op, intents)
+	// A retry of an operation already marked recovery_required must not append another event and audit row.
+	required := func(msg string) error {
+		if op.State == "recovery_required" {
+			return ErrRecoveryPending
+		}
+		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after})
+	}
 	hasHooks := false
 	var barrier *state.Intent
 	for _, i := range intents {
@@ -182,25 +193,58 @@ func (c *Controller) Recover(ctx context.Context) error {
 			barrier = &copyIntent
 		} else if i.Kind == "exec" && i.Phase == "finished" {
 		} else if i.Kind != "create" && i.Kind != "update" {
-			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "unsupported recovery step"})
+			return required("unsupported recovery step")
 		}
 	}
 	if hasHooks {
 		if err = c.recoverHooks(ctx, op.ID); err != nil {
-			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "one-off recovery required"})
+			return required("one-off recovery required")
 		}
 	}
 	if barrier != nil {
 		out, err := c.recoverBarrier(ctx, intents, *barrier)
 		if err != nil {
-			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "verified release requires inspection"})
+			return required("verified release requires inspection")
+		}
+		if out.SchemaBefore == "" {
+			out.SchemaBefore = before
+		}
+		if out.SchemaAfter == "" {
+			out.SchemaAfter = after
 		}
 		return c.Store.Finish(ctx, op.ID, out)
 	}
 	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
-		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"})
+		return required("service recovery required")
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up"})
+	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after})
+}
+
+// recordedSchema returns the schema states of an operation, falling back to the versions its finished one-offs journaled.
+func recordedSchema(op state.Operation, intents []state.Intent) (before, after string) {
+	before, after = op.SchemaBefore, op.SchemaAfter
+	for _, i := range intents {
+		if i.Kind != "oneoff" || i.Phase != "finished" {
+			continue
+		}
+		var r struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(i.Receipt, &r) != nil || r.Version == "" {
+			continue
+		}
+		switch i.Role {
+		case "schema_before", "revert_before":
+			if before == "" {
+				before = r.Version
+			}
+		case "schema_after", "revert_after":
+			if after == "" {
+				after = r.Version
+			}
+		}
+	}
+	return before, after
 }
 
 func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request, error) {
