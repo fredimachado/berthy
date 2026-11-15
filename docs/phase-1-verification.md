@@ -174,3 +174,12 @@ same-ingress control with health checks disabled served 250 requests from the
 bad revision. There were 1,033 requests in total. These observations support
 the native gate for this exact Engine, proxy and route; they do not establish
 graceful draining or validate another production ingress configuration.
+
+A separate full rerun after `9e34ddf`, at approximately 11:50 AEST, inherited
+an intentionally invalid `DOCKER_CONTEXT` and used the dedicated Docker 29.7.2
+socket. Of 769 gated requests, none failed, lacked a unique backend arrival,
+or reached the delayed candidate before health. The delayed candidate served
+224 requests; the prior revision served 380 during the bad update, and the
+bad candidate received zero ingress requests. The bad candidate answered a
+direct request and rollback completed. The positive control served 248 bad
+revision requests; the run had 1,031 requests in total.
