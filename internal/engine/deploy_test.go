@@ -101,3 +101,13 @@ func TestStopContainerUsesBoundedTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServiceTasksIncludesTaskGenerationLabel(t *testing.T) {
+	e := fakeEngine(func(*http.Request) (*http.Response, error) {
+		return response(200, `[{"ID":"task","ServiceID":"service","Spec":{"ContainerSpec":{"Labels":{"berthy.operation":"op1"}}}}]`), nil
+	})
+	tasks, err := e.ServiceTasks(context.Background(), "service")
+	if err != nil || len(tasks) != 1 || tasks[0].Labels["berthy.operation"] != "op1" {
+		t.Fatalf("task generation not returned: %+v, %v", tasks, err)
+	}
+}

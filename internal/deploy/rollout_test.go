@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
@@ -99,8 +100,23 @@ func (h healthFake) InspectContainerHealth(context.Context, string) (string, err
 	return h.status, nil
 }
 func TestHealthRejectsStartingContainer(t *testing.T) {
-	e := healthFake{tasks: []engine.ServiceTask{{ID: "t", ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, SpecVersion: 2}}, status: "starting"}
-	if healthyOnce(context.Background(), e, "s", 2, 1) == nil {
+	e := healthFake{tasks: []engine.ServiceTask{{ID: "t", ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}, status: "starting"}
+	if healthyOnce(context.Background(), e, "s", "op", 1) == nil {
 		t.Fatal("starting task counted healthy")
+	}
+}
+
+func TestHealthRejectsOldGeneration(t *testing.T) {
+	e := healthFake{tasks: []engine.ServiceTask{{ID: "t", ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "old"}}}, status: "healthy"}
+	if healthyOnce(context.Background(), e, "s", "new", 1) == nil {
+		t.Fatal("old task counted healthy")
+	}
+}
+
+func TestHealthWaitHonorsDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1); err == nil {
+		t.Fatal("unhealthy service passed")
 	}
 }

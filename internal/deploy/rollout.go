@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/state"
@@ -89,14 +90,14 @@ type healthReader interface {
 	InspectContainerHealth(context.Context, string) (string, error)
 }
 
-func healthyOnce(ctx context.Context, e healthReader, id string, generation uint64, replicas int) error {
+func healthyOnce(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
 	tasks, err := e.ServiceTasks(ctx, id)
 	if err != nil {
 		return errors.New("task inspection failed")
 	}
 	slots := make(map[uint64]bool)
 	for _, t := range tasks {
-		if t.ServiceID != id || t.DesiredState != "running" || t.State != "running" || t.SpecVersion != generation || t.Slot == 0 || t.ContainerID == "" {
+		if t.ServiceID != id || t.DesiredState != "running" || t.State != "running" || t.Labels["berthy.operation"] != generation || t.Slot == 0 || t.ContainerID == "" {
 			continue
 		}
 		health, err := e.InspectContainerHealth(ctx, t.ContainerID)
@@ -110,4 +111,19 @@ func healthyOnce(ctx context.Context, e healthReader, id string, generation uint
 		}
 	}
 	return nil
+}
+
+func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if healthyOnce(ctx, e, id, generation, replicas) == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("service health deadline exceeded")
+		case <-ticker.C:
+		}
+	}
 }
