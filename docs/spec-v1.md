@@ -591,6 +591,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `config show`, `config validate` | Print or check the merged manifest | No |
 | `backup list` | Backups in object storage with size, age and status | No |
 | `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
+| `checks` | Stored state of every probe and built-in condition, with when each state began | No |
+| `alerts test` | Send a test message through the Telegram channel | Yes |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app or a Compose app | Yes |
@@ -682,6 +684,34 @@ Proposed thresholds: disk space and Docker disk usage warn at 80% and go critica
 - A probe against a service name needs an overlay-attached helper. Phase 3 will
   decide its packaging; one option is the same Berthy binary in a locally built
   image, with one helper per server.
+
+#### Configuration
+
+Probes, peers and alerts are part of the manifest, so they are reviewed like code. Monitoring uses the last applied manifest: the one stored with the most recent release of any app, except the managed ingress connector. A release the agent cannot read keeps the checks that are already running.
+
+```yaml
+probes:
+  site:
+    http: https://app.example.com/health    # or tcp: 10.0.0.5:5432, or service: {app: api, port: 8080, path: /health}
+    expect_status: [200, 204]               # default: any status from 200 to 399
+    interval: 30s                           # default 30s, at least 5s
+    timeout: 5s                             # default 5s, and shorter than the interval
+    failures: 3                             # failed runs in a row before the state changes; default 3
+peers:
+  prod: https://prod.example.com:8443       # the other agent's base URL, with no path
+alerts:
+  telegram:
+    bot_token_secret: TELEGRAM_BOT_TOKEN    # the name of a secret that holds the bot token
+    chat_id: "-1001234567890"               # quote it; or "@channel_name"
+    reminder: 4h                            # while a check keeps failing; 0s turns reminders off
+```
+
+- A check changes state after it has failed the configured number of times in a row. One success recovers it at once. Unknown results never alert.
+- Service probes need the overlay helper, which is the next step. Until then they report unknown.
+- Each peer is asked for `/healthz` every 30 seconds with a 5-second timeout, and is critical after three misses. `/healthz` needs no token and answers `{"ok":true}` and nothing else.
+- Built-in conditions always run: disk and Docker disk (warning from 80%, critical from 90%), memory (warning below 10% available, critical below 5%), restart loops of the apps Berthy manages (three restarts of one replica, or three Swarm tasks that failed or were rejected, within 10 minutes, or an out-of-memory kill; shutdowns, such as a rolling update's old tasks, do not count; unmanaged Swarm services and Compose projects are not checked), and the tunnel when managed ingress is set up.
+- Disk checks cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB; smaller mounts are skipped.
+- An alert is sent when a state changes: 🔴 for critical, 🟠 for warning, ✅ on recovery. Reminders read 🔁 still failing. `berthy alerts test -e ENV` sends a test message to check the channel.
 
 ### Alerts
 
@@ -830,8 +860,8 @@ Each token belongs to one environment and one scope.
 
 | Scope | Allows |
 | --- | --- |
-| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status` |
-| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire` and `lock release` |
+| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks` |
+| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release` and `alerts test` |
 | `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.

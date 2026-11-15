@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress", "alerts":
 		return true
 	}
 	return false
@@ -305,6 +305,17 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			endpoint = "ingress/apply"
 			body = req
 		}
+	case "alerts":
+		if len(f.pos) != 1 || f.pos[0] != "test" {
+			fmt.Fprintln(errout, "usage: alerts test")
+			return 2
+		}
+		if f.dry {
+			fmt.Fprintln(errout, "alerts test has no dry run")
+			return 2
+		}
+		endpoint = "alerts/test"
+		method = "POST"
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"

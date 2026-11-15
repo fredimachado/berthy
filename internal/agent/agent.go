@@ -38,6 +38,8 @@ type Config struct {
 	Protected    bool   `json:"protected,omitempty"`
 	// CloudflareAPIURL overrides the Cloudflare API base URL. https is required, except for a loopback host, which tests use.
 	CloudflareAPIURL string `json:"cloudflare_api_url,omitempty"`
+	// TelegramAPIURL overrides the Telegram Bot API base URL that alerts use. The same rule applies: https, or http on a loopback host.
+	TelegramAPIURL string `json:"telegram_api_url,omitempty"`
 	// ComposeCommand runs the Compose CLI for Compose apps. It defaults to docker compose.
 	ComposeCommand []string `json:"compose_command,omitempty"`
 	Tokens         []Token  `json:"tokens"`
@@ -113,7 +115,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("state_dir and key_file must be configured together")
 	}
 	if c.CloudflareAPIURL != "" {
-		if err := validateCloudflareURL(c.CloudflareAPIURL); err != nil {
+		if err := validateAPIURL("cloudflare_api_url", c.CloudflareAPIURL); err != nil {
+			return err
+		}
+	}
+	if c.TelegramAPIURL != "" {
+		if err := validateAPIURL("telegram_api_url", c.TelegramAPIURL); err != nil {
 			return err
 		}
 	}
@@ -137,12 +144,13 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// validateCloudflareURL accepts an https base URL, or http for a loopback host, which the in-memory Cloudflare fake uses.
-// It rejects userinfo, queries and fragments, so the API token is never sent to an address with credentials in it.
-func validateCloudflareURL(raw string) error {
+// validateAPIURL accepts an https base URL, or http for a loopback host, which the in-memory fakes use. It rejects
+// userinfo, queries and fragments, so a token is never sent to an address with credentials in it. name is the config
+// key the error names.
+func validateAPIURL(name, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil || strings.ContainsAny(raw, "?#") {
-		return fmt.Errorf("invalid cloudflare_api_url")
+		return fmt.Errorf("invalid %s", name)
 	}
 	switch u.Scheme {
 	case "https":
@@ -153,7 +161,7 @@ func validateCloudflareURL(raw string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("cloudflare_api_url must use https, or http on a loopback host")
+	return fmt.Errorf("%s must use https, or http on a loopback host", name)
 }
 
 func Handler(c Config, e *engine.Engine) http.Handler {
@@ -298,6 +306,9 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: version})
 				}
 			}
+			if deployment != nil && deployment.Store != nil {
+				checks = append(checks, monitoringChecks(r.Context(), deployment.Store)...)
+			}
 			result = map[string]any{"checks": checks}
 		default:
 			writeError(w, 404, "not_found", "not found")
@@ -315,6 +326,9 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 	readAuthorized := authorize(c, tokenPattern(c.Environment), "read", handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if serveHealth(w, r) {
+			return
+		}
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
 			writeError(w, 404, "not_found", "not found")

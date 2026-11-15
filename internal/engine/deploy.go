@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxDockerResponse = 8 << 20
@@ -34,6 +35,8 @@ type ServiceTask struct {
 	ID, ServiceID, NodeID, ContainerID, State, DesiredState, Image string
 	Slot, Version, SpecVersion                                     uint64
 	Labels                                                         map[string]string
+	// Timestamp is when the task last changed state: Docker's status timestamp, or its last update when that is missing.
+	Timestamp time.Time
 }
 type Network struct {
 	ID, Name, Driver, Scope string
@@ -264,6 +267,7 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 	var all []struct {
 		ID, ServiceID, NodeID, DesiredState string
 		Slot                                uint64
+		UpdatedAt                           time.Time
 		Version                             struct{ Index uint64 }
 		SpecVersion                         struct{ Index uint64 }
 		Spec                                struct {
@@ -274,6 +278,7 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		}
 		Status struct {
 			State           string
+			Timestamp       time.Time
 			ContainerStatus struct{ ContainerID string }
 		}
 	}
@@ -285,9 +290,29 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		if t.ServiceID != serviceID {
 			continue
 		}
-		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image})
+		at := t.Status.Timestamp
+		if at.IsZero() {
+			at = t.UpdatedAt
+		}
+		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image, Timestamp: at})
 	}
 	return out, nil
+}
+
+// FailedTasksSince counts the tasks that failed at or after since: tasks Swarm marked failed or rejected. Swarm marks a
+// container that exits on its own as failed. A task that was shut down, such as the old tasks of a rolling update, is not
+// a failure whatever its exit code. Tasks without a timestamp are not counted.
+func FailedTasksSince(tasks []ServiceTask, since time.Time) int {
+	n := 0
+	for _, t := range tasks {
+		if t.Timestamp.IsZero() || t.Timestamp.Before(since) {
+			continue
+		}
+		if t.State == "failed" || t.State == "rejected" {
+			n++
+		}
+	}
+	return n
 }
 func (e *Engine) InspectContainer(ctx context.Context, id string) (ContainerSnapshot, error) {
 	p, err := pathID(id)

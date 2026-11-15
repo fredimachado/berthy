@@ -41,6 +41,9 @@ type Manifest struct {
 	Backups      map[string]Backup      `json:"backups,omitempty" yaml:"backups,omitempty"`
 	Destinations map[string]Destination `json:"destinations,omitempty" yaml:"destinations,omitempty"`
 	Telemetry    *Telemetry             `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Probes       map[string]Probe       `json:"probes,omitempty" yaml:"probes,omitempty"`
+	Peers        map[string]string      `json:"peers,omitempty" yaml:"peers,omitempty"`
+	Alerts       *Alerts                `json:"alerts,omitempty" yaml:"alerts,omitempty"`
 	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
 
 	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
@@ -562,9 +565,10 @@ func (m *Manifest) Validate() error {
 	if m.Telemetry != nil && (m.Telemetry.OTLPEndpoint == "" || m.Telemetry.HeadersSecret != "" && !envName.MatchString(m.Telemetry.HeadersSecret)) {
 		return fmt.Errorf("invalid telemetry")
 	}
-	return nil
+	return m.validateMonitoring()
 }
 func (m *Manifest) defaults() {
+	m.defaultsMonitoring()
 	for k, a := range m.Apps {
 		if a.Deploy.DeployTimeout == "" {
 			a.Deploy.DeployTimeout = "120s"

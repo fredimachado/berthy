@@ -101,6 +101,12 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
 			required = "read"
 			method = "GET"
+		case len(rest) == 1 && rest[0] == "checks":
+			required = "read"
+			method = "GET"
+		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
+			required = "deploy"
+			method = "POST"
 		default:
 			legacy.ServeHTTP(w, r)
 			return
@@ -390,6 +396,32 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		case len(rest) == 1 && rest[0] == "checks":
+			rows, err := d.Store.Checks(ctx)
+			if err != nil {
+				writeError(w, 503, "state_unavailable", "state unavailable")
+				return
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for _, row := range rows {
+				out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
+			}
+			json.NewEncoder(w).Encode(out)
+		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
+			sendErr := sendTestAlert(ctx, c, d.Store)
+			outcome := "succeeded"
+			if sendErr != nil {
+				outcome = "failed"
+			}
+			if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
+				writeError(w, 503, "state_unavailable", "state unavailable")
+				return
+			}
+			if sendErr != nil {
+				alertError(w, sendErr)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"sent": true})
 		default:
 			writeError(w, 501, "unavailable", "operation unavailable")
 		}

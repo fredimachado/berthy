@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -163,6 +164,15 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
+		if monitoring := agent.NewMonitoring(c, eng, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) }); monitoring != nil {
+			monitorDone := make(chan struct{})
+			go func() {
+				defer close(monitorDone)
+				monitoring.Run(ctx)
+			}()
+			// Registered after the store's Close, so it runs first: the monitor stops before the store closes.
+			defer func() { cancel(); <-monitorDone }()
+		}
 		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandler(c, eng, collector, deployment), ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			<-ctx.Done()
@@ -231,6 +241,8 @@ func Run(args []string, out, errout io.Writer) int {
 		endpoint = "apps/" + url.PathEscape(positional[0]) + "/logs"
 	case "df", "doctor":
 		endpoint = cmd
+	case "checks":
+		endpoint = "checks"
 	case "agent-info":
 		endpoint = "agent"
 	default:
@@ -299,6 +311,9 @@ func Run(args []string, out, errout io.Writer) int {
 	if resp.StatusCode != 200 {
 		fmt.Fprintln(errout, agentError(resp.StatusCode, body))
 		return 1
+	}
+	if cmd == "checks" {
+		return printChecks(out, errout, body, jsonOutput)
 	}
 	if jsonOutput {
 		var pretty bytes.Buffer
@@ -498,6 +513,43 @@ func agentError(status int, body []byte) string {
 		return fmt.Sprintf("agent returned HTTP %d: %s", status, reply.Message)
 	}
 	return fmt.Sprintf("agent returned HTTP %d", status)
+}
+
+// printChecks prints the stored check states as a table, or as indented JSON when asJSON is set.
+func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
+	if asJSON {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, body, "", "  ") != nil {
+			fmt.Fprintln(errout, "invalid agent response")
+			return 1
+		}
+		fmt.Fprintln(out, pretty.String())
+		return 0
+	}
+	var rows []struct {
+		Name   string    `json:"name"`
+		State  string    `json:"state"`
+		Detail string    `json:"detail"`
+		Since  time.Time `json:"since"`
+	}
+	if json.Unmarshal(body, &rows) != nil {
+		fmt.Fprintln(errout, "invalid agent response")
+		return 1
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "no checks yet")
+		return 0
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATE\tSINCE\tDETAIL")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.State, r.Since.UTC().Format(time.RFC3339), r.Detail)
+	}
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	return 0
 }
 
 // printableMessage reports whether s is at most 300 bytes of valid UTF-8 without control characters.
