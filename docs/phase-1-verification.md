@@ -1,9 +1,7 @@
 # Phase 1 verification
 
 This page records observations, not a claim that every Phase 1 acceptance check
-has finished. The long-running RSS/history check and isolated daemon outage and
-recovery check are pending. Production ingress and VPN behavior require their
-own checks.
+has finished. Production ingress and VPN behavior require their own checks.
 
 ## Environment and setup
 
@@ -92,8 +90,20 @@ times and Docker's displayed rounding matter.
 For the RSS acceptance run, record the agent's idle `VmRSS`, then sample
 `VmRSS` and `VmHWM` from `/proc/$pid/status` during at least 65 minutes of
 normal load. Record the oldest and newest retained stats timestamps and their
-age, not just the sample count. The target is 30,000,000 bytes. The run begun
-at 07:48 AEST is still in progress; no pass is claimed here.
+age, not just the sample count. The target is 30,000,000 bytes.
+
+The `5a5aa83` collector ran for 65 minutes 16 seconds, from 07:48:07 to
+08:53:23 AEST on 15 November 2026. Idle `VmRSS` immediately beforehand was
+8,512 KiB. Across 390 polls, the first and last `VmRSS` were 8,616 and 14,764
+KiB; the maximum `VmRSS` and `VmHWM` were both 14,800 KiB (15,155,200 bytes),
+below the 30,000,000-byte target. This peak applies to this WSL fixture and
+build. The load included a stats watcher, periodic `ps` and `df` calls, up to
+six containers and the real daemon outage described below; it did not include
+an hour-long log follower.
+
+The watcher received 392 samples. The final retained 360 had unique timestamps
+spanning 59 minutes 50 seconds, from 07:53:24.092 to 08:53:14.091 AEST; 358
+were fresh. This measures the collector build above, not a later binary.
 
 ## Isolated outage and recovery
 
@@ -107,7 +117,22 @@ verify the socket cannot reactivate it, and check that `agent-info` still works,
 stream ends on loss. Start the same test daemon again, verify the agent's
 MainPID has not changed, then repeat `doctor`, `ps`, stats and a newly connected
 log stream. Record commands and results without recording credentials. This
-procedure remains to be measured on a fully isolated daemon.
+procedure was exercised at approximately 07:58 AEST on 15 November 2026 on the
+dedicated Ubuntu WSL test daemon, running Docker Engine 29.7.2 as a Swarm
+manager. The agent was built from `7e7086f` and had systemd MainPID 21373.
+The test daemon had no socket activation; stopping its `berthy-phase1-docker`
+unit removed its socket. During the outage, the same agent served identity and
+host disk information. `doctor` exited nonzero with Docker unavailable while
+the host and root filesystem checks remained OK; `ps` returned HTTP 503 and a
+nonzero CLI exit. A Compose log follower received one NDJSON record before
+exiting nonzero with `agent stream failed`. Within one collection period,
+stats retained host metrics and reported `containers_fresh: false` with an
+explicit Docker error.
+
+The same test daemon was started again with `systemd-run`. Doctor, inventory
+and stats recovered without a change to the agent's MainPID. Swarm converged on
+its own; the Compose fixtures had no restart policy and were brought back with
+`compose up -d` before the CLI reconnected.
 
 ## Swarm ingress
 
