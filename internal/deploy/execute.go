@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 	"github.com/distribution/reference"
 )
@@ -17,18 +18,27 @@ type roleWork struct {
 }
 
 func (c *Controller) execute(ctx context.Context, op state.Operation, actor Actor, req Request) {
-	outcome := state.Outcome{State: "failed", Err: "deployment preflight failed"}
-	rollback := req.Kind == "rollback"
-	if rollback {
+	var outcome state.Outcome
+	switch {
+	case req.Kind == "rollback" && req.RevertSchema:
+		outcome = c.runSchemaRevert(ctx, op, actor, req)
+	case req.Kind == "rollback":
 		resolved, err := c.rollbackRequest(ctx, req)
 		if err != nil {
-			_ = c.Store.Finish(ctx, op.ID, state.Outcome{State: "failed", Err: "rollback release unavailable"})
-			return
+			outcome = state.Outcome{State: "failed", Err: "rollback release unavailable"}
+			break
 		}
-		req = resolved
-		req.Kind = "deploy"
+		resolved.Kind = "deploy"
+		outcome = c.runDeploy(ctx, op, actor, resolved, true)
+	default:
+		outcome = c.runDeploy(ctx, op, actor, req, false)
 	}
-	defer func() { _ = c.Store.Finish(context.Background(), op.ID, outcome) }()
+	_ = c.Store.Finish(context.Background(), op.ID, outcome)
+}
+
+// runDeploy rolls out req and returns the outcome for the caller to record. A rollback runs no migration steps.
+func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome) {
+	outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
 	p, err := c.Plan(ctx, actor, req)
 	if err != nil {
 		return
@@ -50,29 +60,10 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	if err != nil {
 		return
 	}
-	img, err := c.Engine.InspectImage(ctx, prepared.Image)
+	img, msg, err := c.ensureImage(ctx, prepared)
 	if err != nil {
-		var status *engine.StatusError
-		if !errors.As(err, &status) || status.Code != 404 {
-			outcome.Err = "image inspection failed"
-			return
-		}
-		pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		err = c.Engine.PullImage(pullCtx, prepared.Image, prepared.Auth)
-		cancel()
-		if err != nil {
-			outcome.Err = "image pull failed"
-			return
-		}
-		img, err = c.Engine.InspectImage(ctx, prepared.Image)
-		if err != nil || img.ID == "" {
-			outcome.Err = "image inspection failed"
-			return
-		}
-		if err = c.Store.RecordImageAcquired(ctx, prepared.Image, img.ID); err != nil {
-			outcome.Err = "image provenance recording failed"
-			return
-		}
+		outcome.Err = msg
+		return
 	}
 	bindings, err := c.Store.Bindings(ctx, req.App)
 	if err != nil {
@@ -198,6 +189,19 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		}
 		work = append(work, roleWork{intent: intent, replicas: replicas})
 	}
+	if !rollback && app.Migrations != nil {
+		source, e := json.Marshal(struct {
+			Manifest manifest.Manifest `json:"manifest"`
+			Image    string            `json:"image"`
+		}{req.Manifest, prepared.Image})
+		if e != nil {
+			return
+		}
+		if e = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9000, Kind: "schema_source", Desired: source}); e != nil {
+			outcome.Err = "migration source journal failed"
+			return
+		}
+	}
 	var before, after string
 	if !rollback {
 		before, after, err = c.runPre(ctx, op.ID, prepared)
@@ -312,6 +316,33 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			outcome.Err = "post-deploy command failed"
 		}
 	}
+	return outcome
+}
+
+// ensureImage inspects a pinned image and pulls it once when the engine does not hold it.
+func (c *Controller) ensureImage(ctx context.Context, p preparedPlan) (engine.Image, string, error) {
+	img, err := c.Engine.InspectImage(ctx, p.Image)
+	if err == nil {
+		return img, "", nil
+	}
+	var status *engine.StatusError
+	if !errors.As(err, &status) || status.Code != 404 {
+		return img, "image inspection failed", err
+	}
+	pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	err = c.Engine.PullImage(pullCtx, p.Image, p.Auth)
+	cancel()
+	if err != nil {
+		return img, "image pull failed", err
+	}
+	img, err = c.Engine.InspectImage(ctx, p.Image)
+	if err != nil || img.ID == "" {
+		return engine.Image{}, "image inspection failed", errors.New("image inspection failed")
+	}
+	if err = c.Store.RecordImageAcquired(ctx, p.Image, img.ID); err != nil {
+		return img, "image provenance recording failed", err
+	}
+	return img, "", nil
 }
 
 func (c *Controller) compensateRollout(ctx context.Context, opID, app string) error {

@@ -554,6 +554,37 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	}
 }
 
+func TestSchemaRevertRequiresKnownTargetBeforeRollout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := Controller{Store: s}
+	m := manifest.Manifest{Project: "p", Network: "n", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {}}}}}
+	b, _ := json.Marshal(m)
+	for i := 0; i < 2; i++ {
+		op, _, err := s.Admit(context.Background(), state.Admission{RequestID: strconv.Itoa(i), ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(context.Background(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "sha256:" + strings.Repeat("a", 64), Manifest: b}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.schemaRevertPlan(context.Background(), Request{App: "web", RevertSchema: true}); err == nil {
+		t.Fatal("unknown target accepted")
+	}
+}
+
 func openStore(t *testing.T) *state.Store {
 	t.Helper()
 	dir := t.TempDir()

@@ -10,6 +10,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
+	"github.com/distribution/reference"
 )
 
 type Request struct {
@@ -32,10 +33,18 @@ type Actor struct {
 	Admin            bool
 }
 type Plan struct {
-	App      string   `json:"app"`
-	Image    string   `json:"image"`
-	Roles    []string `json:"roles"`
-	Blockers []string `json:"blockers,omitempty"`
+	App          string               `json:"app"`
+	Image        string               `json:"image"`
+	Roles        []string             `json:"roles"`
+	Blockers     []string             `json:"blockers,omitempty"`
+	SchemaRevert *SchemaRevertSummary `json:"schema_revert,omitempty"`
+}
+type SchemaRevertSummary struct {
+	SourceOperation string `json:"source_operation"`
+	SourceImage     string `json:"source_image"`
+	From            string `json:"from,omitempty"`
+	Target          string `json:"target"`
+	RollbackRelease int64  `json:"rollback_release,omitempty"`
 }
 type Engine interface {
 	InspectService(context.Context, string) (engine.ServiceSnapshot, error)
@@ -67,6 +76,9 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		}
 		plan, _, err := c.planAdoption(ctx, req)
 		return plan, err
+	}
+	if req.Kind == "rollback" && req.RevertSchema {
+		return c.planSchemaRevert(ctx, actor, req)
 	}
 	if req.Kind == "rollback" {
 		resolved, err := c.rollbackRequest(ctx, req)
@@ -131,11 +143,13 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	sum := sha256.Sum256(b)
 	public, err := json.Marshal(struct {
-		App     string `json:"app"`
-		Version string `json:"version"`
-		Commit  string `json:"commit"`
-		Adopt   bool   `json:"adopt"`
-	}{req.App, req.Version, req.Commit, req.Adopt})
+		App           string `json:"app"`
+		Version       string `json:"version"`
+		Commit        string `json:"commit"`
+		Adopt         bool   `json:"adopt"`
+		RevertSchema  bool   `json:"revert_schema,omitempty"`
+		TargetRelease int64  `json:"target_release,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -188,6 +202,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 	for _, i := range intents {
 		if i.Kind == "oneoff" {
 			hasHooks = true
+		} else if i.Kind == "schema_source" {
 		} else if i.Kind == "barrier" {
 			copyIntent := i
 			barrier = &copyIntent
@@ -252,31 +267,12 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 		return Request{}, errors.New("rollback history unavailable")
 	}
 	if req.RevertSchema {
-		return Request{}, errors.New("schema revert unavailable")
+		return Request{}, errors.New("use schema revert")
 	}
-	current, err := c.Store.Applied(ctx, req.App)
-	if err != nil {
-		return Request{}, errors.New("applied release unavailable")
-	}
-	history, err := c.Store.History(ctx, req.App)
+
+	chosen, err := c.selectRollback(ctx, req)
 	if err != nil {
 		return Request{}, err
-	}
-	var chosen *state.Release
-	for idx := range history {
-		r := &history[idx]
-		if req.TargetRelease != 0 {
-			if r.ID == req.TargetRelease {
-				chosen = r
-				break
-			}
-		} else if r.ID < current.ID {
-			chosen = r
-			break
-		}
-	}
-	if chosen == nil {
-		return Request{}, errors.New("rollback release unavailable")
 	}
 	var m manifest.Manifest
 	if json.Unmarshal(chosen.Manifest, &m) != nil {
@@ -331,4 +327,163 @@ func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent,
 	out.Event = nil
 	out.Err = "post-deploy completion was interrupted"
 	return out, nil
+}
+
+func (c *Controller) selectRollback(ctx context.Context, req Request) (state.Release, error) {
+	current, err := c.Store.Applied(ctx, req.App)
+	if err != nil {
+		return state.Release{}, errors.New("applied release unavailable")
+	}
+	history, err := c.Store.History(ctx, req.App)
+	if err != nil {
+		return state.Release{}, err
+	}
+	for _, r := range history {
+		if req.TargetRelease != 0 && r.ID == req.TargetRelease || req.TargetRelease == 0 && r.ID < current.ID {
+			return r, nil
+		}
+	}
+	return state.Release{}, errors.New("rollback release unavailable")
+}
+
+// planSchemaRevert describes a schema revert without changing anything.
+func (c *Controller) planSchemaRevert(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if !actor.Admin {
+		return Plan{}, errAdminRequired
+	}
+	sr, err := c.schemaRevertPlan(ctx, req)
+	if err != nil {
+		return Plan{}, err
+	}
+	plan := Plan{App: req.App, Image: sr.Prepared.Image, Roles: []string{}}
+	summary := SchemaRevertSummary{SourceOperation: sr.Source.ID, SourceImage: sr.Prepared.Image, From: sr.Source.SchemaAfter, Target: sr.Target}
+	if sr.Image != nil {
+		imgReq := req
+		imgReq.RevertSchema = false
+		imgReq.TargetRelease = sr.Image.ID
+		resolved, err := c.rollbackRequest(ctx, imgReq)
+		if err != nil {
+			return Plan{}, err
+		}
+		resolved.Kind = "deploy"
+		if plan, err = c.Plan(ctx, actor, resolved); err != nil {
+			return Plan{}, err
+		}
+		summary.RollbackRelease = sr.Image.ID
+	}
+	plan.SchemaRevert = &summary
+	return plan, nil
+}
+
+type schemaRevert struct {
+	Source          state.Operation
+	Prepared        preparedPlan
+	Target          string
+	Revert, Version []string
+	Image           *state.Release // rolled back to first; nil keeps the current image
+}
+
+// schemaRevertPlan picks the newest recorded migration, the state to revert to, and the release to roll back to first.
+func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaRevert, error) {
+	if c.Store == nil || req.App == "" {
+		return schemaRevert{}, errors.New("schema revert unavailable")
+	}
+	src, err := c.Store.LatestMigration(ctx, req.App)
+	if errors.Is(err, sql.ErrNoRows) {
+		return schemaRevert{}, errNoMigration
+	}
+	if err != nil {
+		return schemaRevert{}, err
+	}
+	intents, err := c.Store.Intents(ctx, src.ID)
+	if err != nil {
+		return schemaRevert{}, err
+	}
+	var source struct {
+		Manifest manifest.Manifest `json:"manifest"`
+		Image    string            `json:"image"`
+	}
+	journaled := false
+	for _, i := range intents {
+		if i.Kind == "schema_source" {
+			journaled = json.Unmarshal(i.Desired, &source) == nil
+			break
+		}
+	}
+	if !journaled || source.Manifest.Validate() != nil {
+		return schemaRevert{}, errSourceMissing
+	}
+	app, ok := source.Manifest.Apps[req.App]
+	if !ok || app.Migrations == nil || len(app.Migrations.Revert) == 0 || len(app.Migrations.Version) == 0 {
+		return schemaRevert{}, errNoRevertCommand
+	}
+	ref, err := reference.ParseNormalizedNamed(source.Image)
+	if err != nil {
+		return schemaRevert{}, errSourceImage
+	}
+	if _, ok := ref.(reference.Canonical); !ok {
+		return schemaRevert{}, errSourceNotPinned
+	}
+	current, err := c.Store.Applied(ctx, req.App)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return schemaRevert{}, errors.New("applied release unavailable")
+	}
+	hasCurrent := err == nil
+	history, err := c.Store.History(ctx, req.App)
+	if err != nil {
+		return schemaRevert{}, err
+	}
+	var target string
+	var image *state.Release
+	if req.TargetRelease != 0 {
+		var rel *state.Release
+		for i := range history {
+			if history[i].ID == req.TargetRelease {
+				rel = &history[i]
+				break
+			}
+		}
+		if rel == nil || rel.SchemaAfter == "" || !rel.Created.Before(src.Started) {
+			return schemaRevert{}, errTargetMissing
+		}
+		target = rel.SchemaAfter
+		if !hasCurrent || current.ID != rel.ID {
+			image = rel
+		}
+	} else {
+		target = src.SchemaBefore
+		switch {
+		case hasCurrent && current.OperationID == src.ID:
+			for i := range history {
+				if history[i].ID < current.ID {
+					image = &history[i]
+					break
+				}
+			}
+			if image == nil {
+				return schemaRevert{}, errNoEarlierRelease
+			}
+		case hasCurrent && current.Created.After(src.Started):
+			return schemaRevert{}, errNewerRelease
+		}
+	}
+	args := append([]string(nil), app.Migrations.Revert...)
+	count := 0
+	for i, v := range args {
+		if v == "{target}" {
+			args[i] = target
+			count++
+		}
+	}
+	if count != 1 {
+		return schemaRevert{}, errBadRevertCommand
+	}
+	if c.Engine == nil {
+		return schemaRevert{}, errors.New("Docker unavailable")
+	}
+	p, err := c.prepareExecution(ctx, Request{App: req.App, Manifest: source.Manifest}, Plan{Image: source.Image})
+	if err != nil {
+		return schemaRevert{}, err
+	}
+	return schemaRevert{Source: src, Prepared: p, Target: target, Revert: args, Version: app.Migrations.Version, Image: image}, nil
 }

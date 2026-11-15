@@ -361,6 +361,11 @@ func operationError(w http.ResponseWriter, err error) {
 		writeError(w, 404, "not_found", "not found")
 		return
 	}
+	var r deploy.Refusal
+	if errors.As(err, &r) {
+		writeError(w, 400, "operation_failed", string(r))
+		return
+	}
 	writeError(w, 400, "operation_failed", "operation unavailable or invalid")
 }
 func publicOperation(o state.Operation) any {
@@ -381,9 +386,12 @@ func safeOperationError(o state.Operation) string {
 	switch o.Err {
 	case "":
 		return ""
-	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable":
+	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable":
 		return o.Err
 	default:
+		if deploy.PublicMessage(o.Err) {
+			return o.Err
+		}
 		return "operation failed"
 	}
 }

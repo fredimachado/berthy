@@ -153,18 +153,45 @@ func TestUpgradeVersionTwoPreservesProvenance(t *testing.T) {
 		t.Fatalf("lost provenance: %v %v", images, err)
 	}
 }
-func TestLatestFailedMigration(t *testing.T) {
+func TestLatestMigrationPicksNewestRecordedDeploy(t *testing.T) {
 	s, _, _ := testStore(t)
 	ctx := context.Background()
-	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	finish := func(id, kind string, out Outcome) Operation {
+		t.Helper()
+		op, _, err := s.Admit(ctx, Admission{RequestID: id, ActorID: "a", Kind: kind, App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, out); err != nil {
+			t.Fatal(err)
+		}
+		return op
+	}
+	if _, err := s.LatestMigration(ctx, "app"); err == nil {
+		t.Fatal("migration found without history")
+	}
+	finish("old", "deploy", Outcome{State: "succeeded", SchemaBefore: "v0", SchemaAfter: "v1"})
+	finish("plain", "deploy", Outcome{State: "succeeded"})
+	finish("rollback", "rollback", Outcome{State: "succeeded", SchemaBefore: "v9", SchemaAfter: "v8"})
+	want := finish("new", "deploy", Outcome{State: "failed", SchemaBefore: "v1", SchemaAfter: "v2"})
+	held, _, err := s.Admit(ctx, Admission{RequestID: "held", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", SchemaBefore: "v1", SchemaAfter: "v2"}); err != nil {
+	if err = s.Finish(ctx, held.ID, Outcome{State: "recovery_required", SchemaBefore: "v2", SchemaAfter: "v3"}); err != nil {
 		t.Fatal(err)
 	}
-	found, err := s.LatestFailedMigration(ctx, "app")
-	if err != nil || found.ID != op.ID || found.SchemaBefore != "v1" {
-		t.Fatalf("failed migration %v %v", found, err)
+	got, err := s.LatestMigration(ctx, "app")
+	if err != nil || got.ID != want.ID || got.SchemaBefore != "v1" || got.SchemaAfter != "v2" {
+		t.Fatalf("latest migration %+v: %v", got, err)
+	}
+	if _, err = s.LatestMigration(ctx, "other"); err == nil {
+		t.Fatal("migration found for another app")
+	}
+}
+func TestSchemaRevertRequestFieldsArePublic(t *testing.T) {
+	s, _, _ := testStore(t)
+	if _, _, err := s.Admit(context.Background(), Admission{RequestID: "revert", ActorID: "a", Kind: "rollback", App: "app", PublicRequest: []byte(`{"app":"app","revert_schema":true,"target_release":3}`)}); err != nil {
+		t.Fatal(err)
 	}
 }

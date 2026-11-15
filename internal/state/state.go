@@ -244,12 +244,12 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt":
+		case "adopt", "Adopt", "revert_schema":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false
 			}
-		case "exit_code", "exit_status":
+		case "exit_code", "exit_status", "target_release":
 			var x int
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -549,6 +549,11 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// LatestMigration returns the newest finished deploy of app that recorded a schema state.
+func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {

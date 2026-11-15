@@ -132,6 +132,3 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 	}
 	return out, rows.Err()
 }
-func (s *Store) LatestFailedMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted','recovery_required') AND schema_before<>'' ORDER BY started DESC,rowid DESC LIMIT 1`, s.env, app))
-}
