@@ -141,3 +141,21 @@ func TestBackupHookBlocksEarlierCommands(t *testing.T) {
 		t.Fatalf("backup hook did not block: %v, %d commands", err, len(f.specs))
 	}
 }
+
+func TestOneOffRunsExactArgv(t *testing.T) {
+	c, f, id, p := hookFixture(t)
+	f.exits = []int{0}
+	if _, err := c.runOneOff(context.Background(), id, p, 1, "pre_hook", []string{"/tool", "two words"}, false); err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Entrypoint []string
+		Cmd        []string
+	}
+	if err := json.Unmarshal(f.specs[0], &spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Entrypoint) != 1 || spec.Entrypoint[0] != "/tool" || len(spec.Cmd) != 1 || spec.Cmd[0] != "two words" {
+		t.Fatalf("entrypoint and args: %+v", spec)
+	}
+}

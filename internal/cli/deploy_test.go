@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,5 +69,49 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 				t.Fatalf("exit %d: %s", got, errs.String())
 			}
 		})
+	}
+}
+
+func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/environments/dev/deploys":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
+		case "/v1/environments/dev/operations/op1":
+			fmt.Fprint(w, `{"state":"succeeded"}`)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	var out, errs bytes.Buffer
+	got := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1", "--json"}, &out, &errs)
+	if got != 0 || !json.Valid(out.Bytes()) {
+		t.Fatalf("exit %d, invalid JSON output %q, error %s", got, out.String(), errs.String())
+	}
+}
+
+func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/environments/dev/scale" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	var out, errs bytes.Buffer
+	got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", "2", "--dry-run"}, &out, &errs)
+	if got != 0 {
+		t.Fatalf("exit %d: %s", got, errs.String())
 	}
 }

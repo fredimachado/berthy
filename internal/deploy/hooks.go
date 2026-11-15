@@ -92,11 +92,12 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 	labels := map[string]string{"berthy.environment": c.Environment, "berthy.operation": opID, "berthy.oneoff": kind}
 	spec, err := json.Marshal(struct {
 		Image            string            `json:"Image"`
+		Entrypoint       []string          `json:"Entrypoint"`
 		Cmd              []string          `json:"Cmd"`
 		Env              []string          `json:"Env"`
 		Labels           map[string]string `json:"Labels"`
 		NetworkingConfig any               `json:"NetworkingConfig"`
-	}{p.Image, argv, p.Env, labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
+	}{p.Image, argv[:1], argv[1:], p.Env, labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
 	}

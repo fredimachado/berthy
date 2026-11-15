@@ -203,13 +203,17 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "exec requires a command after --")
 			return 2
 		}
-		if cmd != "prune" {
+		if cmd == "deploy" {
 			m, e := manifest.Load(f.dir, f.env)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
 			}
 			req.Manifest = *m
+			if _, e = m.CheckImageDeploy(req.App, req.Version, false); e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
 		}
 		method = "POST"
 		endpoint = cmd
@@ -246,7 +250,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"
-		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete") {
+		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
 				data, e := io.ReadAll(io.LimitReader(os.Stdin, 65537))
 				if e != nil || len(data) > 65536 {
@@ -379,7 +383,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if strings.HasPrefix(line, "event:") {
 					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-					fmt.Fprintln(out, kind)
+					if !asJSON {
+						fmt.Fprintln(out, kind)
+					}
 				}
 			}
 			resp.Body.Close()
@@ -401,7 +407,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 					State string `json:"state"`
 				}
 				if json.Unmarshal(data, &v) == nil && v.State != "running" && v.State != "" {
-					printResponse(out, errout, data, asJSON)
+					exitCode := 0
 					if isExec {
 						outputURL := *base
 						outputURL.Path = prefix + "operations/" + url.PathEscape(id) + "/output"
@@ -421,12 +427,21 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 							fmt.Fprintln(errout, "exec output unavailable")
 							return 1
 						}
-						fmt.Fprint(out, result.Output)
-						if result.ExitCode != 0 {
-							return 1
+						exitCode = result.ExitCode
+						if asJSON {
+							var resultObject map[string]any
+							if json.Unmarshal(data, &resultObject) != nil {
+								return 1
+							}
+							resultObject["output"] = result.Output
+							resultObject["exit_code"] = result.ExitCode
+							data, _ = json.Marshal(resultObject)
+						} else {
+							fmt.Fprint(out, result.Output)
 						}
 					}
-					if v.State == "succeeded" {
+					printResponse(out, errout, data, asJSON)
+					if v.State == "succeeded" && exitCode == 0 {
 						return 0
 					}
 					return 1
