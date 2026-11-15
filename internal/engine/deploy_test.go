@@ -111,3 +111,13 @@ func TestServiceTasksIncludesTaskGenerationLabel(t *testing.T) {
 		t.Fatalf("task generation not returned: %+v, %v", tasks, err)
 	}
 }
+
+func TestServiceTaskIncludesImage(t *testing.T) {
+	e := fakeEngine(func(*http.Request) (*http.Response, error) {
+		return response(200, `[{"ID":"task","ServiceID":"service","Spec":{"ContainerSpec":{"Image":"repo@sha256:abc"}}}]`), nil
+	})
+	tasks, err := e.ServiceTasks(context.Background(), "service")
+	if err != nil || len(tasks) != 1 || tasks[0].Image != "repo@sha256:abc" {
+		t.Fatalf("task image: %+v %v", tasks, err)
+	}
+}

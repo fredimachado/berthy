@@ -8,6 +8,7 @@ import (
 
 	"berthy/internal/engine"
 	"berthy/internal/state"
+	"github.com/distribution/reference"
 )
 
 type roleWork struct {
@@ -33,7 +34,16 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		return
 	}
 	if req.Adopt {
-		outcome.Err = "adoption unavailable"
+		plan, bindings, e := c.planAdoption(ctx, req)
+		if e != nil {
+			outcome.Err = "adoption preflight failed"
+			return
+		}
+		raw, e := json.Marshal(req.Manifest)
+		if e != nil {
+			return
+		}
+		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Manifest: raw, Bindings: bindings}}
 		return
 	}
 	prepared, err := c.prepareExecution(ctx, req, p)
@@ -111,7 +121,10 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			var ownership struct {
 				Labels       map[string]string
 				TaskTemplate struct {
-					ContainerSpec struct{ Labels map[string]string }
+					ContainerSpec struct {
+						Labels map[string]string
+						Image  string
+					}
 				}
 			}
 			if json.Unmarshal(live.Spec, &ownership) != nil {
@@ -128,13 +141,31 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			}
 			var previous struct {
 				TaskTemplate struct {
-					ContainerSpec struct{ Labels map[string]string }
+					ContainerSpec struct {
+						Labels map[string]string
+						Image  string
+					}
 				}
 				Mode struct{ Replicated *struct{ Replicas int } }
 			}
-			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil || previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
+			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
 				outcome.Err = "prior service health cannot be verified"
 				return
+			}
+			if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
+				ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
+				if e != nil {
+					outcome.Err = "prior image identity unavailable"
+					return
+				}
+				if _, ok := ref.(reference.Canonical); !ok {
+					outcome.Err = "prior image is not pinned"
+					return
+				}
+				if healthyImageOnce(ctx, c.Engine, live.ID, previous.TaskTemplate.ContainerSpec.Image, previous.Mode.Replicated.Replicas) != nil {
+					outcome.Err = "prior service health cannot be verified"
+					return
+				}
 			}
 			if _, e = c.operationAuth(ctx, req.App, live.Spec); e != nil {
 				outcome.Err = "prior image credential unavailable"
@@ -204,6 +235,12 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 				outcome.Err = "rollout recovery required"
 			} else {
 				outcome.State = "failed"
+				for _, done := range work {
+					if done.intent.Kind == "update" {
+						outcome.State = "rolled_back"
+						break
+					}
+				}
 				outcome.Err = "rollout failed and was cleaned up"
 			}
 			return
@@ -216,7 +253,50 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		outcome.Err = "release recording failed"
 		return
 	}
+	for _, w := range work {
+		live, e := c.Engine.InspectService(rollCtx, w.intent.Name)
+		if e != nil {
+			outcome.State = "recovery_required"
+			outcome.Err = "final verification unavailable"
+			return
+		}
+		if e = healthyOnce(rollCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
+			outcome.State = "recovery_required"
+			outcome.Err = "final health verification failed"
+			return
+		}
+		if e = waitDrain(rollCtx, c.Engine, live.ID, op.ID); e != nil {
+			outcome.State = "recovery_required"
+			outcome.Err = "final drain verification failed"
+			return
+		}
+	}
 	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Commit: req.Commit, Manifest: manifestJSON, Bindings: releaseBindings}}
+	barrier, e := json.Marshal(outcome)
+	if e != nil {
+		outcome.State = "recovery_required"
+		outcome.Release = nil
+		return
+	}
+	steps, e := c.Store.Intents(rollCtx, op.ID)
+	if e != nil {
+		outcome.State = "recovery_required"
+		outcome.Release = nil
+		outcome.Err = "verification unavailable"
+		return
+	}
+	if _, e = c.recoverBarrier(rollCtx, steps, state.Intent{Desired: barrier}); e != nil {
+		outcome.State = "recovery_required"
+		outcome.Release = nil
+		outcome.Err = "verification unavailable"
+		return
+	}
+	if e = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}); e != nil {
+		outcome.State = "recovery_required"
+		outcome.Release = nil
+		outcome.Err = "verification barrier unavailable"
+		return
+	}
 	if !rollback {
 		err = c.runPost(ctx, op.ID, prepared)
 	} else {
@@ -228,6 +308,7 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			outcome.Release = nil
 			outcome.Err = "post-deploy command outcome uncertain"
 		} else {
+			outcome.State = "failed"
 			outcome.Err = "post-deploy command failed"
 		}
 	}
@@ -238,44 +319,64 @@ func (c *Controller) compensateRollout(ctx context.Context, opID, app string) er
 	if err != nil {
 		return err
 	}
+	var combined error
 	for n := len(intents) - 1; n >= 0; n-- {
 		i := intents[n]
-		if i.Kind == "update" {
-			if err = c.restoreUpdate(ctx, app, i); err != nil {
-				return err
-			}
-			continue
+		var e error
+		switch i.Kind {
+		case "update":
+			e = c.restoreUpdate(ctx, app, i)
+		case "create":
+			e = c.removeCreated(ctx, i)
 		}
-		if i.Kind != "create" {
-			continue
+		combined = errors.Join(combined, e)
+	}
+	return combined
+}
+func (c *Controller) removeCreated(ctx context.Context, i state.Intent) error {
+	live, e := c.Engine.InspectService(ctx, i.Name)
+	if e != nil {
+		var status *engine.StatusError
+		if errors.As(e, &status) && status.Code == 404 {
+			return nil
 		}
-		live, e := c.Engine.InspectService(ctx, i.Name)
-		if e != nil {
-			var status *engine.StatusError
-			if errors.As(e, &status) && status.Code == 404 {
-				continue
-			}
-			return errors.New("recovery inspection failed")
-		}
-		var receipt struct {
-			ID   string          `json:"id"`
-			Spec json.RawMessage `json:"spec"`
-		}
-		if json.Unmarshal(i.Receipt, &receipt) != nil || receipt.ID == "" || live.ID != receipt.ID || !sameSpec(live.Spec, receipt.Spec) {
+		return errors.New("recovery inspection failed")
+	}
+	var receipt struct {
+		ID   string          `json:"id"`
+		Spec json.RawMessage `json:"spec"`
+	}
+	if json.Unmarshal(i.Receipt, &receipt) != nil {
+		return errors.New("service receipt invalid")
+	}
+	if receipt.ID != "" {
+		if live.ID != receipt.ID || !sameSpec(live.Spec, receipt.Spec) {
 			return errors.New("service ownership uncertain")
 		}
-		if e = c.Engine.DeleteService(ctx, live.ID); e != nil {
-			return errors.New("service cleanup failed")
+	} else {
+		var owner struct {
+			Labels       map[string]string
+			TaskTemplate struct {
+				ContainerSpec struct {
+					Labels map[string]string
+					Image  string
+				}
+			}
 		}
-		_, e = c.Engine.InspectService(ctx, i.Name)
-		var status *engine.StatusError
-		if !errors.As(e, &status) || status.Code != 404 {
-			return errors.New("service cleanup unconfirmed")
+		if live.ID == "" || i.Generation == "" || json.Unmarshal(live.Spec, &owner) != nil || owner.Labels["berthy.operation"] != i.Generation || owner.TaskTemplate.ContainerSpec.Labels["berthy.operation"] != i.Generation || !matchesCreatedSpec(i.Desired, live.Spec) {
+			return errors.New("service ownership uncertain")
 		}
+	}
+	if e = c.Engine.DeleteService(ctx, live.ID); e != nil {
+		return errors.New("service cleanup failed")
+	}
+	_, e = c.Engine.InspectService(ctx, i.Name)
+	var status *engine.StatusError
+	if !errors.As(e, &status) || status.Code != 404 {
+		return errors.New("service cleanup unconfirmed")
 	}
 	return nil
 }
-
 func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Intent) error {
 	live, err := c.Engine.InspectService(ctx, i.Name)
 	if err != nil || live.ID != i.ServiceID {
@@ -299,7 +400,10 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 	}
 	var before struct {
 		TaskTemplate struct {
-			ContainerSpec struct{ Labels map[string]string }
+			ContainerSpec struct {
+				Labels map[string]string
+				Image  string
+			}
 		}
 		Mode struct{ Replicated *struct{ Replicas int } }
 	}
@@ -308,7 +412,14 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 	}
 	generation := before.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
 	if generation == "" {
-		return errors.New("prior service generation unavailable")
+		ref, err := reference.ParseNormalizedNamed(before.TaskTemplate.ContainerSpec.Image)
+		if err != nil {
+			return errors.New("prior image identity unavailable")
+		}
+		if _, ok := ref.(reference.Canonical); !ok {
+			return errors.New("prior image is not pinned")
+		}
+		return waitImageHealthy(ctx, c.Engine, i.ServiceID, before.TaskTemplate.ContainerSpec.Image, before.Mode.Replicated.Replicas)
 	}
 	return waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas)
 }

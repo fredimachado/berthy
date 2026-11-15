@@ -58,6 +58,13 @@ type Controller struct {
 
 // Plan performs no durable or Docker mutations.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.Adopt {
+		if !actor.Admin {
+			return Plan{}, errors.New("adoption requires administrator access")
+		}
+		plan, _, err := c.planAdoption(ctx, req)
+		return plan, err
+	}
 	if req.Kind == "rollback" {
 		resolved, err := c.rollbackRequest(ctx, req)
 		if err != nil {
@@ -101,8 +108,16 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if actor.ID == "" || req.RequestID == "" {
 		return state.Operation{}, false, errors.New("actor and request ID required")
 	}
-	if _, err := c.Plan(ctx, actor, req); err != nil {
-		return state.Operation{}, false, err
+	if req.Adopt && !actor.Admin {
+		return state.Operation{}, false, errors.New("adoption requires administrator access")
+	}
+	if req.RevertSchema && !actor.Admin {
+		return state.Operation{}, false, errors.New("schema revert requires administrator access")
+	}
+	if req.Kind == "" || req.Kind == "deploy" {
+		if err := req.Manifest.Validate(); err != nil {
+			return state.Operation{}, false, err
+		}
 	}
 	copyReq := req
 	copyReq.RequestID = ""
@@ -158,9 +173,14 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return err
 	}
 	hasHooks := false
+	var barrier *state.Intent
 	for _, i := range intents {
 		if i.Kind == "oneoff" {
 			hasHooks = true
+		} else if i.Kind == "barrier" {
+			copyIntent := i
+			barrier = &copyIntent
+		} else if i.Kind == "exec" && i.Phase == "finished" {
 		} else if i.Kind != "create" && i.Kind != "update" {
 			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "unsupported recovery step"})
 		}
@@ -169,6 +189,13 @@ func (c *Controller) Recover(ctx context.Context) error {
 		if err = c.recoverHooks(ctx, op.ID); err != nil {
 			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "one-off recovery required"})
 		}
+	}
+	if barrier != nil {
+		out, err := c.recoverBarrier(ctx, intents, *barrier)
+		if err != nil {
+			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "verified release requires inspection"})
+		}
+		return c.Store.Finish(ctx, op.ID, out)
 	}
 	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
 		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"})
@@ -215,4 +242,49 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	req.Version = chosen.Digest
 	req.Commit = chosen.Commit
 	return req, nil
+}
+
+func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent, barrier state.Intent) (state.Outcome, error) {
+	var out state.Outcome
+	if json.Unmarshal(barrier.Desired, &out) != nil || out.Release == nil {
+		return state.Outcome{}, errors.New("invalid verification barrier")
+	}
+	for _, i := range intents {
+		if i.Kind != "create" && i.Kind != "update" {
+			continue
+		}
+		if i.Phase != "verified" {
+			return state.Outcome{}, errors.New("unverified service")
+		}
+		var receipt struct {
+			ID   string          `json:"id"`
+			Spec json.RawMessage `json:"spec"`
+		}
+		if json.Unmarshal(i.Receipt, &receipt) != nil || receipt.ID == "" {
+			return state.Outcome{}, errors.New("missing service observation")
+		}
+		live, err := c.Engine.InspectService(ctx, i.Name)
+		if err != nil || live.ID != receipt.ID || !sameSpec(live.Spec, receipt.Spec) {
+			return state.Outcome{}, errors.New("service changed after verification")
+		}
+		var spec struct {
+			Mode struct{ Replicated *struct{ Replicas int } }
+		}
+		if json.Unmarshal(live.Spec, &spec) != nil || spec.Mode.Replicated == nil {
+			return state.Outcome{}, errors.New("invalid service mode")
+		}
+		if err = healthyOnce(ctx, c.Engine, live.ID, i.Generation, spec.Mode.Replicated.Replicas); err != nil {
+			return state.Outcome{}, err
+		}
+		if err = waitDrain(ctx, c.Engine, live.ID, i.Generation); err != nil {
+			return state.Outcome{}, err
+		}
+		if i.Kind == "update" && live.UpdateStatus.State != "completed" {
+			return state.Outcome{}, errors.New("native update incomplete")
+		}
+	}
+	out.State = "failed"
+	out.Event = nil
+	out.Err = "post-deploy completion was interrupted"
+	return out, nil
 }

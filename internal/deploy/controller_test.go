@@ -26,6 +26,9 @@ func TestProtectedPlanRejectsTagBeforeEngineAccess(t *testing.T) {
 
 func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -82,7 +85,7 @@ func (e *positiveEngine) InspectService(context.Context, string) (engine.Service
 	if e.spec == nil {
 		return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
 	}
-	return engine.ServiceSnapshot{ID: "id", Spec: e.spec}, nil
+	return engine.ServiceSnapshot{ID: "id", Spec: e.spec, UpdateStatus: engine.UpdateStatus{State: "completed"}}, nil
 }
 func (e *positiveEngine) CreateService(_ context.Context, s json.RawMessage, _ *engine.RegistryAuth) (string, error) {
 	e.mu.Lock()
@@ -105,9 +108,12 @@ func (e *positiveEngine) DeleteService(context.Context, string) error {
 func (e *positiveEngine) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var s struct{ Labels map[string]string }
+	var s struct {
+		Labels       map[string]string
+		TaskTemplate struct{ ContainerSpec struct{ Image string } }
+	}
 	_ = json.Unmarshal(e.spec, &s)
-	return []engine.ServiceTask{{ServiceID: "id", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: s.Labels}}, nil
+	return []engine.ServiceTask{{ServiceID: "id", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: s.Labels, Image: s.TaskTemplate.ContainerSpec.Image}}, nil
 }
 func (e *positiveEngine) InspectContainerHealth(context.Context, string) (string, error) {
 	if e.unhealthy {
@@ -118,6 +124,9 @@ func (e *positiveEngine) InspectContainerHealth(context.Context, string) (string
 
 func TestUnhealthyFirstReleaseRemovesCreatedService(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -159,6 +168,9 @@ func TestUnhealthyFirstReleaseRemovesCreatedService(t *testing.T) {
 
 func TestRecoveryCleansObservedCreate(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -192,6 +204,9 @@ func TestRecoveryCleansObservedCreate(t *testing.T) {
 
 func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -241,6 +256,9 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 
 func TestRecoveryKeepsLockOnForeignUpdate(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -274,6 +292,9 @@ func TestRecoveryKeepsLockOnForeignUpdate(t *testing.T) {
 
 func TestRollbackSelectsPriorSuccessfulRelease(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -300,5 +321,235 @@ func TestRollbackSelectsPriorSuccessfulRelease(t *testing.T) {
 	got, err := c.rollbackRequest(context.Background(), Request{App: "web", Kind: "rollback"})
 	if err != nil || got.Version != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("rollback %s: %v", got.Version, err)
+	}
+}
+
+func TestAdoptionRequiresAdminBeforeInspection(t *testing.T) {
+	c := Controller{}
+	_, err := c.Plan(context.Background(), Actor{}, Request{Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "p", Network: "n", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {Service: "existing"}}}}}})
+	if err == nil || !strings.Contains(err.Error(), "administrator") {
+		t.Fatalf("adoption error: %v", err)
+	}
+}
+
+func TestRecoveryCleansExactUnacknowledgedCreate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"owned"},"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"owned"}}}}`)
+	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	e := &positiveEngine{spec: spec}
+	c := Controller{Engine: e, Store: s}
+	if err = c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(context.Background(), op.ID)
+	if err != nil || got.State != "interrupted" {
+		t.Fatalf("state %s: %v", got.State, err)
+	}
+}
+
+func TestAdoptionPlansExistingHealthyPinnedService(t *testing.T) {
+	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
+	one := 1
+	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(spec, &body)
+	body["Name"] = "existing"
+	spec, _ = json.Marshal(body)
+	e := &positiveEngine{spec: spec}
+	c := Controller{Engine: e, Environment: "test"}
+	req := Request{Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": role}}}}}
+	p, bindings, err := c.planAdoption(context.Background(), req)
+	if err != nil || p.Image != digest || len(bindings) != 1 || bindings[0].ServiceID != "id" {
+		t.Fatalf("plan %+v bindings %+v: %v", p, bindings, err)
+	}
+}
+
+func TestRecoveryPreservesVerifiedReleaseAfterPostHookInterruption(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"owned"},"Mode":{"Replicated":{"Replicas":1}}}`)
+	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(context.Background(), op.ID, 0, "verified", json.RawMessage(`{"id":"id","spec":{"Name":"svc","Labels":{"berthy.operation":"owned"},"Mode":{"Replicated":{"Replicas":1}}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	out := state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "digest", Manifest: json.RawMessage(`{}`), Bindings: []state.Binding{{App: "web", Role: "web", Name: "svc", ServiceID: "id"}}}}
+	b, _ := json.Marshal(out)
+	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: b}); err != nil {
+		t.Fatal(err)
+	}
+	e := &positiveEngine{spec: spec}
+	c := Controller{Engine: e, Store: s}
+	if err = c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(context.Background(), op.ID)
+	if err != nil || got.State != "failed" {
+		t.Fatalf("state %s: %v", got.State, err)
+	}
+	if _, err = s.Applied(context.Background(), "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.InspectService(context.Background(), "svc"); err != nil {
+		t.Fatal("verified service deleted")
+	}
+}
+
+func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
+	one := 1
+	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(spec, &body)
+	body["Name"] = "existing"
+	spec, _ = json.Marshal(body)
+	e := &positiveEngine{spec: append(json.RawMessage(nil), spec...)}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	req := Request{RequestID: "adopt", Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": role}}}}}
+	op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, err := s.Operation(context.Background(), op.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != "running" {
+			if got.State != "succeeded" {
+				t.Fatalf("%s: %s", got.State, got.Err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	b, err := s.Bindings(context.Background(), "web")
+	if err != nil || len(b) != 1 || b[0].ServiceID != "id" {
+		t.Fatalf("bindings %+v: %v", b, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !sameSpec(e.spec, spec) {
+		t.Fatal("adoption changed service")
+	}
+}
+
+func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
+	one := 1
+	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(spec, &body)
+	body["Name"] = "existing"
+	delete(body, "Labels")
+	task := body["TaskTemplate"].(map[string]any)
+	delete(task["ContainerSpec"].(map[string]any), "Labels")
+	spec, _ = json.Marshal(body)
+	e := &positiveEngine{spec: spec}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
+	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
+		op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			got, err := s.Operation(context.Background(), op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != "running" {
+				if got.State != "succeeded" {
+					t.Fatalf("%s: %s %s", req.RequestID, got.State, got.Err)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !strings.Contains(string(e.spec), strings.Repeat("b", 64)) {
+		t.Fatal("adopted service was not updated")
 	}
 }

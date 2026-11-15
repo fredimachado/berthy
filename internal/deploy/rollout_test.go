@@ -47,6 +47,7 @@ func (m *mutationFake) CreateService(context.Context, json.RawMessage, *engine.R
 func (m *mutationFake) UpdateService(_ context.Context, _ string, version uint64, spec json.RawMessage, _ *engine.RegistryAuth) error {
 	m.updateVersion = version
 	m.live.Spec = spec
+	m.live.UpdateStatus.State = "completed"
 	return nil
 }
 func (m *mutationFake) DeleteService(context.Context, string) error { return nil }
@@ -220,5 +221,36 @@ func TestDrainWaitsForRetiringTask(t *testing.T) {
 	e := healthFake{tasks: []engine.ServiceTask{{ServiceID: "s", State: "running", Labels: map[string]string{"berthy.operation": "old"}}}}
 	if waitDrain(ctx, e, "s", "new") == nil {
 		t.Fatal("old task still running")
+	}
+}
+
+func TestRejectsInheritedCapabilities(t *testing.T) {
+	raw := json.RawMessage(`{"TaskTemplate":{"Runtime":"container","ContainerSpec":{"CapabilityAdd":["SYS_ADMIN"]}}}`)
+	if validateInheritedRuntime(raw) == nil {
+		t.Fatal("host capabilities accepted")
+	}
+}
+
+func TestUpdateWaitsForNativeCompletion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	e := &mutationFake{live: engine.ServiceSnapshot{ID: "id", UpdateStatus: engine.UpdateStatus{State: "updating"}}}
+	if waitUpdate(ctx, e, "svc", "id") == nil {
+		t.Fatal("unfinished update accepted")
+	}
+}
+
+func TestAdoptedHealthRequiresPinnedTaskImage(t *testing.T) {
+	e := healthFake{tasks: []engine.ServiceTask{{ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Image: "repo@sha256:old"}}, status: "healthy"}
+	if healthyImageOnce(context.Background(), e, "s", "repo@sha256:new", 1) == nil {
+		t.Fatal("wrong predecessor image accepted")
+	}
+}
+
+func TestRuntimeValidationRejectsUnknownSecuritySettings(t *testing.T) {
+	for _, raw := range []string{`{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]}}}`, `{"TaskTemplate":{"ContainerSpec":{"UnexpectedHostAccess":true}}}`} {
+		if validateInheritedRuntime(json.RawMessage(raw)) == nil {
+			t.Fatalf("unsafe runtime accepted: %s", raw)
+		}
 	}
 }

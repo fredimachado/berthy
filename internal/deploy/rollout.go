@@ -197,6 +197,9 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 
 // mergeServiceSpec preserves fields not controlled by the manifest after checking inherited host access.
 func mergeServiceSpec(before, desired json.RawMessage, network string) (json.RawMessage, error) {
+	if err := validateInheritedRuntime(before); err != nil {
+		return nil, err
+	}
 	var old, want map[string]any
 	d := json.NewDecoder(bytes.NewReader(before))
 	d.UseNumber()
@@ -306,6 +309,9 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas); err != nil {
 		return err
 	}
+	if err = waitUpdate(ctx, e, i.Name, i.ServiceID); err != nil {
+		return err
+	}
 	if err = waitDrain(ctx, e, live.ID, i.Generation); err != nil {
 		return err
 	}
@@ -337,6 +343,109 @@ func waitDrain(ctx context.Context, e healthReader, id, generation string) error
 		select {
 		case <-ctx.Done():
 			return errors.New("service drain deadline exceeded")
+		case <-ticker.C:
+		}
+	}
+}
+
+func validateInheritedRuntime(raw json.RawMessage) error {
+	var x struct {
+		TaskTemplate struct {
+			Runtime       string
+			ContainerSpec map[string]json.RawMessage
+		}
+	}
+	if json.Unmarshal(raw, &x) != nil || x.TaskTemplate.ContainerSpec == nil {
+		return errors.New("invalid service runtime")
+	}
+	if x.TaskTemplate.Runtime != "" && x.TaskTemplate.Runtime != "container" {
+		return errors.New("unsafe service runtime")
+	}
+	allowed := map[string]bool{"Image": true, "Labels": true, "Command": true, "Args": true, "Env": true, "Dir": true, "User": true, "Groups": true, "ReadOnly": true, "Mounts": true, "StopGracePeriod": true, "Healthcheck": true, "Isolation": true, "Hostname": true}
+	for k, v := range x.TaskTemplate.ContainerSpec {
+		if !allowed[k] && len(v) > 0 && string(v) != "null" && string(v) != "[]" && string(v) != "{}" && string(v) != "false" {
+			return errors.New("unsupported inherited container settings")
+		}
+	}
+	for _, k := range []string{"CapabilityAdd", "CapabilityDrop", "Privileges", "Secrets", "Configs", "DNSConfig", "Hosts", "Sysctls"} {
+		v := x.TaskTemplate.ContainerSpec[k]
+		if len(v) > 0 && string(v) != "null" && string(v) != "[]" && string(v) != "{}" {
+			return errors.New("unsafe inherited container settings")
+		}
+	}
+	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 && string(rawMounts) != "null" {
+		var mounts []struct{ Type string }
+		if json.Unmarshal(rawMounts, &mounts) != nil {
+			return errors.New("invalid mounts")
+		}
+		for _, m := range mounts {
+			if m.Type != "volume" {
+				return errors.New("unsafe inherited mount")
+			}
+		}
+	}
+	var outer struct {
+		EndpointSpec struct{ Ports []json.RawMessage }
+	}
+	if json.Unmarshal(raw, &outer) != nil || len(outer.EndpointSpec.Ports) > 0 {
+		return errors.New("published ports unsupported")
+	}
+	return nil
+}
+
+func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		live, err := e.InspectService(ctx, name)
+		if err != nil || live.ID != id {
+			return errors.New("update status unavailable")
+		}
+		switch live.UpdateStatus.State {
+		case "completed":
+			return nil
+		case "rollback_started", "rollback_paused", "rollback_completed", "paused":
+			return errors.New("native update did not complete")
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("update completion deadline exceeded")
+		case <-ticker.C:
+		}
+	}
+}
+
+func healthyImageOnce(ctx context.Context, e healthReader, id, image string, replicas int) error {
+	tasks, err := e.ServiceTasks(ctx, id)
+	if err != nil {
+		return errors.New("task inspection failed")
+	}
+	slots := map[uint64]bool{}
+	for _, t := range tasks {
+		if t.ServiceID == id && t.DesiredState == "running" && t.State == "running" && t.Image == image && t.ContainerID != "" && t.Slot > 0 {
+			h, e := e.InspectContainerHealth(ctx, t.ContainerID)
+			if e == nil && h == "healthy" {
+				slots[t.Slot] = true
+			}
+		}
+	}
+	for slot := 1; slot <= replicas; slot++ {
+		if !slots[uint64(slot)] {
+			return errors.New("predecessor image is not healthy")
+		}
+	}
+	return nil
+}
+func waitImageHealthy(ctx context.Context, e healthReader, id, image string, replicas int) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if healthyImageOnce(ctx, e, id, image, replicas) == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("predecessor health deadline exceeded")
 		case <-ticker.C:
 		}
 	}

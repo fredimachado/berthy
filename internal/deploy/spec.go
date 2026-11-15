@@ -58,7 +58,7 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	if len(r.Command) > 0 {
 		container["Args"] = r.Command
 	}
-	config := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(30 * time.Second)}
+	config := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
 	spec := map[string]any{"Name": project + "-" + app + "-" + role, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": config, "RollbackConfig": config}
 	if r.Resources != nil {
 		limits := map[string]any{}

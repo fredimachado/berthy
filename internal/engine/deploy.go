@@ -31,9 +31,9 @@ type ServiceSnapshot struct {
 	UpdateStatus       UpdateStatus
 }
 type ServiceTask struct {
-	ID, ServiceID, NodeID, ContainerID, State, DesiredState string
-	Slot, Version, SpecVersion                              uint64
-	Labels                                                  map[string]string
+	ID, ServiceID, NodeID, ContainerID, State, DesiredState, Image string
+	Slot, Version, SpecVersion                                     uint64
+	Labels                                                         map[string]string
 }
 type Network struct {
 	ID, Name, Driver, Scope string
@@ -267,7 +267,10 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		Version                             struct{ Index uint64 }
 		SpecVersion                         struct{ Index uint64 }
 		Spec                                struct {
-			ContainerSpec struct{ Labels map[string]string }
+			ContainerSpec struct {
+				Labels map[string]string
+				Image  string
+			}
 		}
 		Status struct {
 			State           string
@@ -282,7 +285,7 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		if t.ServiceID != serviceID {
 			continue
 		}
-		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels})
+		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image})
 	}
 	return out, nil
 }
