@@ -131,6 +131,15 @@ func (c *Controller) inspectOperation(ctx context.Context, req Request, operatio
 	return b, live, desired, n, err
 }
 func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.Kind == "exec" || req.Kind == "restart" || req.Kind == "scale" {
+		m, compose, err := c.appliedCompose(ctx, req.App)
+		if err != nil {
+			return Plan{}, err
+		}
+		if compose {
+			return c.planComposeOperation(ctx, req, m)
+		}
+	}
 	switch req.Kind {
 	case "exec":
 		if !actor.Admin {
@@ -248,6 +257,16 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	}
 	if req.Kind != "restart" && req.Kind != "scale" {
 		return state.Outcome{State: "failed", Err: "operation unavailable"}
+	}
+	m, compose, err := c.appliedCompose(ctx, req.App)
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
+	if compose {
+		if req.Kind == "scale" {
+			return state.Outcome{State: "failed", Err: string(errScaleCompose)}
+		}
+		return c.runComposeRestart(ctx, m, req)
 	}
 	b, live, desired, n, err := c.inspectOperation(ctx, req, op.ID)
 	if err != nil {

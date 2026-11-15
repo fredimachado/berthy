@@ -561,6 +561,8 @@ An image app that sets nothing else runs with these Swarm settings.
 4. Write the Compose file and environment, then run `docker compose up -d --remove-orphans`.
 5. Wait for health checks, record the deploy, release the lock.
 
+The CLI reads the Compose file named by the app's `file` and sends its content with the request. The agent keeps that copy with the release, so a rollback redeploys the same file. Only that one file is sent, so a `build:` section is refused. These settings need an admin token: `privileged`, host `network_mode`, `pid`, `ipc`, `uts`, `userns_mode` or `cgroup`, `cap_add`, `devices`, relaxed `security_opt` entries, bind mounts of host paths, `env_file`, `secrets` or `configs` read from host files, and sharing a container outside the project (`volumes_from`, or `network_mode`, `pid`, `ipc` or `userns_mode` naming `container:`). The agent runs the Compose CLI named by `compose_command` (`docker compose` by default) with an isolated home directory, so the Compose plugin must be installed system-wide, or `compose_command` must name a standalone Compose binary. A bind mount must not point inside the agent's Compose directory, which each deploy replaces. A Compose deploy has no automatic rollback: a failed `up` is reported, and the next deploy brings the project to its file, since `up` is idempotent. Adoption records a release only when the plan would change nothing; otherwise it stops and names the first difference. `restart` restarts containers without recreating them, and `scale` and `exec` refuse Compose apps. `--version` does not apply to a Compose deploy.
+
 ### Dry run
 
 Every command that changes something accepts `--dry-run` and prints the plan without acting.

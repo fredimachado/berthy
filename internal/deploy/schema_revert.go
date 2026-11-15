@@ -47,10 +47,12 @@ func PublicMessage(s string) bool {
 	switch Refusal(s) {
 	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
-		errIngressNotApplied, errIngressChanged:
+		errIngressNotApplied, errIngressChanged,
+		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,
+		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecCompose, errComposeRole:
 		return true
 	}
-	return false
+	return composeMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

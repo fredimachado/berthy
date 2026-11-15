@@ -39,6 +39,9 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 // runDeploy rolls out req and returns the outcome for the caller to record. A rollback runs no migration steps.
 func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome) {
 	outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
+	if composeRequest(req) {
+		return c.runCompose(ctx, op, actor, req)
+	}
 	p, err := c.Plan(ctx, actor, req)
 	if err != nil {
 		return

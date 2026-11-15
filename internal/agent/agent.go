@@ -37,8 +37,26 @@ type Config struct {
 	KeyFile      string `json:"key_file,omitempty"`
 	Protected    bool   `json:"protected,omitempty"`
 	// CloudflareAPIURL overrides the Cloudflare API base URL. https is required, except for a loopback host, which tests use.
-	CloudflareAPIURL string  `json:"cloudflare_api_url,omitempty"`
-	Tokens           []Token `json:"tokens"`
+	CloudflareAPIURL string `json:"cloudflare_api_url,omitempty"`
+	// ComposeCommand runs the Compose CLI for Compose apps. It defaults to docker compose.
+	ComposeCommand []string `json:"compose_command,omitempty"`
+	Tokens         []Token  `json:"tokens"`
+}
+
+// composeCommand is the Compose CLI command the agent runs, or the default.
+func (c Config) composeCommand() []string {
+	if len(c.ComposeCommand) == 0 {
+		return []string{"docker", "compose"}
+	}
+	return c.ComposeCommand
+}
+
+// dockerHost is the DOCKER_HOST that points a child process at the agent's Docker socket.
+func dockerHost(socket string) string {
+	if socket == "" {
+		socket = "/var/run/docker.sock"
+	}
+	return "unix://" + socket
 }
 
 var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -97,6 +115,11 @@ func (c Config) Validate() error {
 	if c.CloudflareAPIURL != "" {
 		if err := validateCloudflareURL(c.CloudflareAPIURL); err != nil {
 			return err
+		}
+	}
+	for _, arg := range c.ComposeCommand {
+		if arg == "" || strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("invalid compose_command")
 		}
 	}
 	seen := map[string]bool{}
@@ -265,6 +288,14 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 				cancelIngress()
 				if configured {
 					checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
+				}
+				composeCtx, cancelCompose := context.WithTimeout(r.Context(), 5*time.Second)
+				version, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
+				cancelCompose()
+				if composeErr != nil {
+					checks = append(checks, api.Check{Name: "compose", Detail: "unavailable"})
+				} else {
+					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: version})
 				}
 			}
 			result = map[string]any{"checks": checks}

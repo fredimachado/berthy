@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +35,7 @@ func isDeploymentCommand(s string) bool {
 
 type commandFlags struct {
 	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas string
-	json, dry, adopt, healthy, revert, replace                                            bool
+	json, dry, adopt, healthy, revert, replace, allowRecreate                             bool
 	pos, command                                                                          []string
 }
 
@@ -56,6 +58,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.healthy = true
 		case "--replace-existing":
 			f.replace = true
+		case "--allow-recreate":
+			f.allowRecreate = true
 		case "--revert-schema":
 			f.revert = true
 		case "-e", "--config", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
@@ -171,11 +175,8 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.Role = f.role
 		req.RevertSchema = f.revert
 		req.ReplaceExisting = f.replace
+		req.AllowRecreate = f.allowRecreate
 		req.Command = f.command
-		if cmd == "deploy" && f.version == "" {
-			fmt.Fprintln(errout, "deploy requires --version")
-			return 2
-		}
 		if f.id == "" {
 			var random [16]byte
 			if _, err = rand.Read(random[:]); err != nil {
@@ -213,9 +214,26 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 				return 1
 			}
 			req.Manifest = *m
-			if _, e = m.CheckImageDeploy(req.App, req.Version, false); e != nil {
-				fmt.Fprintln(errout, e)
-				return 1
+			if m.Apps[req.App].Kind == "compose" {
+				if f.version != "" {
+					fmt.Fprintln(errout, "--version does not apply to a compose app")
+					return 2
+				}
+				file, e := readComposeFile(f.dir, m.Apps[req.App].File)
+				if e != nil {
+					fmt.Fprintln(errout, e)
+					return 1
+				}
+				req.ComposeFile = file
+			} else {
+				if f.version == "" {
+					fmt.Fprintln(errout, "deploy requires --version")
+					return 2
+				}
+				if _, e = m.CheckImageDeploy(req.App, req.Version, false); e != nil {
+					fmt.Fprintln(errout, e)
+					return 1
+				}
 			}
 		}
 		method = "POST"
@@ -370,6 +388,47 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)
+}
+
+// readComposeFile reads the Compose file of a Compose app from the manifest directory. The file must resolve to a regular
+// file inside that directory, and no larger than the Compose file limit.
+func readComposeFile(dir, file string) (string, error) {
+	outside := errors.New("compose file must be inside the manifest directory")
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return "", outside
+	}
+	if resolved, e := filepath.EvalSymlinks(root); e == nil {
+		root = resolved
+	}
+	inside := func(p string) bool {
+		rel, e := filepath.Rel(root, p)
+		return e == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	if !inside(filepath.Join(root, file)) {
+		return "", outside
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(root, file))
+	if err != nil || !inside(resolved) {
+		return "", outside
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("compose file unavailable")
+	}
+	if info.Size() > manifest.MaxComposeFile {
+		return "", errors.New("compose file exceeds 512 KiB")
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return "", errors.New("compose file unavailable")
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, manifest.MaxComposeFile+1))
+	if err != nil || manifest.CheckComposeFile(b) != nil {
+		return "", manifest.ErrComposeFile
+	}
+	return string(b), nil
 }
 func send(ctx context.Context, c *http.Client, method, address, token string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))

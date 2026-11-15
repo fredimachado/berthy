@@ -258,7 +258,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt", "revert_schema", "replace_existing":
+		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false

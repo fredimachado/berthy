@@ -33,7 +33,8 @@ func OpenDeployment(c Config, e *engine.Engine) (*deploy.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	controller := &deploy.Controller{Store: s, Environment: c.Environment, Protected: c.Protected, CloudflareURL: c.CloudflareAPIURL}
+	controller := &deploy.Controller{Store: s, Environment: c.Environment, Protected: c.Protected, CloudflareURL: c.CloudflareAPIURL, StateDir: c.StateDir}
+	controller.Compose = engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}
 	if e != nil {
 		controller.Engine = e
 	}
@@ -137,7 +138,7 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			} else {
 				req.Kind = rest[0]
 			}
-			if (req.Adopt || req.RevertSchema || req.ReplaceExisting) && !actor.Admin {
+			if (req.Adopt || req.RevertSchema || req.ReplaceExisting || req.AllowRecreate) && !actor.Admin {
 				writeError(w, 403, "forbidden", "forbidden")
 				return
 			}

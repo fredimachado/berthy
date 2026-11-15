@@ -30,6 +30,10 @@ type Request struct {
 	Command       []string          `json:"command,omitempty"`
 	// ReplaceExisting takes over routes and DNS records that Berthy did not create. It needs administrator access.
 	ReplaceExisting bool `json:"replace_existing,omitempty"`
+	// ComposeFile is the Compose file of a Compose app deploy. The CLI reads it from the manifest directory.
+	ComposeFile string `json:"compose_file,omitempty"`
+	// AllowRecreate lets a Compose deploy or rollback recreate or remove services of a stateful app. It needs administrator access.
+	AllowRecreate bool `json:"allow_recreate,omitempty"`
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -42,6 +46,7 @@ type Plan struct {
 	Blockers     []string             `json:"blockers,omitempty"`
 	SchemaRevert *SchemaRevertSummary `json:"schema_revert,omitempty"`
 	Ingress      *IngressPlan         `json:"ingress,omitempty"`
+	Compose      *ComposePlan         `json:"compose,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -69,6 +74,9 @@ type Controller struct {
 	Protected   bool
 	// CloudflareURL is the Cloudflare API base URL. Empty means the production API.
 	CloudflareURL string
+	// Compose runs the Compose CLI for Compose apps. StateDir holds their working directories under compose/.
+	Compose  ComposeRunner
+	StateDir string
 	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
 	recoverMu sync.Mutex
 }
@@ -81,12 +89,18 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if req.ReplaceExisting && !actor.Admin {
 		return Plan{}, errReplaceAdmin
 	}
+	if req.AllowRecreate && !actor.Admin {
+		return Plan{}, errAllowRecreateAdmin
+	}
 	if req.Kind == "ingress" {
 		return c.planIngress(ctx, actor, req)
 	}
 	if req.Adopt {
 		if !actor.Admin {
 			return Plan{}, errors.New("adoption requires administrator access")
+		}
+		if composeRequest(req) {
+			return c.planCompose(ctx, actor, req)
 		}
 		plan, bindings, err := c.planAdoption(ctx, req)
 		if err != nil {
@@ -115,6 +129,12 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		return c.planOperation(ctx, actor, req)
 	}
 	if err := req.Manifest.Validate(); err != nil {
+		return Plan{}, err
+	}
+	if composeRequest(req) {
+		return c.planCompose(ctx, actor, req)
+	}
+	if err := checkComposeRequest(req); err != nil {
 		return Plan{}, err
 	}
 	protected := c.Protected
@@ -165,6 +185,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.ReplaceExisting && !actor.Admin {
 		return state.Operation{}, false, errReplaceAdmin
 	}
+	if req.AllowRecreate && !actor.Admin {
+		return state.Operation{}, false, errAllowRecreateAdmin
+	}
 	if req.Kind == "ingress" {
 		req.App = manifest.ConnectorAppName
 		if err := req.Manifest.Validate(); err != nil {
@@ -174,6 +197,21 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
+		}
+		if err := checkComposeRequest(req); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
+	if c.Store != nil && (req.Kind == "scale" || req.Kind == "exec") {
+		_, compose, err := c.appliedCompose(ctx, req.App)
+		if err != nil {
+			return state.Operation{}, false, err
+		}
+		if compose && req.Kind == "scale" {
+			return state.Operation{}, false, errScaleCompose
+		}
+		if compose {
+			return state.Operation{}, false, errExecCompose
 		}
 	}
 	copyReq := req
@@ -192,7 +230,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		RevertSchema    bool   `json:"revert_schema,omitempty"`
 		TargetRelease   int64  `json:"target_release,omitempty"`
 		ReplaceExisting bool   `json:"replace_existing,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting})
+		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -249,11 +288,14 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after})
 	}
 	hasHooks := false
+	composeRun := false
 	var barrier *state.Intent
 	for _, i := range intents {
 		if i.Kind == "oneoff" {
 			hasHooks = true
-		} else if i.Kind == "schema_source" {
+		} else if i.Kind == "schema_source" || i.Kind == "compose_source" {
+		} else if i.Kind == "compose" {
+			composeRun = true
 		} else if i.Kind == "barrier" {
 			copyIntent := i
 			barrier = &copyIntent
@@ -279,6 +321,10 @@ func (c *Controller) Recover(ctx context.Context) error {
 			out.SchemaAfter = after
 		}
 		return c.Store.Finish(ctx, op.ID, out)
+	}
+	if composeRun {
+		// Compose has no compensation: the next deploy converges the project, as up is idempotent.
+		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(errComposeInterrupted), SchemaBefore: before, SchemaAfter: after})
 	}
 	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
 		return required("service recovery required")
@@ -333,6 +379,15 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	req.Manifest = m
 	req.Version = chosen.Digest
 	req.Commit = chosen.Commit
+	if composeRequest(req) {
+		// A Compose release has no image digest. Its deploy journaled the Compose file it ran.
+		file, err := c.composeSource(ctx, chosen.OperationID)
+		if err != nil {
+			return Request{}, err
+		}
+		req.ComposeFile = file
+		req.Version = ""
+	}
 	return req, nil
 }
 
