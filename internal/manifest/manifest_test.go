@@ -203,3 +203,112 @@ func TestManagedIngressHostnamesPassImageCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// destinationManifest returns a valid JSON manifest whose only destination is the given JSON object.
+func destinationManifest(dest string) string {
+	return `{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}},"destinations":{"offsite":` + dest + `}}`
+}
+
+func s3Destination(endpoint, region, bucket string) string {
+	d := `{"type":"s3","bucket":"` + bucket + `","access_key_secret":"S3_ACCESS_KEY","secret_key_secret":"S3_SECRET_KEY"`
+	if endpoint != "" {
+		d += `,"endpoint":"` + endpoint + `"`
+	}
+	if region != "" {
+		d += `,"region":"` + region + `"`
+	}
+	return d + `}`
+}
+
+func TestDestinationEndpointRules(t *testing.T) {
+	valid := []string{
+		"https://s3.example.com",
+		"https://s3.example.com:9443",
+		"http://127.0.0.1:19900",
+		"http://localhost:9000",
+		"http://[::1]:9000",
+	}
+	for _, endpoint := range valid {
+		if _, err := DecodeJSON([]byte(destinationManifest(s3Destination(endpoint, "", "backups")))); err != nil {
+			t.Errorf("endpoint %q refused: %v", endpoint, err)
+		}
+	}
+	invalid := []string{
+		"http://10.0.0.5:9000",
+		"http://s3.example.com",
+		"https://s3.example.com/bucket",
+		"https://s3.example.com/",
+		"https://s3.example.com?region=x",
+		"https://user:secret@s3.example.com",
+		"https://s3.example.com#fragment",
+		"https://s3.example.com:0",
+		"https://s3.example.com:70000",
+		"ftp://s3.example.com",
+		"s3.example.com",
+	}
+	for _, endpoint := range invalid {
+		_, err := DecodeJSON([]byte(destinationManifest(s3Destination(endpoint, "", "backups"))))
+		if err == nil || !strings.Contains(err.Error(), "destination offsite: invalid endpoint") {
+			t.Errorf("endpoint %q: %v", endpoint, err)
+		}
+	}
+}
+
+func TestDestinationRegionRules(t *testing.T) {
+	for _, region := range []string{"", "us-east-1", "eu-west-1", strings.Repeat("a", 32)} {
+		if _, err := DecodeJSON([]byte(destinationManifest(s3Destination("", region, "backups")))); err != nil {
+			t.Errorf("region %q refused: %v", region, err)
+		}
+	}
+	for _, region := range []string{"EU-West-1", "eu_west", "eu west", strings.Repeat("a", 33)} {
+		_, err := DecodeJSON([]byte(destinationManifest(s3Destination("", region, "backups"))))
+		if err == nil || !strings.Contains(err.Error(), "destination offsite: invalid region") {
+			t.Errorf("region %q: %v", region, err)
+		}
+	}
+}
+
+func TestDestinationBucketNameRules(t *testing.T) {
+	for _, bucket := range []string{"abc", "berthy-test", "backups.prod.1", strings.Repeat("a", 63)} {
+		if _, err := DecodeJSON([]byte(destinationManifest(s3Destination("", "", bucket)))); err != nil {
+			t.Errorf("bucket %q refused: %v", bucket, err)
+		}
+	}
+	for _, bucket := range []string{"", "ab", "Backups", "-backups", "backups-", "back_ups", "back ups", strings.Repeat("a", 64)} {
+		_, err := DecodeJSON([]byte(destinationManifest(s3Destination("", "", bucket))))
+		if err == nil || !strings.Contains(err.Error(), "destination offsite") {
+			t.Errorf("bucket %q: %v", bucket, err)
+		}
+	}
+}
+
+func TestDestinationRegionIsReadFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	base := `project: demo
+network: demo
+apps:
+  api:
+    kind: image
+    image: ghcr.io/acme/api
+    roles:
+      web: {}
+destinations:
+  offsite:
+    type: s3
+    endpoint: https://s3.example.com
+    region: eu-west-1
+    bucket: backups
+    access_key_secret: S3_ACCESS_KEY
+    secret_key_secret: S3_SECRET_KEY
+`
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Destinations["offsite"].Region; got != "eu-west-1" {
+		t.Fatalf("region: %q", got)
+	}
+}

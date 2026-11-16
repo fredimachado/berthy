@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -164,6 +167,7 @@ type Retention struct {
 type Destination struct {
 	Type            string `json:"type" yaml:"type"`
 	Endpoint        string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	Region          string `json:"region,omitempty" yaml:"region,omitempty"`
 	Bucket          string `json:"bucket" yaml:"bucket"`
 	AccessKeySecret string `json:"access_key_secret" yaml:"access_key_secret"`
 	SecretKeySecret string `json:"secret_key_secret" yaml:"secret_key_secret"`
@@ -177,6 +181,72 @@ var identifier = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 var hostnamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+// bucketName is an S3 bucket name: 3 to 63 characters of lower-case letters, digits, dots and hyphens, starting and
+// ending with a letter or digit.
+var bucketName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$`)
+var regionName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// ValidEndpoint checks a destination endpoint. It accepts an empty endpoint, which means the AWS default, or
+// https://host[:port]. It accepts http:// only for a loopback address or localhost, which tests and the WSL fixture use.
+// An endpoint has no path, query, fragment or userinfo, so credentials can go only to the host named. The error never
+// repeats the endpoint.
+func ValidEndpoint(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("must not have a query or fragment")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("not a URL")
+	}
+	if u.User != nil {
+		return errors.New("must not contain credentials")
+	}
+	if u.Path != "" {
+		return errors.New("must not have a path")
+	}
+	host := u.Hostname()
+	if host == "" || strings.HasSuffix(u.Host, ":") {
+		return errors.New("must be scheme://host[:port]")
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return errors.New("port must be 1 to 65535")
+		}
+	}
+	if !validHost(host) {
+		return errors.New("host is not a valid name or address")
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopback(host) {
+			return nil
+		}
+		return errors.New("http is allowed only for a loopback address or localhost")
+	default:
+		return errors.New("scheme must be https, or http for a loopback address")
+	}
+}
+
+// endpointHost is a DNS name whose labels may be a single label, such as a service name on a private network.
+var endpointHost = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+func validHost(host string) bool {
+	return isLoopback(host) || endpointHost.MatchString(strings.ToLower(host)) || net.ParseIP(host) != nil
+}
+
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func readYAML(path string, optional bool) (*yaml.Node, error) {
 	f, err := os.Open(path)
@@ -546,8 +616,17 @@ func (m *Manifest) Validate() error {
 		if d.AccessKeySecret == TunnelTokenSecret || d.SecretKeySecret == TunnelTokenSecret {
 			return fmt.Errorf("destination %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
 		}
-		if !identifier.MatchString(name) || d.Type != "s3" || d.Bucket == "" || !envName.MatchString(d.AccessKeySecret) || !envName.MatchString(d.SecretKeySecret) {
+		if !identifier.MatchString(name) || d.Type != "s3" || !envName.MatchString(d.AccessKeySecret) || !envName.MatchString(d.SecretKeySecret) {
 			return fmt.Errorf("invalid destination %q", name)
+		}
+		if !bucketName.MatchString(d.Bucket) {
+			return fmt.Errorf("destination %s: invalid bucket name", name)
+		}
+		if err := ValidEndpoint(d.Endpoint); err != nil {
+			return fmt.Errorf("destination %s: invalid endpoint: %w", name, err)
+		}
+		if d.Region != "" && !regionName.MatchString(d.Region) {
+			return fmt.Errorf("destination %s: invalid region", name)
 		}
 	}
 	for _, name := range sortedKeys(m.Backups) {
