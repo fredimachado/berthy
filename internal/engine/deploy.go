@@ -398,12 +398,15 @@ func (e *Engine) WaitContainer(ctx context.Context, id string) (int, error) {
 	}
 	return x.StatusCode, nil
 }
+
+// RemoveContainer removes a container, stopping it first if it runs: the backup helpers are throwaway and must go even when
+// their work failed half-way.
 func (e *Engine) RemoveContainer(ctx context.Context, id string) error {
 	p, err := pathID(id)
 	if err != nil {
 		return err
 	}
-	return e.jsonRequest(ctx, "DELETE", "/containers/"+p, nil, nil, nil)
+	return e.jsonRequest(ctx, "DELETE", "/containers/"+p+"?force=1", nil, nil, nil)
 }
 
 // dockerOutput consumes the non-TTY multiplexed stream without exposing framing. It refuses more than maxCommandOutput.

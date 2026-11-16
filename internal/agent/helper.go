@@ -103,6 +103,8 @@ type helperManager struct {
 
 	// runMu serializes the runs that change Docker.
 	runMu sync.Mutex
+	// imageMu serializes the import of the helper image, which the probe helper and the backup containers both need.
+	imageMu sync.Mutex
 
 	// mu guards the fields below. Probe reads the running helper's token, port and error under it.
 	mu      sync.Mutex
@@ -267,8 +269,24 @@ func (m *helperManager) networkID(ctx context.Context, name string) (string, err
 	return n.ID, nil
 }
 
+// Image makes sure the helper image of the agent's binary exists, importing it when Docker does not have it, and returns
+// its reference. The backup containers run from it: it holds the agent's binary alone, and each of them overrides its
+// entrypoint and user. It creates no container. Pruning of old helper images skips the image of any container.
+func (m *helperManager) Image(ctx context.Context) (string, error) {
+	bin, err := m.preflight()
+	if err != nil {
+		return "", err
+	}
+	if _, err = m.image(ctx, bin); err != nil {
+		return "", err
+	}
+	return helperRepo + ":" + bin.tag(), nil
+}
+
 // image returns the helper image for bin, importing it from the agent's binary when Docker does not have it.
 func (m *helperManager) image(ctx context.Context, bin helperBinary) (engine.Image, error) {
+	m.imageMu.Lock()
+	defer m.imageMu.Unlock()
 	ref := helperRepo + ":" + bin.tag()
 	img, err := m.engine.InspectImage(ctx, ref)
 	if err == nil {

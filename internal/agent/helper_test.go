@@ -962,3 +962,100 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestImageBuildsTheHelperImageForTheBackupContainers(t *testing.T) {
+	f := newHfDocker()
+	m := newHfHelper(f, writeAgentBinary(t, "one"), &hfClock{t: time.Unix(1_700_000_000, 0)})
+	ctx := context.Background()
+	ref, err := m.Image(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "berthy-helper:" + m.binary.tag(); ref != want || len(f.imported) != 1 {
+		t.Fatalf("ref %q (want %q), %d imports", ref, want, len(f.imported))
+	}
+	if _, ok := f.images[ref]; !ok {
+		t.Fatal("the image is not in Docker")
+	}
+	// The probe helper is not involved: no container, no network, and the same image is reused.
+	if f.createCount() != 0 || contains(f.calls, "InspectNetwork") {
+		t.Fatalf("calls %v", f.calls)
+	}
+	if again, err := m.Image(ctx); err != nil || again != ref || len(f.imported) != 1 {
+		t.Fatalf("second call: %q %v, %d imports", again, err, len(f.imported))
+	}
+	// The probe helper then runs from the very same image.
+	if err = m.ensure(ctx, "lab-net"); err != nil || len(f.imported) != 1 || f.only(t).imageID != f.images[ref] {
+		t.Fatalf("ensure after Image: %v, %d imports", err, len(f.imported))
+	}
+}
+
+func TestImageReportsWhatBlocksIt(t *testing.T) {
+	ctx := context.Background()
+	f := newHfDocker()
+	m := newHfHelper(f, writeAgentBinary(t, "one", elf.PT_PHDR, elf.PT_INTERP, elf.PT_LOAD), &hfClock{t: time.Unix(1_700_000_000, 0)})
+	if _, err := m.Image(ctx); err == nil || err.Error() != "service probes need a statically linked berthy binary" {
+		t.Fatalf("error %v", err)
+	}
+	m = newHfHelper(f, writeAgentBinary(t, "one"), &hfClock{t: time.Unix(1_700_000_000, 0)})
+	m.goos = "windows"
+	if _, err := m.Image(ctx); err == nil || err.Error() != "service probes need a Linux agent" {
+		t.Fatalf("error %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("Docker was asked %v", f.calls)
+	}
+	m = newHelperManager("lab", nil, nil)
+	m.exe = func() (string, error) { return writeAgentBinary(t, "one"), nil }
+	m.goos = "linux"
+	if _, err := m.Image(ctx); err == nil || err.Error() != "probe helper unavailable: Docker unavailable" {
+		t.Fatalf("error %v", err)
+	}
+}
+
+// An archive or restore container is created from a helper image and may outlive the agent binary that built it. The
+// pruning of old helper images must leave the image it runs from, whether the probe helper is ensured or removed.
+func TestPruningKeepsTheImageOfABackupContainer(t *testing.T) {
+	f := newHfDocker()
+	exe := writeAgentBinary(t, "one")
+	clk := &hfClock{t: time.Unix(1_700_000_000, 0)}
+	m := newHfHelper(f, exe, clk)
+	ctx := context.Background()
+	oldRef, err := m.Image(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A backup container, created but not started yet, then the agent is upgraded.
+	f.seed("berthy-archive-lab-1a2b3c4d", map[string]string{"berthy.environment": "lab", "berthy.helper": "archive"}, oldRef)
+	f.containers[f.names["berthy-archive-lab-1a2b3c4d"]].running = false
+	if err = os.WriteFile(exe, append(hfELF(elf.PT_LOAD), []byte("version-two")...), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.ensure(ctx, "lab-net"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.images[oldRef]; !ok || contains(f.removed, oldRef) {
+		t.Fatalf("the image of a backup container was removed: %v", f.removed)
+	}
+	clk.t = clk.t.Add(time.Minute)
+	if err = m.remove(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.images[oldRef]; !ok || contains(f.removed, oldRef) {
+		t.Fatalf("remove deleted the image of a backup container: %v", f.removed)
+	}
+	// Once the backup container is gone, the old image is unused and goes with the next cleanup.
+	delete(f.containers, f.names["berthy-archive-lab-1a2b3c4d"])
+	delete(f.names, "berthy-archive-lab-1a2b3c4d")
+	clk.t = clk.t.Add(time.Minute)
+	if err = m.ensure(ctx, "lab-net"); err != nil {
+		t.Fatal(err)
+	}
+	clk.t = clk.t.Add(time.Minute)
+	if err = m.remove(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.images[oldRef]; ok {
+		t.Fatalf("the unused old image was kept: %v", f.removed)
+	}
+}

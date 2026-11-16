@@ -10,6 +10,7 @@ import (
 	"berthy/internal/monitor"
 	"berthy/internal/probehelper"
 	"berthy/internal/state"
+	"berthy/internal/volarchive"
 	"bufio"
 	"bytes"
 	"context"
@@ -55,6 +56,14 @@ func Run(args []string, out, errout io.Writer) int {
 	if cmd == "probe-helper" {
 		// Not in the usage: only the overlay helper container runs it.
 		return runProbeHelper(errout)
+	}
+	switch cmd {
+	case "volume-archive":
+		// Not in the usage either: only the backup container runs it, with the volume mounted at /source.
+		return runVolumeArchive(volarchive.SourceDir, out, errout)
+	case "volume-extract":
+		// Only the restore container runs it, with the new volume at /target and the archive on stdin.
+		return runVolumeExtract(os.Stdin, volarchive.TargetDir, errout)
 	}
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout)
