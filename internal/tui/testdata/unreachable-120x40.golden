@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                                                                  ? help 
+╭─ Apps ────────────────────────────────────────────────────────────────────────────────────────────────────────── 1/3 ╮
+│    App                          Kind      Roles                   Replicas  Health       Version          Backup     │
+│ ▌  api                          image     web                     2/2       ● healthy    sha256:abcdef01  3h         │
+│    blog                         compose   web,db                  2/2       ✖ unhealthy  mixed (2)        -          │
+│    worker                       image     run                     1/1       ◐ starting   v3               ✖ 26h      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│ 3 apps · 1 healthy · 1 unhealthy                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ✖ agent unreachable — retrying in 1s │ 🔒 locked by ci: migrating │ backup failed │ 1 pending           updated 0s ago 
+↑/k up • enter open • / filter • tab next tab • r refresh • ? help • q quit                                             

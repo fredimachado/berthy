@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+   1 Apps ▐ 2 Logs ▌  3 Server   4 Approvals  1                          ? help 
+╭─ Logs → api ───────────────────────────────────────────── ● following · 0:00 ╮
+│ 12:00:03 web.1 GET /api/items 200                                            │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ grep api                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending           
+enter apply • esc clear                                                         

@@ -12,8 +12,8 @@ import (
 	"berthy/internal/monitor"
 	"berthy/internal/probehelper"
 	"berthy/internal/state"
+	"berthy/internal/tui"
 	"berthy/internal/volarchive"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -38,7 +38,7 @@ var envPattern = agentclient.EnvPattern
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp>")
+		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
 	}
 	cmd := args[0]
@@ -58,6 +58,10 @@ func Run(args []string, out, errout io.Writer) int {
 	if cmd == "mcp" {
 		// It serves MCP on stdin and stdout, so nothing else may be printed to out.
 		return mcp.Run(args, os.Stdin, out, errout)
+	}
+	if cmd == "ui" {
+		// It takes over the terminal: it needs the real standard input and output.
+		return tui.Run(args, os.Stdin, out, errout)
 	}
 	if cmd == "state-restore" {
 		// Local: it reads a snapshot from object storage and needs no agent, so it runs when the server is gone.
@@ -428,101 +432,63 @@ func printText(w io.Writer, v any, indent string) {
 }
 
 func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
-	scan := bufio.NewScanner(r)
-	scan.Buffer(make([]byte, 4096), 16<<20)
-	event := ""
-	var data []string
-	size := 0
-	for scan.Scan() {
-		line := scan.Text()
-		if line == "" {
-			if len(data) == 0 {
-				event = ""
-				continue
+	failed := false
+	err := agentclient.ReadEvents(ctx, r, func(event, payload string) error {
+		switch event {
+		case "done":
+			var v struct {
+				Complete bool `json:"complete"`
 			}
-			payload := strings.Join(data, "\n")
-			data = nil
-			size = 0
-			if !json.Valid([]byte(payload)) || len(payload) == 0 || payload[0] != '{' {
-				fmt.Fprintln(errout, "invalid stream event")
-				return 1
+			if json.Unmarshal([]byte(payload), &v) != nil || !v.Complete {
+				return agentclient.ErrInvalidEvent
 			}
-			switch event {
-			case "done":
-				var v struct {
-					Complete bool `json:"complete"`
-				}
-				if json.Unmarshal([]byte(payload), &v) != nil || !v.Complete {
-					fmt.Fprintln(errout, "invalid stream event")
-					return 1
-				}
-				return 0
-			case "error":
-				fmt.Fprintln(errout, "agent stream failed")
-				return 1
-			case "log":
-				var v logs.Record
-				if json.Unmarshal([]byte(payload), &v) != nil {
-					fmt.Fprintln(errout, "invalid stream event")
-					return 1
-				}
-			case "stats":
-				var v metrics.Sample
-				if json.Unmarshal([]byte(payload), &v) != nil {
-					fmt.Fprintln(errout, "invalid stream event")
-					return 1
-				}
-			default:
-				fmt.Fprintln(errout, "invalid stream event")
-				return 1
+			return agentclient.ErrStopEvents
+		case "error":
+			failed = true
+			return errors.New("agent stream failed")
+		case "log":
+			var v logs.Record
+			if json.Unmarshal([]byte(payload), &v) != nil {
+				return agentclient.ErrInvalidEvent
 			}
-			event = ""
-			var v any
-			dec := json.NewDecoder(strings.NewReader(payload))
-			dec.UseNumber()
-			if dec.Decode(&v) != nil {
-				fmt.Fprintln(errout, "invalid stream event")
-				return 1
+		case "stats":
+			var v metrics.Sample
+			if json.Unmarshal([]byte(payload), &v) != nil {
+				return agentclient.ErrInvalidEvent
 			}
-			if jsonOutput {
-				var compact bytes.Buffer
-				if json.Compact(&compact, []byte(payload)) != nil {
-					fmt.Fprintln(errout, "invalid stream event")
-					return 1
-				}
-				fmt.Fprintln(out, compact.String())
-			} else {
-				printText(out, v, "")
-			}
-			continue
+		default:
+			return agentclient.ErrInvalidEvent
 		}
-		if strings.HasPrefix(line, ":") {
-			continue
+		var v any
+		dec := json.NewDecoder(strings.NewReader(payload))
+		dec.UseNumber()
+		if dec.Decode(&v) != nil {
+			return agentclient.ErrInvalidEvent
 		}
-		field, value, ok := strings.Cut(line, ":")
-		if !ok {
-			value = ""
-		}
-		value = strings.TrimPrefix(value, " ")
-		switch field {
-		case "event":
-			event = value
-		case "data":
-			size += len(value) + 1
-			if size > 16<<20 {
-				fmt.Fprintln(errout, "invalid stream event")
-				return 1
+		if jsonOutput {
+			var compact bytes.Buffer
+			if json.Compact(&compact, []byte(payload)) != nil {
+				return agentclient.ErrInvalidEvent
 			}
-			data = append(data, value)
+			fmt.Fprintln(out, compact.String())
+		} else {
+			printText(out, v, "")
 		}
-	}
-	if ctx.Err() != nil {
+		return nil
+	})
+	switch {
+	case err == nil:
+		return 0
+	case ctx.Err() != nil:
 		// The user interrupted (Ctrl-C) and the request context was canceled: a normal exit.
 		return 0
-	}
-	if scan.Err() != nil {
+	case failed:
+		fmt.Fprintln(errout, "agent stream failed")
+	case errors.Is(err, agentclient.ErrInvalidEvent):
+		fmt.Fprintln(errout, "invalid stream event")
+	case errors.Is(err, agentclient.ErrStreamRead):
 		fmt.Fprintln(errout, "agent stream could not be read")
-	} else {
+	default:
 		fmt.Fprintln(errout, "agent stream ended unexpectedly")
 	}
 	return 1

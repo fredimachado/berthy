@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+   1 Apps   2 Logs   3 Server ▐ 4 Approvals ▌ 1                          ? help 
+╭─ Approvals ─────────────────────────────────────────────────────── 1 pending ╮
+│                                                                              │
+│ 3 requests                                                                   │
+│▌ deploy api → sha256:abc123456789                                ▐ pending ▌ │
+│▌ requested by claude · expires in 12m                                        │
+│                                                                              │
+│  restart api/web                                                ▐ approved ▌ │
+│  requested by claude · 2h ago · approved by fredi                            │
+│                                                                              │
+│  scale worker to 3                                               ▐ expired ▌ │
+│  requested by ci · expired 4h ago                                            │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending           
+↑/k up • enter open • / filter • tab next tab • r refresh • ? help • q quit     

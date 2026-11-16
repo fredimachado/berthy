@@ -708,15 +708,32 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 
 ### TUI
 
-`berthy ui -e <env>` opens a live view built for reading first.
+`berthy ui -e <env> --config <cli config>` opens a full-screen live view built for reading first. It reads the same configuration and token as every other command, so a `read` token shows every view; the token is never drawn, logged or written. It needs a terminal on standard input and output and refuses to start without one. It is built with the Charm libraries (Bubble Tea, Bubbles, Lip Gloss) and works at 80×24 and up; a smaller terminal gets a notice. Colours follow the terminal's light or dark background, and `NO_COLOR` turns them off: every state also has a glyph and a word, so nothing depends on colour.
 
-- Apps with health, replicas and running version.
-- Detail for the selected app: roles, last deploys, restarts.
-- Live logs for the selected app.
-- Server meters: CPU, memory, disk, Docker disk usage, block and network I/O.
-- Status line: deploy lock, last backup age, pending approvals.
+The header shows the environment, a badge when it is protected, and the host. Four tabs hold the views:
 
-Actions in the TUI (restart, rollback, approve) ask for confirmation and show the same plan as `--dry-run`.
+- **Apps.** A table of the apps with kind, roles, replicas (running/desired), health (`●` healthy, `◐` starting, `✖` unhealthy, `○` none), version (image tag or short digest) and the age of the oldest newest backup, red when the last run failed. `/` filters by name. `enter` opens the detail of the app: its roles and replicas (state, health, restarts, out-of-memory kills), the last ten deploys with the reason of a failed one, its jobs and its backups. `l` follows its logs.
+- **Logs.** A filterable picker of apps, then the followed logs of the chosen app: the last 200 lines and what comes, with the time, the source (role and replica) and the stream (stderr is tinted). `f` pauses and resumes following, which also pauses when you scroll up; `/` greps with a regular expression (smart case) on the lines the view keeps, the newest 5 000. What an app prints is shown with every escape and control sequence removed. A dropped stream reconnects with a growing wait and asks only for the lines it has not seen.
+- **Server.** Meters for CPU, memory, swap and every mount, the load, the network and disk traffic, a sparkline of the CPU of the last minutes, the Docker disk usage, and the containers sorted by CPU with their memory, network and block I/O.
+- **Approvals.** The changes AI agents have asked for, the ones that wait first, with who asked and the time left. `enter` shows the request and its plan, and a countdown while it waits; a token without the `deploy` scope sees that the plan is hidden.
+
+The status line shows the connection (a spinner while a request is under way; `agent unreachable — retrying in 4s` when the agent cannot be reached, with the last data kept on the screen and the wait growing from 1 s to 30 s), the deploy lock, the oldest successful backup, the pending approvals and the age of the data. The footer shows the keys of the view; `?` shows them all.
+
+| Key | Action |
+| --- | --- |
+| `tab`, `shift+tab`, `1`-`4` | Switch tabs |
+| `↑` `↓` `j` `k`, `pgup` `pgdn`, `g` `G` | Move and scroll |
+| `enter`, `esc` | Open, go back |
+| `/` | Filter, grep |
+| `f` | Follow logs on or off |
+| `l` | Logs of the selected app |
+| `r` | Refresh now |
+| `?` | Help |
+| `q`, `ctrl+c` | Quit |
+
+The views read the agent API: the apps every 3 seconds, the lock and the number of pending approvals every 5, the approvals every 5 while their tab is open, the history of an app when its detail opens and every 10 seconds after, `df` every 30 seconds on the Server tab, and two event streams (`logs?follow=1` and `stats?watch=1`) that run only while their tab is open. Nothing here changes the environment.
+
+Actions in the TUI (restart, rollback, approve) are coming in the next slice: they will ask for confirmation and show the same plan as `--dry-run`.
 
 ### MCP server
 

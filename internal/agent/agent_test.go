@@ -3,6 +3,7 @@ package agent
 import (
 	"berthy/internal/metrics"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -23,6 +24,24 @@ func TestGuardRejectsWrongEnvironmentBeforeDocker(t *testing.T) {
 		h.ServeHTTP(w, r)
 		if w.Code != tc.want {
 			t.Errorf("%s: got %d want %d", tc.path, w.Code, tc.want)
+		}
+	}
+}
+
+func TestAgentInfoSaysWhetherTheEnvironmentIsProtected(t *testing.T) {
+	token := "bty.prod." + strings.Repeat("a", 64)
+	for _, protected := range []bool{true, false} {
+		h := Handler(Config{Environment: "prod", Protected: protected, Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, nil)
+		r := httptest.NewRequest(http.MethodGet, "/v1/environments/prod/agent", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var info struct {
+			Environment string `json:"environment"`
+			Protected   bool   `json:"protected"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil || info.Environment != "prod" || info.Protected != protected {
+			t.Errorf("protected=%v: %d %s", protected, w.Code, w.Body.String())
 		}
 	}
 }

@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                                                                  ? help 
+╭─ Apps → blog ────────────────────────────────────────────────────────────────────────────────────────────────── 100% ╮
+│ blog  compose  ·  ✖ unhealthy  ·  2/2 running  ·  mixed (2)                                                          │
+│                                                                                                                      │
+│ Roles  2 roles                                                                                                       │
+│   web  1/1 running                                                                                                   │
+│   ╰── ✖ running · unhealthy · 5 · dddddddddddd                                                                       │
+│   db  1/1 running                                                                                                    │
+│   ╰── ○ running · no health check · 8 · eeeeeeeeeeee                                                                 │
+│                                                                                                                      │
+│ Recent deploys  last 3                                                                                               │
+│   ✔ 10m ago   sha256:abcdef01  commit c3                                                                             │
+│   ✖ 40m ago   rolled back  commit cbad                                                                               │
+│       → replica web became unhealthy: health check failed 3 times, the container exited with code 1 and was rolled   │
+│         back                                                                                                         │
+│   ✔ 2h ago    sha256:01234567  commit c2                                                                             │
+│                                                                                                                      │
+│ Jobs  0 jobs                                                                                                         │
+│   no jobs                                                                                                            │
+│                                                                                                                      │
+│ Backups  0 backups                                                                                                   │
+│   no backups                                                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending                                    updated 0s ago 
+↑/k up • l logs • esc back • tab next tab • r refresh • ? help • q quit                                                 

@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                          ? help 
+╭─ Apps → api ───────────────────────────────────────────────────────────   0% ╮
+│ api  image  ·  ● healthy  ·  2/2 running  ·  sha256:abcdef01                 │
+│                                                                              │
+│ Roles  1 role                                                                │
+│   web  2/2 running                                                           │
+│   ├── ● running · healthy · restarts 0 · sha256:abcdef01 · aaaaaaaaaaaa      │
+│   ╰── ● running · healthy · restarts 2 · sha256:abcdef01 · bbbbbbbbbbbb      │
+│                                                                              │
+│ Recent deploys  last 3                                                       │
+│   ✔ 10m ago   sha256:abcdef01  commit c3                                     │
+│   ✖ 40m ago   rolled back  commit cbad                                       │
+│       → replica web became unhealthy: health check failed 3 times, the       │
+│         container exited with code 1 and was rolled back                     │
+│   ✔ 2h ago    sha256:01234567  commit c2                                     │
+│                                                                              │
+│ Jobs  1 job                                                                  │
+│   cleanup  0 3 * * *  next in 15h                                            │
+│       ✔ succeeded 9h ago · exit 0                                            │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending           
+↑/k up • l logs • esc back • tab next tab • r refresh • ? help • q quit         

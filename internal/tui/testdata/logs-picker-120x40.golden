@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+   1 Apps ▐ 2 Logs ▌  3 Server   4 Approvals  1                                                                  ? help 
+╭─ Logs ──────────────────────────────────────────────────────────────────────────────────────────────── choose an app ╮
+│                                                                                                                      │
+│ 3 apps                                                                                                               │
+││ api                                                                                                                 │
+││ image · 2/2 · ● healthy                                                                                             │
+│                                                                                                                      │
+│  blog                                                                                                                │
+│  compose · 2/2 · ✖ unhealthy                                                                                         │
+│                                                                                                                      │
+│  worker                                                                                                              │
+│  image · 1/1 · ◐ starting                                                                                            │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending                                    updated 0s ago 
+↑/k up • enter open • / filter • tab next tab • ? help • q quit                                                         

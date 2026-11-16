@@ -242,7 +242,7 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			}
 		case len(parts) == 4 && parts[3] == "agent":
 			host, _ := os.Hostname()
-			result = map[string]any{"environment": c.Environment, "hostname": host}
+			result = map[string]any{"environment": c.Environment, "hostname": host, "protected": c.Protected}
 		case len(parts) == 4 && parts[3] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
