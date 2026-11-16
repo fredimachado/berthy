@@ -718,7 +718,7 @@ func TestRecoveryRepeatsAnInterruptedComposeDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: composeDownOrdinal, Kind: composeDownKind, Name: "shop-db", Desired: json.RawMessage(`{"project":"shop-db","volumes":true}`)}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: composeDownKind, Name: "shop-db", Desired: json.RawMessage(`{"project":"shop-db","volumes":true}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err = c.Recover(ctx); err != nil {

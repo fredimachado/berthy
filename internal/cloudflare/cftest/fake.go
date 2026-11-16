@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -419,15 +421,32 @@ func (f *Fake) tunnelCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *Fake) tunnel(w http.ResponseWriter, r *http.Request, id string) {
-	if !allow(w, r, http.MethodGet) {
-		return
-	}
 	t, ok := f.tunnels[id]
-	if !ok {
-		writeNotFound(w)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		if !ok {
+			writeNotFound(w)
+			return
+		}
+		writeResult(w, t)
+	case http.MethodDelete:
+		if !ok || t.DeletedAt != nil {
+			writeNotFound(w)
+			return
+		}
+		// Cloudflare refuses a tunnel that has active connections. Its error code is not documented, so the fake uses its own.
+		if len(t.Connections) > 0 {
+			writeFailure(w, http.StatusBadRequest, 1022, "Tunnel has active connections")
+			return
+		}
+		deleted := openedAt
+		t.DeletedAt = &deleted
+		f.tunnels[id] = t
+		f.note(r, "tunnel_delete", id)
+		writeResult(w, t)
+	default:
+		writeMethodNotAllowed(w)
 	}
-	writeResult(w, t)
 }
 
 func (f *Fake) tunnelToken(w http.ResponseWriter, r *http.Request, id string) {
@@ -502,7 +521,25 @@ func (f *Fake) zoneList(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, z)
 	}
+	list = page(list, q)
 	writeList(w, list, len(list))
+}
+
+// page returns the part of list that the page and per_page query parameters select. Without them it returns all of list.
+func page[T any](list []T, q url.Values) []T {
+	perPage, err := strconv.Atoi(q.Get("per_page"))
+	if err != nil || perPage < 1 {
+		return list
+	}
+	n, err := strconv.Atoi(q.Get("page"))
+	if err != nil || n < 1 {
+		n = 1
+	}
+	start := (n - 1) * perPage
+	if start >= len(list) {
+		return list[:0]
+	}
+	return list[start:min(start+perPage, len(list))]
 }
 
 func (f *Fake) recordCollection(w http.ResponseWriter, r *http.Request, zoneID string) {
@@ -518,8 +555,12 @@ func (f *Fake) recordCollection(w http.ResponseWriter, r *http.Request, zoneID s
 			if q.Has("name") && rec.Name != q.Get("name") {
 				continue
 			}
+			if want := q.Get("content.exact"); want != "" && !strings.EqualFold(rec.Content, want) {
+				continue
+			}
 			list = append(list, rec)
 		}
+		list = page(list, q)
 		writeList(w, list, len(list))
 	case http.MethodPost:
 		var rec cloudflare.DNSRecord

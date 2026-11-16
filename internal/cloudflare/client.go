@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -344,6 +345,55 @@ func (c *Client) FindZone(ctx context.Context, accountID, hostname string) (Zone
 		}
 	}
 	return Zone{}, ErrZoneNotFound
+}
+
+// maxPages bounds a paged listing, so a server that ignores the page number cannot hold the client forever.
+const maxPages = 200
+
+// Zones lists every zone in the account, following the pages. Cloudflare serves at most 50 zones a page.
+func (c *Client) Zones(ctx context.Context, accountID string) ([]Zone, error) {
+	const perPage = 50
+	var all []Zone
+	for page := 1; page <= maxPages; page++ {
+		var zones []Zone
+		q := url.Values{"account.id": {accountID}, "per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
+		if err := c.call(ctx, http.MethodGet, "/zones", q, nil, &zones); err != nil {
+			return nil, err
+		}
+		all = append(all, zones...)
+		if len(zones) < perPage {
+			return all, nil
+		}
+	}
+	return nil, errors.New("too many zones")
+}
+
+// DNSRecordsByContent lists the records in a zone, of any name and type, whose content is exactly content. The comparison
+// is case-insensitive, as Cloudflare's is, and is repeated here so a server that ignores the filter cannot add records.
+func (c *Client) DNSRecordsByContent(ctx context.Context, zoneID, content string) ([]DNSRecord, error) {
+	const perPage = 100
+	var out []DNSRecord
+	for page := 1; page <= maxPages; page++ {
+		var records []DNSRecord
+		q := url.Values{"content.exact": {content}, "per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
+		if err := c.call(ctx, http.MethodGet, zonePath(zoneID)+"/dns_records", q, nil, &records); err != nil {
+			return nil, err
+		}
+		for _, r := range records {
+			if strings.EqualFold(r.Content, content) {
+				out = append(out, r)
+			}
+		}
+		if len(records) < perPage {
+			return out, nil
+		}
+	}
+	return nil, errors.New("too many records")
+}
+
+// DeleteTunnel deletes a tunnel. Cloudflare refuses a tunnel that has active connections.
+func (c *Client) DeleteTunnel(ctx context.Context, accountID, id string) error {
+	return c.call(ctx, http.MethodDelete, tunnelPath(accountID, id), nil, nil, nil)
 }
 
 // DNSRecords lists the records in a zone with exactly this name.

@@ -28,7 +28,7 @@ import (
 // service probes from inside the shared network. The agent reaches it only through a port published on 127.0.0.1, with a
 // bearer token that stays in the agent's memory.
 const (
-	helperRepo      = "berthy-helper"
+	helperRepo      = engine.HelperRepo
 	helperUser      = "65532:65532"
 	helperMemory    = 64 << 20
 	helperTagLength = 12

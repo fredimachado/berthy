@@ -364,3 +364,45 @@ func TestAppliedAppsListsAppsWithAnAppliedRelease(t *testing.T) {
 		t.Fatalf("a forgotten app is no longer applied: %v %v", apps, err)
 	}
 }
+
+func TestKeptTunnelIsRememberedUnderTheLockAndForgottenWhenIngressIsApplied(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	st := IngressState{AccountID: "acct", APITokenSecret: "CF_TOKEN", TunnelID: "tunnel-1", TunnelName: "demo-prod", DNS: true}
+	if _, err := s.KeptTunnel(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("before any: %v", err)
+	}
+	if err := s.SetKeptTunnel(ctx, "missing", st); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unlocked set: %v", err)
+	}
+	if err := s.ClearKeptTunnel(ctx, "missing"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unlocked clear: %v", err)
+	}
+	op := openIngressOp(t, s, "destroy")
+	if err := s.SetKeptTunnel(ctx, op.ID, st); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.KeptTunnel(ctx)
+	if err != nil || got.AccountID != "acct" || got.APITokenSecret != "CF_TOKEN" || got.TunnelID != "tunnel-1" || got.TunnelName != "demo-prod" {
+		t.Fatalf("kept tunnel %+v %v", got, err)
+	}
+	if err = s.ClearKeptTunnel(ctx, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ClearKeptTunnel(ctx, op.ID); err != nil {
+		t.Fatalf("clearing nothing is not an error: %v", err)
+	}
+	if _, err = s.KeptTunnel(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("after clear: %v", err)
+	}
+	if err = s.SetKeptTunnel(ctx, op.ID, st); err != nil {
+		t.Fatal(err)
+	}
+	// Applying managed ingress again puts a tunnel in use, so the pointer to a left-over one goes.
+	if err = s.SetIngress(ctx, op.ID, st); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.KeptTunnel(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("after SetIngress: %v", err)
+	}
+}

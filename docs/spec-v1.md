@@ -410,7 +410,7 @@ The connector publishes no port. It makes outbound connections to Cloudflare onl
 - **An existing route or record stops the run.** If a hostname is already routed to a different target, or its DNS name is already used by a record Berthy did not create, the run stops and reports it. `--replace-existing` takes it over and needs an `admin` token. A route or record that already matches is adopted with no change.
 - **Berthy's rules come first.** They are placed ahead of rules it did not write, and the tunnel's final catch-all rule stays last.
 - **One writer.** Edit a managed hostname in the manifest, not in the dashboard. A dashboard edit to a managed route is overwritten at the next apply and shown in the dry run first.
-- **Nothing is deleted with the tunnel.** Berthy never deletes a tunnel. Removing managed ingress from the manifest removes the routes and records Berthy created and stops the connector.
+- **The tunnel stays.** Removing managed ingress from the manifest removes the routes and records Berthy created and stops the connector, and leaves the tunnel. Berthy deletes a tunnel only with `berthy destroy --tunnel`, and only when it is clean (see "Destroying an environment").
 - **Image apps only.** Hostnames can be declared on image app roles. A Compose service is published by a rule added in Cloudflare, which Berthy keeps.
 
 ### Credentials
@@ -625,6 +625,28 @@ What it does, in this order:
 
 What it keeps: volumes unless `--volumes`, the release history, routes and records Berthy adopted, and the tunnel. A `stateful` Compose app is removed only with `--allow-recreate`, as it is recreated only with it. Removing an app again after it is gone changes nothing and succeeds. A removal that stops partway is finished by running it again; at start the agent also completes any service deletion it had journaled and records the operation as interrupted. `--dry-run` lists the services, volumes, routes and records, and the volumes that would be kept.
 
+### Destroying an environment
+
+`berthy destroy -e <env> --confirm <env> [--volumes] [--allow-recreate] [--tunnel] [--dry-run]` removes everything Berthy created in the environment. It takes an `admin` token and runs as one operation under the deploy lock. `--confirm` must repeat the environment name, or the CLI refuses before it sends anything and the agent refuses the request. `--dry-run` prints the whole plan and changes nothing.
+
+What it does, in this order:
+
+1. **Every app** with an applied release, except the connector, is removed as `berthy remove` removes it, with the same `--volumes` and `--allow-recreate` rules. If a `stateful` Compose app needs `--allow-recreate` and the flag is missing, or any other app cannot be removed, the whole destroy is refused up front, lists them, and removes nothing.
+2. **Managed ingress** is removed: the routes and DNS records Berthy created, the release of the ones it adopted, the connector, the tunnel token and the stored ingress state.
+3. **Helper containers and images.** The overlay probe helper container, every `berthy-helper` image no container uses, and any backup or restore helper container of this environment that has stopped.
+4. **One-off containers.** Hook and migration containers of this environment that are not running.
+5. **Images.** Every image Berthy pulled that no container or service uses, now that no app has a release.
+
+What it keeps: all secrets, including the Cloudflare API token, the state database and the release, operation, job and backup history, the shared network, Docker objects Berthy did not create, routes and records that are not Berthy's, and volumes unless `--volumes`. A running container is left and reported. Running the command again after it stopped partway finishes it; at start the agent also completes a service deletion it had journaled, and records the operation as interrupted.
+
+**`--tunnel`** deletes the Cloudflare tunnel, but only when nothing else uses it. Berthy remembers the tunnel when it removes managed ingress, so a later `destroy --tunnel` can still find it. The tunnel is deleted only if all of these hold after the connector is gone, and the result names each one that does not:
+
+- its remotely managed configuration has no rule with a hostname, only catch-all rules (an adopted route stays in the tunnel, so it keeps the tunnel);
+- no DNS record in any zone of the account points at `<tunnel id>.cfargotunnel.com`, which includes records Berthy adopted and released;
+- Cloudflare reports no active connections, checked for up to a minute after the connector is removed, so a connector started by hand elsewhere keeps the tunnel.
+
+A tunnel that is kept stays remembered, and `destroy --tunnel` deletes it once the reasons are gone. With no managed tunnel the command says "no managed tunnel".
+
 ### Dry run
 
 Every command that changes something accepts `--dry-run` and prints the plan without acting.
@@ -670,6 +692,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `backup run <job>` | Run a volume backup now | Yes |
 | `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
+| `destroy --confirm <env> [--volumes] [--allow-recreate] [--tunnel]` | Remove every app, managed ingress, helpers, one-off containers and acquired images of the environment; volumes only with `--volumes`, the tunnel only with `--tunnel` and when clean (admin) | Yes |
 | `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
 | `approve <id>` | Approve a pending change requested by an AI agent | Yes |
 
@@ -933,7 +956,7 @@ Each token belongs to one environment and one scope.
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, `remove`, recreating stateful apps, taking over existing routes and DNS records, and token management |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, `remove`, `destroy`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.

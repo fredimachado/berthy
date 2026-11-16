@@ -144,6 +144,8 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 	switch req.Kind {
 	case "remove":
 		return c.planRemove(ctx, actor, req)
+	case "destroy":
+		return c.planDestroy(ctx, actor, req)
 	case "exec":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
@@ -207,6 +209,9 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if req.Kind == "remove" {
 		return c.runRemove(ctx, op, actor, req)
 	}
+	if req.Kind == "destroy" {
+		return c.runDestroy(ctx, op, actor, req)
+	}
 	if req.Kind == "exec" {
 		return c.runExec(ctx, op, actor, req)
 	}
@@ -218,46 +223,8 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 		if err != nil || active.ID != op.ID {
 			return state.Outcome{State: "failed", Err: "operation ownership unavailable"}
 		}
-		candidates, err := c.prunePlan(ctx)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: pruneFailure(err)}
-		}
-		hooks, err := c.prunableHooks(ctx)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: "hook inventory unavailable"}
-		}
-		if len(hooks) > 0 {
-			he := c.Engine.(hookPruner)
-			for _, h := range hooks {
-				container, e := he.InspectContainer(ctx, h.ID)
-				if e != nil {
-					var status *engine.StatusError
-					if errors.As(e, &status) && status.Code == 404 {
-						continue
-					}
-					return state.Outcome{State: "failed", Err: "hook inspection failed"}
-				}
-				if !ownedFinishedHook(container, h, c.Environment) {
-					continue
-				}
-				if e = he.RemoveContainer(ctx, h.ID); e != nil {
-					return state.Outcome{State: "failed", Err: "hook removal failed"}
-				}
-			}
-		}
-
-		e := c.Engine.(inventoryEngine)
-		for _, i := range candidates {
-			current, err := c.Engine.InspectImage(ctx, i.Ref)
-			if err != nil || current.ID != i.ID {
-				return state.Outcome{State: "failed", Err: "image identity changed"}
-			}
-			if err = e.RemoveImageRef(ctx, i.Ref); err != nil {
-				return state.Outcome{State: "failed", Err: "image removal failed"}
-			}
-			if err = c.Store.ForgetImage(ctx, i.Ref, i.ID); err != nil {
-				return state.Outcome{State: "failed", Err: "image journal failed"}
-			}
+		if _, failure := c.pruneNow(ctx); failure != "" {
+			return state.Outcome{State: "failed", Err: failure}
 		}
 		return state.Outcome{State: "succeeded"}
 	}
@@ -398,7 +365,67 @@ func pruneFailure(err error) string {
 	}
 	return "image inventory unavailable"
 }
+
+// pruneNow removes the finished hook containers Berthy journaled, and the images Berthy acquired that no container or
+// service uses and no retained release needs. It returns the references of the images it removed, and a public failure
+// text, which is empty on success.
+func (c *Controller) pruneNow(ctx context.Context) (removed []string, failure string) {
+	candidates, err := c.prunePlan(ctx)
+	if err != nil {
+		return nil, pruneFailure(err)
+	}
+	hooks, err := c.prunableHooks(ctx)
+	if err != nil {
+		return nil, "hook inventory unavailable"
+	}
+	if len(hooks) > 0 {
+		he := c.Engine.(hookPruner)
+		for _, h := range hooks {
+			container, e := he.InspectContainer(ctx, h.ID)
+			if e != nil {
+				var status *engine.StatusError
+				if errors.As(e, &status) && status.Code == 404 {
+					continue
+				}
+				return nil, "hook inspection failed"
+			}
+			if !ownedFinishedHook(container, h, c.Environment) {
+				continue
+			}
+			if e = he.RemoveContainer(ctx, h.ID); e != nil {
+				return nil, "hook removal failed"
+			}
+		}
+	}
+
+	e := c.Engine.(inventoryEngine)
+	for _, i := range candidates {
+		current, err := c.Engine.InspectImage(ctx, i.Ref)
+		if err != nil || current.ID != i.ID {
+			return removed, "image identity changed"
+		}
+		if err = e.RemoveImageRef(ctx, i.Ref); err != nil {
+			return removed, "image removal failed"
+		}
+		if err = c.Store.ForgetImage(ctx, i.Ref, i.ID); err != nil {
+			return removed, "image journal failed"
+		}
+		removed = append(removed, i.Ref)
+	}
+	return removed, ""
+}
+
+// pruneExclusions lists what a caller is about to remove, so the images only that needs are counted as unused. A plan made
+// with them is what prune would find once the removals are done.
+type pruneExclusions struct {
+	containers, services, apps map[string]bool // container IDs, service IDs and app names that are going away
+}
+
 func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, error) {
+	return c.prunePlanWithout(ctx, pruneExclusions{})
+}
+
+func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions) ([]state.AcquiredImage, error) {
 	e, ok := c.Engine.(inventoryEngine)
 	if !ok || c.Store == nil {
 		return nil, errors.New("image inventory unavailable")
@@ -433,12 +460,18 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 		aliases[img.ID] = img.ID
 	}
 	for _, ctr := range containers {
+		if gone.containers[ctr.ID] {
+			continue
+		}
 		if ctr.ImageID == "" {
 			return nil, errors.New("container image unknown")
 		}
 		ids[ctr.ImageID] = true
 	}
 	for _, svc := range services {
+		if gone.services[svc.ID] {
+			continue
+		}
 		for _, spec := range []json.RawMessage{svc.Spec, svc.PreviousSpec} {
 			if len(spec) == 0 || string(spec) == "null" {
 				continue
@@ -463,6 +496,9 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 	for _, r := range history {
 		if _, ok := retains[r.App]; !ok {
 			current, e := c.Store.Applied(ctx, r.App)
+			if gone.apps[r.App] {
+				e = sql.ErrNoRows
+			}
 			switch {
 			case errors.Is(e, sql.ErrNoRows):
 				// An app that was removed, such as the connector once managed ingress is gone, or an app taken down with

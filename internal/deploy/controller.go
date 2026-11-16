@@ -36,8 +36,12 @@ type Request struct {
 	// AllowRecreate lets a Compose deploy or rollback recreate or remove services of a stateful app, and lets a removal take
 	// down a stateful Compose app. It needs administrator access.
 	AllowRecreate bool `json:"allow_recreate,omitempty"`
-	// Volumes makes a removal delete the app's volumes too. Without it every volume stays.
+	// Volumes makes a removal or a destroy delete the volumes of the apps too. Without it every volume stays.
 	Volumes bool `json:"volumes,omitempty"`
+	// Confirm is the environment name a destroy must repeat, so it cannot be sent by accident. Tunnel makes a destroy delete
+	// the Cloudflare tunnel too, when it is clean.
+	Confirm string `json:"confirm,omitempty"`
+	Tunnel  bool   `json:"tunnel,omitempty"`
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -52,6 +56,7 @@ type Plan struct {
 	Ingress      *IngressPlan         `json:"ingress,omitempty"`
 	Compose      *ComposePlan         `json:"compose,omitempty"`
 	Remove       *RemovePlan          `json:"remove,omitempty"`
+	Destroy      *DestroyPlan         `json:"destroy,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -205,6 +210,11 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
+	if req.Kind == "destroy" {
+		if err := c.destroyCheck(actor, req); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
@@ -243,7 +253,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		ReplaceExisting bool   `json:"replace_existing,omitempty"`
 		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
 		Volumes         bool   `json:"volumes,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes})
+		Tunnel          bool   `json:"tunnel,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -291,7 +302,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if op.Kind == "remove" && op.State == "running" {
+	if (op.Kind == "remove" || op.Kind == "destroy") && op.State == "running" {
 		return c.recoverRemove(ctx, op, intents)
 	}
 	before, after := recordedSchema(op, intents)

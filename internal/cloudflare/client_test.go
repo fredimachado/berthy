@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -351,5 +352,81 @@ func TestTunnelTokenHelpers(t *testing.T) {
 	managed := cloudflare.DNSRecord{Comment: cloudflare.RecordComment("prod")}
 	if !cloudflare.IsManaged(managed, "prod") || cloudflare.IsManaged(managed, "stage") || cloudflare.IsManaged(cloudflare.DNSRecord{}, "prod") {
 		t.Fatal("ownership marks do not match the environment")
+	}
+}
+
+func TestZonesListsEveryZoneOfTheAccountAcrossPages(t *testing.T) {
+	f, c := newFake(t)
+	var want []string
+	for i := 0; i < 120; i++ {
+		name := fmt.Sprintf("zone%03d.example", i)
+		f.AddZone(name)
+		want = append(want, name)
+	}
+	zones, err := c.Zones(context.Background(), "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, z := range zones {
+		got = append(got, z.Name)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("zones: got %d, want %d", len(got), len(want))
+	}
+	if _, err = c.Zones(context.Background(), "other"); err == nil {
+		t.Fatal("another account's zones were listed")
+	}
+}
+
+func TestDNSRecordsByContentFindsRecordsOfAnyNameAndType(t *testing.T) {
+	f, c := newFake(t)
+	zone := f.AddZone("example.com")
+	target := cloudflare.TunnelTarget("tun-1")
+	f.AddRecord(zone, cloudflare.DNSRecord{Type: "CNAME", Name: "a.example.com", Content: target})
+	f.AddRecord(zone, cloudflare.DNSRecord{Type: "CNAME", Name: "b.example.com", Content: strings.ToUpper(target)})
+	f.AddRecord(zone, cloudflare.DNSRecord{Type: "CNAME", Name: "c.example.com", Content: "other.example.net"})
+	f.AddRecord(zone, cloudflare.DNSRecord{Type: "TXT", Name: "d.example.com", Content: target + ".extra"})
+	got, err := c.DNSRecordsByContent(context.Background(), zone, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range got {
+		names = append(names, r.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"a.example.com", "b.example.com"}) {
+		t.Fatalf("records %v", names)
+	}
+}
+
+func TestDeleteTunnelRefusesAnActiveOne(t *testing.T) {
+	f, c := newFake(t)
+	id := f.AddTunnel("demo", true)
+	f.SetTunnelStatus(id, "healthy", 2)
+	if err := c.DeleteTunnel(context.Background(), "acct", id); err == nil {
+		t.Fatal("a tunnel with connections was deleted")
+	}
+	if tunnel, _ := c.FindTunnel(context.Background(), "acct", "demo"); tunnel == nil {
+		t.Fatal("the tunnel is gone")
+	}
+	f.SetTunnelStatus(id, "inactive", 0)
+	if err := c.DeleteTunnel(context.Background(), "acct", id); err != nil {
+		t.Fatal(err)
+	}
+	if tunnel, err := c.FindTunnel(context.Background(), "acct", "demo"); err != nil || tunnel != nil {
+		t.Fatalf("tunnel after delete: %v %v", tunnel, err)
+	}
+	err := c.DeleteTunnel(context.Background(), "acct", id)
+	var api *cloudflare.APIError
+	if !errors.As(err, &api) || api.Status != http.StatusNotFound {
+		t.Fatalf("a second delete: %v", err)
+	}
+	var kinds []string
+	for _, w := range f.Snapshot().Writes {
+		kinds = append(kinds, w.Kind)
+	}
+	if !reflect.DeepEqual(kinds, []string{"tunnel_delete"}) {
+		t.Fatalf("writes %v", kinds)
 	}
 }

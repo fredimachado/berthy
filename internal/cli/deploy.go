@@ -27,16 +27,16 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
 		return true
 	}
 	return false
 }
 
 type commandFlags struct {
-	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes                    bool
-	pos, command                                                                          []string
+	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel                     bool
+	pos, command                                                                                   []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -62,9 +62,11 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.allowRecreate = true
 		case "--volumes":
 			f.volumes = true
+		case "--tunnel":
+			f.tunnel = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
+		case "-e", "--config", "--confirm", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -75,6 +77,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.env = v
 			case "--config":
 				f.config = v
+			case "--confirm":
+				f.confirm = v
 			case "--manifest-dir":
 				f.dir = v
 			case "--version":
@@ -132,8 +136,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		b, _ := json.Marshal(m)
 		return printResponse(out, errout, b, f.json)
 	}
-	if f.volumes && cmd != "remove" {
-		fmt.Fprintln(errout, "--volumes applies to remove only")
+	if f.volumes && cmd != "remove" && cmd != "destroy" {
+		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
+		return 2
+	}
+	if (f.tunnel || f.confirm != "") && cmd != "destroy" {
+		fmt.Fprintln(errout, "--tunnel and --confirm apply to destroy only")
+		return 2
+	}
+	if cmd == "destroy" && (len(f.pos) != 0 || f.confirm != f.env) {
+		fmt.Fprintln(errout, "destroy takes no app, and --confirm must repeat the environment name")
 		return 2
 	}
 	if f.config == "" {
@@ -167,15 +179,17 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	endpoint := ""
 	var body any
 	switch cmd {
-	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove":
-		if cmd != "prune" && len(f.pos) != 1 || cmd == "prune" && len(f.pos) != 0 {
+	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy":
+		if cmd != "prune" && cmd != "destroy" && len(f.pos) != 1 || (cmd == "prune" || cmd == "destroy") && len(f.pos) != 0 {
 			fmt.Fprintln(errout, "command requires an app")
 			return 2
 		}
 		var req deploy.Request
-		if cmd != "prune" {
+		if cmd != "prune" && cmd != "destroy" {
 			req.App = f.pos[0]
 		}
+		req.Confirm = f.confirm
+		req.Tunnel = f.tunnel
 		req.Version = f.version
 		req.Commit = f.commit
 		req.RequestID = f.id
@@ -424,6 +438,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if cmd == "remove" && f.dry && !f.json {
 		return printRemovePlan(out, errout, data)
 	}
+	if cmd == "destroy" && f.dry && !f.json {
+		return printDestroyPlan(out, errout, data, f.env)
+	}
 	return printResponse(out, errout, data, f.json)
 }
 
@@ -520,11 +537,11 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				if strings.HasPrefix(line, "event:") {
 					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 					// A removal reports what it did as steps, so their text is shown instead of their name.
-					if !asJSON && !(cmd == "remove" && kind == "step") {
+					if !asJSON && !((cmd == "remove" || cmd == "destroy") && kind == "step") {
 						fmt.Fprintln(out, kind)
 					}
 				}
-				if cmd == "remove" && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
+				if (cmd == "remove" || cmd == "destroy") && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
 					var step struct {
 						Step string `json:"step"`
 					}

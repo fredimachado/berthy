@@ -296,7 +296,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate", "volumes":
+		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate", "volumes", "tunnel":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -950,6 +950,67 @@ func (s *Store) SetIngress(ctx context.Context, opID string, st IngressState) er
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO ingress VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment) DO UPDATE SET account_id=excluded.account_id,api_token_secret=excluded.api_token_secret,tunnel_id=excluded.tunnel_id,tunnel_name=excluded.tunnel_name,dns=excluded.dns,updated=excluded.updated`, s.env, st.AccountID, st.APITokenSecret, st.TunnelID, st.TunnelName, dns, updated)
 	if err != nil {
+		return err
+	}
+	// A tunnel in use again is no longer one that was left behind.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM metadata WHERE name=?`, s.keptTunnelName()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) keptTunnelName() string { return "kept_tunnel:" + s.env }
+
+// KeptTunnel returns the tunnel that managed ingress left behind when it was removed, or sql.ErrNoRows when there is none.
+// Only names and IDs are kept, never a token.
+func (s *Store) KeptTunnel(ctx context.Context) (IngressState, error) {
+	var raw []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE name=?`, s.keptTunnelName()).Scan(&raw); err != nil {
+		return IngressState{}, err
+	}
+	var st IngressState
+	if err := json.Unmarshal(raw, &st); err != nil || st.TunnelID == "" || st.AccountID == "" {
+		return IngressState{}, errors.New("invalid kept tunnel")
+	}
+	return st, nil
+}
+
+// SetKeptTunnel remembers the tunnel of st, so a later run can still find it after the ingress state is cleared. It
+// requires the environment lock to be held by opID.
+func (s *Store) SetKeptTunnel(ctx context.Context, opID string, st IngressState) error {
+	if st.AccountID == "" || st.APITokenSecret == "" || st.TunnelID == "" || st.TunnelName == "" {
+		return errors.New("invalid tunnel")
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO metadata VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value`, s.keptTunnelName(), raw); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ClearKeptTunnel forgets the remembered tunnel. It is not an error when there is none. It requires the environment lock to
+// be held by opID.
+func (s *Store) ClearKeptTunnel(ctx context.Context, opID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM metadata WHERE name=?`, s.keptTunnelName()); err != nil {
 		return err
 	}
 	return tx.Commit()

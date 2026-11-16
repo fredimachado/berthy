@@ -75,7 +75,7 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 		case len(rest) == 1 && (rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
 			required = "deploy"
 			method = "POST"
-		case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove"):
+		case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
 			required = "admin"
 			method = "POST"
 		case len(rest) == 2 && rest[0] == "operations":
@@ -157,7 +157,7 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 		ctx := r.Context()
 		sa := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
 		switch {
-		case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove"):
+		case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
 			var req deploy.Request
 			if err := decodeBody(w, r, &req); err != nil {
 				writeError(w, 400, "bad_request", "invalid request")

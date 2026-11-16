@@ -67,8 +67,13 @@ type InventoryImage struct {
 }
 type InventoryContainer struct {
 	ID, Image, ImageID, State string
+	Names                     []string
 	Labels                    map[string]string
 }
+
+// HelperRepo is the repository of the images Berthy imports from its own binary for its helper containers.
+const HelperRepo = "berthy-helper"
+
 type InventoryService struct {
 	ID                 string
 	Spec, PreviousSpec json.RawMessage

@@ -29,9 +29,8 @@ type RemovePlan struct {
 }
 
 const (
-	removeServiceKind  = "remove_service"
-	composeDownKind    = "compose_down"
-	composeDownOrdinal = 100
+	removeServiceKind = "remove_service"
+	composeDownKind   = "compose_down"
 )
 
 const (
@@ -352,25 +351,32 @@ func (c *Controller) runRemove(ctx context.Context, op state.Operation, actor Ac
 		step("app " + req.App + " is already removed")
 		return state.Outcome{State: "succeeded"}
 	}
+	journal := 0
+	return c.removeApp(ctx, op.ID, req, r, step, &journal)
+}
+
+// removeApp carries out a removal that has been planned and has no blocker. journal numbers the steps it records, so a
+// destroy can remove several apps under one operation. It returns the outcome of the removal.
+func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r *removal, step func(string), journal *int) state.Outcome {
 	if len(r.routes) > 0 {
-		if err = c.removeRoutes(ctx, op.ID, req.App, step); err != nil {
+		if err := c.removeRoutes(ctx, opID, req.App, step); err != nil {
 			return state.Outcome{State: "failed", Err: ingressFailure(err, errIngressPublish)}
 		}
 	}
 	switch r.plan.Kind {
 	case "image":
-		if err = c.removeServices(ctx, op.ID, r, step); err != nil {
+		if err := c.removeServices(ctx, opID, r, step, journal); err != nil {
 			return removeFailure(err, errRemoveService)
 		}
 		if req.Volumes {
 			for _, name := range r.plan.Volumes {
-				if err = c.removeVolume(ctx, name, step); err != nil {
+				if err := c.removeVolume(ctx, name, step); err != nil {
 					return removeFailure(err, errRemoveVolume)
 				}
 			}
 		}
 	case "compose":
-		if err = c.removeProject(ctx, op.ID, r.plan.Project, req.Volumes); err != nil {
+		if err := c.removeProject(ctx, opID, r.plan.Project, req.Volumes, journal); err != nil {
 			return removeFailure(err, errRemoveCompose)
 		}
 		step("brought down Compose project " + r.plan.Project)
@@ -381,10 +387,10 @@ func (c *Controller) runRemove(ctx context.Context, op state.Operation, actor Ac
 	for _, name := range r.plan.KeptVolumes {
 		step("kept volume " + name)
 	}
-	if err = c.Store.ForgetIngressRoutes(ctx, op.ID, req.App); err != nil {
+	if err := c.Store.ForgetIngressRoutes(ctx, opID, req.App); err != nil {
 		return state.Outcome{State: "failed", Err: string(errRemoveState)}
 	}
-	if err = c.Store.ForgetApp(ctx, op.ID, req.App); err != nil {
+	if err := c.Store.ForgetApp(ctx, opID, req.App); err != nil {
 		return state.Outcome{State: "failed", Err: string(errRemoveState)}
 	}
 	return state.Outcome{State: "succeeded"}
@@ -419,9 +425,10 @@ func (c *Controller) removeRoutes(ctx context.Context, opID, app string, step fu
 
 // removeServices deletes the bound services of an image app. Each deletion is journaled first, so a recovery can finish
 // it, and each is confirmed gone before the next begins.
-func (c *Controller) removeServices(ctx context.Context, opID string, r *removal, step func(string)) error {
-	for n, lb := range r.live {
-		i := state.Intent{Ordinal: n + 1, Kind: removeServiceKind, Role: lb.b.Role, Name: lb.b.Name, ServiceID: lb.b.ServiceID, SeenVersion: lb.live.Version, Before: lb.live.Spec, Desired: json.RawMessage(`{}`)}
+func (c *Controller) removeServices(ctx context.Context, opID string, r *removal, step func(string), journal *int) error {
+	for _, lb := range r.live {
+		*journal++
+		i := state.Intent{Ordinal: *journal, Kind: removeServiceKind, Role: lb.b.Role, Name: lb.b.Name, ServiceID: lb.b.ServiceID, SeenVersion: lb.live.Version, Before: lb.live.Spec, Desired: json.RawMessage(`{}`)}
 		if err := c.Store.RecordIntent(ctx, opID, i); err != nil {
 			return errRemoveJournal
 		}
@@ -514,7 +521,9 @@ func (c *Controller) removeVolume(ctx context.Context, name string, step func(st
 // removeProject brings a Compose project down and deletes its working directory. It uses the stored project files; when
 // they are gone it names the project alone, which Compose resolves by label. The project's volumes are removed only when
 // volumes is set. The run is journaled first, so a recovery can repeat it.
-func (c *Controller) removeProject(ctx context.Context, opID, project string, volumes bool) error {
+func (c *Controller) removeProject(ctx context.Context, opID, project string, volumes bool, journal *int) error {
+	*journal++
+	ordinal := *journal
 	desired, err := json.Marshal(struct {
 		Project string `json:"project"`
 		Volumes bool   `json:"volumes"`
@@ -522,17 +531,17 @@ func (c *Controller) removeProject(ctx context.Context, opID, project string, vo
 	if err != nil {
 		return errRemoveJournal
 	}
-	if err = c.Store.RecordIntent(ctx, opID, state.Intent{Ordinal: composeDownOrdinal, Kind: composeDownKind, Name: project, Desired: desired}); err != nil {
+	if err = c.Store.RecordIntent(ctx, opID, state.Intent{Ordinal: ordinal, Kind: composeDownKind, Name: project, Desired: desired}); err != nil {
 		return errRemoveJournal
 	}
-	if err = c.Store.MarkStep(ctx, opID, composeDownOrdinal, "issued", json.RawMessage(`{}`)); err != nil {
+	if err = c.Store.MarkStep(ctx, opID, ordinal, "issued", json.RawMessage(`{}`)); err != nil {
 		return errRemoveJournal
 	}
 	if err = c.composeDown(ctx, project, volumes); err != nil {
-		_ = c.Store.MarkStep(ctx, opID, composeDownOrdinal, "finished", json.RawMessage(`{"ok":false}`))
+		_ = c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":false}`))
 		return errRemoveCompose
 	}
-	return c.Store.MarkStep(ctx, opID, composeDownOrdinal, "finished", json.RawMessage(`{"ok":true}`))
+	return c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":true}`))
 }
 
 // composeDown runs `compose down --remove-orphans`, with --volumes when asked, confirms no container of the project is
@@ -596,5 +605,9 @@ func (c *Controller) recoverRemove(ctx context.Context, op state.Operation, inte
 			}
 		}
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(errRemoveInterrupted)})
+	interrupted := errRemoveInterrupted
+	if op.Kind == "destroy" {
+		interrupted = errDestroyInterrupted
+	}
+	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(interrupted)})
 }
