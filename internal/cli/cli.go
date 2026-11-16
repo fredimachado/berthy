@@ -135,6 +135,10 @@ func Run(args []string, out, errout io.Writer) int {
 		case "--json":
 			jsonOutput = true
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				fmt.Fprintf(errout, "unknown flag %s\n", args[i])
+				return 2
+			}
 			positional = append(positional, args[i])
 		}
 	}
