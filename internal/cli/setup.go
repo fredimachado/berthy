@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 
 	"berthy/internal/manifest"
 	"berthy/internal/setup"
@@ -135,7 +136,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 		report.Token = session.Token
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(*env, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
+		report.NextSteps = setupNextSteps(*env, *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -194,20 +195,43 @@ func setupSettings(dir, env, network string, protected bool) (setupFrom, error) 
 }
 
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
-func setupNextSteps(env string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+// cfg is the --config path given to setup, quoted for the shell when it needs it; the agent commands need it, so CONFIG stands
+// in for it when none was given.
+func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
 	read := "sudo cat /var/lib/berthy/key"
 	if !local {
 		read = "ssh " + target + " " + read
+	}
+	if cfg == "" {
+		cfg = "CONFIG"
+	} else {
+		cfg = shellWord(cfg)
 	}
 	steps := []string{fmt.Sprintf("keep a copy of the encryption key off the server, in a password manager or your provisioning vault: %s > %s.key", read, env)}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
 	}
-	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s", env))
+	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s --config %s", env, cfg))
 	if ingress {
-		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s", env))
+		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s --config %s", env, cfg))
 	}
-	return append(steps, fmt.Sprintf("run the first deploy: berthy deploy -e %s", env))
+	return append(steps, fmt.Sprintf("run the first deploy of each app: berthy deploy APP -e %s --config %s", env, cfg))
+}
+
+// shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in
+// single quotes otherwise, with each single quote written as '\”.
+func shellWord(s string) string {
+	plain := true
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./~:-", r)) {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 var setupGlyphs = map[string]string{

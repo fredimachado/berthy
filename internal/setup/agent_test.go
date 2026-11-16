@@ -1109,7 +1109,7 @@ func TestActivateWithNothingStagedOnlyRestarts(t *testing.T) {
 }
 
 func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
-	f := &agentFake{prevBin: true, prevCfg: true, waits: []int{1, 0}, journal: "Nov 16 agent[1]: key must be an owned regular 0600 file\nNov 16 systemd[1]: berthy.service: Failed\n"}
+	f := &agentFake{prevBin: true, prevCfg: true, waits: []int{1, 0}, journal: "key must be an owned regular 0600 file\nberthy.service: Failed with result 'exit-code'.\n"}
 	err := activate(t, f, Staged{Binary: true, Config: true})
 	var ae *ActivateError
 	if !errors.As(err, &ae) {
@@ -1117,6 +1117,19 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 	}
 	if !strings.HasPrefix(ae.Message, "the new agent did not come up; the previous one was put back: ") || !strings.Contains(ae.Message, "key must be an owned regular 0600 file") || !strings.Contains(ae.Message, " | ") {
 		t.Errorf("message = %q", ae.Message)
+	}
+	// The log lines come without the timestamp and host: -o cat.
+	if strings.Contains(ae.Message, "Nov 16") {
+		t.Errorf("the message carries journal prefixes: %q", ae.Message)
+	}
+	var journalScript string
+	for _, sc := range f.scripts() {
+		if strings.HasPrefix(sc, "journalctl") {
+			journalScript = sc
+		}
+	}
+	if journalScript != "journalctl -u berthy -n 20 --no-pager -o cat 2>&1" {
+		t.Errorf("journal command = %q", journalScript)
 	}
 	if ae.ConfigInPlace {
 		t.Errorf("the previous configuration is back, but ConfigInPlace is set")
@@ -1170,13 +1183,13 @@ func TestActivateRollbackThatDoesNotAnswerEither(t *testing.T) {
 }
 
 func TestActivateOnAFirstInstallLeavesTheAgentStopped(t *testing.T) {
-	f := &agentFake{waits: []int{1}, journal: "agent[1]: invalid listen address\n"}
+	f := &agentFake{waits: []int{1}, journal: "invalid listen address\n"}
 	err := activate(t, f, Staged{Binary: true, Config: true})
 	var ae *ActivateError
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %v", err)
 	}
-	if ae.Message != "the agent did not come up and is left stopped: agent[1]: invalid listen address" || !ae.ConfigInPlace {
+	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || !ae.ConfigInPlace {
 		t.Errorf("error = %+v", ae)
 	}
 	if !f.ran("systemctl stop berthy") || f.restarts != 1 {
@@ -1188,7 +1201,7 @@ func TestFailedFirstInstallStillPrintsTheTokenOfTheLiveConfiguration(t *testing.
 	exe := elfFile(t, emX86)
 	f := freshAgentServer(t)
 	f.waits = []int{1}
-	f.journal = "agent[1]: boom\n"
+	f.journal = "boom\n"
 	s := agentSession(t, f, exe, false, nil)
 	got, ok := runSteps(s)
 	r := lastResult(got)

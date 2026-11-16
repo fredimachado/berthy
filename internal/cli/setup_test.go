@@ -272,8 +272,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"setup of p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
 		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/key > p5.key\n" +
-		"  2. set the secrets the manifest names: berthy secret set NAME -e p5\n" +
-		"  3. run the first deploy: berthy deploy -e p5\n"
+		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --config CONFIG\n" +
+		"  3. run the first deploy of each app: berthy deploy APP -e p5 --config CONFIG\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -303,7 +303,9 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	}
 	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin; it is shown once, at the end",
 		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_P5_TOKEN)",
-		"2. store the admin token above, and set it in $BERTHY_P5_TOKEN when you run berthy"} {
+		"2. store the admin token above, and set it in $BERTHY_P5_TOKEN when you run berthy",
+		"3. set the secrets the manifest names: berthy secret set NAME -e p5 --config " + shellWord(cfgPath),
+		"4. run the first deploy of each app: berthy deploy APP -e p5 --config " + shellWord(cfgPath)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -346,6 +348,10 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if !strings.Contains(got.NextSteps[0], "ssh ops@s1 sudo cat /var/lib/berthy/key > p5.key") {
 		t.Errorf("next step = %q", got.NextSteps[0])
 	}
+	steps := strings.Join(got.NextSteps, "\n")
+	if !strings.Contains(steps, "berthy secret set NAME -e p5 --config CONFIG") || !strings.Contains(steps, "berthy deploy APP -e p5 --config CONFIG") {
+		t.Errorf("next steps = %q", got.NextSteps)
+	}
 	for _, step := range got.NextSteps {
 		if strings.Contains(step, got.Token) {
 			t.Errorf("a next step holds the token")
@@ -361,13 +367,53 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 }
 
 func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) {
-	steps := setupNextSteps("prod", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
-	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod") {
+	steps := setupNextSteps("prod", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
+	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod --config CONFIG") {
 		t.Fatalf("steps = %q", steps)
 	}
-	local := setupNextSteps("prod", true, "this server", "X", false, false)
+	local := setupNextSteps("prod", "", true, "this server", "X", false, false)
 	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/key > prod.key") {
 		t.Fatalf("local steps = %q", local)
+	}
+}
+
+func TestSetupNextStepsNameTheConfigGivenToSetup(t *testing.T) {
+	steps := setupNextSteps("prod", "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false)
+	want := []string{
+		"berthy secret set NAME -e prod --config /etc/berthy/cli.json",
+		"berthy deploy APP -e prod --config /etc/berthy/cli.json",
+	}
+	if len(steps) != 3 || !strings.Contains(steps[1], want[0]) || !strings.Contains(steps[2], want[1]) {
+		t.Fatalf("steps = %q", steps)
+	}
+	for _, step := range steps {
+		if strings.Contains(step, "CONFIG") {
+			t.Errorf("a step names the placeholder CONFIG although the config was given: %q", step)
+		}
+	}
+}
+
+func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
+	tests := map[string]string{
+		"/etc/berthy/cli.json": "/etc/berthy/cli.json",
+		"~/berthy/cli.json":    "~/berthy/cli.json",
+		"my cli.json":          "'my cli.json'",
+		"/tmp/my dir/cli.json": "'/tmp/my dir/cli.json'",
+		`C:\Users\me\cli.json`: `'C:\Users\me\cli.json'`,
+		"it's.json":            `'it'\''s.json'`,
+		"$HOME/cli.json":       "'$HOME/cli.json'",
+	}
+	for cfg, want := range tests {
+		// The ingress step is among the steps: it takes the config too.
+		steps := setupNextSteps("prod", cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true)
+		if len(steps) != 4 {
+			t.Fatalf("steps = %q", steps)
+		}
+		for _, step := range steps[1:] {
+			if !strings.HasSuffix(step, " --config "+want) {
+				t.Errorf("config %q: step %q does not end with --config %s", cfg, step, want)
+			}
+		}
 	}
 }
 

@@ -157,9 +157,10 @@ func restartAndWait(ctx context.Context, r Runner, listen string, secs int) (boo
 	return res.Code == 0, nil
 }
 
-// journalTail is the last lines the agent logged, for the failure message.
+// journalTail is the last lines the agent logged, for the failure message. -o cat leaves out the timestamp and host, so the
+// lines are the agent's messages.
 func journalTail(ctx context.Context, r Runner) (string, error) {
-	res, err := r.Run(ctx, "journalctl -u berthy -n 20 --no-pager 2>&1", nil)
+	res, err := r.Run(ctx, "journalctl -u berthy -n 20 --no-pager -o cat 2>&1", nil)
 	if err != nil {
 		return "", fmt.Errorf("reading the agent's log: %w", err)
 	}

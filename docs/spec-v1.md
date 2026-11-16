@@ -133,7 +133,7 @@ Berthy manages two kinds of application: image apps for stateless services and C
 
 - **Roles.** An image app can define several roles that run the same image with different commands, such as `web` and `worker`. Each role has its own replica count, resources and health check, so web replicas can scale without multiplying job workers. An app can start with one role and split later.
 - **Stateful apps are separate.** Deploying an image app never touches a Compose app. Restarting or recreating a Compose app marked `stateful` always takes an explicit command that names it.
-- **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject mutable tags such as `latest`.
+- **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject every tag, `latest` and a git SHA alike, and deploy only by digest.
 - **Compose project names are explicit.** A Compose app runs under the project name `<project>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
 - **Adoption.** Existing services and Compose projects can be adopted by name without being recreated. See Adopting an existing deployment.
 - **Services deleted outside Berthy.** If a role's service is gone under both its bound name and its recorded ID, the next deploy or rollback recreates it under that name and binds the new service to the role. A service that carries the bound name under a different ID, or that still exists under its ID after a rename, is refused before any service changes.
@@ -204,7 +204,7 @@ apps:
 An environment is one named target: its own server or cluster, agent, overlay, secrets and tokens.
 
 - **No default environment.** Every command names its environment with `-e <name>`. A command that changes something and names no environment is rejected.
-- **Protected environments.** An overlay can set `protected: true`, typically for production. A protected environment rejects mutable image tags, and holds changes requested by AI agents until a person approves them.
+- **Protected environments.** An overlay can set `protected: true`, typically for production. A protected environment rejects every image tag and deploys only by digest, and holds changes requested by AI agents until a person approves them.
 
 ```yaml
 # berthy.prod.yml
@@ -231,7 +231,7 @@ A role's health check is a command run inside the container, with the same field
 ### Environment variables
 
 - **Plain** values are written in the manifest and reviewed like code.
-- **Secret** values are listed in the manifest by name only. The values live in the agent's encrypted store and are set with `berthy secret set`.
+- **Secret** values are listed in the manifest by name only. The values live in the agent's encrypted store and are set with `berthy secret set NAME`, with `--registry HOST` for a registry password (see Registries).
 - A deploy stops before changing anything if a named secret has no value.
 - Values that differ between environments go in the overlays.
 - Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's environment file, where the Compose file reads them as `${NAME}`. Only the agent can read that file.
@@ -250,7 +250,8 @@ registries:
 
 - The credential should be read-only.
 - The agent uses it to resolve tags to digests and to pull. It hands the credential to Swarm with the service, so every server in a cluster can pull.
-- Compose apps use the same credential for images from a listed registry.
+- The password is set with `berthy secret set NAME --registry HOST`, where HOST is the registry's key under `registries`. The agent uses that secret only for that host. An environment secret is set without `--registry`, and an app's environment refuses a secret that has one.
+- Compose apps use the same credential for images from a listed registry. A Compose deploy needs the credential of every registry the manifest lists, not only of those its images come from, because the agent writes them all for the Compose CLI; a missing one stops the deploy.
 - A registry with no entry is pulled from anonymously.
 
 ### Checking a manifest
@@ -582,7 +583,7 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 **Reverting the schema on purpose.** `berthy rollback <app> --revert-schema` runs `revert` with `{target}` set to the state recorded before the failed deploy. Every migration that deploy applied is undone, and nothing else.
 
 - It runs from the newer image, because that image holds the revert code for the migrations it added.
-- With `--to <deploy id>`, the target is the state recorded after that deploy.
+- With `--to <release id>` (the `id` column of `berthy history`), the target is the state recorded after that release's deploy.
 - It takes an `admin` token and is never automatic, because reverting a migration can delete data.
 - An app that declares no `revert` command cannot use it.
 
@@ -627,7 +628,7 @@ An image app that sets nothing else runs with these Swarm settings.
 
 ### Rollback
 
-`berthy rollback <app> -e <env>` redeploys the previous recorded digest with the manifest saved at that deploy. `--to <deploy id>` picks an older one. Secrets stay at their current values.
+`berthy rollback <app> -e <env>` redeploys the previous recorded digest with the manifest saved at that deploy. `--to <release id>` picks an older one: the `id` column of `berthy history`, not an operation id. Secrets stay at their current values.
 
 ### Retain and prune
 
@@ -693,18 +694,20 @@ The CLI is the complete interface; the TUI and the MCP server are two other ways
 
 Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero. A command that an AI agent's token ran on a protected environment, and that the agent held for approval instead of carrying out, exits with code 3: it is neither done nor failed (see "Approval for AI agents on protected environments").
 
+Flags are checked before anything is sent. A read command refuses an unknown flag with exit 2 and `unknown flag`, before it reads any configuration. A change command refuses a flag it does not read with exit 2 and `<flag> is not a flag of <command>`, so `approve <id> --dry-run` is refused rather than approving for real.
+
 Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool.
 
 | Command | Purpose | Changes things |
 | --- | --- | --- |
 | `ps` | Apps, roles, replicas, health, running version | No |
 | `describe <app>` | Full detail for one app, including its last deploys and job results | No |
-| `logs <app>` | Tail or follow logs; `--since`, `--grep`, `--role` | No |
-| `stats` | Server and container metrics; `--watch` for live | No |
+| `logs <app>` | Tail or follow logs; `--tail N`, `--follow` (or `-f`), `--since`, `--grep`, `--role`, `--replica` | No |
+| `stats` | Server and container metrics; `--watch` for live, `--since DURATION` for the samples of that time (at most an hour) | No |
 | `df` | Disk space and Docker disk usage | No |
 | `history <app>` | Deploy records, with the reason of each failed deploy | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
-| `wait <app> --healthy` | Block until an app is healthy or a timeout passes | No |
+| `wait <app>` | Block until each service of the app, or of `--role`, has all its replicas running and healthy, or until `--timeout` passes (default 2m, at most 10m; then it exits non-zero). `--healthy` is accepted and changes nothing. A Compose app has no bound services, so it is refused | No |
 | `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
 | `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
@@ -717,10 +720,10 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `job run <name>` | Run a job now, wait for it to finish and exit 0 only when it succeeded | Yes |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
-| `deploy <app> --version <tag>` | Deploy an image app or a Compose app | Yes |
+| `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
 | `rollback <app>` | Return to a previous deploy | Yes |
-| `restart <app>`, `scale <app>` | Restart or change replica count | Yes |
-| `exec <app> -- <command>` | Run a command in a running container | Yes |
+| `restart <app>`, `scale <app>` | Restart or change replica count; `scale` is for image apps, and a Compose app is refused | Yes |
+| `exec <app> -- <command>` | Run a command in a running container; image apps only, and a Compose app is refused | Yes |
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
 | `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
@@ -790,7 +793,7 @@ Tool names follow those of the Aspire MCP server, so an AI agent can ask a deplo
 | `list_deploys` | `history` | `resource_name`; failed deploys carry their `operation_id` and reason |
 | `get_deploy_diagnostics` | `diagnostics` | `operation_id` of a failed deploy (needs the `deploy` scope: a `read` token gets the agent's 403 as a tool error) |
 | `list_backups` | `backup list` | `backup_name` (optional) |
-| `wait_for_resources` | `wait --healthy` | `resource_name`; `role`; `timeout` (a duration, at most 10 minutes, default 2) |
+| `wait_for_resources` | `wait` | `resource_name`; `role`; `timeout` (a duration, at most 10 minutes, default 2) |
 | `doctor` | `doctor` | none |
 | `list_approvals` | `approvals --all` | none: what became of the changes that were held |
 | `execute_resource_command` | `deploy`, `rollback`, `restart`, `backup run`, `restore` | see below |
@@ -1110,9 +1113,9 @@ Each token belongs to one environment and one scope.
 
 | Scope | Allows |
 | --- | --- |
-| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
+| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, `remove`, `destroy`, recreating stateful apps, taking over existing routes and DNS records, and token management |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `prune`, `restore`, `approve`, `recovery resolve`, `remove`, `destroy`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.
@@ -1169,7 +1172,7 @@ In v1, CI pushes deploys to the agent; the agent does not read the repository. A
 
 ### The deploy step
 
-- A deploy is one command: `berthy deploy api -e dev --version <tag>`.
+- A deploy is one command: `berthy deploy api -e dev --version <tag>`. On a protected environment `--version` is the image's digest, `sha256:…`, since a tag is refused.
 - The CLI reads the manifest and Compose files from the checked-out commit and sends them with the commit SHA.
 - The command waits for the result and exits non-zero if the deploy fails or rolls back. Later steps, such as tagging a release, then run only after a deploy that succeeded.
 
@@ -1209,7 +1212,7 @@ A three-server cluster is not a v1 deliverable, but nothing in v1 may block it. 
 - Run an agent on each server, installed with `berthy setup`. Any manager accepts deploys; `ps` and `stats` query all agents and merge the answers.
 - Raise the replica count of image apps and spread them across servers, with a cap per server.
 - Run the ingress app on every server. With managed ingress, raise the connector's `replicas`.
-- Keep Compose apps pinned to a named server with `node: <name>` in the manifest. That server's agent runs their scheduled jobs and backs up their volumes.
+- Keep Compose apps pinned to a named server with `node: <name>` in the manifest. This is part of the follow-on, not v1: the v1 manifest has no `node` key and refuses it as an unknown field. That server's agent runs their scheduled jobs and backs up their volumes.
 
 ### Known constraints
 
