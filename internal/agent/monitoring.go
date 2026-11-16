@@ -50,9 +50,11 @@ type Monitoring struct {
 	restarts []monitor.Check
 	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
 	root string
-	// seen is when each backup was first in the manifest, and now is the clock of the backup checks.
-	seen backupSeen
-	now  func() time.Time
+	// seen is when each backup was first in the manifest, and now is the clock of the backup checks. stateSeen is the same for
+	// the state backup.
+	seen      backupSeen
+	stateSeen backupSeen
+	now       func() time.Time
 }
 
 // NewMonitoring returns the monitoring of an agent with state, or nil for an agent without state. log receives
@@ -190,6 +192,10 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
 		out = append(out, backupCheck(w.store, name, m.Backups[name], &w.seen, w.clock))
+	}
+	// The state backup is environment-wide, so the block is read whatever apps are deployed.
+	if m.StateBackup != nil {
+		out = append(out, stateBackupCheck(w.store, *m.StateBackup, &w.stateSeen, w.clock))
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
 		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))

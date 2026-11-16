@@ -18,6 +18,7 @@ import (
 	"berthy/internal/manifest"
 	"berthy/internal/objectstore"
 	"berthy/internal/state"
+	"berthy/internal/statebackup"
 )
 
 // Backups is the agent's volume backups: the runner, the credentials and volume resolution it needs, and the runs started
@@ -27,6 +28,9 @@ type Backups struct {
 	Runner *backup.Runner
 	// Scheduler runs the backups that have a schedule, from Start on.
 	Scheduler *backup.Scheduler
+	// State takes the snapshots of the state backup, and StateScheduler runs them on its schedule, from Start on.
+	State          *statebackup.Runner
+	StateScheduler *statebackup.Scheduler
 
 	store *state.Store
 	log   func(string)
@@ -80,28 +84,55 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		},
 		Log: log,
 	}
+	b.State = &statebackup.Runner{Store: d.Store, Env: env, Dir: d.StateDir, Objects: b.stateObjects, Log: log}
+	b.StateScheduler = &statebackup.Scheduler{
+		Env:      env,
+		Store:    d.Store,
+		Runner:   b.State,
+		Manifest: func(ctx context.Context) (manifest.Manifest, error) { return recordedManifest(ctx, d.Store) },
+		Log:      log,
+	}
 	return b
 }
 
 // objects builds the client of a destination from its credentials in the secret store. A secret that is missing, belongs to
 // a registry or is empty makes the credentials unavailable.
 func (b *Backups) objects(ctx context.Context, dest manifest.Destination) (objectstore.Store, error) {
-	read := func(name string) (string, error) {
-		info, value, err := b.store.Secret(ctx, name)
-		if err != nil || info.Registry != "" || len(value) == 0 {
-			return "", backup.ErrCredentials
-		}
-		return string(value), nil
-	}
-	access, err := read(dest.AccessKeySecret)
-	if err != nil {
-		return nil, err
-	}
-	secret, err := read(dest.SecretKeySecret)
-	if err != nil {
-		return nil, err
+	access, secret, ok := b.credentials(ctx, dest)
+	if !ok {
+		return nil, backup.ErrCredentials
 	}
 	return b.newStore(objectstore.Config{Endpoint: dest.Endpoint, Region: dest.Region, Bucket: dest.Bucket, AccessKey: access, SecretKey: secret})
+}
+
+// stateObjects is objects for the state backup, which words its refusals its own way.
+func (b *Backups) stateObjects(ctx context.Context, dest manifest.Destination) (objectstore.Store, error) {
+	access, secret, ok := b.credentials(ctx, dest)
+	if !ok {
+		return nil, statebackup.ErrCredentials
+	}
+	store, err := b.newStore(objectstore.Config{Endpoint: dest.Endpoint, Region: dest.Region, Bucket: dest.Bucket, AccessKey: access, SecretKey: secret})
+	if err != nil {
+		return nil, statebackup.ErrStorage
+	}
+	return store, nil
+}
+
+// credentials reads the access key and the secret key of a destination. ok is false when either is missing, belongs to a
+// registry or is empty.
+func (b *Backups) credentials(ctx context.Context, dest manifest.Destination) (access, secret string, ok bool) {
+	read := func(name string) (string, bool) {
+		info, value, err := b.store.Secret(ctx, name)
+		if err != nil || info.Registry != "" || len(value) == 0 {
+			return "", false
+		}
+		return string(value), true
+	}
+	if access, ok = read(dest.AccessKeySecret); !ok {
+		return "", "", false
+	}
+	secret, ok = read(dest.SecretKeySecret)
+	return access, secret, ok
 }
 
 // resolveVolume returns the Docker name of the volume a backup names. For an image app it is the source of a named-volume
@@ -142,6 +173,16 @@ func (b *Backups) Start(ctx context.Context) {
 	b.mu.Lock()
 	b.base = ctx
 	b.mu.Unlock()
+	if n, err := b.State.RemoveLeftovers(); err != nil {
+		b.logf("state backup: cannot remove leftover snapshots: %v", err)
+	} else if n > 0 {
+		b.logf("state backup: %d leftover snapshot(s) removed", n)
+	}
+	if n, err := b.store.AbandonRunningStateBackups(ctx); err != nil {
+		b.logf("state backup: cannot fail interrupted snapshots: %v", err)
+	} else if n > 0 {
+		b.logf("state backup: %d snapshot(s) were interrupted by an agent restart and are recorded as failed", n)
+	}
 	if n, err := b.store.AbandonRunningBackups(ctx); err != nil {
 		b.logf("backups: cannot fail interrupted runs: %v", err)
 	} else if n > 0 {
@@ -153,10 +194,14 @@ func (b *Backups) Start(ctx context.Context) {
 	}
 	// The schedules run from now on, once: a second Start only changes the context of the runs that requests start.
 	b.started.Do(func() {
-		b.wg.Add(1)
+		b.wg.Add(2)
 		go func() {
 			defer b.wg.Done()
 			b.Scheduler.Run(ctx)
+		}()
+		go func() {
+			defer b.wg.Done()
+			b.StateScheduler.Run(ctx)
 		}()
 	})
 }

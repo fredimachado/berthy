@@ -141,6 +141,12 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
 			required = "deploy"
 			method = "POST"
+		case len(rest) == 1 && rest[0] == "state-backup":
+			required = "admin"
+			method = "POST"
+		case len(rest) == 2 && rest[0] == "state-backup" && rest[1] == "runs":
+			required = "read"
+			method = "GET"
 		case len(rest) == 1 && rest[0] == "restore":
 			required = "admin"
 			method = "POST"
@@ -501,6 +507,8 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			serveJobs(w, r, rest, d, sched, sa)
 		case rest[0] == "backups":
 			serveBackups(w, r, rest, d, backups, sa)
+		case rest[0] == "state-backup":
+			serveStateBackup(w, r, rest, d, backups, sa)
 		case len(rest) == 1 && rest[0] == "checks":
 			rows, err := d.Store.Checks(ctx)
 			if err != nil {

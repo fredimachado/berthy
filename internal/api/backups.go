@@ -34,6 +34,20 @@ type BackupRun struct {
 	Detail      string     `json:"detail,omitempty"`
 }
 
+// StateBackupRun is one run of the agent's state backup as the API shows it, whatever its outcome. Key names the snapshot.
+type StateBackupRun struct {
+	ID        int64      `json:"id"`
+	Key       string     `json:"key"`
+	Trigger   string     `json:"trigger"`
+	Scheduled *time.Time `json:"scheduled,omitempty"` // the cron occurrence of a scheduled run
+	Started   time.Time  `json:"started"`
+	Finished  *time.Time `json:"finished,omitempty"`
+	Status    string     `json:"status"`
+	Size      int64      `json:"size,omitempty"`
+	SHA256    string     `json:"sha256,omitempty"`
+	Detail    string     `json:"detail,omitempty"`
+}
+
 // BackupStatus is a backup of the manifest as describe and ps show it for an app: when it last succeeded, how old that is and
 // the outcome of its newest run.
 type BackupStatus struct {

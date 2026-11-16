@@ -151,7 +151,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version != 11 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -179,7 +179,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE UNIQUE INDEX IF NOT EXISTS job_runs_occurrence ON job_runs(environment, job, scheduled) WHERE scheduled <> 0;
  CREATE TABLE IF NOT EXISTS backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, backup TEXT NOT NULL, app TEXT NOT NULL, volume TEXT NOT NULL, destination TEXT NOT NULL, object_key TEXT NOT NULL, trigger TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0);
  CREATE UNIQUE INDEX IF NOT EXISTS backups_object ON backups(environment, object_key);
- CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));`); err != nil {
+ CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));
+ CREATE TABLE IF NOT EXISTS state_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, object_key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
+ CREATE UNIQUE INDEX IF NOT EXISTS state_backups_occurrence ON state_backups(environment, scheduled) WHERE scheduled <> 0;`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -193,8 +195,8 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	} else if err == nil {
 		var plain []byte
 		plain, err = s.open("key_check", check)
-		if err == nil && string(plain) != "berthy-state" {
-			err = errors.New("invalid state key")
+		if err != nil || string(plain) != "berthy-state" {
+			err = ErrWrongKey
 		}
 	}
 	if err != nil {
@@ -247,7 +249,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=10`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=11`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}

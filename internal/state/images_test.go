@@ -53,7 +53,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 11 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -172,7 +172,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 11 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
@@ -192,7 +192,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 
 func TestUnknownSchemaVersionIsRefused(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`PRAGMA user_version=11`); err != nil {
+	if _, err := s.db.Exec(`PRAGMA user_version=12`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

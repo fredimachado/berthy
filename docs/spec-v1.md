@@ -696,6 +696,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
 | `backup run <name>` | Run a volume backup now, wait for it to finish and exit 0 only when it succeeded (`deploy` scope) | Yes |
 | `restore <key> --into <volume>` | Restore a backup, named by its key from `backup list`, into a new Docker volume (`admin` scope; `--dry-run` checks the key and the name) | Yes |
+| `state-backup` | Take a snapshot of the agent's state now, wait for it to finish and exit 0 only when it succeeded (`admin` scope) | Yes |
+| `state-restore --endpoint URL --bucket NAME --object KEY --out DIR --key-file PATH` | Rebuild the agent's state from a state snapshot with the saved key, without an agent; the storage credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY` | No |
 | `prune` | Remove old images and stopped containers now | Yes |
 | `destroy --confirm <env> [--volumes] [--allow-recreate] [--tunnel]` | Remove every app, managed ingress, helpers, one-off containers and acquired images of the environment; volumes only with `--volumes`, the tunnel only with `--tunnel` and when clean (admin) | Yes |
 | `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
@@ -958,11 +960,41 @@ The command replaces `latest.dump` only after `pg_dump` succeeds. The base manif
 
 ### Agent state
 
-The agent uploads a copy of its SQLite file to object storage daily and excludes the key that encrypts its secrets. Keep a copy of the key off the server, for example in a password manager or the provisioning tool's vault. Rebuild a server from its provisioning, `berthy setup --key-file <saved key>`, the agent state and the volume backups.
+The agent's SQLite file holds its operations, releases, audit log, checks and secrets. The agent uploads a copy of it to object storage daily. The copy holds the secrets sealed, and the key that opens them is never read or uploaded. Keep a copy of the key off the server, for example in a password manager or the provisioning tool's vault. Rebuild a server from its provisioning, `berthy setup --key-file <saved key>`, the agent state and the volume backups.
+
+**Configuration.** The last applied manifest may have one `state_backup` block. It belongs to the environment, so it stays in force whatever apps are deployed:
+
+```yaml
+state_backup:
+  destination: offsite        # a key of destinations, as for volume backups
+  prefix: berthy-state/prod   # optional; the default is berthy-state/<environment>
+  schedule: "17 3 * * *"      # optional; UTC cron; the default is daily at 03:17
+  keep: 14                    # optional; from 1 to 1000; the default is 14
+```
+
+The destination must exist, the schedule must parse, `keep` must be from 1 to 1000, and each segment of the prefix may hold only letters, digits and `._@+=-`, with no `.` or `..` segment. Removing the block stops the snapshots and removes the check.
+
+**What storage holds.** A snapshot is a consistent copy taken with SQLite's `VACUUM INTO` while the agent keeps running. The agent writes it to a private temporary directory, uploads it and removes the directory. Each snapshot is an object `<prefix>/<UTC time>.db`, as in `berthy-state/prod/20261116T031700Z.db`, with a sidecar `<same name>.json`: `{"format":"berthy-state-sqlite-1","environment","schema_version","size","sha256","created"}`. The sidecar is written only after the snapshot was uploaded, so a snapshot that has one is complete. A failed snapshot, upload or sidecar is recorded as `failed` with a detail that starts with its step, and a failed upload leaves no sidecar.
+
+**When it runs.** The schedule runs a snapshot once per UTC occurrence. Each occurrence is recorded in the agent's state, so a restart never takes it twice. Occurrences that pass while the agent is down are not made up. An occurrence that finds a snapshot still running is skipped and logged, and raises no alert. A scheduled run is audited as the actor `state-backup`.
+
+**Retention.** After a successful run the agent deletes all but the `keep` newest snapshots that have a valid sidecar for this environment, the snapshot first and then its sidecar. Other objects under the prefix are never touched.
+
+**Check.** While the block exists, a `state_backup` check runs every 60 seconds and alerts on its first non-ok result. It is critical when the newest run failed, with its detail, such as `upload failed: access denied`. It is also critical when the occurrence after the last success, plus two hours, has passed: `overdue: last snapshot <time> (expected by <time>)`. Before any success it is unknown, and it becomes critical once the first occurrence after the agent first saw the block, plus two hours, has passed. Otherwise it is ok: `last snapshot <age> ago, <size>`. The check appears in `berthy checks`.
+
+**On demand.** `berthy state-backup -e ENV --config CONFIG` takes an `admin` token. It starts a snapshot, waits for it to finish, prints its key, size and checksum, and exits 0 only when it succeeded. The audit log records the token that asked. A request made while another snapshot runs is refused with `409`.
+
+**Restore.** The procedure needs neither the agent nor its server:
+
+1. On the new server, install the Berthy binary and save the key to a file that only the user running the agent can read (mode 0600).
+2. Set the storage credentials in the environment: `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. Flags never carry them.
+3. Run `berthy state-restore --endpoint <URL> --bucket <NAME> [--region <R>] --object berthy-state/prod/<time>.db --out /var/lib/berthy/state --key-file <saved key>`. It downloads the snapshot and its sidecar, checks the size and SHA-256 against the sidecar, and opens the result with the key. It prints the environment, the schema version and the names of the stored secrets, never their values. A wrong key exits non-zero with `the key does not open this state` and leaves nothing behind. The output directory is created with mode 0700 when it is missing, and must otherwise be empty.
+4. Start the agent with `state_dir` set to the output directory and `key_file` set to the saved key. Secrets, deploy history and the audit log are back. Volumes come back separately from the volume backups with `berthy restore`.
 
 ### Limits
 
 - Recovery starts from the latest successful backup or from the export it contains. Missed or failed runs increase the amount of data that may be lost.
+- A snapshot whose upload a crash cut short before its sidecar was written is never listed and never removed. Delete such an object by hand after checking the bucket.
 - Keep-all means storage grows without bound. A lifecycle rule on the bucket can cap it later.
 - A scheduled restore drill into a throwaway container is planned after v1.
 

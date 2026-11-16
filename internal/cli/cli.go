@@ -65,6 +65,10 @@ func Run(args []string, out, errout io.Writer) int {
 		// Only the restore container runs it, with the new volume at /target and the archive on stdin.
 		return runVolumeExtract(os.Stdin, volarchive.TargetDir, errout)
 	}
+	if cmd == "state-restore" {
+		// Local: it reads a snapshot from object storage and needs no agent, so it runs when the server is gone.
+		return runStateRestore(args, out, errout)
+	}
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout)
 	}

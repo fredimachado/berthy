@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup":
 		return true
 	}
 	return false
@@ -185,6 +185,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	}
 	if cmd == "backup" {
 		return runBackupCommand(f, u, prefix, token, out, errout)
+	}
+	if cmd == "state-backup" {
+		return runStateBackupCommand(f, u, prefix, token, out, errout)
 	}
 	method := "GET"
 	endpoint := ""

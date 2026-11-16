@@ -45,6 +45,7 @@ type Manifest struct {
 	Jobs         map[string]Job         `json:"jobs,omitempty" yaml:"jobs,omitempty"`
 	Backups      map[string]Backup      `json:"backups,omitempty" yaml:"backups,omitempty"`
 	Destinations map[string]Destination `json:"destinations,omitempty" yaml:"destinations,omitempty"`
+	StateBackup  *StateBackup           `json:"state_backup,omitempty" yaml:"state_backup,omitempty"`
 	Telemetry    *Telemetry             `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	Probes       map[string]Probe       `json:"probes,omitempty" yaml:"probes,omitempty"`
 	Peers        map[string]string      `json:"peers,omitempty" yaml:"peers,omitempty"`
@@ -239,6 +240,27 @@ type Destination struct {
 	AccessKeySecret string `json:"access_key_secret" yaml:"access_key_secret"`
 	SecretKeySecret string `json:"secret_key_secret" yaml:"secret_key_secret"`
 }
+
+// StateBackup is the environment's backup of the agent's SQLite state. Destination names a destination of the manifest.
+// Prefix is the object prefix; empty means berthy-state/<environment>, which the agent resolves because it knows the
+// environment. Schedule is a UTC cron expression and Keep the number of snapshots that are retained.
+type StateBackup struct {
+	Destination string `json:"destination" yaml:"destination"`
+	Prefix      string `json:"prefix,omitempty" yaml:"prefix,omitempty"`
+	Schedule    string `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	Keep        *int   `json:"keep,omitempty" yaml:"keep,omitempty"`
+}
+
+const (
+	// DefaultStateBackupSchedule runs a state backup daily at 03:17 UTC.
+	DefaultStateBackupSchedule = "17 3 * * *"
+	// DefaultStateBackupKeep is how many snapshots a state backup retains.
+	DefaultStateBackupKeep = 14
+)
+
+// stateBackupPrefixSegment is one segment of a state backup prefix. Like a volume backup's prefix, it allows no dot segments.
+var stateBackupPrefixSegment = regexp.MustCompile(`^[A-Za-z0-9._@+=-]+$`)
+
 type Telemetry struct {
 	OTLPEndpoint  string `json:"otlp_endpoint" yaml:"otlp_endpoint"`
 	HeadersSecret string `json:"headers_secret,omitempty" yaml:"headers_secret,omitempty"`
@@ -757,6 +779,11 @@ func (m *Manifest) Validate() error {
 			}
 		}
 	}
+	if sb := m.StateBackup; sb != nil {
+		if err := m.validateStateBackup(*sb); err != nil {
+			return err
+		}
+	}
 	if m.Telemetry != nil && m.Telemetry.HeadersSecret == TunnelTokenSecret {
 		return fmt.Errorf("telemetry: %s is reserved for managed ingress", TunnelTokenSecret)
 	}
@@ -764,6 +791,29 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("invalid telemetry")
 	}
 	return m.validateMonitoring()
+}
+
+// validateStateBackup checks the environment's state backup: its destination, schedule, prefix and retention.
+func (m *Manifest) validateStateBackup(sb StateBackup) error {
+	if _, ok := m.Destinations[sb.Destination]; !ok {
+		return fmt.Errorf("state_backup: unknown destination")
+	}
+	if sb.Schedule != "" {
+		if _, err := schedule.Parse(sb.Schedule); err != nil {
+			return fmt.Errorf("state_backup: invalid schedule: %w", err)
+		}
+	}
+	if sb.Keep != nil && (*sb.Keep < 1 || *sb.Keep > 1000) {
+		return fmt.Errorf("state_backup: keep must be from 1 to 1000")
+	}
+	if p := strings.Trim(sb.Prefix, "/"); p != "" {
+		for _, seg := range strings.Split(p, "/") {
+			if seg == "." || seg == ".." || !stateBackupPrefixSegment.MatchString(seg) {
+				return fmt.Errorf("state_backup: invalid prefix")
+			}
+		}
+	}
+	return nil
 }
 
 // validateJob checks a job's schedule, timeout and target. An image app's job names a role, which may be left out when
@@ -814,6 +864,15 @@ func validJobTimeout(s string) bool {
 
 func (m *Manifest) defaults() {
 	m.defaultsMonitoring()
+	if sb := m.StateBackup; sb != nil {
+		if sb.Schedule == "" {
+			sb.Schedule = DefaultStateBackupSchedule
+		}
+		if sb.Keep == nil {
+			n := DefaultStateBackupKeep
+			sb.Keep = &n
+		}
+	}
 	for name, j := range m.Jobs {
 		if j.Timeout == "" {
 			j.Timeout = defaultJobTimeout
