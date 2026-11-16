@@ -163,6 +163,11 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 			out = append(out, w.serviceCheck(ctx, "probe:"+name, m, p, interval, timeout, failures))
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(m.Jobs)) {
+		if m.Jobs[name].Schedule != "" {
+			out = append(out, jobCheck(w.store, name))
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
 		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))
 	}

@@ -198,3 +198,34 @@ func TestVolumeExistsTreatsNotFoundAsAbsent(t *testing.T) {
 		t.Fatal("server error reported as absent")
 	}
 }
+
+func TestComposeContainersReportStateAndNumber(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		return response(200, `[{"Id":"abc123","State":"running","Labels":{"com.docker.compose.service":"db","com.docker.compose.container-number":"2"}},{"Id":"def456","State":"exited","Labels":{"com.docker.compose.service":"db"}}]`), nil
+	})
+	got, err := e.ComposeContainers(context.Background(), "shop-db")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("containers %+v: %v", got, err)
+	}
+	if got[0].State != "running" || got[0].Number != 2 || got[1].State != "exited" || got[1].Number != 0 {
+		t.Fatalf("state and number: %+v", got)
+	}
+}
+
+func TestNodeIDIsThisNodesSwarmID(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1.44/info" {
+			t.Errorf("request %s", r.URL.Path)
+		}
+		return response(200, `{"Swarm":{"NodeID":"node-1","LocalNodeState":"active"}}`), nil
+	})
+	if id, err := e.NodeID(context.Background()); err != nil || id != "node-1" {
+		t.Fatalf("node id %q: %v", id, err)
+	}
+	inactive := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		return response(200, `{"Swarm":{"NodeID":"","LocalNodeState":"inactive"}}`), nil
+	})
+	if _, err := inactive.NodeID(context.Background()); err == nil {
+		t.Fatal("node id of a node outside a swarm")
+	}
+}

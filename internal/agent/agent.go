@@ -226,7 +226,13 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 				apps, err = appInventory(ctx, e, deployment)
 				if err == nil {
 					var code int
-					result, code = engine.Select(apps, parts[4])
+					var app api.App
+					app, code = engine.Select(apps, parts[4])
+					result = app
+					if code == 200 {
+						app.Jobs = appJobs(ctx, deployment, app, time.Now())
+						result = app
+					}
 					if code != 200 {
 						message := http.StatusText(code)
 						if code == 409 {

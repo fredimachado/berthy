@@ -20,6 +20,7 @@ import (
 
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/state"
@@ -51,6 +52,12 @@ func NewDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 // NewDeploymentHandlerWithTelemetry is NewDeploymentHandler for an agent that exports telemetry, so that the doctor reports
 // the export. tel may be nil.
 func NewDeploymentHandlerWithTelemetry(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter) http.Handler {
+	return NewDeploymentHandlerWithJobs(c, e, col, d, tel, nil)
+}
+
+// NewDeploymentHandlerWithJobs is NewDeploymentHandlerWithTelemetry for an agent that runs jobs on demand. sched may be
+// nil, in which case a request to run a job is refused as unavailable.
+func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler) http.Handler {
 	legacy := handlerWithState(c, e, col, d, tel)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -111,6 +118,12 @@ func NewDeploymentHandlerWithTelemetry(c Config, e *engine.Engine, col *metrics.
 		case len(rest) == 1 && rest[0] == "checks":
 			required = "read"
 			method = "GET"
+		case len(rest) == 1 && rest[0] == "jobs", len(rest) == 3 && rest[0] == "jobs" && rest[2] == "runs":
+			required = "read"
+			method = "GET"
+		case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
+			required = "deploy"
+			method = "POST"
 		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
 			required = "deploy"
 			method = "POST"
@@ -403,6 +416,8 @@ func NewDeploymentHandlerWithTelemetry(c Config, e *engine.Engine, col *metrics.
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		case rest[0] == "jobs":
+			serveJobs(w, r, rest, d, sched, sa)
 		case len(rest) == 1 && rest[0] == "checks":
 			rows, err := d.Store.Checks(ctx)
 			if err != nil {

@@ -142,7 +142,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -165,7 +165,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, operation_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, created INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS ingress (environment TEXT PRIMARY KEY, account_id TEXT NOT NULL, api_token_secret TEXT NOT NULL, tunnel_id TEXT NOT NULL, tunnel_name TEXT NOT NULL, dns INTEGER NOT NULL, updated INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS ingress_routes (environment TEXT NOT NULL, hostname TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, service TEXT NOT NULL, zone_id TEXT NOT NULL, dns_record_id TEXT NOT NULL, PRIMARY KEY(environment, hostname));
- CREATE TABLE IF NOT EXISTS checks (environment TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, since INTEGER NOT NULL, notified_state TEXT NOT NULL, notified INTEGER NOT NULL, PRIMARY KEY(environment, name));`); err != nil {
+ CREATE TABLE IF NOT EXISTS checks (environment TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, since INTEGER NOT NULL, notified_state TEXT NOT NULL, notified INTEGER NOT NULL, PRIMARY KEY(environment, name));
+ CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, job TEXT NOT NULL, app TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, exit_code INTEGER, detail TEXT NOT NULL, container TEXT NOT NULL);
+ CREATE UNIQUE INDEX IF NOT EXISTS job_runs_occurrence ON job_runs(environment, job, scheduled) WHERE scheduled <> 0;`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -193,7 +195,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=5`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=6`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}

@@ -5,8 +5,9 @@ type AppRef struct {
 	Name string `json:"name"`
 }
 type App struct {
-	Ref   AppRef `json:"ref"`
-	Roles []Role `json:"roles"`
+	Ref   AppRef      `json:"ref"`
+	Roles []Role      `json:"roles"`
+	Jobs  []JobStatus `json:"jobs,omitempty"`
 }
 type Role struct {
 	Name     string    `json:"name"`

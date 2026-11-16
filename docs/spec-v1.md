@@ -592,7 +592,9 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `backup list` | Backups in object storage with size, age and status | No |
 | `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
 | `checks` | Stored state of every probe and built-in condition, with when each state began | No |
+| `jobs` | Every job with its target, schedule, next occurrence and last run | No |
 | `alerts test` | Send a test message through the Telegram channel | Yes |
+| `job run <name>` | Run a job now, wait for it to finish and exit 0 only when it succeeded | Yes |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app or a Compose app | Yes |
@@ -736,9 +738,16 @@ jobs:
 ```
 
 - Select the app with `app`. For a Compose app, use `service` to select the service. For an image app, use `role` to select the role. The selector can be omitted when the app has exactly one service or role.
-- At each scheduled time, Berthy runs `command` once in a running container for the target, even when the role has several replicas. It uses the container's environment and mounts. Include a shell explicitly if the command needs shell syntax.
-- Berthy records the last run time, exit status or execution error in `describe <app>`. A nonzero exit or a missing running container fails the job and raises an alert. If the job is still running at its next scheduled time, Berthy skips that occurrence and records the skip.
-- A job with no `schedule` can run on demand as preparation for a volume backup.
+- Jobs come from the last applied manifest, which the agent re-reads every minute, so a changed schedule takes effect at the next minute after its deploy.
+- At each scheduled time, Berthy runs `command` once in a running container for the target, even when the role has several replicas. For an image app it picks the running replica with the lowest slot on the agent's node. For a Compose app it picks the lowest-numbered running container of the service; if the app has several services running and no `service` is named, the run fails and says so. The command uses the container's environment and mounts. Include a shell explicitly if the command needs shell syntax.
+- `timeout` (default `1h`, from `1s` to `24h`) limits a run. A run that exceeds it fails with `timed out after <timeout>`. The wait ends, but the command may still be running inside the container, because Docker has no way to stop one exec.
+- Each scheduled occurrence runs at most once. The agent records the occurrence in its state before it runs, so restarting the agent in the same minute cannot run it twice. Occurrences that pass while the agent is down are not made up.
+- Berthy records each run's start, end, trigger, container, exit status and a short reason, and `describe <app>` and `berthy jobs` show the last run. A nonzero exit, a missing running container, an exec error or a timeout fails the run and raises an alert through the `job:<name>` check, which stays critical until a later run succeeds. If the job is still running at its next scheduled time, Berthy skips that occurrence and records the skip; a skip never raises an alert.
+- The command's output is read and thrown away, so a job may print as much as it likes. It is not stored, because it may contain secrets. The record holds the exit code and a fixed reason such as `exit status 3`, `no running container for api/web` or `exec failed`.
+- When the agent is stopped in an orderly way (a restart or an upgrade) while a job runs, the run is recorded as `interrupted` with `agent stopped during the run`. Like a skip, an interrupted run never raises an alert and does not change the job's check. A run still marked running when the agent starts again, because the agent crashed or was killed, is recorded as failed with `agent restarted during the run`. In both cases the command may still be running in its container.
+- Every run is written to the audit log with the job as the caller (`job:<name>`, action `job_run:<name>`, outcome `succeeded`, `failed`, `skipped` or `interrupted`). Jobs do not take the deploy lock, so they can run during a deploy.
+- A job with no `schedule` runs only on demand, as preparation for a volume backup or with `berthy job run <name> -e ENV`. The command starts the run, waits until it finishes or its `timeout` plus 30 seconds passes, prints the status, exit code and reason, and exits 0 only when the run succeeded. It fails at once when a run of the job is already in progress. It takes a `deploy` token, and the audit log records which token asked (`job_start:<name>`).
+- `berthy jobs -e ENV` lists every job with its target, schedule, next occurrence and last run, and takes a `read` token.
 
 ## Volume backups and restore
 
@@ -858,8 +867,8 @@ Each token belongs to one environment and one scope.
 
 | Scope | Allows |
 | --- | --- |
-| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks` |
-| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release` and `alerts test` |
+| `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
+| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
 | `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.

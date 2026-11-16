@@ -1,0 +1,158 @@
+package agent
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"berthy/internal/api"
+	"berthy/internal/deploy"
+	"berthy/internal/engine"
+	"berthy/internal/jobs"
+	"berthy/internal/manifest"
+	"berthy/internal/monitor"
+	"berthy/internal/state"
+)
+
+// NewJobs returns the scheduler of an agent with state and Docker, or nil for an agent without either. Its jobs come from
+// the last applied manifest. log receives operational messages, which never contain secrets.
+func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string)) *jobs.Scheduler {
+	if e == nil || d == nil || d.Store == nil {
+		return nil
+	}
+	store := d.Store
+	return &jobs.Scheduler{
+		Env:   c.Environment,
+		Store: store,
+		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
+			m, _, err := store.LatestManifest(ctx)
+			return m, err
+		},
+		Target: jobs.EngineTarget{Store: store, Docker: e},
+		Exec:   e,
+		Log:    log,
+	}
+}
+
+// appJobs returns the jobs of the last applied manifest that belong to an app of the inventory, or nil when there are
+// none or the manifest cannot be read. An image app is listed under its manifest name, and a Compose app under its
+// Compose project name.
+func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Time) []api.JobStatus {
+	if d == nil || d.Store == nil {
+		return nil
+	}
+	m, _, err := d.Store.LatestManifest(ctx)
+	if err != nil {
+		return nil
+	}
+	name := ""
+	for n, a := range m.Apps {
+		switch {
+		case app.Ref.Kind == "image" && a.Kind == "image" && n == app.Ref.Name,
+			app.Ref.Kind == "compose" && a.Kind == "compose" && m.ComposeProject(n) == app.Ref.Name:
+			name = n
+		}
+	}
+	if name == "" {
+		return nil
+	}
+	list, err := jobs.Statuses(ctx, d.Store, m, name, now)
+	if err != nil || len(list) == 0 {
+		return nil
+	}
+	return list
+}
+
+// jobCheck returns the monitor check of a scheduled job: critical while its last finished run failed, ok while it
+// succeeded, and unknown before it has run. A skipped occurrence never changes it.
+func jobCheck(store *state.Store, name string) monitor.Check {
+	return monitor.NewFunc("job:"+name, 30*time.Second, 1, func(ctx context.Context) monitor.Result {
+		last, err := store.LastJobRuns(ctx)
+		if err != nil {
+			return monitor.Result{State: monitor.Unknown, Detail: "job runs unavailable"}
+		}
+		run, ok := last[name]
+		switch {
+		case !ok:
+			return monitor.Result{State: monitor.Unknown, Detail: "not run yet"}
+		case run.Status == "failed":
+			return monitor.Result{State: monitor.Critical, Detail: run.Detail}
+		}
+		return monitor.Result{State: monitor.OK, Detail: "last run succeeded"}
+	})
+}
+
+// serveJobs answers the job routes: the list of jobs, one job's runs, and an on-demand run. rest is the path after the
+// environment, and the caller has checked the method and the scope.
+func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.Controller, sched *jobs.Scheduler, actor state.Actor) {
+	ctx := r.Context()
+	switch {
+	case len(rest) == 1:
+		m, _, err := d.Store.LatestManifest(ctx)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		list, err := jobs.Statuses(ctx, d.Store, m, "", time.Now())
+		if err != nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		json.NewEncoder(w).Encode(list)
+	case rest[2] == "runs":
+		limit := 20
+		if v := r.URL.Query().Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > 100 {
+				writeError(w, 400, "bad_request", "invalid limit")
+				return
+			}
+			limit = n
+		}
+		runs, err := d.Store.JobRuns(ctx, rest[1], limit)
+		if err != nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		if len(runs) == 0 {
+			// A job with no runs is known only through the manifest.
+			if m, _, err := d.Store.LatestManifest(ctx); err != nil {
+				writeError(w, 404, "not_found", "not found")
+				return
+			} else if _, ok := m.Jobs[rest[1]]; !ok {
+				writeError(w, 404, "not_found", "not found")
+				return
+			}
+		}
+		out := make([]api.JobRun, 0, len(runs))
+		for _, run := range runs {
+			out = append(out, jobs.RunStatus(run))
+		}
+		json.NewEncoder(w).Encode(out)
+	default:
+		if sched == nil {
+			writeError(w, 503, "jobs_unavailable", "jobs unavailable")
+			return
+		}
+		id, err := sched.Start(ctx, rest[1], "manual")
+		switch {
+		case errors.Is(err, jobs.ErrUnknownJob):
+			writeError(w, 404, "not_found", "not found")
+			return
+		case errors.Is(err, jobs.ErrJobRunning):
+			writeError(w, 409, "conflict", "job is already running")
+			return
+		case err != nil:
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		// The run itself is audited as the job; this records who asked for it.
+		_ = d.Store.RecordAudit(ctx, actor, "job_start:"+rest[1], "started")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]int64{"run_id": id})
+	}
+}

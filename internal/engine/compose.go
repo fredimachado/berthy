@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -121,6 +122,10 @@ func (c Compose) Version(ctx context.Context, home string) (string, error) {
 type ComposeContainer struct {
 	ID, Service, ConfigHash string
 	OneOff                  bool
+	// State is Docker's container state, such as running or exited. Number is the replica number Compose gave the
+	// container, or 0 when it gave none.
+	State  string
+	Number int
 }
 
 // ComposeContainers lists every container of a Compose project, stopped ones included.
@@ -135,6 +140,7 @@ func (e *Engine) ComposeContainers(ctx context.Context, project string) ([]Compo
 	q := url.Values{"all": {"1"}, "filters": {string(f)}}
 	var raw []struct {
 		Id     string
+		State  string
 		Labels map[string]string
 	}
 	if err = e.jsonRequest(ctx, "GET", "/containers/json?"+q.Encode(), nil, nil, &raw); err != nil {
@@ -145,7 +151,10 @@ func (e *Engine) ComposeContainers(ctx context.Context, project string) ([]Compo
 		if _, err = pathID(c.Id); err != nil {
 			return nil, err
 		}
+		number, _ := strconv.Atoi(c.Labels["com.docker.compose.container-number"])
 		out = append(out, ComposeContainer{
+			State:      c.State,
+			Number:     number,
 			ID:         c.Id,
 			Service:    c.Labels["com.docker.compose.service"],
 			ConfigHash: c.Labels["com.docker.compose.config-hash"],

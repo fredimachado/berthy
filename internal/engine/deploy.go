@@ -406,24 +406,35 @@ func (e *Engine) RemoveContainer(ctx context.Context, id string) error {
 	return e.jsonRequest(ctx, "DELETE", "/containers/"+p, nil, nil, nil)
 }
 
-// dockerOutput consumes the non-TTY multiplexed stream without exposing framing.
+// dockerOutput consumes the non-TTY multiplexed stream without exposing framing. It refuses more than maxCommandOutput.
 func dockerOutput(r io.Reader) ([]byte, error) {
 	var out bytes.Buffer
+	if err := dockerStream(r, &out, maxCommandOutput); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// dockerStream copies the payload of the non-TTY multiplexed stream r to w, validating its framing. A frame is copied
+// whole, so memory stays bounded by w. limit is the most payload to accept, or a negative number for no limit.
+func dockerStream(r io.Reader, w io.Writer, limit int64) error {
+	var total int64
 	for {
 		var hdr [8]byte
 		_, err := io.ReadFull(r, hdr[:])
 		if err == io.EOF {
-			return out.Bytes(), nil
+			return nil
 		}
 		if err != nil || (hdr[0] != 1 && hdr[0] != 2) || hdr[1] != 0 || hdr[2] != 0 || hdr[3] != 0 {
-			return nil, fmt.Errorf("invalid Docker output stream")
+			return fmt.Errorf("invalid Docker output stream")
 		}
-		size := binary.BigEndian.Uint32(hdr[4:])
-		if int64(size) > int64(maxCommandOutput-out.Len()) {
-			return nil, fmt.Errorf("Docker output exceeds limit")
+		size := int64(binary.BigEndian.Uint32(hdr[4:]))
+		if limit >= 0 && size > limit-total {
+			return fmt.Errorf("Docker output exceeds limit")
 		}
-		if _, err = io.CopyN(&out, r, int64(size)); err != nil {
-			return nil, fmt.Errorf("invalid Docker output stream")
+		total += size
+		if _, err = io.CopyN(w, r, size); err != nil {
+			return fmt.Errorf("invalid Docker output stream")
 		}
 	}
 }
@@ -440,12 +451,33 @@ func (e *Engine) ContainerLogs(ctx context.Context, id string) ([]byte, error) {
 	return dockerOutput(resp.Body)
 }
 func (e *Engine) Exec(ctx context.Context, id string, command []string) (ExecResult, error) {
-	p, err := pathID(id)
+	var out bytes.Buffer
+	code, err := e.exec(ctx, id, command, func(r io.Reader) error {
+		o, err := dockerOutput(r)
+		out.Write(o)
+		return err
+	})
 	if err != nil {
 		return ExecResult{}, err
 	}
+	return ExecResult{Output: out.Bytes(), ExitCode: code}, nil
+}
+
+// ExecDiscard runs a command in a container like Exec, but reads the command's output and throws it away, so a command
+// that prints a great deal still returns its exit code. Memory use does not depend on the amount of output. ctx must have
+// a deadline.
+func (e *Engine) ExecDiscard(ctx context.Context, id string, command []string) (int, error) {
+	return e.exec(ctx, id, command, func(r io.Reader) error { return dockerStream(r, io.Discard, -1) })
+}
+
+// exec creates an exec in a container, starts it, hands the output stream to consume, and returns the exit code.
+func (e *Engine) exec(ctx context.Context, id string, command []string, consume func(io.Reader) error) (int, error) {
+	p, err := pathID(id)
+	if err != nil {
+		return 0, err
+	}
 	if len(command) == 0 || command[0] == "" {
-		return ExecResult{}, fmt.Errorf("empty command")
+		return 0, fmt.Errorf("empty command")
 	}
 	body, err := json.Marshal(struct {
 		AttachStdout, AttachStderr bool
@@ -453,36 +485,36 @@ func (e *Engine) Exec(ctx context.Context, id string, command []string) (ExecRes
 		Cmd                        []string
 	}{true, true, false, command})
 	if err != nil {
-		return ExecResult{}, err
+		return 0, err
 	}
 	var x struct{ ID string }
 	if err = e.jsonRequest(ctx, "POST", "/containers/"+p+"/exec", body, nil, &x); err != nil {
-		return ExecResult{}, err
+		return 0, err
 	}
 	p, err = pathID(x.ID)
 	if err != nil {
-		return ExecResult{}, fmt.Errorf("invalid Docker exec response")
+		return 0, fmt.Errorf("invalid Docker exec response")
 	}
 	resp, err := e.request(ctx, "POST", "/exec/"+p+"/start", []byte(`{"Detach":false,"Tty":false}`), nil, true)
 	if err != nil {
-		return ExecResult{}, err
+		return 0, err
 	}
-	output, err := dockerOutput(resp.Body)
+	err = consume(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return ExecResult{}, err
+		return 0, err
 	}
 	var status struct {
 		Running  bool
 		ExitCode *int
 	}
 	if err = e.jsonRequest(ctx, "GET", "/exec/"+p+"/json", nil, nil, &status); err != nil {
-		return ExecResult{}, err
+		return 0, err
 	}
 	if status.Running || status.ExitCode == nil {
-		return ExecResult{}, fmt.Errorf("Docker exec has no exit status")
+		return 0, fmt.Errorf("Docker exec has no exit status")
 	}
-	return ExecResult{Output: output, ExitCode: *status.ExitCode}, nil
+	return *status.ExitCode, nil
 }
 func (e *Engine) InventoryImages(ctx context.Context) ([]InventoryImage, error) {
 	var x []InventoryImage

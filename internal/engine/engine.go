@@ -330,3 +330,15 @@ func (e *Engine) Stats(ctx context.Context, id string) (metrics.RawContainer, er
 	}
 	return r, nil
 }
+
+// NodeID returns the Swarm node ID of the node the daemon runs on. It fails when the node is not in a swarm.
+func (e *Engine) NodeID(ctx context.Context) (string, error) {
+	var info struct{ Swarm struct{ NodeID string } }
+	if err := e.Get(ctx, "/info", &info); err != nil {
+		return "", err
+	}
+	if info.Swarm.NodeID == "" {
+		return "", fmt.Errorf("node is not in a swarm")
+	}
+	return info.Swarm.NodeID, nil
+}

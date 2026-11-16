@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress", "alerts":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
 		return true
 	}
 	return false
@@ -154,6 +154,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return 1
 	}
 	prefix := strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(f.env) + "/"
+	if cmd == "job" {
+		return runJobCommand(f, u, prefix, token, out, errout)
+	}
 	method := "GET"
 	endpoint := ""
 	var body any
