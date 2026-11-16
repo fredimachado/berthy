@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/deploy"
 )
@@ -104,7 +105,7 @@ func printRestorePlan(out, errout io.Writer, data []byte) int {
 func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	call := agentCaller(ctx, newAgentClient(), base, prefix, token)
+	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
 	switch {
 	case len(f.pos) == 1 && f.pos[0] == "list":
 		query := ""
@@ -117,7 +118,7 @@ func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, 
 			return 1
 		}
 		if status != http.StatusOK {
-			fmt.Fprintln(errout, agentError(status, data))
+			fmt.Fprintln(errout, agentclient.Message(status, data))
 			return 1
 		}
 		return printBackups(out, errout, data, f.json)
@@ -138,7 +139,7 @@ func runBackupRun(ctx context.Context, call func(method, path, query string) ([]
 		return 1
 	}
 	if status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentError(status, data))
+		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
 	if code, held := reportHeld(data, out, errout, asJSON); held {

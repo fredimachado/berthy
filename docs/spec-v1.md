@@ -720,21 +720,56 @@ Actions in the TUI (restart, rollback, approve) ask for confirmation and show th
 
 ### MCP server
 
-`berthy mcp` runs a local MCP server that calls the agent API with the token it was given. Tool names follow those of the Aspire MCP server, so an AI agent can ask a deployed environment the same questions it asks a local run.
+`berthy mcp -e <env> --config <cli config> [--manifest-dir <dir>]` runs a local MCP server over stdio that calls the agent API with the token it was given. The token comes from the environment variable that the CLI configuration names for `<env>`, as for every other command; it is never printed and never part of a tool result. Only protocol messages go to stdout; diagnostics go to stderr. `--manifest-dir` (default `.`) is where `deploy` reads the manifest, and a Compose app's file, from, exactly as `berthy deploy` does. The server shares the CLI's HTTP client and request code, so an AI agent sees what a person sees, with the same errors.
 
-| Tool | Maps to |
-| --- | --- |
-| `list_resources` | `ps` |
-| `describe_resource` | `describe` |
-| `list_console_logs` | `logs` |
-| `get_stats` | `stats` and `df` |
-| `list_deploys` | `history` |
-| `list_backups` | `backup list` |
-| `wait_for_resources` | `wait` |
-| `doctor` | `doctor` |
-| `execute_resource_command` | `deploy`, `rollback`, `restart`, `backup run`, `restore` |
+Tool names follow those of the Aspire MCP server, so an AI agent can ask a deployed environment the same questions it asks a local run. Each tool returns the agent's JSON as structured content (a list is wrapped in an object, `{"resources": [...]}`) and a short text: a summary line followed by the same JSON, or for `list_console_logs` the log lines. Every tool is read-only except `execute_resource_command`, and the tools say so in their MCP annotations.
 
-On a protected environment, `execute_resource_command` creates a pending approval instead of acting. See Security and guardrails.
+| Tool | Maps to | Inputs |
+| --- | --- | --- |
+| `list_resources` | `ps` | none |
+| `describe_resource` | `describe` | `resource_name`, which may be `image:NAME`, `swarm:NAME` or `compose:NAME` |
+| `list_console_logs` | `logs`, without `--follow` | `resource_name`; `role`, `since`, `grep`; `tail` (default 200, at most 1000) |
+| `get_stats` | `stats` and `df` | none; the result has `stats` and `df` |
+| `list_deploys` | `history` | `resource_name`; failed deploys carry their `operation_id` and reason |
+| `get_deploy_diagnostics` | `diagnostics` | `operation_id` of a failed deploy (needs the `deploy` scope: a `read` token gets the agent's 403 as a tool error) |
+| `list_backups` | `backup list` | `backup_name` (optional) |
+| `wait_for_resources` | `wait --healthy` | `resource_name`; `role`; `timeout` (a duration, at most 10 minutes, default 2) |
+| `doctor` | `doctor` | none |
+| `list_approvals` | `approvals --all` | none: what became of the changes that were held |
+| `execute_resource_command` | `deploy`, `rollback`, `restart`, `backup run`, `restore` | see below |
+
+`execute_resource_command` takes `command`, one of `deploy`, `rollback`, `restart`, `backup_run` and `restore`, and the fields of that command; a field that does not belong to the command, or a missing one, is a tool error before anything reaches the agent.
+
+| `command` | Fields | Scope the token needs |
+| --- | --- | --- |
+| `deploy` | `resource_name`, `version` (an image app; a Compose app takes none), `dry_run` | `deploy` |
+| `rollback` | `resource_name`, `to` (a release id; default the previous one), `dry_run` | `deploy` |
+| `restart` | `resource_name`, `role`, `dry_run` | `deploy` |
+| `backup_run` | `backup_name` (no `dry_run`) | `deploy` |
+| `restore` | `backup_key` (from `list_backups`), `into_volume`, `dry_run` | `admin` |
+
+The result of `execute_resource_command` is one of:
+
+- **Done or failed.** A started operation is followed until it ends, for at most 10 minutes: `{"operation_id", "state", "reason"}` (a backup run has `backup_run_id` and `key` instead). `state` is the agent's: `succeeded`, `failed`, `rolled_back`, `interrupted`, `recovery_required`, or `running` when the bound passed first. Any state but `succeeded` and `running` is marked as a tool error, and the text points to `get_deploy_diagnostics`.
+- **Held.** On a protected environment an agent token's change is not carried out (see "Approval for AI agents on protected environments"). The result is `{"status": "held for approval", "approval_id", "expires", "plan"}`, it is not an error, and the text says `held for approval <id>: a person must run berthy approve <id>`. The AI agent has to tell the person and not retry; `list_approvals` shows later whether it was approved, rejected or expired.
+- **Plan.** With `dry_run`, `{"dry_run": true, "plan": ...}`: the plan that `--dry-run` prints. It is never held.
+- **Refused.** A 400, 403, 409 or other refusal of the agent (the wrong scope, a held deploy lock, an unknown app or a manifest that does not allow the image) is a tool error carrying the agent's message, never a protocol error.
+
+A client such as Claude Code starts the server itself. With the token in the environment the client runs it in, the entry of a `.mcp.json` is:
+
+```json
+{
+  "mcpServers": {
+    "berthy": {
+      "command": "berthy",
+      "args": ["mcp", "-e", "prod", "--config", "/home/me/.config/berthy/config.json", "--manifest-dir", "/home/me/shop"],
+      "env": { "BERTHY_PROD_TOKEN": "${BERTHY_PROD_TOKEN}" }
+    }
+  }
+}
+```
+
+The configuration file is the CLI's: `{"environments": {"prod": {"url": "http://127.0.0.1:8443", "token_env": "BERTHY_PROD_TOKEN"}}}`. Any other stdio MCP client takes the same command, arguments and environment. Make the token with `berthy agent token -e prod --agent --scope deploy` (or `--scope read` to let the AI agent only look), so that on a protected environment its changes are held for a person.
 
 ## Monitoring, logs and health checks
 

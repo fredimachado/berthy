@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"berthy/internal/agent"
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 )
 
@@ -157,11 +158,11 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	client := newAgentClient()
+	client := agentclient.NewHTTPClient()
 	call := func(method, endpoint, query string, body []byte) ([]byte, int, error) {
 		u := *base
 		u.Path, u.RawQuery = prefix+endpoint, query
-		resp, err := send(ctx, client, method, u.String(), token, body)
+		resp, err := agentclient.Send(ctx, client, method, u.String(), token, body)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -184,7 +185,7 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 			return 1
 		}
 		if status != http.StatusOK {
-			fmt.Fprintln(errout, agentError(status, data))
+			fmt.Fprintln(errout, agentclient.Message(status, data))
 			return 1
 		}
 		return printApprovals(out, errout, data, f.all, f.json)
@@ -199,7 +200,7 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 			return 1
 		}
 		if status != http.StatusOK {
-			fmt.Fprintln(errout, agentError(status, data))
+			fmt.Fprintln(errout, agentclient.Message(status, data))
 			return 1
 		}
 		if f.json {
@@ -249,7 +250,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env)
 	}
 	if status != http.StatusOK && status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentError(status, data))
+		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)

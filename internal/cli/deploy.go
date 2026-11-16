@@ -10,17 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 )
@@ -166,26 +165,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "remote commands require --config")
 		return 2
 	}
-	b, err := os.ReadFile(f.config)
+	target, err := agentclient.Load(f.config, f.env)
 	if err != nil {
-		fmt.Fprintln(errout, "cannot read config")
+		fmt.Fprintln(errout, err)
 		return 1
 	}
-	var c Config
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if d.Decode(&c) != nil || d.Decode(&struct{}{}) != io.EOF {
-		fmt.Fprintln(errout, "invalid config")
-		return 1
-	}
-	target, ok := c.Environments[f.env]
-	token := os.Getenv(target.TokenEnv)
-	u, err := url.Parse(target.URL)
-	if !ok || token == "" || err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		fmt.Fprintln(errout, "invalid agent configuration")
-		return 1
-	}
-	prefix := strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(f.env) + "/"
+	u, token, prefix := target.Base, target.Token, target.Prefix
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
 	}
@@ -259,32 +244,17 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 2
 		}
 		if cmd == "deploy" {
-			m, e := manifest.Load(f.dir, f.env)
-			if e != nil {
-				fmt.Fprintln(errout, e)
-				return 1
-			}
-			req.Manifest = *m
-			if m.Apps[req.App].Kind == "compose" {
-				if f.version != "" {
+			if e := agentclient.PrepareDeploy(f.dir, f.env, &req); e != nil {
+				switch {
+				case errors.Is(e, agentclient.ErrVersionRequired):
+					fmt.Fprintln(errout, "deploy requires --version")
+					return 2
+				case errors.Is(e, agentclient.ErrVersionNotAllowed):
 					fmt.Fprintln(errout, "--version does not apply to a compose app")
 					return 2
 				}
-				file, e := readComposeFile(f.dir, m.Apps[req.App].File)
-				if e != nil {
-					fmt.Fprintln(errout, e)
-					return 1
-				}
-				req.ComposeFile = file
-			} else {
-				if f.version == "" {
-					fmt.Fprintln(errout, "deploy requires --version")
-					return 2
-				}
-				if _, e = m.CheckImageDeploy(req.App, req.Version, false); e != nil {
-					fmt.Fprintln(errout, e)
-					return 1
-				}
+				fmt.Fprintln(errout, e)
+				return 1
 			}
 		}
 		method = "POST"
@@ -428,10 +398,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	client := &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := agentclient.NewHTTPClient()
 	if cmd == "wait" {
-		client.Timeout = 11 * time.Minute
-		client.Transport.(*http.Transport).ResponseHeaderTimeout = 11 * time.Minute
+		client = agentclient.WithTimeout(client, 11*time.Minute)
 	}
 	var payload []byte
 	if body != nil {
@@ -440,7 +409,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 1
 		}
 	}
-	resp, err := send(ctx, client, method, u.String(), token, payload)
+	resp, err := agentclient.Send(ctx, client, method, u.String(), token, payload)
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
@@ -471,7 +440,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env)
 	}
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintln(errout, agentError(resp.StatusCode, data))
+		fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, data))
 		return 1
 	}
 	if cmd == "diagnostics" && !f.json {
@@ -489,57 +458,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	return printResponse(out, errout, data, f.json)
 }
 
-// readComposeFile reads the Compose file of a Compose app from the manifest directory. The file must resolve to a regular
-// file inside that directory, and no larger than the Compose file limit.
-func readComposeFile(dir, file string) (string, error) {
-	outside := errors.New("compose file must be inside the manifest directory")
-	root, err := filepath.Abs(dir)
-	if err != nil {
-		return "", outside
-	}
-	if resolved, e := filepath.EvalSymlinks(root); e == nil {
-		root = resolved
-	}
-	inside := func(p string) bool {
-		rel, e := filepath.Rel(root, p)
-		return e == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-	}
-	if !inside(filepath.Join(root, file)) {
-		return "", outside
-	}
-	resolved, err := filepath.EvalSymlinks(filepath.Join(root, file))
-	if err != nil || !inside(resolved) {
-		return "", outside
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("compose file unavailable")
-	}
-	if info.Size() > manifest.MaxComposeFile {
-		return "", errors.New("compose file exceeds 512 KiB")
-	}
-	f, err := os.Open(resolved)
-	if err != nil {
-		return "", errors.New("compose file unavailable")
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, manifest.MaxComposeFile+1))
-	if err != nil || manifest.CheckComposeFile(b) != nil {
-		return "", manifest.ErrComposeFile
-	}
-	return string(b), nil
-}
-func send(ctx context.Context, c *http.Client, method, address, token string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	return c.Do(req)
-}
 func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -607,7 +525,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		statusURL := *base
 		statusURL.Path = prefix + "operations/" + url.PathEscape(id)
 		statusURL.RawQuery = ""
-		status, e := send(ctx, c, "GET", statusURL.String(), token, nil)
+		status, e := agentclient.Send(ctx, c, "GET", statusURL.String(), token, nil)
 		validStatus := false
 		if e == nil {
 			data, e := io.ReadAll(io.LimitReader(status.Body, 1<<20))
@@ -623,7 +541,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 						outputURL := *base
 						outputURL.Path = prefix + "operations/" + url.PathEscape(id) + "/output"
 						outputURL.RawQuery = ""
-						output, e := send(ctx, c, "GET", outputURL.String(), token, nil)
+						output, e := agentclient.Send(ctx, c, "GET", outputURL.String(), token, nil)
 						if e != nil {
 							fmt.Fprintln(errout, "exec output unavailable")
 							return 1

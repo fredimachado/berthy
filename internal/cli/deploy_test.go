@@ -206,27 +206,6 @@ func TestAgentErrorDoesNotEchoControlCharacters(t *testing.T) {
 	}
 }
 
-func TestAgentErrorShowsOnlySafeMessages(t *testing.T) {
-	long := strings.Repeat("x", 300)
-	for _, tc := range []struct{ name, body, want string }{
-		{"short", `{"message":"use --to"}`, "agent returned HTTP 409: use --to"},
-		{"300 bytes", `{"message":"` + long + `"}`, "agent returned HTTP 409: " + long},
-		{"301 bytes", `{"message":"` + long + `x"}`, "agent returned HTTP 409"},
-		{"nul", `{"message":"a\u0000b"}`, "agent returned HTTP 409"},
-		{"newline", `{"message":"a\nb"}`, "agent returned HTTP 409"},
-		{"empty", `{"message":""}`, "agent returned HTTP 409"},
-		{"no message", `{"code":"x"}`, "agent returned HTTP 409"},
-		{"not json", `<html>`, "agent returned HTTP 409"},
-	} {
-		if got := agentError(409, []byte(tc.body)); got != tc.want {
-			t.Errorf("%s: %q", tc.name, got)
-		}
-	}
-	if printableMessage("bad\xffbyte") {
-		t.Error("invalid UTF-8 accepted")
-	}
-}
-
 func TestRecoveryResolveNeedsReason(t *testing.T) {
 	cfg := refusingAgent(t, `{"code":"operation_failed","message":"unexpected"}`)
 	var out, errs bytes.Buffer

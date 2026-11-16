@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/state"
 	"berthy/internal/statebackup"
@@ -71,14 +72,14 @@ func runStateBackupCommand(f commandFlags, base *url.URL, prefix, token string, 
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	call := agentCaller(ctx, newAgentClient(), base, prefix, token)
+	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
 	data, status, err := call("POST", "state-backup", "")
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
 	}
 	if status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentError(status, data))
+		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
 	if code, held := reportHeld(data, out, errout, f.json); held {

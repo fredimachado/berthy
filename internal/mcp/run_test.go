@@ -1,0 +1,118 @@
+package mcp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// lockedBuffer is a bytes.Buffer that several goroutines may write.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func writeConfig(t *testing.T, url string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_MCP_TEST_TOKEN"}}}`, url)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRunRefusesBadArguments(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
+	good := writeConfig(t, "http://127.0.0.1:1")
+	for _, tc := range []struct {
+		name string
+		args []string
+		code int
+		want string
+	}{
+		{"no environment", []string{"--config", good}, 2, "valid -e environment required"},
+		{"bad environment", []string{"-e", "Dev!", "--config", good}, 2, "valid -e environment required"},
+		{"no config", []string{"-e", "dev"}, 2, "requires --config"},
+		{"unknown flag", []string{"-e", "dev", "--config", good, "--follow"}, 2, "unknown argument --follow"},
+		{"missing value", []string{"-e", "dev", "--config"}, 2, "missing value for --config"},
+		{"unknown environment", []string{"-e", "prod", "--config", good}, 1, "unknown environment"},
+		{"missing config file", []string{"-e", "dev", "--config", filepath.Join(t.TempDir(), "none.json")}, 1, "cannot read config"},
+	} {
+		var out, errs bytes.Buffer
+		if code := Run(tc.args, strings.NewReader(""), &out, &errs); code != tc.code || !strings.Contains(errs.String(), tc.want) || out.Len() != 0 || strings.Contains(errs.String(), testToken) {
+			t.Errorf("%s: exit %d stdout %q stderr %q", tc.name, code, out.String(), errs.String())
+		}
+	}
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", "")
+	var out, errs bytes.Buffer
+	if code := Run([]string{"-e", "dev", "--config", good}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "token environment variable is empty") {
+		t.Errorf("empty token: exit %d %q", code, errs.String())
+	}
+}
+
+func TestRunServesOnlyProtocolOnStdout(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
+	agent, u := newFakeAgent(t)
+	agent.on("GET", "apps", 200, `[{"ref":{"kind":"image","name":"api"}}]`)
+	config := writeConfig(t, u.String())
+	dir := manifestDir(t)
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	var wire, stderr lockedBuffer
+	done := make(chan int, 1)
+	go func() {
+		code := Run([]string{"-e", "dev", "--config", config, "--manifest-dir", dir}, inR, outW, &stderr)
+		outW.Close()
+		done <- code
+	}()
+	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "v1"}, nil)
+	cs, err := client.Connect(context.Background(), &sdk.IOTransport{Reader: io.NopCloser(io.TeeReader(outR, &wire)), Writer: inW}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v\nstderr: %s", err, stderr.String())
+	}
+	res := call(t, cs, "list_resources", nil)
+	if res.IsError || !strings.Contains(text(t, res), "api") {
+		t.Fatalf("list_resources: %v %q", res.IsError, text(t, res))
+	}
+	cs.Close()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	for _, line := range strings.Split(strings.TrimSpace(wire.String()), "\n") {
+		var frame struct {
+			JSONRPC string `json:"jsonrpc"`
+		}
+		if json.Unmarshal([]byte(line), &frame) != nil || frame.JSONRPC != "2.0" {
+			t.Errorf("stdout has a line that is not a protocol frame: %q", line)
+		}
+	}
+	if strings.Contains(wire.String(), testToken) || strings.Contains(stderr.String(), testToken) {
+		t.Fatal("the token was printed")
+	}
+	if got := agent.requests(); len(got) != 1 || got[0].Auth != "Bearer "+testToken {
+		t.Fatalf("agent requests %+v", got)
+	}
+}

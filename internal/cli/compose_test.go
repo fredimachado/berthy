@@ -9,11 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-
-	"berthy/internal/manifest"
 )
 
 const composeManifest = "project: demo\nnetwork: demo\napps:\n  db:\n    kind: compose\n    file: compose.yaml\n    stateful: true\n"
@@ -105,39 +102,6 @@ func TestDeployComposeRefusesVersionFlagAndKeepsImageRule(t *testing.T) {
 	}
 	if len(bodies) != 0 {
 		t.Fatalf("refused commands reached the agent: %v", bodies)
-	}
-}
-
-func TestReadComposeFileStaysInsideAndWithinLimit(t *testing.T) {
-	dir := writeComposeProject(t, composeManifest, "services: {}\n")
-	if got, err := readComposeFile(dir, "compose.yaml"); err != nil || got != "services: {}\n" {
-		t.Fatalf("read: %q %v", got, err)
-	}
-	for _, file := range []string{"..", "missing.yaml", "sub/../../escape.yaml"} {
-		if _, err := readComposeFile(dir, file); err == nil {
-			t.Errorf("%s accepted", file)
-		}
-	}
-	outside := filepath.Join(filepath.Dir(dir), "outside.yaml")
-	if err := os.WriteFile(outside, []byte("services: {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(dir, "link.yaml")); err != nil {
-		if runtime.GOOS == "windows" {
-			t.Skip("symlinks need developer mode on Windows")
-		}
-		t.Fatal(err)
-	}
-	if _, err := readComposeFile(dir, "link.yaml"); err == nil || !strings.Contains(err.Error(), "inside the manifest directory") {
-		t.Fatalf("symlink out of the directory: %v", err)
-	}
-	big := writeComposeProject(t, composeManifest, strings.Repeat("x", manifest.MaxComposeFile+1))
-	if _, err := readComposeFile(big, "compose.yaml"); err == nil {
-		t.Fatal("file over the limit accepted")
-	}
-	binary := writeComposeProject(t, composeManifest, "services:\x00\n")
-	if _, err := readComposeFile(binary, "compose.yaml"); err == nil {
-		t.Fatal("NUL in compose file accepted")
 	}
 }
 

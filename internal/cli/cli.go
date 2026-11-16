@@ -2,10 +2,12 @@ package cli
 
 import (
 	"berthy/internal/agent"
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
+	"berthy/internal/mcp"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/probehelper"
@@ -23,7 +25,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -31,22 +32,13 @@ import (
 	"syscall"
 	"text/tabwriter"
 	"time"
-	"unicode"
-	"unicode/utf8"
 )
 
-type Config struct {
-	Environments map[string]struct {
-		URL      string `json:"url"`
-		TokenEnv string `json:"token_env"`
-	} `json:"environments"`
-}
-
-var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+var envPattern = agentclient.EnvPattern
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info>")
+		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp>")
 		return 2
 	}
 	cmd := args[0]
@@ -62,6 +54,10 @@ func Run(args []string, out, errout io.Writer) int {
 	case "volume-extract":
 		// Only the restore container runs it, with the new volume at /target and the archive on stdin.
 		return runVolumeExtract(os.Stdin, volarchive.TargetDir, errout)
+	}
+	if cmd == "mcp" {
+		// It serves MCP on stdin and stdout, so nothing else may be printed to out.
+		return mcp.Run(args, os.Stdin, out, errout)
 	}
 	if cmd == "state-restore" {
 		// Local: it reads a snapshot from object storage and needs no agent, so it runs when the server is gone.
@@ -228,37 +224,12 @@ func Run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "remote commands require -e and --config")
 		return 2
 	}
-	b, err := os.ReadFile(config)
+	target, err := agentclient.Load(config, env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	var c Config
-	decConfig := json.NewDecoder(bytes.NewReader(b))
-	decConfig.DisallowUnknownFields()
-	if err = decConfig.Decode(&c); err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
-	}
-	if err = decConfig.Decode(&struct{}{}); err != io.EOF {
-		fmt.Fprintln(errout, "invalid trailing JSON")
-		return 1
-	}
-	target, ok := c.Environments[env]
-	if !ok || target.TokenEnv == "" {
-		fmt.Fprintln(errout, "unknown environment or missing token_env")
-		return 1
-	}
-	token := os.Getenv(target.TokenEnv)
-	if token == "" {
-		fmt.Fprintln(errout, "token environment variable is empty")
-		return 1
-	}
-	u, err := url.Parse(target.URL)
-	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		fmt.Fprintln(errout, "invalid agent URL")
-		return 1
-	}
+	u, token := *target.Base, target.Token
 	var endpoint string
 	switch cmd {
 	case "ps":
@@ -287,7 +258,7 @@ func Run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "unknown command")
 		return 2
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/" + endpoint
+	u.Path = target.Prefix + endpoint
 	if cmd == "stats" {
 		q := u.Query()
 		if watch {
@@ -347,7 +318,7 @@ func Run(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		fmt.Fprintln(errout, agentError(resp.StatusCode, body))
+		fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, body))
 		return 1
 	}
 	if cmd == "checks" {
@@ -557,17 +528,6 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 	return 1
 }
 
-// agentError describes a refused agent request. The agent message is shown only when it is safe to print.
-func agentError(status int, body []byte) string {
-	var reply struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(body, &reply) == nil && printableMessage(reply.Message) {
-		return fmt.Sprintf("agent returned HTTP %d: %s", status, reply.Message)
-	}
-	return fmt.Sprintf("agent returned HTTP %d", status)
-}
-
 // printChecks prints the stored check states as a table, or as indented JSON when asJSON is set.
 func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 	if asJSON {
@@ -603,17 +563,4 @@ func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 		return 1
 	}
 	return 0
-}
-
-// printableMessage reports whether s is at most 300 bytes of valid UTF-8 without control characters.
-func printableMessage(s string) bool {
-	if s == "" || len(s) > 300 || !utf8.ValidString(s) {
-		return false
-	}
-	for _, r := range s {
-		if unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
 }
