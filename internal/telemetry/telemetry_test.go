@@ -457,6 +457,57 @@ func TestReconfigurationSwitchesEndpointAndStopsWhenOff(t *testing.T) {
 	}
 }
 
+// heldExporter is a metric exporter whose Shutdown does not return until release is closed. Shutdown sends a pipeline's
+// final export, so this holds the pipeline in the middle of its last export.
+type heldExporter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *heldExporter) Temporality(sdkmetric.InstrumentKind) metricdata.Temporality {
+	return metricdata.CumulativeTemporality
+}
+
+func (h *heldExporter) Aggregation(k sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+	return sdkmetric.DefaultAggregationSelector(k)
+}
+
+func (h *heldExporter) Export(context.Context, *metricdata.ResourceMetrics) error { return nil }
+
+func (h *heldExporter) ForceFlush(context.Context) error { return nil }
+
+func (h *heldExporter) Shutdown(context.Context) error {
+	close(h.entered)
+	<-h.release
+	return nil
+}
+
+// Turning export off shuts the last pipeline down, and its final export is still going out until that shutdown returns.
+// Status and Target must keep describing the endpoint until then, so a caller that sees export as off knows nothing more is sent.
+func TestOffIsReportedOnlyOnceTheLastPipelineHasShutDown(t *testing.T) {
+	held := &heldExporter{entered: make(chan struct{}), release: make(chan struct{})}
+	p := &pipeline{provider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(held, sdkmetric.WithInterval(time.Hour))))}
+	e := &Exporter{live: p, configured: true, target: "http://collector.test:4318"}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		e.stop(p)
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pipeline never began to shut down")
+	}
+	if configured, _, _ := e.Status(); !configured || e.Target() == "" {
+		t.Fatal("export reads as off while the last pipeline is still sending its final export")
+	}
+	close(held.release)
+	<-stopped
+	if configured, _, _ := e.Status(); configured || e.Target() != "" {
+		t.Fatalf("after the shutdown: configured %v, target %q", configured, e.Target())
+	}
+}
+
 func TestFailureIsReportedWithoutHeaderValues(t *testing.T) {
 	const header = "Bearer TEST-ONLY-SECRET-42"
 	rc := newReceiver(t)

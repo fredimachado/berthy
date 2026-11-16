@@ -57,7 +57,7 @@ type Exporter struct {
 	configEvery time.Duration
 
 	mu         sync.Mutex
-	live       *pipeline // the pipeline whose results Status reports; nil while export is off
+	live       *pipeline // the pipeline whose results Status reports; nil once it has begun to shut down
 	configured bool
 	target     string
 	lastErr    string
@@ -168,23 +168,30 @@ func (e *Exporter) start(ctx context.Context, cfg Config) (*pipeline, error) {
 	return p, nil
 }
 
-// stop flushes a pipeline and shuts it down. It is first cleared as the live one, so the results of its final export are
-// dropped rather than reported.
+// stop flushes a pipeline and shuts it down. It is cleared as the live one before the shutdown, so the results of its final
+// export are dropped rather than reported. Export is reported as off only once the shutdown has returned: the final export
+// goes out during it, and until then Status and Target still describe that endpoint.
 func (e *Exporter) stop(p *pipeline) {
 	if p == nil {
 		return
 	}
 	e.mu.Lock()
-	if e.live == p {
+	wasLive := e.live == p
+	if wasLive {
 		e.live = nil
-		e.configured = false
-		e.target = ""
-		e.lastOK = time.Time{}
 	}
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	_ = p.provider.Shutdown(ctx)
+	if !wasLive {
+		return
+	}
+	e.mu.Lock()
+	e.configured = false
+	e.target = ""
+	e.lastOK = time.Time{}
+	e.mu.Unlock()
 }
 
 // setOff records that no export runs. reason is why, or empty when the manifest names no endpoint.
