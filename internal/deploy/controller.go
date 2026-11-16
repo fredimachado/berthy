@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
@@ -489,6 +490,7 @@ type schemaRevert struct {
 	Prepared        preparedPlan
 	Target          string
 	Revert, Version []string
+	Timeout         time.Duration  // the migration's own time limit for each command
 	Image           *state.Release // rolled back to first; nil keeps the current image
 }
 
@@ -594,5 +596,5 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 	if err != nil {
 		return schemaRevert{}, err
 	}
-	return schemaRevert{Source: src, Prepared: p, Target: target, Revert: args, Version: app.Migrations.Version, Image: image}, nil
+	return schemaRevert{Source: src, Prepared: p, Target: target, Revert: args, Version: app.Migrations.Version, Timeout: app.Migrations.TimeoutDuration(), Image: image}, nil
 }

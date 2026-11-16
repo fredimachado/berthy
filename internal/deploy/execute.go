@@ -267,6 +267,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 		return
 	}
+	attempts := app.Deploy.StartAttemptLimit()
 	deadline := time.Now().Add(budget)
 	rollCtx, stop := context.WithDeadline(ctx, deadline)
 	defer stop()
@@ -276,13 +277,15 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		id := w.intent.ServiceID
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas)
+			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas)
+			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
 		}
 		if e != nil {
 			// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e))
+			var gaveUp *errStartAttempts
+			errors.As(e, &gaveUp)
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp)
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 			recoveryCancel()
@@ -314,19 +317,19 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final verification unavailable"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable")
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable", nil)
 			return
 		}
 		if e = healthyOnce(rollCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final health verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed")
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed", nil)
 			return
 		}
 		if e = waitDrain(rollCtx, c.Engine, live.ID, op.ID); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final drain verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed")
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed", nil)
 			return
 		}
 	}
@@ -531,5 +534,6 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		}
 		return waitImageHealthy(ctx, c.Engine, i.ServiceID, before.TaskTemplate.ContainerSpec.Image, before.Mode.Replicated.Replicas)
 	}
-	return waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas)
+	// Restoring is not a rollout of a new version: it has no attempt limit.
+	return waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
 }

@@ -182,6 +182,7 @@ apps:
     deploy:
       deploy_timeout: 120s
       drain_timeout: 30s
+      start_attempts: 3
       retain: 5
     hooks:
       pre_deploy:
@@ -446,7 +447,7 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 1. **Lock.** Take the environment's deploy lock. If someone holds it, stop and report who and why.
 2. **Check.** Validate the manifest, confirm every named secret has a value, resolve the tag to a digest, pull the image.
 3. **Pre-deploy hooks.** Run them in order. A failure stops the deploy with nothing changed.
-4. **Start new.** Start the new version beside the old one. It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count.
+4. **Start new.** Start the new version beside the old one. It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count. A new version whose tasks fail to start `start_attempts` times (3 by default) is given up on at once, without waiting for `deploy_timeout`.
 5. **Switch and drain.** Route traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
 6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
@@ -459,7 +460,7 @@ If step 4 fails, the agent rolls back to the previous digest, records the deploy
 A new version can fail to start for reasons only its own output explains: a missing setting, a migration that did not apply, a health check that never passed. The old version keeps serving, and the evidence is kept before anything is cleaned up, so the cause can be found afterwards even though the failed task has been replaced and a service created by the deploy has been deleted.
 
 - **What is kept.** Before a failed rollout is rolled back or removed, the agent reads, for every role in the deploy, the newest tasks of the new version (at most five per role), including failed, rejected and shut-down ones. Per task it keeps the Swarm state and error, the exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines (at most 64 KiB) of its output with standard output and error interleaved. A failed pre-deploy or post-deploy command, a migration step, or one that ran past its time limit leaves the same for its container: exit code, error and the last lines of output. A piece that cannot be read is marked in that entry, and the rest is kept. Together the evidence of one deploy is limited to 1 MiB; the oldest logs are dropped first and marked truncated.
-- **A public reason.** The operation also records one line saying what happened, such as `role web: task exited with code 1 (3 failed tasks)`, `role web: container never became healthy (last check: exit 1)`, `pre-deploy command 1 exited with code 3` or `migration apply exited with code 2`. It carries no output of the app, so it is safe in history and in the event stream. `berthy history` and the operation record show it; the deploy, rollback and ingress apply commands print it when they fail.
+- **A public reason.** The operation also records one line saying what happened, such as `role web: task exited with code 1 (gave up after 3 failed starts)`, `role web: container never became healthy (last check: exit 1)`, `pre-deploy command 1 exited with code 3` or `migration apply exited with code 2 (after 3 attempts)`. It carries no output of the app, so it is safe in history and in the event stream. `berthy history` and the operation record show it; the deploy, rollback and ingress apply commands print it when they fail.
 - **Redaction and storage.** Every managed secret value is replaced by `[redacted]` in the output and health-check results before they are stored. The evidence is encrypted in the state file like the other private records. The evidence of the newest 50 operations that have any is kept; older evidence is deleted. Containers of finished migration steps and of commands that timed out stay until `berthy prune` removes them, which is safe because the evidence already holds their output.
 - **Reading it.** `berthy diagnostics <operation id> -e <env>` prints it for a person, and `--json` prints it for an agent; the id is in the output of the failed command and in `berthy history`. The API serves it at `GET /v1/environments/<env>/operations/<id>/diagnostics`. It needs the `deploy` scope, not `read`: application output can hold personal data that a read-only token should not see. An operation without evidence answers 404.
 
@@ -476,7 +477,27 @@ Hooks are declared per app as `pre_deploy` and `post_deploy` lists. Two step typ
 | Step | What it does | Typical use |
 | --- | --- | --- |
 | `backup: <job>` | Runs a named volume backup, including its preparation job if set, and waits for it | Archiving a fresh database dump before a deploy |
-| `run: <command>` | Runs the command once in a container of the new image, with the app's environment | A one-off task before traffic switches |
+| `run: <command>` | Runs the command in a container of the new image, with the app's environment. Runs once unless `retries` is set | A one-off task before traffic switches |
+
+A `run` hook takes two optional settings.
+
+| Setting | Meaning | Default |
+| --- | --- | --- |
+| `timeout` | Time limit of each attempt, from `1s` to `24h` | `5m` |
+| `retries` | How many more times the command runs after it exits non-zero, from 0 to 5 | `0` |
+
+```yaml
+    hooks:
+      pre_deploy:
+        - run: [bin/warm-cache]
+          timeout: 2m
+          retries: 2
+```
+
+- **Retries are off by default, and a command should only be retried when it is safe to run again.** A command that failed halfway may have changed something. Set `retries` only for a command that is idempotent, such as one that checks a dependency or warms a cache.
+- Each attempt runs in its own container, five seconds after the previous one ended. The deploy keeps the output of the last attempt, and the failure reason says how many attempts ran, such as `pre-deploy command 1 exited with code 3 (after 3 attempts)`.
+- **A command that runs past its `timeout` is never retried.** It may still be running, so starting it again could run it twice. The deploy stops and the operation needs recovery, as it always did for a timed-out command.
+- `backup:` steps take neither setting.
 
 ### Database migrations
 
@@ -502,13 +523,23 @@ An app that applies migrations when it starts can leave the schema ahead of the 
       version: [<command>]
       apply: [<command>]
       revert: [<command>, "{target}"]
+      timeout: 5m
+      retries: 0
 ```
+
+`timeout` limits every migration command (`version`, `apply` and `revert`), each attempt on its own, from `1s` to `24h`; it defaults to `5m`. `retries`, from 0 to 5 and `0` by default, runs a failed `apply` again.
+
+**Retrying `apply` is only safe for an idempotent command.** A migration that failed halfway may have applied part of its changes, and running it again from the middle can fail or change the schema twice. Berthy cannot know whether yours handles that, so `retries` is off. Turn it on for a migration tool that records each step in its own transaction and skips what it has applied, or for a failure that comes from outside the migration, such as a database that was still starting.
+
+- `version` and `revert` are never retried.
+- A migration command that runs past `timeout` is never retried, because it may still be running. The deploy stops with the outcome uncertain, and recovery stops the container.
+- Each attempt of `apply` runs in its own container, five seconds after the previous one ended. The state after is recorded once, after the last attempt.
 
 **How a deploy applies migrations.** The block runs after the pre-deploy hooks and before the new version starts.
 
 1. The pre-deploy hooks have already run, including a `backup:` step if one is declared.
 2. Berthy runs `version` and stores the result in the deploy record as the state before.
-3. Berthy runs `apply` once.
+3. Berthy runs `apply`, once unless `retries` is set.
 4. Berthy runs `version` again and stores the state after. One deploy can apply several migrations; the two recorded states mark exactly where it started and ended.
 5. If `apply` fails, the deploy stops and the old version keeps running. The state after is still recorded, because a failed `apply` may have applied some of its migrations.
 6. If it succeeds but the new version fails its health check, the image rolls back and the schema stays where it is.
@@ -530,8 +561,15 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 | --- | --- | --- | --- |
 | `deploy_timeout` | Longest the new version may take to become healthy | No overall limit; bounded by the health check | 120s |
 | `drain_timeout` | Time the old version gets to finish requests | 10s | 30s |
+| `start_attempts` | How many failed task starts a rollout tolerates before it gives up, from 1 to 10 | Unlimited restarts | 3 |
 
 The wait before health checks count is the health check's own `start_period`, set per role.
+
+**Start attempts.** Swarm restarts a task that exits or is killed as unhealthy. During a deploy Berthy counts those failures for each role of the new version and gives up as soon as one role's reach `start_attempts`: the old version keeps running, a service the deploy created is removed, and the deploy fails with a reason such as `role web: task exited with code 1 (gave up after 3 failed starts)`. A deploy that gives up this way does not wait out `deploy_timeout`. A new version that fails twice and starts on the third try passes with the default of 3. Failures of the old version, or from an earlier deploy, are not counted.
+
+The limit applies to a rollout only. Once a version is serving, Swarm keeps restarting a task that crashes, without limit, so a service that dies at 3 in the morning comes back by itself.
+
+Hook and migration time limits and retries are set with the hooks and migrations; see Hooks and Database migrations.
 
 ### Service defaults
 
@@ -541,9 +579,9 @@ An image app that sets nothing else runs with these Swarm settings.
 | --- | --- |
 | Update order | Start the new version first |
 | Update parallelism | 1 at a time |
-| On a failed update | Roll back |
+| On a failed update | Berthy counts failed starts of the new version (`start_attempts`, 3) and restores the previous version when they are used up; Swarm keeps replacing a failing task meanwhile |
 | Rollback order and parallelism | Start first, 1 at a time |
-| Restart policy | Docker's default: restart on any exit, after 5 seconds, without limit |
+| Restart policy | Restart on any exit, after 5 seconds, without limit; set explicitly on every service |
 | Placement | No constraints |
 | Replicas | 1 |
 | Resource limits | None unless set per role |

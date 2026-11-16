@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,7 +124,7 @@ func TestHealthRejectsOldGeneration(t *testing.T) {
 func TestHealthWaitHonorsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1); err == nil {
+	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1, 0); err == nil {
 		t.Fatal("unhealthy service passed")
 	}
 }
@@ -177,7 +179,7 @@ func TestCreateRoleJournalsAndVerifiesHealthyGeneration(t *testing.T) {
 	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Spec: desired}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "container", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
 	j := &journalFake{}
-	id, err := createRole(context.Background(), j, m, "op", state.Intent{Kind: "create", Name: "svc", Generation: "op", Desired: desired}, nil, 1)
+	id, err := createRole(context.Background(), j, m, "op", state.Intent{Kind: "create", Name: "svc", Generation: "op", Desired: desired}, nil, 1, 3)
 	if err != nil || id != "id" || len(j.saved) != 1 || m.creates != 1 {
 		t.Fatalf("id=%q err=%v intents=%d creates=%d", id, err, len(j.saved), m.creates)
 	}
@@ -209,7 +211,7 @@ func TestUpdateRoleUsesCurrentVersion(t *testing.T) {
 	desired := json.RawMessage(`{"Name":"svc","version":"new"}`)
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
 	j := &journalFake{}
-	err := updateRole(context.Background(), j, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1)
+	err := updateRole(context.Background(), j, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, 3)
 	if err != nil || m.updateVersion != 9 {
 		t.Fatalf("update version %d: %v", m.updateVersion, err)
 	}
@@ -252,5 +254,175 @@ func TestRuntimeValidationRejectsUnknownSecuritySettings(t *testing.T) {
 		if validateInheritedRuntime(json.RawMessage(raw)) == nil {
 			t.Fatalf("unsafe runtime accepted: %s", raw)
 		}
+	}
+}
+
+// seqHealth is a healthReader whose task list changes with every poll, like a Swarm that keeps replacing a failing task and
+// forgets the oldest ones.
+type seqHealth struct {
+	mu    sync.Mutex
+	polls int
+	step  func(poll int) []engine.ServiceTask
+}
+
+func (s *seqHealth) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.polls++
+	return s.step(s.polls), nil
+}
+func (s *seqHealth) InspectContainerHealth(context.Context, string) (string, error) {
+	return "healthy", nil
+}
+
+func failedTask(id, state, generation string) engine.ServiceTask {
+	return engine.ServiceTask{ID: id, ServiceID: "s", State: state, DesiredState: "shutdown", Slot: 1, Labels: map[string]string{"berthy.operation": generation}}
+}
+
+// onService returns the tasks as tasks of the service with the given ID.
+func onService(id string, tasks ...engine.ServiceTask) []engine.ServiceTask {
+	for i := range tasks {
+		tasks[i].ServiceID = id
+	}
+	return tasks
+}
+
+func runningTask(id, generation string) engine.ServiceTask {
+	return engine.ServiceTask{ID: id, ServiceID: "s", ContainerID: "c-" + id, State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": generation}}
+}
+
+func TestWaitHealthyGivesUpAtTheStartAttemptLimit(t *testing.T) {
+	// A long deadline: the wait must end because of the failures, not the clock.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	e := healthFake{tasks: []engine.ServiceTask{failedTask("t1", "failed", "op"), failedTask("t2", "rejected", "op"), failedTask("t3", "failed", "op"), runningTask("t4", "op")}, status: "starting"}
+	start := time.Now()
+	err := waitHealthy(ctx, e, "s", "op", 1, 3)
+	var gave *errStartAttempts
+	if !errors.As(err, &gave) || gave.Failed != 3 || gave.Limit != 3 {
+		t.Fatalf("error %v", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("took %v: waited for the deadline", time.Since(start))
+	}
+}
+
+func TestWaitHealthyIgnoresFailuresOfOtherGenerationsAndBelowTheLimit(t *testing.T) {
+	e := healthFake{tasks: []engine.ServiceTask{failedTask("o1", "failed", "other"), failedTask("o2", "failed", "other"), failedTask("o3", "failed", "other"), failedTask("o4", "failed", "other"), failedTask("t1", "failed", "op"), failedTask("t2", "failed", "op")}, status: "starting"}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	err := waitHealthy(ctx, e, "s", "op", 1, 3)
+	var gave *errStartAttempts
+	if err == nil || errors.As(err, &gave) {
+		t.Fatalf("error %v, want the deadline", err)
+	}
+}
+
+func TestWaitHealthyWithoutALimitNeverGivesUp(t *testing.T) {
+	var tasks []engine.ServiceTask
+	for i := 0; i < 20; i++ {
+		tasks = append(tasks, failedTask(fmt.Sprintf("t%d", i), "failed", "op"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	err := waitHealthy(ctx, healthFake{tasks: tasks, status: "starting"}, "s", "op", 1, 0)
+	var gave *errStartAttempts
+	if err == nil || errors.As(err, &gave) {
+		t.Fatalf("error %v, want the deadline", err)
+	}
+}
+
+// Swarm keeps few old tasks, so the count must not depend on seeing every failure at once.
+func TestWaitHealthyCountsFailuresAcrossPolls(t *testing.T) {
+	e := &seqHealth{step: func(poll int) []engine.ServiceTask {
+		return []engine.ServiceTask{failedTask(fmt.Sprintf("t%d", poll), "failed", "op")} // only the newest failure is ever listed
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := waitHealthy(ctx, e, "s", "op", 1, 3)
+	var gave *errStartAttempts
+	if !errors.As(err, &gave) || gave.Failed != 3 || e.polls != 3 {
+		t.Fatalf("error %v after %d polls", err, e.polls)
+	}
+}
+
+func TestWaitHealthySucceedsAfterFailuresBelowTheLimit(t *testing.T) {
+	e := &seqHealth{step: func(poll int) []engine.ServiceTask {
+		if poll <= 2 {
+			return []engine.ServiceTask{failedTask(fmt.Sprintf("t%d", poll), "failed", "op")}
+		}
+		return []engine.ServiceTask{failedTask("t1", "failed", "op"), failedTask("t2", "failed", "op"), runningTask("t3", "op")}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := waitHealthy(ctx, e, "s", "op", 1, 3); err != nil {
+		t.Fatalf("a role that started on its third try failed: %v", err)
+	}
+}
+
+func TestCreateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
+	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Spec: desired}, tasks: onService("id", failedTask("t1", "failed", "op"), failedTask("t2", "failed", "op"))}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := createRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: desired}, nil, 1, 2)
+	var gave *errStartAttempts
+	if !errors.As(err, &gave) || gave.Role != "web" || gave.Failed != 2 || gave.Limit != 2 {
+		t.Fatalf("error %v", err)
+	}
+}
+
+func TestUpdateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
+	before := json.RawMessage(`{"Name":"svc","version":"old"}`)
+	desired := json.RawMessage(`{"Name":"svc","version":"new"}`)
+	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: onService("id", failedTask("t1", "failed", "op"), runningTask("t0", "old"))}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	err := updateRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, 1)
+	var gave *errStartAttempts
+	if !errors.As(err, &gave) || gave.Role != "web" || gave.Failed != 1 {
+		t.Fatalf("error %v", err)
+	}
+}
+
+func TestServiceSpecLetsBerthyDecideWhenAnUpdateFails(t *testing.T) {
+	one := 1
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "10s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		UpdateConfig, RollbackConfig map[string]any
+		TaskTemplate                 struct{ RestartPolicy map[string]any }
+	}
+	if err = json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	// Swarm keeps replacing a failing new task; Berthy counts them and compensates when its attempts are used up.
+	if v.UpdateConfig["FailureAction"] != "continue" || v.UpdateConfig["Order"] != "start-first" {
+		t.Fatalf("update config %v", v.UpdateConfig)
+	}
+	if v.RollbackConfig["FailureAction"] != "rollback" || v.RollbackConfig["Order"] != "start-first" {
+		t.Fatalf("rollback config %v", v.RollbackConfig)
+	}
+	rp := v.TaskTemplate.RestartPolicy
+	if rp["Condition"] != "any" || rp["Delay"] != float64(5*time.Second) || rp["MaxAttempts"] != float64(0) {
+		t.Fatalf("restart policy %v", rp)
+	}
+}
+
+func TestMergeServiceSpecSetsTheRestartPolicyOfAnExistingService(t *testing.T) {
+	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"old"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback"}}`)
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}],"RestartPolicy":{"Condition":"any","Delay":5000000000}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"continue"}}`)
+	merged, err := mergeServiceSpec(live, desired, "net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		UpdateConfig map[string]any
+		TaskTemplate struct{ RestartPolicy map[string]any }
+	}
+	if err = json.Unmarshal(merged, &v); err != nil || v.UpdateConfig["FailureAction"] != "continue" || v.TaskTemplate.RestartPolicy["Condition"] != "any" {
+		t.Fatalf("merged %s: %v", merged, err)
 	}
 }

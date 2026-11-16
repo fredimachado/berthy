@@ -105,15 +105,15 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 
 // runRevert records the schema state, runs the revert from the migration's image, and records the state again.
 func (c *Controller) runRevert(ctx context.Context, opID string, sr schemaRevert) (string, string, error) {
-	before, err := c.runOneOff(ctx, opID, sr.Prepared, 30000, "revert_before", sr.Version, true)
+	before, err := c.runOneOff(ctx, opID, sr.Prepared, 30000, "revert_before", sr.Version, true, sr.Timeout)
 	if err != nil {
 		return "", "", err
 	}
-	_, revertErr := c.runOneOff(ctx, opID, sr.Prepared, 30001, "migration_revert", sr.Revert, false)
+	_, revertErr := c.runOneOff(ctx, opID, sr.Prepared, 30001, "migration_revert", sr.Revert, false, sr.Timeout)
 	if errors.Is(revertErr, ErrOneOffUncertain) {
 		return before, "", revertErr
 	}
-	after, afterErr := c.runOneOff(ctx, opID, sr.Prepared, 30002, "revert_after", sr.Version, true)
+	after, afterErr := c.runOneOff(ctx, opID, sr.Prepared, 30002, "revert_after", sr.Version, true, sr.Timeout)
 	if revertErr != nil {
 		return before, after, revertErr
 	}

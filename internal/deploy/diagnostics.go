@@ -32,21 +32,23 @@ const (
 
 // Diagnostic is evidence about one failed piece of an operation: a task of the new version or a one-off command.
 type Diagnostic struct {
-	Kind      string               `json:"kind"` // "task" or "oneoff"
-	Name      string               `json:"name"` // service name of a task, or the hook role of a one-off ("pre_hook", "migration_apply", ...)
-	Role      string               `json:"role,omitempty"`
-	Index     int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command in the manifest
-	TaskID    string               `json:"task_id,omitempty"`
-	Container string               `json:"container,omitempty"`
-	State     string               `json:"state,omitempty"` // Swarm task state or container state
-	Error     string               `json:"error,omitempty"` // Swarm task error or container error
-	ExitCode  *int                 `json:"exit_code,omitempty"`
-	OOMKilled bool                 `json:"oom_killed,omitempty"`
-	Health    string               `json:"health,omitempty"`
-	HealthLog []engine.HealthProbe `json:"health_log,omitempty"`
-	Logs      string               `json:"logs,omitempty"` // last lines, secrets redacted
-	Truncated bool                 `json:"truncated,omitempty"`
-	Captured  time.Time            `json:"captured"`
+	Kind        string               `json:"kind"` // "task" or "oneoff"
+	Name        string               `json:"name"` // service name of a task, or the hook role of a one-off ("pre_hook", "migration_apply", ...)
+	Role        string               `json:"role,omitempty"`
+	Index       int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command in the manifest
+	TaskID      string               `json:"task_id,omitempty"`
+	Container   string               `json:"container,omitempty"`
+	State       string               `json:"state,omitempty"` // Swarm task state or container state
+	Error       string               `json:"error,omitempty"` // Swarm task error or container error
+	ExitCode    *int                 `json:"exit_code,omitempty"`
+	OOMKilled   bool                 `json:"oom_killed,omitempty"`
+	Attempts    int                  `json:"attempts,omitempty"`      // how many times a retried one-off ran, when more than once
+	GaveUpAfter int                  `json:"gave_up_after,omitempty"` // the start attempts a rollout used up before it gave up on this role
+	Health      string               `json:"health,omitempty"`
+	HealthLog   []engine.HealthProbe `json:"health_log,omitempty"`
+	Logs        string               `json:"logs,omitempty"` // last lines, secrets redacted
+	Truncated   bool                 `json:"truncated,omitempty"`
+	Captured    time.Time            `json:"captured"`
 }
 
 // diagnosticEngine is what capture needs from Docker beyond the rollout. An engine without it records the Swarm view only.
@@ -287,10 +289,18 @@ func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diag
 
 // recordRolloutFailure captures and stores the evidence of a failed rollout and returns the public reason. It runs before
 // anything is cleaned up. fallback is the reason when no task left evidence.
-func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work []roleWork, fallback string) string {
+func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work []roleWork, fallback string, gaveUp *errStartAttempts) string {
 	capCtx, cancel := captureContext(ctx)
 	defer cancel()
-	return c.storeDiagnostics(capCtx, opID, c.captureRollout(capCtx, opID, work), fallback)
+	d := c.captureRollout(capCtx, opID, work)
+	if gaveUp != nil {
+		for i := range d {
+			if d[i].Kind == "task" && d[i].Role == gaveUp.Role {
+				d[i].GaveUpAfter = gaveUp.Limit
+			}
+		}
+	}
+	return c.storeDiagnostics(capCtx, opID, d, fallback)
 }
 
 // captureInterrupted keeps the evidence of an interrupted rollout before recovery compensates it, unless the operation
@@ -308,7 +318,7 @@ func (c *Controller) captureInterrupted(ctx context.Context, opID string, intent
 	if len(work) == 0 {
 		return ""
 	}
-	return c.recordRolloutFailure(ctx, opID, work, "")
+	return c.recordRolloutFailure(ctx, opID, work, "", nil)
 }
 
 // recordOneOffFailure stores the evidence a failed hook or migration carried and returns the public reason, or "" when the
@@ -321,6 +331,10 @@ func (c *Controller) recordOneOffFailure(ctx context.Context, opID string, err e
 
 // rolloutFallback is the public reason when no task left evidence, chosen from the rollout's own error. The texts are fixed.
 func rolloutFallback(cause error) string {
+	var gaveUp *errStartAttempts
+	if errors.As(cause, &gaveUp) {
+		return fmt.Sprintf("role %s: gave up after %d failed starts", printable(gaveUp.Role, 64), gaveUp.Limit)
+	}
 	if cause != nil {
 		switch cause.Error() {
 		case "service health deadline exceeded":
@@ -390,8 +404,12 @@ func taskCause(tasks []Diagnostic) string {
 	} else if len(tasks) > 0 {
 		cause = "deploy deadline exceeded before the task was healthy"
 	}
-	if cause != "" && failed > 1 {
-		cause += fmt.Sprintf(" (%d failed tasks)", failed)
+	if cause != "" {
+		if t := anyTask(tasks, func(t Diagnostic) bool { return t.GaveUpAfter > 0 }); t != nil {
+			cause += fmt.Sprintf(" (gave up after %d failed starts)", t.GaveUpAfter)
+		} else if failed > 1 {
+			cause += fmt.Sprintf(" (%d failed tasks)", failed)
+		}
 	}
 	return cause
 }
@@ -419,31 +437,40 @@ func exitedOnItsOwn(t Diagnostic) bool {
 	return t.ExitCode != nil && t.State != "running" && t.State != "starting"
 }
 
-func oneOffCause(d Diagnostic) string {
-	var what string
-	switch d.Name {
+// oneOffLabel names a one-off for people: "pre-deploy command 2", "migration apply". index is the 1-based position of a hook.
+func oneOffLabel(kind string, index int) string {
+	switch kind {
 	case "pre_hook":
-		what = fmt.Sprintf("pre-deploy command %d", max(d.Index, 1))
+		return fmt.Sprintf("pre-deploy command %d", max(index, 1))
 	case "post_hook":
-		what = fmt.Sprintf("post-deploy command %d", max(d.Index, 1))
+		return fmt.Sprintf("post-deploy command %d", max(index, 1))
 	case "migration_apply":
-		what = "migration apply"
+		return "migration apply"
 	case "schema_before", "schema_after", "revert_before", "revert_after":
-		what = "schema version command"
+		return "schema version command"
 	case "migration_revert":
-		what = "migration revert"
-	default:
-		what = "one-off command " + printable(d.Name, 64)
+		return "migration revert"
 	}
+	return "one-off command " + printable(kind, 64)
+}
+
+func oneOffCause(d Diagnostic) string {
+	what := oneOffLabel(d.Name, d.Index)
+	var cause string
 	switch {
 	case d.OOMKilled:
-		return what + " was killed: out of memory"
+		cause = what + " was killed: out of memory"
 	case strings.HasPrefix(d.Error, errTimedOut):
-		return what + " timed out"
+		cause = what + " timed out"
 	case d.ExitCode != nil:
-		return fmt.Sprintf("%s exited with code %d", what, *d.ExitCode)
+		cause = fmt.Sprintf("%s exited with code %d", what, *d.ExitCode)
+	default:
+		cause = what + " outcome uncertain"
 	}
-	return what + " outcome uncertain"
+	if d.Attempts > 1 {
+		cause += fmt.Sprintf(" (after %d attempts)", d.Attempts)
+	}
+	return cause
 }
 
 // printable keeps the printable ASCII of s, replacing anything else with '?', and cuts it to limit bytes.

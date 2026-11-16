@@ -283,7 +283,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err = applyIntent(ctx, c.Store, c.Engine, op.ID, i, auth); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service update requires recovery"}
 	}
-	if err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n); err != nil {
+	if err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, 0); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service health requires recovery"}
 	}
 	if err = waitDrain(ctx, c.Engine, b.ServiceID, op.ID); err != nil {
@@ -332,7 +332,7 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 		if generation == "" {
 			return errors.New("service generation unavailable")
 		}
-		if err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas); err != nil {
+		if err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas, 0); err != nil {
 			return err
 		}
 	}

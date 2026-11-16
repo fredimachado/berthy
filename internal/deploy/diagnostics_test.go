@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,7 +226,7 @@ func TestFailedCreatedRoleKeepsTaskEvidenceBeforeTheServiceIsDeleted(t *testing.
 		t.Fatal(err)
 	}
 	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
-	want := "role web: task exited with code 1 (3 failed tasks)"
+	want := "role web: task exited with code 1 (gave up after 3 failed starts)"
 	if op.State != "failed" || op.Err != "rollout failed and was cleaned up" || op.Reason != want {
 		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
 	}
@@ -450,7 +451,7 @@ func TestFailedHookDiagnosticCarriesExitCodeAndOutput(t *testing.T) {
 	name := fmt.Sprintf("berthy-%s-10000", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "exited", ExitCode: 3}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stderr migration 0042 failed: column exists\n"}
-	_, err = c.runOneOff(context.Background(), op.ID, p, 10000, "pre_hook", []string{"migrate"}, false)
+	_, err = c.runOneOff(context.Background(), op.ID, p, 10000, "pre_hook", []string{"migrate"}, false, time.Minute)
 	d := failureDiagnostics(err)
 	if err == nil || len(d) != 1 || d[0].ExitCode == nil || *d[0].ExitCode != 3 || !strings.Contains(d[0].Logs, "migration 0042 failed") || d[0].Index != 1 {
 		t.Fatalf("error %v diagnostics %+v", err, d)
@@ -495,7 +496,7 @@ func TestTimedOutOneOffKeepsItsOutputAndIsNotStopped(t *testing.T) {
 	name := fmt.Sprintf("berthy-%s-10001", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "running"}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stdout still migrating\n"}
-	_, err = c.runOneOff(context.Background(), op.ID, p, 10001, "migration_apply", []string{"apply"}, false)
+	_, err = c.runOneOff(context.Background(), op.ID, p, 10001, "migration_apply", []string{"apply"}, false, 5*time.Minute)
 	d := failureDiagnostics(err)
 	if !errors.Is(err, ErrOneOffUncertain) || len(d) != 1 || !strings.HasPrefix(d[0].Error, errTimedOut) || !strings.Contains(d[0].Logs, "still migrating") || d[0].ExitCode != nil {
 		t.Fatalf("error %v diagnostics %+v", err, d)
@@ -620,3 +621,140 @@ func (p *perContainerPrune) InspectContainer(_ context.Context, id string) (engi
 	return engine.ContainerSnapshot{ID: id, Running: p.running[id], Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": p.op, "berthy.oneoff": p.roles[id]}}, nil
 }
 func (p *perContainerPrune) RemoveContainer(context.Context, string) error { return nil }
+
+func withStartAttempts(n int) func(*manifest.App) {
+	return func(a *manifest.App) { a.Deploy.StartAttempts = &n }
+}
+
+func TestCreatedRoleGivesUpAfterItsStartAttempts(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 2) }
+	f.diagnose = exitedContainers(2, "starting")
+	f.tails = map[string]string{"c1": "boom\n", "c2": "boom\n"}
+	c, s := diagController(t, f)
+	start := time.Now()
+	// A long deadline: the deploy must end because the attempts are used up, not because the time is.
+	op := deployWeb(t, c, s, "first", "a", webManifest("1m", withStartAttempts(2)))
+	if time.Since(start) > 20*time.Second {
+		t.Fatalf("took %v: waited for the deploy timeout", time.Since(start))
+	}
+	if op.State != "failed" || op.Err != "rollout failed and was cleaned up" || op.Reason != "role web: task exited with code 1 (gave up after 2 failed starts)" {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	if f.callIndex("DeleteService") < 0 {
+		t.Fatal("the service was not removed")
+	}
+	if got := storedDiagnostics(t, s, op.ID); len(got) != 2 || got[0].GaveUpAfter != 2 {
+		t.Fatalf("diagnostics %+v", got)
+	}
+}
+
+func TestUpdatedRoleGivesUpAfterItsStartAttemptsAndKeepsThePreviousVersion(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, image string) []engine.ServiceTask {
+		if strings.Contains(image, strings.Repeat("b", 64)) {
+			return failedTasks(generation, 2)
+		}
+		return []engine.ServiceTask{{ID: "good", ContainerID: "c-good", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": generation}, Image: image}}
+	}
+	f.diagnose = exitedContainers(2, "starting")
+	f.tails = map[string]string{"c1": "boom\n", "c2": "boom\n"}
+	c, s := diagController(t, f)
+	if op := deployWeb(t, c, s, "first", "a", webManifest("2s", nil)); op.State != "succeeded" {
+		t.Fatalf("first deploy %s %s", op.State, op.Err)
+	}
+	start := time.Now()
+	op := deployWeb(t, c, s, "second", "b", webManifest("1m", withStartAttempts(2)))
+	if time.Since(start) > 20*time.Second {
+		t.Fatalf("took %v: waited for the deploy timeout", time.Since(start))
+	}
+	if op.State != "rolled_back" || op.Reason != "role web: task exited with code 1 (gave up after 2 failed starts)" {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	f.positiveEngine.mu.Lock()
+	live := string(f.positiveEngine.spec)
+	f.positiveEngine.mu.Unlock()
+	if !strings.Contains(live, strings.Repeat("a", 64)) || strings.Contains(live, strings.Repeat("b", 64)) {
+		t.Fatalf("the previous version was not restored: %s", live)
+	}
+}
+
+func TestRoleThatStartsOnItsLastAttemptSucceeds(t *testing.T) {
+	for _, tc := range []struct {
+		attempts int
+		state    string
+	}{{3, "succeeded"}, {2, "failed"}} {
+		t.Run(fmt.Sprint(tc.attempts), func(t *testing.T) {
+			f := newDiagFake()
+			var polls atomic.Int32
+			f.tasksFor = func(generation, image string) []engine.ServiceTask {
+				// The role fails twice, then runs: Swarm replaced the failed task, and the third one is healthy.
+				if polls.Add(1) <= 2 {
+					return failedTasks(generation, int(polls.Load()))
+				}
+				tasks := failedTasks(generation, 2)
+				return append(tasks, engine.ServiceTask{ID: "good", ContainerID: "c-good", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": generation}, Image: image})
+			}
+			f.diagnose = exitedContainers(2, "starting")
+			c, s := diagController(t, f)
+			op := deployWeb(t, c, s, "first", "a", webManifest("1m", withStartAttempts(tc.attempts)))
+			if op.State != tc.state {
+				t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+			}
+		})
+	}
+}
+
+func TestRecoveryRestoresTheSpecOfAnUpdateThatBerthyWasWatching(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	prior, _, err := s.Admit(ctx, state.Admission{RequestID: "prior", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: json.RawMessage(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "update", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback","Order":"start-first"}}`)
+	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `","Labels":{"berthy.operation":"new"}},"RestartPolicy":{"Condition":"any","Delay":5000000000}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"continue","Order":"start-first"}}`)
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
+		t.Fatal(err)
+	}
+	// The agent stopped while the update ran and Berthy was still waiting for the new version: Swarm keeps replacing its
+	// failing tasks, and the service carries the journaled target.
+	e := dockerSpecs{&positiveEngine{spec: storedAsDocker(desired)}}
+	c := Controller{Engine: e, Store: s}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !sameSpec(e.spec, before) {
+		t.Fatalf("service not restored: %s", e.spec)
+	}
+}
+
+func TestStartAttemptWordingOfTheReason(t *testing.T) {
+	if got := rolloutFallback(&errStartAttempts{Role: "web", Failed: 3, Limit: 3}); got != "role web: gave up after 3 failed starts" {
+		t.Fatalf("fallback %q", got)
+	}
+	if got := rolloutFallback(fmt.Errorf("wrapped: %w", &errStartAttempts{Role: "web", Limit: 2})); got != "role web: gave up after 2 failed starts" {
+		t.Fatalf("wrapped fallback %q", got)
+	}
+	tasks := []Diagnostic{{Kind: "task", Role: "web", State: "failed", ExitCode: exitCode(1), GaveUpAfter: 3}, {Kind: "task", Role: "web", State: "failed", ExitCode: exitCode(1), GaveUpAfter: 3}}
+	if got := failureReason(tasks, "x"); got != "role web: task exited with code 1 (gave up after 3 failed starts)" {
+		t.Fatalf("reason %q", got)
+	}
+	retried := []Diagnostic{{Kind: "oneoff", Name: "migration_apply", ExitCode: exitCode(2), Attempts: 3}}
+	if got := failureReason(retried, "x"); got != "migration apply exited with code 2 (after 3 attempts)" {
+		t.Fatalf("reason %q", got)
+	}
+}

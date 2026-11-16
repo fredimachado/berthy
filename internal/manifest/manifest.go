@@ -111,6 +111,8 @@ type Deploy struct {
 	DeployTimeout string `json:"deploy_timeout,omitempty" yaml:"deploy_timeout,omitempty"`
 	DrainTimeout  string `json:"drain_timeout,omitempty" yaml:"drain_timeout,omitempty"`
 	Retain        *int   `json:"retain,omitempty" yaml:"retain,omitempty"`
+	// StartAttempts is how many failed task starts a rollout tolerates before it gives up; default 3, from 1 to 10.
+	StartAttempts *int `json:"start_attempts,omitempty" yaml:"start_attempts,omitempty"`
 }
 type Hooks struct {
 	PreDeploy  []Hook `json:"pre_deploy,omitempty" yaml:"pre_deploy,omitempty"`
@@ -119,11 +121,19 @@ type Hooks struct {
 type Hook struct {
 	Backup string   `json:"backup,omitempty" yaml:"backup,omitempty"`
 	Run    []string `json:"run,omitempty" yaml:"run,omitempty"`
+	// Timeout and Retries are for run hooks only: the time limit of each attempt (default 5m, from 1s to 24h) and how
+	// many more times a command that exited non-zero is run (default 0, up to 5).
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Retries *int   `json:"retries,omitempty" yaml:"retries,omitempty"`
 }
 type Migrations struct {
 	Version []string `json:"version" yaml:"version"`
 	Apply   []string `json:"apply" yaml:"apply"`
 	Revert  []string `json:"revert,omitempty" yaml:"revert,omitempty"`
+	// Timeout limits each migration command (default 5m, from 1s to 24h). Retries runs a failed apply again (default 0, up
+	// to 5); version and revert are never retried.
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Retries *int   `json:"retries,omitempty" yaml:"retries,omitempty"`
 }
 type Job struct {
 	App      string   `json:"app" yaml:"app"`
@@ -141,6 +151,63 @@ const (
 	minJobTimeout     = time.Second
 	maxJobTimeout     = 24 * time.Hour
 )
+
+// Rollout and command settings. A setting left out takes its default, which stored manifests show.
+const (
+	defaultStartAttempts  = 3
+	maxStartAttempts      = 10
+	defaultCommandTimeout = "5m"
+	minCommandTimeout     = time.Second
+	maxCommandTimeout     = 24 * time.Hour
+	maxCommandRetries     = 5
+)
+
+// StartAttemptLimit is how many failed task starts a rollout of the app tolerates. A manifest stored before the setting
+// existed answers with the default.
+func (d Deploy) StartAttemptLimit() int {
+	if d.StartAttempts == nil {
+		return defaultStartAttempts
+	}
+	return *d.StartAttempts
+}
+
+func commandTimeout(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		d, _ = time.ParseDuration(defaultCommandTimeout)
+	}
+	return d
+}
+
+func commandRetries(n *int) int {
+	if n == nil {
+		return 0
+	}
+	return *n
+}
+
+// validCommandTimeout accepts an empty timeout, which takes the default, or a duration from 1s to 24h.
+func validCommandTimeout(s string) bool {
+	if s == "" {
+		return true
+	}
+	d, err := time.ParseDuration(s)
+	return err == nil && d >= minCommandTimeout && d <= maxCommandTimeout
+}
+
+func validCommandRetries(n *int) bool { return n == nil || *n >= 0 && *n <= maxCommandRetries }
+
+// TimeoutDuration is the time limit of each attempt of a run hook.
+func (h Hook) TimeoutDuration() time.Duration { return commandTimeout(h.Timeout) }
+
+// RetryCount is how many more times a run hook is run after it exits non-zero.
+func (h Hook) RetryCount() int { return commandRetries(h.Retries) }
+
+// TimeoutDuration is the time limit of each migration command.
+func (x Migrations) TimeoutDuration() time.Duration { return commandTimeout(x.Timeout) }
+
+// RetryCount is how many more times a failed apply is run.
+func (x Migrations) RetryCount() int { return commandRetries(x.Retries) }
 
 // TimeoutDuration returns the job's timeout. The manifest is validated and defaulted before use, so the fallback only
 // covers a Job built in code.
@@ -547,6 +614,9 @@ func (m *Manifest) Validate() error {
 		if !duration(a.Deploy.DeployTimeout, false) || !duration(a.Deploy.DrainTimeout, false) || a.Deploy.Retain != nil && *a.Deploy.Retain < 1 {
 			return fmt.Errorf("app %s: invalid deploy settings", name)
 		}
+		if n := a.Deploy.StartAttempts; n != nil && (*n < 1 || *n > maxStartAttempts) {
+			return fmt.Errorf("app %s: invalid start_attempts", name)
+		}
 		for _, rn := range sortedKeys(a.Roles) {
 			r := a.Roles[rn]
 			for _, host := range r.Hostnames {
@@ -581,14 +651,33 @@ func (m *Manifest) Validate() error {
 				}
 			}
 		}
-		for _, h := range append(append([]Hook{}, a.Hooks.PreDeploy...), a.Hooks.PostDeploy...) {
-			if (h.Backup == "") == (len(h.Run) == 0) || h.Backup != "" && !identifier.MatchString(h.Backup) || len(h.Run) > 0 && !argv(h.Run) {
-				return fmt.Errorf("app %s: invalid hook", name)
+		for _, lh := range []struct {
+			list  string
+			hooks []Hook
+		}{{"pre_deploy", a.Hooks.PreDeploy}, {"post_deploy", a.Hooks.PostDeploy}} {
+			for n, h := range lh.hooks {
+				if (h.Backup == "") == (len(h.Run) == 0) || h.Backup != "" && !identifier.MatchString(h.Backup) || len(h.Run) > 0 && !argv(h.Run) {
+					return fmt.Errorf("app %s: invalid hook", name)
+				}
+				switch {
+				case h.Backup != "" && (h.Timeout != "" || h.Retries != nil):
+					return fmt.Errorf("app %s: %s hook %d: timeout and retries apply to run hooks only", name, lh.list, n+1)
+				case !validCommandTimeout(h.Timeout):
+					return fmt.Errorf("app %s: %s hook %d: invalid timeout", name, lh.list, n+1)
+				case !validCommandRetries(h.Retries):
+					return fmt.Errorf("app %s: %s hook %d: invalid retries", name, lh.list, n+1)
+				}
 			}
 		}
 		if x := a.Migrations; x != nil {
 			if !argv(x.Version) || !argv(x.Apply) || len(x.Revert) > 0 && !argv(x.Revert) {
 				return fmt.Errorf("app %s: invalid migrations", name)
+			}
+			if !validCommandTimeout(x.Timeout) {
+				return fmt.Errorf("app %s: invalid migrations timeout", name)
+			}
+			if !validCommandRetries(x.Retries) {
+				return fmt.Errorf("app %s: invalid migrations retries", name)
 			}
 			n := 0
 			for _, s := range x.Revert {
@@ -734,6 +823,31 @@ func (m *Manifest) defaults() {
 			n := 5
 			a.Deploy.Retain = &n
 		}
+		if a.Deploy.StartAttempts == nil {
+			n := defaultStartAttempts
+			a.Deploy.StartAttempts = &n
+		}
+		for _, hooks := range [][]Hook{a.Hooks.PreDeploy, a.Hooks.PostDeploy} {
+			for i, h := range hooks {
+				if h.Backup != "" {
+					continue
+				}
+				if h.Timeout == "" {
+					hooks[i].Timeout = defaultCommandTimeout
+				}
+				if h.Retries == nil {
+					hooks[i].Retries = new(int)
+				}
+			}
+		}
+		if x := a.Migrations; x != nil {
+			if x.Timeout == "" {
+				x.Timeout = defaultCommandTimeout
+			}
+			if x.Retries == nil {
+				x.Retries = new(int)
+			}
+		}
 		for rn, r := range a.Roles {
 			if r.Replicas == nil {
 				n := 1
@@ -834,6 +948,7 @@ func (m *Manifest) ConnectorApp() (App, string, error) {
 	}
 	retries := 3
 	retain := 3
+	attempts := defaultStartAttempts
 	app := App{
 		Kind:  "image",
 		Image: reference.TrimNamed(ref).String(),
@@ -849,7 +964,7 @@ func (m *Manifest) ConnectorApp() (App, string, error) {
 			},
 		}},
 		Env:    Env{Secret: []string{TunnelTokenSecret}},
-		Deploy: Deploy{DeployTimeout: "180s", DrainTimeout: "30s", Retain: &retain},
+		Deploy: Deploy{DeployTimeout: "180s", DrainTimeout: "30s", Retain: &retain, StartAttempts: &attempts},
 	}
 	return app, version, nil
 }

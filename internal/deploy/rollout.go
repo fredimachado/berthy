@@ -142,6 +142,11 @@ func healthyOnce(ctx context.Context, e healthReader, id string, generation stri
 	if err != nil {
 		return errors.New("task inspection failed")
 	}
+	return healthyIn(ctx, e, tasks, id, generation, replicas)
+}
+
+// healthyIn reports whether every replica slot of the generation has a running task whose container is healthy.
+func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id string, generation string, replicas int) error {
 	slots := make(map[uint64]bool)
 	for _, t := range tasks {
 		if t.ServiceID != id || t.DesiredState != "running" || t.State != "running" || t.Labels["berthy.operation"] != generation || t.Slot == 0 || t.ContainerID == "" {
@@ -160,12 +165,39 @@ func healthyOnce(ctx context.Context, e healthReader, id string, generation stri
 	return nil
 }
 
-func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
+// errStartAttempts reports that the new version used up its start attempts: a rollout stops waiting as soon as the
+// generation has had limit failed task starts, instead of waiting out the deploy timeout.
+type errStartAttempts struct {
+	Role          string
+	Failed, Limit int
+}
+
+func (e *errStartAttempts) Error() string { return "service gave up after failed starts" }
+
+// startFailed is a task that ended in error: its container exited non-zero or was killed as unhealthy, or Swarm refused to
+// start it.
+func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.State == "rejected" }
+
+// waitHealthy waits until every replica of the generation runs healthy, the context ends, or, with a positive limit, the
+// generation has had limit failed tasks. Swarm keeps few old tasks, so failures are counted by task ID across polls.
+func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	failed := map[string]bool{}
 	for {
-		if healthyOnce(ctx, e, id, generation, replicas) == nil {
-			return nil
+		tasks, err := e.ServiceTasks(ctx, id)
+		if err == nil {
+			if healthyIn(ctx, e, tasks, id, generation, replicas) == nil {
+				return nil
+			}
+			for _, t := range tasks {
+				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) {
+					failed[t.ID] = true
+				}
+			}
+			if limit > 0 && len(failed) >= limit {
+				return &errStartAttempts{Failed: len(failed), Limit: limit}
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -204,7 +236,16 @@ type rolloutEngine interface {
 	healthReader
 }
 
-func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int) (string, error) {
+// withRole names the role whose rollout gave up; other errors pass through.
+func withRole(err error, role string) error {
+	var gave *errStartAttempts
+	if errors.As(err, &gave) {
+		gave.Role = role
+	}
+	return err
+}
+
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) (string, error) {
 	if err := j.RecordIntent(ctx, op, i); err != nil {
 		return "", err
 	}
@@ -226,8 +267,8 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
 		return "", err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas); err != nil {
-		return "", err
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+		return "", withRole(err, i.Role)
 	}
 	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt); err != nil {
 		return "", err
@@ -313,7 +354,7 @@ func mergeServiceSpec(before, desired json.RawMessage, network string) (json.Raw
 			delete(oc, k)
 		}
 	}
-	for _, k := range []string{"Resources"} {
+	for _, k := range []string{"Resources", "RestartPolicy"} {
 		if v, ok := wt[k]; ok {
 			ot[k] = v
 		} else {
@@ -328,7 +369,7 @@ func mergeServiceSpec(before, desired json.RawMessage, network string) (json.Raw
 	return json.Marshal(old)
 }
 
-func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int) error {
+func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) error {
 	if err := applyIntent(ctx, j, e, op, i, auth); err != nil {
 		return err
 	}
@@ -346,8 +387,8 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
 		return err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas); err != nil {
-		return err
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+		return withRole(err, i.Role)
 	}
 	if err = waitUpdate(ctx, e, i.Name, i.ServiceID); err != nil {
 		return err

@@ -65,8 +65,15 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	if len(r.Command) > 0 {
 		container["Args"] = r.Command
 	}
-	config := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
-	spec := map[string]any{"Name": project + "-" + app + "-" + role, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": config, "RollbackConfig": config}
+	// A rollout gives the new version a bounded number of failed starts, and Berthy, not Swarm, decides when that is used
+	// up: "continue" keeps Swarm replacing a failing new task under the restart policy while Berthy counts the failures
+	// and restores the previous spec itself. Swarm's own "rollback" would give up after the first failure.
+	update := map[string]any{"Parallelism": 1, "FailureAction": "continue", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
+	rollback := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
+	// Written out so the cadence is documented: a task that exits is replaced after 5 seconds, without limit. In steady
+	// state a crashed app always comes back; only a rollout stops early.
+	restart := map[string]any{"Condition": "any", "Delay": int64(5 * time.Second), "MaxAttempts": 0}
+	spec := map[string]any{"Name": project + "-" + app + "-" + role, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}, "RestartPolicy": restart}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": update, "RollbackConfig": rollback}
 	if r.Resources != nil {
 		limits := map[string]any{}
 		if r.Resources.CPU != "" {
