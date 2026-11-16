@@ -46,7 +46,12 @@ func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if b.Backup == "" || b.App == "" || b.Volume == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() || (b.Trigger == "schedule") == b.Scheduled.IsZero() {
 		return 0, errors.New("invalid backup run")
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO backups(environment,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail,scheduled) VALUES(?,?,?,?,?,?,?,?,0,'running',0,'','',?) ON CONFLICT DO NOTHING`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `INSERT INTO backups(environment,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail,scheduled) VALUES(?,?,?,?,?,?,?,?,0,'running',0,'','',?) ON CONFLICT DO NOTHING`,
 		s.env, b.Backup, b.App, b.Volume, b.Destination, b.ObjectKey, b.Trigger, toMilli(b.Started), toMilli(b.Scheduled))
 	if err != nil {
 		return 0, err
@@ -54,7 +59,15 @@ func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return 0, ErrConflict
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	// The newest two successes are kept however old they are: the size check compares the newest with the one before it.
+	if err = pruneRuns(ctx, tx, "backups", "environment=? AND backup=?", "status='succeeded'", 2, s.env, b.Backup); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }
 
 // FinishBackup ends a running run with status succeeded or failed. A succeeded run needs the archive's SHA-256. It returns

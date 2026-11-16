@@ -58,7 +58,12 @@ func (s *Store) StartStateBackup(ctx context.Context, r StateBackupRun) (int64, 
 	if r.Key == "" || r.Started.IsZero() || (r.Trigger != "schedule" && r.Trigger != "manual") || (r.Trigger == "schedule") == r.Scheduled.IsZero() {
 		return 0, errors.New("invalid state backup run")
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO state_backups(environment,trigger,scheduled,started,finished,status,object_key,size,sha256,detail) VALUES(?,?,?,?,0,'running',?,0,'','') ON CONFLICT DO NOTHING`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `INSERT INTO state_backups(environment,trigger,scheduled,started,finished,status,object_key,size,sha256,detail) VALUES(?,?,?,?,0,'running',?,0,'','') ON CONFLICT DO NOTHING`,
 		s.env, r.Trigger, toMilli(r.Scheduled), toMilli(r.Started), r.Key)
 	if err != nil {
 		return 0, err
@@ -66,7 +71,14 @@ func (s *Store) StartStateBackup(ctx context.Context, r StateBackupRun) (int64, 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return 0, ErrConflict
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err = pruneRuns(ctx, tx, "state_backups", "environment=?", "status='succeeded'", 1, s.env); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }
 
 // FinishStateBackup ends a running run with status succeeded or failed. A succeeded run needs the snapshot's SHA-256. It returns

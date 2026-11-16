@@ -167,17 +167,35 @@ func TestJobRunValidationAndRetention(t *testing.T) {
 	if err := s.FinishJobRun(ctx, first, "succeeded", nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < maxJobRuns+20; i++ {
+	for i := 0; i < maxRunsKept+20; i++ {
 		if _, err := s.StartJobRun(ctx, JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: minute(1).Add(time.Duration(i) * time.Minute), Started: minute(1), Finished: minute(1), Status: "skipped", Detail: "previous run still running"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runs, err := s.JobRuns(ctx, "tick", 5000)
-	if err != nil || len(runs) > maxJobRuns+1 {
+	if err != nil || len(runs) > maxRunsKept+1 {
 		t.Fatalf("history not pruned: %d %v", len(runs), err)
 	}
 	if last, _ := s.LastJobRuns(ctx); last["tick"].ID != first {
 		t.Fatalf("the last finished run was pruned: %+v", last)
+	}
+}
+
+func TestJobRunKeepsARunningRunBeyondTheWindow(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	// A long run under a per-minute schedule gets a skipped row each minute, so the window passes it while it runs.
+	running, err := s.StartJobRun(ctx, JobRun{Job: "tick", App: "api", Trigger: "manual", Started: minute(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxRunsKept+20; i++ {
+		if _, err := s.StartJobRun(ctx, JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: minute(1).Add(time.Duration(i) * time.Minute), Started: minute(1), Finished: minute(1), Status: "skipped", Detail: "previous run still running"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.FinishJobRun(ctx, running, "succeeded", nil, ""); err != nil {
+		t.Fatalf("the running run was pruned before it finished: %v", err)
 	}
 }
 

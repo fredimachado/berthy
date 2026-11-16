@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"slices"
 	"time"
 )
 
@@ -24,8 +26,9 @@ type JobRun struct {
 const (
 	// maxJobDetail bounds the detail stored for one run.
 	maxJobDetail = 512
-	// maxJobRuns is how many runs of one job are kept. The newest finished run that was not skipped is always kept.
-	maxJobRuns = 500
+	// maxRunsKept is how many runs of one job, backup or state backup are kept. Runs that readers need beyond that window
+	// are kept too; see pruneRuns.
+	maxRunsKept = 500
 	// AbandonedJobDetail is the detail of a run that a previous agent process left running.
 	AbandonedJobDetail = "agent restarted during the run"
 )
@@ -74,13 +77,24 @@ func (s *Store) StartJobRun(ctx context.Context, r JobRun) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Keep the newest maxJobRuns runs of the job, and the newest run that succeeded or failed, which the job's
-	// check reports.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM job_runs WHERE environment=? AND job=? AND id <= COALESCE((SELECT id FROM job_runs WHERE environment=? AND job=? ORDER BY id DESC LIMIT 1 OFFSET ?),0) AND id <> COALESCE((SELECT MAX(id) FROM job_runs WHERE environment=? AND job=? AND status IN ('succeeded','failed')),0)`,
-		s.env, r.Job, s.env, r.Job, maxJobRuns, s.env, r.Job); err != nil {
+	// The newest run that succeeded or failed is the one the job's check reports.
+	if err = pruneRuns(ctx, tx, "job_runs", "environment=? AND job=?", "status IN ('succeeded','failed')", 1, s.env, r.Job); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()
+}
+
+// pruneRuns keeps one run history to its window. It runs inside the transaction that records a run, so a history never
+// grows past its window. A history is the rows of one table that match scope, with the arguments that scope takes. Beyond
+// the newest maxRunsKept of them it deletes every row except a running one and the newest keepN rows whose status matches
+// keep. Those rows are what the readers of the history need, however old they are. The table, scope and keep are fixed SQL
+// in this package, never input.
+func pruneRuns(ctx context.Context, tx *sql.Tx, table, scope, keep string, keepN int, args ...any) error {
+	query := fmt.Sprintf(`DELETE FROM %[1]s WHERE %[2]s AND status<>'running' AND id NOT IN (SELECT id FROM %[1]s WHERE %[2]s ORDER BY id DESC LIMIT %[3]d) AND id NOT IN (SELECT id FROM %[1]s WHERE %[2]s AND %[4]s ORDER BY id DESC LIMIT %[5]d)`,
+		table, scope, maxRunsKept, keep, keepN)
+	// The scope appears three times in the statement, so its arguments do too.
+	_, err := tx.ExecContext(ctx, query, slices.Concat(args, args, args)...)
+	return err
 }
 
 // FinishJobRun ends a running run with status succeeded, failed or interrupted. A run is interrupted when the agent stopped

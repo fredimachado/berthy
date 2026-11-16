@@ -466,3 +466,92 @@ func TestUpgradeVersionNineAddsTheOccurrenceOfBackups(t *testing.T) {
 	}
 	again.Close()
 }
+
+func TestBackupHistoryKeepsTheNewest500RunsOfEachBackup(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	// The other backup's runs come first, so a global window would drop them while filling this one.
+	for n := 100; n < 103; n++ {
+		id, err := s.StartBackup(ctx, backupRun("archive", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.FinishBackup(ctx, id, "failed", 0, "", "refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for n := range maxRunsKept + 10 {
+		id, err := s.StartBackup(ctx, backupRun("files", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.FinishBackup(ctx, id, "failed", 0, "", "refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := s.BackupRuns(ctx, "files", 5000)
+	if err != nil || len(files) != maxRunsKept {
+		t.Fatalf("kept %d runs of files, want %d: %v", len(files), maxRunsKept, err)
+	}
+	if oldest := files[len(files)-1]; !oldest.Started.Equal(minute(10)) {
+		t.Fatalf("the window keeps runs from %v, want the newest 500 (from %v)", oldest.Started, minute(10))
+	}
+	archive, err := s.BackupRuns(ctx, "archive", 5000)
+	if err != nil || len(archive) != 3 {
+		t.Fatalf("kept %d runs of archive, want 3: %v", len(archive), err)
+	}
+}
+
+func TestBackupHistoryKeepsTheTwoNewestSuccessesAndARunningRunBeyondTheWindow(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	running, err := s.StartBackup(ctx, backupRun("files", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, err := s.StartBackup(ctx, backupRun("files", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.FinishBackup(ctx, older, "succeeded", 10, strings.Repeat("a", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := s.StartBackup(ctx, backupRun("files", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.FinishBackup(ctx, newer, "succeeded", 5, strings.Repeat("b", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	for n := 3; n < 3+maxRunsKept+10; n++ {
+		id, err := s.StartBackup(ctx, backupRun("files", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.FinishBackup(ctx, id, "failed", 0, "", "refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := s.BackupRuns(ctx, "files", 5000)
+	if err != nil || len(runs) != maxRunsKept+3 {
+		t.Fatalf("kept %d runs, want %d: %v", len(runs), maxRunsKept+3, err)
+	}
+	statuses := map[int64]string{}
+	for _, r := range runs {
+		statuses[r.ID] = r.Status
+	}
+	if statuses[running] != "running" {
+		t.Fatalf("the running run was pruned or changed: %q", statuses[running])
+	}
+	if statuses[older] != "succeeded" || statuses[newer] != "succeeded" {
+		t.Fatalf("a success beyond the window was pruned: older %q, newer %q", statuses[older], statuses[newer])
+	}
+	if last, _ := s.LastSuccessfulBackups(ctx); last["files"].ID != newer {
+		t.Fatalf("last successful run: %+v", last["files"])
+	}
+	// The size check compares the newest success with the one before it, so both must still be read back.
+	history, err := s.BackupHistory(ctx, "files")
+	if err != nil || len(history.Successes) != 2 || history.Successes[0].ID != newer || history.Successes[1].ID != older {
+		t.Fatalf("successes the checks read: %+v %v", history.Successes, err)
+	}
+}

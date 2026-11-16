@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -192,5 +193,46 @@ func TestSchemaTenUpgradesToElevenWithTheStateBackupTable(t *testing.T) {
 	}
 	if _, err = upgraded.StartStateBackup(context.Background(), StateBackupRun{Trigger: "manual", Started: time.Now(), Key: "x.db"}); err != nil {
 		t.Fatalf("table after upgrade: %v", err)
+	}
+}
+
+func TestStateBackupHistoryKeepsTheNewest500RunsAndTheNewestSuccessAndRunningRun(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	start := func(n int) int64 {
+		t.Helper()
+		id, err := s.StartStateBackup(ctx, StateBackupRun{Trigger: "manual", Started: minute(n), Key: "berthy-state/test/" + minute(n).Format("150405") + ".db"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	running := start(0)
+	success := start(1)
+	if err := s.FinishStateBackup(ctx, success, "succeeded", 10, strings.Repeat("a", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	for n := 2; n < 2+maxRunsKept+10; n++ {
+		id := start(n)
+		if err := s.FinishStateBackup(ctx, id, "failed", 0, "", "refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := s.StateBackupRuns(ctx, 5000)
+	if err != nil || len(runs) != maxRunsKept+2 {
+		t.Fatalf("kept %d runs, want %d: %v", len(runs), maxRunsKept+2, err)
+	}
+	statuses := map[int64]string{}
+	for _, r := range runs {
+		statuses[r.ID] = r.Status
+	}
+	if statuses[running] != "running" {
+		t.Fatalf("the running run was pruned or changed: %q", statuses[running])
+	}
+	if statuses[success] != "succeeded" {
+		t.Fatalf("the newest success was pruned: %q", statuses[success])
+	}
+	if h, err := s.StateBackupHistory(ctx); err != nil || h.Success == nil || h.Success.ID != success {
+		t.Fatalf("history success: %+v %v", h.Success, err)
 	}
 }
