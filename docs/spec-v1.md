@@ -662,7 +662,7 @@ The CLI is the complete interface; the TUI and the MCP server are two other ways
 
 ### CLI
 
-Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero.
+Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero. A command that an AI agent's token ran on a protected environment, and that the agent held for approval instead of carrying out, exits with code 3: it is neither done nor failed (see "Approval for AI agents on protected environments").
 
 Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool.
 
@@ -701,7 +701,10 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `prune` | Remove old images and stopped containers now | Yes |
 | `destroy --confirm <env> [--volumes] [--allow-recreate] [--tunnel]` | Remove every app, managed ingress, helpers, one-off containers and acquired images of the environment; volumes only with `--volumes`, the tunnel only with `--tunnel` and when clean (admin) | Yes |
 | `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
-| `approve <id>` | Approve a pending change requested by an AI agent | Yes |
+| `approvals [--all]` | List the changes AI agents have asked for and that wait for a person: id, age, time left, who asked and what; `--all` also lists the decided and expired ones (`read` scope; the plan column needs `deploy`) | No |
+| `approve <id>` | Show the plan of a change an AI agent asked for, carry it out as that agent and follow the operation it starts; it asks nothing more, so the person has read the plan in `approvals` first (`admin` scope, never an agent token) | Yes |
+| `reject <id> [-m <reason>]` | Refuse a change an AI agent asked for; nothing runs (`admin` scope, never an agent token) | Yes |
+| `agent token -e <env> [--agent] [--name <name>] [--scope read\|deploy\|admin]` | Make a token and print it once, with its digest and the object to paste into the agent's `tokens` list; it needs no agent and no network | No |
 
 ### TUI
 
@@ -1020,6 +1023,8 @@ Each token belongs to one environment and one scope.
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.
+- A token can be marked as an **agent token** (`"agent": true` in the agent's configuration, `--agent` when it is made). The mark does not change the scope: an agent token with the `read` scope reads, and one with `deploy` or `admin` can ask for the changes of that scope. What changes is that on a protected environment its changes are held for a person (see below). An agent token can never approve or reject, whatever its scope.
+- `approvals` needs the `read` scope, which lists each request without its plan; the plan, which can repeat a command line, is shown only to a token with the `deploy` scope or higher. `approve` and `reject` need the `admin` scope and a token that is not an agent token.
 - `berthy setup` creates the first `admin` token. The agent stores only its digest, so the value is shown once and cannot be read back.
 - The CLI's configuration stores each agent's address and the name of the environment variable that holds the token, never the token itself.
 
@@ -1035,15 +1040,26 @@ Each token belongs to one environment and one scope.
 
 ### Approval for AI agents on protected environments
 
-1. An AI agent's token is marked as an agent token when it is created.
-2. A change requested on a protected environment with an agent token is not carried out. The agent stores it as a pending approval with its dry-run plan.
-3. A person reviews the plan and runs `berthy approve <id>`, or approves in the TUI.
-4. An unapproved request expires after 15 minutes (proposed).
+An environment is protected when the agent's configuration says `"protected": true` or when a protected deploy has marked it.
+
+1. An AI agent's token is marked as an agent token when it is made: `berthy agent token -e <env> --agent --name claude --scope deploy` prints the token and the object `{"name":"claude","digest":"...","scope":"deploy","agent":true}` for the agent's `tokens` list.
+2. On a protected environment an agent token's request that changes something is **held**: the agent checks the token and its scope as always, then stores the request instead of carrying it out and answers `202` with `{"approval_id", "expires", "plan"}` and the header `Berthy-Approval: pending`. Nothing else changes: no operation starts, and the deploy lock is not taken. Every route that changes something is held: deploy, rollback, restart, scale, exec, prune, remove, destroy, restore, ingress apply, secret set and delete, lock acquire and release, backup run, job run, state backup, recovery resolve and alerts test.
+3. What is not held: reads; a dry run, which an agent token gets as any token does, because it changes nothing; and every request of an agent token on an unprotected environment, which is served like a request of any token with its scope. A request that cannot be planned, such as one that needs a right the token lacks, is refused at once as it would be for any token and is not held.
+4. The **plan** of a held request is the object that `--dry-run` of the same request prints. The agent produces it by running the route's own dry-run path on the stored request, so the CLI, the TUI and the MCP server show one plan. A route without a dry run (`backup run`, `job run`, `state backup`, `alerts test`) has a description instead: `{"action":"backup run","target":"main-db"}`. An `exec` plan names the command. A secret set or delete plan names the secret, the registry and whether it exists (`{"action":"secret set","name":"DATABASE_URL","registry":"","exists":true}`), and a lock plan says whether the environment is locked now; a secret's value is never in a plan. Every managed secret value is replaced by `[redacted]` in a plan before it is stored, compared or shown, so a value typed into an exec command does not reach the state database in the clear.
+5. The held request is stored in the state database with its plan and a one-line summary such as `deploy api 1.4.2`, `restart api/web` or `secret set DATABASE_URL`. The request itself can carry a secret value, so it is stored sealed with the state key, like a secret; listings show the summary and the plan, never the request.
+6. A person lists what waits with `berthy approvals`, reviews the plan, and runs `berthy approve <id>`, or rejects it with `berthy reject <id> -m "reason"`; the TUI does the same later. `approve` and `reject` need an `admin` token that is not an agent token.
+7. `approve` plans the stored request again with the same function. When that plan is not exactly the stored plan, for example because a release was recorded since the request, nothing runs: the approval is marked `failed` and the person is told to ask for a new request. Otherwise the stored request runs through the ordinary route as the requesting agent: the operation, the lock and the audit rows name the agent token, with ` (approved by <approver>)` after its name. The result, the operation ID or a short outcome, is recorded with the approval. If the agent's token was removed from the configuration or lost its scope since the request, nothing runs and the approval is marked `failed`.
+8. A request that nobody approves **expires** after 15 minutes. An expired request cannot run: `approve` refuses it with `approval expired` and marks it `expired`. The lifetime is the agent's `approval_ttl` setting, a Go duration of at least one minute, 15 minutes when it is not set. An approval is decided once; approving or rejecting a decided one is refused.
+9. An approval has one of the statuses `pending`, `approved` (it ran, or is running), `rejected`, `expired` and `failed`. The newest 500 decided approvals of an environment are kept, and the oldest are deleted. At most 100 requests wait at once; the next is refused with `429`.
+10. The audit log records `approval_request:<summary>` by the agent when it is held, and `approval_approve`, `approval_reject`, `approval_expired` or `approval_failed` by the person who decided; an expiry that nobody caused is recorded by `berthy`. Expiry is recorded when the approval is next listed or decided.
+11. The CLI exit code of a held command is **3**: not done, not failed. The command prints `held for approval: <id> (expires <time>)` and the plan, and with `--json` prints the answer as JSON.
+
+The approvals API: `GET /v1/environments/<env>/approvals[?status=pending]` (`read`), which lists the approvals newest first with id, actor, kind, summary, plan (`deploy` scope or higher only), created, expires, status, decided_by, decided_at and result; `POST .../approvals/<id>/approve` and `POST .../approvals/<id>/reject` with an optional `{"reason"}` (`admin`, not an agent token).
 
 ### Other guardrails
 
 - **Explicit environment.** No command that changes something runs without `-e`.
-- **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints.
+- **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints, and `approve` checks that it still is before it runs the request.
 - **Deploy lock.** A manual lock freezes an environment for everyone, people and AI agents alike.
 - **Stateful protection.** Recreating or removing a `stateful` Compose app needs `--allow-recreate` and an `admin` token. `berthy remove` of a `stateful` Compose app needs the same.
 - **Audit log.** Every change is recorded with time, command, target and outcome. API requests include the token name and caller's address. Scheduled runs identify the job as the caller.

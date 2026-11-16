@@ -29,6 +29,9 @@ type Token struct {
 	Name   string `json:"name,omitempty"`
 	Digest string `json:"digest"`
 	Scope  string `json:"scope"`
+	// Agent marks the token of an AI agent. On a protected environment the agent does not carry out its changes: each one is
+	// held as a pending approval until a person approves it.
+	Agent bool `json:"agent,omitempty"`
 }
 type Config struct {
 	Environment  string `json:"environment"`
@@ -43,7 +46,30 @@ type Config struct {
 	TelegramAPIURL string `json:"telegram_api_url,omitempty"`
 	// ComposeCommand runs the Compose CLI for Compose apps. It defaults to docker compose.
 	ComposeCommand []string `json:"compose_command,omitempty"`
-	Tokens         []Token  `json:"tokens"`
+	// ApprovalTTL is how long a held request waits for a person before it expires, as a Go duration of at least a minute. It
+	// defaults to 15 minutes. Tests of expiry shorten it.
+	ApprovalTTL string  `json:"approval_ttl,omitempty"`
+	Tokens      []Token `json:"tokens"`
+	// clock is the time source of the approvals. Tests set it; nil means the system clock.
+	clock func() time.Time
+}
+
+const defaultApprovalTTL = 15 * time.Minute
+
+// approvalTTL is how long a held request lives. Validate has checked the configured value.
+func (c Config) approvalTTL() time.Duration {
+	if d, err := time.ParseDuration(c.ApprovalTTL); err == nil && d >= time.Minute {
+		return d
+	}
+	return defaultApprovalTTL
+}
+
+// now is the current time for approvals.
+func (c Config) now() time.Time {
+	if c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
 }
 
 // composeCommand is the Compose CLI command the agent runs, or the default.
@@ -114,6 +140,11 @@ func (c Config) Validate() error {
 	}
 	if (c.StateDir == "") != (c.KeyFile == "") {
 		return fmt.Errorf("state_dir and key_file must be configured together")
+	}
+	if c.ApprovalTTL != "" {
+		if d, err := time.ParseDuration(c.ApprovalTTL); err != nil || d < time.Minute {
+			return fmt.Errorf("approval_ttl must be a duration of at least 1m")
+		}
 	}
 	if c.CloudflareAPIURL != "" {
 		if err := validateAPIURL("cloudflare_api_url", c.CloudflareAPIURL); err != nil {

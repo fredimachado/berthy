@@ -80,6 +80,12 @@ func captureContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), diagnosticCaptureLimit)
 }
 
+// Redactor is redactor for callers outside the package: a function that replaces every managed secret value in its argument,
+// or false when the secrets cannot be read.
+func (c *Controller) Redactor(ctx context.Context) (func(string) string, bool) {
+	return c.redactor(ctx)
+}
+
 // redactor returns a function that replaces every managed secret value in its argument. It reports false when the secrets
 // cannot be read: nothing that might hold one is stored then.
 func (c *Controller) redactor(ctx context.Context) (func(string) string, bool) {

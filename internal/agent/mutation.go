@@ -66,116 +66,9 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 // which case the backup routes answer that backups are unavailable.
 func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups) http.Handler {
 	legacy := handlerWithState(c, e, col, d, tel)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
-			legacy.ServeHTTP(w, r)
-			return
-		}
-		rest := parts[3:]
-		required := ""
-		method := ""
-		switch {
-		case len(rest) == 1 && rest[0] == "deploys":
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 1 && (rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
-			required = "admin"
-			method = "POST"
-		case len(rest) == 2 && rest[0] == "operations":
-			required = "read"
-			method = "GET"
-		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "output":
-			required = "admin"
-			method = "GET"
-		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "events":
-			required = "read"
-			method = "GET"
-		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "diagnostics":
-			// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
-			required = "deploy"
-			method = "GET"
-		case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait"):
-			required = "read"
-			method = "GET"
-		case len(rest) == 1 && (rest[0] == "audit" || rest[0] == "lock"):
-			required = "read"
-			method = "GET"
-		case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 1 && rest[0] == "secrets":
-			required = "admin"
-			if r.Method == "GET" {
-				method = "GET"
-			} else {
-				method = "POST"
-			}
-		case len(rest) == 2 && rest[0] == "secrets":
-			required = "admin"
-			method = "DELETE"
-		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
-			required = "admin"
-			method = "POST"
-		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
-			required = "read"
-			method = "GET"
-		case len(rest) == 1 && rest[0] == "checks":
-			required = "read"
-			method = "GET"
-		case len(rest) == 1 && rest[0] == "jobs", len(rest) == 3 && rest[0] == "jobs" && rest[2] == "runs":
-			required = "read"
-			method = "GET"
-		case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 1 && rest[0] == "backups", len(rest) == 3 && rest[0] == "backups" && rest[2] == "runs":
-			required = "read"
-			method = "GET"
-		case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
-			required = "deploy"
-			method = "POST"
-		case len(rest) == 1 && rest[0] == "state-backup":
-			required = "admin"
-			method = "POST"
-		case len(rest) == 2 && rest[0] == "state-backup" && rest[1] == "runs":
-			required = "read"
-			method = "GET"
-		case len(rest) == 1 && rest[0] == "restore":
-			required = "admin"
-			method = "POST"
-		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-			required = "deploy"
-			method = "POST"
-		default:
-			legacy.ServeHTTP(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		actor, scope, ok := authenticate(c, r)
-		if !ok {
-			writeError(w, 401, "unauthorized", "unauthorized")
-			return
-		}
-		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
-		if levels[scope] < levels[required] {
-			writeError(w, 403, "forbidden", "forbidden")
-			return
-		}
-		if r.Method != method {
-			writeError(w, 405, "method_not_allowed", "method not allowed")
-			return
-		}
-		if d == nil || d.Store == nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
+	gate := &approvalGate{c: c, d: d}
+	// serve carries out a request that is authenticated, in scope and not held for approval.
+	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
 		ctx := r.Context()
 		sa := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
 		switch {
@@ -441,7 +334,16 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				return
 			}
 			if req.DryRun {
-				json.NewEncoder(w).Encode(map[string]bool{"dry_run": true})
+				_, lockErr := d.Store.Lock(ctx)
+				if lockErr != nil && !errors.Is(lockErr, sql.ErrNoRows) {
+					operationError(w, lockErr)
+					return
+				}
+				plan := map[string]any{"action": "lock " + rest[1], "currently_locked": lockErr == nil}
+				if req.Message != "" {
+					plan["message"] = req.Message
+				}
+				json.NewEncoder(w).Encode(plan)
 				return
 			}
 			var err error
@@ -489,7 +391,22 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				return
 			}
 			if req.DryRun {
-				json.NewEncoder(w).Encode(map[string]bool{"dry_run": true})
+				existing, listErr := d.Store.Secrets(ctx)
+				if listErr != nil {
+					operationError(w, listErr)
+					return
+				}
+				exists := false
+				for _, info := range existing {
+					exists = exists || info.Name == req.Name
+				}
+				plan := map[string]any{"action": "secret set", "name": req.Name, "exists": exists}
+				if r.Method == "DELETE" {
+					plan["action"] = "secret delete"
+				} else {
+					plan["registry"] = req.Registry
+				}
+				json.NewEncoder(w).Encode(plan)
 				return
 			}
 			var err error
@@ -538,7 +455,143 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		default:
 			writeError(w, 501, "unavailable", "operation unavailable")
 		}
+	}
+	gate.serve = serve
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
+			legacy.ServeHTTP(w, r)
+			return
+		}
+		rest := parts[3:]
+		required, method, known := routeScope(rest, r.Method)
+		if !known {
+			legacy.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		actor, scope, ok := authenticate(c, r)
+		if !ok {
+			writeError(w, 401, "unauthorized", "unauthorized")
+			return
+		}
+		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
+		if levels[scope] < levels[required] {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
+		if r.Method != method {
+			writeError(w, 405, "method_not_allowed", "method not allowed")
+			return
+		}
+		if d == nil || d.Store == nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		if rest[0] == "approvals" {
+			gate.serveApprovals(w, r, actor, scope, rest)
+			return
+		}
+		// An agent token on a protected environment does not change it: the request is held until a person approves it.
+		if actor.Agent && method != "GET" && gate.hold(w, r, actor, rest) {
+			return
+		}
+		serve(w, r, actor, rest)
 	})
+}
+
+// routeScope is the route table of the deployment API. rest is the path after the environment. It returns the scope the
+// route needs and the one HTTP method it takes. ok is false for a path that is not one of these routes. Every route whose
+// method is not GET changes something.
+func routeScope(rest []string, httpMethod string) (required, method string, ok bool) {
+	switch {
+	case len(rest) == 1 && rest[0] == "deploys":
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && (rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
+		required = "admin"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "operations":
+		required = "read"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "output":
+		required = "admin"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "events":
+		required = "read"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "diagnostics":
+		// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
+		required = "deploy"
+		method = "GET"
+	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait"):
+		required = "read"
+		method = "GET"
+	case len(rest) == 1 && (rest[0] == "audit" || rest[0] == "lock"):
+		required = "read"
+		method = "GET"
+	case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && rest[0] == "secrets":
+		required = "admin"
+		if httpMethod == "GET" {
+			method = "GET"
+		} else {
+			method = "POST"
+		}
+	case len(rest) == 2 && rest[0] == "secrets":
+		required = "admin"
+		method = "DELETE"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
+		required = "admin"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
+		required = "read"
+		method = "GET"
+	case len(rest) == 1 && rest[0] == "checks":
+		required = "read"
+		method = "GET"
+	case len(rest) == 1 && rest[0] == "jobs", len(rest) == 3 && rest[0] == "jobs" && rest[2] == "runs":
+		required = "read"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && rest[0] == "backups", len(rest) == 3 && rest[0] == "backups" && rest[2] == "runs":
+		required = "read"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && rest[0] == "state-backup":
+		required = "admin"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "state-backup" && rest[1] == "runs":
+		required = "read"
+		method = "GET"
+	case len(rest) == 1 && rest[0] == "restore":
+		required = "admin"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
+		required = "deploy"
+		method = "POST"
+	case len(rest) == 1 && rest[0] == "approvals":
+		required = "read"
+		method = "GET"
+	case len(rest) == 3 && rest[0] == "approvals" && (rest[2] == "approve" || rest[2] == "reject"):
+		required = "admin"
+		method = "POST"
+	default:
+		return "", "", false
+	}
+	return required, method, true
 }
 func authenticate(c Config, r *http.Request) (deploy.Actor, string, bool) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -554,13 +607,19 @@ func authenticate(c Config, r *http.Request) (deploy.Actor, string, bool) {
 	if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !tokenPattern(c.Environment).MatchString(raw) || found == nil {
 		return deploy.Actor{}, "", false
 	}
+	return tokenActor(*found, sum, r.RemoteAddr), found.Scope, true
+}
+
+// tokenActor is the actor a token stands for. sum is the SHA-256 of the token's value, which is also its digest. The actor's
+// ID is a fingerprint of the digest, so the ID never reveals what verifies the token.
+func tokenActor(t Token, sum [32]byte, remote string) deploy.Actor {
 	fingerprint := sha256.Sum256(sum[:])
 	id := hex.EncodeToString(fingerprint[:])
-	name := found.Name
+	name := t.Name
 	if name == "" {
 		name = "token:" + id[:12]
 	}
-	return deploy.Actor{ID: id, Name: name, Remote: r.RemoteAddr, Admin: found.Scope == "admin"}, found.Scope, true
+	return deploy.Actor{ID: id, Name: name, Remote: remote, Admin: t.Scope == "admin", Agent: t.Agent}
 }
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)

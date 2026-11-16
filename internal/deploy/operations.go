@@ -155,7 +155,7 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		if _, err := c.execTarget(ctx, req); err != nil {
 			return Plan{}, err
 		}
-		return Plan{App: req.App}, nil
+		return Plan{App: req.App, Command: req.Command}, nil
 	case "prune":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")

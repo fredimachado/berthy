@@ -151,7 +151,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 && version != 11 {
+	if !fresh && (version < 1 || version > 12) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -181,7 +181,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE UNIQUE INDEX IF NOT EXISTS backups_object ON backups(environment, object_key);
  CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));
  CREATE TABLE IF NOT EXISTS state_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, object_key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
- CREATE UNIQUE INDEX IF NOT EXISTS state_backups_occurrence ON state_backups(environment, scheduled) WHERE scheduled <> 0;`); err != nil {
+ CREATE UNIQUE INDEX IF NOT EXISTS state_backups_occurrence ON state_backups(environment, scheduled) WHERE scheduled <> 0;
+ CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, environment TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, request_sealed BLOB NOT NULL, summary TEXT NOT NULL, plan BLOB NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, status TEXT NOT NULL, decided_by TEXT NOT NULL, decided_at INTEGER NOT NULL, result TEXT NOT NULL);
+ CREATE INDEX IF NOT EXISTS approvals_environment ON approvals(environment, status, created);`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -249,7 +251,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=11`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=12`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}

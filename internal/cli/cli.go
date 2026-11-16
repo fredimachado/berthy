@@ -14,8 +14,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,19 +70,8 @@ func Run(args []string, out, errout io.Writer) int {
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout)
 	}
-	if cmd == "agent" && len(args) == 3 && args[0] == "token" && args[1] == "-e" {
-		if !envPattern.MatchString(args[2]) {
-			fmt.Fprintln(errout, "invalid environment")
-			return 2
-		}
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			fmt.Fprintln(errout, err)
-			return 1
-		}
-		token := "bty." + args[2] + "." + hex.EncodeToString(b)
-		fmt.Fprintf(out, "token: %s\nsha256: %s\n", token, agent.Digest(token))
-		return 0
+	if cmd == "agent" && len(args) > 0 && args[0] == "token" {
+		return runAgentToken(args[1:], out, errout)
 	}
 	var config, env string
 	var jsonOutput, watch bool

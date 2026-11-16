@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup", "approvals", "approve", "reject":
 		return true
 	}
 	return false
@@ -35,7 +35,7 @@ func isDeploymentCommand(s string) bool {
 
 type commandFlags struct {
 	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel                                   bool
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                              bool
 	pos, command                                                                                                 []string
 }
 
@@ -64,6 +64,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.volumes = true
 		case "--tunnel":
 			f.tunnel = true
+		case "--all":
+			f.all = true
 		case "--revert-schema":
 			f.revert = true
 		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
@@ -144,6 +146,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
 		return 2
 	}
+	if f.all && cmd != "approvals" {
+		fmt.Fprintln(errout, "--all applies to approvals only")
+		return 2
+	}
 	if (f.tunnel || f.confirm != "") && cmd != "destroy" {
 		fmt.Fprintln(errout, "--tunnel and --confirm apply to destroy only")
 		return 2
@@ -180,6 +186,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return 1
 	}
 	prefix := strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(f.env) + "/"
+	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
+		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
+	}
 	if cmd == "job" {
 		return runJobCommand(f, u, prefix, token, out, errout)
 	}
@@ -443,6 +452,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if resp.StatusCode == http.StatusAccepted {
+		if code, held := reportHeld(data, out, errout, f.json); held {
+			return code
+		}
 		var accepted struct {
 			ID     string `json:"operation_id"`
 			Events string `json:"events_url"`

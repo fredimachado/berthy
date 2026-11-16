@@ -49,6 +49,8 @@ type Request struct {
 type Actor struct {
 	ID, Name, Remote string
 	Admin            bool
+	// Agent marks an AI agent's token. On a protected environment its changes are held until a person approves them.
+	Agent bool
 }
 type Plan struct {
 	App          string               `json:"app"`
@@ -61,6 +63,8 @@ type Plan struct {
 	Remove       *RemovePlan          `json:"remove,omitempty"`
 	Destroy      *DestroyPlan         `json:"destroy,omitempty"`
 	Restore      *RestorePlan         `json:"restore,omitempty"`
+	// Command is what an exec would run, so the person who approves it sees the command and not only the app.
+	Command []string `json:"command,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`

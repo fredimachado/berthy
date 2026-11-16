@@ -102,6 +102,9 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 		fmt.Fprintln(errout, agentError(status, data))
 		return 1
 	}
+	if code, held := reportHeld(data, out, errout, f.json); held {
+		return code
+	}
 	if json.Unmarshal(data, &started) != nil || started.RunID == 0 {
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1

@@ -141,6 +141,9 @@ func runBackupRun(ctx context.Context, call func(method, path, query string) ([]
 		fmt.Fprintln(errout, agentError(status, data))
 		return 1
 	}
+	if code, held := reportHeld(data, out, errout, asJSON); held {
+		return code
+	}
 	var started struct {
 		RunID int64 `json:"backup_run_id"`
 	}

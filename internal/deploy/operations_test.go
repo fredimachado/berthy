@@ -472,3 +472,32 @@ func TestPruneFailureCategoriesAreDistinct(t *testing.T) {
 		})
 	}
 }
+
+func TestExecPlanNamesTheCommandSoAPersonCanReviewIt(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	first, _, err := s.Admit(ctx, state.Admission{RequestID: "first", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	spec := fmt.Sprintf(`{"Name":"app-web","TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":%q}}}}`, first.ID)
+	c := Controller{Store: s, Engine: &runtimeEngine{store: s, op: first.ID, spec: []byte(spec)}, Environment: "stage"}
+	plan, err := c.Plan(ctx, Actor{Admin: true}, Request{Kind: "exec", App: "app", Command: []string{"rm", "-rf", "/data"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(plan.Command); string(got) != `["rm","-rf","/data"]` || plan.App != "app" {
+		t.Fatalf("plan %+v", plan)
+	}
+}
