@@ -327,6 +327,8 @@ Run from the application's repository, setup reads two values from the merged ma
 | State and encryption key | `/var/lib/berthy`, readable only by the agent's user |
 | Service | `berthy.service`, running as the `berthy` user in the `docker` group |
 
+The agent's configuration names the environment, its listen address, the Docker socket, the state directory and key file, `protected`, the tokens, and `network`: the shared overlay network the apps join. Setup writes `network` from the manifest. `doctor` checks the network the configuration names, and when it names none, the network of the last applied manifest. With neither, the check is left out, as on a fresh agent before its first deploy. The agent's version is in its `agent` check and in `GET /v1/environments/<env>/agent`.
+
 ### What it does not do
 
 - It does not create the server, its users, its firewall rules or its private network. The private address must exist before setup runs.
@@ -676,7 +678,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `history <app>` | Deploy records, with the reason of each failed deploy | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app> --healthy` | Block until an app is healthy or a timeout passes | No |
-| `doctor` | Checks the agent and its version, Docker, Swarm, the shared network, disk, backups, lock and peers | No |
+| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
+| `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
 | `backup list [--backup <name>]` | Backups in object storage: key, size, checksum and when each finished (`read` scope) | No |

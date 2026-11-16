@@ -13,6 +13,7 @@ import (
 	"berthy/internal/probehelper"
 	"berthy/internal/state"
 	"berthy/internal/tui"
+	"berthy/internal/version"
 	"berthy/internal/volarchive"
 	"bytes"
 	"context"
@@ -38,11 +39,15 @@ var envPattern = agentclient.EnvPattern
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <agent|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
+		fmt.Fprintln(errout, "usage: berthy <agent|version|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
 	}
 	cmd := args[0]
 	args = args[1:]
+	if cmd == "version" {
+		// Local: it prints this build's version and needs no agent or config.
+		return runVersion(args, out, errout)
+	}
 	if cmd == "probe-helper" {
 		// Not in the usage: only the overlay helper container runs it.
 		return runProbeHelper(errout)
@@ -218,6 +223,7 @@ func Run(args []string, out, errout io.Writer) int {
 			defer done()
 			_ = server.Shutdown(shutdownCtx)
 		}()
+		fmt.Fprintf(errout, "berthy agent %s listening on %s\n", version.String(), c.Listen)
 		if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(errout, err)
 			return 1
@@ -346,6 +352,13 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "invalid agent response")
 			return 1
 		}
+		if cmd == "doctor" {
+			agentVersion, known := doctorAgentVersion(body)
+			if !known {
+				agentVersion = "unknown"
+			}
+			fmt.Fprintf(out, "cli: %s\nagent: %s\n", version.String(), agentVersion)
+		}
 		printText(out, v, "")
 	}
 
@@ -355,6 +368,15 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		if json.Unmarshal(body, &d) != nil {
 			return 1
+		}
+		agentVersion, _ := doctorAgentVersion(body)
+		if note := versionNote(agentVersion); note != "" {
+			// stdout stays one JSON document under --json, so the note goes to stderr then.
+			noteOut := out
+			if jsonOutput {
+				noteOut = errout
+			}
+			fmt.Fprintln(noteOut, note)
 		}
 		for _, ch := range d.Checks {
 			if ch.Critical && !ch.OK {

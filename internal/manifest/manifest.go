@@ -276,6 +276,9 @@ var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 var bucketName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$`)
 var regionName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
+// ValidNetwork reports whether name is a valid network name, by the rule the manifest applies to its network.
+func ValidNetwork(name string) bool { return identifier.MatchString(name) }
+
 // ValidEndpoint checks a destination endpoint. It accepts an empty endpoint, which means the AWS default, or
 // https://host[:port]. It accepts http:// only for a loopback address or localhost, which tests and the WSL fixture use.
 // An endpoint has no path, query, fragment or userinfo, so credentials can go only to the host named. The error never

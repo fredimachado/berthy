@@ -4,8 +4,10 @@ import (
 	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/telemetry"
+	"berthy/internal/version"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -40,6 +42,9 @@ type Config struct {
 	StateDir     string `json:"state_dir,omitempty"`
 	KeyFile      string `json:"key_file,omitempty"`
 	Protected    bool   `json:"protected,omitempty"`
+	// Network is the shared overlay network the apps join; berthy setup writes it. When it is empty, the network of the
+	// last applied manifest is used, and with neither, the network check is left out.
+	Network string `json:"network,omitempty"`
 	// CloudflareAPIURL overrides the Cloudflare API base URL. https is required, except for a loopback host, which tests use.
 	CloudflareAPIURL string `json:"cloudflare_api_url,omitempty"`
 	// TelegramAPIURL overrides the Telegram Bot API base URL that alerts use. The same rule applies: https, or http on a loopback host.
@@ -146,6 +151,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("approval_ttl must be a duration of at least 1m")
 		}
 	}
+	if c.Network != "" && !manifest.ValidNetwork(c.Network) {
+		return fmt.Errorf("invalid network")
+	}
 	if c.CloudflareAPIURL != "" {
 		if err := validateAPIURL("cloudflare_api_url", c.CloudflareAPIURL); err != nil {
 			return err
@@ -242,7 +250,7 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			}
 		case len(parts) == 4 && parts[3] == "agent":
 			host, _ := os.Hostname()
-			result = map[string]any{"environment": c.Environment, "hostname": host, "protected": c.Protected}
+			result = map[string]any{"environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
 		case len(parts) == 4 && parts[3] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
@@ -302,25 +310,25 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 
 		case len(parts) == 4 && parts[3] == "doctor":
 			host, _ := os.Hostname()
-			checks := []api.Check{{Name: "host", OK: host != "", Critical: true, Detail: host}}
+			checks := []api.Check{{Name: "agent", OK: true, Critical: true, Detail: version.String()}, {Name: "host", OK: host != "", Critical: true, Detail: host}}
 			mounts, _ := hostDisk()
 			checks = append(checks, rootDiskCheck(mounts))
-			var version struct {
+			var dockerVersion struct {
 				APIVersion    string
 				MinAPIVersion string
 			}
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
-				err = e.Get(ctx, "/version", &version)
+				err = e.Get(ctx, "/version", &dockerVersion)
 			}
 			if err != nil {
 				checks = append(checks, api.Check{Name: "docker", Critical: true, Detail: "unavailable"})
 				err = nil
 			} else {
 				checks = append(checks, api.Check{Name: "docker", OK: true, Critical: true, Detail: "available"})
-				compatible := compareVersion(version.MinAPIVersion, "1.44") <= 0 && compareVersion(version.APIVersion, "1.44") >= 0
-				checks = append(checks, api.Check{Name: "docker_api", OK: compatible, Critical: true, Detail: version.MinAPIVersion + " - " + version.APIVersion})
+				compatible := compareVersion(dockerVersion.MinAPIVersion, "1.44") <= 0 && compareVersion(dockerVersion.APIVersion, "1.44") >= 0
+				checks = append(checks, api.Check{Name: "docker_api", OK: compatible, Critical: true, Detail: dockerVersion.MinAPIVersion + " - " + dockerVersion.APIVersion})
 				if compatible {
 					var info struct {
 						Swarm struct {
@@ -335,6 +343,9 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 					}
 				}
 			}
+			if netName, ok := doctorNetwork(ctx, c, deployment); ok {
+				checks = append(checks, networkCheck(ctx, e, netName))
+			}
 			if deployment != nil {
 				ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
 				configured, status := deployment.TunnelHealth(ingressCtx)
@@ -343,15 +354,16 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 					checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
 				}
 				composeCtx, cancelCompose := context.WithTimeout(r.Context(), 5*time.Second)
-				version, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
+				composeVersion, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
 				cancelCompose()
 				if composeErr != nil {
 					checks = append(checks, api.Check{Name: "compose", Detail: "unavailable"})
 				} else {
-					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: version})
+					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: composeVersion})
 				}
 			}
 			if deployment != nil && deployment.Store != nil {
+				checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
 				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
 			}
 			if tel != nil {
