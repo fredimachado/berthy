@@ -49,7 +49,8 @@ func PublicMessage(s string) bool {
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,
-		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecCompose, errComposeRole:
+		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecCompose, errComposeRole,
+		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal:
 		return true
 	}
 	return composeMessage.MatchString(s)

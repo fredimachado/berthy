@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,10 @@ type ComposeRun struct {
 	Project, Dir string   // Dir holds compose.yaml and .env, mode 0700
 	Args         []string // after the global flags
 	DockerConfig string   // optional DOCKER_CONFIG dir with registry auths
+	// NoFiles runs the command for the project name alone, with no Compose file or environment file. Compose finds the
+	// project's containers, networks and volumes by their labels, which is all that bringing a project down needs. Dir is
+	// then only the private working directory and home, and may be empty.
+	NoFiles bool
 }
 
 // boundedBuffer keeps the first max bytes written to it and discards the rest. It never fails a write, so a chatty
@@ -65,7 +70,10 @@ func (c Compose) Run(ctx context.Context, r ComposeRun) (stdout, stderr []byte, 
 		return nil, nil, errors.New("invalid compose command")
 	}
 	args := append([]string(nil), c.Command[1:]...)
-	args = append(args, "-p", r.Project, "--project-directory", r.Dir, "-f", filepath.Join(r.Dir, "compose.yaml"), "--env-file", filepath.Join(r.Dir, ".env"))
+	args = append(args, "-p", r.Project)
+	if !r.NoFiles {
+		args = append(args, "--project-directory", r.Dir, "-f", filepath.Join(r.Dir, "compose.yaml"), "--env-file", filepath.Join(r.Dir, ".env"))
+	}
 	args = append(args, r.Args...)
 	cmd := exec.CommandContext(ctx, c.Command[0], args...)
 	prepareCommand(cmd)
@@ -161,6 +169,31 @@ func (e *Engine) ComposeContainers(ctx context.Context, project string) ([]Compo
 			OneOff:     strings.EqualFold(c.Labels["com.docker.compose.oneoff"], "true"),
 		})
 	}
+	return out, nil
+}
+
+// ProjectVolumes lists the names of the volumes Compose created for a project, found by the project label, in name order.
+// A volume the Compose file declares external carries no such label, so it is never listed.
+func (e *Engine) ProjectVolumes(ctx context.Context, project string) ([]string, error) {
+	if !composeProject.MatchString(project) {
+		return nil, fmt.Errorf("invalid Compose project")
+	}
+	f, err := json.Marshal(map[string][]string{"label": {"com.docker.compose.project=" + project}})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct{ Volumes []struct{ Name string } }
+	if err = e.jsonRequest(ctx, "GET", "/volumes?"+url.Values{"filters": {string(f)}}.Encode(), nil, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(raw.Volumes))
+	for _, v := range raw.Volumes {
+		if _, err = pathID(v.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, v.Name)
+	}
+	sort.Strings(out)
 	return out, nil
 }
 

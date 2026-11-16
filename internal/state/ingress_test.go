@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -247,5 +248,119 @@ func TestReplaceExistingIsAPublicBoolean(t *testing.T) {
 	}
 	if _, _, err := s.Admit(ctx, Admission{RequestID: "replace-text", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{"replace_existing":"yes"}`)}); err == nil {
 		t.Fatal("string accepted for a boolean")
+	}
+}
+
+func TestUpgradeVersionEightKeepsRoutesCreatedByBerthy(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	op := openIngressOp(t, s, "apply")
+	if err := s.SetIngressRoute(ctx, op.ID, IngressRoute{Hostname: "api.example.com", App: "api", Role: "web", Service: "http://svc:8080", ZoneID: "z", DNSRecordID: "r", RouteCreated: true, DNSCreated: true}); err != nil {
+		t.Fatal(err)
+	}
+	// A schema 8 database has none of the ownership columns.
+	if _, err := s.db.Exec(`ALTER TABLE ingress_routes DROP COLUMN route_created; ALTER TABLE ingress_routes DROP COLUMN dns_created; ALTER TABLE ingress_routes DROP COLUMN dns_prior_comment; PRAGMA user_version=8`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var version int
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+		t.Fatalf("migration: %d %v", version, err)
+	}
+	routes, err := upgraded.IngressRoutes(ctx, "")
+	if err != nil || len(routes) != 1 || !routes[0].RouteCreated || !routes[0].DNSCreated || routes[0].DNSPriorComment != "" {
+		t.Fatalf("an existing route must count as created by Berthy: %+v %v", routes, err)
+	}
+}
+
+func TestIngressRouteOwnershipRoundTrips(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op := openIngressOp(t, s, "apply")
+	adopted := IngressRoute{Hostname: "a.example.com", App: "api", Role: "web", Service: "http://svc:8080", ZoneID: "z", DNSRecordID: "r1", RouteCreated: false, DNSCreated: false, DNSPriorComment: "the team's record"}
+	created := IngressRoute{Hostname: "b.example.com", App: "api", Role: "web", Service: "http://svc:8080", ZoneID: "z", DNSRecordID: "r2", RouteCreated: true, DNSCreated: true}
+	for _, r := range []IngressRoute{adopted, created} {
+		if err := s.SetIngressRoute(ctx, op.ID, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routes, err := s.IngressRoutes(ctx, "api")
+	if err != nil || len(routes) != 2 || routes[0] != adopted || routes[1] != created {
+		t.Fatalf("ownership flags lost: %+v %v", routes, err)
+	}
+	// An upsert replaces the flags with the new row's.
+	adopted.RouteCreated, adopted.DNSCreated, adopted.DNSPriorComment = true, true, ""
+	if err = s.SetIngressRoute(ctx, op.ID, adopted); err != nil {
+		t.Fatal(err)
+	}
+	if routes, err = s.IngressRoutes(ctx, "api"); err != nil || routes[0] != adopted {
+		t.Fatalf("upsert kept stale flags: %+v %v", routes, err)
+	}
+}
+
+func TestForgetIngressRoutesRemovesOneAppsRowsUnderTheLock(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	if err := s.ForgetIngressRoutes(ctx, "missing", "api"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unlocked forget: %v", err)
+	}
+	op := openIngressOp(t, s, "apply")
+	for _, r := range []IngressRoute{
+		{Hostname: "a.example.com", App: "api", Role: "web", Service: "http://svc:8080"},
+		{Hostname: "b.example.com", App: "api", Role: "web", Service: "http://svc:8080"},
+		{Hostname: "c.example.com", App: "admin", Role: "web", Service: "http://svc2:8080"},
+	} {
+		if err := s.SetIngressRoute(ctx, op.ID, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ForgetIngressRoutes(ctx, op.ID, "api"); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := s.IngressRoutes(ctx, "")
+	if err != nil || len(routes) != 1 || routes[0].App != "admin" {
+		t.Fatalf("only the other app's route may stay: %+v %v", routes, err)
+	}
+	if err = s.ForgetIngressRoutes(ctx, op.ID, "api"); err != nil {
+		t.Fatalf("forgetting an app with no routes is not an error: %v", err)
+	}
+	if err = s.ForgetIngressRoutes(ctx, op.ID, ""); err == nil {
+		t.Fatal("an empty app name was accepted")
+	}
+}
+
+func TestAppliedAppsListsAppsWithAnAppliedRelease(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	if apps, err := s.AppliedApps(ctx); err != nil || len(apps) != 0 {
+		t.Fatalf("empty state: %v %v", apps, err)
+	}
+	for _, app := range []string{"web", "api"} {
+		op, _, err := s.Admit(ctx, Admission{RequestID: "d-" + app, ActorID: "a", Kind: "deploy", App: app, PublicRequest: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded", Release: &Release{App: app, Digest: "d", Manifest: json.RawMessage(`{}`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apps, err := s.AppliedApps(ctx)
+	if err != nil || len(apps) != 2 || apps[0] != "api" || apps[1] != "web" {
+		t.Fatalf("applied apps: %v %v", apps, err)
+	}
+	op, _, err := s.Admit(ctx, Admission{RequestID: "forget", ActorID: "a", Kind: "remove", App: "api", PublicRequest: json.RawMessage(`{"app":"api","volumes":true}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ForgetApp(ctx, op.ID, "api"); err != nil {
+		t.Fatal(err)
+	}
+	if apps, err = s.AppliedApps(ctx); err != nil || len(apps) != 1 || apps[0] != "web" {
+		t.Fatalf("a forgotten app is no longer applied: %v %v", apps, err)
 	}
 }

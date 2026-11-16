@@ -940,3 +940,40 @@ func TestRecoveryRemovesUnobservedRecreateByBoundName(t *testing.T) {
 		t.Fatalf("recreated service still exists: %v", err)
 	}
 }
+
+func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testing.T) {
+	s := openStore(t)
+	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
+	one := 1
+	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(spec, &body)
+	body["Name"] = "existing"
+	delete(body, "Labels")
+	container := body["TaskTemplate"].(map[string]any)["ContainerSpec"].(map[string]any)
+	delete(container, "Labels")
+	// What docker service create stores for the settings it does not use.
+	container["DNSConfig"], container["Hosts"], container["Init"] = map[string]any{}, []any{}, false
+	spec, _ = json.Marshal(body)
+	e := &positiveEngine{spec: spec}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
+	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
+		op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitOperation(t, s, op.ID); got.State != "succeeded" {
+			t.Fatalf("%s: %s %s", req.RequestID, got.State, got.Err)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !strings.Contains(string(e.spec), strings.Repeat("b", 64)) {
+		t.Fatal("adopted service was not updated")
+	}
+}

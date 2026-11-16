@@ -95,6 +95,11 @@ type IngressState struct {
 // IngressRoute is one hostname that routes through the environment's tunnel.
 type IngressRoute struct {
 	Hostname, App, Role, Service, ZoneID, DNSRecordID string // DNSRecordID is empty when Berthy manages no DNS record for the hostname
+	// RouteCreated and DNSCreated are false when Berthy adopted an existing rule or record instead of creating it. Removing
+	// the app then releases it: an adopted rule stays in the tunnel, and an adopted record keeps living with its old comment.
+	RouteCreated, DNSCreated bool
+	// DNSPriorComment is the comment an adopted record had before Berthy marked it. Releasing the record puts it back.
+	DNSPriorComment string
 }
 
 func Open(stateDir, keyFile, environment string) (*Store, error) {
@@ -146,7 +151,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -168,7 +173,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS secrets (environment TEXT NOT NULL, name TEXT NOT NULL, registry TEXT NOT NULL, sealed BLOB NOT NULL, PRIMARY KEY(environment,name));
  CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, operation_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, created INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS ingress (environment TEXT PRIMARY KEY, account_id TEXT NOT NULL, api_token_secret TEXT NOT NULL, tunnel_id TEXT NOT NULL, tunnel_name TEXT NOT NULL, dns INTEGER NOT NULL, updated INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS ingress_routes (environment TEXT NOT NULL, hostname TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, service TEXT NOT NULL, zone_id TEXT NOT NULL, dns_record_id TEXT NOT NULL, PRIMARY KEY(environment, hostname));
+ CREATE TABLE IF NOT EXISTS ingress_routes (environment TEXT NOT NULL, hostname TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, service TEXT NOT NULL, zone_id TEXT NOT NULL, dns_record_id TEXT NOT NULL, route_created INTEGER NOT NULL DEFAULT 1, dns_created INTEGER NOT NULL DEFAULT 1, dns_prior_comment TEXT NOT NULL DEFAULT '', PRIMARY KEY(environment, hostname));
  CREATE TABLE IF NOT EXISTS checks (environment TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, since INTEGER NOT NULL, notified_state TEXT NOT NULL, notified INTEGER NOT NULL, PRIMARY KEY(environment, name));
  CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, job TEXT NOT NULL, app TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, exit_code INTEGER, detail TEXT NOT NULL, container TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS job_runs_occurrence ON job_runs(environment, job, scheduled) WHERE scheduled <> 0;
@@ -213,7 +218,19 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=8`); err != nil {
+	if version != 0 && version < 9 {
+		// A database from before schema 9 lacks the ownership columns. Every route it holds counts as created by Berthy,
+		// which is how it was treated until now. The column check keeps a repeated upgrade harmless.
+		var has int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('ingress_routes') WHERE name='route_created'`).Scan(&has); err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE ingress_routes ADD COLUMN route_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_prior_comment TEXT NOT NULL DEFAULT ''`)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
+	if _, err = tx.Exec(`PRAGMA user_version=9`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -279,7 +296,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate":
+		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate", "volumes":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -983,7 +1000,7 @@ func (s *Store) ForgetApp(ctx context.Context, opID, app string) error {
 
 // IngressRoutes returns the routes of app, or of every app when app is empty, ordered by hostname.
 func (s *Store) IngressRoutes(ctx context.Context, app string) ([]IngressRoute, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT hostname,app,role,service,zone_id,dns_record_id FROM ingress_routes WHERE environment=? AND (?='' OR app=?) ORDER BY hostname`, s.env, app, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT hostname,app,role,service,zone_id,dns_record_id,route_created,dns_created,dns_prior_comment FROM ingress_routes WHERE environment=? AND (?='' OR app=?) ORDER BY hostname`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -991,9 +1008,11 @@ func (s *Store) IngressRoutes(ctx context.Context, app string) ([]IngressRoute, 
 	var out []IngressRoute
 	for rows.Next() {
 		var r IngressRoute
-		if err = rows.Scan(&r.Hostname, &r.App, &r.Role, &r.Service, &r.ZoneID, &r.DNSRecordID); err != nil {
+		var routeCreated, dnsCreated int
+		if err = rows.Scan(&r.Hostname, &r.App, &r.Role, &r.Service, &r.ZoneID, &r.DNSRecordID, &routeCreated, &dnsCreated, &r.DNSPriorComment); err != nil {
 			return nil, err
 		}
+		r.RouteCreated, r.DNSCreated = routeCreated != 0, dnsCreated != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -1013,11 +1032,56 @@ func (s *Store) SetIngressRoute(ctx context.Context, opID string, r IngressRoute
 	if err = owned(ctx, tx, s.env, opID); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO ingress_routes VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment,hostname) DO UPDATE SET app=excluded.app,role=excluded.role,service=excluded.service,zone_id=excluded.zone_id,dns_record_id=excluded.dns_record_id`, s.env, r.Hostname, r.App, r.Role, r.Service, r.ZoneID, r.DNSRecordID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO ingress_routes(environment,hostname,app,role,service,zone_id,dns_record_id,route_created,dns_created,dns_prior_comment) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(environment,hostname) DO UPDATE SET app=excluded.app,role=excluded.role,service=excluded.service,zone_id=excluded.zone_id,dns_record_id=excluded.dns_record_id,route_created=excluded.route_created,dns_created=excluded.dns_created,dns_prior_comment=excluded.dns_prior_comment`, s.env, r.Hostname, r.App, r.Role, r.Service, r.ZoneID, r.DNSRecordID, boolInt(r.RouteCreated), boolInt(r.DNSCreated), r.DNSPriorComment)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ForgetIngressRoutes removes every route row of app. It is not an error when app has none. Removing an app uses it to
+// leave no row behind once Cloudflare is done. It requires the environment lock to be held by opID.
+func (s *Store) ForgetIngressRoutes(ctx context.Context, opID, app string) error {
+	if app == "" {
+		return errors.New("app required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = owned(ctx, tx, s.env, opID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE environment=? AND app=?`, s.env, app); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AppliedApps lists the apps that have an applied release, in name order.
+func (s *Store) AppliedApps(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT app FROM applied WHERE environment=? ORDER BY app`, s.env)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var app string
+		if err = rows.Scan(&app); err != nil {
+			return nil, err
+		}
+		out = append(out, app)
+	}
+	return out, rows.Err()
 }
 
 // DeleteIngressRoute removes the route for hostname. It returns sql.ErrNoRows when there is none.

@@ -12,8 +12,8 @@ import (
 // connectorStored is the manifest Berthy stores with each connector release: the connector app, with the tunnel token.
 const connectorStored = `{"project":"demo","network":"demo","apps":{"ingress":{"kind":"image","image":"docker.io/cloudflare/cloudflared","roles":{"connector":{"replicas":1}},"env":{"secret":["TUNNEL_TOKEN"]}}}}`
 
-// Removing managed ingress forgets the connector app's applied release, but keeps its history. Prune must still run,
-// and it must keep the newest connector release.
+// Removing managed ingress forgets the connector app's applied release, but keeps its history. Prune must still run. The
+// connector no longer runs, so none of its releases protects an image.
 func TestPruneAfterManagedIngressIsRemoved(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
@@ -51,7 +51,7 @@ func TestPruneAfterManagedIngressIsRemoved(t *testing.T) {
 	}}
 	c := Controller{Store: s, Engine: f}
 	out := c.runOperation(ctx, prune, Actor{Admin: true}, Request{Kind: "prune"})
-	if out.State != "succeeded" || len(f.removed) != 1 || f.removed[0] != "ing-old" {
+	if out.State != "succeeded" || len(f.removed) != 2 || f.removed[0] != "ing-current" || f.removed[1] != "ing-old" {
 		t.Fatalf("outcome %+v removed %v", out, f.removed)
 	}
 }

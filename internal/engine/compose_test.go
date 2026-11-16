@@ -229,3 +229,41 @@ func TestNodeIDIsThisNodesSwarmID(t *testing.T) {
 		t.Fatal("node id of a node outside a swarm")
 	}
 }
+
+func TestComposeRunWithoutFilesNamesOnlyTheProject(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := helperCompose().Run(context.Background(), ComposeRun{Project: "shop-db", Dir: dir, NoFiles: true, Args: []string{"down", "--remove-orphans"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Args []string `json:"args"`
+		Env  []string `json:"env"`
+	}
+	if err = json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("helper output %q: %v", out, err)
+	}
+	want := []string{"-p", "shop-db", "down", "--remove-orphans"}
+	if strings.Join(got.Args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("a project without files must not be told to read any: %q", got.Args)
+	}
+	if !contains(got.Env, "HOME="+dir) {
+		t.Fatalf("environment lacks the private home: %q", got.Env)
+	}
+}
+
+func TestProjectVolumesQueryTheProjectLabel(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1.44/volumes" || !strings.Contains(r.URL.Query().Get("filters"), "com.docker.compose.project=shop-db") {
+			t.Errorf("request %s %s", r.URL.Path, r.URL.RawQuery)
+		}
+		return response(200, `{"Volumes":[{"Name":"shop-db_data"},{"Name":"shop-db_cache"}],"Warnings":null}`), nil
+	})
+	got, err := e.ProjectVolumes(context.Background(), "shop-db")
+	if err != nil || len(got) != 2 || got[0] != "shop-db_cache" || got[1] != "shop-db_data" {
+		t.Fatalf("volumes %v: %v", got, err)
+	}
+	if _, err = e.ProjectVolumes(context.Background(), "Shop DB"); err == nil {
+		t.Fatal("invalid project accepted")
+	}
+}

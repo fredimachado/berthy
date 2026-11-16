@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 
 	"berthy/internal/api"
@@ -33,12 +35,27 @@ const probeTargetsManifest = `{"project":"demo","network":"demo",
 func recordBoundRelease(t *testing.T, s *state.Store, id, manifestJSON string, bindings []state.Binding) {
 	t.Helper()
 	ctx := context.Background()
-	op, _, err := s.Admit(ctx, state.Admission{RequestID: id, ActorID: "ci", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
-	if err != nil {
+	var m struct {
+		Apps map[string]json.RawMessage `json:"apps"`
+	}
+	if err := json.Unmarshal([]byte(manifestJSON), &m); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Manifest: []byte(manifestJSON), Bindings: bindings}}); err != nil {
-		t.Fatal(err)
+	// Every app the manifest names has an applied release, as it would after its own deploy.
+	for _, app := range slices.Sorted(maps.Keys(m.Apps)) {
+		var own []state.Binding
+		for _, b := range bindings {
+			if b.App == app {
+				own = append(own, b)
+			}
+		}
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: id + "-" + app, ActorID: "ci", Kind: "deploy", App: app, PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON), Bindings: own}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -37,15 +37,21 @@ func monitoringConfig(telegramURL string) Config {
 	}
 }
 
-// recordRelease stores a successful deploy whose manifest is manifestJSON, as the agent does after a deploy.
+// recordRelease stores a successful deploy of every app the manifest names, as the agent does after deploys of them.
 func recordRelease(t *testing.T, s *state.Store, id, manifestJSON string) {
 	t.Helper()
+	recordBoundRelease(t, s, id, manifestJSON, nil)
+}
+
+// recordAppRelease stores a successful deploy of one app whose manifest is manifestJSON.
+func recordAppRelease(t *testing.T, s *state.Store, id, app, manifestJSON string) {
+	t.Helper()
 	ctx := context.Background()
-	op, _, err := s.Admit(ctx, state.Admission{RequestID: id, ActorID: "ci", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: id + "-" + app, ActorID: "ci", Kind: "deploy", App: app, PublicRequest: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Manifest: []byte(manifestJSON)}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON)}}); err != nil {
 		t.Fatal(err)
 	}
 }

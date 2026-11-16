@@ -42,6 +42,8 @@ type fakeCompose struct {
 	upArgs     []string
 	upEnvFound bool
 	upAuthSeen bool
+	downErr    error
+	onDown     func(engine.ComposeRun)
 }
 
 func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
@@ -68,6 +70,14 @@ func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byt
 		return nil, nil, f.upErr
 	case "restart":
 		return nil, nil, f.restartErr
+	case "down":
+		if f.downErr != nil {
+			return nil, nil, f.downErr
+		}
+		if f.onDown != nil {
+			f.onDown(r)
+		}
+		return nil, nil, nil
 	}
 	return nil, nil, errors.New("unexpected compose command")
 }
@@ -135,6 +145,12 @@ type composeDocker struct {
 	*positiveEngine
 	containers []engine.ComposeContainer
 	volumes    map[string]bool
+	// projectVolumes are the volumes Compose created for the project, found by label.
+	projectVolumes []string
+}
+
+func (d *composeDocker) ProjectVolumes(context.Context, string) ([]string, error) {
+	return d.projectVolumes, nil
 }
 
 func (d *composeDocker) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {

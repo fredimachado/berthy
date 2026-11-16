@@ -92,7 +92,7 @@ func TestUpgradeVersionFourAddsChecksTable(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if err = upgraded.PutCheck(context.Background(), CheckState{Name: "memory", State: "ok"}); err != nil {

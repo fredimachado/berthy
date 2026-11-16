@@ -29,7 +29,7 @@ func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string))
 		Env:   c.Environment,
 		Store: store,
 		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
-			m, _, err := store.LatestManifest(ctx)
+			m, _, err := deployedManifest(ctx, store)
 			return m, err
 		},
 		Target: jobs.EngineTarget{Store: store, Docker: e},
@@ -45,7 +45,7 @@ func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Ti
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	m, _, err := d.Store.LatestManifest(ctx)
+	m, _, err := deployedManifest(ctx, d.Store)
 	if err != nil {
 		return nil
 	}
@@ -92,7 +92,7 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 	ctx := r.Context()
 	switch {
 	case len(rest) == 1:
-		m, _, err := d.Store.LatestManifest(ctx)
+		m, _, err := deployedManifest(ctx, d.Store)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
@@ -120,7 +120,7 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 		}
 		if len(runs) == 0 {
 			// A job with no runs is known only through the manifest.
-			if m, _, err := d.Store.LatestManifest(ctx); err != nil {
+			if m, _, err := deployedManifest(ctx, d.Store); err != nil {
 				writeError(w, 404, "not_found", "not found")
 				return
 			} else if _, ok := m.Jobs[rest[1]]; !ok {

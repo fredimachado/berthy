@@ -33,8 +33,11 @@ type Request struct {
 	ReplaceExisting bool `json:"replace_existing,omitempty"`
 	// ComposeFile is the Compose file of a Compose app deploy. The CLI reads it from the manifest directory.
 	ComposeFile string `json:"compose_file,omitempty"`
-	// AllowRecreate lets a Compose deploy or rollback recreate or remove services of a stateful app. It needs administrator access.
+	// AllowRecreate lets a Compose deploy or rollback recreate or remove services of a stateful app, and lets a removal take
+	// down a stateful Compose app. It needs administrator access.
 	AllowRecreate bool `json:"allow_recreate,omitempty"`
+	// Volumes makes a removal delete the app's volumes too. Without it every volume stays.
+	Volumes bool `json:"volumes,omitempty"`
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -48,6 +51,7 @@ type Plan struct {
 	SchemaRevert *SchemaRevertSummary `json:"schema_revert,omitempty"`
 	Ingress      *IngressPlan         `json:"ingress,omitempty"`
 	Compose      *ComposePlan         `json:"compose,omitempty"`
+	Remove       *RemovePlan          `json:"remove,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -195,6 +199,12 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
+	if req.Kind == "remove" {
+		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
+		if _, _, err := c.removeCheck(ctx, actor, req); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
@@ -232,7 +242,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		TargetRelease   int64  `json:"target_release,omitempty"`
 		ReplaceExisting bool   `json:"replace_existing,omitempty"`
 		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate})
+		Volumes         bool   `json:"volumes,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -279,6 +290,9 @@ func (c *Controller) Recover(ctx context.Context) error {
 	intents, err := c.Store.Intents(ctx, op.ID)
 	if err != nil {
 		return err
+	}
+	if op.Kind == "remove" && op.State == "running" {
+		return c.recoverRemove(ctx, op, intents)
 	}
 	before, after := recordedSchema(op, intents)
 	reason := ""

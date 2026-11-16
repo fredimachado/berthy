@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 
 	"berthy/internal/cloudflare"
@@ -97,6 +98,40 @@ func tunnelIDOf(t *cloudflare.Tunnel) string {
 
 // everyRoute lets a run remove any route Berthy owns that the manifest no longer asks for.
 func everyRoute(state.IngressRoute) bool { return true }
+
+// applyRemovable decides which owned routes an ingress apply may remove. The manifest does not ask for the routes of an app
+// it no longer names, but when that app still has an applied release its services keep running, so its routes stay until
+// berthy remove takes the app down. The notes name each such app that owns a route. An app with no applied release has
+// nothing left to serve, so its routes may go.
+func (c *Controller) applyRemovable(ctx context.Context, m manifest.Manifest) (func(state.IngressRoute) bool, []string, error) {
+	if c.Store == nil {
+		return nil, nil, errors.New("state unavailable")
+	}
+	applied, err := c.Store.AppliedApps(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	routes, err := c.Store.IngressRoutes(ctx, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	owners := map[string]bool{}
+	for _, r := range routes {
+		owners[r.App] = true
+	}
+	kept := map[string]bool{}
+	var notes []string
+	for _, app := range applied {
+		if _, named := m.Apps[app]; named || app == manifest.ConnectorAppName {
+			continue
+		}
+		kept[app] = true
+		if owners[app] {
+			notes = append(notes, fmt.Sprintf("app %s is deployed but not in the manifest; run berthy remove %s", app, app))
+		}
+	}
+	return func(r state.IngressRoute) bool { return !kept[r.App] }, notes, nil
+}
 
 // connectorRequest is the deploy request that runs the connector app. withToken is false only before the tunnel token
 // is stored, so the connector can still be planned.
@@ -366,10 +401,17 @@ func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) 
 		return Plan{}, err
 	}
 	ing := c.newIngressSync(t, "", tunnelIDOf(t.tunnel))
-	ip, _, _, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	removable, notes := everyRoute, []string(nil)
+	if !t.removal {
+		if removable, notes, err = c.applyRemovable(ctx, m); err != nil {
+			return Plan{}, err
+		}
+	}
+	ip, _, _, err := ing.plan(ctx, wants, removable, req.ReplaceExisting)
 	if err != nil {
 		return Plan{}, err
 	}
+	ip.Notes = notes
 	ip.CreateTunnel = !t.removal && t.tunnel == nil
 	p := Plan{App: manifest.ConnectorAppName, Roles: []string{}, Blockers: ip.Conflicts}
 	if t.removal {
@@ -427,7 +469,16 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 		return fail(err)
 	}
 	ing := c.newIngressSync(t, op.ID, tunnelIDOf(t.tunnel))
-	plan, _, _, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	removable, notes, err := c.applyRemovable(ctx, m)
+	if err != nil {
+		return fail(err)
+	}
+	for _, note := range notes {
+		if data, e := json.Marshal(map[string]string{"step": note}); e == nil {
+			_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: data})
+		}
+	}
+	plan, _, _, err := ing.plan(ctx, wants, removable, req.ReplaceExisting)
 	if err != nil {
 		return fail(err)
 	}
@@ -480,7 +531,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 		}
 	}
 	// The connector is running, so the routes can point at it. Plan again from fresh reads, then write.
-	plan, cfg, steps, err := ing.plan(ctx, wants, everyRoute, req.ReplaceExisting)
+	plan, cfg, steps, err := ing.plan(ctx, wants, removable, req.ReplaceExisting)
 	if err == nil && len(plan.Conflicts) > 0 {
 		c.recordConflicts(ctx, op.ID, plan.Conflicts)
 		err = errIngressConflict

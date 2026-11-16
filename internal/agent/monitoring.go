@@ -78,7 +78,7 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	if _, ok := w.samples(); !ok && w.metrics != nil {
 		return nil
 	}
-	m, _, manifestErr := w.store.LatestManifest(ctx)
+	m, _, manifestErr := deployedManifest(ctx, w.store)
 	if manifestErr != nil && !errors.Is(manifestErr, sql.ErrNoRows) {
 		return nil
 	}
@@ -489,7 +489,7 @@ func alertError(w http.ResponseWriter, err error) {
 // secret when alerts need it, and the overlay helper when a service probe needs it. A peer's stored state is used when
 // the monitor has one; otherwise the peer is asked now.
 func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, environment string) []api.Check {
-	m, _, err := s.LatestManifest(ctx)
+	m, _, err := deployedManifest(ctx, s)
 	if err != nil {
 		return nil
 	}
@@ -520,6 +520,9 @@ func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, env
 	if hasServiceProbe(m.Probes) {
 		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)
 		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
+	}
+	if check, ok := orphanAppsCheck(ctx, s, m); ok {
+		out = append(out, check)
 	}
 	return out
 }

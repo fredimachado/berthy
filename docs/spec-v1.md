@@ -400,12 +400,13 @@ The connector publishes no port. It makes outbound connections to Cloudflare onl
 - **`berthy deploy <app>`** updates that app's routes and DNS records as the last step of the deploy, once the new version is healthy. A new hostname goes live only after the app can answer it.
 - **`berthy ingress status -e prod`** shows the tunnel's health as Cloudflare reports it, the connectors, and each hostname with its target and DNS record.
 - **Removing a hostname** from the manifest removes its route and DNS record at the next apply or deploy of that app.
+- **An app that is dropped from the manifest keeps its routes.** `ingress apply` removes the routes of an app only when the app has no applied release. An app that is still deployed but missing from the manifest keeps running, so its routes and records stay, and the plan and the dry run say so with `app <name> is deployed but not in the manifest; run berthy remove <name>`. `berthy doctor` lists such apps as `orphan_apps`. Run `berthy remove <name>` to take the app and its routes down.
 - **Checks run first.** The check step of a deploy confirms the API token works, each hostname's zone is in the account, and no hostname is taken. A problem stops the deploy before anything changes.
 - **Dry run.** `--dry-run` prints the routes and DNS records that would be added, changed or removed.
 
 ### Rules
 
-- **Berthy only touches what it created.** A tunnel's routes are stored as one document, so Berthy reads it, changes its own rules and writes it back with every other rule kept. It marks the DNS records it creates and never edits or deletes one without that mark.
+- **Berthy only touches what it created.** A tunnel's routes are stored as one document, so Berthy reads it, changes its own rules and writes it back with every other rule kept. It marks the DNS records it creates and never edits or deletes one without that mark. A rule or record that already matched is adopted, not created: Berthy marks an adopted record so it can tell it from others, but remembers its old comment, and when the route goes away it releases what it adopted instead of deleting it. The adopted rule stays in the tunnel, and the adopted record stays in the zone with its old comment back. A rule or record that `--replace-existing` took over counts as Berthy's own, because Berthy replaced it with one it wrote.
 - **An existing route or record stops the run.** If a hostname is already routed to a different target, or its DNS name is already used by a record Berthy did not create, the run stops and reports it. `--replace-existing` takes it over and needs an `admin` token. A route or record that already matches is adopted with no change.
 - **Berthy's rules come first.** They are placed ahead of rules it did not write, and the tunnel's final catch-all rule stays last.
 - **One writer.** Edit a managed hostname in the manifest, not in the dashboard. A dashboard edit to a managed route is overwritten at the next apply and shown in the dry run first.
@@ -599,6 +600,7 @@ An image app that sets nothing else runs with these Swarm settings.
 - The agent keeps the images of the last `retain` deploys per app (default 5), so rollback needs no pull.
 - After each successful deploy it removes older images, stopped containers and unused layers.
 - It never removes volumes.
+- An app that was removed with `berthy remove` has no applied release, so none of its releases protects an image any more; its images are removed at the next prune. Its release history stays.
 
 ### Compose app deploy
 
@@ -609,6 +611,19 @@ An image app that sets nothing else runs with these Swarm settings.
 5. Wait for health checks, record the deploy, release the lock.
 
 The CLI reads the Compose file named by the app's `file` and sends its content with the request. The agent keeps that copy with the release, so a rollback redeploys the same file. Only that one file is sent, so a `build:` section is refused. These settings need an admin token: `privileged`, host `network_mode`, `pid`, `ipc`, `uts`, `userns_mode` or `cgroup`, `cap_add`, `devices`, relaxed `security_opt` entries, bind mounts of host paths, `env_file`, `secrets` or `configs` read from host files, and sharing a container outside the project (`volumes_from`, or `network_mode`, `pid`, `ipc` or `userns_mode` naming `container:`). The agent runs the Compose CLI named by `compose_command` (`docker compose` by default) with an isolated home directory, so the Compose plugin must be installed system-wide, or `compose_command` must name a standalone Compose binary. A bind mount must not point inside the agent's Compose directory, which each deploy replaces. A Compose deploy has no automatic rollback: a failed `up` is reported, and the next deploy brings the project to its file, since `up` is idempotent. Adoption records a release only when the plan would change nothing; otherwise it stops and names the first difference. `restart` restarts containers without recreating them, and `scale` and `exec` refuse Compose apps. `--version` does not apply to a Compose deploy.
+
+### Removing an app
+
+`berthy remove <app> -e <env> [--volumes] [--allow-recreate] [--dry-run]` takes an app down and removes what Berthy created for it. It takes an `admin` token, runs as an operation under the deploy lock, and needs no manifest: it works from the app's applied release. The ingress connector app cannot be removed this way; remove managed ingress with `ingress apply` and a manifest without an `ingress` block.
+
+What it does, in this order:
+
+1. **Routes and DNS records.** It removes the routes and DNS records Berthy created for the app. A route or record Berthy adopted is released, not deleted: its rows are dropped, an adopted DNS record gets its old comment back, and an adopted rule stays in the tunnel. A record that has lost Berthy's mark is left alone.
+2. **Services.** An image app's services are deleted, one at a time, after each deletion is journaled. Each must still be the service the app is bound to (same name and ID), and any Berthy label it carries must name this environment, app and role; a service adopted with `--adopt` that has no labels yet is accepted. Otherwise nothing is deleted and the removal is refused. A service that is already gone counts as removed. A Compose app is brought down with `compose down --remove-orphans` in its stored project directory, which is then deleted. When the files are gone, Berthy runs `compose -p <project> down` with no file, which Compose resolves by label and which removes the project's containers and network.
+3. **Volumes, only with `--volumes`.** An image app's volumes are the named volumes its roles mount (`name:/path`); a Compose app's are the project's named, non-external volumes, removed by `down --volumes`. A volume another container still uses is kept and reported. Berthy never removes an external volume or a volume the app does not name.
+4. **State.** The app's bindings, applied release and route rows are forgotten. Releases, operations, job runs, backups and the audit log stay as history, so `history <app>` still works. The app is no longer monitored, scheduled or listed.
+
+What it keeps: volumes unless `--volumes`, the release history, routes and records Berthy adopted, and the tunnel. A `stateful` Compose app is removed only with `--allow-recreate`, as it is recreated only with it. Removing an app again after it is gone changes nothing and succeeds. A removal that stops partway is finished by running it again; at start the agent also completes any service deletion it had journaled and records the operation as interrupted. `--dry-run` lists the services, volumes, routes and records, and the volumes that would be kept.
 
 ### Dry run
 
@@ -655,6 +670,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `backup run <job>` | Run a volume backup now | Yes |
 | `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
+| `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
 | `approve <id>` | Approve a pending change requested by an AI agent | Yes |
 
 ### TUI
@@ -917,7 +933,7 @@ Each token belongs to one environment and one scope.
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, `remove`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.
 - AI agents get `read` tokens by default.
@@ -946,7 +962,7 @@ Each token belongs to one environment and one scope.
 - **Explicit environment.** No command that changes something runs without `-e`.
 - **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints.
 - **Deploy lock.** A manual lock freezes an environment for everyone, people and AI agents alike.
-- **Stateful protection.** Recreating or removing a `stateful` Compose app needs `--allow-recreate` and an `admin` token.
+- **Stateful protection.** Recreating or removing a `stateful` Compose app needs `--allow-recreate` and an `admin` token. `berthy remove` of a `stateful` Compose app needs the same.
 - **Audit log.** Every change is recorded with time, command, target and outcome. API requests include the token name and caller's address. Scheduled runs identify the job as the caller.
 
 ### Secrets

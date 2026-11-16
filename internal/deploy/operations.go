@@ -142,6 +142,8 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		}
 	}
 	switch req.Kind {
+	case "remove":
+		return c.planRemove(ctx, actor, req)
 	case "exec":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
@@ -202,6 +204,9 @@ func (c *Controller) operationAuth(ctx context.Context, app string, spec json.Ra
 	return &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}, nil
 }
 func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+	if req.Kind == "remove" {
+		return c.runRemove(ctx, op, actor, req)
+	}
 	if req.Kind == "exec" {
 		return c.runExec(ctx, op, actor, req)
 	}
@@ -457,20 +462,20 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 	retains := map[string]int{}
 	for _, r := range history {
 		if _, ok := retains[r.App]; !ok {
-			// An app that was removed, such as the connector once managed ingress is gone, keeps its history but has
-			// no applied release. Its newest release sets the retention, and none of its releases is current.
-			manifestJSON := r.Manifest
 			current, e := c.Store.Applied(ctx, r.App)
 			switch {
-			case e == nil:
-				refs[current.Digest] = true
-				manifestJSON = current.Manifest
 			case errors.Is(e, sql.ErrNoRows):
-			default:
+				// An app that was removed, such as the connector once managed ingress is gone, or an app taken down with
+				// berthy remove, keeps its history but has no applied release. Nothing runs from it, and nothing can
+				// roll back to it, so none of its releases protects an image.
+				retains[r.App] = 0
+				continue
+			case e != nil:
 				return nil, errors.New("applied release unavailable")
 			}
+			refs[current.Digest] = true
 			var m manifest.Manifest
-			if json.Unmarshal(manifestJSON, &m) != nil {
+			if json.Unmarshal(current.Manifest, &m) != nil {
 				return nil, errors.New("applied manifest unavailable")
 			}
 			app, ok := m.Apps[r.App]

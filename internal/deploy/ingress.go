@@ -24,8 +24,8 @@ type IngressChange struct {
 	Hostname string `json:"hostname"`
 	App      string `json:"app,omitempty"`
 	Role     string `json:"role,omitempty"`
-	Route    string `json:"route"`              // add, change, remove, adopt, keep
-	DNS      string `json:"dns,omitempty"`      // add, change, remove, adopt, keep; empty when DNS is not managed
+	Route    string `json:"route"`              // add, change, remove, release, adopt, keep; release leaves an adopted rule in the tunnel
+	DNS      string `json:"dns,omitempty"`      // add, change, remove, release, adopt, keep; release keeps an adopted record; empty when DNS is not managed
 	Target   string `json:"target,omitempty"`   // desired service
 	Previous string `json:"previous,omitempty"` // previous service when Route is change/remove
 }
@@ -41,17 +41,21 @@ type IngressPlan struct {
 	RemoveConnector    bool            `json:"remove_connector,omitempty"`
 	Changes            []IngressChange `json:"changes"`
 	Conflicts          []string        `json:"conflicts,omitempty"`
+	// Notes are things the run leaves alone on purpose. They do not stop it.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // dnsStep is the DNS work for one hostname. A step with remove set deletes the record of a hostname that is leaving
-// the tunnel. The other steps belong to wanted hostnames.
+// the tunnel, or releases it when Berthy adopted it. The other steps belong to wanted hostnames.
 type dnsStep struct {
 	Want    RouteWant
-	Action  string // add, change, adopt, keep, remove, or "" when DNS is off or nothing is to be done
+	Action  string // add, change, adopt, keep, remove, release, or "" when DNS is off or nothing is to be done
 	Zone    cloudflare.Zone
 	Record  *cloudflare.DNSRecord  // the record to update, delete or adopt
 	Replace []cloudflare.DNSRecord // foreign records deleted by --replace-existing before creating ours
 	remove  bool
+	// prior is the comment a released record gets back.
+	prior string
 }
 
 // ingressSync plans and applies the routes and DNS records of one environment against one tunnel.
@@ -122,9 +126,15 @@ func mergeRoutes(cfg cloudflare.TunnelConfig, wants []RouteWant, owned map[strin
 		if wanted[h] || !removable[h] {
 			continue
 		}
-		removed[h] = true
 		row := owned[h]
-		changes = append(changes, IngressChange{Hostname: h, App: row.App, Role: row.Role, Route: "remove", Previous: servicesOf(rulesFor(rules, h))})
+		ch := IngressChange{Hostname: h, App: row.App, Role: row.Role, Route: "remove", Previous: servicesOf(rulesFor(rules, h))}
+		if row.RouteCreated {
+			removed[h] = true
+		} else {
+			// Berthy adopted this rule, so it was never Berthy's to delete. Berthy lets go of it and the rule stays.
+			ch.Route = "release"
+		}
+		changes = append(changes, ch)
 	}
 	sortChanges(changes)
 	if len(conflicts) > 0 {
@@ -264,8 +274,9 @@ func (s *ingressSync) dnsFor(ctx context.Context, w RouteWant, prev *state.Ingre
 	return step, "", nil
 }
 
-// dnsRemoval plans the deletion of the record Berthy created for a hostname that is leaving the tunnel. A record that
-// is missing, not managed, or not the one Berthy recorded is left alone.
+// dnsRemoval plans the end of the record Berthy keeps for a hostname that is leaving the tunnel: deleted when Berthy
+// created it, released when Berthy adopted it, which puts the old comment back and keeps the record. A record that is
+// missing, not marked as Berthy's, or not the one Berthy recorded is left alone.
 func (s *ingressSync) dnsRemoval(ctx context.Context, row state.IngressRoute) (dnsStep, error) {
 	step := dnsStep{Want: RouteWant{Hostname: row.Hostname, App: row.App, Role: row.Role, Service: row.Service}, Zone: cloudflare.Zone{ID: row.ZoneID}, remove: true}
 	if row.DNSRecordID == "" || row.ZoneID == "" {
@@ -281,6 +292,9 @@ func (s *ingressSync) dnsRemoval(ctx context.Context, row state.IngressRoute) (d
 	for i := range records {
 		if records[i].ID == row.DNSRecordID && cloudflare.IsManaged(records[i], s.c.Environment) {
 			step.Action = "remove"
+			if !row.DNSCreated {
+				step.Action, step.prior = "release", row.DNSPriorComment
+			}
 			step.Record = &records[i]
 		}
 	}
@@ -338,6 +352,18 @@ func (s *ingressSync) apply(ctx context.Context, plan IngressPlan, cfg cloudflar
 			}
 		}
 	}
+	previous, err := s.c.Store.IngressRoutes(ctx, "")
+	if err != nil {
+		return errIngressState
+	}
+	before := map[string]state.IngressRoute{}
+	for _, r := range previous {
+		before[r.Hostname] = r
+	}
+	routeActions := map[string]string{}
+	for _, ch := range plan.Changes {
+		routeActions[ch.Hostname] = ch.Route
+	}
 	for _, st := range steps {
 		if st.remove {
 			continue
@@ -349,6 +375,7 @@ func (s *ingressSync) apply(ctx context.Context, plan IngressPlan, cfg cloudflar
 		if st.Record != nil {
 			route.DNSRecordID = st.Record.ID
 		}
+		route.RouteCreated, route.DNSCreated, route.DNSPriorComment = ownership(before[st.Want.Hostname], routeActions[st.Want.Hostname], st)
 		if err := s.c.Store.SetIngressRoute(ctx, s.opID, route); err != nil {
 			return errIngressState
 		}
@@ -362,11 +389,44 @@ func (s *ingressSync) apply(ctx context.Context, plan IngressPlan, cfg cloudflar
 				return errIngressPublish
 			}
 		}
+		if st.Action == "release" && st.Record != nil {
+			// The record goes back to what it was before Berthy marked it: same name, target and proxying, old comment.
+			released := *st.Record
+			released.Comment = st.prior
+			if _, err := s.cf.UpdateDNSRecord(ctx, st.Zone.ID, st.Record.ID, released); err != nil && !notFound(err) {
+				return errIngressPublish
+			}
+		}
 		if err := s.c.Store.DeleteIngressRoute(ctx, s.opID, st.Want.Hostname); err != nil {
 			return errIngressState
 		}
 	}
 	return nil
+}
+
+// ownership decides what Berthy created for one wanted hostname: the rule, the record, and the comment the record had
+// before Berthy marked it. before is the row of an earlier run, if any; route is what the plan does to the rule. A rule
+// or record Berthy adopted stays adopted across later runs, and anything Berthy adds, changes or takes over counts as its
+// own.
+func ownership(before state.IngressRoute, route string, st dnsStep) (routeCreated, dnsCreated bool, prior string) {
+	routeCreated = true
+	switch route {
+	case "adopt":
+		routeCreated = false
+	case "keep":
+		routeCreated = before.Hostname == "" || before.RouteCreated
+	}
+	dnsCreated = true
+	switch {
+	case st.Action == "adopt":
+		dnsCreated = false
+		if st.Record != nil {
+			prior = st.Record.Comment
+		}
+	case (st.Action == "keep" || st.Action == "change") && st.Record != nil && before.DNSRecordID == st.Record.ID:
+		dnsCreated, prior = before.DNSCreated, before.DNSPriorComment
+	}
+	return routeCreated, dnsCreated, prior
 }
 
 // record is the DNS record Berthy writes for a hostname: a proxied CNAME to the tunnel, marked as Berthy's.

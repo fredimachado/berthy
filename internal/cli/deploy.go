@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
 		return true
 	}
 	return false
@@ -35,7 +35,7 @@ func isDeploymentCommand(s string) bool {
 
 type commandFlags struct {
 	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas string
-	json, dry, adopt, healthy, revert, replace, allowRecreate                             bool
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes                    bool
 	pos, command                                                                          []string
 }
 
@@ -60,6 +60,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.replace = true
 		case "--allow-recreate":
 			f.allowRecreate = true
+		case "--volumes":
+			f.volumes = true
 		case "--revert-schema":
 			f.revert = true
 		case "-e", "--config", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
@@ -130,6 +132,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		b, _ := json.Marshal(m)
 		return printResponse(out, errout, b, f.json)
 	}
+	if f.volumes && cmd != "remove" {
+		fmt.Fprintln(errout, "--volumes applies to remove only")
+		return 2
+	}
 	if f.config == "" {
 		fmt.Fprintln(errout, "remote commands require --config")
 		return 2
@@ -161,7 +167,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	endpoint := ""
 	var body any
 	switch cmd {
-	case "deploy", "rollback", "restart", "scale", "exec", "prune":
+	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove":
 		if cmd != "prune" && len(f.pos) != 1 || cmd == "prune" && len(f.pos) != 0 {
 			fmt.Fprintln(errout, "command requires an app")
 			return 2
@@ -179,6 +185,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.RevertSchema = f.revert
 		req.ReplaceExisting = f.replace
 		req.AllowRecreate = f.allowRecreate
+		req.Volumes = f.volumes
 		req.Command = f.command
 		if f.id == "" {
 			var random [16]byte
@@ -414,6 +421,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if cmd == "diagnostics" && !f.json {
 		return printDiagnostics(out, errout, data)
 	}
+	if cmd == "remove" && f.dry && !f.json {
+		return printRemovePlan(out, errout, data)
+	}
 	return printResponse(out, errout, data, f.json)
 }
 
@@ -509,8 +519,17 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if strings.HasPrefix(line, "event:") {
 					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-					if !asJSON {
+					// A removal reports what it did as steps, so their text is shown instead of their name.
+					if !asJSON && !(cmd == "remove" && kind == "step") {
 						fmt.Fprintln(out, kind)
+					}
+				}
+				if cmd == "remove" && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
+					var step struct {
+						Step string `json:"step"`
+					}
+					if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &step) == nil && step.Step != "" {
+						fmt.Fprintln(out, "  "+terminalSafe(step.Step))
 					}
 				}
 			}

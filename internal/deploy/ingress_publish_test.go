@@ -567,7 +567,7 @@ func TestRemovalStillPublishesWithoutAConnector(t *testing.T) {
 	tunnelID := f.tunnel().ID
 	record := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: cloudflare.TunnelTarget(tunnelID), Proxied: true, Comment: cloudflare.RecordComment(ingressEnv)})
 	f.cf.SetConfig(tunnelID, json.RawMessage(`{"ingress":[{"hostname":"api.example.com","service":"`+apiTarget+`"},{"service":"http_status:404"}]}`))
-	seedOwnedRoute(t, f, state.IngressRoute{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: record})
+	seedOwnedRoute(t, f, state.IngressRoute{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: record, RouteCreated: true, DNSCreated: true})
 
 	// The app's last hostname goes. Its route and record are its own, so the removal publishes with no connector.
 	if op := f.deploy("drop", "api", apiFirst, withIngress(t, apiApps(webRole(), ""))); op.State != "succeeded" {

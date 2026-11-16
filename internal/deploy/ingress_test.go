@@ -292,7 +292,7 @@ func rulesOf(rs ...cloudflare.Rule) cloudflare.TunnelConfig {
 
 func TestMergeRoutesPlacesBerthyFirstAndKeepsTheRest(t *testing.T) {
 	apiWant := []RouteWant{{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget}}
-	apiOwned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget}}
+	apiOwned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget, RouteCreated: true, DNSCreated: true}}
 	removable := map[string]bool{"api.example.com": true}
 	origin := cloudflare.Rule{Hostname: "other.example.com", Service: "http://other:80", Extra: map[string]json.RawMessage{"originRequest": json.RawMessage(`{"connectTimeout":"5s"}`)}}
 	cases := []struct {
@@ -424,7 +424,7 @@ func TestMergeRoutesReportsPreviousAndKeepsExtra(t *testing.T) {
 	origin := json.RawMessage(`{"connectTimeout":"9s"}`)
 	cfg := rulesOf(cloudflare.Rule{Hostname: "api.example.com", Service: "http://old:80", Extra: map[string]json.RawMessage{"originRequest": origin}}, rule("", "http_status:404"))
 	want := []RouteWant{{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget}}
-	owned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "api", Role: "web", Service: "http://old:80"}}
+	owned := map[string]state.IngressRoute{"api.example.com": {Hostname: "api.example.com", App: "api", Role: "web", Service: "http://old:80", RouteCreated: true, DNSCreated: true}}
 	merged, changes, conflicts := mergeRoutes(cfg, want, owned, nil, false)
 	if len(conflicts) != 0 || len(changes) != 1 || changes[0].Previous != "http://old:80" || changes[0].Target != apiTarget {
 		t.Fatalf("changes %+v conflicts %v", changes, conflicts)
@@ -460,7 +460,7 @@ func TestDNSPlanningDecidesEachRecord(t *testing.T) {
 	}
 	routeOf := func(t *testing.T, f *ingressFixture, op state.Operation, recordID string) {
 		t.Helper()
-		route := state.IngressRoute{Hostname: host, App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: recordID}
+		route := state.IngressRoute{Hostname: host, App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: recordID, RouteCreated: true, DNSCreated: true}
 		if err := f.store.SetIngressRoute(context.Background(), op.ID, route); err != nil {
 			t.Fatal(err)
 		}
