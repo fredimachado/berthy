@@ -13,8 +13,8 @@ import (
 	"berthy/internal/state"
 )
 
-// storedAsDocker returns a service spec as Docker keeps it: null fields are not stored, and neither are zero durations in
-// the health check (Docker's HealthConfig omits them, so a zero start period never comes back).
+// storedAsDocker returns a service spec as Docker keeps it: its API types omit every zero-valued field (null, false, 0,
+// "", empty lists and empty objects), so none of them comes back from an inspect. List elements are kept.
 func storedAsDocker(s json.RawMessage) json.RawMessage {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(s))
@@ -22,23 +22,46 @@ func storedAsDocker(s json.RawMessage) json.RawMessage {
 	if dec.Decode(&v) != nil {
 		return s
 	}
-	v = dropNulls(v)
-	dropZeroHealthDurations(v)
-	out, _ := json.Marshal(v)
+	out, _ := json.Marshal(dropZeroFields(v))
 	return out
 }
 
-// dropZeroHealthDurations removes the zero-valued fields of a service spec's health check, as Docker does.
-func dropZeroHealthDurations(v any) {
-	spec, _ := v.(map[string]any)
-	task, _ := spec["TaskTemplate"].(map[string]any)
-	container, _ := task["ContainerSpec"].(map[string]any)
-	health, _ := container["Healthcheck"].(map[string]any)
-	for key, value := range health {
-		if value == json.Number("0") {
-			delete(health, key)
+// dropZeroFields removes the zero-valued fields of every object in v, innermost first.
+func dropZeroFields(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if e = dropZeroFields(e); zeroValue(e) {
+				delete(x, k)
+			} else {
+				x[k] = e
+			}
+		}
+	case []any:
+		for i, e := range x {
+			x[i] = dropZeroFields(e)
 		}
 	}
+	return v
+}
+
+func zeroValue(v any) bool {
+	switch y := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !y
+	case string:
+		return y == ""
+	case json.Number:
+		f, _ := y.Float64()
+		return f == 0
+	case []any:
+		return len(y) == 0
+	case map[string]any:
+		return len(y) == 0
+	}
+	return false
 }
 
 // dockerSpecs is positiveEngine with service specs stored the way Docker stores them.
@@ -159,7 +182,7 @@ func TestRecoveryAcceptsJournaledNullEnv(t *testing.T) {
 	}
 }
 
-func TestSpecComparisonIgnoresNullMapFields(t *testing.T) {
+func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 	if !sameSpec(json.RawMessage(`{"a":null,"b":1}`), json.RawMessage(`{"b":1}`)) {
 		t.Fatal("null map field changes the comparison")
 	}
@@ -230,5 +253,114 @@ func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
 		if health["Interval"] != float64(5*time.Second) || health["Timeout"] != float64(2*time.Second) || health["Retries"] != float64(3) {
 			t.Fatalf("health check %v", health)
 		}
+	}
+}
+
+func TestCanonicalSpecDropsTheZeroFieldsDockerOmits(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"null":                  {`{"a":null,"b":1}`, `{"b":1}`},
+		"false":                 {`{"a":false,"b":true}`, `{"b":true}`},
+		"zero numbers":          {`{"a":0,"b":0.0,"c":2}`, `{"c":2}`},
+		"empty string":          {`{"a":"","b":"x"}`, `{"b":"x"}`},
+		"empty list":            {`{"a":[],"b":[1]}`, `{"b":[1]}`},
+		"empty object":          {`{"a":{},"b":{"c":1}}`, `{"b":{"c":1}}`},
+		"object that empties":   {`{"a":{"b":null,"c":{"d":false}}}`, `{}`},
+		"nested in objects":     {`{"a":{"b":{"c":0,"d":"x"}}}`, `{"a":{"b":{"d":"x"}}}`},
+		"list elements stay":    {`{"a":[null,0,false,""]}`, `{"a":[null,0,false,""]}`},
+		"object in a list":      {`{"a":[{"b":false,"c":1},{"d":null}]}`, `{"a":[{"c":1},{}]}`},
+		"mount as journaled":    {`{"Mounts":[{"Type":"volume","Source":"data","Target":"/data","ReadOnly":false}]}`, `{"Mounts":[{"Source":"data","Target":"/data","Type":"volume"}]}`},
+		"large integer is kept": {`{"a":9007199254740993}`, `{"a":9007199254740993}`},
+	} {
+		var v any
+		dec := json.NewDecoder(strings.NewReader(tc.in))
+		dec.UseNumber()
+		if err := dec.Decode(&v); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(canonicalSpec(v))
+		var wantV any
+		dec = json.NewDecoder(strings.NewReader(tc.want))
+		dec.UseNumber()
+		if err := dec.Decode(&wantV); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(wantV)
+		if string(got) != string(want) {
+			t.Errorf("%s: got %s, want %s", name, got, want)
+		}
+	}
+	if sameSpec(json.RawMessage(`{"Replicas":1}`), json.RawMessage(`{"Replicas":2}`)) || sameSpec(json.RawMessage(`{"ReadOnly":true}`), json.RawMessage(`{}`)) {
+		t.Fatal("a real difference is ignored")
+	}
+	if !sameSpec(json.RawMessage(`{"Mounts":[{"ReadOnly":false,"Source":"data"}],"Env":null}`), json.RawMessage(`{"Mounts":[{"Source":"data"}]}`)) {
+		t.Fatal("zero fields change the comparison")
+	}
+}
+
+// volumeManifest declares one web role that mounts a named volume.
+func volumeManifest() manifest.Manifest {
+	m := dockerManifest(nil)
+	role := m.Apps["web"].Roles["web"]
+	role.Volumes = []string{"data:/data"}
+	m.Apps["web"].Roles["web"] = role
+	return m
+}
+
+func TestRoleWithANamedVolumeDeploysAndUpdates(t *testing.T) {
+	s := openStore(t)
+	e := dockerSpecs{&positiveEngine{}}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	for _, req := range []Request{
+		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: volumeManifest()},
+		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: volumeManifest()},
+	} {
+		op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitOperation(t, s, op.ID); got.State != "succeeded" {
+			t.Fatalf("%s: %s %s", req.RequestID, got.State, got.Err)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !strings.Contains(string(e.spec), `"Source":"data"`) || strings.Contains(string(e.spec), "ReadOnly") {
+		t.Fatalf("stored spec: %s", e.spec)
+	}
+}
+
+func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	prior, _, err := s.Admit(ctx, state.Admission{RequestID: "prior", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: json.RawMessage(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "update", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := `"Mounts":[{"Type":"volume","Source":"data","Target":"/data","ReadOnly":false}]`
+	before := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `",` + mount + `,"Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `",` + mount + `,"Labels":{"berthy.operation":"new"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
+		t.Fatal(err)
+	}
+	e := dockerSpecs{&positiveEngine{spec: storedAsDocker(desired)}}
+	c := Controller{Engine: e, Store: s}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !sameSpec(e.spec, before) {
+		t.Fatalf("service not restored: %s", e.spec)
 	}
 }

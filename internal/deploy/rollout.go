@@ -22,6 +22,8 @@ type serviceMutator interface {
 	DeleteService(context.Context, string) error
 }
 
+// sameSpec reports whether two service specs are the same once each is canonicalized. Docker stores a spec through types
+// that omit zero values, so a spec read back never equals the one that was sent unless both sides drop them.
 func sameSpec(a, b json.RawMessage) bool {
 	var x, y any
 	da := json.NewDecoder(bytes.NewReader(a))
@@ -31,28 +33,49 @@ func sameSpec(a, b json.RawMessage) bool {
 	if da.Decode(&x) != nil || db.Decode(&y) != nil {
 		return false
 	}
-	ax, _ := json.Marshal(dropNulls(x))
-	by, _ := json.Marshal(dropNulls(y))
+	ax, _ := json.Marshal(canonicalSpec(x))
+	by, _ := json.Marshal(canonicalSpec(y))
 	return bytes.Equal(ax, by)
 }
 
-// dropNulls removes null map fields, which Docker does not store. Array elements are kept.
-func dropNulls(v any) any {
+// canonicalSpec drops every object field whose value is one Docker omits when it stores a service: null, false, 0, "", an
+// empty list, and an empty object, which includes an object whose own fields were all dropped. List elements are kept in
+// place, and so are the zero values inside lists, because a list is not omitted field by field.
+func canonicalSpec(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
-			if e == nil {
+			if e = canonicalSpec(e); isZeroSpecValue(e) {
 				delete(x, k)
-				continue
+			} else {
+				x[k] = e
 			}
-			x[k] = dropNulls(e)
 		}
 	case []any:
 		for i, e := range x {
-			x[i] = dropNulls(e)
+			x[i] = canonicalSpec(e)
 		}
 	}
 	return v
+}
+
+func isZeroSpecValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !x
+	case string:
+		return x == ""
+	case json.Number:
+		f, err := x.Float64()
+		return err == nil && f == 0
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	}
+	return false
 }
 
 func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i state.Intent, auth *engine.RegistryAuth) error {
@@ -152,7 +175,7 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 	}
 }
 
-// Docker adds these defaults when it stores a newly created service.
+// Docker adds these non-zero defaults when it stores a newly created service. Zero values it omits are handled by sameSpec.
 func matchesCreatedSpec(desired, live json.RawMessage) bool {
 	var d, l map[string]any
 	dd := json.NewDecoder(bytes.NewReader(desired))
@@ -166,9 +189,6 @@ func matchesCreatedSpec(desired, live json.RawMessage) bool {
 	if ok {
 		if task["Runtime"] == "container" {
 			delete(task, "Runtime")
-		}
-		if task["ForceUpdate"] == json.Number("0") {
-			delete(task, "ForceUpdate")
 		}
 		if c, ok := task["ContainerSpec"].(map[string]any); ok && c["Isolation"] == "default" {
 			delete(c, "Isolation")
