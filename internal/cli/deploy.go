@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,10 +33,56 @@ func isDeploymentCommand(s string) bool {
 	return false
 }
 
+// withRemoteFlags is the flags of a command that calls the agent, which all read -e, --config and --json, with extra.
+func withRemoteFlags(extra ...string) []string {
+	return append([]string{"-e", "--config", "--json"}, extra...)
+}
+
+// changeFlags is the flags each change command reads, keyed by command, or by command and subcommand where the subcommands
+// differ. A flag that is not in its command's list is refused before anything is sent: a command given a flag it does not
+// read would otherwise run as if the flag were not there, so --dry-run on approve would approve for real. The lists were
+// taken from the code: the flags the handler reads, and for the deploy requests the fields the agent acts on for that kind.
+// scale accepts --manifest-dir and does not read it: a scale needs no checkout, and TestScaleDoesNotLoadCheckoutManifest relies on that.
+var changeFlags = map[string][]string{
+	"deploy":           withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
+	"rollback":         withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
+	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
+	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
+	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role"),
+	"prune":            withRemoteFlags("--dry-run", "--request-id"),
+	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
+	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
+	"restore":          withRemoteFlags("--dry-run", "--request-id", "--into"),
+	"wait":             withRemoteFlags("--role", "--timeout", "--healthy"),
+	"history":          withRemoteFlags(),
+	"diagnostics":      withRemoteFlags(),
+	"audit":            withRemoteFlags(),
+	"lock status":      withRemoteFlags(),
+	"lock acquire":     withRemoteFlags("--dry-run", "--message"),
+	"lock release":     withRemoteFlags("--dry-run"),
+	"recovery resolve": withRemoteFlags("--dry-run", "--message"),
+	"ingress apply":    withRemoteFlags("--dry-run", "--manifest-dir", "--request-id", "--replace-existing", "--commit"),
+	"ingress status":   withRemoteFlags(),
+	"alerts test":      withRemoteFlags(),
+	"secret list":      withRemoteFlags(),
+	"secret set":       withRemoteFlags("--dry-run", "--registry"),
+	"secret delete":    withRemoteFlags("--dry-run"),
+	"secret rm":        withRemoteFlags("--dry-run"),
+	"job run":          withRemoteFlags(),
+	"backup list":      withRemoteFlags("--backup"),
+	"backup run":       withRemoteFlags(),
+	"state-backup":     withRemoteFlags(),
+	"approvals":        withRemoteFlags("--all"),
+	"approve":          withRemoteFlags(),
+	"reject":           withRemoteFlags("--message"),
+	"config show":      {"-e", "--manifest-dir", "--json"},
+	"config validate":  {"-e", "--manifest-dir"},
+}
+
 type commandFlags struct {
 	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                              bool
-	pos, command                                                                                                 []string
+	pos, command, given                                                                                          []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -45,6 +92,9 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 		if a == "--" {
 			f.command = append(f.command, args[i+1:]...)
 			break
+		}
+		if strings.HasPrefix(a, "-") {
+			f.given = append(f.given, a)
 		}
 		switch a {
 		case "--json":
@@ -114,6 +164,90 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 	}
 	return f, nil
 }
+
+// canonicalFlag is the name changeFlags lists a flag under: -m is --message.
+func canonicalFlag(flag string) string {
+	if flag == "-m" {
+		return "--message"
+	}
+	return flag
+}
+
+// changeKey is the key of changeFlags for a command and its positional arguments. ok is false when the arguments name no
+// known subcommand: the handler then refuses them with its usage message.
+func changeKey(cmd string, pos []string) (key string, ok bool) {
+	sub := ""
+	if len(pos) > 0 {
+		sub = pos[0]
+	}
+	switch cmd {
+	case "config":
+		if len(pos) == 1 && (sub == "show" || sub == "validate") {
+			return cmd + " " + sub, true
+		}
+	case "lock":
+		if len(pos) == 0 || (len(pos) == 1 && sub == "status") {
+			return "lock status", true
+		}
+		if len(pos) == 1 && (sub == "acquire" || sub == "release") {
+			return "lock " + sub, true
+		}
+	case "recovery":
+		if len(pos) == 2 && sub == "resolve" {
+			return "recovery resolve", true
+		}
+	case "ingress":
+		if len(pos) == 1 && (sub == "apply" || sub == "status") {
+			return "ingress " + sub, true
+		}
+	case "alerts":
+		if len(pos) == 1 && sub == "test" {
+			return "alerts test", true
+		}
+	case "job":
+		if len(pos) == 2 && sub == "run" {
+			return "job run", true
+		}
+	case "backup":
+		if len(pos) == 1 && sub == "list" {
+			return "backup list", true
+		}
+		if len(pos) == 2 && sub == "run" {
+			return "backup run", true
+		}
+	case "secret":
+		if len(pos) == 1 && sub == "list" {
+			return "secret list", true
+		}
+		if len(pos) == 2 && sub == "set" {
+			return "secret set", true
+		}
+		if len(pos) == 2 && (sub == "delete" || sub == "rm") {
+			return "secret " + sub, true
+		}
+	default:
+		if _, known := changeFlags[cmd]; known {
+			return cmd, true
+		}
+	}
+	return "", false
+}
+
+// refusedFlag returns the first flag given to cmd that its subcommand does not read, as the person typed it, and the name of
+// the command it was given to. flag is empty when every flag is read, or when the subcommand is not known.
+func refusedFlag(cmd string, f commandFlags) (flag, key string) {
+	key, ok := changeKey(cmd, f.pos)
+	if !ok {
+		return "", ""
+	}
+	for _, typed := range f.given {
+		if !slices.Contains(changeFlags[key], canonicalFlag(typed)) {
+			return typed, key
+		}
+	}
+	return "", key
+}
+
 func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	f, err := parseDeploymentArgs(args)
 	if err != nil {
@@ -123,23 +257,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if !envPattern.MatchString(f.env) {
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
-	}
-	if cmd == "config" {
-		if len(f.pos) != 1 || (f.pos[0] != "show" && f.pos[0] != "validate") {
-			fmt.Fprintln(errout, "config requires show or validate")
-			return 2
-		}
-		m, err := manifest.Load(f.dir, f.env)
-		if err != nil {
-			fmt.Fprintln(errout, err)
-			return 1
-		}
-		if f.pos[0] == "validate" {
-			fmt.Fprintln(out, "manifest valid")
-			return 0
-		}
-		b, _ := json.Marshal(m)
-		return printResponse(out, errout, b, f.json)
 	}
 	if f.volumes && cmd != "remove" && cmd != "destroy" {
 		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
@@ -160,6 +277,27 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if (f.backup != "" && cmd != "backup") || (f.into != "" && cmd != "restore") {
 		fmt.Fprintln(errout, "--backup applies to backup list, and --into to restore")
 		return 2
+	}
+	if flag, key := refusedFlag(cmd, f); flag != "" {
+		fmt.Fprintf(errout, "%s is not a flag of %s\n", flag, key)
+		return 2
+	}
+	if cmd == "config" {
+		if len(f.pos) != 1 || (f.pos[0] != "show" && f.pos[0] != "validate") {
+			fmt.Fprintln(errout, "config requires show or validate")
+			return 2
+		}
+		m, err := manifest.Load(f.dir, f.env)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		if f.pos[0] == "validate" {
+			fmt.Fprintln(out, "manifest valid")
+			return 0
+		}
+		b, _ := json.Marshal(m)
+		return printResponse(out, errout, b, f.json)
 	}
 	if f.config == "" {
 		fmt.Fprintln(errout, "remote commands require --config")
@@ -351,10 +489,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	case "alerts":
 		if len(f.pos) != 1 || f.pos[0] != "test" {
 			fmt.Fprintln(errout, "usage: alerts test")
-			return 2
-		}
-		if f.dry {
-			fmt.Fprintln(errout, "alerts test has no dry run")
 			return 2
 		}
 		endpoint = "alerts/test"
