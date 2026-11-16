@@ -89,21 +89,7 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 	name := url.PathEscape(f.pos[1])
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	client := &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	call := func(method, path, query string) ([]byte, int, error) {
-		u := *base
-		u.Path, u.RawQuery = prefix+path, query
-		resp, err := send(ctx, client, method, u.String(), token, nil)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer resp.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-		if err != nil || len(data) > 1<<20 {
-			return nil, 0, fmt.Errorf("invalid agent response")
-		}
-		return data, resp.StatusCode, nil
-	}
+	call := agentCaller(ctx, newAgentClient(), base, prefix, token)
 	data, status, err := call("POST", "jobs/"+name+"/run", "")
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
@@ -178,6 +164,30 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 			fmt.Fprintf(errout, "stopped waiting; run %d continues on the agent\n", started.RunID)
 			return 1
 		}
+	}
+}
+
+// newAgentClient is the HTTP client of the commands that poll the agent: no proxy, short connect and header limits.
+func newAgentClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// agentCaller returns a function that sends a request without a body to the agent under prefix and reads the answer, at most
+// 1 MiB of it.
+func agentCaller(ctx context.Context, client *http.Client, base *url.URL, prefix, token string) func(method, path, query string) ([]byte, int, error) {
+	return func(method, path, query string) ([]byte, int, error) {
+		u := *base
+		u.Path, u.RawQuery = prefix+path, query
+		resp, err := send(ctx, client, method, u.String(), token, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+		if err != nil || len(data) > 1<<20 {
+			return nil, 0, fmt.Errorf("invalid agent response")
+		}
+		return data, resp.StatusCode, nil
 	}
 }
 

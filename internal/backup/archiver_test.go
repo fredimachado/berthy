@@ -46,6 +46,9 @@ type fakeDocker struct {
 
 	// Failures to inject.
 	createErr, attachErr, startErr, waitErr, createVolumeErr, removeContainerErr error
+	// inventory is what InventoryContainers lists, and inventoryErr fails it.
+	inventory    []engine.InventoryContainer
+	inventoryErr error
 	// onWait runs when the container is waited for, with the context Wait got.
 	onWait func(ctx context.Context)
 	// ctxErrOnRemove records the state of the context each removal got.
@@ -184,6 +187,11 @@ func (f *fakeDocker) RemoveVolume(_ context.Context, name string) error {
 	}
 	delete(f.volumes, name)
 	return nil
+}
+
+func (f *fakeDocker) InventoryContainers(context.Context) ([]engine.InventoryContainer, error) {
+	f.call("InventoryContainers")
+	return f.inventory, f.inventoryErr
 }
 
 func (f *fakeDocker) callNames() []string {

@@ -29,8 +29,8 @@ func deployedApps(ctx context.Context, s *state.Store, m manifest.Manifest) (map
 	return out, nil
 }
 
-// deployedManifest is the last applied manifest without the apps that have no applied release, and without their jobs and
-// the service probes aimed at them. Monitoring, scheduling and the app listings read it, so a removed app is never
+// deployedManifest is the last applied manifest without the apps that have no applied release, and without their jobs, their
+// backups and the service probes aimed at them. Monitoring, scheduling and the app listings read it, so a removed app is never
 // monitored or scheduled while the manifest still names it. Settings that belong to the environment, such as peers, alerts
 // and telemetry, stay as they are.
 func deployedManifest(ctx context.Context, s *state.Store) (manifest.Manifest, time.Time, error) {
@@ -45,6 +45,7 @@ func deployedManifest(ctx context.Context, s *state.Store) (manifest.Manifest, t
 	m.Apps = filtered(m.Apps, func(name string, _ manifest.App) bool { return deployed[name] })
 	m.Jobs = filtered(m.Jobs, func(_ string, j manifest.Job) bool { return deployed[j.App] })
 	m.Probes = filtered(m.Probes, func(_ string, p manifest.Probe) bool { return p.Service == nil || deployed[p.Service.App] })
+	m.Backups = filtered(m.Backups, func(_ string, b manifest.Backup) bool { return deployed[b.App] })
 	return m, at, nil
 }
 

@@ -674,7 +674,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `doctor` | Checks the agent and its version, Docker, Swarm, the shared network, disk, backups, lock and peers | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
-| `backup list` | Backups in object storage with size, age and status | No |
+| `backup list [--backup <name>]` | Backups in object storage: key, size, checksum and when each finished (`read` scope) | No |
 | `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
 | `checks` | Stored state of every probe and built-in condition, with when each state began | No |
 | `jobs` | Every job with its target, schedule, next occurrence and last run | No |
@@ -689,8 +689,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
 | `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
-| `backup run <job>` | Run a volume backup now | Yes |
-| `restore <backup> --into <volume>` | Restore a backup to a new Docker volume | Yes |
+| `backup run <name>` | Run a volume backup now, wait for it to finish and exit 0 only when it succeeded (`deploy` scope) | Yes |
+| `restore <key> --into <volume>` | Restore a backup, named by its key from `backup list`, into a new Docker volume (`admin` scope; `--dry-run` checks the key and the name) | Yes |
 | `prune` | Remove old images and stopped containers now | Yes |
 | `destroy --confirm <env> [--volumes] [--allow-recreate] [--tunnel]` | Remove every app, managed ingress, helpers, one-off containers and acquired images of the environment; volumes only with `--volumes`, the tunnel only with `--tunnel` and when clean (admin) | Yes |
 | `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
@@ -871,11 +871,24 @@ backups:
 
 ### How a backup runs
 
-1. If the backup names a job under `before`, the agent runs that command and waits for it to succeed. This applies to scheduled backups, manual runs and deploy hooks.
-2. The agent reads the volume through a read-only mount and streams a compressed archive to object storage. A failed archive or upload is aborted and never listed as a successful backup.
-3. On success the agent records the source volume, object key, size, duration and checksum, then applies retention.
+1. If the backup names a job under `before`, the agent runs that command and waits for it to succeed. This applies to scheduled backups, manual runs and deploy hooks. A preparation that fails fails the backup with `preparation failed: <reason of the job run>`, and no archive is started.
+2. The agent reads the volume through a read-only mount and streams a compressed archive to object storage, hashing it on the way. A failed archive or upload is aborted and never listed as a successful backup.
+3. Only after the archive is stored does the agent write its sidecar, then it records the source volume, object key, size, duration and checksum, and applies retention.
 
-Backups of the same volume run one at a time. If the preparation job has its own schedule, the backup waits for any active run to finish, then reserves the job until archiving finishes.
+Backups of the same volume run one at a time: a second one is refused with `409` while one runs, and records nothing. If the preparation job has its own schedule, the backup waits for any active run to finish, then reserves the job until archiving finishes; a scheduled occurrence that arrives in between is skipped.
+
+A failed run is recorded as `failed` with a detail that starts with the step that failed: `preparation failed`, `archive failed`, `upload failed` or `sidecar failed`. A run that the agent's stop cut short reads `agent stopped during the backup`, and one that a crash left running reads `agent restarted during the backup`.
+
+**Which volume.** For an image app, `volume` must be the source of a named-volume mount of one of its roles, and the Docker volume has that name. For a Compose app, `volume` is a key of the Compose file's top-level `volumes`, and the agent asks Compose, with the project's stored files, for the Docker name (an external volume has the name it declares). A volume the app does not mount is refused: `backup <name>: volume <volume> is not mounted by app <app>`. A backup of an app that is not deployed is not part of the configuration.
+
+**What storage holds.** Objects of a backup sit under `<prefix>/<backup>/`, where `<prefix>` is the backup's `prefix` or `<app>/<volume>`:
+
+- the archive `<UTC time>-<run id>.tar.gz`, as in `20261116T100000Z-7.tar.gz`;
+- its sidecar `<same name>.json`: `{"format":"berthy-volume-tar-gzip-1","environment","backup","app","volume","docker_volume","size","sha256","started","finished","run_id"}`.
+
+The sidecar is written only after the archive was uploaded, so a backup that has one is complete. `backup list` reads sidecars: an archive without one is never listed and never restorable, and neither is a sidecar of another backup, environment or format. The destination's credentials are the secrets named by `access_key_secret` and `secret_key_secret`; without them a run is refused with `backup credentials unavailable`.
+
+**Retention.** `keep: all` (the default) deletes nothing. `keep: N` deletes, after a successful run, all but the `N` newest backups that have a sidecar for this backup, the archive first and then its sidecar. Objects without a sidecar of this backup are never touched. A failed deletion is logged and does not fail the run.
 
 A volume archive reads files as they are encountered. For apps that need a consistent set of files while writes continue, use a preparation job to write a consistent export to a dedicated volume.
 
@@ -887,8 +900,12 @@ A volume archive reads files as they are encountered. For apps that need a consi
 
 ### Restore
 
-- `berthy backup list -e prod` shows what is in object storage.
-- `berthy restore <backup> --into <volume> -e prod` takes an `admin` token. It verifies the checksum and extracts the archive into a new Docker volume, preserving file permissions and ownership. Choose an unused volume name.
+- `berthy backup list -e prod` shows what is in object storage, with the key of each backup.
+- `berthy restore <key> --into <volume> -e prod` takes an `admin` token. It is an operation of kind `restore` under the deploy lock, with events like `remove` and `destroy`, and the audit log records it with the token that asked. It streams the archive from storage into a new Docker volume, preserving file permissions and ownership, and compares the SHA-256 and size it read with the sidecar's. A mismatch fails the operation with `backup checksum mismatch` and removes the new volume. Choose an unused name: a volume that exists is refused, and so is a key whose sidecar is missing.
+- `--dry-run` checks that the key names a backup with a valid sidecar and that the volume does not exist, and shows the backup it would restore.
+- `backup list` and `restore` read the backups and destinations of the last applied manifest whether or not the app is still deployed, so backups stay restorable after `berthy remove` or `destroy`. Running a backup needs the app deployed.
+- The volume a restore creates carries the label `berthy.restore-operation=<operation id>`. If the agent stops or crashes during a restore, the operation ends `interrupted`, and the recovery at the next start removes the restore container the agent left and the volume that carries that operation's label, and no other volume. If it cannot remove the volume, the operation says so: remove it and run the restore again.
+- When the agent starts it also removes the archive and restore containers that a killed agent left running in its environment. A multipart upload that a killed agent left in storage is not removed; a lifecycle rule on the bucket that aborts incomplete uploads does that.
 - Inspect the restored volume before mounting it in an app. If it contains an export, use the app's own restore command to import it.
 
 ### Example: PostgreSQL dump

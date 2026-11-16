@@ -180,7 +180,8 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		collector := metrics.New(metrics.NewHostReader(), eng)
 		go collector.Run(ctx)
-		if monitoring := agent.NewMonitoring(c, eng, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) }); monitoring != nil {
+		monitoring := agent.NewMonitoring(c, eng, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
+		if monitoring != nil {
 			monitorDone := make(chan struct{})
 			go func() {
 				defer close(monitorDone)
@@ -199,6 +200,12 @@ func Run(args []string, out, errout io.Writer) int {
 			// Registered after the store's Close, so it runs first: the runs end and are recorded before the store closes.
 			defer func() { cancel(); <-jobsDone }()
 		}
+		backups := agent.NewBackups(c, eng, deployment, scheduler, monitoring.HelperImage, func(msg string) { fmt.Fprintln(errout, msg) })
+		if backups != nil {
+			backups.Start(ctx)
+			// Registered after the store's Close, so it runs first: the runs end and are recorded before the store closes.
+			defer func() { cancel(); backups.Wait() }()
+		}
 		exporter := agent.NewTelemetry(c, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
 		if exporter != nil {
 			exportDone := make(chan struct{})
@@ -209,7 +216,7 @@ func Run(args []string, out, errout io.Writer) int {
 			// Registered after the monitor's stop, so the last export is flushed before the store closes.
 			defer func() { cancel(); <-exportDone }()
 		}
-		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandlerWithJobs(c, eng, collector, deployment, exporter, scheduler), ReadHeaderTimeout: 5 * time.Second}
+		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandlerWithBackups(c, eng, collector, deployment, exporter, scheduler, backups), ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)

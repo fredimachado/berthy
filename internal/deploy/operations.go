@@ -146,6 +146,8 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		return c.planRemove(ctx, actor, req)
 	case "destroy":
 		return c.planDestroy(ctx, actor, req)
+	case restoreKind:
+		return c.planRestore(ctx, actor, req)
 	case "exec":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
@@ -211,6 +213,9 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	}
 	if req.Kind == "destroy" {
 		return c.runDestroy(ctx, op, actor, req)
+	}
+	if req.Kind == restoreKind {
+		return c.runRestore(ctx, op, actor, req)
 	}
 	if req.Kind == "exec" {
 		return c.runExec(ctx, op, actor, req)

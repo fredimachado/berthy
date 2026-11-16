@@ -197,6 +197,24 @@ func (e *Engine) ProjectVolumes(ctx context.Context, project string) ([]string, 
 	return out, nil
 }
 
+// VolumeLabels returns the labels of the named volume, and false when Docker holds no such volume.
+func (e *Engine) VolumeLabels(ctx context.Context, name string) (map[string]string, bool, error) {
+	p, err := pathID(name)
+	if err != nil {
+		return nil, false, err
+	}
+	var v struct{ Labels map[string]string }
+	err = e.jsonRequest(ctx, "GET", "/volumes/"+p, nil, nil, &v)
+	var status *StatusError
+	switch {
+	case err == nil:
+		return v.Labels, true, nil
+	case errors.As(err, &status) && status.Code == 404:
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
 // VolumeExists reports whether Docker holds a volume with this name. Docker answers 404 for a volume it does not hold.
 func (e *Engine) VolumeExists(ctx context.Context, name string) (bool, error) {
 	p, err := pathID(name)

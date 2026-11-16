@@ -500,3 +500,107 @@ func TestRunAndWaitCanceledByItsCaller(t *testing.T) {
 		t.Fatalf("stored: %+v", runs)
 	}
 }
+
+func TestRunHeldWaitsForAnActiveRunThenRunsOnce(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, map[string]manifest.Job{"tick": tickJob()})
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	r.exec.fn = func(context.Context, string, []string) (engine.ExecResult, error) {
+		started <- struct{}{}
+		<-release
+		return engine.ExecResult{}, nil
+	}
+	r.sched.step(ctx)
+	<-started
+	type held struct {
+		run     state.JobRun
+		release func()
+		err     error
+	}
+	done := make(chan held, 1)
+	go func() {
+		run, rel, err := r.sched.RunHeld(ctx, "tick")
+		done <- held{run, rel, err}
+	}()
+	select {
+	case <-done:
+		t.Fatal("RunHeld ran while the job was running")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if n := r.exec.count(); n != 1 {
+		t.Fatalf("commands run while waiting: %d", n)
+	}
+	r.exec.mu.Lock()
+	r.exec.fn = nil
+	r.exec.mu.Unlock()
+	close(release)
+	h := <-done
+	if h.err != nil || h.run.Status != "succeeded" || h.run.Trigger != "backup" || h.run.Finished.IsZero() || h.release == nil {
+		t.Fatalf("held run: %+v %v", h.run, h.err)
+	}
+	if n := r.exec.count(); n != 2 {
+		t.Fatalf("commands run: %d", n)
+	}
+	h.release()
+}
+
+func TestRunHeldKeepsTheJobMarkedRunningUntilReleased(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, map[string]manifest.Job{"tick": tickJob()})
+	run, release, err := r.sched.RunHeld(ctx, "tick")
+	if err != nil || run.Status != "succeeded" {
+		t.Fatalf("held run: %+v %v", run, err)
+	}
+	// A scheduled occurrence while the job is held is skipped and never runs.
+	r.sched.step(ctx)
+	r.sched.wait()
+	runs := r.runs(t, "tick")
+	if len(runs) != 2 || runs[0].Status != "skipped" || runs[0].Trigger != "schedule" || runs[0].Detail != "previous run still running" {
+		t.Fatalf("occurrence while held: %+v", runs)
+	}
+	if n := r.exec.count(); n != 1 {
+		t.Fatalf("the skipped occurrence ran: %d", n)
+	}
+	if _, err = r.sched.Start(ctx, "tick", "manual"); !errors.Is(err, ErrJobRunning) {
+		t.Fatalf("start while held: %v", err)
+	}
+	release()
+	release() // releasing twice is harmless
+	r.clock.Add(time.Minute)
+	r.settle(ctx)
+	if n := r.exec.count(); n != 2 {
+		t.Fatalf("job did not run after the release: %d", n)
+	}
+}
+
+func TestRunHeldReturnsAFailedRunAndStillHolds(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, map[string]manifest.Job{"tick": tickJob()})
+	r.exec.fn = func(context.Context, string, []string) (engine.ExecResult, error) {
+		return engine.ExecResult{ExitCode: 4}, nil
+	}
+	run, release, err := r.sched.RunHeld(ctx, "tick")
+	if err != nil || run.Status != "failed" || run.Detail != "exit status 4" || release == nil {
+		t.Fatalf("failed held run: %+v %v", run, err)
+	}
+	release()
+	if _, _, err = r.sched.RunHeld(ctx, "missing"); !errors.Is(err, ErrUnknownJob) {
+		t.Fatalf("unknown job: %v", err)
+	}
+}
+
+func TestRunHeldGivesUpWhenItsContextEnds(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, map[string]manifest.Job{"tick": tickJob()})
+	_, release, err := r.sched.RunHeld(ctx, "tick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, _, err = r.sched.RunHeld(waitCtx, "tick"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting for a held job: %v", err)
+	}
+}

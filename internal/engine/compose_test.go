@@ -267,3 +267,30 @@ func TestProjectVolumesQueryTheProjectLabel(t *testing.T) {
 		t.Fatal("invalid project accepted")
 	}
 }
+
+func TestVolumeLabelsReadsTheLabelsOfAnExistingVolume(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/v1.44/volumes/restored-1":
+			return response(200, `{"Name":"restored-1","Labels":{"berthy.restore-operation":"op1"}}`), nil
+		case "/v1.44/volumes/plain":
+			return response(200, `{"Name":"plain","Labels":null}`), nil
+		case "/v1.44/volumes/gone":
+			return response(404, `{"message":"no such volume"}`), nil
+		}
+		return response(500, `{}`), nil
+	})
+	labels, ok, err := e.VolumeLabels(context.Background(), "restored-1")
+	if err != nil || !ok || labels["berthy.restore-operation"] != "op1" {
+		t.Fatalf("labelled volume: %v %v %v", labels, ok, err)
+	}
+	if labels, ok, err = e.VolumeLabels(context.Background(), "plain"); err != nil || !ok || len(labels) != 0 {
+		t.Fatalf("volume without labels: %v %v %v", labels, ok, err)
+	}
+	if _, ok, err = e.VolumeLabels(context.Background(), "gone"); err != nil || ok {
+		t.Fatalf("missing volume: %v %v", ok, err)
+	}
+	if _, _, err = e.VolumeLabels(context.Background(), "broken"); err == nil {
+		t.Fatal("server error reported as absent")
+	}
+}

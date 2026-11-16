@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -58,6 +59,12 @@ func NewDeploymentHandlerWithTelemetry(c Config, e *engine.Engine, col *metrics.
 // NewDeploymentHandlerWithJobs is NewDeploymentHandlerWithTelemetry for an agent that runs jobs on demand. sched may be
 // nil, in which case a request to run a job is refused as unavailable.
 func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler) http.Handler {
+	return NewDeploymentHandlerWithBackups(c, e, col, d, tel, sched, nil)
+}
+
+// NewDeploymentHandlerWithBackups is NewDeploymentHandlerWithJobs for an agent that backs up volumes. backups may be nil, in
+// which case the backup routes answer that backups are unavailable.
+func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups) http.Handler {
 	legacy := handlerWithState(c, e, col, d, tel)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -128,6 +135,15 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 		case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
 			required = "deploy"
 			method = "POST"
+		case len(rest) == 1 && rest[0] == "backups", len(rest) == 3 && rest[0] == "backups" && rest[2] == "runs":
+			required = "read"
+			method = "GET"
+		case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
+			required = "deploy"
+			method = "POST"
+		case len(rest) == 1 && rest[0] == "restore":
+			required = "admin"
+			method = "POST"
 		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
 			required = "deploy"
 			method = "POST"
@@ -180,6 +196,44 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 				}
 				json.NewEncoder(w).Encode(plan)
 				return
+			}
+			op, _, err := d.Admit(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			path := "/v1/environments/" + c.Environment + "/operations/" + op.ID + "/events"
+			w.Header().Set("Location", path)
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+		case len(rest) == 1 && rest[0] == "restore":
+			var body struct {
+				Key       string `json:"key"`
+				Into      string `json:"into"`
+				DryRun    bool   `json:"dry_run"`
+				RequestID string `json:"request_id"`
+			}
+			if err := decodeBody(w, r, &body); err != nil {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+			req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, DryRun: body.DryRun, RequestID: body.RequestID}
+			if req.DryRun {
+				plan, err := d.Plan(ctx, actor, req)
+				if err != nil {
+					operationError(w, err)
+					return
+				}
+				json.NewEncoder(w).Encode(plan)
+				return
+			}
+			if req.RequestID == "" {
+				var random [16]byte
+				if _, err := rand.Read(random[:]); err != nil {
+					writeError(w, 503, "unavailable", "operation unavailable")
+					return
+				}
+				req.RequestID = hex.EncodeToString(random[:])
 			}
 			op, _, err := d.Admit(ctx, actor, req)
 			if err != nil {
@@ -445,6 +499,8 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		case rest[0] == "jobs":
 			serveJobs(w, r, rest, d, sched, sa)
+		case rest[0] == "backups":
+			serveBackups(w, r, rest, d, backups, sa)
 		case len(rest) == 1 && rest[0] == "checks":
 			rows, err := d.Store.Checks(ctx)
 			if err != nil {

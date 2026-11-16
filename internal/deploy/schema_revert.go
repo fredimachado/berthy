@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"berthy/internal/backup"
 	"berthy/internal/state"
 )
 
@@ -51,10 +52,11 @@ func PublicMessage(s string) bool {
 		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,
 		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecCompose, errComposeRole,
 		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal,
-		errDestroyAdmin, errDestroyConfirm, errDestroyInterrupted, errDestroyPreflight, errDestroyContainers, errDestroyImages, errDestroyState:
+		errDestroyAdmin, errDestroyConfirm, errDestroyInterrupted, errDestroyPreflight, errDestroyContainers, errDestroyImages, errDestroyState,
+		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned:
 		return true
 	}
-	return composeMessage.MatchString(s)
+	return backup.PublicRefusal(s) || composeMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

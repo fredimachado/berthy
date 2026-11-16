@@ -42,6 +42,9 @@ type Request struct {
 	// the Cloudflare tunnel too, when it is clean.
 	Confirm string `json:"confirm,omitempty"`
 	Tunnel  bool   `json:"tunnel,omitempty"`
+	// RestoreKey is the object key of the backup a restore reads, and RestoreInto the name of the new volume it fills.
+	RestoreKey  string `json:"restore_key,omitempty"`
+	RestoreInto string `json:"restore_into,omitempty"`
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -57,6 +60,7 @@ type Plan struct {
 	Compose      *ComposePlan         `json:"compose,omitempty"`
 	Remove       *RemovePlan          `json:"remove,omitempty"`
 	Destroy      *DestroyPlan         `json:"destroy,omitempty"`
+	Restore      *RestorePlan         `json:"restore,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -87,6 +91,8 @@ type Controller struct {
 	// Compose runs the Compose CLI for Compose apps. StateDir holds their working directories under compose/.
 	Compose  ComposeRunner
 	StateDir string
+	// Restorer reads backups from object storage for a restore. Nil means restore is unavailable.
+	Restorer VolumeRestorer
 	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
 	recoverMu sync.Mutex
 }
@@ -215,6 +221,12 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
+	if req.Kind == restoreKind {
+		// What the backup and the volume alone can refuse is refused now, so the caller sees it at once.
+		if _, err := c.restoreCheck(ctx, actor, req); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
 	if req.Kind == "" || req.Kind == "deploy" {
 		if err := req.Manifest.Validate(); err != nil {
 			return state.Operation{}, false, err
@@ -254,7 +266,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
 		Volumes         bool   `json:"volumes,omitempty"`
 		Tunnel          bool   `json:"tunnel,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel})
+		RestoreKey      string `json:"restore_key,omitempty"`
+		RestoreInto     string `json:"restore_into,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -304,6 +318,9 @@ func (c *Controller) Recover(ctx context.Context) error {
 	}
 	if (op.Kind == "remove" || op.Kind == "destroy") && op.State == "running" {
 		return c.recoverRemove(ctx, op, intents)
+	}
+	if op.Kind == restoreKind && op.State == "running" {
+		return c.recoverRestore(ctx, op, intents)
 	}
 	before, after := recordedSchema(op, intents)
 	reason := ""

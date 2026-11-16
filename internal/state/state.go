@@ -291,7 +291,7 @@ func publicJSON(b []byte) bool {
 	}
 	for k, v := range fields {
 		switch k {
-		case "app", "version", "commit", "state", "role", "step", "status", "digest", "code", "reason", "App", "Version", "Commit":
+		case "app", "version", "commit", "state", "role", "step", "status", "digest", "code", "reason", "restore_key", "restore_into", "App", "Version", "Commit":
 			var s string
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false

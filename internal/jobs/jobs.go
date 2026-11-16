@@ -190,6 +190,7 @@ func (s *Scheduler) spawn(ctx context.Context, m manifest.Manifest, name string,
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer s.release(name)
 		s.execute(ctx, m, name, job, run, "interrupted", "agent stopped during the run")
 	}()
 }
@@ -246,15 +247,44 @@ func (s *Scheduler) RunAndWait(ctx context.Context, name, trigger string) (state
 	if err != nil {
 		return state.JobRun{}, err
 	}
+	defer s.release(name)
 	return s.execute(ctx, m, name, job, run, "failed", "run canceled"), nil
 }
 
-// execute runs the job's command and records the result. The caller has marked the job running and recorded the run.
+// holdPoll is how often RunHeld looks again at a job that is running.
+const holdPoll = 50 * time.Millisecond
+
+// RunHeld runs the job once for a volume backup, and keeps it marked running until the returned release is called. It first
+// waits for an active run of the job to finish, so the backup never cuts one short. While the job is held, an occurrence
+// that arrives is recorded as skipped, as for any run in progress. The run is recorded with trigger "backup"; a command
+// that fails is a finished run with status failed, not an error. The release is safe to call more than once. A canceled ctx
+// ends the wait, or the run, and no release is returned with an error.
+func (s *Scheduler) RunHeld(ctx context.Context, name string) (state.JobRun, func(), error) {
+	for {
+		m, job, run, err := s.begin(ctx, name, "backup")
+		switch {
+		case err == nil:
+			var once sync.Once
+			release := func() { once.Do(func() { s.release(name) }) }
+			// execute does not release the job: the caller does.
+			return s.execute(ctx, m, name, job, run, "failed", "run canceled"), release, nil
+		case !errors.Is(err, ErrJobRunning):
+			return state.JobRun{}, nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return state.JobRun{}, nil, ctx.Err()
+		case <-time.After(holdPoll):
+		}
+	}
+}
+
+// execute runs the job's command and records the result. The caller has marked the job running and recorded the run, and
+// clears the mark once it has no more use for it.
 // A run that ctx ends is recorded with status canceledStatus and detail canceled. A run in the background ends with its
 // context when the agent stops, which says nothing about the job, so it is interrupted. A caller that waits for the run
 // wants an incomplete run to be a failure.
 func (s *Scheduler) execute(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, run state.JobRun, canceledStatus, canceled string) state.JobRun {
-	defer s.release(name)
 	status, detail := "succeeded", ""
 	var exit *int
 	container, err := s.Target.Container(ctx, m, job)

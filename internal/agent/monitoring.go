@@ -64,6 +64,15 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	return w
 }
 
+// HelperImage returns the helper image of the agent's binary, importing it when Docker lacks it. The backup containers run
+// from it, and it shares the import with the overlay helper.
+func (w *Monitoring) HelperImage(ctx context.Context) (string, error) {
+	if w == nil || w.helper == nil || w.helper.engine == nil {
+		return "", errors.New("helper image unavailable")
+	}
+	return w.helper.Image(ctx)
+}
+
 // Run runs the monitor until ctx ends. It does nothing on a nil Monitoring.
 func (w *Monitoring) Run(ctx context.Context) {
 	if w != nil {

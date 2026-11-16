@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"berthy/internal/engine"
@@ -35,6 +36,7 @@ type ArchiverEngine interface {
 	StartContainer(ctx context.Context, id string) error
 	WaitContainer(ctx context.Context, id string) (int, error)
 	RemoveContainer(ctx context.Context, id string) error
+	InventoryContainers(ctx context.Context) ([]engine.InventoryContainer, error)
 	VolumeExists(ctx context.Context, name string) (bool, error)
 	CreateVolume(ctx context.Context, name string, labels map[string]string) error
 	RemoveVolume(ctx context.Context, name string) error
@@ -201,6 +203,38 @@ func (a *Archiver) create(ctx context.Context, kind, volume string) (string, err
 		return "", errors.New("helper create failed: no container ID")
 	}
 	return id, nil
+}
+
+// RemoveLeftovers removes the archive and restore helper containers of this environment that exist, and returns how many it
+// removed. It is for an agent's start: a helper outlives an agent that was killed, and no run of the new agent has started
+// one yet, so every such container is a leftover. A container that cannot be removed is logged and does not stop the rest.
+func (a *Archiver) RemoveLeftovers(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+	containers, err := a.Engine.InventoryContainers(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("container inventory failed: %w", err)
+	}
+	removed := 0
+	for _, c := range containers {
+		if c.Labels["berthy.environment"] != a.Env || (c.Labels["berthy.helper"] != "archive" && c.Labels["berthy.helper"] != "restore") {
+			continue
+		}
+		name := c.ID
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if err := a.Engine.RemoveContainer(ctx, c.ID); err != nil {
+			var status *engine.StatusError
+			if !errors.As(err, &status) || status.Code != 404 {
+				a.log("leftover helper container %s was not removed: %v", name, err)
+			}
+			continue
+		}
+		a.log("removed leftover helper container %s (%s, %s)", name, c.Labels["berthy.helper"], c.State)
+		removed++
+	}
+	return removed, nil
 }
 
 // removeContainer removes the helper container, running or not, on a context that the end of the run does not cancel.

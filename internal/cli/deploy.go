@@ -27,16 +27,16 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore":
 		return true
 	}
 	return false
 }
 
 type commandFlags struct {
-	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel                     bool
-	pos, command                                                                                   []string
+	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel                                   bool
+	pos, command                                                                                                 []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -66,7 +66,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.tunnel = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -79,6 +79,10 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.config = v
 			case "--confirm":
 				f.confirm = v
+			case "--backup":
+				f.backup = v
+			case "--into":
+				f.into = v
 			case "--manifest-dir":
 				f.dir = v
 			case "--version":
@@ -148,6 +152,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "destroy takes no app, and --confirm must repeat the environment name")
 		return 2
 	}
+	if (f.backup != "" && cmd != "backup") || (f.into != "" && cmd != "restore") {
+		fmt.Fprintln(errout, "--backup applies to backup list, and --into to restore")
+		return 2
+	}
 	if f.config == "" {
 		fmt.Fprintln(errout, "remote commands require --config")
 		return 2
@@ -174,6 +182,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	prefix := strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(f.env) + "/"
 	if cmd == "job" {
 		return runJobCommand(f, u, prefix, token, out, errout)
+	}
+	if cmd == "backup" {
+		return runBackupCommand(f, u, prefix, token, out, errout)
 	}
 	method := "GET"
 	endpoint := ""
@@ -270,6 +281,22 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			endpoint = "deploys"
 		}
 		body = req
+	case "restore":
+		if len(f.pos) != 1 || f.pos[0] == "" || f.into == "" {
+			fmt.Fprintln(errout, "usage: restore KEY --into VOLUME [--dry-run]")
+			return 2
+		}
+		id := f.id
+		if id == "" {
+			var random [16]byte
+			if _, err = rand.Read(random[:]); err != nil {
+				return 1
+			}
+			id = hex.EncodeToString(random[:])
+		}
+		method = "POST"
+		endpoint = "restore"
+		body = map[string]any{"key": f.pos[0], "into": f.into, "dry_run": f.dry, "request_id": id}
 	case "history", "wait":
 		if len(f.pos) != 1 {
 			fmt.Fprintln(errout, "command requires an app")
@@ -441,6 +468,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if cmd == "destroy" && f.dry && !f.json {
 		return printDestroyPlan(out, errout, data, f.env)
 	}
+	if cmd == "restore" && f.dry && !f.json {
+		return printRestorePlan(out, errout, data)
+	}
 	return printResponse(out, errout, data, f.json)
 }
 
@@ -511,6 +541,10 @@ func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
 	}
 	return 0
 }
+
+// reportsSteps says whether the command's operation reports what it did as steps.
+func reportsSteps(cmd string) bool { return cmd == "remove" || cmd == "destroy" || cmd == "restore" }
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env string) int {
 	cursor := ""
 	failures := 0
@@ -536,12 +570,12 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if strings.HasPrefix(line, "event:") {
 					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-					// A removal reports what it did as steps, so their text is shown instead of their name.
-					if !asJSON && !((cmd == "remove" || cmd == "destroy") && kind == "step") {
+					// A removal or a restore reports what it did as steps, so their text is shown instead of their name.
+					if !asJSON && !(reportsSteps(cmd) && kind == "step") {
 						fmt.Fprintln(out, kind)
 					}
 				}
-				if (cmd == "remove" || cmd == "destroy") && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
+				if reportsSteps(cmd) && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
 					var step struct {
 						Step string `json:"step"`
 					}

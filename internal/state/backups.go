@@ -101,6 +101,24 @@ func scanBackupRun(row interface{ Scan(...any) error }) (BackupRun, error) {
 	return r, nil
 }
 
+// SetBackupObjectKey replaces the object key of a run that is still running. A run records a provisional key when it starts,
+// because its final key names the run's own ID, which only exists once the run is recorded. It returns ErrConflict when the
+// run is not running or the key belongs to another run.
+func (s *Store) SetBackupObjectKey(ctx context.Context, id int64, key string) error {
+	if key == "" {
+		return errors.New("invalid backup object key")
+	}
+	// OR IGNORE turns a key that another run holds into an update of no rows.
+	res, err := s.db.ExecContext(ctx, `UPDATE OR IGNORE backups SET object_key=? WHERE environment=? AND id=? AND status='running'`, key, s.env, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 // BackupRuns returns the newest runs of a backup, newest first. An empty backup means every backup.
 func (s *Store) BackupRuns(ctx context.Context, backup string, limit int) ([]BackupRun, error) {
 	if limit < 1 {

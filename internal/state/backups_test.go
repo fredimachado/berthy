@@ -281,3 +281,38 @@ func TestUpgradeVersionSixAddsBackupsTable(t *testing.T) {
 		t.Fatalf("object key index missing after upgrade: %v", err)
 	}
 }
+
+func TestSetBackupObjectKeyRenamesARunningRunOnly(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	id, err := s.StartBackup(ctx, backupRun("uploads", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := s.StartBackup(ctx, backupRun("uploads", 2))
+	if err = s.SetBackupObjectKey(ctx, id, "files/uploads/uploads/final-1.tar.gz"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	runs, _ := s.BackupRuns(ctx, "uploads", 10)
+	var got BackupRun
+	for _, r := range runs {
+		if r.ID == id {
+			got = r
+		}
+	}
+	if got.ObjectKey != "files/uploads/uploads/final-1.tar.gz" {
+		t.Fatalf("key: %q", got.ObjectKey)
+	}
+	if err = s.SetBackupObjectKey(ctx, other, "files/uploads/uploads/final-1.tar.gz"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a key that is taken: %v", err)
+	}
+	if err = s.SetBackupObjectKey(ctx, other, ""); err == nil {
+		t.Fatal("empty key accepted")
+	}
+	if err = s.FinishBackup(ctx, id, "failed", 0, "", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetBackupObjectKey(ctx, id, "files/uploads/uploads/late.tar.gz"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a finished run: %v", err)
+	}
+}
