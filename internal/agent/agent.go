@@ -10,6 +10,7 @@ import (
 	"berthy/internal/version"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -101,6 +102,18 @@ func tokenPattern(env string) *regexp.Regexp {
 }
 
 func Digest(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+
+// NewToken makes a bearer token for env, bty.<env>.<64 hex>, from 32 random bytes, and returns it with its digest. The agent's
+// configuration holds only the digest.
+func NewToken(env string) (token, digest string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", err
+	}
+	token = "bty." + env + "." + hex.EncodeToString(b)
+	return token, Digest(token), nil
+}
+
 func Load(path string) (Config, error) {
 	var c Config
 	st, err := os.Stat(path)

@@ -186,7 +186,7 @@ func Connect(ctx context.Context, r Runner) (Login, error) {
 		return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
 	}
 	if res.Code != 0 {
-		return Login{}, fmt.Errorf("could not run commands on %s: %s", r.Target(), failureText(res))
+		return Login{}, fmt.Errorf("could not run commands on %s: %s%s", r.Target(), failureText(res), hostKeyHint(r, res))
 	}
 	words := strings.Fields(string(res.Stdout))
 	if len(words) < 1 {
@@ -210,6 +210,15 @@ func Connect(ctx context.Context, r Runner) (Login, error) {
 		s.SetSudo(login.Sudo)
 	}
 	return login, nil
+}
+
+// hostKeyHint says what to do when ssh refused an unknown or changed host key. BatchMode never asks, which is right, but the
+// person needs to know how to accept the key.
+func hostKeyHint(r Runner, res Result) string {
+	if !strings.Contains(string(res.Stderr), "Host key verification failed") {
+		return ""
+	}
+	return "; connect once with ssh " + r.Target() + " to check and accept the server's host key"
 }
 
 // failureText is the last line a failed script printed to stderr, or to stdout when stderr is empty, or its exit code.

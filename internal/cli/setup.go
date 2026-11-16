@@ -8,15 +8,19 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/signal"
+	"runtime"
 
 	"berthy/internal/manifest"
 	"berthy/internal/setup"
+	"berthy/internal/version"
 )
 
-const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) --listen ADDRESS:PORT [--network NAME] [--protected]\n" +
-	"                    [--manifest-dir DIR] [--no-install-docker] [--dry-run] [--json]"
+const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
+	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--config PATH]\n" +
+	"                    [--no-install-docker] [--dry-run] [--json]"
 
 // newSetupRunner makes the runner that reaches the server: ssh to host, or this server for local. Tests replace it.
 var newSetupRunner = func(host string, local bool) (setup.Runner, error) {
@@ -26,6 +30,15 @@ var newSetupRunner = func(host string, local bool) (setup.Runner, error) {
 	return setup.NewSSH(host)
 }
 
+// setupBuild describes this CLI for the steps that install the agent. Tests replace it.
+var setupBuild = func() setup.Build {
+	path, _ := os.Executable()
+	return setup.Build{OS: runtime.GOOS, Arch: runtime.GOARCH, Path: path, Version: version.String(), Release: version.Release()}
+}
+
+// setupDoctor asks the new agent for its doctor from this machine. Nil sends an HTTP request; tests replace it.
+var setupDoctor setup.DoctorFunc
+
 // setupReport is the --json output of setup.
 type setupReport struct {
 	Environment string             `json:"environment"`
@@ -33,6 +46,9 @@ type setupReport struct {
 	DryRun      bool               `json:"dry_run"`
 	Steps       []setup.StepResult `json:"steps"`
 	OK          bool               `json:"ok"`
+	// Token is the admin token this run made. It is shown once, here and in the text output, and nowhere else.
+	Token     string   `json:"token,omitempty"`
+	NextSteps []string `json:"next_steps,omitempty"`
 }
 
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
@@ -44,10 +60,14 @@ func runSetup(args []string, out, errout io.Writer) int {
 	env := fset.String("e", "", "environment")
 	host := fset.String("host", "", "USER@SERVER to set up over ssh")
 	local := fset.Bool("local", false, "set up the server this command runs on")
-	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on")
+	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run")
 	network := fset.String("network", "", "the shared network, when there is no manifest")
 	protected := fset.Bool("protected", false, "mark the environment as protected, when there is no manifest")
 	dir := fset.String("manifest-dir", ".", "directory of the manifest")
+	binary := fset.String("binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
+	keyFile := fset.String("key-file", "", "a saved encryption key to install, when rebuilding a server")
+	newToken := fset.Bool("new-token", false, "add another admin token")
+	cliConfig := fset.String("config", "", "the CLI configuration to add the environment to")
 	noInstall := fset.Bool("no-install-docker", false, "stop when Docker is missing instead of installing it")
 	dry := fset.Bool("dry-run", false, "check and report what would change, without changing anything")
 	asJSON := fset.Bool("json", false, "report as JSON")
@@ -68,18 +88,25 @@ func runSetup(args []string, out, errout io.Writer) int {
 		return usage("use exactly one of --host and --local")
 	case *host != "" && !setup.ValidHost(*host):
 		return usage("invalid --host %q: use USER@SERVER or SERVER", *host)
-	case *listen == "":
-		return usage("setup needs --listen ADDRESS:PORT, the private address of the server")
 	}
-	ip, port, err := setup.ParseListen(*listen)
+	// The agent's address is needed on a first run only; the server's own configuration has it afterwards.
+	var ip net.IP
+	var port int
+	if *listen != "" {
+		var err error
+		if ip, port, err = setup.ParseListen(*listen); err != nil {
+			return usage("%v", err)
+		}
+	}
+	from, err := setupSettings(*dir, *env, *network, *protected)
 	if err != nil {
 		return usage("%v", err)
 	}
-	name, isProtected, err := setupSettings(*dir, *env, *network, *protected)
-	if err != nil {
-		return usage("%v", err)
+	opts := setup.Options{
+		Env: *env, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
+		Binary: *binary, KeyFile: *keyFile, NewToken: *newToken, CLIConfig: *cliConfig, Build: setupBuild(),
+		ReleaseURL: os.Getenv("BERTHY_RELEASE_URL"), Doctor: setupDoctor,
 	}
-	opts := setup.Options{Env: *env, Network: name, ListenIP: ip, ListenPort: port, Protected: isProtected, NoInstallDocker: *noInstall}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -93,22 +120,43 @@ func runSetup(args []string, out, errout io.Writer) int {
 			printSetupStep(out, r)
 		}
 	}
+	var session *setup.Session
 	runner, err := newSetupRunner(*host, *local)
 	if err != nil {
 		show(setup.StepResult{Step: "connect", Status: setup.StatusFailed, Detail: terminalSafe(err.Error())})
 	} else {
 		report.Target = runner.Target()
-		report.OK = setup.Run(ctx, &setup.Session{R: runner, Opts: opts, DryRun: *dry}, setup.Steps(), show)
+		session = &setup.Session{R: runner, Opts: opts, DryRun: *dry}
+		report.OK = setup.Run(ctx, session, setup.Steps(), show)
+	}
+	// The token is shown once, as soon as the configuration holding its digest is live on the server, even if a later step
+	// failed: a second run keeps that configuration and would not make another.
+	if session != nil && session.Token != "" && session.TokenLive {
+		report.Token = session.Token
+	}
+	if report.OK && !*dry {
+		report.NextSteps = setupNextSteps(*env, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
 	}
 	if *asJSON {
-		data, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
+		// No HTML escaping: the next steps hold shell redirections that should stay readable.
+		enc := json.NewEncoder(out)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
 			fmt.Fprintln(errout, "could not write the report")
 			return 1
 		}
-		fmt.Fprintln(out, string(data))
 	} else {
 		fmt.Fprintln(out, setupSummary(report))
+		if report.Token != "" {
+			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(*env), report.Token)
+		}
+		if len(report.NextSteps) > 0 {
+			fmt.Fprintln(out, "\nnext steps:")
+			for i, step := range report.NextSteps {
+				fmt.Fprintf(out, "  %d. %s\n", i+1, terminalSafe(step))
+			}
+		}
 	}
 	if !report.OK {
 		return 1
@@ -116,26 +164,50 @@ func runSetup(args []string, out, errout io.Writer) int {
 	return 0
 }
 
+// setupFrom is what setup takes from the manifest, or from the flags when the directory has none.
+type setupFrom struct {
+	network   string
+	protected bool
+	ingress   bool // the manifest declares managed ingress
+}
+
 // setupSettings finds the network and protected setting: from the merged manifest of the environment when the directory has
 // one, from the flags otherwise. A flag that disagrees with the manifest is an error.
-func setupSettings(dir, env, network string, protected bool) (string, bool, error) {
+func setupSettings(dir, env, network string, protected bool) (setupFrom, error) {
 	m, err := manifest.Load(dir, env)
 	switch {
 	case err == nil:
 		if network != "" && network != m.Network {
-			return "", false, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, m.Network, env)
+			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, m.Network, env)
 		}
-		return m.Network, m.Protected || protected, nil
+		return setupFrom{network: m.Network, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		if network == "" {
-			return "", false, fmt.Errorf("there is no berthy.yml in %s: pass --network NAME", dir)
+			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --network NAME", dir)
 		}
 		if !manifest.ValidNetwork(network) {
-			return "", false, fmt.Errorf("invalid --network %q: lowercase letters, digits, - and _", network)
+			return setupFrom{}, fmt.Errorf("invalid --network %q: lowercase letters, digits, - and _", network)
 		}
-		return network, protected, nil
+		return setupFrom{network: network, protected: protected}, nil
 	}
-	return "", false, fmt.Errorf("manifest of %s: %v", env, err)
+	return setupFrom{}, fmt.Errorf("manifest of %s: %v", env, err)
+}
+
+// setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
+func setupNextSteps(env string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+	read := "sudo cat /var/lib/berthy/key"
+	if !local {
+		read = "ssh " + target + " " + read
+	}
+	steps := []string{fmt.Sprintf("keep a copy of the encryption key off the server, in a password manager or your provisioning vault: %s > %s.key", read, env)}
+	if madeToken {
+		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
+	}
+	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s", env))
+	if ingress {
+		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s", env))
+	}
+	return append(steps, fmt.Sprintf("run the first deploy: berthy deploy -e %s", env))
 }
 
 var setupGlyphs = map[string]string{
@@ -147,7 +219,7 @@ var setupGlyphs = map[string]string{
 }
 
 func printSetupStep(out io.Writer, r setup.StepResult) {
-	fmt.Fprintf(out, "%s %-7s  %s\n", setupGlyphs[r.Status], terminalSafe(r.Step), terminalSafe(r.Detail))
+	fmt.Fprintf(out, "%s %-10s  %s\n", setupGlyphs[r.Status], terminalSafe(r.Step), terminalSafe(r.Detail))
 }
 
 // setupSummary is the last line of the text output.

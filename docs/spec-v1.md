@@ -280,29 +280,43 @@ It works in one of two ways.
 3. **Docker.** Confirm Docker Engine is installed, at a supported version, enabled at boot and running. If Docker is missing, install it with Docker's official install script. If it is stopped, start it.
 4. **Swarm.** Turn on Swarm mode with the private address as the advertise address, and the Swarm management port listening on that address only, unless the server is already a manager.
 5. **Network.** Create the shared attachable overlay network named in the manifest, unless it exists.
-6. **Agent.** Install the binary, create the `berthy` system user with access to Docker, write the agent's configuration, create the state directory and the encryption key, then install, enable and start the systemd service.
-7. **First token.** Create one `admin` token and print it once. Add the environment to the CLI's configuration with the agent's address.
-8. **Verify.** Call the new agent and run `doctor`. If the laptop cannot reach the private address, setup says so and runs the same check on the server instead.
+6. **Agent.** Create the `berthy` system user and add it to the `docker` group (`user`). Put the agent binary on the server (`binary`; see "Same version as the CLI" below). Create the state directory and the encryption key (`key`). Write the agent's configuration (`config`), then install the systemd unit, enable the service and start it, or restart it when the binary, the configuration or the unit changed (`service`). The new agent has to answer its health check; if it does not, setup puts the previous one back.
+7. **First token and CLI configuration.** On a server that has no agent configuration, create one `admin` token and print it once (`token`). With `--config`, add the environment to the CLI's configuration with the agent's address (`cli_config`).
+8. **Verify.** Call the new agent's `doctor` (`verify`). If this machine cannot reach the private address, setup says so and sends the same request on the server instead.
 
-It ends by printing the next steps: store a copy of the encryption key off the server, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
+It ends by printing the next steps: store a copy of the encryption key off the server (the command that copies it, never the key), set the token in the environment variable the CLI configuration names, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
 
 ### Rules
 
 - **It deploys nothing.** Setup never builds, pushes, pulls or starts an app. The first deploy is a separate `berthy deploy`, after the secrets are set.
 - **Safe to run again.** Each step checks before it acts. A second run repairs what is missing and changes nothing else. It never replaces the encryption key, the tokens or the agent's state, and it never touches a running app.
-- **It upgrades the agent.** Running setup with a newer CLI replaces the agent binary and restarts the service. Apps keep running while the agent restarts.
+- **It upgrades the agent.** Running setup with a newer CLI replaces the agent binary and restarts the service. Apps keep running while the agent restarts: setup never calls Docker for an app, and only the agent's process restarts. The new binary is first placed next to the live one (`/usr/local/bin/berthy.new`, checked against its SHA-256), then renamed over it with the previous one kept as `berthy.prev`; a changed configuration is handled the same way (`agent.json.new`, the previous one kept as `agent.json.prev`). Setup then waits up to 30 seconds for the agent to answer `GET /healthz` on its listen address, asked on the server. If it does not, setup puts the previous binary and configuration back, restarts the service, and fails the `service` step with `the new agent did not come up; the previous one was put back` and the last 20 lines of the agent's journal. On a first install there is nothing to put back: the step fails with the journal lines and leaves the service stopped. The `.prev` files are kept for one generation.
 - **Existing Docker is left alone.** Setup does not upgrade or reconfigure a Docker installation it did not make. Docker older than the minimum supported version stops the run with a message. The minimum is Docker Engine 25.
 - **Existing Swarm and network are kept.** A server that is already a manager keeps its Swarm. An existing network with the right name is used as it is; if it is not an attachable overlay, setup stops. A server that is a worker in another Swarm stops the run.
-- **Same version as the CLI.** Setup installs the version of Berthy that runs it. A Linux CLI of the server's architecture uploads itself. Otherwise the server downloads the matching release and verifies its checksum. `--binary <path>` supplies a local build instead.
+- **Same version as the CLI.** Setup installs the version of Berthy that runs it, chosen in this order:
+  1. `--binary <path>`: a local file, which must be an ELF executable for the server's architecture (`x86_64` or `aarch64`) or setup stops.
+  2. A Linux CLI of the server's architecture uploads itself.
+  3. A release CLI on any other platform makes the server download the matching release, with `curl` or `wget`, from `<release URL>/<version>/berthy-linux-<arch>` (`amd64` or `arm64`) and `<release URL>/<version>/checksums.txt`, a file in `sha256sum` format with one line per artifact. The server checks the line of the artifact with `sha256sum -c` and stops with `checksum mismatch` if it differs. The release URL is `https://github.com/fredimachado/berthy/releases/download`, or the value of `BERTHY_RELEASE_URL`, which exists for tests and mirrors and must be `https`, or `http` on a loopback or private address.
+  4. A development build on any other platform has nothing to install: setup stops and asks for `--binary`.
+
+  An upload streams the file through the SSH session into `berthy.new` and compares the SHA-256 the server computes with the local one. A server that already has that exact binary (by hash, or by version for a download) keeps it: the `binary` step is `ok`.
+- **The encryption key is never replaced.** `--key-file` reads a saved key of exactly 32 bytes. If the server has a key, it must be the same one, or setup stops with `the server has a different encryption key; setup never replaces it`. If it has none, setup installs the saved key (mode 0600, owned by `berthy`; no key byte appears in a command line or in the output). Without `--key-file`, an existing key is kept; with no key and no state, setup generates one on the server, where it stays; with state but no key it stops with `/var/lib/berthy/state has state but no key: pass --key-file with the saved key`. Setup never reads a key back: it compares hashes.
+- **The configuration is merged, never overwritten.** Setup starts from the server's own `agent.json` and sets only what it owns: `environment`, `listen` on the first run, `docker_socket`, `state_dir` and `key_file` when empty, `network`, and `protected` (set from the manifest or `--protected`, never turned off). Tokens and every other field are kept. A different `--listen` than the agent's is refused (`the agent listens on <address>; setup does not move it`), and `--listen` may be left out once the server has a configuration. A configuration that does not validate stops the run, without printing it. The file is written only when its content changes.
+- **The first token is printed once.** A server without an agent configuration gets one `admin` token named `admin`. The agent's configuration holds its digest; the value exists only in setup's memory and appears once, after the step lines, as `admin token for <env> (shown once, store it now): bty.…`, and as `token` in `--json`. It is never in a step detail, an error or a log, on either side, and never in a command line or script sent to the server. `--new-token` adds another `admin` token named `admin-<UTC date and time>` and keeps the existing ones. If the service fails on a first install, the token is still shown, because the configuration that holds it stays in place. If a failed upgrade puts the previous configuration back, the new token is not shown.
+- **The CLI configuration.** With `--config <path>`, setup adds or updates `environments.<env>` with `url` (`http://<listen address>`) and `token_env` (the variable the entry already names, or `BERTHY_<ENV>_TOKEN`, with `ENV` in upper case and other characters as `_`), keeps every other environment, and replaces the file atomically (a new file has mode 0600). The file never holds a token. Without `--config` the step is `skipped` and its detail says which entry to add.
+- **Verify.** With an admin token (the one just made, or the one in the variable the CLI configuration names), setup calls `GET /v1/environments/<env>/doctor` from this machine with a 5 second connect timeout and prints a one-line summary; a critical check that is not ok fails the step and the run exits 1. If this machine cannot reach the agent, setup says so and sends the same request on the server with `curl`; the token goes to `curl` on its standard input, never in a command line. Without a token, setup only checks that `/healthz` answers.
 - **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything on the server: not a package, a service, a setting or a temporary file. A step that would change something reports `would_change`.
 - **Scriptable.** `--json` prints one object on standard output and nothing else. A failed step exits 1 and names the step; a wrong command line exits 2.
 
-Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `agent`) and ends with one status: `ok` (nothing to change), `changed`, `would_change` (a dry run), `skipped` or `failed`. A failed step stops the run.
+Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, `binary`, `key`, `token`, `config`, `service`, `cli_config`, `verify`) and ends with one status: `ok` (nothing to change), `changed`, `would_change` (a dry run), `skipped` or `failed`. A failed step stops the run.
 
 ```json
 {"environment": "prod", "target": "ops@s1", "dry_run": false, "ok": true,
- "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}]}
+ "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}],
+ "token": "bty.prod.…", "next_steps": ["keep a copy of the encryption key off the server, …"]}
 ```
+
+`token` is present only when this run made a token. `next_steps` is present after a successful run that is not a dry run. A dry run makes no token, writes no file and sends only reads to the server: the steps that would change something report `would_change`, and `verify` reports `skipped` with `would check the agent`.
 
 ### What it reads from the manifest
 
@@ -319,24 +333,26 @@ Run from the application's repository, setup reads two values from the merged ma
 | --- | --- |
 | `--host <user>@<server>` | Set up a remote server over SSH |
 | `--local` | Set up the server the command runs on |
-| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. It must be one specific address of the server, not `0.0.0.0` or `::`. |
+| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run; later runs keep the agent's own. It must be one specific address of the server, not `0.0.0.0` or `::`, and a loopback, private or VPN address. |
 | `--network <name>` | The shared network, when the directory has no manifest |
 | `--protected` | Mark the environment as protected, when the directory has no manifest |
 | `--manifest-dir <dir>` | Where to read the manifest from. The default is the current directory. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
 | `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
-| `--binary <path>` | Install this Linux build of Berthy instead of the release that matches the CLI |
+| `--binary <path>` | Install this Linux build of Berthy instead of the CLI itself or the release that matches it |
 | `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
 | `--new-token` | Add another `admin` token, for when the first one is lost |
+| `--config <path>` | The CLI configuration to add the environment to. Without it, setup says what to add. |
 
 ### What it leaves on the server
 
 | Item | Location |
 | --- | --- |
-| Binary | `/usr/local/bin/berthy` |
-| Agent configuration | `/etc/berthy/agent.json`, readable only by the agent's user |
-| State and encryption key | `/var/lib/berthy`, readable only by the agent's user |
-| Service | `berthy.service`, running as the `berthy` user in the `docker` group |
+| Binary | `/usr/local/bin/berthy`; the previous one as `berthy.prev` after an upgrade |
+| Agent configuration | `/etc/berthy/agent.json`, owned by `berthy`, mode 0600 (the agent refuses a configuration that group or others can access); the previous one as `agent.json.prev` after a change |
+| State | `/var/lib/berthy/state`, owned by `berthy`, mode 0700 |
+| Encryption key | `/var/lib/berthy/key`, 32 bytes, owned by `berthy`, mode 0600 |
+| Service | `/etc/systemd/system/berthy.service`, the file the repository ships as `deploy/systemd/berthy.service`, running as the `berthy` user in the `docker` group |
 
 The agent's configuration names the environment, its listen address, the Docker socket, the state directory and key file, `protected`, the tokens, and `network`: the shared overlay network the apps join. Setup writes `network` from the manifest. `doctor` checks the network the configuration names, and when it names none, the network of the last applied manifest. With neither, the check is left out, as on a fresh agent before its first deploy. The agent's version is in its `agent` check and in `GET /v1/environments/<env>/agent`.
 
@@ -1065,10 +1081,11 @@ The destination must exist, the schedule must parse, `keep` must be from 1 to 10
 
 **Restore.** The procedure needs neither the agent nor its server:
 
-1. On the new server, install the Berthy binary and save the key to a file that only the user running the agent can read (mode 0600).
+1. On the new server, install the Berthy binary (any build; setup replaces it later) and save the key to a file that only root can read (mode 0600). Do not run setup yet: it would start an agent with an empty state.
 2. Set the storage credentials in the environment: `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. Flags never carry them.
 3. Run `berthy state-restore --endpoint <URL> --bucket <NAME> [--region <R>] --object berthy-state/prod/<time>.db --out /var/lib/berthy/state --key-file <saved key>`. It downloads the snapshot and its sidecar, checks the size and SHA-256 against the sidecar, and opens the result with the key. It prints the environment, the schema version and the names of the stored secrets, never their values. A wrong key exits non-zero with `the key does not open this state` and leaves nothing behind. The output directory is created with mode 0700 when it is missing, and must otherwise be empty.
-4. Start the agent with `state_dir` set to the output directory and `key_file` set to the saved key. Secrets, deploy history and the audit log are back. Volumes come back separately from the volume backups with `berthy restore`.
+4. From your own machine, run `berthy setup -e <env> --host <user>@<server> --listen <address>:<port> --key-file <saved key>`, with the key from where you keep it. Setup keeps the restored state in `/var/lib/berthy/state` and gives it to the `berthy` user, installs the saved key, writes the configuration and starts the agent, which opens the state. Secrets, deploy history and the audit log are back. The tokens are not in the state: they live in the agent's configuration, so setup prints a new `admin` token. Volumes come back separately from the volume backups with `berthy restore`.
+5. A key that does not open the state shows up as the agent failing to start: setup fails at `service` with the agent's log lines, and the agent is left stopped.
 
 ### Limits
 
@@ -1112,7 +1129,7 @@ Each token belongs to one environment and one scope.
 - Berthy never stores an SSH key, a password or a `sudo` credential.
 - It needs root or `sudo` on the server. No Berthy token can run it, and it is not available through the API or MCP.
 - The agent's audit log does not record it, because it runs outside the agent. The server's SSH and `sudo` logs do.
-- The Docker install script and a downloaded Berthy release are fetched over HTTPS from their publishers. The release is checked against its published checksum before it is installed.
+- The Docker install script and a downloaded Berthy release are fetched over HTTPS from their publishers (a mirror named by `BERTHY_RELEASE_URL` may use plain HTTP on a loopback or private address only). The release is checked against its published checksum before it is installed.
 
 ### Approval for AI agents on protected environments
 

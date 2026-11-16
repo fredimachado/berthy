@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"berthy/internal/agent"
 )
 
 // Statuses of a step.
@@ -21,14 +25,67 @@ const (
 // MinDockerMajor is the oldest Docker Engine setup accepts.
 const MinDockerMajor = 25
 
+// Build describes this CLI: what it can upload to the server and which release it matches.
+type Build struct {
+	OS, Arch string // GOOS and GOARCH
+	Path     string // the running executable
+	Version  string // the version it reports, such as v1.2.0 or "dev (8649d6e)"
+	Release  bool   // a release build: the server can download the same version
+}
+
 // Options are the choices of one run.
 type Options struct {
 	Env             string
 	Network         string // the shared overlay network
-	ListenIP        net.IP // the address the agent listens on and Swarm advertises
+	ListenIP        net.IP // the address the agent listens on and Swarm advertises; nil to keep the one the server's agent has
 	ListenPort      int
 	Protected       bool
 	NoInstallDocker bool
+
+	Binary     string // --binary: the Linux build of Berthy to install instead of this CLI or the release
+	KeyFile    string // --key-file: the saved encryption key to install
+	NewToken   bool   // --new-token: add another admin token
+	CLIConfig  string // --config: the CLI configuration to write the environment into
+	Build      Build
+	ReleaseURL string // BERTHY_RELEASE_URL: where releases are downloaded from; empty means GitHub
+
+	// HealthTimeout is how long the new agent has to answer. Zero means 30 seconds.
+	HealthTimeout time.Duration
+	// Now is the clock of token names. Nil means the system clock.
+	Now func() time.Time
+	// Getenv reads an environment variable. Nil means os.Getenv.
+	Getenv func(string) string
+	// Doctor asks the agent for its doctor from this machine. Nil means an HTTP request.
+	Doctor DoctorFunc
+}
+
+func (o Options) now() time.Time {
+	if o.Now != nil {
+		return o.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (o Options) getenv(name string) string {
+	if o.Getenv != nil {
+		return o.Getenv(name)
+	}
+	return os.Getenv(name)
+}
+
+func (o Options) healthTimeout() time.Duration {
+	if o.HealthTimeout > 0 {
+		return o.HealthTimeout
+	}
+	return defaultHealthTimeout
+}
+
+// listen is the address the agent listens on, as ADDRESS:PORT, or empty when it is not known yet.
+func (o Options) listen() string {
+	if o.ListenIP == nil {
+		return ""
+	}
+	return net.JoinHostPort(o.ListenIP.String(), strconv.Itoa(o.ListenPort))
 }
 
 // Session is the state of one run, shared by its steps.
@@ -41,11 +98,25 @@ type Session struct {
 	// Login is who setup runs as, found by the connect step.
 	Login Login
 
+	// Token is the admin token this run made. It lives only here: the steps never put it in a detail, an error or a script.
+	// TokenLive is true once the agent's configuration with its digest is in place on the server.
+	Token     string
+	TokenLive bool
+	// TokenEnv is the environment variable the CLI configuration names for the token, once the cli_config step knows it.
+	TokenEnv string
+
 	// freshDocker is set in a dry run when Docker is missing: later steps then assume the Docker the install would leave.
 	freshDocker bool
 	// dockerStopped is set in a dry run when Docker is installed but stopped: the Swarm and the network cannot be read until
 	// it runs.
 	dockerStopped bool
+
+	existing    *agent.Config // the server's agent configuration, when there is one
+	configRead  bool
+	newToken    *agent.Token
+	staged      Staged // what this run staged for the service step
+	unitChanged bool
+	serverVer   *string // the version the agent binary on the server reports; "" when it says none
 }
 
 // StepResult is what a step reported.
@@ -70,7 +141,14 @@ func Steps() []Step {
 		{"docker", dockerStep},
 		{"swarm", swarmStep},
 		{"network", networkStep},
-		{"agent", agentStep},
+		{"user", userStep},
+		{"binary", binaryStep},
+		{"key", keyStep},
+		{"token", tokenStep},
+		{"config", configStep},
+		{"service", serviceStep},
+		{"cli_config", cliConfigStep},
+		{"verify", verifyStep},
 	}
 }
 
@@ -162,6 +240,12 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 	if arch == "" {
 		return "", "", fmt.Errorf("unsupported CPU architecture %s: Berthy supports x86_64 and aarch64", orUnknown(clean(f.Arch)))
 	}
+	if f.AgentEnv != "" && f.AgentEnv != s.Opts.Env {
+		return "", "", fmt.Errorf("this server runs the agent of environment %s", clean(f.AgentEnv))
+	}
+	if err := s.resolveListen(ctx, f); err != nil {
+		return "", "", err
+	}
 	assigned := false
 	for _, a := range f.Addrs {
 		if ip := net.ParseIP(a); ip != nil && ip.Equal(s.Opts.ListenIP) {
@@ -170,9 +254,6 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	if !assigned {
 		return "", "", fmt.Errorf("%s is not assigned to this server: --listen needs one of its addresses", s.Opts.ListenIP)
-	}
-	if f.AgentEnv != "" && f.AgentEnv != s.Opts.Env {
-		return "", "", fmt.Errorf("this server runs the agent of environment %s", clean(f.AgentEnv))
 	}
 	return StatusOK, fmt.Sprintf("linux %s, systemd, %s assigned", arch, s.Opts.ListenIP), nil
 }
@@ -387,9 +468,4 @@ func networkStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", err
 	}
 	return StatusChanged, "created network " + name, nil
-}
-
-// agentStep stands in for the agent's installation until a build brings it.
-func agentStep(ctx context.Context, s *Session) (string, string, error) {
-	return StatusSkipped, "not installed by this build yet", nil
 }

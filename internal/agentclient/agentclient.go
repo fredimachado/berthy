@@ -25,12 +25,30 @@ import (
 // ErrInvalidResponse is an answer of the agent that cannot be used: unreadable or over 1 MiB.
 var ErrInvalidResponse = errors.New("invalid agent response")
 
+// Environment is one environment's entry of the CLI configuration.
+type Environment struct {
+	URL      string `json:"url"`
+	TokenEnv string `json:"token_env"`
+}
+
 // Config is the CLI configuration file: where each environment's agent is and which environment variable holds its token.
 type Config struct {
-	Environments map[string]struct {
-		URL      string `json:"url"`
-		TokenEnv string `json:"token_env"`
-	} `json:"environments"`
+	Environments map[string]Environment `json:"environments"`
+}
+
+// ParseConfig reads the configuration file's content: unknown fields and trailing data are refused. The errors never repeat
+// any value of the file.
+func ParseConfig(b []byte) (Config, error) {
+	var c Config
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&c); err != nil {
+		return Config{}, errors.New("invalid config")
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		return Config{}, errors.New("invalid trailing JSON")
+	}
+	return c, nil
 }
 
 // Target is one environment's agent as the configuration names it.
@@ -51,14 +69,9 @@ func Load(path, env string) (*Target, error) {
 	if err != nil {
 		return nil, errors.New("cannot read config")
 	}
-	var c Config
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
-		return nil, errors.New("invalid config")
-	}
-	if err = d.Decode(&struct{}{}); err != io.EOF {
-		return nil, errors.New("invalid trailing JSON")
+	c, err := ParseConfig(b)
+	if err != nil {
+		return nil, err
 	}
 	target, ok := c.Environments[env]
 	if !ok || target.TokenEnv == "" {

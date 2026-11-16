@@ -1,0 +1,172 @@
+package setup
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+
+	"berthy/internal/agentclient"
+	"berthy/internal/api"
+)
+
+// ErrUnreachable is what a DoctorFunc returns when the agent could not be reached at all, as opposed to answering with an
+// error.
+var ErrUnreachable = errors.New("unreachable")
+
+// DoctorFunc asks the agent at baseURL for the doctor of env with token.
+type DoctorFunc func(ctx context.Context, baseURL, env, token string) ([]api.Check, error)
+
+// httpDoctor is the DoctorFunc that sends the request from this machine, with a 5 second connect timeout.
+func httpDoctor(ctx context.Context, baseURL, env, token string) ([]api.Check, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "/v1/environments/" + url.PathEscape(env) + "/"
+	body, status, err := agentclient.Do(ctx, agentclient.NewHTTPClient(), u, prefix, token, "GET", "doctor", "", nil)
+	if err != nil {
+		if errors.Is(err, agentclient.ErrInvalidResponse) {
+			return nil, err
+		}
+		return nil, ErrUnreachable
+	}
+	if status != 200 {
+		return nil, errors.New(agentclient.Message(status, body))
+	}
+	return parseChecks(body)
+}
+
+func parseChecks(body []byte) ([]api.Check, error) {
+	var d struct {
+		Checks []api.Check `json:"checks"`
+	}
+	if json.Unmarshal(body, &d) != nil || len(d.Checks) == 0 {
+		return nil, errors.New("the agent's doctor answer cannot be read")
+	}
+	return d.Checks, nil
+}
+
+// token is the admin token to verify with: the one this run made, or the one in the environment variable the CLI configuration
+// names.
+func (s *Session) verifyToken() string {
+	if s.Token != "" && s.TokenLive {
+		return s.Token
+	}
+	if s.TokenEnv != "" {
+		return s.Opts.getenv(s.TokenEnv)
+	}
+	return ""
+}
+
+// summarize turns the checks into the step's result: every critical check must be ok.
+func summarize(checks []api.Check) (string, error) {
+	version := "unknown version"
+	var failed, warned []string
+	for _, c := range checks {
+		if c.Name == "agent" && c.Detail != "" {
+			version = c.Detail
+		}
+		if c.OK {
+			continue
+		}
+		item := c.Name
+		if c.Detail != "" {
+			item += ": " + c.Detail
+		}
+		if c.Critical {
+			failed = append(failed, item)
+		} else {
+			warned = append(warned, item)
+		}
+	}
+	if len(failed) > 0 {
+		return "", fmt.Errorf("doctor found %d critical %s: %s", len(failed), plural(len(failed), "problem", "problems"), strings.Join(failed, "; "))
+	}
+	ok := len(checks) - len(warned)
+	detail := fmt.Sprintf("agent %s, %d of %d checks ok", version, ok, len(checks))
+	if len(warned) > 0 {
+		detail += " (not ok: " + strings.Join(warned, "; ") + ")"
+	}
+	return detail, nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// verifyStep asks the new agent for its doctor. From this machine when it can reach the agent, from the server otherwise.
+// Without a token it only checks that the agent answers.
+func verifyStep(ctx context.Context, s *Session) (string, string, error) {
+	if s.DryRun {
+		return StatusSkipped, "would check the agent", nil
+	}
+	f, err := s.facts(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	listen := s.Opts.listen()
+	base := agentURL(listen)
+	token := s.verifyToken()
+	if token == "" {
+		if !s.healthy(ctx) {
+			return "", "", fmt.Errorf("the agent does not answer on %s", base)
+		}
+		return StatusOK, "the agent answers; run berthy doctor with an admin token to check it fully", nil
+	}
+	doctor := s.Opts.Doctor
+	if doctor == nil {
+		doctor = httpDoctor
+	}
+	checks, err := doctor(ctx, base, s.Opts.Env, token)
+	prefix := ""
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrUnreachable):
+		if !f.Curl {
+			return "", "", fmt.Errorf("this machine cannot reach %s, and the server has no curl to check there", base)
+		}
+		prefix = fmt.Sprintf("this machine cannot reach %s; checked on the server: ", base)
+		if checks, err = s.doctorOnServer(ctx, base, token); err != nil {
+			return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %v", base, err)
+		}
+	default:
+		return "", "", err
+	}
+	detail, err := summarize(checks)
+	if err != nil {
+		return "", "", err
+	}
+	return StatusOK, prefix + detail, nil
+}
+
+// healthy reports whether the agent answers /healthz, asked from the server.
+func (s *Session) healthy(ctx context.Context) bool {
+	res, err := s.R.Run(ctx, waitScript(healthURL(s.Opts.listen()), 5), nil)
+	return err == nil && res.Code == 0
+}
+
+// doctorOnServer sends the doctor request from the server. The token goes to curl on its standard input as a header line, so
+// it is in no argument and no script.
+func (s *Session) doctorOnServer(ctx context.Context, base, token string) ([]api.Check, error) {
+	u := base + "/v1/environments/" + url.PathEscape(s.Opts.Env) + "/doctor"
+	script := "curl -fsS --max-time 30 -H @- " + shellQuote(u)
+	res, err := s.R.Run(ctx, script, strings.NewReader("Authorization: Bearer "+token+"\n"))
+	if err != nil {
+		return nil, err
+	}
+	if res.Code != 0 {
+		return nil, errors.New(failureText(Result{Stderr: redact(res.Stderr, token), Code: res.Code}))
+	}
+	return parseChecks(res.Stdout)
+}
+
+// redact removes the token from text that came from the server.
+func redact(b []byte, token string) []byte {
+	return []byte(strings.ReplaceAll(string(b), token, "<token>"))
+}

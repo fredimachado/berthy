@@ -11,6 +11,7 @@ ExecStart=/usr/local/bin/berthy agent --config /etc/berthy/agent.json
 Restart=on-failure
 NoNewPrivileges=true
 StateDirectory=berthy
+StateDirectoryMode=0700
 UMask=0077
 
 [Install]

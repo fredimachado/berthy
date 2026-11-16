@@ -78,6 +78,9 @@ func (f *fakeServer) ranAny(markers ...string) bool {
 	return false
 }
 
+// dockerSteps are the steps that make the server ready for the agent: the ones before the agent's own.
+func dockerSteps() []Step { return Steps()[:5] }
+
 const listenIP = "172.31.250.10"
 
 func base() []string {
@@ -103,7 +106,7 @@ func newSession(f *fakeServer, dry bool) *Session {
 func runAll(t *testing.T, f *fakeServer, dry bool) ([]StepResult, bool) {
 	t.Helper()
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, dry), Steps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(f, dry), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	return got, ok
 }
 
@@ -130,11 +133,11 @@ func TestFreshServerInstallsDockerSwarmAndNetwork(t *testing.T) {
 		with(base(), with(dockerUp("29.9.3"), "swarm=active true")...),
 	}}
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, false).withRunner(g), Steps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if !ok {
 		t.Fatalf("setup failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=changed swarm=changed network=changed agent=skipped"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=changed swarm=changed network=changed"; statuses(got) != want {
 		t.Fatalf("statuses = %s, want %s", statuses(got), want)
 	}
 	if got[2].Detail != "installed 29.9.3 with the official script" {
@@ -200,7 +203,7 @@ func TestSetUpServerChangesNothing(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=ok swarm=ok network=ok agent=skipped"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=ok swarm=ok network=ok"; statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
 	if c := f.changes(); len(c) != 0 {
@@ -217,7 +220,7 @@ func TestSetUpServerChangesNothing(t *testing.T) {
 	}
 	want := []string{
 		"ops@s1 (sudo)", "linux amd64, systemd, 172.31.250.10 assigned", "Docker 29.9.3, running, enabled", "manager",
-		"p5net (attachable overlay)", "not installed by this build yet",
+		"p5net (attachable overlay)",
 	}
 	for i, r := range got {
 		if r.Detail != want[i] {
@@ -273,7 +276,7 @@ func (d *deadServer) Run(ctx context.Context, script string, stdin io.Reader) (R
 
 func TestConnectFailureNamesTheCause(t *testing.T) {
 	var got []StepResult
-	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(&deadServer{}), Steps(), func(r StepResult) { got = append(got, r) })
+	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(&deadServer{}), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if len(got) != 1 || got[0].Status != StatusFailed || !strings.Contains(got[0].Detail, "Connection refused") {
 		t.Fatalf("got %+v", got)
 	}
@@ -282,7 +285,7 @@ func TestConnectFailureNamesTheCause(t *testing.T) {
 func TestRunnerErrorFailsTheStep(t *testing.T) {
 	r := &erroring{err: errors.New("boom")}
 	var got []StepResult
-	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(r), Steps(), func(x StepResult) { got = append(got, x) })
+	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(r), dockerSteps(), func(x StepResult) { got = append(got, x) })
 	if len(got) != 1 || got[0].Step != "connect" || got[0].Status != StatusFailed || !strings.Contains(got[0].Detail, "boom") {
 		t.Fatalf("got %+v", got)
 	}
@@ -329,7 +332,7 @@ func TestStepFailures(t *testing.T) {
 					tc.opts(&s.Opts)
 				}
 				var got []StepResult
-				ok := Run(context.Background(), s, Steps(), func(r StepResult) { got = append(got, r) })
+				ok := Run(context.Background(), s, dockerSteps(), func(r StepResult) { got = append(got, r) })
 				last := lastResult(got)
 				if ok || last.Step != tc.step || last.Status != StatusFailed || last.Detail != tc.detail {
 					t.Fatalf("got %+v ok=%v, want %s failing with %q", got, ok, tc.step, tc.detail)
@@ -347,7 +350,7 @@ func TestDockerStoppedAndDisabledIsStartedAndEnabled(t *testing.T) {
 	f := newServer(stopped)
 	g := &sequenceServer{fakeServer: f, outputs: [][]string{stopped, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true")...)}}
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, false).withRunner(g), Steps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
@@ -409,7 +412,7 @@ func TestInstallUsesWgetWithoutCurl(t *testing.T) {
 	g := &sequenceServer{fakeServer: f, outputs: [][]string{probe, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true")...)}}
 	got, _ := func() ([]StepResult, bool) {
 		var got []StepResult
-		ok := Run(context.Background(), newSession(f, false).withRunner(g), Steps(), func(r StepResult) { got = append(got, r) })
+		ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 		return got, ok
 	}()
 	if got[1].Detail != "linux arm64, systemd, 172.31.250.10 assigned" {
@@ -426,7 +429,7 @@ func TestDryRunOfFreshServerSendsNoChange(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=would_change swarm=would_change network=would_change agent=skipped"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=would_change swarm=would_change network=would_change"; statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
 	for i, want := range map[int]string{
@@ -462,7 +465,7 @@ func TestDryRunOfStoppedDockerDoesNotStartIt(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=would_change swarm=skipped network=skipped agent=skipped"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=would_change swarm=skipped network=skipped"; statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
 	if got[2].Detail != "would start and enable Docker" {
@@ -474,7 +477,7 @@ func TestDryRunOfStoppedDockerDoesNotStartIt(t *testing.T) {
 func TestDryRunOfPartlySetUpServer(t *testing.T) {
 	f := newServer(with(base(), with(dockerUp("29.9.3"), "swarm=inactive false")...))
 	got, ok := runAll(t, f, true)
-	if !ok || statuses(got) != "connect=ok check=ok docker=ok swarm=would_change network=would_change agent=skipped" {
+	if !ok || statuses(got) != "connect=ok check=ok docker=ok swarm=would_change network=would_change" {
 		t.Fatalf("got %s ok=%v", statuses(got), ok)
 	}
 	assertOnlyReads(t, f)
@@ -483,7 +486,7 @@ func TestDryRunOfPartlySetUpServer(t *testing.T) {
 func TestDryRunOfSetUpServerIsAllOK(t *testing.T) {
 	f := newServer(setUpServer())
 	got, _ := runAll(t, f, true)
-	if statuses(got) != "connect=ok check=ok docker=ok swarm=ok network=ok agent=skipped" {
+	if statuses(got) != "connect=ok check=ok docker=ok swarm=ok network=ok" {
 		t.Fatalf("got %s", statuses(got))
 	}
 	assertOnlyReads(t, f)

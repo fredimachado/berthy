@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,18 +73,17 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "invalid name: use letters, digits, dots, dashes and underscores")
 		return 2
 	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
-	}
-	token := "bty." + env + "." + hex.EncodeToString(b)
-	entry, err := json.Marshal(agent.Token{Name: name, Digest: agent.Digest(token), Scope: scope, Agent: isAgent})
+	token, digest, err := agent.NewToken(env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\n", token, agent.Digest(token), entry)
+	entry, err := json.Marshal(agent.Token{Name: name, Digest: digest, Scope: scope, Agent: isAgent})
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\n", token, digest, entry)
 	return 0
 }
 
