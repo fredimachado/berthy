@@ -28,8 +28,8 @@ official script" step runs for real. Docker and Swarm run nested inside it.
 ./fakeserver.sh exec NAME CMD...      # docker exec, bypassing ssh
 ./fakeserver.sh install-docker NAME   # run get.docker.com inside, enable docker
 ./fakeserver.sh stop NAME
-./fakeserver.sh rm NAME               # also removes the NAME-docker volume
-./fakeserver.sh rm-all                # every labelled server, volume, and the network
+./fakeserver.sh rm NAME               # also removes its labelled NAME-docker and NAME-containerd volumes
+./fakeserver.sh rm-all                # every labelled server and volume, and the network if labelled
 ```
 
 `start` is idempotent. Without `IP` the lowest free address from `.10` of the
@@ -47,6 +47,19 @@ filesystem, and Docker 29 stores image layers under `/var/lib/containerd`
 
 `get.docker.com` prints "WSL DETECTED" and waits 20 seconds when the host kernel
 is WSL's (the container reports the host kernel). That is harmless.
+
+## Safety
+
+The script acts only on what it created. A server is the container NAME that
+carries the label `berthy.fakeserver=1`, and every lookup requires both the exact
+name and the label. `rm` and `rm-all` remove only labelled volumes and networks:
+`rm` leaves a same-named volume without the label in place, with a warning, and
+`start` refuses to use one.
+
+Docker also reads an argument as a container id prefix when no name matches, so
+a server name made only of hex digits (`f1`, `abc`) could select any container on
+the daemon, including one that is not a fakeserver. The script refuses such names;
+use a name with another letter, e.g. `sf1`.
 
 ## Pointing `berthy setup` at it
 
