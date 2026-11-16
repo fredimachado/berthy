@@ -118,14 +118,14 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		return "", ErrOneOffUncertain
 	}
 	if err = e.StartContainer(ctx, id); err != nil {
-		return "", ErrOneOffUncertain
+		return "", c.uncertainOneOff(parent, ctx, err, id, kind, ordinal)
 	}
 	if err = c.Store.MarkStep(ctx, opID, ordinal, "started", receipt); err != nil {
 		return "", ErrOneOffUncertain
 	}
 	exit, err := e.WaitContainer(ctx, id)
 	if err != nil {
-		return "", ErrOneOffUncertain
+		return "", c.uncertainOneOff(parent, ctx, err, id, kind, ordinal)
 	}
 	receipt, _ = json.Marshal(struct {
 		ID   string `json:"id"`
@@ -135,7 +135,15 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		return "", ErrOneOffUncertain
 	}
 	if exit != 0 {
-		return "", fmt.Errorf("%s failed with exit code %d", kind, exit)
+		// The evidence is read now: nothing removes the container, but the next steps of the operation may.
+		capCtx, cancelCapture := captureContext(parent)
+		d := c.captureOneOff(capCtx, id, kind)
+		cancelCapture()
+		d.Index = commandIndex(kind, ordinal)
+		if d.ExitCode == nil {
+			d.ExitCode = &exit
+		}
+		return "", &oneOffFailure{err: fmt.Errorf("%s failed with exit code %d", kind, exit), diagnostic: d}
 	}
 	if !version {
 		return "", nil
@@ -158,6 +166,30 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		return "", ErrOneOffUncertain
 	}
 	return v, nil
+}
+
+// uncertainOneOff is the error of a one-off whose outcome is unknown, such as one that ran past its time limit. It carries
+// what the container shows so far and leaves the container alone: recovery stops it.
+func (c *Controller) uncertainOneOff(parent, ctx context.Context, cause error, id, kind string, ordinal int) error {
+	capCtx, cancel := captureContext(parent)
+	defer cancel()
+	d := c.captureOneOff(capCtx, id, kind)
+	d.Index = commandIndex(kind, ordinal)
+	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		addNote(&d, errTimedOut+" after "+hookTimeout.String())
+	}
+	return &oneOffFailure{err: ErrOneOffUncertain, diagnostic: d}
+}
+
+// commandIndex is the 1-based position of a pre or post-deploy command among the manifest's, or 0 for any other one-off.
+func commandIndex(kind string, ordinal int) int {
+	switch kind {
+	case "pre_hook":
+		return ordinal - 10000 + 1
+	case "post_hook":
+		return ordinal - 20000 + 1
+	}
+	return 0
 }
 func safeVersion(output []byte, p preparedPlan) (string, error) {
 	if len(output) > 1024 || !utf8.Valid(output) {

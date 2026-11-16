@@ -38,6 +38,8 @@ type Operation struct {
 	State                          string
 	Started                        time.Time
 	Err, SchemaBefore, SchemaAfter string
+	// Reason is the public one-line cause of a failed operation. Err stays the fixed category.
+	Reason string
 }
 type Intent struct {
 	Ordinal                                 int
@@ -68,9 +70,11 @@ type SecretInfo struct{ Name, Registry string }
 type Outcome struct {
 	Protected                      bool
 	Err, SchemaBefore, SchemaAfter string
-	State                          string
-	Event                          json.RawMessage
-	Release                        *Release
+	// Reason is the public one-line cause of a failure. It joins the final event when the outcome sets no event.
+	Reason  string
+	State   string
+	Event   json.RawMessage
+	Release *Release
 }
 type Lock struct {
 	OperationID, Holder, Reason string
@@ -142,7 +146,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -154,7 +158,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS acquired_images (environment TEXT NOT NULL, ref TEXT NOT NULL, image_id TEXT NOT NULL, PRIMARY KEY(environment,ref));
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, UNIQUE(environment,request_id));
+ CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', UNIQUE(environment,request_id));
  CREATE TABLE IF NOT EXISTS locks (environment TEXT PRIMARY KEY, operation_id TEXT REFERENCES operations(id), holder TEXT NOT NULL, reason TEXT NOT NULL, acquired INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL REFERENCES operations(id), kind TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS intents (operation_id TEXT NOT NULL REFERENCES operations(id), ordinal INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, service_id TEXT NOT NULL, generation TEXT NOT NULL, seen_version INTEGER NOT NULL, deadline INTEGER NOT NULL, before_sealed BLOB, desired_sealed BLOB NOT NULL, phase TEXT NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(operation_id,ordinal));
@@ -169,7 +173,8 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, job TEXT NOT NULL, app TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, exit_code INTEGER, detail TEXT NOT NULL, container TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS job_runs_occurrence ON job_runs(environment, job, scheduled) WHERE scheduled <> 0;
  CREATE TABLE IF NOT EXISTS backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, backup TEXT NOT NULL, app TEXT NOT NULL, volume TEXT NOT NULL, destination TEXT NOT NULL, object_key TEXT NOT NULL, trigger TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
- CREATE UNIQUE INDEX IF NOT EXISTS backups_object ON backups(environment, object_key);`); err != nil {
+ CREATE UNIQUE INDEX IF NOT EXISTS backups_object ON backups(environment, object_key);
+ CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -197,7 +202,18 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=7`); err != nil {
+	if version != 0 && version < 8 {
+		// A database from before schema 8 lacks the reason column. The column check keeps a repeated upgrade harmless.
+		var has int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='reason'`).Scan(&has); err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN reason TEXT NOT NULL DEFAULT ''`)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
+	if _, err = tx.Exec(`PRAGMA user_version=8`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -288,7 +304,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 		return Operation{}, false, err
 	}
 	defer tx.Rollback()
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
 	if err == nil {
 		if op.ActorID != a.ActorID || op.RequestHash != a.RequestHash {
 			return Operation{}, false, ErrConflict
@@ -302,7 +318,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if err != nil {
 		return Operation{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", now(), "", "", "")
+	_, err = tx.ExecContext(ctx, `INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", now(), "", "", "", "")
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -325,16 +341,16 @@ func operationQuery(row *sql.Row) (Operation, error) {
 	var o Operation
 	var hash []byte
 	var started int64
-	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter)
+	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter, &o.Reason)
 	o.Started = time.UnixMilli(started).UTC()
 	copy(o.RequestHash[:], hash)
 	return o, err
 }
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after FROM operations WHERE environment=? AND id=?`, s.env, id))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND id=?`, s.env, id))
 }
 func (s *Store) Active(ctx context.Context) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
 }
 func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMessage) error {
 	if !publicJSON(data) {
@@ -486,6 +502,13 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	}
 	if len(o.Event) == 0 {
 		o.Event = json.RawMessage(`{}`)
+		if o.Reason != "" {
+			event, e := json.Marshal(map[string]string{"state": o.State, "reason": o.Reason})
+			if e != nil {
+				return e
+			}
+			o.Event = event
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -495,7 +518,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after FROM operations WHERE environment=? AND id=?`, s.env, id))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND id=?`, s.env, id))
 	if err != nil {
 		return err
 	}
@@ -535,7 +558,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE operations SET state=?,error=?,schema_before=?,schema_after=? WHERE id=?`, o.State, o.Err, o.SchemaBefore, o.SchemaAfter, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE operations SET state=?,error=?,schema_before=?,schema_after=?,reason=COALESCE(NULLIF(?,''),reason) WHERE id=?`, o.State, o.Err, o.SchemaBefore, o.SchemaAfter, o.Reason, id); err != nil {
 		return err
 	}
 	if err = eventTx(ctx, tx, id, o.State, o.Event); err != nil {
@@ -615,7 +638,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 
 // LatestMigration returns the newest finished deploy of app that recorded a schema state.
 func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {

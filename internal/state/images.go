@@ -79,8 +79,11 @@ func (s *Store) ForgetImage(ctx context.Context, ref, id string) error {
 
 type CompletedOneOff struct{ OperationID, ID, Name, Role string }
 
+// CompletedOneOffs lists the one-off containers of finished operations that Berthy may prune: the hooks and migration
+// commands that finished, and any one-off that created a container but never finished, such as one that timed out. Their
+// output lives on in the operation's diagnostics. A step that never created a container has none to list.
 func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND i.phase='finished' AND i.role IN ('pre_hook','post_hook') ORDER BY i.operation_id,i.ordinal`, s.env)
+	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after')) ORDER BY i.operation_id,i.ordinal`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +92,9 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 	for rows.Next() {
 		var x CompletedOneOff
 		var ordinal int
+		var phase string
 		var sealed []byte
-		if err = rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &sealed); err != nil {
+		if err = rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &phase, &sealed); err != nil {
 			return nil, err
 		}
 		plain, e := s.open(fmt.Sprintf("intent:%s:%d:receipt", x.OperationID, ordinal), sealed)
@@ -100,8 +104,11 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 		var receipt struct {
 			ID string `json:"id"`
 		}
-		if json.Unmarshal(plain, &receipt) != nil || receipt.ID == "" {
+		if json.Unmarshal(plain, &receipt) != nil || receipt.ID == "" && phase != "intent" && phase != "created" {
 			return nil, errors.New("invalid one-off receipt")
+		}
+		if receipt.ID == "" {
+			continue
 		}
 		x.ID = receipt.ID
 		out = append(out, x)
@@ -111,12 +118,12 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 
 type HistoryOperation struct {
 	OperationID, Kind, App, Commit, State string
-	SchemaBefore, SchemaAfter             string
+	SchemaBefore, SchemaAfter, Reason     string
 	Started                               time.Time
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +132,7 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 	for rows.Next() {
 		var o HistoryOperation
 		var ms int64
-		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter); err != nil {
+		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason); err != nil {
 			return nil, err
 		}
 		o.Started = time.UnixMilli(ms).UTC()

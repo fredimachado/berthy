@@ -93,11 +93,12 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 	case err == nil:
 	case errors.Is(err, ErrOneOffUncertain):
 		// Recovery owns the rest: it stops any revert container still running, then finishes the operation.
-		return state.Outcome{State: "recovery_required", Err: "schema revert outcome uncertain", SchemaBefore: before, SchemaAfter: after}
+		return state.Outcome{State: "recovery_required", Err: "schema revert outcome uncertain", SchemaBefore: before, SchemaAfter: after, Reason: c.recordOneOffFailure(ctx, op.ID, err)}
 	case errors.Is(err, errRevertMismatch):
 		out.State, out.Err = "failed", errRevertMismatch.Error()
 	default:
 		out.State, out.Err = "failed", "schema revert failed"
+		out.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 	}
 	return out
 }

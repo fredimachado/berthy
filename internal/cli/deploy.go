@@ -27,7 +27,7 @@ import (
 
 func isDeploymentCommand(s string) bool {
 	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
+	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job":
 		return true
 	}
 	return false
@@ -255,6 +255,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 2
 		}
 		endpoint = cmd + "/" + url.PathEscape(f.pos[0])
+	case "diagnostics":
+		if len(f.pos) != 1 || f.pos[0] == "" {
+			fmt.Fprintln(errout, "usage: diagnostics OPERATION_ID -e ENV [--json]")
+			return 2
+		}
+		endpoint = "operations/" + url.PathEscape(f.pos[0]) + "/diagnostics"
 	case "audit":
 		if len(f.pos) != 0 {
 			return 2
@@ -399,11 +405,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "invalid operation events URL")
 			return 1
 		}
-		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd == "exec")
+		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env)
 	}
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintln(errout, agentError(resp.StatusCode, data))
 		return 1
+	}
+	if cmd == "diagnostics" && !f.json {
+		return printDiagnostics(out, errout, data)
 	}
 	return printResponse(out, errout, data, f.json)
 }
@@ -475,7 +484,7 @@ func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
 	}
 	return 0
 }
-func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON, isExec bool) int {
+func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env string) int {
 	cursor := ""
 	failures := 0
 	for {
@@ -525,7 +534,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if json.Unmarshal(data, &v) == nil && v.State != "running" && v.State != "" {
 					exitCode := 0
-					if isExec {
+					if cmd == "exec" {
 						outputURL := *base
 						outputURL.Path = prefix + "operations/" + url.PathEscape(id) + "/output"
 						outputURL.RawQuery = ""
@@ -560,6 +569,14 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 					printResponse(out, errout, data, asJSON)
 					if v.State == "succeeded" && exitCode == 0 {
 						return 0
+					}
+					if (v.State == "failed" || v.State == "rolled_back" || v.State == "recovery_required") && (cmd == "deploy" || cmd == "rollback" || cmd == "ingress") {
+						// stdout stays one JSON document under --json, so the pointer goes to stderr then.
+						hint := out
+						if asJSON {
+							hint = errout
+						}
+						fmt.Fprintln(hint, failureHint(env, id))
 					}
 					return 1
 				}

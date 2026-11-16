@@ -1,0 +1,622 @@
+package deploy
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"berthy/internal/engine"
+	"berthy/internal/manifest"
+	"berthy/internal/state"
+)
+
+// diagFake is positiveEngine with the tasks, containers and one-off commands of a failing deploy. Its tasks follow the
+// service spec that is live, like Swarm's, so evidence read after the service was deleted is gone.
+type diagFake struct {
+	*positiveEngine
+	fmu      sync.Mutex
+	calls    []string
+	tasksFor func(generation, image string) []engine.ServiceTask
+	diagnose map[string]engine.ContainerDiagnosis
+	tails    map[string]string
+	exits    []int
+	versions []string
+	waitErr  error
+}
+
+func (f *diagFake) record(call string) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	f.calls = append(f.calls, call)
+}
+func (f *diagFake) callIndex(call string) int {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	for i, c := range f.calls {
+		if c == call {
+			return i
+		}
+	}
+	return -1
+}
+func (f *diagFake) lastIndexWithPrefix(prefix string) int {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	n := -1
+	for i, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			n = i
+		}
+	}
+	return n
+}
+func (f *diagFake) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
+	f.positiveEngine.mu.Lock()
+	spec := append(json.RawMessage(nil), f.positiveEngine.spec...)
+	f.positiveEngine.mu.Unlock()
+	if spec == nil {
+		return nil, nil
+	}
+	var s struct {
+		TaskTemplate struct {
+			ContainerSpec struct {
+				Image  string
+				Labels map[string]string
+			}
+		}
+	}
+	_ = json.Unmarshal(spec, &s)
+	generation := s.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
+	f.record("ServiceTasks")
+	if f.tasksFor == nil {
+		return []engine.ServiceTask{{ID: "healthy", ServiceID: "id", ContainerID: "healthy-c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": generation}, Image: s.TaskTemplate.ContainerSpec.Image}}, nil
+	}
+	tasks := f.tasksFor(generation, s.TaskTemplate.ContainerSpec.Image)
+	for i := range tasks {
+		if tasks[i].ServiceID == "" {
+			tasks[i].ServiceID = "id"
+		}
+	}
+	return tasks, nil
+}
+func (f *diagFake) InspectContainerHealth(_ context.Context, id string) (string, error) {
+	if d, ok := f.diagnose[id]; ok && d.Health != "" {
+		return d.Health, nil
+	}
+	return "healthy", nil
+}
+func (f *diagFake) DeleteService(ctx context.Context, id string) error {
+	f.record("DeleteService")
+	return f.positiveEngine.DeleteService(ctx, id)
+}
+func (f *diagFake) DiagnoseContainer(_ context.Context, id string) (engine.ContainerDiagnosis, error) {
+	f.record("Diagnose:" + id)
+	d, ok := f.diagnose[id]
+	if !ok {
+		return engine.ContainerDiagnosis{}, errors.New("no such container")
+	}
+	return d, nil
+}
+func (f *diagFake) LogTail(_ context.Context, id string, lines, maxBytes int) (string, bool, error) {
+	f.record("LogTail:" + id)
+	if lines != 200 || maxBytes != 64<<10 {
+		return "", false, errors.New("unexpected tail bounds")
+	}
+	text, ok := f.tails[id]
+	if !ok {
+		return "", false, errors.New("no logs")
+	}
+	return text, false, nil
+}
+func (f *diagFake) CreateContainer(_ context.Context, name string, _ json.RawMessage) (string, error) {
+	f.record("CreateContainer:" + name)
+	return name, nil
+}
+func (f *diagFake) StartContainer(context.Context, string) error { return nil }
+func (f *diagFake) WaitContainer(context.Context, string) (int, error) {
+	if f.waitErr != nil {
+		return 0, f.waitErr
+	}
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	n := f.exits[0]
+	f.exits = f.exits[1:]
+	return n, nil
+}
+func (f *diagFake) ContainerLogs(context.Context, string) ([]byte, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	v := f.versions[0]
+	f.versions = f.versions[1:]
+	return []byte(v), nil
+}
+func (f *diagFake) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
+}
+func (f *diagFake) StopContainer(_ context.Context, id string, _ int) error {
+	f.record("StopContainer:" + id)
+	return nil
+}
+
+func exitCode(n int) *int { return &n }
+
+// failedTasks returns n failed tasks of the generation, newest last in list order: t1 is the oldest.
+func failedTasks(generation string, n int) []engine.ServiceTask {
+	var out []engine.ServiceTask
+	base := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	for i := 1; i <= n; i++ {
+		out = append(out, engine.ServiceTask{ID: fmt.Sprintf("t%d", i), ContainerID: fmt.Sprintf("c%d", i), State: "failed", DesiredState: "shutdown", Slot: uint64(i), Version: uint64(i), Timestamp: base.Add(time.Duration(i) * time.Second), Err: "task: non-zero exit (1)", Message: "started", ExitCode: exitCode(1), Labels: map[string]string{"berthy.operation": generation}})
+	}
+	// A task of another generation is no evidence of this operation.
+	out = append(out, engine.ServiceTask{ID: "other", ContainerID: "c-other", State: "failed", Timestamp: base.Add(time.Hour), Labels: map[string]string{"berthy.operation": "someone-else"}})
+	return out
+}
+
+func exitedContainers(n int, health string) map[string]engine.ContainerDiagnosis {
+	out := map[string]engine.ContainerDiagnosis{}
+	for i := 1; i <= n; i++ {
+		out[fmt.Sprintf("c%d", i)] = engine.ContainerDiagnosis{State: "exited", ExitCode: 1, Health: health}
+	}
+	return out
+}
+
+func diagController(t *testing.T, f *diagFake) (*Controller, *state.Store) {
+	t.Helper()
+	s := openStore(t)
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	return c, s
+}
+
+func newDiagFake() *diagFake { return &diagFake{positiveEngine: &positiveEngine{}} }
+
+func webManifest(timeout string, hooks func(*manifest.App)) manifest.Manifest {
+	m := dockerManifest(nil)
+	app := m.Apps["web"]
+	app.Deploy.DeployTimeout = timeout
+	if hooks != nil {
+		hooks(&app)
+	}
+	m.Apps["web"] = app
+	return m
+}
+
+func deployWeb(t *testing.T, c *Controller, s *state.Store, request, digest string, m manifest.Manifest) state.Operation {
+	t.Helper()
+	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: request, App: "web", Version: "sha256:" + strings.Repeat(digest, 64), Manifest: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return waitOperation(t, s, op.ID)
+}
+
+func storedDiagnostics(t *testing.T, s *state.Store, id string) []Diagnostic {
+	t.Helper()
+	raw, err := s.Diagnostics(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []Diagnostic
+	for _, r := range raw {
+		var d Diagnostic
+		if err = json.Unmarshal(r, &d); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func TestFailedCreatedRoleKeepsTaskEvidenceBeforeTheServiceIsDeleted(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 3) }
+	f.diagnose = exitedContainers(3, "starting")
+	f.tails = map[string]string{
+		"c1": "2026-11-16T10:00:01Z stderr config: DATABASE_URL is required\n",
+		"c2": "2026-11-16T10:00:02Z stderr config: DATABASE_URL is required\n",
+		"c3": "2026-11-16T10:00:03Z stderr config: DATABASE_URL is required password=hunter2-secret\n",
+	}
+	c, s := diagController(t, f)
+	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
+		t.Fatal(err)
+	}
+	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	want := "role web: task exited with code 1 (3 failed tasks)"
+	if op.State != "failed" || op.Err != "rollout failed and was cleaned up" || op.Reason != want {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	got := storedDiagnostics(t, s, op.ID)
+	if len(got) != 3 || got[0].TaskID != "t3" || got[1].TaskID != "t2" || got[2].TaskID != "t1" {
+		t.Fatalf("diagnostics are not the three tasks of the operation, newest first: %+v", got)
+	}
+	d := got[0]
+	if d.Kind != "task" || d.Role != "web" || d.Name != "proj-web-web" || d.State != "failed" || d.ExitCode == nil || *d.ExitCode != 1 || d.Container != "c3" || d.Captured.IsZero() {
+		t.Fatalf("diagnostic %+v", d)
+	}
+	if !strings.Contains(d.Logs, "DATABASE_URL is required") || strings.Contains(d.Logs, "hunter2-secret") || !strings.Contains(d.Logs, "[redacted]") {
+		t.Fatalf("logs were not redacted: %q", d.Logs)
+	}
+	deleted, lastRead := f.callIndex("DeleteService"), f.lastIndexWithPrefix("LogTail:")
+	if deleted < 0 || lastRead < 0 || lastRead > deleted {
+		t.Fatalf("evidence was read after the service was deleted: delete at %d, last log read at %d, calls %v", deleted, lastRead, f.calls)
+	}
+	if strings.Contains(op.Reason, "DATABASE_URL") {
+		t.Fatal("log text leaked into the public reason")
+	}
+	events, err := s.EventsAfter(context.Background(), op.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	var data map[string]string
+	if err = json.Unmarshal(last.Data, &data); err != nil || last.Kind != "failed" || data["reason"] != want || data["state"] != "failed" {
+		t.Fatalf("final event %s %s", last.Kind, last.Data)
+	}
+}
+
+func TestEvidenceKeepsFiveNewestTasksPerRole(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 8) }
+	f.diagnose = exitedContainers(8, "starting")
+	f.tails = map[string]string{}
+	for i := 1; i <= 8; i++ {
+		f.tails[fmt.Sprintf("c%d", i)] = fmt.Sprintf("line %d\n", i)
+	}
+	c, s := diagController(t, f)
+	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	got := storedDiagnostics(t, s, op.ID)
+	if len(got) != 5 || got[0].TaskID != "t8" || got[4].TaskID != "t4" {
+		t.Fatalf("kept %d diagnostics: %+v", len(got), got)
+	}
+}
+
+func TestUpdatedRoleThatNeverBecameHealthyRecordsItsHealthLog(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, image string) []engine.ServiceTask {
+		labels := map[string]string{"berthy.operation": generation}
+		if strings.Contains(image, strings.Repeat("b", 64)) {
+			return []engine.ServiceTask{{ID: "bad", ContainerID: "c-bad", State: "running", DesiredState: "running", Slot: 1, Labels: labels, Image: image, Timestamp: time.Now()}}
+		}
+		return []engine.ServiceTask{{ID: "good", ContainerID: "c-good", State: "running", DesiredState: "running", Slot: 1, Labels: labels, Image: image}}
+	}
+	probe := func(sec int) engine.HealthProbe {
+		return engine.HealthProbe{Start: time.Date(2026, 11, 16, 10, 0, sec, 0, time.UTC), ExitCode: 1, Output: "cannot connect to hunter2-secret@db"}
+	}
+	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
+	f.tails = map[string]string{"c-bad": "2026-11-16T10:00:01Z stdout waiting for the database\n"}
+	c, s := diagController(t, f)
+	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
+		t.Fatal(err)
+	}
+	if op := deployWeb(t, c, s, "first", "a", webManifest("2s", nil)); op.State != "succeeded" {
+		t.Fatalf("first deploy %s %s", op.State, op.Err)
+	}
+	op := deployWeb(t, c, s, "second", "b", webManifest("300ms", nil))
+	if op.State != "rolled_back" || op.Reason != "role web: container never became healthy (last check: exit 1)" {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	got := storedDiagnostics(t, s, op.ID)
+	if len(got) != 1 || got[0].TaskID != "bad" || got[0].Health != "starting" || len(got[0].HealthLog) != 3 {
+		t.Fatalf("diagnostics %+v", got)
+	}
+	if strings.Contains(got[0].HealthLog[0].Output, "hunter2-secret") || !strings.Contains(got[0].HealthLog[0].Output, "[redacted]") {
+		t.Fatalf("health output was not redacted: %q", got[0].HealthLog[0].Output)
+	}
+	if strings.Contains(op.Reason, "cannot connect") {
+		t.Fatal("health-check output leaked into the public reason")
+	}
+}
+
+func TestReasonForOutOfMemoryAndForATaskStillStarting(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		tasks        func(string) []engine.ServiceTask
+		diagnose     map[string]engine.ContainerDiagnosis
+	}{
+		{"oom", "role web: task was killed: out of memory", func(g string) []engine.ServiceTask { return failedTasks(g, 1)[:1] }, map[string]engine.ContainerDiagnosis{"c1": {State: "exited", ExitCode: 137, OOMKilled: true}}},
+		{"starting", "role web: deploy deadline exceeded before the task was healthy", func(g string) []engine.ServiceTask {
+			return []engine.ServiceTask{{ID: "s1", ContainerID: "cs", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": g}}}
+		}, map[string]engine.ContainerDiagnosis{"cs": {State: "running", Health: "starting"}}},
+		{"rejected", "role web: task failed: No such image: example/web", func(g string) []engine.ServiceTask {
+			return []engine.ServiceTask{{ID: "r1", State: "rejected", DesiredState: "shutdown", Slot: 1, Err: "No such image: example/web", Labels: map[string]string{"berthy.operation": g}}}
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDiagFake()
+			f.tasksFor = func(generation, _ string) []engine.ServiceTask { return tc.tasks(generation) }
+			f.diagnose = tc.diagnose
+			f.tails = map[string]string{"c1": "Killed\n", "cs": "booting\n"}
+			c, s := diagController(t, f)
+			op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+			if op.State != "failed" || op.Reason != tc.reason {
+				t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+			}
+			if len(storedDiagnostics(t, s, op.ID)) != 1 {
+				t.Fatal("evidence not stored")
+			}
+		})
+	}
+}
+
+func TestUnreadableEvidenceIsNotedNotFatal(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 1)[:1] }
+	f.diagnose = exitedContainers(1, "starting") // no log tail for c1
+	c, s := diagController(t, f)
+	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	got := storedDiagnostics(t, s, op.ID)
+	if len(got) != 1 || got[0].Logs != "" || !strings.Contains(got[0].Error, "logs unavailable") || got[0].ExitCode == nil {
+		t.Fatalf("diagnostics %+v", got)
+	}
+	if op.Reason != "role web: task exited with code 1" {
+		t.Fatalf("reason %q", op.Reason)
+	}
+}
+
+func TestDiagnosticsTotalStaysWithinOneMiB(t *testing.T) {
+	var d []Diagnostic
+	for i := 0; i < 20; i++ {
+		d = append(d, Diagnostic{Kind: "task", TaskID: fmt.Sprintf("t%d", i), Logs: strings.Repeat("x", 64<<10)})
+	}
+	d = capDiagnostics(d)
+	total := 0
+	for i, item := range d {
+		b, _ := json.Marshal(item)
+		total += len(b)
+		if (item.Logs == "") != item.Truncated {
+			t.Fatalf("diagnostic %d: logs %d bytes, truncated %v", i, len(item.Logs), item.Truncated)
+		}
+	}
+	if total > diagnosticTotalBytes || d[0].Logs == "" || d[19].Logs != "" || !d[19].Truncated {
+		t.Fatalf("total %d, newest keeps logs %v, oldest dropped %v", total, d[0].Logs != "", d[19].Logs == "")
+	}
+}
+
+func TestFailureReasonIsPublicAndBounded(t *testing.T) {
+	two := 2
+	for _, tc := range []struct {
+		name     string
+		d        []Diagnostic
+		fallback string
+		want     string
+	}{
+		{"fallback", nil, "rollout failed", "rollout failed"},
+		{"two roles", []Diagnostic{
+			{Kind: "task", Role: "web", State: "failed", ExitCode: &two},
+			{Kind: "task", Role: "worker", State: "failed", OOMKilled: true},
+		}, "x", "role web: task exited with code 2; role worker: task was killed: out of memory"},
+		{"unhealthy exit wins over the kill exit code", []Diagnostic{{Kind: "task", Role: "web", State: "failed", ExitCode: exitCode(137), Health: "unhealthy", HealthLog: []engine.HealthProbe{{ExitCode: 7, Output: "SECRET"}}}}, "x", "role web: container never became healthy (last check: exit 7)"},
+		{"a crash before any check ran is an exit, though Docker calls it unhealthy", []Diagnostic{{Kind: "task", Role: "web", State: "failed", ExitCode: exitCode(1), Health: "unhealthy"}}, "x", "role web: task exited with code 1"},
+		{"checks that passed before a crash are not a failed start", []Diagnostic{{Kind: "task", Role: "web", State: "failed", ExitCode: exitCode(1), Health: "healthy", HealthLog: []engine.HealthProbe{{ExitCode: 0}}}}, "x", "role web: task exited with code 1"},
+		{"swarm error is sanitized", []Diagnostic{{Kind: "task", Role: "web", State: "rejected", Error: "bad\x00image é \n" + strings.Repeat("e", 300)}}, "x", ""},
+		{"pre hook", []Diagnostic{{Kind: "oneoff", Name: "pre_hook", Index: 2, ExitCode: exitCode(3), Logs: "SECRET"}}, "x", "pre-deploy command 2 exited with code 3"},
+		{"post hook", []Diagnostic{{Kind: "oneoff", Name: "post_hook", Index: 1, ExitCode: exitCode(1)}}, "x", "post-deploy command 1 exited with code 1"},
+		{"migration", []Diagnostic{{Kind: "oneoff", Name: "migration_apply", ExitCode: exitCode(2)}}, "x", "migration apply exited with code 2"},
+		{"timeout", []Diagnostic{{Kind: "oneoff", Name: "pre_hook", Index: 1, Error: errTimedOut + " after 5m0s"}}, "x", "pre-deploy command 1 timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := failureReason(tc.d, tc.fallback)
+			if tc.want != "" && got != tc.want {
+				t.Fatalf("reason %q, want %q", got, tc.want)
+			}
+			if len(got) > maxReasonBytes || strings.Contains(got, "SECRET") || strings.IndexFunc(got, func(r rune) bool { return r < 0x20 || r > 0x7e }) >= 0 {
+				t.Fatalf("reason is not public: %q", got)
+			}
+		})
+	}
+}
+
+func TestFailedPreDeployCommandStoresItsOutputAndReason(t *testing.T) {
+	f := newDiagFake()
+	f.exits = []int{3}
+	f.diagnose = map[string]engine.ContainerDiagnosis{}
+	c, s := diagController(t, f)
+	op := deployWeb(t, c, s, "first", "a", webManifest("2s", func(a *manifest.App) {
+		a.Hooks.PreDeploy = []manifest.Hook{{Run: []string{"/bin/migrate"}}}
+	}))
+	f.fmu.Lock()
+	name := ""
+	for _, call := range f.calls {
+		if strings.HasPrefix(call, "CreateContainer:") {
+			name = strings.TrimPrefix(call, "CreateContainer:")
+		}
+	}
+	f.fmu.Unlock()
+	if name == "" {
+		t.Fatal("no one-off ran")
+	}
+	// The container is only known after it ran; a second deploy attempt reuses the fake with output in place.
+	if op.State != "failed" || op.Err != "pre-deploy command failed" || op.Reason != "pre-deploy command 1 exited with code 3" {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	if got := storedDiagnostics(t, s, op.ID); len(got) != 1 || got[0].Kind != "oneoff" || got[0].Name != "pre_hook" || got[0].Index != 1 || got[0].Container != name {
+		t.Fatalf("diagnostics %+v", got)
+	}
+}
+
+func TestFailedHookDiagnosticCarriesExitCodeAndOutput(t *testing.T) {
+	f := newDiagFake()
+	f.exits = []int{3}
+	c, s := diagController(t, f)
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest("1s", nil)}}
+	name := fmt.Sprintf("berthy-%s-10000", op.ID)
+	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "exited", ExitCode: 3}}
+	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stderr migration 0042 failed: column exists\n"}
+	_, err = c.runOneOff(context.Background(), op.ID, p, 10000, "pre_hook", []string{"migrate"}, false)
+	d := failureDiagnostics(err)
+	if err == nil || len(d) != 1 || d[0].ExitCode == nil || *d[0].ExitCode != 3 || !strings.Contains(d[0].Logs, "migration 0042 failed") || d[0].Index != 1 {
+		t.Fatalf("error %v diagnostics %+v", err, d)
+	}
+	if d[0].State != "exited" {
+		t.Fatalf("a one-off has no task state, so it shows its container state: %q", d[0].State)
+	}
+	if err.Error() != "pre_hook failed with exit code 3" {
+		t.Fatalf("error text changed: %v", err)
+	}
+}
+
+func TestFailedMigrationApplyStoresOutputAndNamesTheMigration(t *testing.T) {
+	f := newDiagFake()
+	f.exits = []int{0, 2, 0}
+	f.versions = []string{"v41\n", "v41\n"}
+	c, s := diagController(t, f)
+	op := deployWeb(t, c, s, "first", "a", webManifest("2s", func(a *manifest.App) {
+		a.Migrations = &manifest.Migrations{Version: []string{"version"}, Apply: []string{"apply"}}
+	}))
+	if op.State != "failed" || op.Err != "pre-deploy command failed" || op.Reason != "migration apply exited with code 2" {
+		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
+	}
+	if op.SchemaBefore != "v41" {
+		t.Fatalf("schema states changed: %q %q", op.SchemaBefore, op.SchemaAfter)
+	}
+	got := storedDiagnostics(t, s, op.ID)
+	if len(got) != 1 || got[0].Name != "migration_apply" || got[0].ExitCode == nil || *got[0].ExitCode != 2 {
+		t.Fatalf("diagnostics %+v", got)
+	}
+}
+
+func TestTimedOutOneOffKeepsItsOutputAndIsNotStopped(t *testing.T) {
+	f := newDiagFake()
+	f.waitErr = context.DeadlineExceeded
+	c, s := diagController(t, f)
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest("1s", nil)}}
+	name := fmt.Sprintf("berthy-%s-10001", op.ID)
+	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "running"}}
+	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stdout still migrating\n"}
+	_, err = c.runOneOff(context.Background(), op.ID, p, 10001, "migration_apply", []string{"apply"}, false)
+	d := failureDiagnostics(err)
+	if !errors.Is(err, ErrOneOffUncertain) || len(d) != 1 || !strings.HasPrefix(d[0].Error, errTimedOut) || !strings.Contains(d[0].Logs, "still migrating") || d[0].ExitCode != nil {
+		t.Fatalf("error %v diagnostics %+v", err, d)
+	}
+	if failureReason(d, "x") != "migration apply timed out" {
+		t.Fatalf("reason %q", failureReason(d, "x"))
+	}
+	if f.callIndex("StopContainer:"+name) >= 0 {
+		t.Fatal("capture stopped the container; recovery owns that")
+	}
+}
+
+func TestRecoveryCapturesEvidenceBeforeCompensating(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 2) }
+	f.diagnose = exitedContainers(2, "starting")
+	f.tails = map[string]string{"c1": "boom one\n", "c2": "boom two\n"}
+	c, s := diagController(t, f)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(fmt.Sprintf(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"example/web","Labels":{"berthy.operation":%q}}}}`, op.ID))
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: op.ID, Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 0, "observed", json.RawMessage(fmt.Sprintf(`{"id":"id","spec":%s}`, spec))); err != nil {
+		t.Fatal(err)
+	}
+	f.positiveEngine.spec = spec
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil || got.State != "interrupted" || got.Reason != "role web: task exited with code 1 (2 failed tasks)" {
+		t.Fatalf("operation %s reason %q: %v", got.State, got.Reason, err)
+	}
+	if d := storedDiagnostics(t, s, op.ID); len(d) != 2 {
+		t.Fatalf("diagnostics %+v", d)
+	}
+	if f.lastIndexWithPrefix("LogTail:") > f.callIndex("DeleteService") {
+		t.Fatalf("recovery read evidence after deleting: %v", f.calls)
+	}
+}
+
+func TestRecoveryKeepsDiagnosticsAnOperationAlreadyHas(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 2) }
+	f.diagnose = exitedContainers(2, "starting")
+	f.tails = map[string]string{"c1": "x\n", "c2": "y\n"}
+	c, s := diagController(t, f)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(fmt.Sprintf(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"example/web","Labels":{"berthy.operation":%q}}}}`, op.ID))
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: op.ID, Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 0, "observed", json.RawMessage(fmt.Sprintf(`{"id":"id","spec":%s}`, spec))); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PutDiagnostics(ctx, op.ID, []json.RawMessage{json.RawMessage(`{"kind":"oneoff","name":"pre_hook","captured":"2026-11-16T10:00:00Z"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	f.positiveEngine.spec = spec
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d := storedDiagnostics(t, s, op.ID); len(d) != 1 || d[0].Kind != "oneoff" {
+		t.Fatalf("diagnostics %+v", d)
+	}
+}
+
+func TestPruneIncludesFinishedMigrationAndTimedOutOneOffs(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "p", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, step := range []struct{ role, phase, receipt string }{
+		{"schema_before", "finished", `{"id":"c-before","exit":0,"version":"v1"}`},
+		{"migration_apply", "finished", `{"id":"c-apply","exit":2}`},
+		{"pre_hook", "started", `{"id":"c-slow"}`},
+	} {
+		if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 10000 + i, Kind: "oneoff", Role: step.role, Name: "task", Desired: json.RawMessage(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.MarkStep(ctx, op.ID, 10000+i, step.phase, json.RawMessage(step.receipt)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	f := &perContainerPrune{op: op.ID, running: map[string]bool{"c-slow": true}, roles: map[string]string{"c-before": "schema_before", "c-apply": "migration_apply", "c-slow": "pre_hook"}}
+	c := Controller{Store: s, Engine: f, Environment: "stage"}
+	hooks, err := c.prunableHooks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, h := range hooks {
+		ids = append(ids, h.ID)
+	}
+	if strings.Join(ids, ",") != "c-before,c-apply" {
+		t.Fatalf("prunable %v: finished migration containers qualify, a running one does not", ids)
+	}
+}
+
+type perContainerPrune struct {
+	Engine
+	op      string
+	running map[string]bool
+	roles   map[string]string
+}
+
+func (p *perContainerPrune) InspectContainer(_ context.Context, id string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{ID: id, Running: p.running[id], Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": p.op, "berthy.oneoff": p.roles[id]}}, nil
+}
+func (p *perContainerPrune) RemoveContainer(context.Context, string) error { return nil }

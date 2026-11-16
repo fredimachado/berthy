@@ -87,6 +87,10 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "events":
 			required = "read"
 			method = "GET"
+		case len(rest) == 3 && rest[0] == "operations" && rest[2] == "diagnostics":
+			// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
+			required = "deploy"
+			method = "GET"
 		case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait"):
 			required = "read"
 			method = "GET"
@@ -260,6 +264,26 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 				}
 			}
 			writeError(w, 404, "not_found", "output unavailable")
+		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "diagnostics":
+			op, err := d.Store.Operation(ctx, rest[1])
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			items, err := d.Store.Diagnostics(ctx, op.ID)
+			if err != nil {
+				writeError(w, 503, "unavailable", "diagnostics unavailable")
+				return
+			}
+			if len(items) == 0 {
+				writeError(w, 404, "not_found", "no diagnostics for this operation")
+				return
+			}
+			json.NewEncoder(w).Encode(struct {
+				OperationID string            `json:"operation_id"`
+				Reason      string            `json:"reason"`
+				Diagnostics []json.RawMessage `json:"diagnostics"`
+			}{op.ID, safeReason(op.Reason), items})
 		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
 			var req struct {
 				Reason string `json:"reason"`
@@ -317,6 +341,9 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 			}
 			for _, op := range failures {
 				row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
+				if reason := safeReason(op.Reason); reason != "" {
+					row["reason"] = reason
+				}
 				addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
 				out = append(out, row)
 			}
@@ -508,16 +535,31 @@ func publicOperation(o state.Operation) any {
 		Commit       string    `json:"commit"`
 		Started      time.Time `json:"started"`
 		Error        string    `json:"error,omitempty"`
+		Reason       string    `json:"reason,omitempty"`
 		SchemaBefore string    `json:"schema_before,omitempty"`
 		SchemaAfter  string    `json:"schema_after,omitempty"`
-	}{o.ID, o.State, o.Kind, o.App, o.Commit, o.Started, safeOperationError(o), o.SchemaBefore, o.SchemaAfter}
+	}{o.ID, o.State, o.Kind, o.App, o.Commit, o.Started, safeOperationError(o), safeReason(o.Reason), o.SchemaBefore, o.SchemaAfter}
+}
+
+// safeReason returns a failure reason when it is the public kind the deploy package writes: at most 300 bytes
+// of printable ASCII. Anything else is dropped rather than shown.
+func safeReason(reason string) string {
+	if len(reason) > 300 {
+		return ""
+	}
+	for _, r := range reason {
+		if r < 0x20 || r > 0x7e {
+			return ""
+		}
+	}
+	return reason
 }
 
 func safeOperationError(o state.Operation) string {
 	switch o.Err {
 	case "":
 		return ""
-	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable", "recovery resolved by admin", "bound service unavailable", "invalid bound service", "bound service ownership changed", "prior service health cannot be verified", "prior image identity unavailable", "prior image is not pinned", "prior image credential unavailable", "removing managed roles unavailable", "role preflight failed", "image inspection failed", "image provenance recording failed", "adoption preflight failed", "migration source journal failed", "Cloudflare API token secret unavailable", "Cloudflare token check failed", "Cloudflare unavailable", "tunnel is not remotely managed", "ingress hostname conflict", "ingress publish failed", "managed ingress is not configured", "tunnel token unavailable", "tunnel token removal failed", "connector removal failed", "ingress state recording failed", "managed ingress is not applied; run ingress apply", "managed ingress changed; run ingress apply":
+	case "pre-deploy command failed", "one-off outcome uncertain", "post-deploy command failed", "post-deploy command outcome uncertain", "rollout recovery required", "rollout failed and was cleaned up", "rollback release unavailable", "schema revert unavailable", "schema revert failed", "schema revert did not reach target", "schema revert outcome uncertain", "operation interrupted and cleaned up", "post-deploy completion was interrupted", "unsupported recovery step", "one-off recovery required", "verified release requires inspection", "service recovery required", "service update requires recovery", "service health requires recovery", "service drain requires recovery", "service journal requires recovery", "exec outcome uncertain", "exec returned nonzero", "deployment preflight failed", "image pull failed", "unsafe or incompatible service", "service name is unavailable", "recovery resolved by admin", "Docker unavailable", "image inventory unavailable", "container inventory unavailable", "service inventory unavailable", "container image unknown", "service image unknown", "release history unavailable", "hook inventory unavailable", "bound service unavailable", "invalid bound service", "bound service ownership changed", "prior service health cannot be verified", "prior image identity unavailable", "prior image is not pinned", "prior image credential unavailable", "removing managed roles unavailable", "role preflight failed", "image inspection failed", "image provenance recording failed", "adoption preflight failed", "migration source journal failed", "Cloudflare API token secret unavailable", "Cloudflare token check failed", "Cloudflare unavailable", "tunnel is not remotely managed", "ingress hostname conflict", "ingress publish failed", "managed ingress is not configured", "tunnel token unavailable", "tunnel token removal failed", "connector removal failed", "ingress state recording failed", "managed ingress is not applied; run ingress apply", "managed ingress changed; run ingress apply":
 		return o.Err
 	default:
 		if deploy.PublicMessage(o.Err) {

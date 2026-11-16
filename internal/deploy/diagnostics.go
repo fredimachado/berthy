@@ -1,0 +1,463 @@
+package deploy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"berthy/internal/engine"
+	"berthy/internal/state"
+)
+
+const (
+	diagnosticTasksPerRole = 5
+	diagnosticCallTimeout  = 5 * time.Second
+	diagnosticCaptureLimit = time.Minute
+	diagnosticLogLines     = 200
+	diagnosticLogBytes     = 64 << 10
+	diagnosticTotalBytes   = 1 << 20
+	maxReasonBytes         = 300
+	maxSwarmErrorBytes     = 100
+
+	// errTimedOut is the Error of a one-off that did not finish within its time limit.
+	errTimedOut = "timed out"
+	// errLogsUnavailable is added to a diagnostic when the container's output could not be read.
+	errLogsUnavailable = "logs unavailable"
+)
+
+// Diagnostic is evidence about one failed piece of an operation: a task of the new version or a one-off command.
+type Diagnostic struct {
+	Kind      string               `json:"kind"` // "task" or "oneoff"
+	Name      string               `json:"name"` // service name of a task, or the hook role of a one-off ("pre_hook", "migration_apply", ...)
+	Role      string               `json:"role,omitempty"`
+	Index     int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command in the manifest
+	TaskID    string               `json:"task_id,omitempty"`
+	Container string               `json:"container,omitempty"`
+	State     string               `json:"state,omitempty"` // Swarm task state or container state
+	Error     string               `json:"error,omitempty"` // Swarm task error or container error
+	ExitCode  *int                 `json:"exit_code,omitempty"`
+	OOMKilled bool                 `json:"oom_killed,omitempty"`
+	Health    string               `json:"health,omitempty"`
+	HealthLog []engine.HealthProbe `json:"health_log,omitempty"`
+	Logs      string               `json:"logs,omitempty"` // last lines, secrets redacted
+	Truncated bool                 `json:"truncated,omitempty"`
+	Captured  time.Time            `json:"captured"`
+}
+
+// diagnosticEngine is what capture needs from Docker beyond the rollout. An engine without it records the Swarm view only.
+type diagnosticEngine interface {
+	DiagnoseContainer(context.Context, string) (engine.ContainerDiagnosis, error)
+	LogTail(context.Context, string, int, int) (string, bool, error)
+}
+
+// oneOffFailure carries the evidence of a failed one-off up to the operation that ran it.
+type oneOffFailure struct {
+	err        error
+	diagnostic Diagnostic
+}
+
+func (f *oneOffFailure) Error() string { return f.err.Error() }
+func (f *oneOffFailure) Unwrap() error { return f.err }
+
+// failureDiagnostics returns the evidence a failed hook or migration carried, or nil.
+func failureDiagnostics(err error) []Diagnostic {
+	var f *oneOffFailure
+	if errors.As(err, &f) {
+		return []Diagnostic{f.diagnostic}
+	}
+	return nil
+}
+
+// captureContext outlives the context of the operation that failed, whose deadline has usually passed by now.
+func captureContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), diagnosticCaptureLimit)
+}
+
+// redactor returns a function that replaces every managed secret value in its argument. It reports false when the secrets
+// cannot be read: nothing that might hold one is stored then.
+func (c *Controller) redactor(ctx context.Context) (func(string) string, bool) {
+	if c.Store == nil {
+		return nil, false
+	}
+	infos, err := c.Store.Secrets(ctx)
+	if err != nil {
+		return nil, false
+	}
+	var secrets [][]byte
+	for _, info := range infos {
+		_, value, e := c.Store.Secret(ctx, info.Name)
+		if e != nil {
+			return nil, false
+		}
+		secrets = append(secrets, value)
+	}
+	return func(s string) string { return redactOutput([]byte(s), secrets) }, true
+}
+
+func addNote(d *Diagnostic, note string) {
+	if d.Error == "" {
+		d.Error = note
+	} else if !strings.Contains(d.Error, note) {
+		d.Error += "; " + note
+	}
+}
+
+// inspectInto adds what Docker knows about the container to d and reports whether it could be read.
+func inspectInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact func(string) string) {
+	callCtx, cancel := context.WithTimeout(ctx, diagnosticCallTimeout)
+	diag, err := de.DiagnoseContainer(callCtx, d.Container)
+	cancel()
+	if err != nil {
+		addNote(d, "container unavailable")
+		return
+	}
+	if diag.OOMKilled {
+		d.OOMKilled = true
+	}
+	if diag.Error != "" {
+		addNote(d, redact(diag.Error))
+	}
+	if d.State == "" {
+		d.State = diag.State
+	}
+	switch diag.State {
+	case "exited", "dead":
+		code := diag.ExitCode
+		d.ExitCode = &code
+	}
+	d.Health = diag.Health
+	for _, probe := range diag.HealthLog {
+		probe.Output = redact(probe.Output)
+		d.HealthLog = append(d.HealthLog, probe)
+	}
+}
+
+// logsInto adds the container's last lines to d, redacted.
+func logsInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact func(string) string, redactable bool) {
+	if !redactable {
+		addNote(d, errLogsUnavailable)
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, diagnosticCallTimeout)
+	text, truncated, err := de.LogTail(callCtx, d.Container, diagnosticLogLines, diagnosticLogBytes)
+	cancel()
+	if err != nil {
+		addNote(d, errLogsUnavailable)
+		return
+	}
+	d.Logs = redact(text)
+	d.Truncated = truncated
+}
+
+// captureRollout collects evidence for every task of the operation's generation of every role in the rollout, before
+// compensation removes anything: newest tasks first, at most five per role, including failed, shut down and rejected ones.
+// A task that runs healthy needs none. Each Docker call has a short timeout, and a piece that cannot be read is noted in
+// that diagnostic's Error instead of failing the capture. The total is kept within 1 MiB by dropping the logs of the oldest
+// tasks first.
+func (c *Controller) captureRollout(ctx context.Context, opID string, work []roleWork) []Diagnostic {
+	redact, redactable := c.redactor(ctx)
+	if !redactable {
+		redact = func(string) string { return "" }
+	}
+	de, _ := c.Engine.(diagnosticEngine)
+	var out []Diagnostic
+	for _, w := range work {
+		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, de, redact, redactable)...)
+	}
+	return capDiagnostics(out)
+}
+
+func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceID string, de diagnosticEngine, redact func(string) string, redactable bool) []Diagnostic {
+	unavailable := func(note string) []Diagnostic {
+		return []Diagnostic{{Kind: "task", Name: name, Role: role, Error: note, Captured: time.Now().UTC()}}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, diagnosticCallTimeout)
+	defer cancel()
+	if serviceID == "" {
+		live, err := c.Engine.InspectService(callCtx, name)
+		if err != nil {
+			var status *engine.StatusError
+			if errors.As(err, &status) && status.Code == 404 {
+				return nil // the role was never created
+			}
+			return unavailable("service unavailable")
+		}
+		serviceID = live.ID
+	}
+	tasks, err := c.Engine.ServiceTasks(callCtx, serviceID)
+	if err != nil {
+		return unavailable("tasks unavailable")
+	}
+	var mine []engine.ServiceTask
+	for _, t := range tasks {
+		if t.ServiceID == serviceID && t.Labels["berthy.operation"] == opID {
+			mine = append(mine, t)
+		}
+	}
+	sort.SliceStable(mine, func(i, j int) bool {
+		if !mine[i].Timestamp.Equal(mine[j].Timestamp) {
+			return mine[i].Timestamp.After(mine[j].Timestamp)
+		}
+		return mine[i].Version > mine[j].Version
+	})
+	var out []Diagnostic
+	for _, t := range mine {
+		if len(out) == diagnosticTasksPerRole {
+			break
+		}
+		d := Diagnostic{Kind: "task", Name: name, Role: role, TaskID: t.ID, Container: t.ContainerID, State: t.State, Captured: time.Now().UTC()}
+		if t.Err != "" {
+			d.Error = redact(t.Err)
+		} else if t.State == "rejected" || t.State == "failed" {
+			d.Error = redact(t.Message)
+		}
+		if t.ExitCode != nil {
+			code := *t.ExitCode
+			d.ExitCode = &code
+		}
+		if t.ContainerID != "" && de != nil {
+			inspectInto(ctx, de, &d, redact)
+			if t.State == "running" && d.Health == "healthy" {
+				continue
+			}
+			logsInto(ctx, de, &d, redact, redactable)
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// captureOneOff collects evidence for a failed or timed-out one-off container: its state, exit code, error and last lines
+// of output.
+func (c *Controller) captureOneOff(ctx context.Context, containerID, role string) Diagnostic {
+	d := Diagnostic{Kind: "oneoff", Name: role, Container: containerID, Captured: time.Now().UTC()}
+	de, ok := c.Engine.(diagnosticEngine)
+	if !ok || containerID == "" {
+		return d
+	}
+	redact, redactable := c.redactor(ctx)
+	if !redactable {
+		redact = func(string) string { return "" }
+	}
+	inspectInto(ctx, de, &d, redact)
+	logsInto(ctx, de, &d, redact, redactable)
+	return d
+}
+
+// capDiagnostics keeps the stored size of the diagnostics within diagnosticTotalBytes. It drops the logs of the oldest
+// diagnostics, which come last, first, and marks each one Truncated.
+func capDiagnostics(d []Diagnostic) []Diagnostic {
+	sizes := make([]int, len(d))
+	total := 0
+	for i := range d {
+		b, _ := json.Marshal(d[i])
+		sizes[i] = len(b)
+		total += len(b)
+	}
+	for i := len(d) - 1; i >= 0 && total > diagnosticTotalBytes; i-- {
+		if d[i].Logs == "" {
+			continue
+		}
+		total -= len(d[i].Logs)
+		d[i].Logs = ""
+		d[i].Truncated = true
+	}
+	return d
+}
+
+// storeDiagnostics keeps the evidence with the operation and returns the public reason it adds up to. Recording the
+// evidence is best effort: a failure to store it must not hide the failure it explains.
+func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diagnostic, fallback string) string {
+	if len(d) > 0 && c.Store != nil {
+		items := make([]json.RawMessage, 0, len(d))
+		for _, item := range d {
+			if b, err := json.Marshal(item); err == nil {
+				items = append(items, b)
+			}
+		}
+		_ = c.Store.PutDiagnostics(ctx, opID, items)
+	}
+	return failureReason(d, fallback)
+}
+
+// recordRolloutFailure captures and stores the evidence of a failed rollout and returns the public reason. It runs before
+// anything is cleaned up. fallback is the reason when no task left evidence.
+func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work []roleWork, fallback string) string {
+	capCtx, cancel := captureContext(ctx)
+	defer cancel()
+	return c.storeDiagnostics(capCtx, opID, c.captureRollout(capCtx, opID, work), fallback)
+}
+
+// captureInterrupted keeps the evidence of an interrupted rollout before recovery compensates it, unless the operation
+// already has some. It returns the public reason the evidence adds up to, or "".
+func (c *Controller) captureInterrupted(ctx context.Context, opID string, intents []state.Intent) string {
+	if existing, err := c.Store.Diagnostics(ctx, opID); err != nil || len(existing) > 0 {
+		return ""
+	}
+	var work []roleWork
+	for _, i := range intents {
+		if i.Kind == "create" || i.Kind == "update" {
+			work = append(work, roleWork{intent: i})
+		}
+	}
+	if len(work) == 0 {
+		return ""
+	}
+	return c.recordRolloutFailure(ctx, opID, work, "")
+}
+
+// recordOneOffFailure stores the evidence a failed hook or migration carried and returns the public reason, or "" when the
+// failure carried none.
+func (c *Controller) recordOneOffFailure(ctx context.Context, opID string, err error) string {
+	capCtx, cancel := captureContext(ctx)
+	defer cancel()
+	return c.storeDiagnostics(capCtx, opID, failureDiagnostics(err), "")
+}
+
+// rolloutFallback is the public reason when no task left evidence, chosen from the rollout's own error. The texts are fixed.
+func rolloutFallback(cause error) string {
+	if cause != nil {
+		switch cause.Error() {
+		case "service health deadline exceeded":
+			return "deploy deadline exceeded before the task was healthy"
+		case "update completion deadline exceeded":
+			return "deploy deadline exceeded before the service update completed"
+		case "native update did not complete":
+			return "service update did not complete"
+		}
+	}
+	return "rollout failed"
+}
+
+// failureReason summarizes diagnostics into one public line, "role <r>: <what happened>" per role joined by "; ", and
+// "<command> exited with code N" for a one-off. It never includes log or health-check text: those can hold secrets or
+// personal data and live only in the sealed diagnostics. fallback is the reason when the diagnostics say nothing.
+func failureReason(d []Diagnostic, fallback string) string {
+	var parts []string
+	seen := map[string]bool{}
+	for _, item := range d {
+		switch item.Kind {
+		case "task":
+			if seen[item.Role] {
+				continue
+			}
+			seen[item.Role] = true
+			var tasks []Diagnostic
+			for _, t := range d {
+				if t.Kind == "task" && t.Role == item.Role {
+					tasks = append(tasks, t)
+				}
+			}
+			if cause := taskCause(tasks); cause != "" {
+				parts = append(parts, "role "+printable(item.Role, 64)+": "+cause)
+			}
+		case "oneoff":
+			parts = append(parts, oneOffCause(item))
+		}
+	}
+	reason := strings.Join(parts, "; ")
+	if reason == "" {
+		reason = fallback
+	}
+	return printable(reason, maxReasonBytes)
+}
+
+// taskCause says what went wrong with one role's tasks, newest first.
+func taskCause(tasks []Diagnostic) string {
+	failed := 0
+	for _, t := range tasks {
+		if t.State == "failed" || t.State == "rejected" {
+			failed++
+		}
+	}
+	cause := ""
+	if anyTask(tasks, func(t Diagnostic) bool { return t.OOMKilled }) != nil {
+		cause = "task was killed: out of memory"
+	} else if t := anyTask(tasks, neverHealthy); t != nil {
+		cause = "container never became healthy"
+		if n := len(t.HealthLog); n > 0 {
+			cause += fmt.Sprintf(" (last check: exit %d)", t.HealthLog[n-1].ExitCode)
+		}
+	} else if t := anyTask(tasks, exitedOnItsOwn); t != nil {
+		cause = fmt.Sprintf("task exited with code %d", *t.ExitCode)
+	} else if t := anyTask(tasks, func(t Diagnostic) bool { return t.Error != "" && t.State != "running" }); t != nil {
+		cause = "task failed: " + printable(t.Error, maxSwarmErrorBytes)
+	} else if len(tasks) > 0 {
+		cause = "deploy deadline exceeded before the task was healthy"
+	}
+	if cause != "" && failed > 1 {
+		cause += fmt.Sprintf(" (%d failed tasks)", failed)
+	}
+	return cause
+}
+
+func anyTask(tasks []Diagnostic, match func(Diagnostic) bool) *Diagnostic {
+	for i := range tasks {
+		if match(tasks[i]) {
+			return &tasks[i]
+		}
+	}
+	return nil
+}
+
+// neverHealthy: the health checks ran and the last one failed, or Docker marked a container unhealthy that is still there.
+// A container that crashed before any check ran is not one: Docker calls it unhealthy too, but its exit code says more.
+func neverHealthy(t Diagnostic) bool {
+	if n := len(t.HealthLog); n > 0 {
+		return t.HealthLog[n-1].ExitCode != 0
+	}
+	return t.Health == "unhealthy" && t.ExitCode == nil
+}
+
+// exitedOnItsOwn: the task's container ended and reported an exit code.
+func exitedOnItsOwn(t Diagnostic) bool {
+	return t.ExitCode != nil && t.State != "running" && t.State != "starting"
+}
+
+func oneOffCause(d Diagnostic) string {
+	var what string
+	switch d.Name {
+	case "pre_hook":
+		what = fmt.Sprintf("pre-deploy command %d", max(d.Index, 1))
+	case "post_hook":
+		what = fmt.Sprintf("post-deploy command %d", max(d.Index, 1))
+	case "migration_apply":
+		what = "migration apply"
+	case "schema_before", "schema_after", "revert_before", "revert_after":
+		what = "schema version command"
+	case "migration_revert":
+		what = "migration revert"
+	default:
+		what = "one-off command " + printable(d.Name, 64)
+	}
+	switch {
+	case d.OOMKilled:
+		return what + " was killed: out of memory"
+	case strings.HasPrefix(d.Error, errTimedOut):
+		return what + " timed out"
+	case d.ExitCode != nil:
+		return fmt.Sprintf("%s exited with code %d", what, *d.ExitCode)
+	}
+	return what + " outcome uncertain"
+}
+
+// printable keeps the printable ASCII of s, replacing anything else with '?', and cuts it to limit bytes.
+func printable(s string, limit int) string {
+	var b bytes.Buffer
+	for _, r := range s {
+		if b.Len() >= limit {
+			break
+		}
+		if r >= 0x20 && r < 0x7f {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}

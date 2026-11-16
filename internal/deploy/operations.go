@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"berthy/internal/engine"
@@ -214,7 +215,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 		}
 		candidates, err := c.prunePlan(ctx)
 		if err != nil {
-			return state.Outcome{State: "failed", Err: "image inventory unavailable"}
+			return state.Outcome{State: "failed", Err: pruneFailure(err)}
 		}
 		hooks, err := c.prunableHooks(ctx)
 		if err != nil {
@@ -369,6 +370,29 @@ func pruneCandidates(owned []state.AcquiredImage, refs, ids map[string]bool) []s
 	}
 	return out
 }
+
+// errPruneHistory is the failure to read what the state holds about releases and acquired images.
+var errPruneHistory = errors.New("release history unavailable")
+
+// inventoryFailure names why an inventory could not be read: Docker itself, or the one inventory.
+func inventoryFailure(err error, what string) error {
+	if strings.Contains(err.Error(), "Docker unavailable") {
+		return errors.New("Docker unavailable")
+	}
+	return errors.New(what)
+}
+
+// pruneFailure is the public reason a prune could not plan: one of the fixed inventory texts, never a raw error.
+func pruneFailure(err error) string {
+	switch err.Error() {
+	case "Docker unavailable", "image inventory unavailable", "container inventory unavailable", "service inventory unavailable", "container image unknown", "service image unknown", "release history unavailable":
+		return err.Error()
+	}
+	if strings.HasPrefix(err.Error(), "applied ") {
+		return "release history unavailable"
+	}
+	return "image inventory unavailable"
+}
 func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, error) {
 	e, ok := c.Engine.(inventoryEngine)
 	if !ok || c.Store == nil {
@@ -376,23 +400,23 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 	}
 	owned, err := c.Store.AcquiredImages(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errPruneHistory
 	}
 	images, err := e.InventoryImages(ctx)
 	if err != nil {
-		return nil, errors.New("image inventory unavailable")
+		return nil, inventoryFailure(err, "image inventory unavailable")
 	}
 	containers, err := e.InventoryContainers(ctx)
 	if err != nil {
-		return nil, errors.New("container inventory unavailable")
+		return nil, inventoryFailure(err, "container inventory unavailable")
 	}
 	services, err := e.InventoryServices(ctx)
 	if err != nil {
-		return nil, errors.New("service inventory unavailable")
+		return nil, inventoryFailure(err, "service inventory unavailable")
 	}
 	history, err := c.Store.History(ctx, "")
 	if err != nil {
-		return nil, err
+		return nil, errPruneHistory
 	}
 	refs := map[string]bool{}
 	ids := map[string]bool{}
@@ -422,10 +446,10 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 			}
 			ref := v.TaskTemplate.ContainerSpec.Image
 			refs[ref] = true
+			// A reference the engine no longer resolves, such as the previous spec of a service whose old image was
+			// removed, protects nothing: there is no local image for it. Every reference that does resolve stays protected.
 			if id := aliases[ref]; id != "" {
 				ids[id] = true
-			} else {
-				return nil, errors.New("service image identity unknown")
 			}
 		}
 	}

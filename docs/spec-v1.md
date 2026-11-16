@@ -454,6 +454,15 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 
 If step 4 fails, the agent rolls back to the previous digest, records the deploy as failed, and sends an alert.
 
+### When a deploy fails
+
+A new version can fail to start for reasons only its own output explains: a missing setting, a migration that did not apply, a health check that never passed. The old version keeps serving, and the evidence is kept before anything is cleaned up, so the cause can be found afterwards even though the failed task has been replaced and a service created by the deploy has been deleted.
+
+- **What is kept.** Before a failed rollout is rolled back or removed, the agent reads, for every role in the deploy, the newest tasks of the new version (at most five per role), including failed, rejected and shut-down ones. Per task it keeps the Swarm state and error, the exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines (at most 64 KiB) of its output with standard output and error interleaved. A failed pre-deploy or post-deploy command, a migration step, or one that ran past its time limit leaves the same for its container: exit code, error and the last lines of output. A piece that cannot be read is marked in that entry, and the rest is kept. Together the evidence of one deploy is limited to 1 MiB; the oldest logs are dropped first and marked truncated.
+- **A public reason.** The operation also records one line saying what happened, such as `role web: task exited with code 1 (3 failed tasks)`, `role web: container never became healthy (last check: exit 1)`, `pre-deploy command 1 exited with code 3` or `migration apply exited with code 2`. It carries no output of the app, so it is safe in history and in the event stream. `berthy history` and the operation record show it; the deploy, rollback and ingress apply commands print it when they fail.
+- **Redaction and storage.** Every managed secret value is replaced by `[redacted]` in the output and health-check results before they are stored. The evidence is encrypted in the state file like the other private records. The evidence of the newest 50 operations that have any is kept; older evidence is deleted. Containers of finished migration steps and of commands that timed out stay until `berthy prune` removes them, which is safe because the evidence already holds their output.
+- **Reading it.** `berthy diagnostics <operation id> -e <env>` prints it for a person, and `--json` prints it for an agent; the id is in the output of the failed command and in `berthy history`. The API serves it at `GET /v1/environments/<env>/operations/<id>/diagnostics`. It needs the `deploy` scope, not `read`: application output can hold personal data that a read-only token should not see. An operation without evidence answers 404.
+
 ### Deploy lock
 
 - One lock per environment, taken automatically for the length of a deploy.
@@ -584,7 +593,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `logs <app>` | Tail or follow logs; `--since`, `--grep`, `--role` | No |
 | `stats` | Server and container metrics; `--watch` for live | No |
 | `df` | Disk space and Docker disk usage | No |
-| `history <app>` | Deploy records | No |
+| `history <app>` | Deploy records, with the reason of each failed deploy | No |
+| `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app> --healthy` | Block until an app is healthy or a timeout passes | No |
 | `doctor` | Checks the agent and its version, Docker, Swarm, the shared network, disk, backups, lock and peers | No |
 | `audit` | Who changed what and when | No |
@@ -868,7 +878,7 @@ Each token belongs to one environment and one scope.
 | Scope | Allows |
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `backup list`, `ingress status`, `checks`, `jobs` |
-| `deploy` | Everything in `read`, plus `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
+| `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run` and `alerts test` |
 | `admin` | Everything in `deploy`, plus secrets, `exec`, `restore`, `approve`, `recovery resolve`, recreating stateful apps, taking over existing routes and DNS records, and token management |
 
 - CI holds a `deploy` token for each environment it deploys to.

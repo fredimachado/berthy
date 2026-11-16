@@ -201,6 +201,8 @@ type pruneEngine struct {
 	services       []engine.InventoryService
 	removed        []string
 	inventoryError bool
+	containersErr  error
+	servicesErr    error
 }
 
 func (f *pruneEngine) InventoryImages(context.Context) ([]engine.InventoryImage, error) {
@@ -210,9 +212,15 @@ func (f *pruneEngine) InventoryImages(context.Context) ([]engine.InventoryImage,
 	return f.images, nil
 }
 func (f *pruneEngine) InventoryContainers(context.Context) ([]engine.InventoryContainer, error) {
+	if f.containersErr != nil {
+		return nil, f.containersErr
+	}
 	return f.containers, nil
 }
 func (f *pruneEngine) InventoryServices(context.Context) ([]engine.InventoryService, error) {
+	if f.servicesErr != nil {
+		return nil, f.servicesErr
+	}
 	return f.services, nil
 }
 func (f *pruneEngine) InspectImage(_ context.Context, ref string) (engine.Image, error) {
@@ -395,5 +403,72 @@ func TestWaitWithoutRoleChecksAllBindings(t *testing.T) {
 	defer cancel()
 	if err = c.Wait(deadline, "app", ""); err == nil || strings.Contains(err.Error(), "role required") {
 		t.Fatalf("did not inspect each role: %v", err)
+	}
+}
+
+func pruneFixture(t *testing.T) (*state.Store, state.Operation) {
+	t.Helper()
+	s := openStore(t)
+	ctx := context.Background()
+	deploy, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []state.AcquiredImage{{Ref: "old", ID: "id-old"}, {Ref: "prev", ID: "id-prev"}, {Ref: "current", ID: "id-current"}} {
+		if err = s.RecordImageAcquired(ctx, x.Ref, x.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.Finish(ctx, deploy.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "p", ActorID: "a", Kind: "prune", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, op
+}
+
+// A service whose previous spec names an image that is gone protects nothing it cannot resolve, and aborts nothing: every
+// image a container or a service spec still resolves to stays.
+func TestPruneProceedsPastAnUnresolvableServiceImage(t *testing.T) {
+	s, op := pruneFixture(t)
+	spec := func(image string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"TaskTemplate":{"ContainerSpec":{"Image":%q}}}`, image))
+	}
+	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{
+		{ID: "id-old", RepoDigests: []string{"old"}}, {ID: "id-prev", RepoDigests: []string{"prev"}}, {ID: "id-current", RepoDigests: []string{"current"}},
+	}, services: []engine.InventoryService{
+		{ID: "unmanaged", Spec: spec("current"), PreviousSpec: spec("gone-image@sha256:aaaa")},
+		{ID: "gone-current", Spec: spec("also-gone"), PreviousSpec: spec("prev")},
+	}}
+	c := Controller{Store: s, Engine: f, Environment: "stage"}
+	out := c.runOperation(context.Background(), op, Actor{Admin: true}, Request{Kind: "prune"})
+	if out.State != "succeeded" || len(f.removed) != 1 || f.removed[0] != "old" {
+		t.Fatalf("outcome %+v removed %v: only the unreferenced image may go", out, f.removed)
+	}
+}
+
+func TestPruneFailureCategoriesAreDistinct(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*pruneEngine)
+		want string
+	}{
+		{"images", func(f *pruneEngine) { f.inventoryError = true }, "image inventory unavailable"},
+		{"containers", func(f *pruneEngine) { f.containersErr = errors.New("boom") }, "container inventory unavailable"},
+		{"services", func(f *pruneEngine) { f.servicesErr = errors.New("boom") }, "service inventory unavailable"},
+		{"docker down", func(f *pruneEngine) { f.containersErr = errors.New("Docker unavailable: dial unix") }, "Docker unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, op := pruneFixture(t)
+			f := &pruneEngine{runtimeEngine: &runtimeEngine{}}
+			tc.set(f)
+			c := Controller{Store: s, Engine: f, Environment: "stage"}
+			out := c.runOperation(context.Background(), op, Actor{Admin: true}, Request{Kind: "prune"})
+			if out.State != "failed" || out.Err != tc.want || len(f.removed) != 0 {
+				t.Fatalf("outcome %+v removed %v, want %q", out, f.removed, tc.want)
+			}
+		})
 	}
 }

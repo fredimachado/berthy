@@ -264,6 +264,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		} else {
 			outcome.Err = "pre-deploy command failed"
 		}
+		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 		return
 	}
 	deadline := time.Now().Add(budget)
@@ -280,6 +281,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas)
 		}
 		if e != nil {
+			// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e))
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 			recoveryCancel()
@@ -311,16 +314,19 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final verification unavailable"
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable")
 			return
 		}
 		if e = healthyOnce(rollCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final health verification failed"
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed")
 			return
 		}
 		if e = waitDrain(rollCtx, c.Engine, live.ID, op.ID); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final drain verification failed"
+			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed")
 			return
 		}
 	}
@@ -363,9 +369,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.State = "recovery_required"
 		outcome.Release = nil
 		outcome.Err = "post-deploy command outcome uncertain"
+		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 	case err != nil:
 		outcome.State = "failed"
 		outcome.Err = "post-deploy command failed"
+		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 	case publishErr != nil:
 		// The new version runs and its release is recorded. Only its routes are missing.
 		outcome.State = "failed"

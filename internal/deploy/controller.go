@@ -280,12 +280,13 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return err
 	}
 	before, after := recordedSchema(op, intents)
+	reason := ""
 	// A retry of an operation already marked recovery_required must not append another event and audit row.
 	required := func(msg string) error {
 		if op.State == "recovery_required" {
 			return ErrRecoveryPending
 		}
-		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after})
+		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after, Reason: reason})
 	}
 	hasHooks := false
 	composeRun := false
@@ -326,10 +327,11 @@ func (c *Controller) Recover(ctx context.Context) error {
 		// Compose has no compensation: the next deploy converges the project, as up is idempotent.
 		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(errComposeInterrupted), SchemaBefore: before, SchemaAfter: after})
 	}
+	reason = c.captureInterrupted(ctx, op.ID, intents)
 	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
 		return required("service recovery required")
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after})
+	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after, Reason: reason})
 }
 
 // recordedSchema returns the schema states of an operation, falling back to the versions its finished one-offs journaled.

@@ -37,6 +37,10 @@ type ServiceTask struct {
 	Labels                                                         map[string]string
 	// Timestamp is when the task last changed state: Docker's status timestamp, or its last update when that is missing.
 	Timestamp time.Time
+	// Err and Message are Docker's task status error and message, such as "task: non-zero exit (1)". ExitCode is the
+	// container's exit code when Docker reports one.
+	Err, Message string
+	ExitCode     *int
 }
 type Network struct {
 	ID, Name, Driver, Scope string
@@ -277,9 +281,12 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 			}
 		}
 		Status struct {
-			State           string
-			Timestamp       time.Time
-			ContainerStatus struct{ ContainerID string }
+			State, Err, Message string
+			Timestamp           time.Time
+			ContainerStatus     struct {
+				ContainerID string
+				ExitCode    *int
+			}
 		}
 	}
 	if err := e.jsonRequest(ctx, "GET", "/tasks?"+q.Encode(), nil, nil, &all); err != nil {
@@ -294,7 +301,7 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		if at.IsZero() {
 			at = t.UpdatedAt
 		}
-		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image, Timestamp: at})
+		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image, Timestamp: at, Err: t.Status.Err, Message: t.Status.Message, ExitCode: t.Status.ContainerStatus.ExitCode})
 	}
 	return out, nil
 }
@@ -346,6 +353,70 @@ func (e *Engine) InspectContainerHealth(ctx context.Context, id string) (string,
 		return "none", nil
 	}
 	return x.State.Health.Status, nil
+}
+
+// HealthProbe is one result of a container's health check.
+type HealthProbe struct {
+	Start    time.Time `json:"start"`
+	ExitCode int       `json:"exit_code"`
+	Output   string    `json:"output,omitempty"`
+}
+
+// ContainerDiagnosis is what Docker knows about why a container is not running or not healthy.
+type ContainerDiagnosis struct {
+	State     string
+	ExitCode  int
+	OOMKilled bool
+	Error     string
+	Health    string // empty when the container has no health check
+	HealthLog []HealthProbe
+}
+
+const (
+	maxHealthProbes      = 5
+	maxHealthProbeOutput = 1 << 10
+)
+
+// DiagnoseContainer reads a container's state, exit code, out-of-memory flag, error and the last results of its health check.
+func (e *Engine) DiagnoseContainer(ctx context.Context, id string) (ContainerDiagnosis, error) {
+	p, err := pathID(id)
+	if err != nil {
+		return ContainerDiagnosis{}, err
+	}
+	var x struct {
+		State struct {
+			Status, Error string
+			ExitCode      int
+			OOMKilled     bool
+			Health        *struct {
+				Status string
+				Log    []struct {
+					Start    time.Time
+					ExitCode int
+					Output   string
+				}
+			}
+		}
+	}
+	if err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x); err != nil {
+		return ContainerDiagnosis{}, err
+	}
+	d := ContainerDiagnosis{State: x.State.Status, ExitCode: x.State.ExitCode, OOMKilled: x.State.OOMKilled, Error: x.State.Error}
+	if x.State.Health != nil {
+		d.Health = x.State.Health.Status
+		log := x.State.Health.Log
+		if len(log) > maxHealthProbes {
+			log = log[len(log)-maxHealthProbes:]
+		}
+		for _, probe := range log {
+			out := probe.Output
+			if len(out) > maxHealthProbeOutput {
+				out = strings.ToValidUTF8(out[:maxHealthProbeOutput], "")
+			}
+			d.HealthLog = append(d.HealthLog, HealthProbe{Start: probe.Start, ExitCode: probe.ExitCode, Output: out})
+		}
+	}
+	return d, nil
 }
 func (e *Engine) CreateContainer(ctx context.Context, name string, spec json.RawMessage) (string, error) {
 	if _, err := pathID(name); err != nil {

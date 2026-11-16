@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -52,7 +53,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 7 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -171,7 +172,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 7 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
@@ -191,7 +192,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 
 func TestUnknownSchemaVersionIsRefused(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`PRAGMA user_version=8`); err != nil {
+	if _, err := s.db.Exec(`PRAGMA user_version=9`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -240,5 +241,52 @@ func TestSchemaRevertRequestFieldsArePublic(t *testing.T) {
 	s, _, _ := testStore(t)
 	if _, _, err := s.Admit(context.Background(), Admission{RequestID: "revert", ActorID: "a", Kind: "rollback", App: "app", PublicRequest: []byte(`{"app":"app","revert_schema":true,"target_release":3}`)}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCompletedOneOffsIncludeMigrationsAndUnfinishedOnesOfFinishedOperations(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []struct {
+		ordinal int
+		role    string
+		phase   string
+		receipt string
+	}{
+		{10000, "pre_hook", "finished", `{"id":"c-pre","exit":0}`},
+		{10001, "schema_before", "finished", `{"id":"c-before","exit":0,"version":"v1"}`},
+		{10002, "migration_apply", "finished", `{"id":"c-apply","exit":2}`},
+		{10003, "schema_after", "started", `{"id":"c-after"}`},
+		{10004, "pre_hook", "created", `{"id":"c-created"}`},
+		{10005, "pre_hook", "intent", `{}`},
+	}
+	for _, step := range steps {
+		if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: step.ordinal, Kind: "oneoff", Role: step.role, Name: "task", Desired: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+		if step.phase != "intent" {
+			if err = s.MarkStep(ctx, op.ID, step.ordinal, step.phase, []byte(step.receipt)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.CompletedOneOffs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, one := range got {
+		ids = append(ids, one.ID)
+	}
+	want := "c-pre,c-before,c-apply,c-after,c-created"
+	if strings.Join(ids, ",") != want {
+		t.Fatalf("one-offs %v, want %s (a step that created no container has none)", ids, want)
 	}
 }
