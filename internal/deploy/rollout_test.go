@@ -426,3 +426,43 @@ func TestMergeServiceSpecSetsTheRestartPolicyOfAnExistingService(t *testing.T) {
 		t.Fatalf("merged %s: %v", merged, err)
 	}
 }
+
+// dockerStoredContainer is the shape docker service create leaves in a ContainerSpec: settings Berthy does not use are
+// present, with empty values.
+const dockerStoredContainer = `{"Image":"old","Init":false,"Hosts":[],"DNSConfig":{},"Isolation":"default","Privileges":null,"Sysctls":{},"Secrets":[],"Configs":[]}`
+
+func inheritedSpec(container string) json.RawMessage {
+	return json.RawMessage(`{"Name":"svc","TaskTemplate":{"Runtime":"container","ContainerSpec":` + container + `,"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
+}
+
+func TestInheritedSettingsAreEmptyWhenDockerStoredThemEmpty(t *testing.T) {
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
+	live := inheritedSpec(dockerStoredContainer)
+	if err := validateInheritedRuntime(live); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if _, err := mergeServiceSpec(live, desired, "net"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+}
+
+func TestInheritedSettingsWithAValueAreStillRefused(t *testing.T) {
+	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
+	for name, container := range map[string]string{
+		"nameservers": `{"Image":"old","DNSConfig":{"Nameservers":["1.1.1.1"]}}`,
+		"init":        `{"Image":"old","Init":true}`,
+		"hosts":       `{"Image":"old","Hosts":["10.0.0.1 evil"]}`,
+		"sysctls":     `{"Image":"old","Sysctls":{"net.ipv4.ip_forward":"1"}}`,
+		"privileges":  `{"Image":"old","Privileges":{"NoNewPrivileges":false,"SELinuxContext":{"Disable":true}}}`,
+		"isolation":   `{"Image":"old","Isolation":"hyperv"}`,
+	} {
+		live := inheritedSpec(container)
+		_, mergeErr := mergeServiceSpec(live, desired, "net")
+		if mergeErr == nil {
+			t.Errorf("%s: merge accepted it", name)
+		}
+		if name != "isolation" && validateInheritedRuntime(live) == nil {
+			t.Errorf("%s: validate accepted it", name)
+		}
+	}
+}

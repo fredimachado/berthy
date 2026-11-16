@@ -312,7 +312,7 @@ func mergeServiceSpec(before, desired json.RawMessage, network string) (json.Raw
 		return nil, errors.New("invalid container")
 	}
 	for _, k := range []string{"Privileges", "Secrets", "Configs", "DNSConfig", "Hosts", "Init", "Sysctls", "Isolation"} {
-		if v, exists := oc[k]; exists && v != nil && !(k == "Isolation" && v == "default") {
+		if v, exists := oc[k]; exists && !emptyInherited(v) && !(k == "Isolation" && v == "default") {
 			return nil, errors.New("unsafe inherited container settings")
 		}
 	}
@@ -429,6 +429,23 @@ func waitDrain(ctx context.Context, e healthReader, id, generation string) error
 	}
 }
 
+// emptyInherited reports whether an inherited container setting holds nothing: null, false, zero, an empty string, list or
+// object, or an object whose fields are all such. It is the rule sameSpec uses, because Docker stores the settings it does
+// not use with empty values, and both checks of an inherited service must read those values the same way.
+func emptyInherited(v any) bool { return isZeroSpecValue(canonicalSpec(v)) }
+
+// emptyInheritedRaw is emptyInherited for a setting still in JSON form. A missing setting is empty; one that cannot be read
+// is not.
+func emptyInheritedRaw(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var v any
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	return d.Decode(&v) == nil && emptyInherited(v)
+}
+
 func validateInheritedRuntime(raw json.RawMessage) error {
 	var x struct {
 		TaskTemplate struct {
@@ -444,13 +461,12 @@ func validateInheritedRuntime(raw json.RawMessage) error {
 	}
 	allowed := map[string]bool{"Image": true, "Labels": true, "Command": true, "Args": true, "Env": true, "Dir": true, "User": true, "Groups": true, "ReadOnly": true, "Mounts": true, "StopGracePeriod": true, "Healthcheck": true, "Isolation": true, "Hostname": true}
 	for k, v := range x.TaskTemplate.ContainerSpec {
-		if !allowed[k] && len(v) > 0 && string(v) != "null" && string(v) != "[]" && string(v) != "{}" && string(v) != "false" {
+		if !allowed[k] && !emptyInheritedRaw(v) {
 			return errors.New("unsupported inherited container settings")
 		}
 	}
 	for _, k := range []string{"CapabilityAdd", "CapabilityDrop", "Privileges", "Secrets", "Configs", "DNSConfig", "Hosts", "Sysctls"} {
-		v := x.TaskTemplate.ContainerSpec[k]
-		if len(v) > 0 && string(v) != "null" && string(v) != "[]" && string(v) != "{}" {
+		if !emptyInheritedRaw(x.TaskTemplate.ContainerSpec[k]) {
 			return errors.New("unsafe inherited container settings")
 		}
 	}
