@@ -1,0 +1,83 @@
+name: Release
+
+# Publishing is driven by a version tag, so a release is never built from a branch. setup downloads these assets by tag.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Workflow level, because creating the release is the only write this workflow makes.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No build cache in a release workflow, so a poisoned cache cannot reach the published binaries (zizmor cache-poisoning).
+          cache: false
+
+      # Same pattern as versionTag in internal/setup/binary.go: setup refuses any other version, so no other tag is published.
+      - name: Check the tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^v[0-9][0-9A-Za-z.+_-]*$'; then
+            echo "tag $VERSION is not a release version (v<digit>...)" >&2
+            exit 1
+          fi
+
+      - name: Run tests
+        run: go test -count=1 ./...
+
+      # Static binaries, stamped with the tag: berthy version reports it and setup compares it.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            name="berthy-$os-$arch"; [ "$os" = windows ] && name="$name.exe"
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X berthy/internal/version.Version=$VERSION" \
+              -o "dist/$name" ./cmd/berthy
+          done
+
+      # The server installs the linux binaries, so check that they are static and that they report this release.
+      - name: Check the Linux binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          for name in berthy-linux-amd64 berthy-linux-arm64; do
+            file "dist/$name" | tee /dev/stderr | grep -q 'statically linked'
+          done
+          # The amd64 binary runs on this runner; the arm64 one cannot run here without an emulator.
+          dist/berthy-linux-amd64 version --json | jq -e --arg v "$VERSION" '.version == $v and .release == true'
+
+      # Names only, without the dist/ prefix: the server finds its line by the file name.
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum berthy-* > checksums.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          # A tag with a "-" (v1.2.0-rc.1) is a prerelease, so it never becomes "latest".
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
+          # gh release create fails when the release exists, so published assets are never replaced.
+          gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "$VERSION" --generate-notes "${prerelease[@]}"

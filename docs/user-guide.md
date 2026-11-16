@@ -2219,7 +2219,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **Images are not built.** CI builds and pushes them.
 - **A Compose app has no automatic rollback, no `scale`, no `exec` and no `--version`.** A Compose `build:` is refused.
 - **`hostnames` only on image apps.** Compose services are published by a rule you add in Cloudflare.
-- **Release downloads need a published release.** `berthy setup` installs the CLI's own version. A Linux CLI of the server's architecture uploads itself. Otherwise the server downloads `berthy-linux-<arch>` and `checksums.txt` of the CLI's version from the release site (`BERTHY_RELEASE_URL` overrides it) and checks the checksum, which needs that release to exist. A development build on another platform can use `--binary <path>` instead.
+- **Release downloads need a published release of that version.** The repository's release workflow publishes one when a version tag (`v*`) is pushed, with the `berthy-<os>-<arch>` CLIs and `checksums.txt`. A Linux CLI of the server's architecture uploads itself. A release CLI on another platform downloads its own version from the release site (`BERTHY_RELEASE_URL` overrides it) and checks the checksum. A development build on another platform, or a version with no published release, uses `--binary <path>` instead.
 - **A scheduled restore drill is not built.** You verify restores by hand (steps 10 and 15).
 
 #### Not verified against real services
