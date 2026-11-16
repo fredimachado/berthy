@@ -57,9 +57,9 @@ type Scheduler struct {
 
 	tick time.Duration // how often Run looks at the clock; zero means a second
 
+	minutes schedule.Minutes // the minutes handled
 	mu      sync.Mutex
 	running map[string]bool // job name -> a run is in progress (one writer: guarded by mu)
-	last    time.Time       // the last minute handled
 	base    context.Context // Run's context, which on-demand runs outlive their request with
 	wg      sync.WaitGroup  // the runs in progress
 }
@@ -116,14 +116,10 @@ func (s *Scheduler) step(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	cur := s.now().UTC().Truncate(time.Minute)
-	s.mu.Lock()
-	if !cur.After(s.last) {
-		s.mu.Unlock()
+	cur, ok := s.minutes.Claim(s.now())
+	if !ok {
 		return
 	}
-	s.last = cur
-	s.mu.Unlock()
 	m, err := s.Manifest(ctx)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {

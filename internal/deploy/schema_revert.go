@@ -53,7 +53,7 @@ func PublicMessage(s string) bool {
 		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecCompose, errComposeRole,
 		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal,
 		errDestroyAdmin, errDestroyConfirm, errDestroyInterrupted, errDestroyPreflight, errDestroyContainers, errDestroyImages, errDestroyState,
-		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned:
+		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
 	return backup.PublicRefusal(s) || composeMessage.MatchString(s)

@@ -32,10 +32,10 @@ const (
 
 // Diagnostic is evidence about one failed piece of an operation: a task of the new version or a one-off command.
 type Diagnostic struct {
-	Kind        string               `json:"kind"` // "task" or "oneoff"
-	Name        string               `json:"name"` // service name of a task, or the hook role of a one-off ("pre_hook", "migration_apply", ...)
-	Role        string               `json:"role,omitempty"`
-	Index       int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command in the manifest
+	Kind        string               `json:"kind"`            // "task", "oneoff" or "backup"
+	Name        string               `json:"name"`            // service name of a task, the hook role of a one-off ("pre_hook", "migration_apply", ...), or the name of a backup
+	Role        string               `json:"role,omitempty"`  // of a backup: the hook list it ran in, "pre_hook" or "post_hook"
+	Index       int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command or backup in the manifest
 	TaskID      string               `json:"task_id,omitempty"`
 	Container   string               `json:"container,omitempty"`
 	State       string               `json:"state,omitempty"` // Swarm task state or container state
@@ -372,6 +372,8 @@ func failureReason(d []Diagnostic, fallback string) string {
 			}
 		case "oneoff":
 			parts = append(parts, oneOffCause(item))
+		case "backup":
+			parts = append(parts, backupCause(item))
 		}
 	}
 	reason := strings.Join(parts, "; ")

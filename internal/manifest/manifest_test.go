@@ -78,11 +78,22 @@ func TestImageSelection(t *testing.T) {
 			t.Errorf("accepted %s", v)
 		}
 	}
-	a := m.Apps["api"]
-	a.Hooks.PostDeploy = []Hook{{Backup: "db"}}
-	m.Apps["api"] = a
-	if _, err := m.CheckImageDeploy("api", "v1", false); err == nil {
-		t.Fatal("accepted unsupported backup hook")
+}
+
+func TestBackupHooksNameABackupOfTheManifest(t *testing.T) {
+	const base = `"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"hooks":{"%s":[{"backup":"main-db"},{"run":["true"]}]}},"db":{"kind":"compose","file":"db/compose.yaml"}}`
+	backups := `,"destinations":{"offsite":{"type":"s3","bucket":"bkt","access_key_secret":"A","secret_key_secret":"B"}},"backups":{"main-db":{"app":"db","volume":"dumps","destination":"offsite"}}`
+	for _, list := range []string{"pre_deploy", "post_deploy"} {
+		m, err := DecodeJSON([]byte("{" + fmt.Sprintf(base, list) + backups + "}"))
+		if err != nil {
+			t.Fatalf("%s hook of a declared backup: %v", list, err)
+		}
+		if _, err = m.CheckImageDeploy("api", "v1", false); err != nil {
+			t.Fatalf("%s: a backup hook stops the deploy check: %v", list, err)
+		}
+		if _, err = DecodeJSON([]byte("{" + fmt.Sprintf(base, list) + "}")); err == nil || !strings.Contains(err.Error(), "unknown backup") {
+			t.Fatalf("%s hook of a backup that is not declared: %v", list, err)
+		}
 	}
 }
 
@@ -146,7 +157,7 @@ telemetry:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"api", "postgres"} {
+	for _, name := range []string{"postgres"} {
 		if _, err := m.CheckImageDeploy(name, "v1", false); err == nil {
 			t.Errorf("accepted unsupported deployment %s", name)
 		}
@@ -310,5 +321,19 @@ destinations:
 	}
 	if got := m.Destinations["offsite"].Region; got != "eu-west-1" {
 		t.Fatalf("region: %q", got)
+	}
+}
+
+func TestBackupScheduleIsValidated(t *testing.T) {
+	const pre = `{"project":"demo","network":"demo","apps":{"db":{"kind":"compose","file":"db/compose.yaml"}},"destinations":{"offsite":{"type":"s3","bucket":"bkt","access_key_secret":"A","secret_key_secret":"B"}},"backups":{"main":{"app":"db","volume":"dumps","destination":"offsite"`
+	for _, ok := range []string{`,"schedule":"0 0 * * *"`, `,"schedule":"*/2 * * * *"`, ``} {
+		if _, err := DecodeJSON([]byte(pre + ok + `}}}`)); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{`,"schedule":"0 0 * *"`, `,"schedule":"61 * * * *"`, `,"schedule":"daily"`} {
+		if _, err := DecodeJSON([]byte(pre + bad + `}}}`)); err == nil || !strings.Contains(err.Error(), "schedule") {
+			t.Errorf("%q: %v", bad, err)
+		}
 	}
 }

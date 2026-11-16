@@ -293,3 +293,19 @@ func TestRestoreUsageAndRefusals(t *testing.T) {
 		t.Fatalf("exit %d: %q", code, errout.String())
 	}
 }
+
+func TestDiagnosticsShowTheDetailOfAFailedBackupHook(t *testing.T) {
+	body := `{"operation_id":"op1","reason":"pre-deploy backup main-db failed: upload failed","diagnostics":[{"kind":"backup","name":"main-db","role":"pre_hook","index":2,"error":"upload failed: access denied","captured":"2026-11-16T10:00:00Z"}]}`
+	var out, errout bytes.Buffer
+	if code := printDiagnostics(&out, &errout, []byte(body)); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	for _, want := range []string{"reason: pre-deploy backup main-db failed: upload failed", "[1] backup main-db #2", "error: upload failed: access denied"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "logs") {
+		t.Fatalf("a backup has no logs:\n%s", out.String())
+	}
+}

@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"berthy/internal/engine"
-	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
@@ -50,17 +49,15 @@ const (
 
 func (c *Controller) runPre(ctx context.Context, opID string, p preparedPlan) (string, string, error) {
 	app := p.Request.Manifest.Apps[p.Request.App]
-	for _, h := range append(append([]manifest.Hook{}, app.Hooks.PreDeploy...), app.Hooks.PostDeploy...) {
-		if h.Backup != "" {
-			return "", "", errors.New("backup hooks unavailable")
-		}
-	}
 	if len(app.Hooks.PreDeploy) > maxHooksPerList {
 		return "", "", errors.New("too many pre-deploy commands")
 	}
 	for i, h := range app.Hooks.PreDeploy {
 		if h.Backup != "" {
-			return "", "", errors.New("backup hooks unavailable")
+			if err := c.runBackupHook(ctx, opID, p, "pre_hook", i+1, h.Backup); err != nil {
+				return "", "", err
+			}
+			continue
 		}
 		if _, err := c.runRetrying(ctx, opID, p, preHookOrdinal+attemptsPerCommand*i, "pre_hook", h.Run, false, h.TimeoutDuration(), h.RetryCount()); err != nil {
 			return "", "", err
@@ -97,7 +94,10 @@ func (c *Controller) runPost(ctx context.Context, opID string, p preparedPlan) e
 	}
 	for i, h := range hooks {
 		if h.Backup != "" {
-			return errors.New("backup hooks unavailable")
+			if err := c.runBackupHook(ctx, opID, p, "post_hook", i+1, h.Backup); err != nil {
+				return err
+			}
+			continue
 		}
 		if _, err := c.runRetrying(ctx, opID, p, postHookOrdinal+attemptsPerCommand*i, "post_hook", h.Run, false, h.TimeoutDuration(), h.RetryCount()); err != nil {
 			return err

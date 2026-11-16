@@ -181,6 +181,7 @@ type backupRig struct {
 	backups *Backups
 	h       http.Handler
 	s3      objectstore.Store
+	url     string
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -207,7 +208,7 @@ func newBackupRig(t *testing.T) *backupRig {
 	srv := httptest.NewServer(gofakes3.New(backend).Server())
 	t.Cleanup(srv.Close)
 	s := openIngressStore(t)
-	g := &backupRig{t: t, store: s, docker: newFakeArchiveEngine(), compose: &configCompose{out: `{"volumes":{"docs":{"name":"files_docs"},"shared":{"name":"team-shared","external":true}}}`}}
+	g := &backupRig{t: t, url: srv.URL, store: s, docker: newFakeArchiveEngine(), compose: &configCompose{out: `{"volumes":{"docs":{"name":"files_docs"},"shared":{"name":"team-shared","external":true}}}`}}
 	g.docker.volumes["uploads"] = "uploads-payload"
 	g.docker.volumes["files_docs"] = "docs-payload"
 	recordAppRelease(t, s, "r-api", "api", backupManifest(srv.URL))

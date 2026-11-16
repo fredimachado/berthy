@@ -49,18 +49,45 @@ func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Ti
 	if err != nil {
 		return nil
 	}
-	name := ""
-	for n, a := range m.Apps {
-		switch {
-		case app.Ref.Kind == "image" && a.Kind == "image" && n == app.Ref.Name,
-			app.Ref.Kind == "compose" && a.Kind == "compose" && m.ComposeProject(n) == app.Ref.Name:
-			name = n
-		}
-	}
+	name := manifestAppName(m, app.Ref)
 	if name == "" {
 		return nil
 	}
 	list, err := jobs.Statuses(ctx, d.Store, m, name, now)
+	if err != nil || len(list) == 0 {
+		return nil
+	}
+	return list
+}
+
+// manifestAppName returns the name the manifest gives the app of an inventory entry, or "" when it names none. An image app is
+// listed under its manifest name, and a Compose app under its Compose project name.
+func manifestAppName(m manifest.Manifest, ref api.AppRef) string {
+	for n, a := range m.Apps {
+		switch {
+		case ref.Kind == "image" && a.Kind == "image" && n == ref.Name,
+			ref.Kind == "compose" && a.Kind == "compose" && m.ComposeProject(n) == ref.Name:
+			return n
+		}
+	}
+	return ""
+}
+
+// appBackups returns the backups of the last applied manifest that belong to an app of the inventory, with their ages, or nil
+// when there are none or the manifest cannot be read.
+func appBackups(ctx context.Context, d *deploy.Controller, app api.App, now time.Time) []api.BackupStatus {
+	if d == nil || d.Store == nil {
+		return nil
+	}
+	m, _, err := deployedManifest(ctx, d.Store)
+	if err != nil {
+		return nil
+	}
+	name := manifestAppName(m, app.Ref)
+	if name == "" {
+		return nil
+	}
+	list, err := backupStatuses(ctx, d.Store, m, name, now)
 	if err != nil || len(list) == 0 {
 		return nil
 	}

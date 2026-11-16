@@ -50,6 +50,9 @@ type Monitoring struct {
 	restarts []monitor.Check
 	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
 	root string
+	// seen is when each backup was first in the manifest, and now is the clock of the backup checks.
+	seen backupSeen
+	now  func() time.Time
 }
 
 // NewMonitoring returns the monitoring of an agent with state, or nil for an agent without state. log receives
@@ -62,6 +65,14 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	w.composeServices = w.projectServices
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
 	return w
+}
+
+// clock is the time of the backup checks.
+func (w *Monitoring) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 // HelperImage returns the helper image of the agent's binary, importing it when Docker lacks it. The backup containers run
@@ -176,6 +187,9 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 		if m.Jobs[name].Schedule != "" {
 			out = append(out, jobCheck(w.store, name))
 		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
+		out = append(out, backupCheck(w.store, name, m.Backups[name], &w.seen, w.clock))
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
 		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))
@@ -525,6 +539,16 @@ func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, env
 			detail = monitor.MissingTelegramSecret
 		}
 		out = append(out, api.Check{Name: "telegram", OK: present, Detail: detail})
+	}
+	// A backup's doctor check mirrors the state of its monitor check, so the doctor and the alerts always agree. It is never
+	// critical for the doctor's exit code: a failed backup is an alert, and the agent itself is healthy.
+	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
+		c := api.Check{Name: "backup:" + name, OK: true, Detail: "not checked yet"}
+		if st, ok := states["backup:"+name]; ok && st.State != "" {
+			c.OK = st.State == monitor.OK || st.State == monitor.Unknown
+			c.Detail = st.State + ": " + st.Detail
+		}
+		out = append(out, c)
 	}
 	if hasServiceProbe(m.Probes) {
 		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)

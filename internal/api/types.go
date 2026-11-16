@@ -8,6 +8,8 @@ type App struct {
 	Ref   AppRef      `json:"ref"`
 	Roles []Role      `json:"roles"`
 	Jobs  []JobStatus `json:"jobs,omitempty"`
+	// Backups are the backups of the manifest that belong to the app, with their ages.
+	Backups []BackupStatus `json:"backups,omitempty"`
 }
 type Role struct {
 	Name     string    `json:"name"`

@@ -184,3 +184,28 @@ func TestMatchesAgreesWithNext(t *testing.T) {
 		}
 	}
 }
+
+func TestMinutesHandsOutEachUTCMinuteOnce(t *testing.T) {
+	var m Minutes
+	at := func(h, min, sec int) time.Time { return time.Date(2026, 11, 16, h, min, sec, 0, time.UTC) }
+	cur, ok := m.Claim(at(10, 0, 30))
+	if !ok || !cur.Equal(at(10, 0, 0)) {
+		t.Fatalf("first claim: %v %v", cur, ok)
+	}
+	if _, ok = m.Claim(at(10, 0, 59)); ok {
+		t.Fatal("a minute was handed out twice")
+	}
+	// A clock that goes back hands out nothing; a jump forward hands out only the current minute, so nothing is made up.
+	if _, ok = m.Claim(at(9, 59, 0)); ok {
+		t.Fatal("a minute in the past was handed out")
+	}
+	cur, ok = m.Claim(at(12, 5, 1))
+	if !ok || !cur.Equal(at(12, 5, 0)) {
+		t.Fatalf("after a jump: %v %v", cur, ok)
+	}
+	// A local time zone does not matter: the minute is UTC.
+	zone := time.FixedZone("x", 3600)
+	if _, ok = m.Claim(time.Date(2026, 11, 16, 13, 5, 30, 0, zone)); ok {
+		t.Fatal("the same UTC minute in another zone was handed out")
+	}
+}

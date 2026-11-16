@@ -477,7 +477,7 @@ Hooks are declared per app as `pre_deploy` and `post_deploy` lists. Two step typ
 
 | Step | What it does | Typical use |
 | --- | --- | --- |
-| `backup: <job>` | Runs a named volume backup, including its preparation job if set, and waits for it | Archiving a fresh database dump before a deploy |
+| `backup: <name>` | Runs the named volume backup, including its preparation job if set, and waits for it. The name is a key of `backups` | Archiving a fresh database dump before a deploy |
 | `run: <command>` | Runs the command in a container of the new image, with the app's environment. Runs once unless `retries` is set | A one-off task before traffic switches |
 
 A `run` hook takes two optional settings.
@@ -499,6 +499,11 @@ A `run` hook takes two optional settings.
 - Each attempt runs in its own container, five seconds after the previous one ended. The deploy keeps the output of the last attempt, and the failure reason says how many attempts ran, such as `pre-deploy command 1 exited with code 3 (after 3 attempts)`.
 - **A command that runs past its `timeout` is never retried.** It may still be running, so starting it again could run it twice. The deploy stops and the operation needs recovery, as it always did for a timed-out command.
 - `backup:` steps take neither setting.
+- **A backup step runs in order with the `run` steps** of its list, and runs the backup through the same code as `backup run`, with the trigger `hook`. The manifest being deployed supplies the backup, its destination and its volume, and the backup's `before` job runs first as for any run. A `backup` that no `backups` key names is refused when the manifest is read.
+- **A failed `pre_deploy` backup stops the deploy before the migration block.** Nothing after it in the list runs, the migration's version and apply commands do not run, and the old version keeps serving. The operation fails with `pre-deploy backup failed`, and its reason names the backup and the step that failed, such as `pre-deploy backup main-db failed: upload failed`. `berthy diagnostics <operation>` (a `deploy` token) shows a diagnostic of kind `backup` with the run's own detail, such as `upload failed: access denied`, and no logs.
+- **A failed `post_deploy` backup** is reported like a failed post-deploy command: the new version stays, and the operation fails with `post-deploy backup failed` and the same kind of reason.
+- A backup whose app has no applied release has no volume to read yet, as on the first deploy of an app. The step is skipped, and the operation's events say so.
+- A backup that cannot start, such as one of the same volume that is running, fails the step with its reason.
 
 ### Database migrations
 
@@ -867,6 +872,7 @@ backups:
 - For a Compose app, `volume` is the key in the Compose file's top-level `volumes` block. Berthy resolves it using the app's Compose project name and any explicit volume name.
 - For an image app, `volume` is the Docker volume name mounted by one of its roles. A role declares mounts under `volumes`, with entries such as `uploads:/app/uploads`.
 - Omit `schedule` to run a backup only through `backup run` or a deploy hook.
+- **Schedules.** A backup with a `schedule` runs once per UTC cron occurrence, with the trigger `schedule`. The agent reads the manifest of the deployed apps every minute, so a changed schedule takes effect at the next minute after its deploy. Each occurrence is recorded in the agent's state before it runs and at most once, so restarting the agent in the same minute, or a second process on the same state, cannot run it twice. Occurrences that pass while the agent is down are not made up. If a backup of the same Docker volume is still running at an occurrence, the occurrence is skipped: nothing is recorded, the agent logs `skipped: previous backup still running`, and nothing alerts. A scheduled run that cannot start, such as one whose credentials are gone, is recorded as a failed run so that the backup's check shows why. Every scheduled run is written to the audit log with the backup as the caller (`backup:<name>`, action `backup_run:<name>`, outcomes `started`, then `succeeded` or `failed`).
 - `retention.keep` defaults to `all`. Set it to a number to retain that many successful backups for the job.
 
 ### How a backup runs
@@ -894,9 +900,14 @@ A volume archive reads files as they are encountered. For apps that need a consi
 
 ### Safety checks
 
-- **Overdue backup.** For backups with a schedule, the agent alerts when the newest successful backup is older than the schedule allows. The age also shows in `ps`, `doctor` and the TUI.
-- **Size anomaly.** A backup under half the size of the previous one raises an alert (proposed threshold).
-- **Failure.** Any failed run alerts with the preparation, archive or upload error.
+Each backup of the deployed manifest has a check named `backup:<name>`, run every 60 seconds, which alerts on its first non-ok result, like a job's check. A run that an agent stop or restart cut short does not count for it.
+
+- **Failure.** The newest finished run failed: critical, with its detail (`preparation failed: exit status 3`, `upload failed: access denied`, `backup credentials unavailable`). A later success clears it.
+- **Overdue backup.** For backups with a schedule: critical, `overdue: last success <time> (expected by <time>)`, when the time is later than the first occurrence after the newest success plus a grace. The grace is the interval between that occurrence and the next one, at most one hour: an hourly backup is overdue 2 hours after its last success, a daily one at 02:30 one hour after 02:30 the next day. A backup that never succeeded counts from when the agent first saw it, and until then reports unknown `not run yet`, which never alerts.
+- **Size anomaly.** Warning, `size dropped to N% of the previous backup`, when the newest success is under half the size of the one before it.
+- Otherwise ok: `last success <age> ago, <size>`.
+
+**Where ages show.** `describe <app>` and `ps` (in JSON) list the app's backups with `last_success`, `age`, `size`, `last_status` and, after a failure, its `detail`. `doctor` has one check per backup that shows the monitor's state and detail; a backup in trouble does not make the doctor exit non-zero, because it is an alert and not a fault of the agent.
 
 ### Restore
 

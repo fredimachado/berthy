@@ -216,7 +216,13 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
-				result, err = appInventory(ctx, e, deployment)
+				var apps []api.App
+				apps, err = appInventory(ctx, e, deployment)
+				// ps shows how old each app's backups are.
+				for i := range apps {
+					apps[i].Backups = appBackups(ctx, deployment, apps[i], time.Now())
+				}
+				result = apps
 			}
 		case len(parts) == 5 && parts[3] == "apps":
 			if e == nil {
@@ -231,6 +237,7 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 					result = app
 					if code == 200 {
 						app.Jobs = appJobs(ctx, deployment, app, time.Now())
+						app.Backups = appBackups(ctx, deployment, app, time.Now())
 						result = app
 					}
 					if code != 200 {

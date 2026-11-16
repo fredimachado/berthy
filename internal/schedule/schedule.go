@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -225,3 +226,23 @@ func (s Schedule) Next(t time.Time) time.Time {
 
 // String returns the expression as it was parsed.
 func (s Schedule) String() string { return s.expr }
+
+// Minutes hands out each UTC minute once, for a scheduler that looks at the clock every second. Only the current minute counts:
+// a sleep or a clock jump makes up nothing. The zero value is ready to use.
+type Minutes struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// Claim returns the UTC minute that now falls in, and true, when that minute has not been handed out and is later than the
+// last one that was.
+func (m *Minutes) Claim(now time.Time) (time.Time, bool) {
+	cur := now.UTC().Truncate(time.Minute)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !cur.After(m.last) {
+		return time.Time{}, false
+	}
+	m.last = cur
+	return cur, true
+}

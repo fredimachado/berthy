@@ -172,7 +172,7 @@ func TestUpgradeVersionSevenAddsReasonAndDiagnostics(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	id := failedOperation(t, upgraded, 1, "web", `{"kind":"task"}`)

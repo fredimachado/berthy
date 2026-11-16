@@ -151,7 +151,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 {
+	if !fresh && version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7 && version != 8 && version != 9 && version != 10 {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -177,7 +177,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS checks (environment TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, since INTEGER NOT NULL, notified_state TEXT NOT NULL, notified INTEGER NOT NULL, PRIMARY KEY(environment, name));
  CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, job TEXT NOT NULL, app TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, exit_code INTEGER, detail TEXT NOT NULL, container TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS job_runs_occurrence ON job_runs(environment, job, scheduled) WHERE scheduled <> 0;
- CREATE TABLE IF NOT EXISTS backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, backup TEXT NOT NULL, app TEXT NOT NULL, volume TEXT NOT NULL, destination TEXT NOT NULL, object_key TEXT NOT NULL, trigger TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, backup TEXT NOT NULL, app TEXT NOT NULL, volume TEXT NOT NULL, destination TEXT NOT NULL, object_key TEXT NOT NULL, trigger TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0);
  CREATE UNIQUE INDEX IF NOT EXISTS backups_object ON backups(environment, object_key);
  CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));`); err != nil {
 		tx.Rollback()
@@ -230,7 +230,24 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=9`); err != nil {
+	if version != 0 && version < 10 {
+		// A database from before schema 10 lacks the occurrence of a scheduled backup. The column check keeps a repeated upgrade
+		// harmless.
+		var has int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('backups') WHERE name='scheduled'`).Scan(&has); err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE backups ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0`)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
+	// Each scheduled occurrence of a backup is recorded once.
+	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS backups_occurrence ON backups(environment, backup, scheduled) WHERE scheduled <> 0`); err != nil {
+		tx.Rollback()
+		return fail(err)
+	}
+	if _, err = tx.Exec(`PRAGMA user_version=10`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}

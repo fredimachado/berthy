@@ -15,7 +15,7 @@ func backupRun(backup string, n int) BackupRun {
 		Volume:      "uploads",
 		Destination: "offsite",
 		ObjectKey:   "files/uploads/" + backup + "/" + minute(n).Format("150405") + ".tar.zst",
-		Trigger:     "schedule",
+		Trigger:     "manual",
 		Started:     minute(n),
 	}
 }
@@ -35,7 +35,7 @@ func TestStartBackupRecordsARunningRun(t *testing.T) {
 	if r.ID != id || r.Status != "running" || !r.Finished.IsZero() || r.Size != 0 || r.SHA256 != "" || r.Detail != "" {
 		t.Fatalf("running run: %+v", r)
 	}
-	if r.Backup != "uploads" || r.App != "files" || r.Volume != "uploads" || r.Destination != "offsite" || r.Trigger != "schedule" || !r.Started.Equal(minute(1)) {
+	if r.Backup != "uploads" || r.App != "files" || r.Volume != "uploads" || r.Destination != "offsite" || r.Trigger != "manual" || !r.Started.Equal(minute(1)) {
 		t.Fatalf("fields: %+v", r)
 	}
 }
@@ -266,7 +266,7 @@ func TestUpgradeVersionSixAddsBackupsTable(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	ctx := context.Background()
@@ -315,4 +315,154 @@ func TestSetBackupObjectKeyRenamesARunningRunOnly(t *testing.T) {
 	if err = s.SetBackupObjectKey(ctx, id, "files/uploads/uploads/late.tar.gz"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a finished run: %v", err)
 	}
+}
+
+func scheduledRun(backup string, n int) BackupRun {
+	r := backupRun(backup, n)
+	r.Trigger = "schedule"
+	r.Scheduled = minute(n)
+	return r
+}
+
+func TestAScheduledOccurrenceIsRecordedOnce(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	first := scheduledRun("uploads", 1)
+	id, err := s.StartBackup(ctx, first)
+	if err != nil || id == 0 {
+		t.Fatalf("first: %d %v", id, err)
+	}
+	// The same occurrence again, whatever object key it brings.
+	again := first
+	again.ObjectKey = "files/uploads/uploads/another.tar.gz"
+	if _, err = s.StartBackup(ctx, again); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second run of the occurrence: %v", err)
+	}
+	// Another occurrence, another backup's occurrence, and manual runs are unaffected.
+	if _, err = s.StartBackup(ctx, scheduledRun("uploads", 2)); err != nil {
+		t.Fatalf("next occurrence: %v", err)
+	}
+	other := scheduledRun("other", 1)
+	other.ObjectKey = "files/uploads/other/x.tar.gz"
+	if _, err = s.StartBackup(ctx, other); err != nil {
+		t.Fatalf("other backup: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		m := backupRun("uploads", 10+i)
+		m.Trigger = "manual"
+		if _, err = s.StartBackup(ctx, m); err != nil {
+			t.Fatalf("manual run %d: %v", i, err)
+		}
+	}
+	runs, _ := s.BackupRuns(ctx, "uploads", 10)
+	var found bool
+	for _, r := range runs {
+		if r.ID == id {
+			found = r.Scheduled.Equal(minute(1)) && r.Trigger == "schedule"
+		}
+	}
+	if !found {
+		t.Fatalf("the scheduled run lost its occurrence: %+v", runs)
+	}
+}
+
+func TestAScheduledRunNeedsItsOccurrenceAndOnlyItDoes(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	noOccurrence := backupRun("uploads", 1)
+	noOccurrence.Trigger = "schedule"
+	if _, err := s.StartBackup(ctx, noOccurrence); err == nil || errors.Is(err, ErrConflict) {
+		t.Fatalf("a scheduled run without an occurrence: %v", err)
+	}
+	manual := backupRun("uploads", 2)
+	manual.Scheduled = minute(2)
+	if _, err := s.StartBackup(ctx, manual); err == nil || errors.Is(err, ErrConflict) {
+		t.Fatalf("a manual run with an occurrence: %v", err)
+	}
+}
+
+func TestBackupHistoryNamesTheLastFinishedRunAndTheLastTwoSuccesses(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	h, err := s.BackupHistory(ctx, "uploads")
+	if err != nil || h.Last != nil || len(h.Successes) != 0 {
+		t.Fatalf("empty history: %+v %v", h, err)
+	}
+	sum := strings.Repeat("ab", 32)
+	finish := func(n int, status string, size int64, detail string) {
+		t.Helper()
+		id, err := s.StartBackup(ctx, backupRun("uploads", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sh := ""
+		if status == "succeeded" {
+			sh = sum
+		}
+		if err = s.FinishBackup(ctx, id, status, size, sh, detail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish(1, "succeeded", 100, "")
+	finish(2, "succeeded", 200, "")
+	finish(3, "failed", 0, "upload failed: access denied")
+	s.StartBackup(ctx, backupRun("uploads", 4)) // still running
+	h, _ = s.BackupHistory(ctx, "uploads")
+	if h.Last == nil || h.Last.Status != "failed" || h.Last.Detail != "upload failed: access denied" || len(h.Successes) != 2 || h.Successes[0].Size != 200 || h.Successes[1].Size != 100 {
+		t.Fatalf("history: %+v", h)
+	}
+	// A run that the agent's stop or restart cut short says nothing about the backup, as an interrupted job does.
+	finish(5, "failed", 0, StoppedBackupDetail)
+	finish(6, "failed", 0, AbandonedBackupDetail)
+	h, _ = s.BackupHistory(ctx, "uploads")
+	if h.Last == nil || h.Last.Detail != "upload failed: access denied" {
+		t.Fatalf("history after interrupted runs: %+v", h.Last)
+	}
+	finish(7, "succeeded", 300, "")
+	h, _ = s.BackupHistory(ctx, "uploads")
+	if h.Last.Status != "succeeded" || h.Successes[0].Size != 300 || h.Successes[1].Size != 200 {
+		t.Fatalf("history after a success: %+v", h)
+	}
+	if other, _ := s.BackupHistory(ctx, "other"); other.Last != nil {
+		t.Fatalf("another backup's history: %+v", other)
+	}
+}
+
+func TestUpgradeVersionNineAddsTheOccurrenceOfBackups(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	id, err := s.StartBackup(ctx, backupRun("uploads", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A version 9 database: no occurrence column and no occurrence index.
+	if _, err = s.db.Exec(`DROP INDEX backups_occurrence; ALTER TABLE backups DROP COLUMN scheduled; PRAGMA user_version=9`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var version int
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+		t.Fatalf("migration: %d %v", version, err)
+	}
+	runs, _ := upgraded.BackupRuns(ctx, "uploads", 10)
+	if len(runs) != 1 || runs[0].ID != id || !runs[0].Scheduled.IsZero() {
+		t.Fatalf("the old run after the upgrade: %+v", runs)
+	}
+	if _, err = upgraded.StartBackup(ctx, scheduledRun("uploads", 3)); err != nil {
+		t.Fatalf("scheduled run after the upgrade: %v", err)
+	}
+	if _, err = upgraded.StartBackup(ctx, scheduledRun("uploads", 3)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("occurrence index missing after the upgrade: %v", err)
+	}
+	upgraded.Close()
+	again, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatalf("a second open after the upgrade: %v", err)
+	}
+	again.Close()
 }

@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"regexp"
 	"time"
@@ -12,6 +13,8 @@ type BackupRun struct {
 	ID                               int64
 	Backup, App, Volume, Destination string
 	ObjectKey, Trigger               string // Trigger is schedule, manual or hook
+	// Scheduled is the UTC minute of the cron occurrence a scheduled run belongs to, and zero for any other run.
+	Scheduled time.Time
 	// Started is when the run began; Finished is zero while it runs.
 	Started, Finished time.Time
 	Status            string // running, succeeded or failed
@@ -22,6 +25,8 @@ type BackupRun struct {
 const (
 	// AbandonedBackupDetail is the detail of a run that a previous agent process left running.
 	AbandonedBackupDetail = "agent restarted during the backup"
+	// StoppedBackupDetail is the detail of a run that an orderly agent stop cut short.
+	StoppedBackupDetail = "agent stopped during the backup"
 	// maxBackupDetail bounds the detail stored for one run.
 	maxBackupDetail = 512
 )
@@ -32,16 +37,17 @@ var (
 )
 
 // StartBackup records a backup run that has begun. A run starts as running; any other status is refused. Each object key
-// is recorded once per environment, whatever the run's status, so a key that is already recorded returns ErrConflict.
+// is recorded once per environment, whatever the run's status, and so is each scheduled occurrence of a backup, so a key or an
+// occurrence that is already recorded returns ErrConflict. A scheduled run has an occurrence and no other run does.
 func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if b.Status != "" && b.Status != "running" {
 		return 0, errors.New("invalid backup run")
 	}
-	if b.Backup == "" || b.App == "" || b.Volume == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() {
+	if b.Backup == "" || b.App == "" || b.Volume == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() || (b.Trigger == "schedule") == b.Scheduled.IsZero() {
 		return 0, errors.New("invalid backup run")
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO backups(environment,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail) VALUES(?,?,?,?,?,?,?,?,0,'running',0,'','') ON CONFLICT DO NOTHING`,
-		s.env, b.Backup, b.App, b.Volume, b.Destination, b.ObjectKey, b.Trigger, toMilli(b.Started))
+	res, err := s.db.ExecContext(ctx, `INSERT INTO backups(environment,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail,scheduled) VALUES(?,?,?,?,?,?,?,?,0,'running',0,'','',?) ON CONFLICT DO NOTHING`,
+		s.env, b.Backup, b.App, b.Volume, b.Destination, b.ObjectKey, b.Trigger, toMilli(b.Started), toMilli(b.Scheduled))
 	if err != nil {
 		return 0, err
 	}
@@ -89,15 +95,15 @@ func (s *Store) AbandonRunningBackups(ctx context.Context) (int, error) {
 	return int(n), err
 }
 
-const backupColumns = `id,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail`
+const backupColumns = `id,backup,app,volume,destination,object_key,trigger,started,finished,status,size,sha256,detail,scheduled`
 
 func scanBackupRun(row interface{ Scan(...any) error }) (BackupRun, error) {
 	var r BackupRun
-	var started, finished int64
-	if err := row.Scan(&r.ID, &r.Backup, &r.App, &r.Volume, &r.Destination, &r.ObjectKey, &r.Trigger, &started, &finished, &r.Status, &r.Size, &r.SHA256, &r.Detail); err != nil {
+	var started, finished, scheduled int64
+	if err := row.Scan(&r.ID, &r.Backup, &r.App, &r.Volume, &r.Destination, &r.ObjectKey, &r.Trigger, &started, &finished, &r.Status, &r.Size, &r.SHA256, &r.Detail, &scheduled); err != nil {
 		return BackupRun{}, err
 	}
-	r.Started, r.Finished = fromMilli(started), fromMilli(finished)
+	r.Started, r.Finished, r.Scheduled = fromMilli(started), fromMilli(finished), fromMilli(scheduled)
 	return r, nil
 }
 
@@ -157,4 +163,43 @@ func (s *Store) LastSuccessfulBackups(ctx context.Context) (map[string]BackupRun
 		out[r.Backup] = r
 	}
 	return out, rows.Err()
+}
+
+// BackupHistory is what a backup's checks and ages need to know about its runs.
+type BackupHistory struct {
+	// Last is the newest finished run, or nil. A run that an agent stop or restart cut short is not counted: it says nothing about
+	// the backup, as an interrupted job run says nothing about its job.
+	Last *BackupRun
+	// Successes holds the newest two successful runs, newest first.
+	Successes []BackupRun
+}
+
+// BackupHistory returns the history of one backup.
+func (s *Store) BackupHistory(ctx context.Context, backup string) (BackupHistory, error) {
+	var h BackupHistory
+	rows, err := s.db.QueryContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND status='succeeded' ORDER BY id DESC LIMIT 2`, s.env, backup)
+	if err != nil {
+		return h, err
+	}
+	for rows.Next() {
+		r, err := scanBackupRun(rows)
+		if err != nil {
+			rows.Close()
+			return h, err
+		}
+		h.Successes = append(h.Successes, r)
+	}
+	if err = rows.Close(); err != nil {
+		return h, err
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND (status='succeeded' OR status='failed' AND detail NOT IN (?,?)) ORDER BY id DESC LIMIT 1`, s.env, backup, StoppedBackupDetail, AbandonedBackupDetail)
+	last, err := scanBackupRun(row)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return h, err
+	default:
+		h.Last = &last
+	}
+	return h, nil
 }

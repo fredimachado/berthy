@@ -262,7 +262,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			outcome.State = "recovery_required"
 			outcome.Err = "one-off outcome uncertain"
 		} else {
-			outcome.Err = "pre-deploy command failed"
+			outcome.Err = hookFailureText(err, "pre")
 		}
 		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 		return
@@ -375,7 +375,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 	case err != nil:
 		outcome.State = "failed"
-		outcome.Err = "post-deploy command failed"
+		outcome.Err = hookFailureText(err, "post")
 		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
 	case publishErr != nil:
 		// The new version runs and its release is recorded. Only its routes are missing.

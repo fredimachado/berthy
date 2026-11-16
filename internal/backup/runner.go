@@ -211,6 +211,40 @@ func (r *Runner) Run(ctx context.Context, m manifest.Manifest, name, trigger str
 // without recording anything when the backup is unknown, its volume cannot be resolved, its destination cannot be reached
 // with the credentials at hand, or a backup of the same Docker volume is running. The caller must call Execute.
 func (r *Runner) Begin(ctx context.Context, m manifest.Manifest, name, trigger string) (*Pending, error) {
+	return r.BeginAt(ctx, m, name, trigger, time.Time{})
+}
+
+// BeginAt is Begin for a run that belongs to a cron occurrence: scheduled is the UTC minute of a "schedule" run, and is zero
+// for every other trigger. The occurrence is recorded once, so a second BeginAt for it returns state.ErrConflict, even from
+// another process. A refusal after which the backup is known and cannot run, such as credentials that are gone, is recorded
+// as a failed run unless the trigger is "manual", because nobody is waiting to read it: the backup's check shows it.
+func (r *Runner) BeginAt(ctx context.Context, m manifest.Manifest, name, trigger string, scheduled time.Time) (*Pending, error) {
+	p, err := r.begin(ctx, m, name, trigger, scheduled)
+	var refusal Refusal
+	if err != nil && trigger != "manual" && errors.As(err, &refusal) && !errors.Is(err, ErrBackupRunning) && !errors.Is(err, ErrUnknownBackup) {
+		if recErr := r.recordRefused(ctx, m.Backups[name], name, trigger, scheduled, refusal); recErr != nil {
+			return nil, recErr
+		}
+	}
+	return p, err
+}
+
+// recordRefused records a run that could not start, already failed, so it shows in the runs and in the backup's check.
+func (r *Runner) recordRefused(ctx context.Context, b manifest.Backup, name, trigger string, scheduled time.Time, why Refusal) error {
+	var token [8]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	id, err := r.Store.StartBackup(ctx, state.BackupRun{Backup: name, App: b.App, Volume: b.Volume, Destination: b.Destination, Trigger: trigger,
+		Scheduled: scheduled, Started: r.now(), ObjectKey: name + "/refused-" + hex.EncodeToString(token[:])})
+	if err != nil {
+		return err
+	}
+	r.finish(id, "failed", 0, "", why.Error())
+	return nil
+}
+
+func (r *Runner) begin(ctx context.Context, m manifest.Manifest, name, trigger string, scheduled time.Time) (*Pending, error) {
 	b, ok := m.Backups[name]
 	if !ok {
 		return nil, ErrUnknownBackup
@@ -241,7 +275,7 @@ func (r *Runner) Begin(ctx context.Context, m manifest.Manifest, name, trigger s
 	}
 	started := r.now()
 	id, err := r.Store.StartBackup(ctx, state.BackupRun{
-		Backup: name, App: b.App, Volume: b.Volume, Destination: b.Destination, Trigger: trigger, Started: started,
+		Backup: name, App: b.App, Volume: b.Volume, Destination: b.Destination, Trigger: trigger, Scheduled: scheduled, Started: started,
 		ObjectKey: dir + "/starting-" + hex.EncodeToString(token[:]),
 	})
 	if err != nil {
@@ -254,7 +288,7 @@ func (r *Runner) Begin(ctx context.Context, m manifest.Manifest, name, trigger s
 		r.unclaim(dockerVolume)
 		return nil, err
 	}
-	run := state.BackupRun{ID: id, Backup: name, App: b.App, Volume: b.Volume, Destination: b.Destination, ObjectKey: key, Trigger: trigger, Started: started, Status: "running"}
+	run := state.BackupRun{ID: id, Backup: name, App: b.App, Volume: b.Volume, Destination: b.Destination, ObjectKey: key, Trigger: trigger, Scheduled: scheduled, Started: started, Status: "running"}
 	return &Pending{r: r, run: run, backup: b, store: store, dockerVolume: dockerVolume, dir: dir, key: key}, nil
 }
 
@@ -298,7 +332,7 @@ func (p *Pending) Execute(ctx context.Context) Result {
 		detail := stage
 		switch {
 		case ctx.Err() != nil:
-			detail = "agent stopped during the backup"
+			detail = state.StoppedBackupDetail
 		case cause != nil && strings.HasPrefix(cause.Error(), stage):
 			// The object client words its own failures as "upload failed: ...".
 			detail = cause.Error()

@@ -144,18 +144,6 @@ func TestUncertainMigrationDoesNotRunVersionWhileUnconfirmed(t *testing.T) {
 		t.Fatalf("uncertain migration ran further commands: %v %d", err, len(f.specs))
 	}
 }
-func TestBackupHookBlocksEarlierCommands(t *testing.T) {
-	c, f, id, p := hookFixture(t)
-	a := p.Request.Manifest.Apps["app"]
-	a.Hooks.PreDeploy = []manifest.Hook{{Run: []string{"first"}}, {Backup: "db"}}
-	p.Request.Manifest.Apps["app"] = a
-	f.exits = []int{0}
-	_, _, err := c.runPre(context.Background(), id, p)
-	if err == nil || len(f.specs) != 0 {
-		t.Fatalf("backup hook did not block: %v, %d commands", err, len(f.specs))
-	}
-}
-
 func TestOneOffRunsExactArgv(t *testing.T) {
 	c, f, id, p := hookFixture(t)
 	f.exits = []int{0}

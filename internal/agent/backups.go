@@ -25,15 +25,18 @@ import (
 // the apps that are deployed.
 type Backups struct {
 	Runner *backup.Runner
+	// Scheduler runs the backups that have a schedule, from Start on.
+	Scheduler *backup.Scheduler
 
 	store *state.Store
 	log   func(string)
 	// newStore builds an object store client. It is objectstore.New except in tests.
 	newStore func(objectstore.Config) (objectstore.Store, error)
 
-	mu   sync.Mutex
-	base context.Context // Run's context, which started runs end with
-	wg   sync.WaitGroup  // the runs in progress
+	mu      sync.Mutex
+	base    context.Context // Start's context, which started runs end with
+	wg      sync.WaitGroup  // the runs in progress, and the scheduler
+	started sync.Once
 }
 
 // NewBackups returns the backups of an agent with state and Docker, or nil for an agent without either. sched runs a backup's
@@ -66,6 +69,17 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		Log: log,
 	}
 	d.Restorer = restorer{b: b, store: d.Store}
+	d.Backups = b
+	b.Scheduler = &backup.Scheduler{
+		Env:    env,
+		Store:  d.Store,
+		Runner: b.Runner,
+		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
+			m, _, err := deployedManifest(ctx, d.Store)
+			return m, err
+		},
+		Log: log,
+	}
 	return b
 }
 
@@ -137,7 +151,27 @@ func (b *Backups) Start(ctx context.Context) {
 	if _, err := b.Runner.Archiver.RemoveLeftovers(ctx); err != nil {
 		b.logf("backups: cannot remove leftover helper containers: %v", err)
 	}
+	// The schedules run from now on, once: a second Start only changes the context of the runs that requests start.
+	b.started.Do(func() {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.Scheduler.Run(ctx)
+		}()
+	})
 }
+
+// RunBackup runs the backup of a deploy hook and waits for it, on the manifest that is being deployed, as the deploy controller
+// asks. It makes no scheduled run of its own: the run has the trigger "hook".
+func (b *Backups) RunBackup(ctx context.Context, m manifest.Manifest, name string) (deploy.BackupResult, error) {
+	res, err := b.Runner.Run(ctx, m, name, "hook")
+	if err != nil {
+		return deploy.BackupResult{}, err
+	}
+	return deploy.BackupResult{RunID: res.Run.ID, Status: res.Run.Status, Detail: res.Run.Detail}, nil
+}
+
+var _ deploy.BackupRunner = (*Backups)(nil)
 
 // Wait returns once the runs in progress have recorded their outcome. Cancel the context given to Start first, or it waits
 // for the runs to end by themselves.
@@ -307,6 +341,10 @@ func backupRunStatus(r state.BackupRun) api.BackupRun {
 	if !r.Finished.IsZero() {
 		t := r.Finished
 		out.Finished = &t
+	}
+	if !r.Scheduled.IsZero() {
+		t := r.Scheduled
+		out.Scheduled = &t
 	}
 	return out
 }

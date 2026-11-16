@@ -93,6 +93,8 @@ type Controller struct {
 	StateDir string
 	// Restorer reads backups from object storage for a restore. Nil means restore is unavailable.
 	Restorer VolumeRestorer
+	// Backups runs the volume backups of `backup:` hooks. Nil means a deploy with such a hook fails at it.
+	Backups BackupRunner
 	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
 	recoverMu sync.Mutex
 }

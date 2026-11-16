@@ -667,6 +667,9 @@ func (m *Manifest) Validate() error {
 				case !validCommandRetries(h.Retries):
 					return fmt.Errorf("app %s: %s hook %d: invalid retries", name, lh.list, n+1)
 				}
+				if _, ok := m.Backups[h.Backup]; h.Backup != "" && !ok {
+					return fmt.Errorf("app %s: %s hook %d: unknown backup", name, lh.list, n+1)
+				}
 			}
 		}
 		if x := a.Migrations; x != nil {
@@ -728,6 +731,11 @@ func (m *Manifest) Validate() error {
 		}
 		if _, ok := m.Destinations[b.Destination]; !ok {
 			return fmt.Errorf("backup %s: unknown destination", name)
+		}
+		if b.Schedule != "" {
+			if _, err := schedule.Parse(b.Schedule); err != nil {
+				return fmt.Errorf("backup %s: invalid schedule: %w", name, err)
+			}
 		}
 		if b.Before != "" {
 			if _, ok := m.Jobs[b.Before]; !ok {
@@ -877,11 +885,6 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	a, ok := m.Apps[app]
 	if !ok || a.Kind != "image" {
 		return "", fmt.Errorf("app %q is not an image app", app)
-	}
-	for _, h := range append(append([]Hook{}, a.Hooks.PreDeploy...), a.Hooks.PostDeploy...) {
-		if h.Backup != "" {
-			return "", fmt.Errorf("backup hooks are not supported yet")
-		}
 	}
 	repo, e := reference.ParseNormalizedNamed(a.Image)
 	if e != nil {

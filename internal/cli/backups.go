@@ -25,20 +25,6 @@ var (
 	backupWaitLimit = 25 * time.Hour
 )
 
-// humanSize writes a byte count with a binary unit, as `backup list` shows sizes.
-func humanSize(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for m := n / unit; m >= unit && exp < 4; m /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
-}
-
 // printBackups prints the backups in storage as a table, or as indented JSON when asJSON is set. Every text comes from the
 // agent, so it is printed with control characters made visible.
 func printBackups(out, errout io.Writer, body []byte, asJSON bool) int {
@@ -63,7 +49,7 @@ func printBackups(out, errout io.Writer, body []byte, asJSON bool) int {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "BACKUP\tAPP\tVOLUME\tSIZE\tFINISHED\tSHA256\tKEY")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Backup), terminalSafe(r.App), terminalSafe(r.Volume), humanSize(r.Size), r.Finished.UTC().Format(time.RFC3339), terminalSafe(r.SHA256), terminalSafe(r.Key))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Backup), terminalSafe(r.App), terminalSafe(r.Volume), api.HumanSize(r.Size), r.Finished.UTC().Format(time.RFC3339), terminalSafe(r.SHA256), terminalSafe(r.Key))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)
@@ -110,7 +96,7 @@ func printRestorePlan(out, errout io.Writer, data []byte) int {
 	fmt.Fprintf(out, "into volume %s (new)\n", terminalSafe(r.Into))
 	fmt.Fprintf(out, "backup: %s (app %s, volume %s)\n", terminalSafe(r.Backup), terminalSafe(r.App), terminalSafe(r.Volume))
 	fmt.Fprintf(out, "taken: %s\n", r.Finished.UTC().Format(time.RFC3339))
-	fmt.Fprintf(out, "size: %s\nsha256: %s\n", humanSize(r.Size), terminalSafe(r.SHA256))
+	fmt.Fprintf(out, "size: %s\nsha256: %s\n", api.HumanSize(r.Size), terminalSafe(r.SHA256))
 	return 0
 }
 
