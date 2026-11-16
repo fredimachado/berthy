@@ -25,7 +25,13 @@ var fixtureTime = time.Unix(1_650_000_000, 123_456_789)
 // kind, and the files that cannot be archived.
 func makeTree(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	// A unix socket path is limited to 104 bytes on macOS (108 on Linux), and t.TempDir embeds the test's name in the
+	// path, so the long test names here overflow it. A short root keeps the socket's path within the limit.
+	root, err := os.MkdirTemp("", "va")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
 	mk := func(rel string, mode fs.FileMode, data string) {
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
