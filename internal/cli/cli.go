@@ -39,7 +39,7 @@ var envPattern = agentclient.EnvPattern
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <agent|version|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
+		fmt.Fprintln(errout, "usage: berthy <setup|agent|version|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
 	}
 	cmd := args[0]
@@ -67,6 +67,10 @@ func Run(args []string, out, errout io.Writer) int {
 	if cmd == "ui" {
 		// It takes over the terminal: it needs the real standard input and output.
 		return tui.Run(args, os.Stdin, out, errout)
+	}
+	if cmd == "setup" {
+		// Local to the operator: it reaches a server over ssh, or runs on it, and needs no agent or config.
+		return runSetup(args, out, errout)
 	}
 	if cmd == "state-restore" {
 		// Local: it reads a snapshot from object storage and needs no agent, so it runs when the server is gone.

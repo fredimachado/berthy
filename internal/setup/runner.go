@@ -1,0 +1,244 @@
+// Package setup prepares a server for the agent: it connects to the server, checks it, and makes sure Docker, Swarm and the
+// shared network are in place. It runs shell scripts as root through a Runner, over the operator's own ssh client or on the
+// server itself. Every step checks before it acts, so a second run on a server that is set up changes nothing.
+package setup
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strings"
+)
+
+// Runner runs shell scripts as root on the server being set up.
+type Runner interface {
+	// Run runs script with sh as root (through sudo -n when the login is not root). stdin, when not nil, is the script's
+	// standard input, for uploads. It returns the exit code; err is only for a runner that could not run at all.
+	Run(ctx context.Context, script string, stdin io.Reader) (Result, error)
+	// Target is what the output calls the server: "ops@s1", or "this server" for --local.
+	Target() string
+}
+
+// SudoSetter is implemented by runners that can wrap their scripts in sudo. Connect turns it on when the login is not root.
+type SudoSetter interface {
+	SetSudo(bool)
+}
+
+// Result is what a script printed and the exit code it ended with.
+type Result struct {
+	Stdout, Stderr []byte
+	Code           int
+}
+
+// maxCaptured is how much of each output stream is kept: the tail, because the end of an installer's output is what says why
+// it failed.
+const maxCaptured = 1 << 20
+
+var hostPattern = regexp.MustCompile(`^([a-z_][a-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$`)
+
+// ValidHost reports whether s is a destination for ssh: USER@HOST or a bare HOST. It never starts with "-", so it cannot be
+// read as an ssh option.
+func ValidHost(s string) bool { return len(s) <= 320 && hostPattern.MatchString(s) }
+
+// shellQuote quotes s as one word for sh: in single quotes, where each embedded single quote ends the quoting, is escaped
+// with a backslash and starts it again. Inside single quotes nothing is special, so $, backticks, backslashes and newlines
+// stay as they are.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// remoteCommand is the command line the server's shell runs for a script: sh -c SCRIPT, through sudo -n when sudo is set.
+func remoteCommand(sudo bool, script string) string {
+	cmd := "sh -c " + shellQuote(script)
+	if sudo {
+		return "sudo -n " + cmd
+	}
+	return cmd
+}
+
+// sshArgs is the argument list of the ssh process for a script on dest. The destination follows "--", so it can never be an
+// option, and BatchMode keeps ssh from ever asking for a password.
+func sshArgs(dest string, sudo bool, script string) []string {
+	return []string{"-o", "BatchMode=yes", "-T", "--", dest, remoteCommand(sudo, script)}
+}
+
+// localArgs is the command and arguments that run a script on this server: sh -c directly for root, sudo -n sh -c otherwise.
+func localArgs(sudo bool, script string) (string, []string) {
+	if sudo {
+		return "sudo", []string{"-n", "sh", "-c", script}
+	}
+	return "sh", []string{"-c", script}
+}
+
+// SSH runs scripts through the operator's own ssh client, found on PATH, so keys, agents, jump hosts and host key checks
+// behave as they do for ssh itself. It never asks for a password and never stores a key.
+type SSH struct {
+	Dest string
+	// Program is the ssh executable.
+	Program string
+	sudo    bool
+}
+
+// NewSSH checks dest and finds ssh on PATH.
+func NewSSH(dest string) (*SSH, error) {
+	if !ValidHost(dest) {
+		return nil, fmt.Errorf("invalid host %q: use USER@SERVER or SERVER", dest)
+	}
+	program, err := exec.LookPath("ssh")
+	if err != nil {
+		return nil, errors.New("ssh was not found on PATH: install an OpenSSH client")
+	}
+	return &SSH{Dest: dest, Program: program}, nil
+}
+
+func (r *SSH) Target() string { return r.Dest }
+
+func (r *SSH) SetSudo(v bool) { r.sudo = v }
+
+func (r *SSH) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
+	if !ValidHost(r.Dest) {
+		return Result{}, fmt.Errorf("invalid host %q", r.Dest)
+	}
+	return runProcess(ctx, r.Program, sshArgs(r.Dest, r.sudo, script), stdin)
+}
+
+// Local runs scripts on this server: sh -c directly when it runs as root, sudo -n sh -c otherwise.
+type Local struct {
+	sudo bool
+}
+
+// NewLocal checks that this is a Linux server.
+func NewLocal() (*Local, error) { return newLocal(runtime.GOOS) }
+
+func newLocal(goos string) (*Local, error) {
+	if goos != "linux" {
+		return nil, errors.New("--local sets up the server the command runs on, which must run Linux")
+	}
+	return &Local{}, nil
+}
+
+func (r *Local) Target() string { return "this server" }
+
+func (r *Local) SetSudo(v bool) { r.sudo = v }
+
+func (r *Local) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
+	name, args := localArgs(r.sudo, script)
+	return runProcess(ctx, name, args, stdin)
+}
+
+// runProcess runs name with args and captures the tail of both output streams. A non-zero exit is a Result; a process that
+// could not start is an error.
+func runProcess(ctx context.Context, name string, args []string, stdin io.Reader) (Result, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = stdin
+	stdout, stderr := &tailBuffer{max: maxCaptured}, &tailBuffer{max: maxCaptured}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case ctx.Err() != nil:
+		return res, ctx.Err()
+	case errors.As(err, &exit):
+		res.Code = exit.ExitCode()
+		if res.Code < 0 {
+			res.Code = 1
+		}
+	default:
+		return res, err
+	}
+	return res, nil
+}
+
+// tailBuffer keeps the last max bytes written to it.
+type tailBuffer struct {
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = append([]byte(nil), t.buf[len(t.buf)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) Bytes() []byte { return bytes.Clone(t.buf) }
+
+// Login is who setup runs as on the server.
+type Login struct {
+	User string
+	Sudo bool
+}
+
+// Connect probes the login: it finds out which account the runner connects as and whether that is root. Any other account
+// must be able to run sudo without a password. When it can, sudo is applied to every script that follows.
+func Connect(ctx context.Context, r Runner) (Login, error) {
+	res, err := r.Run(ctx, "id -u; id -un", nil)
+	if err != nil {
+		return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
+	}
+	if res.Code != 0 {
+		return Login{}, fmt.Errorf("could not run commands on %s: %s", r.Target(), failureText(res))
+	}
+	words := strings.Fields(string(res.Stdout))
+	if len(words) < 1 {
+		return Login{}, fmt.Errorf("could not tell which account runs on %s", r.Target())
+	}
+	login := Login{User: "root"}
+	if len(words) > 1 {
+		login.User = clean(words[1])
+	}
+	if words[0] != "0" {
+		res, err = r.Run(ctx, "sudo -n true", nil)
+		if err != nil {
+			return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
+		}
+		if res.Code != 0 {
+			return Login{}, errors.New("the account must be root or able to run sudo without a password")
+		}
+		login.Sudo = true
+	}
+	if s, ok := r.(SudoSetter); ok {
+		s.SetSudo(login.Sudo)
+	}
+	return login, nil
+}
+
+// failureText is the last line a failed script printed to stderr, or to stdout when stderr is empty, or its exit code.
+func failureText(res Result) string {
+	if lines := nonEmptyLines(res.Stderr); len(lines) > 0 {
+		return clean(lines[len(lines)-1])
+	}
+	if lines := nonEmptyLines(res.Stdout); len(lines) > 0 {
+		return clean(lines[len(lines)-1])
+	}
+	return fmt.Sprintf("exit code %d", res.Code)
+}
+
+func nonEmptyLines(b []byte) []string {
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// clean makes text from the server safe to print: control characters become spaces.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+			return ' '
+		}
+		return r
+	}, s)
+}

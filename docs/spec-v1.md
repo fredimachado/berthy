@@ -275,10 +275,10 @@ It works in one of two ways.
 
 ### What it does
 
-1. **Connect.** Over SSH, or locally. The account must be root or able to use `sudo`.
+1. **Connect.** Over SSH, or locally. The account must be root or able to use `sudo` without a password prompt: setup runs `sudo -n` and never asks for one. Over SSH, setup runs the `ssh` found on `PATH`, so keys, the agent, jump hosts and host key checks are the ones the operator already uses. Setup never takes a password and never stores a key.
 2. **Check the server.** Linux with systemd, a supported CPU architecture, and the `--listen` address already assigned to the server. A server that already runs an agent for a different environment stops the run.
 3. **Docker.** Confirm Docker Engine is installed, at a supported version, enabled at boot and running. If Docker is missing, install it with Docker's official install script. If it is stopped, start it.
-4. **Swarm.** Turn on Swarm mode with the private address as the advertise address, unless the server is already a manager.
+4. **Swarm.** Turn on Swarm mode with the private address as the advertise address, and the Swarm management port listening on that address only, unless the server is already a manager.
 5. **Network.** Create the shared attachable overlay network named in the manifest, unless it exists.
 6. **Agent.** Install the binary, create the `berthy` system user with access to Docker, write the agent's configuration, create the state directory and the encryption key, then install, enable and start the systemd service.
 7. **First token.** Create one `admin` token and print it once. Add the environment to the CLI's configuration with the agent's address.
@@ -294,8 +294,15 @@ It ends by printing the next steps: store a copy of the encryption key off the s
 - **Existing Docker is left alone.** Setup does not upgrade or reconfigure a Docker installation it did not make. Docker older than the minimum supported version stops the run with a message. The minimum is Docker Engine 25.
 - **Existing Swarm and network are kept.** A server that is already a manager keeps its Swarm. An existing network with the right name is used as it is; if it is not an attachable overlay, setup stops. A server that is a worker in another Swarm stops the run.
 - **Same version as the CLI.** Setup installs the version of Berthy that runs it. A Linux CLI of the server's architecture uploads itself. Otherwise the server downloads the matching release and verifies its checksum. `--binary <path>` supplies a local build instead.
-- **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything.
-- **Scriptable.** `--json` reports each step and its result. A failed step exits non-zero and names the step.
+- **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything on the server: not a package, a service, a setting or a temporary file. A step that would change something reports `would_change`.
+- **Scriptable.** `--json` prints one object on standard output and nothing else. A failed step exits 1 and names the step; a wrong command line exits 2.
+
+Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `agent`) and ends with one status: `ok` (nothing to change), `changed`, `would_change` (a dry run), `skipped` or `failed`. A failed step stops the run.
+
+```json
+{"environment": "prod", "target": "ops@s1", "dry_run": false, "ok": true,
+ "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}]}
+```
 
 ### What it reads from the manifest
 
@@ -312,8 +319,12 @@ Run from the application's repository, setup reads two values from the merged ma
 | --- | --- |
 | `--host <user>@<server>` | Set up a remote server over SSH |
 | `--local` | Set up the server the command runs on |
-| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. |
+| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. It must be one specific address of the server, not `0.0.0.0` or `::`. |
+| `--network <name>` | The shared network, when the directory has no manifest |
+| `--protected` | Mark the environment as protected, when the directory has no manifest |
+| `--manifest-dir <dir>` | Where to read the manifest from. The default is the current directory. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
+| `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
 | `--binary <path>` | Install this Linux build of Berthy instead of the release that matches the CLI |
 | `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
 | `--new-token` | Add another `admin` token, for when the first one is lost |
