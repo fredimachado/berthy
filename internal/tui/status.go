@@ -33,6 +33,10 @@ type statusModel struct {
 	pending      int
 	pendingKnown bool
 	infoKnown    bool
+
+	// note is a message of the interface itself, shown until noteUntil.
+	note      string
+	noteUntil time.Time
 }
 
 func newStatusModel(st styles) statusModel {
@@ -117,6 +121,9 @@ func (s *statusModel) view(st styles, now time.Time, w int, backups backupSummar
 		conn = spinning + st.muted.Render(" connecting")
 	}
 	segs := []segment{{conn, 99}}
+	if s.note != "" && now.Before(s.noteUntil) {
+		segs = append(segs, segment{st.info.Render(clip(sanitize(s.note), 60)), 0})
+	}
 	switch {
 	case !s.lockKnown:
 	case s.lock.Locked:
@@ -152,17 +159,25 @@ func (s *statusModel) view(st styles, now time.Time, w int, backups backupSummar
 			parts[i] = sg.text
 		}
 		line := " " + strings.Join(parts, sep)
-		if lipgloss.Width(line)+lipgloss.Width(right)+1 <= w || len(segs) == 1 {
-			return between(line, right+" ", w)
+		trail := ""
+		if right != "" {
+			trail = right + " "
 		}
-		// Too narrow: drop the part of the highest drop order first, then the clock.
-		worst := 0
+		if lipgloss.Width(line)+lipgloss.Width(trail)+1 <= w || len(segs) == 1 {
+			return between(line, trail, w)
+		}
+		// Too narrow: the clock goes first, then the parts of the highest drop order, so a note, the lock and the pending count stay.
+		if right != "" {
+			right = ""
+			continue
+		}
+		worst := -1
 		for i, sg := range segs {
-			if sg.drop > segs[worst].drop && sg.drop != 99 {
+			if sg.drop != 99 && (worst < 0 || sg.drop > segs[worst].drop) {
 				worst = i
 			}
 		}
-		if segs[worst].drop == 99 {
+		if worst < 0 {
 			return between(line, "", w)
 		}
 		segs = append(segs[:worst], segs[worst+1:]...)

@@ -37,4 +37,4 @@
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending                                    updated 0s ago 
-↑/k up • l logs • esc back • tab next tab • r refresh • ? help • q quit                                                 
+↑/k up • R restart • b roll back • l logs • esc back • ? help • q quit                                                  

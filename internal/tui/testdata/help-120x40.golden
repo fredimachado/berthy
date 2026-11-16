@@ -32,9 +32,9 @@
 │ 3 apps · 1 healthy · 1 unhealthy                                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending                                    updated 0s ago 
-tab       next tab        ↑/k    up           enter open      f follow                                                  
-shift+tab previous tab    ↓/j    down         esc   back      r refresh                                                 
-1-4       go to tab       pgup   page up      /     filter                                                              
-?         help            pgdn   page down    l     logs                                                                
+tab       next tab        ↑/k    up           enter open      f follow     R restart                                    
+shift+tab previous tab    ↓/j    down         esc   back      r refresh    b roll back                                  
+1-4       go to tab       pgup   page up      /     filter                 a approve                                    
+?         help            pgdn   page down    l     logs                   x reject                                     
 q         quit            g/home top                                                                                    
                           G/end  bottom                                                                                 

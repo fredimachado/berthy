@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                          ? help 
+                                                                                
+  ╭─ Roll back api to release 2 on prod ───────────────────────────────   0% ╮  
+  │ Roll back api to release 2                                               │  
+  │                                                                          │  
+  │ · App api                                                                │  
+  │ · From release 3 · sha256:abcdef01 · commit c3 · 10m ago                 │  
+  │ · To release 2 · sha256:01234567 · commit c2 · 2h ago                    │  
+  │ · Image 127.0.0.1:15001/app                                              │  
+  │ · Digest sha256:abcdef0123456789abcd…                                    │  
+  │ · Roles web                                                              │  
+  │                                                                          │  
+  │ The app is deployed again with the image of that release, as a new       │  
+  │                                                                          │  
+  │┃ Type the environment name to confirm: prod                              │  
+  │┃ > pro                                                                   │  
+  │    Roll back     Cancel                                                  │  
+  │                                                                          │  
+  │ enter next · pgup/pgdn scroll the plan · esc cancel                      │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+ ● connected │ unlocked │ backup failed │ 1 pending              updated 0s ago 
+                                                                                

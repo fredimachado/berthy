@@ -21,4 +21,4 @@
 │ 3 apps · 1 healthy · 1 unhealthy                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending           
-↑/k up • enter open • / filter • tab next tab • r refresh • ? help • q quit     
+↑/k up • enter open • R restart • b roll back • / filter • ? help • q quit      

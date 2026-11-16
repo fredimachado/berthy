@@ -708,7 +708,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 
 ### TUI
 
-`berthy ui -e <env> --config <cli config>` opens a full-screen live view built for reading first. It reads the same configuration and token as every other command, so a `read` token shows every view; the token is never drawn, logged or written. It needs a terminal on standard input and output and refuses to start without one. It is built with the Charm libraries (Bubble Tea, Bubbles, Lip Gloss) and works at 80×24 and up; a smaller terminal gets a notice. Colours follow the terminal's light or dark background, and `NO_COLOR` turns them off: every state also has a glyph and a word, so nothing depends on colour.
+`berthy ui -e <env> --config <cli config>` opens a full-screen live view built for reading first. It reads the same configuration and token as every other command, so a `read` token shows every view; the token is never drawn, logged or written. It needs a terminal on standard input and output and refuses to start without one. It is built with the Charm libraries (Bubble Tea, Bubbles, Lip Gloss, Huh for the confirmations and Glamour for the plans) and works at 80×24 and up; a smaller terminal gets a notice. Colours follow the terminal's light or dark background, and `NO_COLOR` turns them off: every state also has a glyph and a word, so nothing depends on colour.
 
 The header shows the environment, a badge when it is protected, and the host. Four tabs hold the views:
 
@@ -727,13 +727,23 @@ The status line shows the connection (a spinner while a request is under way; `a
 | `/` | Filter, grep |
 | `f` | Follow logs on or off |
 | `l` | Logs of the selected app |
+| `R` | Restart the selected app (a role picker first when an image app has several roles) |
+| `b` | Roll back the selected app (a picker of the earlier successful releases first) |
+| `a`, `x` | Approve, reject the selected pending request on the Approvals tab |
 | `r` | Refresh now |
 | `?` | Help |
 | `q`, `ctrl+c` | Quit |
 
-The views read the agent API: the apps every 3 seconds, the lock and the number of pending approvals every 5, the approvals every 5 while their tab is open, the history of an app when its detail opens and every 10 seconds after, `df` every 30 seconds on the Server tab, and two event streams (`logs?follow=1` and `stats?watch=1`) that run only while their tab is open. Nothing here changes the environment.
+The views read the agent API: the apps every 3 seconds, the lock and the number of pending approvals every 5, the approvals every 5 while their tab is open, the history of an app when its detail opens and every 10 seconds after, `df` every 30 seconds on the Server tab, and two event streams (`logs?follow=1` and `stats?watch=1`) that run only while their tab is open. The views only read: a change is made only through an action, below.
 
-Actions in the TUI (restart, rollback, approve) are coming in the next slice: they will ask for confirmation and show the same plan as `--dry-run`.
+**Actions.** `R` restarts the app under the cursor or the open one, `b` rolls it back, and on the Approvals tab `a` approves and `x` rejects the selected pending request. The keys show in the footer only where they apply. Every action goes through one overlay and nothing is sent before the person confirms in it:
+
+1. **Plan.** A restart or a roll back asks the agent for the same request with `dry_run` set, which is the plan `--dry-run` prints; an approval or a rejection reads the requests again and refuses at once when the request is no longer pending or has expired. A roll back first asks which release, in a list of the earlier successful releases from the app's history (id, short digest, commit, age), the previous one chosen; a restart of an image app with several roles asks which role (the agent restarts one role at a time; a Compose app restarts as a whole).
+2. **Confirm.** The plan is drawn as Markdown with Glamour in the colours of the interface, inside a scrolling pane: the facts (app, image and its whole digest, roles, what will happen) and the full plan as JSON. Every string of the agent goes into the document inside a code span, so nothing in it can be formatting. For an approval the overlay also shows who asked, how long ago, and a live countdown to the expiry. A Huh confirmation follows, with Cancel as the default. On a protected environment a roll back and an approval also ask for the environment's name, typed exactly (it is case sensitive), in the same form: the confirmation cannot be reached before the name is right. A rejection asks for an optional reason of up to 200 characters. `esc` cancels at any time before the confirmation and sends nothing; the overlay takes every key while it is open.
+3. **Run.** The real request is sent with a fresh `request_id`; after a network error `r` sends it again with the same one, so the agent recognizes a retry. The agent can answer with an operation, which is followed; with a held request (the token is an AI agent's on a protected environment), which the overlay reports as "Held for approval <id>" with the command a person runs to approve it; with a result (a rejection); or with a refusal, which is shown with the agent's message and, for a `403` of a token that is too weak, the scope it needs (`deploy` to restart and roll back, `admin` to approve and reject).
+4. **Follow.** The events of the operation stream in as a live list with a spinner and the time elapsed, on the same events stream and with the same checks as the CLI; a dropped stream reconnects without showing an event twice. It ends with the result: "Restarted api in 12s", or for a failed, rolled back or recovery-required operation the reason, the command `berthy diagnostics <operation> -e <env>`, and `d` to open the app. `esc` while it runs closes the overlay and leaves a note on the status line, "operation <id> continues on the agent": the operation is not cancelled.
+
+When an action ends, the apps, the lock, the pending count, the approvals and the open app's history are read again at once. Only one action is open at a time; the views under the overlay go on updating.
 
 ### MCP server
 

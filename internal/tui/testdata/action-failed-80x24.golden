@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                          ? help 
+                                                                                
+                                                                                
+                                                                                
+  ╭─ Restart api (web) on prod ──────────────────────────────────────────────╮  
+  │                                                                          │  
+  │ · step: pulling the image                                                │  
+  │ · updating web                                                           │  
+  │ · web replica 1 healthy                                                  │  
+  │                                                                          │  
+  │ ✖ Restart of api did not succeed · rolled back                           │  
+  │   replica web became unhealthy: health check failed 3 times              │  
+  │   berthy diagnostics 8f3a2b1c -e prod                                    │  
+  │                                                                          │  
+  │ d open api · any key close                                               │  
+  │                                                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ● connected │ unlocked │ backup failed │ 1 pending              updated 0s ago 
+                                                                                

@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                                                                  ? help 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+          ╭─ Restart api (web) on prod ──────────────────────────────────────────────────────────────────────╮          
+          │                                                                                                  │          
+          │ ⠋ Restarting · 0s                                                                                │          
+          │ operation 8f3a2b1c                                                                               │          
+          │                                                                                                  │          
+          │ · step: pulling the image                                                                        │          
+          │ · updating web                                                                                   │          
+          │ ▸ web replica 1 healthy                                                                          │          
+          │                                                                                                  │          
+          │ esc close, the operation goes on                                                                 │          
+          │                                                                                                  │          
+          ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ● connected │ unlocked │ backup failed │ 1 pending                                                      updated 0s ago 
+                                                                                                                        

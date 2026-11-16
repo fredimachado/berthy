@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                          ? help 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+  ╭─ Roll back api to release 2 on prod ─────────────────────────────────────╮  
+  │                                                                          │  
+  │┃ Roll back to which release?                                             │  
+  │┃ The newest earlier release is chosen.                                   │  
+  │┃ ❯ release 2  sha256:01234567  commit c2  2h ago                         │  
+  │┃   release 1  sha256:fedcba98  commit c1  26h ago                        │  
+  │                                                                          │  
+  │ ↑↓ choose · enter select · esc cancel                                    │  
+  │                                                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ● connected │ unlocked │ backup failed │ 1 pending              updated 0s ago 
+                                                                                

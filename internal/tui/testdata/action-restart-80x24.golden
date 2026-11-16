@@ -1,0 +1,24 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                           lab-1 
+ ▐ 1 Apps ▌  2 Logs   3 Server   4 Approvals  1                          ? help 
+                                                                                
+  ╭─ Restart api (web) on prod ────────────────────────────────────────   0% ╮  
+  │ Restart api · web                                                        │  
+  │                                                                          │  
+  │ · App api                                                                │  
+  │ · Image 127.0.0.1:15001/app                                              │  
+  │ · Digest sha256:abcdef0123456789abcd…                                    │  
+  │ · Roles web                                                              │  
+  │                                                                          │  
+  │ The replicas of the role are replaced one after the other, with the same │  
+  │ image and configuration. The app keeps serving while they are.           │  
+  │                                                                          │  
+  │ Full plan                                                                │  
+  │                                                                          │  
+  │                                                                          │  
+  │┃   Restart     Cancel                                                    │  
+  │                                                                          │  
+  │ ←→ choose · enter confirm · pgup/pgdn scroll the plan · esc cancel       │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+ ● connected │ unlocked │ backup failed │ 1 pending              updated 0s ago 
+                                                                                

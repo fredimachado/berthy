@@ -47,8 +47,8 @@ const (
 	infoEvery      = 30 * time.Second
 )
 
-// overlay is the slot of what is drawn over the views: the confirmations of the actions in the next slice. While there is one,
-// it gets every key.
+// overlay is the slot of what is drawn over the views: the confirmation and the progress of an action. While there is one, it
+// gets every key.
 type overlay interface {
 	Update(tea.Msg) (overlay, tea.Cmd)
 	View(st styles, w, h int) string
@@ -97,7 +97,7 @@ func NewModel(c *client, env string, now func() time.Time) *Model {
 	return m
 }
 
-// SelectedApp is the app under the cursor of the apps tab, or the one whose detail is open. The actions of the next slice act
+// SelectedApp is the app under the cursor of the apps tab, or the one whose detail is open. The actions act
 // on it.
 func (m *Model) SelectedApp() (api.App, bool) {
 	if m.detail != nil {
@@ -210,7 +210,23 @@ func (m *Model) helpContext() helpView {
 }
 
 func (m *Model) helpView() string {
-	return m.help.View(contextKeys{k: m.keys, view: m.helpContext()})
+	k := m.keys
+	// The short help shows an action only where it applies.
+	onApp := m.active == tabApps && !m.apps.filtering && m.apps.loaded
+	if onApp && m.detail == nil {
+		_, onApp = m.apps.selected()
+	}
+	k.Restart.SetEnabled(onApp)
+	k.Rollback.SetEnabled(onApp)
+	onApproval := false
+	if m.active == tabApprovals && !m.approvals.list.SettingFilter() {
+		if r, ok := m.selectedApproval(); ok {
+			onApproval = m.decidable(r)
+		}
+	}
+	k.Approve.SetEnabled(onApproval)
+	k.Reject.SetEnabled(onApproval)
+	return m.help.View(contextKeys{k: k, view: m.helpContext()})
 }
 
 // layout sizes every part for the terminal.
@@ -335,6 +351,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case errMsg:
 		m.failed(msg)
+	case actionFinishedMsg:
+		add(m.refreshAll())
+	case actionCloseMsg:
+		if msg.note != "" {
+			m.status.note, m.status.noteUntil = msg.note, m.now().Add(noteFor)
+		}
+		if msg.openApp != "" {
+			add(m.openApp(msg.openApp))
+		}
 	}
 	if o := m.overlay; o != nil {
 		if _, isKey := msg.(tea.KeyPressMsg); !isKey {
@@ -417,6 +442,70 @@ func (m *Model) poll(now time.Time) tea.Cmd {
 		cmds = append(cmds, m.start("history", m.c.fetchHistory(m.detail.path)))
 	}
 	return tea.Batch(cmds...)
+}
+
+// noteFor is how long a note stays on the status line.
+const noteFor = 20 * time.Second
+
+// refreshAll reads again what an action may have changed: the apps, the lock, the pending count, the approvals and the history
+// of the app that is open.
+func (m *Model) refreshAll() tea.Cmd {
+	cmds := []tea.Cmd{m.start("apps", m.c.fetchApps()), m.start("lock", m.c.fetchLock()), m.start("pending", m.c.fetchPending()),
+		m.start("approvals", m.c.fetchApprovals())}
+	if m.detail != nil {
+		cmds = append(cmds, m.start("history", m.c.fetchHistory(m.detail.path)))
+	}
+	return tea.Batch(cmds...)
+}
+
+// openApp shows the detail of an app, on the apps tab.
+func (m *Model) openApp(name string) tea.Cmd {
+	for _, a := range m.apps.apps {
+		if a.Ref.Name != name {
+			continue
+		}
+		cmd := m.setTab(tabApps)
+		m.detail = newDetail(a, m.appPath(a))
+		m.layout()
+		return tea.Batch(cmd, m.start("history", m.c.fetchHistory(m.detail.path)))
+	}
+	return nil
+}
+
+// startAction opens the overlay of an action on the app or the approval that the view shows.
+func (m *Model) startAction(kind actionKind) tea.Cmd {
+	var app api.App
+	var path string
+	var row approvalRow
+	if kind == actRestart || kind == actRollback {
+		a, ok := m.SelectedApp()
+		if !ok {
+			return nil
+		}
+		app, path = a, m.appPath(a)
+	} else {
+		r, ok := m.selectedApproval()
+		if !ok || !m.decidable(r) {
+			return nil
+		}
+		row = r
+	}
+	o, cmd := newActionOverlay(m, kind, app, path, row)
+	m.overlay = o
+	return cmd
+}
+
+// selectedApproval is the request under the cursor of the approvals tab, or the one that is open.
+func (m *Model) selectedApproval() (approvalRow, bool) {
+	if d := m.approvals.detail; d != nil {
+		return d.row, true
+	}
+	return m.approvals.selected()
+}
+
+// decidable is true for a request that waits for a decision.
+func (m *Model) decidable(r approvalRow) bool {
+	return r.Status == "pending" && m.now().Before(r.Expires)
 }
 
 // refreshNow reads everything the visible tab shows, now.
@@ -659,6 +748,10 @@ func (m *Model) keyApps(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		case key.Matches(msg, k.Logs):
 			return m.openLogs(d.app)
+		case key.Matches(msg, k.Restart):
+			return m.startAction(actRestart)
+		case key.Matches(msg, k.Rollback):
+			return m.startAction(actRollback)
 		}
 		var c tea.Cmd
 		d.vp, c = d.vp.Update(msg)
@@ -678,6 +771,10 @@ func (m *Model) keyApps(msg tea.KeyPressMsg) tea.Cmd {
 				return m.openLogs(app)
 			}
 			return nil
+		case key.Matches(msg, k.Restart):
+			return m.startAction(actRestart)
+		case key.Matches(msg, k.Rollback):
+			return m.startAction(actRollback)
 		}
 	}
 	c, _ := m.apps.update(msg, k)
@@ -732,9 +829,23 @@ func (m *Model) keyApprovals(msg tea.KeyPressMsg) tea.Cmd {
 			a.detail = nil
 			return nil
 		}
+		switch {
+		case key.Matches(msg, k.Approve):
+			return m.startAction(actApprove)
+		case key.Matches(msg, k.Reject):
+			return m.startAction(actReject)
+		}
 		var c tea.Cmd
 		d.vp, c = d.vp.Update(msg)
 		return c
+	}
+	if !a.list.SettingFilter() {
+		switch {
+		case key.Matches(msg, k.Approve):
+			return m.startAction(actApprove)
+		case key.Matches(msg, k.Reject):
+			return m.startAction(actReject)
+		}
 	}
 	if !a.list.SettingFilter() && key.Matches(msg, k.Open) {
 		if row, ok := a.selected(); ok {
@@ -774,9 +885,18 @@ func (m *Model) render() string {
 		m.viewTabs(),
 		body,
 		m.status.view(m.st, m.now(), m.width, backups, m.status.spin.View(), m.lastRefresh),
-		m.helpView(),
+		m.footer(),
 	}
 	return fitLines(strings.Join(parts, "\n"), m.width, m.height)
+}
+
+// footer is the help line. While an action is open it is empty, with the same height: the keys of the views do nothing then, and the
+// overlay shows its own.
+func (m *Model) footer() string {
+	if m.overlay == nil {
+		return m.helpView()
+	}
+	return strings.Repeat("\n", lipgloss.Height(m.helpView())-1)
 }
 
 func (m *Model) viewHeader() string {

@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+   1 Apps   2 Logs   3 Server ▐ 4 Approvals ▌ 1                                                                  ? help 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+          ╭─ Approve deploy api → sha256:abc123456789 requested by claude ─────────────────────────────   0% ╮          
+          │ requested by claude · 3m ago · deploy                                                            │          
+          │ ⏳ 12:00 left to decide · expires 12:12:00                                                       │          
+          │ ──────────────────────────────────────────────────────────────────────────────────────────────── │          
+          │ deploy api → sha256:abc123456789                                                                 │          
+          │                                                                                                  │          
+          │ · App api                                                                                        │          
+          │ · Image 127.0.0.1:15001/app                                                                      │          
+          │ · Digest sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789                 │          
+          │ · Roles web                                                                                      │          
+          │                                                                                                  │          
+          │ Approving carries out the deploy as claude, exactly as planned, and follows what the agent does  │          
+          │ with it.                                                                                         │          
+          │                                                                                                  │          
+          │ Full plan                                                                                        │          
+          │                                                                                                  │          
+          │   {                                                                                              │          
+          │     "action": "deploy",                                                                          │          
+          │     "app": "api",                                                                                │          
+          │     "image": "127.0.0.1:15001/app@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0 │          
+          │       123456789",                                                                                │          
+          │     "roles": [                                                                                   │          
+          │       "web"                                                                                      │          
+          │                                                                                                  │          
+          │┃ Type the environment name to confirm: prod                                                      │          
+          │┃ > p                                                                                             │          
+          │    Approve     Cancel                                                                            │          
+          │                                                                                                  │          
+          │ enter next · pgup/pgdn scroll the plan · esc cancel                                              │          
+          ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ⠋ connected │ unlocked │ backup failed │ 1 pending                                                      updated 0s ago 
+                                                                                                                        
