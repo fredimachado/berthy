@@ -1,0 +1,87 @@
+# The prod environment: protected, two replicas, resource limits,
+# backups, alerts, monitoring and a public hostname.
+protected: true
+
+apps:
+  api:
+    roles:
+      web:
+        replicas: 2
+        resources:
+          cpu: "1.0"
+          memory: 512M
+        hostnames:
+          - todo.example.com
+    # A pre-deploy hook list replaces the base list. The base has none, so this is the whole list.
+    hooks:
+      pre_deploy:
+        - backup: main-db
+
+# Where backups and agent state snapshots go.
+destinations:
+  offsite:
+    type: s3
+    endpoint: https://s3.example.com
+    region: eu-central-1
+    bucket: acme-todo-backups
+    access_key_secret: S3_ACCESS_KEY
+    secret_key_secret: S3_SECRET_KEY
+
+# Runs dump-db, then uploads the db-dumps volume, every night at 01:00 UTC.
+backups:
+  main-db:
+    app: postgres
+    volume: db-dumps
+    schedule: "0 1 * * *"
+    destination: offsite
+    prefix: postgres/todo
+    before: dump-db
+    retention:
+      keep: 14
+
+# A daily snapshot of the agent's own state.
+state_backup:
+  destination: offsite
+  prefix: berthy-state/prod
+  schedule: "17 3 * * *"
+  keep: 14
+
+# Managed ingress: Berthy owns the Cloudflare tunnel, its routes and DNS records.
+ingress:
+  cloudflare:
+    account_id: 0123456789abcdef0123456789abcdef
+    api_token_secret: CLOUDFLARE_API_TOKEN
+    image: cloudflare/cloudflared:2024.12.2
+    replicas: 1
+    tunnel: todo-prod
+    dns: true
+
+# Checks the agent runs on a schedule.
+probes:
+  api-health:
+    service:
+      app: api
+      role: web
+      port: 8080
+      path: /health
+    interval: 30s
+    timeout: 5s
+    failures: 3
+  public-site:
+    http: https://todo.example.com/health
+    expect_status: [200, 204]
+
+# The prod agent also asks the dev agent whether it is alive.
+peers:
+  dev: http://10.0.0.4:7710
+
+alerts:
+  telegram:
+    bot_token_secret: TELEGRAM_BOT_TOKEN
+    chat_id: "-1001234567890"
+    reminder: 4h
+
+# Metrics go to an OpenTelemetry collector on the private network.
+telemetry:
+  otlp_endpoint: http://10.0.0.6:4318
+  headers_secret: OTLP_HEADERS

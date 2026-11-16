@@ -10,12 +10,20 @@ the same CLI and an MCP server.
 
 ## Status
 
-Phase 1 provides a read-only agent and CLI. Later deployment, backup and TUI
-features remain planned. See [Phase 1 verification](docs/phase-1-verification.md)
-for the current evidence and a safe way to reproduce the checks.
+Phases 1 to 4 are built and verified: the read-only agent and CLI, image and
+Compose deploys, managed ingress with Cloudflare Tunnel, health checks, alerts,
+scheduled commands, volume and state backups, the terminal UI, the MCP server
+and approvals for AI agents. Phase 5, `berthy setup`, which prepares a server
+and installs the agent, is in progress. See the
+[verification records](docs/phase-4-verification.md) for the evidence and what
+it does not cover.
 
 ## Documents
 
+- [User guide](docs/user-guide.md): every command, flag and manifest key,
+  taught step by step by deploying and managing a sample todo app.
+- [Todo example](examples/todo/): the manifest and Compose files the guide
+  uses, a private image app with PostgreSQL and Redis.
 - [v1 spec](docs/spec-v1.md): scope, architecture, deploy lifecycle, backups,
   guardrails, rollout plan and open questions.
 - [Implementation plan](docs/implementation-plan-v1.md): phase boundaries and acceptance checks.
