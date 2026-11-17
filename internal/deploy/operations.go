@@ -177,6 +177,21 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		return Plan{}, errors.New("operation unavailable")
 	}
 }
+
+// serviceImageHost is the registry host of the image a service spec runs.
+func serviceImageHost(spec json.RawMessage) (string, error) {
+	var v struct {
+		TaskTemplate struct{ ContainerSpec struct{ Image string } }
+	}
+	if err := json.Unmarshal(spec, &v); err != nil {
+		return "", errors.New("service image unavailable")
+	}
+	ref, err := reference.ParseNormalizedNamed(v.TaskTemplate.ContainerSpec.Image)
+	if err != nil {
+		return "", errors.New("service image unavailable")
+	}
+	return reference.Domain(ref), nil
+}
 func (c *Controller) operationAuth(ctx context.Context, app string, spec json.RawMessage) (*engine.RegistryAuth, error) {
 	r, err := c.Store.Applied(ctx, app)
 	if err != nil {
@@ -186,17 +201,10 @@ func (c *Controller) operationAuth(ctx context.Context, app string, spec json.Ra
 	if err = json.Unmarshal(r.Manifest, &m); err != nil {
 		return nil, errors.New("applied manifest unavailable")
 	}
-	var v struct {
-		TaskTemplate struct{ ContainerSpec struct{ Image string } }
-	}
-	if err = json.Unmarshal(spec, &v); err != nil {
-		return nil, errors.New("service image unavailable")
-	}
-	ref, err := reference.ParseNormalizedNamed(v.TaskTemplate.ContainerSpec.Image)
+	host, err := serviceImageHost(spec)
 	if err != nil {
-		return nil, errors.New("service image unavailable")
+		return nil, err
 	}
-	host := reference.Domain(ref)
 	reg, ok := m.Registries[host]
 	if !ok {
 		return nil, nil

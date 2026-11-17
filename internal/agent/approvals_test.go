@@ -671,7 +671,7 @@ func TestSecretAndLockDryRunsReturnARealPlan(t *testing.T) {
 	}
 	const value = "dry-run-canary"
 	check(plan("/secrets", apAdminToken, `{"name":"DATABASE_URL","value":"`+value+`","registry":"ghcr.io","dry_run":true}`),
-		`{"action":"secret set","name":"DATABASE_URL","registry":"ghcr.io","exists":false}`)
+		`{"action":"secret set","name":"DATABASE_URL","registry":"ghcr.io","exists":false,"services":[]}`)
 	del := func() string {
 		t.Helper()
 		r := httptest.NewRequest("DELETE", "/v1/environments/lab/secrets/DATABASE_URL", strings.NewReader(`{"dry_run":true}`))

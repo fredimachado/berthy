@@ -410,21 +410,37 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
 				return
 			}
-			if req.DryRun {
-				existing, listErr := d.Store.Secrets(ctx)
+			// A set that names no registry keeps the one the stored secret has, so rotating a registry password does not turn
+			// it into a plain secret.
+			exists := false
+			if req.DryRun || (r.Method != "DELETE" && req.Registry == "") {
+				stored, listErr := d.Store.Secrets(ctx)
 				if listErr != nil {
 					operationError(w, listErr)
 					return
 				}
-				exists := false
-				for _, info := range existing {
-					exists = exists || info.Name == req.Name
+				for _, info := range stored {
+					if info.Name == req.Name {
+						exists = true
+						if r.Method != "DELETE" && req.Registry == "" {
+							req.Registry = info.Registry
+						}
+					}
 				}
+			}
+			if req.DryRun {
 				plan := map[string]any{"action": "secret set", "name": req.Name, "exists": exists}
 				if r.Method == "DELETE" {
 					plan["action"] = "secret delete"
 				} else {
 					plan["registry"] = req.Registry
+					if req.Registry != "" {
+						if names, listErr := d.RegistryServices(ctx, req.Registry); listErr != nil {
+							plan["services_error"] = listErr.Error()
+						} else {
+							plan["services"] = append([]string{}, names...)
+						}
+					}
 				}
 				json.NewEncoder(w).Encode(plan)
 				return
@@ -439,7 +455,29 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				operationError(w, err)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+			if r.Method == "DELETE" || req.Registry == "" {
+				json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+				return
+			}
+			// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
+			answer := map[string]any{"ok": true, "registry": req.Registry}
+			refreshed, refreshErr := d.RefreshRegistryAuth(ctx, req.Registry)
+			outcome := "succeeded"
+			if refreshErr != nil {
+				answer["services_error"] = refreshErr.Error()
+				outcome = "failed"
+			} else {
+				answer["services"] = append([]deploy.RegistryRefresh{}, refreshed...)
+				for _, s := range refreshed {
+					if !s.Updated {
+						outcome = "failed"
+					}
+				}
+			}
+			if refreshErr != nil || len(refreshed) > 0 {
+				d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
+			}
+			json.NewEncoder(w).Encode(answer)
 		case rest[0] == "jobs":
 			serveJobs(w, r, rest, d, sched, sa)
 		case rest[0] == "backups":
