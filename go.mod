@@ -102,3 +102,7 @@ require (
 // A copy of v0.1.4 that looks for the clipboard tools at the first copy or paste. Upstream looks for them in a package init,
 // which searches every PATH directory in every berthy command. See third_party/clipboard/README.md.
 replace github.com/atotto/clipboard => ./third_party/clipboard
+
+// A copy of v1.6.0 that works out the machine ID at the first id, not in a package init. On macOS upstream runs ioreg at start,
+// which searches PATH and starts a process in every berthy command. See third_party/xid/README.md.
+replace github.com/rs/xid => ./third_party/xid
