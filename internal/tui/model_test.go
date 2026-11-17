@@ -525,3 +525,135 @@ func TestSelectedAppAccessor(t *testing.T) {
 		t.Fatalf("selected %v %v", a.Ref.Name, ok)
 	}
 }
+
+// replicaLog is a line of one replica of the web role, read from the container cid.
+func replicaLog(sec int, task, cid, stream, msg string) logs.Record {
+	return logs.Record{Identity: logs.Identity{Role: "web", Replica: task, ContainerID: cid}, Timestamp: testNow.Add(time.Duration(sec) * time.Second), Stream: stream, Message: msg}
+}
+
+// replicaLines is the stream of two replicas: the first answers twice, the second once.
+func replicaLines(gen int) batchMsg {
+	return batchMsg{kind: "logs", gen: gen, closed: true, msgs: []tea.Msg{
+		streamStateMsg{gen: gen, kind: "logs", state: streamLive},
+		logMsg{gen: gen, rec: replicaLog(0, "k2x8pq7vbn3rwm5ts6yhl4jd1", "f77449eeec32abcdef0123456789", "stdout", "GET /version 200")},
+		logMsg{gen: gen, rec: replicaLog(1, "k2x8pq7vbn3rwm5ts6yhl4jd2", "a1b2c3d4e5f6abcdef0123456789", "stdout", "GET /health 200")},
+		logMsg{gen: gen, rec: replicaLog(2, "k2x8pq7vbn3rwm5ts6yhl4jd1", "f77449eeec32abcdef0123456789", "stderr", "panic: something")},
+	}}
+}
+
+// TestSourceNameUsesTheContainerID: a line's source is the role and the first characters of the container id, which a
+// response and docker ps show; a record without one falls back to its task id.
+func TestSourceNameUsesTheContainerID(t *testing.T) {
+	r := logs.Record{Identity: logs.Identity{Role: "web", Replica: "k2x8pq7vbn3rwm5ts6yhl4jdc", ContainerID: "f77449eeec32abcdef"}}
+	if got := sourceName(r); got != "web.f77449" {
+		t.Fatalf("container id: %q", got)
+	}
+	r.ContainerID = ""
+	if got := sourceName(r); got != "web.k2x8pq" {
+		t.Fatalf("task id fallback: %q", got)
+	}
+	if got := sourceName(logs.Record{}); got != "app" {
+		t.Fatalf("no role: %q", got)
+	}
+}
+
+// TestLogsReplicaFilterCyclesThroughReplicas: p shows one replica's lines, then the next, then all of them again.
+func TestLogsReplicaFilterCyclesThroughReplicas(t *testing.T) {
+	m := loadedModel(t, 120, 40)
+	keys(m, "2", "enter")
+	send(m, replicaLines(m.logs.gen))
+	if m.logs.shown() != 3 {
+		t.Fatalf("shows %d lines before p", m.logs.shown())
+	}
+	keys(m, "p")
+	if m.logs.replica != "web.f77449" || m.logs.shown() != 2 {
+		t.Fatalf("first replica: %q, %d lines", m.logs.replica, m.logs.shown())
+	}
+	if out := plain(m); strings.Contains(out, "GET /health 200") || !strings.Contains(out, "panic: something") {
+		t.Fatalf("the other replica's line is shown:\n%s", out)
+	}
+	keys(m, "p")
+	if m.logs.replica != "web.a1b2c3" || m.logs.shown() != 1 {
+		t.Fatalf("second replica: %q, %d lines", m.logs.replica, m.logs.shown())
+	}
+	keys(m, "p")
+	if m.logs.replica != "" || m.logs.shown() != 3 {
+		t.Fatalf("all again: %q, %d lines", m.logs.replica, m.logs.shown())
+	}
+	m.shutdown()
+}
+
+// TestLogsReplicaAndGrepBothApply: a line has to pass the replica and the grep; esc clears both.
+func TestLogsReplicaAndGrepBothApply(t *testing.T) {
+	m := loadedModel(t, 120, 40)
+	keys(m, "2", "enter")
+	send(m, replicaLines(m.logs.gen))
+	keys(m, "p", "/", "h", "e", "a", "l", "t", "h", "enter")
+	if m.logs.shown() != 0 {
+		t.Fatalf("grep for the other replica's line shows %d lines", m.logs.shown())
+	}
+	keys(m, "p")
+	if m.logs.replica != "web.a1b2c3" || m.logs.shown() != 1 {
+		t.Fatalf("replica and grep: %q, %d lines", m.logs.replica, m.logs.shown())
+	}
+	if out := plain(m); !strings.Contains(out, "web.a1b2c3") || !strings.Contains(out, "grep health") || !strings.Contains(out, "replica web.a1b2c3") {
+		t.Fatalf("footer does not show both filters:\n%s", out)
+	}
+	keys(m, "esc")
+	if m.logs.pattern != "" || m.logs.replica != "" || m.logs.shown() != 3 || m.logs.app == "" {
+		t.Fatalf("esc did not clear both: pattern %q replica %q, %d lines, app %q", m.logs.pattern, m.logs.replica, m.logs.shown(), m.logs.app)
+	}
+	m.shutdown()
+}
+
+// TestLogsEscClearsReplicaBeforeLeaving: with a replica chosen, esc clears it and stays in the logs; the next esc goes back
+// to the picker. A new stream starts with every replica.
+func TestLogsEscClearsReplicaBeforeLeaving(t *testing.T) {
+	m := loadedModel(t, 120, 40)
+	keys(m, "2", "enter")
+	send(m, replicaLines(m.logs.gen))
+	keys(m, "p", "esc")
+	if m.logs.replica != "" || m.logs.app == "" {
+		t.Fatalf("esc with a replica chosen: replica %q, app %q", m.logs.replica, m.logs.app)
+	}
+	keys(m, "p", "1", "2")
+	if m.logs.replica != "" {
+		t.Fatalf("a new stream kept the replica %q", m.logs.replica)
+	}
+	keys(m, "esc")
+	if m.logs.app != "" {
+		t.Fatal("esc with no filter did not go back to the picker")
+	}
+	m.shutdown()
+}
+
+// TestLogsReplicaGolden: the logs of one replica, at both sizes.
+func TestLogsReplicaGolden(t *testing.T) {
+	for _, s := range sizes {
+		m := loadedModel(t, s.w, s.h)
+		keys(m, "2", "enter")
+		send(m, replicaLines(m.logs.gen))
+		keys(m, "p")
+		golden(t, "logs-replica-"+s.name, plain(m))
+		m.shutdown()
+	}
+}
+
+// TestLogsHelpKeepsHelpAndQuitAt80Columns: the logs footer fits 80 columns with ? help and q quit still showing.
+func TestLogsHelpKeepsHelpAndQuitAt80Columns(t *testing.T) {
+	m := loadedModel(t, 80, 24)
+	keys(m, "2", "enter")
+	if out := plain(m); !strings.Contains(out, "? help • q quit") {
+		t.Fatalf("footer cut off at 80 columns:\n%s", out)
+	}
+	m.shutdown()
+}
+
+// TestCountsGroupThousands: the footer counts read as 1,203 lines.
+func TestCountsGroupThousands(t *testing.T) {
+	for n, want := range map[int]string{0: "0", 412: "412", 1203: "1,203", 1000000: "1,000,000"} {
+		if got := grouped(n); got != want {
+			t.Errorf("grouped(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

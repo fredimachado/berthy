@@ -134,6 +134,90 @@ func TestLogSourcesSkipsNonLocalReplicas(t *testing.T) {
 	}
 }
 
+// TestLogSourcesMatchesReplicaByPrefix: the container id a response shows (its 12 characters) names a replica, and so does
+// a prefix of 6 or more characters. A shorter one matches only exactly.
+func TestLogSourcesMatchesReplicaByPrefix(t *testing.T) {
+	pad := func(id string) string { return id + strings.Repeat("0", 64-len(id)) }
+	web1 := api.Replica{TaskID: "task-web-1", ContainerID: pad("f77449eeec32"), Local: true}
+	web2 := api.Replica{TaskID: "task-web-2", ContainerID: pad("a1b2c3d4e5f6"), Local: true}
+	worker := api.Replica{TaskID: "task-worker-1", ContainerID: pad("9f8e7d6c5b4a"), Local: true}
+	app := api.App{Roles: []api.Role{
+		{Name: "web", Replicas: []api.Replica{web1, web2}},
+		{Name: "worker", Replicas: []api.Replica{worker}},
+	}}
+	for _, tc := range []struct {
+		name, role, replica string
+		want                []string
+		status              int
+	}{
+		{"task id", "", "task-web-1", []string{web1.ContainerID}, 200},
+		{"full container id", "", web1.ContainerID, []string{web1.ContainerID}, 200},
+		{"12-character container prefix", "", "f77449eeec32", []string{web1.ContainerID}, 200},
+		{"6-character prefix", "", "a1b2c3", []string{web2.ContainerID}, 200},
+		{"5-character prefix matches nothing", "", "f7744", nil, 404},
+		{"prefix of a replica in another role", "worker", "a1b2c3", nil, 404},
+		{"role filter and prefix", "web", "a1b2c3", []string{web2.ContainerID}, 200},
+		{"prefix of a worker", "", "9f8e7d6c5b4a", []string{worker.ContainerID}, 200},
+	} {
+		ids, status, message := logSources(app, tc.role, tc.replica)
+		if status != tc.status {
+			t.Fatalf("%s: status %d %q, want %d", tc.name, status, message, tc.status)
+		}
+		if len(ids) != len(tc.want) {
+			t.Fatalf("%s: got %+v, want containers %v", tc.name, ids, tc.want)
+		}
+		for i, id := range ids {
+			if id.ContainerID != tc.want[i] {
+				t.Fatalf("%s: got container %s, want %s", tc.name, id.ContainerID, tc.want[i])
+			}
+		}
+	}
+}
+
+// TestLogSourcesRefusesAmbiguousPrefix: a prefix that names more than one replica of the app is refused, and a replica on
+// another node counts, since the prefix would name it too. The role filter comes first, so it can tell them apart.
+func TestLogSourcesRefusesAmbiguousPrefix(t *testing.T) {
+	pad := func(id string) string { return id + strings.Repeat("0", 64-len(id)) }
+	web := api.Replica{TaskID: "task-web", ContainerID: pad("f77449eeec32"), Local: true}
+	worker := api.Replica{TaskID: "task-worker", ContainerID: pad("f77449ffff00"), Local: true}
+	app := api.App{Roles: []api.Role{
+		{Name: "web", Replicas: []api.Replica{web}},
+		{Name: "worker", Replicas: []api.Replica{worker}},
+	}}
+	ids, status, message := logSources(app, "", "f77449")
+	if status != 400 || message != `replica "f77449" matches several replicas; give more characters` || len(ids) != 0 {
+		t.Fatalf("ambiguous prefix: %d %q %+v", status, message, ids)
+	}
+	if ids, status, message = logSources(app, "web", "f77449"); status != 200 || len(ids) != 1 || ids[0].ContainerID != web.ContainerID {
+		t.Fatalf("role filter did not tell them apart: %d %q %+v", status, message, ids)
+	}
+	if ids, status, message = logSources(app, "", "f77449eeec"); status != 200 || len(ids) != 1 || ids[0].ContainerID != web.ContainerID {
+		t.Fatalf("longer prefix: %d %q %+v", status, message, ids)
+	}
+	remote := api.App{Roles: []api.Role{
+		{Name: "web", Replicas: []api.Replica{web}},
+		{Name: "worker", Replicas: []api.Replica{{TaskID: "task-remote", ContainerID: pad("f77449aaaa00")}}},
+	}}
+	if _, status, message = logSources(remote, "", "f77449"); status != 400 {
+		t.Fatalf("replica on another node not counted: %d %q", status, message)
+	}
+}
+
+// TestLogSourcesWholeIDBeatsPrefix: a whole id names its replica even when it is also a prefix of another replica's id. A
+// prefix counts as a prefix only when no whole id matches, so the prefix of both stays ambiguous.
+func TestLogSourcesWholeIDBeatsPrefix(t *testing.T) {
+	a := api.Replica{TaskID: "task-a", ContainerID: "f77449eeec32abcd", Local: true}
+	b := api.Replica{TaskID: "task-b", ContainerID: "f77449eeec32abcd0123", Local: true}
+	app := api.App{Roles: []api.Role{{Name: "web", Replicas: []api.Replica{a, b}}}}
+	ids, status, message := logSources(app, "", a.ContainerID)
+	if status != 200 || len(ids) != 1 || ids[0].ContainerID != a.ContainerID {
+		t.Fatalf("whole id of a: %d %q %+v", status, message, ids)
+	}
+	if ids, status, message = logSources(app, "", "f77449eeec32"); status != 400 || len(ids) != 0 {
+		t.Fatalf("prefix of both: %d %q %+v", status, message, ids)
+	}
+}
+
 func TestRedactionBeforeFiltering(t *testing.T) {
 	rows := []logs.Record{{Message: "old-value and new-value"}, {Message: "public"}}
 	got := redactRecords(rows, []string{"old-value", "new-value"}, regexp.MustCompile("old-value"))

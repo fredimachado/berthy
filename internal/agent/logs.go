@@ -68,7 +68,11 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 	}
 	ids, status, message := logSources(app, q.Get("role"), q.Get("replica"))
 	if status != 200 {
-		writeError(w, status, "not_found", message)
+		code := "not_found"
+		if status == 400 {
+			code = "bad_request"
+		}
+		writeError(w, status, code, message)
 		return
 	}
 	if len(ids) > logs.MaxSources {
@@ -205,12 +209,40 @@ func parseSince(value string, now time.Time) (time.Time, error) {
 	return now.Add(-d), nil
 }
 
+// minReplicaPrefix is the shortest prefix that names a replica. The 12 characters that docker ps and a container's host name
+// show are well past it; a shorter prefix matches only a whole id.
+const minReplicaPrefix = 6
+
+// replicaNamed reports whether want names this replica: its task id or its container id, whole. With prefixes set it also
+// names the replica by a prefix of at least minReplicaPrefix characters.
+func replicaNamed(want, taskID, containerID string, prefixes bool) bool {
+	if want == taskID || want == containerID {
+		return true
+	}
+	if !prefixes || len(want) < minReplicaPrefix {
+		return false
+	}
+	return strings.HasPrefix(taskID, want) || strings.HasPrefix(containerID, want)
+}
+
 // logSources returns the containers this node can read for the role and
 // replica filters. A replica not inspected on this node (Local false) still
-// counts as found but is not a log source.
+// counts as found but is not a log source. A replica filter that names more
+// than one replica of the app (on any node) is refused: it could be any of them.
+// A whole id names its replica even when it is also a prefix of another's, so
+// prefixes count only when no replica has that whole id.
 func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity, status int, message string) {
+	wholeID := false
+	for _, role := range app.Roles {
+		if wantRole != "" && wantRole != role.Name {
+			continue
+		}
+		for _, rep := range role.Replicas {
+			wholeID = wholeID || (wantReplica != "" && replicaNamed(wantReplica, rep.TaskID, rep.ContainerID, false))
+		}
+	}
 	roleFound := wantRole == ""
-	replicaFound := wantReplica == ""
+	matched := 0
 	replicaRemote := false
 	for _, role := range app.Roles {
 		if wantRole != "" && wantRole != role.Name {
@@ -222,10 +254,10 @@ func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity,
 			if rep.TaskID != "" {
 				identity = rep.TaskID
 			}
-			if wantReplica != "" && wantReplica != identity && wantReplica != rep.ContainerID {
+			if wantReplica != "" && !replicaNamed(wantReplica, rep.TaskID, rep.ContainerID, !wholeID) {
 				continue
 			}
-			replicaFound = true
+			matched++
 			if rep.ContainerID == "" {
 				continue
 			}
@@ -238,8 +270,11 @@ func logSources(app api.App, wantRole, wantReplica string) (ids []logs.Identity,
 			ids = append(ids, logs.Identity{Role: role.Name, Replica: identity, ContainerID: rep.ContainerID})
 		}
 	}
-	if !roleFound || !replicaFound {
+	if !roleFound || (wantReplica != "" && matched == 0) {
 		return nil, 404, "role or replica not found"
+	}
+	if wantReplica != "" && matched > 1 {
+		return nil, 400, fmt.Sprintf("replica %q matches several replicas; give more characters", wantReplica)
 	}
 	if replicaRemote && len(ids) == 0 {
 		return nil, 404, "replica not on this node"

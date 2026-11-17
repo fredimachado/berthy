@@ -10,7 +10,8 @@ type keyMap struct {
 	Top, Bottom              key.Binding
 	Open, Back               key.Binding
 	Filter, Apply, Clear     key.Binding
-	Follow, Refresh, Logs    key.Binding
+	Follow, Replica, Refresh key.Binding
+	Logs                     key.Binding
 	Help, Quit               key.Binding
 	// The actions: they are shown only in the views where they apply.
 	Restart, Rollback, Approve, Reject key.Binding
@@ -33,6 +34,7 @@ func newKeyMap() keyMap {
 		Apply:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
 		Clear:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
 		Follow:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "follow")),
+		Replica:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "replica")),
 		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
@@ -75,7 +77,7 @@ func (c contextKeys) ShortHelp() []key.Binding {
 	case helpLogsPick:
 		return []key.Binding{k.Up, k.Open, k.Filter, k.NextTab, k.Help, k.Quit}
 	case helpLogs:
-		return []key.Binding{k.Up, k.Follow, k.Filter, k.Back, k.NextTab, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Follow, k.Replica, k.Filter, k.Back, k.Help, k.Quit}
 	case helpServer:
 		return []key.Binding{k.NextTab, k.Refresh, k.Help, k.Quit}
 	case helpApprovals:
@@ -96,7 +98,7 @@ func (c contextKeys) FullHelp() [][]key.Binding {
 		{k.NextTab, k.PrevTab, k.GoTab, k.Help, k.Quit},
 		{k.Up, k.Down, k.PageUp, k.PageDn, k.Top, k.Bottom},
 		{k.Open, k.Back, k.Filter, k.Logs},
-		{k.Follow, k.Refresh},
+		{k.Follow, k.Replica, k.Refresh},
 		{k.Restart, k.Rollback, k.Approve, k.Reject},
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -37,6 +39,7 @@ func (i appItem) FilterValue() string { return i.name }
 // logLine is one line of the logs view, drawn once when it arrives.
 type logLine struct {
 	rec      logs.Record
+	source   string // the replica the line came from, as sourceName names it
 	plain    string // what the grep filter reads: source and message
 	rendered string
 }
@@ -50,6 +53,7 @@ type logsModel struct {
 	pattern  string
 	re       *regexp.Regexp
 	reErr    bool
+	replica  string // the source shown alone, or "" for all of them
 
 	app, label string
 	lines      []logLine
@@ -150,16 +154,19 @@ func srcPalette(st styles) []lipgloss.Style {
 	return out
 }
 
-// sourceName is the name of the container a record came from.
+// sourceName is the name of the container a record came from: its role and the first characters of its container id, the
+// ones docker ps shows. A record with no container id takes the first characters of its task id.
 func sourceName(r logs.Record) string {
 	name := r.Role
-	if r.Replica != "" {
-		// A Swarm task id is long; its first characters tell replicas apart.
-		replica := []rune(r.Replica)
-		name += "." + string(replica[:min(len(replica), 6)])
-	}
 	if name == "" {
 		name = "app"
+	}
+	id := []rune(r.ContainerID)
+	if len(id) == 0 {
+		id = []rune(r.Replica)
+	}
+	if len(id) > 0 {
+		name += "." + string(id[:min(len(id), 6)])
 	}
 	return sanitize(name)
 }
@@ -179,6 +186,7 @@ func renderLine(st styles, r logs.Record) logLine {
 	ts := r.Timestamp.Local().Format("15:04:05")
 	return logLine{
 		rec:      r,
+		source:   src,
 		plain:    src + " " + msg,
 		rendered: st.faint.Render(ts) + " " + srcStyle.Render(src) + " " + msgStyle.Render(msg),
 	}
@@ -195,7 +203,7 @@ func (l *logsModel) ingest(st styles, recs []logs.Record) {
 	l.rebuild()
 }
 
-// rebuild fills the viewport with the lines that pass the filter.
+// rebuild fills the viewport with the lines that pass the replica filter and the grep.
 func (l *logsModel) rebuild() {
 	lines := l.lines
 	if len(lines) > maxLogLines {
@@ -203,6 +211,9 @@ func (l *logsModel) rebuild() {
 	}
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
+		if l.replica != "" && ln.source != l.replica {
+			continue
+		}
 		if l.re == nil || l.re.MatchString(ln.plain) {
 			out = append(out, ln.rendered)
 		}
@@ -234,13 +245,56 @@ func (l *logsModel) compile(p string) {
 	l.re, l.reErr = re, false
 }
 
-// reset forgets the lines of the previous app.
+// reset forgets the lines of the previous app, and the replica chosen for it.
 func (l *logsModel) reset() {
 	l.lines = nil
+	l.replica = ""
 	l.live = false
 	l.follow = true
 	l.vp.SetContentLines(nil)
 	l.state, l.text, l.retry = streamConnecting, "", 0
+}
+
+// sources are the distinct sources of the buffered lines, in the order each was first seen.
+func (l *logsModel) sources() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, ln := range l.lines {
+		if !seen[ln.source] {
+			seen[ln.source] = true
+			out = append(out, ln.source)
+		}
+	}
+	return out
+}
+
+// nextReplica moves the replica filter on: all, then each source in turn, then all again. A source that has left the
+// buffer ends the cycle.
+func (l *logsModel) nextReplica() {
+	srcs := l.sources()
+	next := ""
+	if l.replica == "" {
+		if len(srcs) > 0 {
+			next = srcs[0]
+		}
+	} else if i := slices.Index(srcs, l.replica); i >= 0 && i+1 < len(srcs) {
+		next = srcs[i+1]
+	}
+	l.replica = next
+	l.rebuild()
+}
+
+// grouped writes a count with a comma every three digits, as the footer shows it.
+func grouped(n int) string {
+	s := strconv.Itoa(n)
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
 
 // selectedItem is the app under the picker's cursor.
@@ -303,10 +357,14 @@ func (l *logsModel) updateView(msg tea.Msg, k keyMap) (cmd tea.Cmd, used bool) {
 		l.follow = true
 		l.vp.GotoBottom()
 		return nil, true
-	case key.Matches(km, k.Clear) && l.pattern != "":
+	case key.Matches(km, k.Replica):
+		l.nextReplica()
+		return nil, true
+	case key.Matches(km, k.Clear) && (l.pattern != "" || l.replica != ""):
 		l.pattern = ""
 		l.grep.Reset()
 		l.compile("")
+		l.replica = ""
 		l.rebuild()
 		return nil, true
 	}
@@ -338,6 +396,21 @@ func (l *logsModel) status(st styles, spin string) string {
 	return st.warn.Render("❚❚ paused") + st.faint.Render(" "+glyphDot+" ") + st.muted.Render(countdown(l.watch.Elapsed()))
 }
 
+// filterFoot is the line under the logs: the filters on, how many lines pass them and how to clear them.
+func (l *logsModel) filterFoot(st styles) string {
+	var parts []string
+	if l.pattern != "" {
+		parts = append(parts, st.muted.Render("grep ")+st.accent.Render(sanitize(l.pattern)))
+	}
+	hint := "(esc clears)"
+	if l.replica != "" {
+		parts = append(parts, st.muted.Render("replica ")+st.accent.Render(sanitize(l.replica)))
+		hint = "(p next " + glyphDot + " esc clears)"
+	}
+	count := fmt.Sprintf("%s of %s lines  %s", grouped(l.shown()), grouped(len(l.lines)), hint)
+	return strings.Join(parts, "  ") + "  " + st.faint.Render(count)
+}
+
 // view draws the pane's content.
 func (l *logsModel) view(st styles, spin string, w, h int) string {
 	if l.app == "" {
@@ -347,8 +420,8 @@ func (l *logsModel) view(st styles, spin string, w, h int) string {
 	switch {
 	case l.grepping:
 		foot = l.grep.View()
-	case l.pattern != "":
-		foot = st.muted.Render("grep ") + st.accent.Render(sanitize(l.pattern)) + st.faint.Render(fmt.Sprintf("  %d of %d lines  (esc clears)", l.shown(), len(l.lines)))
+	case l.pattern != "" || l.replica != "":
+		foot = l.filterFoot(st)
 	}
 	if l.reErr {
 		foot = fit(foot, max(w-27, 10)) + "  " + st.err.Render("not a regular expression")
@@ -365,6 +438,8 @@ func (l *logsModel) view(st styles, spin string, w, h int) string {
 		body = lipgloss.Place(w, max(h-1, 1), lipgloss.Center, lipgloss.Center, msg)
 	} else if l.re != nil && l.shown() == 0 {
 		body = lipgloss.Place(w, max(h-1, 1), lipgloss.Center, lipgloss.Center, st.muted.Render("No line matches the pattern."))
+	} else if l.replica != "" && l.shown() == 0 {
+		body = lipgloss.Place(w, max(h-1, 1), lipgloss.Center, lipgloss.Center, st.muted.Render("No line from this replica."))
 	}
 	if foot == "" {
 		return body

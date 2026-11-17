@@ -928,6 +928,15 @@ berthy logs api -e prod --config $CFG --follow
 berthy logs api -e prod --config $CFG --since 10m --grep 'ERROR|panic' --role web --tail 500
 ```
 
+Each line is the time in UTC, the source and the message. The source is the role and the first 12 characters of the container's id, the ones `docker ps` shows, so you can tell replicas apart. A line from stderr is marked `[stderr]`:
+
+```text
+2026-11-17T02:07:50Z web.f77449eeec32 GET /version 200
+2026-11-17T02:07:51Z web.f77449eeec32 [stderr] panic: something
+```
+
+`--json` prints the records as JSON instead.
+
 | Flag | Meaning |
 | --- | --- |
 | `--follow`, `-f` | Keep streaming new lines until you press Ctrl-C. |
@@ -935,7 +944,7 @@ berthy logs api -e prod --config $CFG --since 10m --grep 'ERROR|panic' --role we
 | `--since <when>` | A duration (`10m`, `2h`) or an RFC 3339 time. |
 | `--grep <regex>` | Only lines that match this regular expression. |
 | `--role <name>` | Only one role of an image app. |
-| `--replica <id>` | Only one replica. Use the task or container id that `ps` or `describe` shows. |
+| `--replica <id>` | Only one replica. Use the task id or the container id that `ps` or `describe` shows, or a prefix of at least 6 characters of either, such as the 12 characters a log line shows. A prefix that matches more than one replica is refused: give more characters. |
 
 Berthy reads logs straight from Docker and stores none. Anything that looks like a managed secret value is shown as `[redacted]`. For history and search, send logs to a log backend from your apps.
 
@@ -1780,7 +1789,7 @@ The header shows the environment, a badge when it is protected, and the host. Fo
 | Tab | What it shows |
 | --- | --- |
 | **Apps** | A table of apps: kind, roles, replicas (running/desired), health (`●` healthy, `◐` starting, `✖` unhealthy, `○` none), version, and the age of the newest backup (red when the last run failed). `/` filters by name. `enter` opens the app's detail: roles and replicas (state, health, restarts, out-of-memory kills), the last ten deploys with the reason of a failed one, its jobs and backups. `l` follows its logs. |
-| **Logs** | A picker of apps, then the followed logs of the chosen one: the last 200 lines and what comes, with time, source (role and replica) and stream (stderr is tinted). `f` pauses and resumes following. `/` greps with a regular expression (smart case) over the last 5,000 lines. A dropped stream reconnects by itself. |
+| **Logs** | A picker of apps, then the followed logs of the chosen one: the last 200 lines and what comes, with time, source (role and the first 6 characters of the container id, such as `web.f77449`) and stream (stderr is tinted). `f` pauses and resumes following. `p` shows one replica's lines, then the next one's, then all of them. `/` greps with a regular expression (smart case) over the last 5,000 lines. A dropped stream reconnects by itself. |
 | **Server** | Meters for CPU, memory, swap and every mount, load, network and disk traffic, a CPU sparkline, Docker's disk usage, and containers sorted by CPU. |
 | **Approvals** | The changes AI agents asked for, those that wait first, with who asked and the time left. `enter` shows the request and its plan, and a countdown. |
 
@@ -1793,6 +1802,7 @@ The status line shows the connection (`agent unreachable — retrying in 4s` whe
 | `enter`, `esc` | Open, go back |
 | `/` | Filter, grep |
 | `f` | Follow logs on or off |
+| `p` | In the logs, show one replica's lines, then the next, then all |
 | `l` | Logs of the selected app |
 | `R` | Restart the selected app (a role picker first when an image app has several roles) |
 | `b` | Roll back the selected app (a picker of the earlier successful releases first) |

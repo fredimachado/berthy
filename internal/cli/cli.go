@@ -341,6 +341,9 @@ func Run(args []string, out, errout io.Writer) int {
 	if cmd == "jobs" {
 		return printJobs(out, errout, body, jsonOutput)
 	}
+	if cmd == "logs" && !jsonOutput {
+		return printLogLines(out, errout, body)
+	}
 	if jsonOutput {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, body, "", "  ") != nil {
@@ -449,12 +452,65 @@ func printText(w io.Writer, v any, indent string) {
 		}
 	case []any:
 		for _, v := range x {
-			printText(w, v, indent)
-			fmt.Fprintln(w)
+			switch v.(type) {
+			case map[string]any, []any:
+				printText(w, v, indent)
+				fmt.Fprintln(w)
+			default:
+				// A scalar is an item of the list, so it is marked and indented under its key.
+				fmt.Fprintf(w, "%s- %v\n", indent, v)
+			}
 		}
 	default:
 		fmt.Fprintln(w, x)
 	}
+}
+
+// shortIDLength is how many characters of a container id a log line shows: the ones docker ps shows.
+const shortIDLength = 12
+
+// logLine is one log record as a line: time, source and message. The source is the role and the container's short id
+// (the 12 characters docker ps and the container's host name show), so a line can be matched to the replica that answered.
+// A stderr line is marked. Control characters in the message are made safe as everywhere else in the CLI (terminalSafe).
+func logLine(r logs.Record) string {
+	line := r.Timestamp.UTC().Format(time.RFC3339) + " " + logSource(r) + " "
+	if r.Stream == "stderr" {
+		line += "[stderr] "
+	}
+	return line + terminalSafe(r.Message)
+}
+
+// logSource is the role and the short container id of a record, or of its task id when no container id is known. A record
+// with no role is from the app itself.
+func logSource(r logs.Record) string {
+	role := r.Role
+	if role == "" {
+		role = "app"
+	}
+	id := r.ContainerID
+	if id == "" {
+		id = r.Replica
+	}
+	if len(id) > shortIDLength {
+		id = id[:shortIDLength]
+	}
+	if id == "" {
+		return terminalSafe(role)
+	}
+	return terminalSafe(role + "." + id)
+}
+
+// printLogLines prints the records of a logs response, one line each.
+func printLogLines(out, errout io.Writer, body []byte) int {
+	var rows []logs.Record
+	if json.Unmarshal(body, &rows) != nil {
+		fmt.Fprintln(errout, "invalid agent response")
+		return 1
+	}
+	for _, r := range rows {
+		fmt.Fprintln(out, logLine(r))
+	}
+	return 0
 }
 
 func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
@@ -476,6 +532,10 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 			var v logs.Record
 			if json.Unmarshal([]byte(payload), &v) != nil {
 				return agentclient.ErrInvalidEvent
+			}
+			if !jsonOutput {
+				fmt.Fprintln(out, logLine(v))
+				return nil
 			}
 		case "stats":
 			var v metrics.Sample

@@ -811,7 +811,7 @@ func (m *Model) keyLogs(msg tea.KeyPressMsg) tea.Cmd {
 		m.logs.picker, c = m.logs.picker.Update(msg)
 		return c
 	}
-	if !m.logs.grepping && m.logs.pattern == "" && key.Matches(msg, k.Back) {
+	if !m.logs.grepping && m.logs.pattern == "" && m.logs.replica == "" && key.Matches(msg, k.Back) {
 		m.stopLogs()
 		m.logs.app = ""
 		m.logs.lines = nil
