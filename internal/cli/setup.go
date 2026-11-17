@@ -21,7 +21,7 @@ import (
 
 const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--config PATH]\n" +
-	"                    [--no-install-docker] [--dry-run] [--json]"
+	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]"
 
 // newSetupRunner makes the runner that reaches the server: ssh to host, or this server for local. Tests replace it.
 var newSetupRunner = func(host string, local bool) (setup.Runner, error) {
@@ -72,6 +72,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	noInstall := fset.Bool("no-install-docker", false, "stop when Docker is missing instead of installing it")
 	dry := fset.Bool("dry-run", false, "check and report what would change, without changing anything")
 	asJSON := fset.Bool("json", false, "report as JSON")
+	verbose := fset.Bool("verbose", false, "print each command setup sends and its exit status on standard error; with --dry-run, the commands a real run would send")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
@@ -128,6 +129,11 @@ func runSetup(args []string, out, errout io.Writer) int {
 	} else {
 		report.Target = runner.Target()
 		session = &setup.Session{R: runner, Opts: opts, DryRun: *dry}
+		if *verbose {
+			// The log prints to standard error as the run goes; the report reads the same log for each step's commands.
+			session.Log = setup.NewCommandLog(errout)
+			session.R = setup.Recording(runner, session.Log)
+		}
 		report.OK = setup.Run(ctx, session, setup.Steps(), show)
 	}
 	// The token is shown once, as soon as the configuration holding its digest is live on the server, even if a later step

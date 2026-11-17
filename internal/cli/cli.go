@@ -189,6 +189,13 @@ func Run(args []string, out, errout io.Writer) int {
 			} else if errors.Is(err, deploy.ErrRecoveryPending) {
 				fmt.Fprintln(errout, recoveryNotice(""))
 			}
+			// A running agent owns no interactive session of an earlier process: their containers go, in whatever state they are.
+			cleanupCtx, cleaned := context.WithTimeout(ctx, 30*time.Second)
+			err = deployment.RemoveOrphanSessions(cleanupCtx)
+			cleaned()
+			if err != nil {
+				fmt.Fprintln(errout, "interactive session cleanup failed")
+			}
 			stopped := make(chan struct{})
 			go func() {
 				defer close(stopped)
@@ -235,10 +242,17 @@ func Run(args []string, out, errout io.Writer) int {
 			defer func() { cancel(); <-exportDone }()
 		}
 		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandlerWithBackups(c, eng, collector, deployment, exporter, scheduler, backups), ReadHeaderTimeout: 5 * time.Second}
+		shutdown := make(chan struct{})
 		go func() {
+			defer close(shutdown)
 			<-ctx.Done()
 			shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 			defer done()
+			// http.Server.Shutdown does not track a connection a handler took over, so the open sessions are closed here: the containers
+			// of run sessions are stopped and removed before the agent exits.
+			if deployment != nil {
+				deployment.CloseSessions(shutdownCtx)
+			}
 			_ = server.Shutdown(shutdownCtx)
 		}()
 		fmt.Fprintf(errout, "berthy agent %s listening on %s\n", version.String(), c.Listen)
@@ -246,6 +260,7 @@ func Run(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
+		<-shutdown
 		return 0
 	}
 	if env == "" {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -140,7 +141,7 @@ func TestConnectorAppForTagAndDigest(t *testing.T) {
 	if connector.Health == nil || fmt.Sprint(connector.Health.Test) != "[CMD cloudflared tunnel --metrics 127.0.0.1:20241 ready]" || *connector.Health.Retries != 3 || connector.Health.StartPeriod != "30s" {
 		t.Fatalf("health %+v", connector.Health)
 	}
-	if fmt.Sprint(app.Env.Secret) != "[TUNNEL_TOKEN]" || len(app.Env.Plain) != 0 {
+	if !slices.Equal(app.Env.Secret, []SecretVar{{Var: TunnelTokenSecret, Secret: TunnelTokenSecret}}) || len(app.Env.Plain) != 0 {
 		t.Fatalf("env %+v", app.Env)
 	}
 	if app.Deploy.DeployTimeout != "180s" || app.Deploy.DrainTimeout != "30s" || *app.Deploy.Retain != 3 {

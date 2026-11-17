@@ -23,6 +23,7 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
+	"berthy/internal/session"
 )
 
 func isDeploymentCommand(s string) bool {
@@ -44,8 +45,8 @@ var changeFlags = map[string][]string{
 	"rollback":         withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
 	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
 	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
-	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role", "--service"),
-	"run":              withRemoteFlags("--dry-run", "--request-id", "--role", "--timeout"),
+	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role", "--service", "--interactive"),
+	"run":              withRemoteFlags("--dry-run", "--request-id", "--role", "--timeout", "--interactive"),
 	"prune":            withRemoteFlags("--dry-run", "--request-id"),
 	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
 	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
@@ -78,7 +79,7 @@ var changeFlags = map[string][]string{
 
 type commandFlags struct {
 	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                              bool
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive                 bool
 	pos, command, given, versions                                                                                []string
 }
 
@@ -98,6 +99,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.json = true
 		case "--dry-run":
 			f.dry = true
+		case "-i", "--interactive":
+			f.interactive = true
 		case "--adopt":
 			f.adopt = true
 		case "--healthy":
@@ -164,10 +167,13 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 	return f, nil
 }
 
-// canonicalFlag is the name changeFlags lists a flag under: -m is --message.
+// canonicalFlag is the name changeFlags lists a flag under: -m is --message, and -i is --interactive.
 func canonicalFlag(flag string) string {
 	if flag == "-m" {
 		return "--message"
+	}
+	if flag == "-i" {
+		return "--interactive"
 	}
 	return flag
 }
@@ -408,6 +414,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		if cmd == "run" && len(req.Command) == 0 {
 			fmt.Fprintln(errout, "run requires a command after --")
 			return 2
+		}
+		// A dry run shows what would run, so -i changes nothing about it.
+		if f.interactive && !f.dry {
+			return runInteractive(ctx, target, session.Request{Kind: cmd, App: req.App, Role: req.Role, Service: req.Service, Command: req.Command, Timeout: req.Timeout}, os.Stdin, out, errout)
 		}
 		if cmd == "deploy" {
 			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)

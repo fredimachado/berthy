@@ -26,6 +26,11 @@ type Stream struct {
 	closeErr  error
 }
 
+// NewStream wraps a connection that is already open, such as one a test made, as a Stream.
+func NewStream(ctx context.Context, conn net.Conn) *Stream {
+	return &Stream{ctx: ctx, conn: conn, br: bufio.NewReader(conn), stop: func() bool { return false }}
+}
+
 // Read returns the output. Ending the context makes it fail with the context's error.
 func (s *Stream) Read(p []byte) (int, error) {
 	n, err := s.br.Read(p)

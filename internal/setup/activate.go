@@ -75,19 +75,9 @@ func wholeSeconds(d time.Duration) int {
 //
 // Only the agent's process restarts: no app is touched.
 func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeout time.Duration) error {
-	var swap strings.Builder
-	swap.WriteString("set -e\n")
-	if staged.Binary {
-		swap.WriteString("if [ -e " + binPath + " ]; then cp -p " + binPath + " " + binPath + ".prev; echo prev_bin=yes; fi\n")
-		swap.WriteString("mv -f " + binPath + ".new " + binPath + "\n")
-	}
-	if staged.Config {
-		swap.WriteString("if [ -e " + configPath + " ]; then cp -p " + configPath + " " + configPath + ".prev; echo prev_cfg=yes; fi\n")
-		swap.WriteString("mv -f " + configPath + ".new " + configPath + "\n")
-	}
 	var out string
-	if staged.Binary || staged.Config {
-		res, err := r.Run(ctx, swap.String(), nil)
+	if swap := swapScript(staged); swap != "" {
+		res, err := r.Run(ctx, swap, nil)
 		if err != nil {
 			return fmt.Errorf("putting the new agent in place: %w", err)
 		}
@@ -145,12 +135,46 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	return &ActivateError{Message: withLog(msg, journal), ConfigInPlace: inPlace}
 }
 
+// swapScript puts the staged binary and configuration in place, keeping the previous ones as .prev and printing which it kept. It
+// is "" when nothing is staged.
+func swapScript(staged Staged) string {
+	if !staged.Binary && !staged.Config {
+		return ""
+	}
+	var swap strings.Builder
+	swap.WriteString("set -e\n")
+	if staged.Binary {
+		swap.WriteString("if [ -e " + binPath + " ]; then cp -p " + binPath + " " + binPath + ".prev; echo prev_bin=yes; fi\n")
+		swap.WriteString("mv -f " + binPath + ".new " + binPath + "\n")
+	}
+	if staged.Config {
+		swap.WriteString("if [ -e " + configPath + " ]; then cp -p " + configPath + " " + configPath + ".prev; echo prev_cfg=yes; fi\n")
+		swap.WriteString("mv -f " + configPath + ".new " + configPath + "\n")
+	}
+	return swap.String()
+}
+
+// restartScript restarts the service and waits until the agent answers on listen, for secs seconds at most.
+func restartScript(listen string, secs int) string {
+	// reset-failed clears the start limit a crash loop used up, or the restart would be refused as too quick.
+	return "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
+		"systemctl restart berthy 2>&1 || exit 1\n" + waitScript(healthURL(listen), secs)
+}
+
+// activateScripts are the scripts Activate sends when the new agent comes up: the swap, when something is staged, and the restart.
+// A dry run lists them. The scripts that put the previous agent back, and the journal, run only when the new agent does not come
+// up, so a dry run does not list them.
+func activateScripts(staged Staged, listen string, timeout time.Duration) []string {
+	var out []string
+	if swap := swapScript(staged); swap != "" {
+		out = append(out, swap)
+	}
+	return append(out, restartScript(listen, wholeSeconds(timeout)))
+}
+
 // restartAndWait restarts the service and reports whether the agent answered within the given seconds.
 func restartAndWait(ctx context.Context, r Runner, listen string, secs int) (bool, error) {
-	// reset-failed clears the start limit a crash loop used up, or the restart would be refused as too quick.
-	script := "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
-		"systemctl restart berthy 2>&1 || exit 1\n" + waitScript(healthURL(listen), secs)
-	res, err := r.Run(ctx, script, nil)
+	res, err := r.Run(ctx, restartScript(listen, secs), nil)
 	if err != nil {
 		return false, fmt.Errorf("restarting the agent: %w", err)
 	}

@@ -120,11 +120,11 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		}
 		auth = &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}
 	}
-	for _, key := range app.Env.Secret {
+	for _, name := range app.Env.SecretNames() {
 		if c.Store == nil {
 			return Plan{}, errors.New("workload secret unavailable")
 		}
-		info, _, err := c.Store.Secret(ctx, key)
+		info, _, err := c.Store.Secret(ctx, name)
 		if err != nil || info.Registry != "" {
 			return Plan{}, errors.New("workload secret unavailable")
 		}
@@ -180,12 +180,12 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 	for k, v := range app.Env.Plain {
 		out.Env = append(out.Env, k+"="+v)
 	}
-	for _, k := range app.Env.Secret {
-		info, value, e := c.Store.Secret(ctx, k)
+	for _, s := range app.Env.Secret {
+		info, value, e := c.Store.Secret(ctx, s.Secret)
 		if e != nil || info.Registry != "" {
 			return out, errors.New("workload secret unavailable")
 		}
-		out.Env = append(out.Env, k+"="+string(value))
+		out.Env = append(out.Env, s.Var+"="+string(value))
 	}
 	sort.Strings(out.Env)
 	logDriver, err := c.daemonLogDriver(ctx)

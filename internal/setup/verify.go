@@ -104,6 +104,11 @@ func plural(n int, one, many string) string {
 // Without a token it only checks that the agent answers.
 func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	if s.DryRun {
+		// Without an admin token a real run only checks that the agent answers, with the health script. With one, it asks the
+		// doctor from this machine, which sends no script; only a real run finds out whether this machine can reach the agent.
+		if !s.dryHasToken() {
+			s.Log.Would(healthScript(s.Opts.listen()))
+		}
 		return StatusSkipped, "would check the agent", nil
 	}
 	f, err := s.facts(ctx)
@@ -145,9 +150,18 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	return StatusOK, prefix + detail, nil
 }
 
+// healthScript asks the server whether the agent answers on listen, for five seconds.
+func healthScript(listen string) string { return waitScript(healthURL(listen), 5) }
+
+// dryHasToken says whether a real run would have an admin token to verify with: the one it would make, or the one the environment
+// names.
+func (s *Session) dryHasToken() bool {
+	return s.dryToken || s.TokenEnv != "" && s.Opts.getenv(s.TokenEnv) != ""
+}
+
 // healthy reports whether the agent answers /healthz, asked from the server.
 func (s *Session) healthy(ctx context.Context) bool {
-	res, err := s.R.Run(ctx, waitScript(healthURL(s.Opts.listen()), 5), nil)
+	res, err := s.R.Run(ctx, healthScript(s.Opts.listen()), nil)
 	return err == nil && res.Code == 0
 }
 
