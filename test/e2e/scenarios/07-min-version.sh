@@ -16,6 +16,8 @@ CLI090=$E2E_ROOT/bin/berthy-v090
 AGENT080=$E2E_ROOT/bin/berthy-agent-v080
 OLD080=$E2E_ROOT/bin/berthy-old-v080
 OLD_SRC=$E2E_ROOT/src-6acd0ce
+# The old agent's configuration: the fixture's, with a state directory and a key of its own (see old_agent_state).
+OLD_CFG=$RUN/old/agent.json
 
 # stamped OUT VERSION TREE: builds TREE's cmd/berthy stamped with VERSION, or fails and keeps no partial file.
 stamped() {
@@ -29,10 +31,11 @@ stamped() {
   fi
 }
 
-# start_with BINARY: starts BINARY as the agent and waits until it answers, as start_agent does for the fixture's own binary.
+# start_with BINARY [CONFIG]: starts BINARY as the agent with CONFIG (the fixture's when none is given) and waits until it
+# answers, as start_agent does for the fixture's own binary.
 start_with() {
-  local bin=$1 i
-  spawn "$RUN/agent.pid" "$LOG/agent.log" "$bin" agent --config "$RUN/agent.json"
+  local bin=$1 cfg=${2:-$RUN/agent.json} i
+  spawn "$RUN/agent.pid" "$LOG/agent.log" "$bin" agent --config "$cfg"
   for i in $(seq 1 120); do
     if adm agent-info >/dev/null 2>&1; then
       return 0
@@ -46,10 +49,21 @@ start_with() {
   return 1
 }
 
-# restart_with BINARY: stops the running agent and starts BINARY in its place.
+# restart_with BINARY [CONFIG]: stops the running agent and starts BINARY in its place.
 restart_with() {
   stop_agent
-  start_with "$1"
+  start_with "$1" "${2:-}"
+}
+
+# old_agent_state: gives the old agent a state directory and a key of its own, and its configuration is the fixture's with
+# only those two paths changed. The agent of this tree has migrated the fixture's state to schema 14, which the agent of
+# 6acd0ce (schema 13) refuses to open, so the old agent must never see that state.
+old_agent_state() {
+  mkdir -p "$RUN/old/state" && chmod 700 "$RUN/old/state" || return 1
+  head -c 32 /dev/urandom > "$RUN/old/state.key" && chmod 600 "$RUN/old/state.key" || return 1
+  sed -e "s#\"state_dir\":\"[^\"]*\"#\"state_dir\":\"$RUN/old/state\"#" -e "s#\"key_file\":\"[^\"]*\"#\"key_file\":\"$RUN/old/state.key\"#" \
+    "$RUN/agent.json" > "$OLD_CFG" || return 1
+  grep -q "\"state_dir\":\"$RUN/old/state\"" "$OLD_CFG" && grep -q "\"key_file\":\"$RUN/old/state.key\"" "$OLD_CFG"
 }
 
 # manifest_with_min VERSION: the base manifest with min_version VERSION, or with none when VERSION is empty.
@@ -137,8 +151,9 @@ spec=$(service_spec e2e-web-main)
 expect_contains "the service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 
 # d. The agent of 6acd0ce has no logging key: it answers invalid request, and the CLI names the older agent. With min_version
-#    the CLI refuses first and names the agent's release.
-restart_with "$OLD080" || exit 1
+#    the CLI refuses first and names the agent's release. It runs on a state directory of its own, never the fixture's.
+old_agent_state || { echo "cannot give the old agent its own state" >&2; exit 1; }
+restart_with "$OLD080" "$OLD_CFG" || exit 1
 logging_manifest "" | write_manifest || exit 1
 out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent: the deploy is refused: exit" 1 "$code"
