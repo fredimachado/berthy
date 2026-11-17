@@ -450,8 +450,22 @@ func (e *Engine) StopContainer(ctx context.Context, id string, seconds int) erro
 	if seconds < 0 || seconds > 300 {
 		return fmt.Errorf("invalid stop timeout")
 	}
-	return e.jsonRequest(ctx, "POST", "/containers/"+p+"/stop?t="+strconv.Itoa(seconds), nil, nil, nil)
+	// Docker answers once the container has stopped, which is up to seconds after SIGTERM and then the kill. That can be longer than
+	// the pooled client's cap, so the stop is bounded by the grace it asks for plus a margin instead.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second+stopMargin)
+	defer cancel()
+	resp, err := e.request(ctx, "POST", "/containers/"+p+"/stop?t="+strconv.Itoa(seconds), nil, nil, true)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDockerResponse))
+	return err
 }
+
+// stopMargin is the time StopContainer allows Docker beyond the grace it was given, to kill the container and answer.
+const stopMargin = 10 * time.Second
+
 func (e *Engine) WaitContainer(ctx context.Context, id string) (int, error) {
 	p, err := pathID(id)
 	if err != nil {

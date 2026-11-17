@@ -15,9 +15,8 @@ import (
 	"berthy/internal/state"
 )
 
-// runStopGrace is the seconds a run that ran past its time limit gets to stop on SIGTERM before Docker kills it. The Docker client
-// gives up on a request after 5 seconds, so the grace must leave room for the stop itself.
-const runStopGrace = 3
+// runStopGrace is the seconds a run that ran past its time limit gets to stop on SIGTERM before Docker kills it.
+const runStopGrace = 10
 
 // runOrdinal is the journal ordinal of a run's container; its output follows at runOrdinal+1. It is after the ordinals of an
 // exec and a schema revert, which an operation of its own kind never shares.

@@ -121,3 +121,19 @@ func TestServiceTaskIncludesImage(t *testing.T) {
 		t.Fatalf("task image: %+v %v", tasks, err)
 	}
 }
+
+// TestStopContainerOutlastsThePooledClientTimeout: Docker answers a stop only after the container has stopped, which can take
+// longer than the pooled client's cap. The stop is bounded by its own grace, not by that cap.
+func TestStopContainerOutlastsThePooledClientTimeout(t *testing.T) {
+	e := &Engine{client: &http.Client{Timeout: 100 * time.Millisecond, Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+		return response(204, ``), nil
+	})}}
+	if err := e.StopContainer(context.Background(), "c1", 5); err != nil {
+		t.Fatalf("a stop that Docker answers late failed: %v", err)
+	}
+}
