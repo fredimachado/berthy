@@ -558,7 +558,7 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 	}
 	m := composeApp(false)
 	app := m.Apps["db"]
-	app.Env = manifest.Env{Plain: map[string]string{"MODE": "one", "NOTE": "plain value"}, Secret: []string{"DB_PASSWORD"}}
+	app.Env = manifest.Env{Plain: map[string]string{"MODE": "one", "NOTE": "plain value"}, Secret: []manifest.SecretVar{{Var: "DB_PASSWORD", Secret: "DB_PASSWORD"}}}
 	m.Apps["db"] = app
 	m.Registries = map[string]manifest.Registry{"registry.example": {Username: "robot", PasswordSecret: "REGISTRY_TOKEN"}}
 	dir := t.TempDir()
@@ -616,7 +616,7 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 		t.Fatalf("secret with newline: %v", err)
 	}
 	// A missing secret stops the deploy with the workload message.
-	m.Apps["db"] = manifest.App{Kind: "compose", File: "compose.yaml", Env: manifest.Env{Secret: []string{"ABSENT"}}}
+	m.Apps["db"] = manifest.App{Kind: "compose", File: "compose.yaml", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "ABSENT", Secret: "ABSENT"}}}}
 	if _, err = c.stageCompose(ctx, t.TempDir(), composeReq("missing", composeFileOne, m)); !errors.Is(err, errComposeSecretMissing) {
 		t.Fatalf("missing secret: %v", err)
 	}

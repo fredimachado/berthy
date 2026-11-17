@@ -126,8 +126,68 @@ type Health struct {
 }
 type Env struct {
 	Plain  map[string]string `json:"plain,omitempty" yaml:"plain,omitempty"`
-	Secret []string          `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Secret []SecretVar       `json:"secret,omitempty" yaml:"secret,omitempty"`
 }
+
+// SecretVar is one entry of env.secret: the variable a container gets and the secret whose value it takes. In a manifest it
+// is a name, for a variable of the same name as its secret, or a one-key map from the variable to the secret.
+type SecretVar struct {
+	Var    string
+	Secret string
+}
+
+// MarshalJSON writes the bare name when the variable is the secret's name, so a manifest without a mapping keeps the form it
+// was stored in, and {"VAR":"SECRET"} otherwise.
+func (s SecretVar) MarshalJSON() ([]byte, error) {
+	if s.Var == s.Secret {
+		return json.Marshal(s.Secret)
+	}
+	return json.Marshal(map[string]string{s.Var: s.Secret})
+}
+
+// UnmarshalJSON reads a name, or an object with exactly one key, a variable, whose value is a secret's name. Anything else
+// is refused here, so the rule that says what an entry is can be shown to the user.
+func (s *SecretVar) UnmarshalJSON(b []byte) error {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return errSecretEntry
+	}
+	switch x := v.(type) {
+	case string:
+		s.Var, s.Secret = x, x
+	case map[string]any:
+		if len(x) != 1 {
+			return errSecretEntry
+		}
+		for name, value := range x {
+			secret, ok := value.(string)
+			if !ok || name == "" {
+				return errSecretEntry
+			}
+			s.Var, s.Secret = name, secret
+		}
+	default:
+		return errSecretEntry
+	}
+	return nil
+}
+
+var errSecretEntry = errors.New("env.secret entry must be a name or VARIABLE: SECRET")
+
+// SecretNames returns the names of the secrets the entries read, sorted and without duplicates.
+func (e Env) SecretNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, s := range e.Secret {
+		if !seen[s.Secret] {
+			seen[s.Secret] = true
+			names = append(names, s.Secret)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 type Deploy struct {
 	DeployTimeout string `json:"deploy_timeout,omitempty" yaml:"deploy_timeout,omitempty"`
 	DrainTimeout  string `json:"drain_timeout,omitempty" yaml:"drain_timeout,omitempty"`
@@ -550,9 +610,17 @@ func decodeManifest(data []byte, connector bool) (*Manifest, error) {
 	m.defaults()
 	return &m, nil
 }
+
+// jsonUnmarshaler is the interface of a type that reads its own JSON shape.
+var jsonUnmarshaler = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+
 func exactKeys(n *yaml.Node, t reflect.Type) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	// A type with its own UnmarshalJSON checks its own shape. Its keys are not field names, as a variable's name is not.
+	if reflect.PointerTo(t).Implements(jsonUnmarshaler) {
+		return nil
 	}
 	switch t.Kind() {
 	case reflect.Struct:
@@ -693,19 +761,22 @@ func (m *Manifest) Validate() error {
 		}
 		seen := map[string]bool{}
 		for _, s := range a.Env.Secret {
-			if s == TunnelTokenSecret && !(m.Connector && name == ConnectorAppName) {
+			if (s.Var == TunnelTokenSecret || s.Secret == TunnelTokenSecret) && !(m.Connector && name == ConnectorAppName) {
 				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
 			}
-			if strings.HasPrefix(s, berthyEnvPrefix) {
+			if strings.HasPrefix(s.Var, berthyEnvPrefix) {
 				return fmt.Errorf("app %s: names starting with BERTHY_ are reserved for Berthy", name)
 			}
-			if !envName.MatchString(s) || seen[s] {
+			if !envName.MatchString(s.Var) || !envName.MatchString(s.Secret) {
 				return fmt.Errorf("app %s: invalid secret", name)
 			}
-			if _, ok := a.Env.Plain[s]; ok {
+			if seen[s.Var] {
+				return fmt.Errorf("app %s: variable %s is listed twice", name, s.Var)
+			}
+			if _, ok := a.Env.Plain[s.Var]; ok {
 				return fmt.Errorf("app %s: duplicate environment name", name)
 			}
-			seen[s] = true
+			seen[s.Var] = true
 		}
 		if !duration(a.Deploy.DeployTimeout, false) || !duration(a.Deploy.DrainTimeout, false) || a.Deploy.Retain != nil && *a.Deploy.Retain < 1 {
 			return fmt.Errorf("app %s: invalid deploy settings", name)
@@ -1170,7 +1241,7 @@ func (m *Manifest) ConnectorApp() (App, string, error) {
 				Retries:     &retries,
 			},
 		}},
-		Env:    Env{Secret: []string{TunnelTokenSecret}},
+		Env:    Env{Secret: []SecretVar{{Var: TunnelTokenSecret, Secret: TunnelTokenSecret}}},
 		Deploy: Deploy{DeployTimeout: "180s", DrainTimeout: "30s", Retain: &retain, StartAttempts: &attempts},
 	}
 	return app, version, nil

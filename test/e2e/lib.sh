@@ -19,13 +19,17 @@ OTLP_BIN=$E2E_ROOT/bin/fakeotlp
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
 MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
-ENVN=e2e
-PROJECT=e2e
+# The environment, project, registry and listen addresses default to the values below. Two runs on the same daemon at once (a
+# checkout's own run and another's) set their own, with their own E2E_ROOT, so they never share a Swarm service, a registry
+# container or a port. For example: ENVN=e2e9 PROJECT=e2e9 REG=127.0.0.1:15031 REG_NAME=e2e9-registry AGENT_LISTEN=127.0.0.1:19511.
+ENVN=${ENVN:-e2e}
+PROJECT=${PROJECT:-e2e}
 NETWORK=berthy-phase2-lab
-REG=127.0.0.1:15021          # throwaway unauthenticated registry container "e2e-registry"
-AGENT_LISTEN=127.0.0.1:19501
-TG_LISTEN=127.0.0.1:18901
-OTLP_LISTEN=127.0.0.1:18902
+REG=${REG:-127.0.0.1:15021}          # throwaway unauthenticated registry
+REG_NAME=${REG_NAME:-e2e-registry}   # its container name
+AGENT_LISTEN=${AGENT_LISTEN:-127.0.0.1:19501}
+TG_LISTEN=${TG_LISTEN:-127.0.0.1:18901}
+OTLP_LISTEN=${OTLP_LISTEN:-127.0.0.1:18902}
 # The repo is two directories above this file, so the harness works from any checkout, including /mnt/d.
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 
@@ -171,8 +175,8 @@ YML
 }
 
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
-# containers and volumes labelled berthy.environment=e2e, the e2e-registry container, and volumes named e2e_* or in a
-# compose project e2e*. Nothing else on the daemon matches these filters.
+# containers and volumes labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes named ${PROJECT}_* or in a
+# compose project $PROJECT or $PROJECT-*. Nothing else on the daemon matches these filters.
 purge_fixture() {
   local i v
   local -a ids
@@ -196,7 +200,7 @@ purge_fixture() {
     sleep 0.5
   done
 
-  d rm -fv e2e-registry >/dev/null 2>&1
+  d rm -fv "$REG_NAME" >/dev/null 2>&1
 
   # References under the e2e registry: tags left by an interrupted setup, and the digest references that stay once a tag is
   # removed. They are removed by name, never by image id, so an image that a source tag also names keeps its source tag.
@@ -204,20 +208,26 @@ purge_fixture() {
     awk -v p="$REG/e2e/" 'index($1, p) == 1 { if ($2 == "<none>") print $1 "@" $3; else print $1 ":" $2 }' |
     while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
 
-  # Compose projects of the harness are named e2e-* (project e2e, app <name>). Berthy labels nothing on them, so their
-  # containers and networks are found by the Compose project label, and only the e2e-* prefix is removed.
+  # Compose projects of the harness are named $PROJECT-* (app <name>). Berthy labels nothing on them, so their containers and
+  # networks are found by the Compose project label, and only the $PROJECT-* prefix is removed.
   d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' |
-    awk '$2 ~ /^e2e-/ { print $1 }' |
+    awk -v p="$PROJECT" 'index($2, p "-") == 1 { print $1 }' |
     while read -r c; do d rm -f "$c" >/dev/null 2>&1; done
   d network ls --filter label=com.docker.compose.project -q |
     while read -r n; do
       case $(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null) in
-        e2e-*) d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2 ;;
+        "$PROJECT"-*) d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2 ;;
       esac
     done
 
   d volume ls --format '{{.Name}} {{.Labels}}' |
-    awk '$1 ~ /^e2e_/ || $2 ~ /(^|,)com\.docker\.compose\.project=e2e/ { print $1 }' |
+    awk -v p="$PROJECT" '
+      { hit = index($1, p "_") == 1
+        n = split($2, labels, ",")
+        for (i = 1; i <= n; i++) {
+          if (labels[i] == "com.docker.compose.project=" p || index(labels[i], "com.docker.compose.project=" p "-") == 1) hit = 1
+        }
+        if (hit) print $1 }' |
     while read -r v; do
       d volume rm "$v" >/dev/null 2>&1 || echo "volume $v is still in use and was kept" >&2
     done
