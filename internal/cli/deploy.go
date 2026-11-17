@@ -321,6 +321,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	if cmd == "state-backup" {
 		return runStateBackupCommand(f, u, prefix, token, out, errout)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	client := agentclient.NewHTTPClient()
 	method := "GET"
 	endpoint := ""
 	var body any
@@ -505,13 +508,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			endpoint = "secrets"
 		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
-				value, code := secretValue(f, errout)
+				stored := func() ([]storedSecret, bool) {
+					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, errout)
+				}
+				value, registry, code := secretValue(f, errout, stored)
 				if code != 0 {
 					return code
 				}
 				endpoint = "secrets"
 				method = "POST"
-				body = map[string]any{"name": f.pos[1], "value": value, "registry": f.registry, "dry_run": f.dry}
+				body = map[string]any{"name": f.pos[1], "value": value, "registry": registry, "dry_run": f.dry}
 			} else {
 				endpoint = "secrets/" + url.PathEscape(f.pos[1])
 				method = "DELETE"
@@ -522,9 +528,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 2
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	client := agentclient.NewHTTPClient()
 	if cmd == "wait" {
 		client = agentclient.WithTimeout(client, 11*time.Minute)
 	}
@@ -535,9 +538,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 // operation to watch to its end, or a result to print. It is what runDeployment does once it has built the request. base is
 // the agent's URL, which it does not change.
 func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, endpoint string, body any, f commandFlags, cmd string, out, errout io.Writer) int {
-	copied := *base
-	u := &copied
-	u.Path = prefix + endpoint
+	u := agentURL(base, prefix, endpoint)
 	if cmd == "wait" {
 		q := u.Query()
 		if f.role != "" {
@@ -559,18 +560,11 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			return 1
 		}
 	}
-	resp, err := agentclient.Send(ctx, client, method, u.String(), token, payload)
-	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+	status, data, ok := askAgent(ctx, client, u, token, method, payload, errout)
+	if !ok {
 		return 1
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 {
-		fmt.Fprintln(errout, "invalid agent response")
-		return 1
-	}
-	if resp.StatusCode == http.StatusAccepted {
+	if status == http.StatusAccepted {
 		if code, held := reportHeld(data, out, errout, f.json); held {
 			return code
 		}
@@ -589,8 +583,8 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		}
 		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env)
 	}
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, data))
+	if status != http.StatusOK {
+		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
 	if cmd == "diagnostics" && !f.json {
@@ -605,7 +599,36 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	if cmd == "restore" && f.dry && !f.json {
 		return printRestorePlan(out, errout, data)
 	}
+	if cmd == "secret" && f.pos[0] == "set" && !f.dry && !f.json {
+		if printSecretSet(out, data) {
+			return 0
+		}
+	}
 	return printResponse(out, errout, data, f.json)
+}
+
+// agentURL returns base with the path of endpoint under prefix. base is not changed.
+func agentURL(base *url.URL, prefix, endpoint string) *url.URL {
+	copied := *base
+	copied.Path = prefix + endpoint
+	return &copied
+}
+
+// askAgent sends one request to the agent at u with the token, with payload as its body when it is not nil, and reads the
+// answer. When the agent cannot be reached or its answer cannot be read, it prints why and returns ok false.
+func askAgent(ctx context.Context, client *http.Client, u *url.URL, token, method string, payload []byte, errout io.Writer) (status int, data []byte, ok bool) {
+	resp, err := agentclient.Send(ctx, client, method, u.String(), token, payload)
+	if err != nil {
+		fmt.Fprintln(errout, "agent connection failed")
+		return 0, nil, false
+	}
+	defer resp.Body.Close()
+	data, err = io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		fmt.Fprintln(errout, "invalid agent response")
+		return 0, nil, false
+	}
+	return resp.StatusCode, data, true
 }
 
 // newRequestID is a fresh random request ID, which the agent uses to recognize a retry of the same request.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"berthy/internal/agent"
+	"berthy/internal/agentclient"
 	"berthy/internal/cloudflare"
 	"berthy/internal/manifest"
 	"berthy/internal/registrycheck"
@@ -274,19 +275,44 @@ func readHidden(fd uintptr) ([]byte, error) {
 	return term.ReadPassword(fd)
 }
 
-// secretValue returns the value `secret set` stores. From a pipe it reads standard input to its end, as before.
-// At a terminal it prints the guide, asks, and reads the value hidden. code is non-zero when there is no value to store.
-func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
+// storedSecret is one secret the agent holds, as GET secrets lists it: its name, and the registry whose password it is, or
+// empty for a secret that is not a registry password.
+type storedSecret struct {
+	Name     string `json:"name"`
+	Registry string `json:"registry"`
+}
+
+// secretValue returns the value `secret set` stores and the registry it is for. From a pipe it reads standard input to its
+// end, as before, and the registry is the flag's. At a terminal it first asks the agent what it holds (stored; ok is false
+// when the agent could not say, and has printed why), says when the value replaces a stored one, prints the guide, asks,
+// and reads the value hidden. code is non-zero when there is no value to store.
+func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool)) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, maxSecretValue+1))
 		if e != nil || len(data) > maxSecretValue {
 			fmt.Fprintln(errout, "secret input unavailable or too large")
-			return "", 1
+			return "", "", 1
 		}
-		return strings.TrimSuffix(string(data), "\n"), 0
+		return strings.TrimSuffix(string(data), "\n"), f.registry, 0
 	}
 	name := f.pos[1]
+	held, ok := stored()
+	if !ok {
+		return "", "", 1
+	}
+	registry = f.registry
+	if i := slices.IndexFunc(held, func(s storedSecret) bool { return s.Name == name }); i >= 0 {
+		prior := held[i]
+		if prior.Registry != "" {
+			fmt.Fprintf(errout, "%s is stored as the password for %s. The new value replaces it.\n", name, prior.Registry)
+		} else {
+			fmt.Fprintf(errout, "%s is already stored. The new value replaces it.\n", name)
+		}
+		if registry == "" {
+			registry = prior.Registry
+		}
+	}
 	m, err := manifest.Load(f.dir, f.env)
 	if err != nil {
 		m = nil
@@ -295,7 +321,7 @@ func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
 			fmt.Fprintf(errout, "manifest not loaded: %v\n", err)
 		}
 	}
-	g := guideFor(m, f.env, name, f.registry)
+	g := guideFor(m, f.env, name, registry)
 	for _, line := range g.intro {
 		fmt.Fprintln(errout, line)
 	}
@@ -304,11 +330,11 @@ func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
 	fmt.Fprintln(errout)
 	if err != nil || len(line) > maxSecretValue {
 		fmt.Fprintln(errout, "secret input unavailable or too large")
-		return "", 1
+		return "", "", 1
 	}
 	if len(line) == 0 {
 		fmt.Fprintln(errout, "no value entered")
-		return "", 1
+		return "", "", 1
 	}
 	value = string(line)
 	if g.check != nil {
@@ -321,8 +347,74 @@ func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
 		}
 		if res.refusal != "" {
 			fmt.Fprintln(errout, "not stored: "+res.refusal)
-			return "", 1
+			return "", "", 1
 		}
 	}
-	return value, 0
+	return value, registry, 0
+}
+
+// storedSecrets asks the agent which secrets it holds, at u. ok is false when the agent did not answer with the list, and the
+// reason has been printed.
+func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token string, errout io.Writer) ([]storedSecret, bool) {
+	status, data, ok := askAgent(ctx, client, u, token, http.MethodGet, nil, errout)
+	if !ok {
+		return nil, false
+	}
+	if status != http.StatusOK {
+		fmt.Fprintln(errout, agentclient.Message(status, data))
+		return nil, false
+	}
+	var held []storedSecret
+	// Only an array is the list: a JSON null decodes to a nil slice, which is not one.
+	if json.Unmarshal(data, &held) != nil || held == nil {
+		fmt.Fprintln(errout, "invalid agent response")
+		return nil, false
+	}
+	return held, true
+}
+
+// secretSetReply is the agent's answer to a secret set. A registry password the agent stored names the registry, the running
+// services that pull from it and what happened to each; services_error says why they could not be looked at.
+type secretSetReply struct {
+	Registry      string          `json:"registry"`
+	Services      []secretService `json:"services"`
+	ServicesError string          `json:"services_error"`
+}
+
+// secretService is what the agent did with one running service that pulls from the registry.
+type secretService struct {
+	Name    string `json:"name"`
+	Updated bool   `json:"updated"`
+	Error   string `json:"error"`
+}
+
+// printSecretSet says what the agent did with the services of a registry password it stored. It returns false, printing
+// nothing, when the answer names no registry: that is a plain secret, which the generic printer prints.
+func printSecretSet(out io.Writer, data []byte) bool {
+	var reply secretSetReply
+	if json.Unmarshal(data, &reply) != nil || reply.Registry == "" {
+		return false
+	}
+	registry := terminalSafe(reply.Registry)
+	fmt.Fprintln(out, "ok: true")
+	retry := false
+	switch {
+	case reply.ServicesError != "":
+		fmt.Fprintln(out, "services not updated: "+terminalSafe(reply.ServicesError))
+		retry = true
+	case len(reply.Services) == 0:
+		fmt.Fprintln(out, "no running service pulls from "+registry+" yet")
+	}
+	for _, s := range reply.Services {
+		if s.Updated {
+			fmt.Fprintln(out, terminalSafe(s.Name)+": now pulls from "+registry+" with the new password")
+			continue
+		}
+		fmt.Fprintln(out, terminalSafe(s.Name)+": not updated ("+terminalSafe(s.Error)+")")
+		retry = true
+	}
+	if retry {
+		fmt.Fprintln(out, "Run the command again to retry the services that were not updated.")
+	}
+	return true
 }
