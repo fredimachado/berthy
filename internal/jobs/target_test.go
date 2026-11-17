@@ -193,3 +193,51 @@ func TestStatusesListJobsWithNextAndLastRun(t *testing.T) {
 	}
 	var _ []api.JobStatus = one
 }
+
+// TestPickComposeContainerChoosesWhatAJobOrAnExecRunsIn: the running, non-one-off container of the named service, or of the
+// only service when none is named, the lowest replica first and then the lowest id.
+func TestPickComposeContainerChoosesWhatAJobOrAnExecRunsIn(t *testing.T) {
+	pg := []engine.ComposeContainer{
+		{ID: "pg-3", Service: "postgres", State: "running", Number: 3},
+		{ID: "pg-2", Service: "postgres", State: "running", Number: 2},
+		{ID: "pg-2b", Service: "postgres", State: "running", Number: 2},
+	}
+	web := engine.ComposeContainer{ID: "web-1", Service: "web", State: "running", Number: 1}
+	oneOff := engine.ComposeContainer{ID: "pg-oneoff", Service: "postgres", State: "running", Number: 1, OneOff: true}
+	stopped := engine.ComposeContainer{ID: "pg-stopped", Service: "postgres", State: "exited", Number: 1}
+	for _, tc := range []struct {
+		name       string
+		containers []engine.ComposeContainer
+		service    string
+		want       string
+	}{
+		{"named service", append([]engine.ComposeContainer{web, oneOff, stopped}, pg...), "postgres", "pg-2"},
+		{"only service", append([]engine.ComposeContainer{oneOff, stopped}, pg...), "", "pg-2"},
+		{"lowest id among replicas of one number", []engine.ComposeContainer{{ID: "b", Service: "x", State: "running", Number: 1}, {ID: "a", Service: "x", State: "running", Number: 1}}, "x", "a"},
+		{"one-off container is never chosen", []engine.ComposeContainer{oneOff, {ID: "pg-run", Service: "postgres", State: "running", Number: 4}}, "postgres", "pg-run"},
+	} {
+		got, err := PickComposeContainer(tc.containers, tc.service)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: container %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+	if _, err := PickComposeContainer([]engine.ComposeContainer{web, {ID: "pg", Service: "postgres", State: "running", Number: 1}}, ""); !errors.Is(err, ErrSeveralServices) {
+		t.Errorf("two services without a name: %v", err)
+	}
+	if _, err := PickComposeContainer([]engine.ComposeContainer{web, {ID: "pg", Service: "postgres", State: "running", Number: 1}}, "postgres"); err != nil {
+		t.Errorf("named service among two: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		containers []engine.ComposeContainer
+		service    string
+	}{
+		{"no containers", nil, ""},
+		{"only one-off and stopped", []engine.ComposeContainer{oneOff, stopped}, "postgres"},
+		{"named service not running", []engine.ComposeContainer{web}, "postgres"},
+	} {
+		if _, err := PickComposeContainer(tc.containers, tc.service); !errors.Is(err, ErrNoRunningContainer) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}

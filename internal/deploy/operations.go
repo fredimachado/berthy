@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
 	"github.com/distribution/reference"
@@ -132,7 +133,7 @@ func (c *Controller) inspectOperation(ctx context.Context, req Request, operatio
 	return b, live, desired, n, err
 }
 func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request) (Plan, error) {
-	if req.Kind == "exec" || req.Kind == "restart" || req.Kind == "scale" {
+	if req.Kind == "restart" || req.Kind == "scale" {
 		m, compose, err := c.appliedCompose(ctx, req.App)
 		if err != nil {
 			return Plan{}, err
@@ -152,10 +153,11 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
 		}
-		if _, err := c.execTarget(ctx, req); err != nil {
+		_, target, err := c.execTarget(ctx, req)
+		if err != nil {
 			return Plan{}, err
 		}
-		return Plan{App: req.App, Command: req.Command}, nil
+		return Plan{App: req.App, Command: req.Command, Exec: &ExecPlan{Target: target}}, nil
 	case "prune":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
@@ -560,24 +562,56 @@ type execEngine interface {
 	Exec(context.Context, string, []string) (engine.ExecResult, error)
 }
 
-func (c *Controller) execTarget(ctx context.Context, req Request) (string, error) {
+// composeContainersEngine lists the containers of a Compose project. An exec of a Compose app picks its container from them.
+type composeContainersEngine interface {
+	ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error)
+}
+
+// execKind checks that req names its container the way its app takes it: a role for an image app, a service for a Compose
+// app. It reads the applied release only, so Admit can refuse the wrong flag before anything is journaled. It also reports
+// whether the app is a Compose app.
+func (c *Controller) execKind(ctx context.Context, req Request) (manifest.Manifest, bool, error) {
+	m, compose, err := c.appliedCompose(ctx, req.App)
+	if err != nil {
+		return m, false, err
+	}
+	switch {
+	case compose && req.Role != "":
+		return m, true, errComposeRole
+	case !compose && req.Service != "":
+		return m, false, errExecServiceImage
+	}
+	return m, compose, nil
+}
+
+// execTarget finds the container an exec runs in, and names where it runs: the bound Swarm service of the role for an image
+// app, or the Compose project and service of the container for a Compose app. The name is what a plan shows, so it stays the
+// same when the container changes.
+func (c *Controller) execTarget(ctx context.Context, req Request) (string, string, error) {
 	if len(req.Command) == 0 || req.Command[0] == "" {
-		return "", errors.New("command required")
+		return "", "", errors.New("command required")
+	}
+	m, compose, err := c.execKind(ctx, req)
+	if err != nil {
+		return "", "", err
 	}
 	e, ok := c.Engine.(execEngine)
 	if !ok {
-		return "", errors.New("exec unavailable")
+		return "", "", errors.New("exec unavailable")
+	}
+	if compose {
+		return c.composeExecTarget(ctx, m, req)
 	}
 	b, err := c.operationBinding(ctx, req.App, req.Role)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	live, err := c.Engine.InspectService(ctx, b.Name)
 	if err != nil || live.ID != b.ServiceID {
-		return "", errors.New("bound service unavailable")
+		return "", "", errors.New("bound service unavailable")
 	}
 	if err = validateInheritedRuntime(live.Spec); err != nil {
-		return "", err
+		return "", "", err
 	}
 	var spec struct {
 		Name         string
@@ -586,15 +620,15 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, error
 		}
 	}
 	if json.Unmarshal(live.Spec, &spec) != nil || spec.Name != b.Name {
-		return "", errors.New("invalid service")
+		return "", "", errors.New("invalid service")
 	}
 	generation := spec.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
 	if generation == "" {
-		return "", errors.New("generation unavailable")
+		return "", "", errors.New("generation unavailable")
 	}
 	tasks, err := c.Engine.ServiceTasks(ctx, b.ServiceID)
 	if err != nil {
-		return "", errors.New("task inspection failed")
+		return "", "", errors.New("task inspection failed")
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Slot < tasks[j].Slot })
 	for _, task := range tasks {
@@ -607,17 +641,59 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, error
 		}
 		health, err := c.Engine.InspectContainerHealth(ctx, task.ContainerID)
 		if err == nil && health == "healthy" {
-			return task.ContainerID, nil
+			return task.ContainerID, b.Name, nil
 		}
 	}
-	return "", errors.New("healthy local container unavailable")
+	return "", "", errors.New("healthy local container unavailable")
 }
+
+// composeExecTarget is the container a Compose app's exec runs in: the running container of the named service, or of the
+// app's only service. It is chosen by the rule scheduled jobs use. The target names the service of that container.
+func (c *Controller) composeExecTarget(ctx context.Context, m manifest.Manifest, req Request) (string, string, error) {
+	d, ok := c.Engine.(composeContainersEngine)
+	if !ok {
+		return "", "", errors.New("exec unavailable")
+	}
+	project := m.ComposeProject(req.App)
+	containers, err := d.ComposeContainers(ctx, project)
+	if err != nil {
+		return "", "", errors.New("container inspection failed")
+	}
+	id, err := jobs.PickComposeContainer(containers, req.Service)
+	switch {
+	case errors.Is(err, jobs.ErrNoRunningContainer):
+		return "", "", Refusal(noRunningContainer(req.App, req.Service))
+	case errors.Is(err, jobs.ErrSeveralServices):
+		return "", "", errExecServices
+	case err != nil:
+		return "", "", err
+	}
+	for _, ct := range containers {
+		if ct.ID == id {
+			return id, project + "/" + ct.Service, nil
+		}
+	}
+	return "", "", errors.New("container inspection failed")
+}
+
+// noRunningContainer is the refusal of an exec whose Compose app has no running container of the service it names.
+func noRunningContainer(app, service string) string {
+	if service == "" {
+		return "no running container for " + app
+	}
+	return "no running container for " + app + "/" + service
+}
+
 func (c *Controller) runExec(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
 	if !actor.Admin {
 		return state.Outcome{State: "failed", Err: "administrator required"}
 	}
-	target, err := c.execTarget(ctx, req)
+	container, _, err := c.execTarget(ctx, req)
 	if err != nil {
+		var r Refusal
+		if errors.As(err, &r) {
+			return state.Outcome{State: "failed", Err: string(r)}
+		}
 		return state.Outcome{State: "failed", Err: "exec target unavailable"}
 	}
 	infos, err := c.Store.Secrets(ctx)
@@ -635,11 +711,11 @@ func (c *Controller) runExec(ctx context.Context, op state.Operation, actor Acto
 	desired, err := json.Marshal(struct {
 		Command     []string `json:"command"`
 		ContainerID string   `json:"container_id"`
-	}{req.Command, target})
+	}{req.Command, container})
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "exec preparation failed"}
 	}
-	intent := state.Intent{Ordinal: 30000, Kind: "exec", Name: target, Desired: desired}
+	intent := state.Intent{Ordinal: 30000, Kind: "exec", Name: container, Desired: desired}
 	if err = c.Store.RecordIntent(ctx, op.ID, intent); err != nil {
 		return state.Outcome{State: "failed", Err: "exec journal failed"}
 	}
@@ -648,7 +724,7 @@ func (c *Controller) runExec(ctx context.Context, op state.Operation, actor Acto
 	}
 	execCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	result, err := c.Engine.(execEngine).Exec(execCtx, target, req.Command)
+	result, err := c.Engine.(execEngine).Exec(execCtx, container, req.Command)
 	if err != nil {
 		return state.Outcome{State: "recovery_required", Err: "exec outcome uncertain"}
 	}

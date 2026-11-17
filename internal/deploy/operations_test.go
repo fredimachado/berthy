@@ -500,4 +500,7 @@ func TestExecPlanNamesTheCommandSoAPersonCanReviewIt(t *testing.T) {
 	if got, _ := json.Marshal(plan.Command); string(got) != `["rm","-rf","/data"]` || plan.App != "app" {
 		t.Fatalf("plan %+v", plan)
 	}
+	if plan.Exec == nil || plan.Exec.Target != "app-web" {
+		t.Fatalf("an image app's exec plan names the role's service: %+v", plan.Exec)
+	}
 }

@@ -281,3 +281,34 @@ func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
 		t.Fatalf("json history lacks the tag of release 3 or shows one for release 2:\n%s", out.String())
 	}
 }
+
+// TestExecShowsWhyItFailedBeforeItRan: an exec that fails before its command starts has no output. The CLI shows the operation's
+// record, with the reason in it, and exits 1, rather than only saying the output is unavailable.
+func TestExecShowsWhyItFailedBeforeItRan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/environments/dev/exec":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\n")
+		case "/v1/environments/dev/operations/op1":
+			fmt.Fprint(w, `{"id":"op1","state":"failed","kind":"exec","app":"db","error":"the app has several services: name one with --service"}`)
+		case "/v1/environments/dev/operations/op1/output":
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"code":"not_found","message":"output unavailable"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	var out, errs bytes.Buffer
+	got := Run([]string{"exec", "db", "-e", "dev", "--config", cfg, "--", "true"}, &out, &errs)
+	if got != 1 || !strings.Contains(out.String(), "name one with --service") || strings.Contains(errs.String(), "exec output unavailable") {
+		t.Fatalf("exit %d, out %q, err %q", got, out.String(), errs.String())
+	}
+}

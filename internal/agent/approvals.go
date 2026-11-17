@@ -567,6 +567,7 @@ func summarize(rest []string, body []byte) string {
 		Key           string   `json:"key"`
 		Into          string   `json:"into"`
 		Volumes       bool     `json:"volumes"`
+		Service       string   `json:"service"`
 		Command       []string `json:"command"`
 	}
 	_ = json.Unmarshal(body, &b)
@@ -596,6 +597,9 @@ func summarize(rest []string, body []byte) string {
 		}
 		return "scale " + app
 	case "exec":
+		if b.Service != "" {
+			return "exec " + cleanText(b.App, 80) + "/" + cleanText(b.Service, 40)
+		}
 		return "exec " + app
 	case "prune":
 		return "prune"

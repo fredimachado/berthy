@@ -44,7 +44,7 @@ var changeFlags = map[string][]string{
 	"rollback":         withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
 	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
 	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
-	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role"),
+	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role", "--service"),
 	"prune":            withRemoteFlags("--dry-run", "--request-id"),
 	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
 	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
@@ -76,9 +76,9 @@ var changeFlags = map[string][]string{
 }
 
 type commandFlags struct {
-	env, config, dir, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                     bool
-	pos, command, given, versions                                                                       []string
+	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                              bool
+	pos, command, given, versions                                                                                []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -113,7 +113,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.all = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -140,6 +140,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.id = v
 			case "--role":
 				f.role = v
+			case "--service":
+				f.service = v
 			case "--timeout":
 				f.timeout = v
 			case "--registry":
@@ -359,6 +361,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.DryRun = f.dry
 		req.Adopt = f.adopt
 		req.Role = f.role
+		req.Service = f.service
 		req.RevertSchema = f.revert
 		req.ReplaceExisting = f.replace
 		req.AllowRecreate = f.allowRecreate
@@ -390,6 +393,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		if cmd == "scale" && req.Replicas == nil {
 			fmt.Fprintln(errout, "scale requires --replicas")
+			return 2
+		}
+		if cmd == "exec" && f.role != "" && f.service != "" {
+			fmt.Fprintln(errout, "--role and --service cannot be combined")
 			return 2
 		}
 		if cmd == "exec" && len(req.Command) == 0 {
@@ -744,6 +751,11 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 						}
 						b, e := io.ReadAll(io.LimitReader(output.Body, (1<<20)+1))
 						output.Body.Close()
+						if output.StatusCode == http.StatusNotFound && v.State == "failed" {
+							// The command never started, so there is no output. The record says why it failed.
+							printResponse(out, errout, data, asJSON)
+							return 1
+						}
 						var result struct {
 							Output   string `json:"output"`
 							ExitCode int    `json:"exit_code"`

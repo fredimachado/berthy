@@ -33,6 +33,8 @@ type Request struct {
 	Replicas      *int              `json:"replicas,omitempty"`
 	RevertSchema  bool              `json:"revert_schema,omitempty"`
 	Command       []string          `json:"command,omitempty"`
+	// Service names the Compose service an exec runs in. It may be left out when the app has one service.
+	Service string `json:"service,omitempty"`
 	// ReplaceExisting takes over routes and DNS records that Berthy did not create. It needs administrator access.
 	ReplaceExisting bool `json:"replace_existing,omitempty"`
 	// ComposeFile is the Compose file of a Compose app deploy. The CLI reads it from the manifest directory.
@@ -81,8 +83,16 @@ type Plan struct {
 	Restore      *RestorePlan         `json:"restore,omitempty"`
 	// Command is what an exec would run, so the person who approves it sees the command and not only the app.
 	Command []string `json:"command,omitempty"`
+	// Exec says where an exec runs: the Swarm service of the role, or the Compose project and service. The container itself
+	// is chosen when the command runs, so the plan stays the same between a hold and its approval.
+	Exec *ExecPlan `json:"exec,omitempty"`
 	// Changes lists what the next deploy will change on an adopted service, one line per difference.
 	Changes []string `json:"changes,omitempty"`
+}
+type ExecPlan struct {
+	// Target is the Swarm service of the role for an image app, and the Compose project and service, such as shop-db/postgres,
+	// for a Compose app.
+	Target string `json:"target"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`
@@ -305,16 +315,19 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
-	if c.Store != nil && (req.Kind == "scale" || req.Kind == "exec") {
+	if c.Store != nil && req.Kind == "scale" {
 		_, compose, err := c.appliedCompose(ctx, req.App)
 		if err != nil {
 			return state.Operation{}, false, err
 		}
-		if compose && req.Kind == "scale" {
+		if compose {
 			return state.Operation{}, false, errScaleCompose
 		}
-		if compose {
-			return state.Operation{}, false, errExecCompose
+	}
+	if req.Kind == "exec" {
+		// A flag the app's kind does not take is refused now, so the caller sees it at once instead of in a failed operation.
+		if _, _, err := c.execKind(ctx, req); err != nil {
+			return state.Operation{}, false, err
 		}
 	}
 	copyReq := req

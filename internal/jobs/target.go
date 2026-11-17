@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -77,19 +78,21 @@ func (t EngineTarget) imageContainer(ctx context.Context, app manifest.App, job 
 	return best.ContainerID, nil
 }
 
-func (t EngineTarget) composeContainer(ctx context.Context, m manifest.Manifest, job manifest.Job) (string, error) {
-	containers, err := t.Docker.ComposeContainers(ctx, m.ComposeProject(job.App))
-	if err != nil {
-		return "", err
-	}
-	name := job.App
-	if job.Service != "" {
-		name += "/" + job.Service
-	}
+// ErrNoRunningContainer means a Compose app has no running, non-one-off container of the service asked for, or of any
+// service when none was named. ErrSeveralServices means none was named and the app runs more than one service.
+var (
+	ErrNoRunningContainer = errors.New("no running container")
+	ErrSeveralServices    = errors.New("several services")
+)
+
+// PickComposeContainer chooses the container of a Compose app that a job or an exec runs in: a running container of the
+// named service, or of the app's only service when service is empty. A one-off container is never chosen. Among replicas
+// it takes the lowest number, then the lowest id.
+func PickComposeContainer(containers []engine.ComposeContainer, service string) (string, error) {
 	var running []engine.ComposeContainer
 	services := map[string]bool{}
 	for _, c := range containers {
-		if c.State != "running" || c.OneOff || c.Service == "" || job.Service != "" && c.Service != job.Service {
+		if c.State != "running" || c.OneOff || c.Service == "" || service != "" && c.Service != service {
 			continue
 		}
 		running = append(running, c)
@@ -97,9 +100,9 @@ func (t EngineTarget) composeContainer(ctx context.Context, m manifest.Manifest,
 	}
 	switch {
 	case len(running) == 0:
-		return "", TargetError("no running container for " + name)
+		return "", ErrNoRunningContainer
 	case len(services) > 1:
-		return "", TargetError("name the Compose service as service")
+		return "", ErrSeveralServices
 	}
 	best := running[0]
 	for _, c := range running[1:] {
@@ -108,4 +111,23 @@ func (t EngineTarget) composeContainer(ctx context.Context, m manifest.Manifest,
 		}
 	}
 	return best.ID, nil
+}
+
+func (t EngineTarget) composeContainer(ctx context.Context, m manifest.Manifest, job manifest.Job) (string, error) {
+	containers, err := t.Docker.ComposeContainers(ctx, m.ComposeProject(job.App))
+	if err != nil {
+		return "", err
+	}
+	id, err := PickComposeContainer(containers, job.Service)
+	name := job.App
+	if job.Service != "" {
+		name += "/" + job.Service
+	}
+	switch {
+	case errors.Is(err, ErrNoRunningContainer):
+		return "", TargetError("no running container for " + name)
+	case errors.Is(err, ErrSeveralServices):
+		return "", TargetError("name the Compose service as service")
+	}
+	return id, err
 }

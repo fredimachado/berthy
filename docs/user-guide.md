@@ -864,15 +864,15 @@ Nothing else needs to change. The agent reads the token from its store on every 
 
 The running connector is not affected. It runs with the tunnel's own token (`TUNNEL_TOKEN`), not the API token. To replace the tunnel's token, rotate it in Cloudflare's dashboard, then run `berthy ingress apply` to pick up the new one.
 
-**An app secret, such as `POSTGRES_PASSWORD`.** Set the new value with `berthy secret set`, then redeploy the apps that use it so they pick it up. For `POSTGRES_PASSWORD` that is not enough: the database keeps its old password. You must change it in the database too. `berthy exec` does not work on Compose apps, so do that on the server with Docker:
+**An app secret, such as `POSTGRES_PASSWORD`.** Set the new value with `berthy secret set`, then redeploy the apps that use it so they pick it up. For `POSTGRES_PASSWORD` that is not enough: the database keeps its old password. You must change it in the database too, with `berthy exec` into the Compose service:
 
 ```bash
-ssh ops@10.0.0.5
-docker exec -it "$(docker ps -qf label=com.docker.compose.project=todo-postgres)" \
-  psql -U todo -d todo -c "ALTER USER todo PASSWORD '<new password>'"
+berthy secret set POSTGRES_PASSWORD -e prod
+berthy exec postgres -e prod --service postgres -- psql -U todo -d todo -c "ALTER USER todo PASSWORD '<new password>'"
+berthy deploy api -e prod --version <version>
 ```
 
-Do the `ALTER USER` first, then `secret set`, then redeploy `api`, in a quiet moment. Berthy has no step for this yet.
+Set the secret, change the password, then redeploy `api`, in a quiet moment: from the `ALTER USER` until `api` is redeployed, `api` cannot connect to the database.
 
 ---
 ### Step 4. The first deploy
@@ -1329,7 +1329,15 @@ berthy exec api -e prod -- /app/bin/migrate version
 berthy exec api -e prod --role web -- sh -c 'echo "$LOG_LEVEL"'
 ```
 
-Everything after `--` is the command. `exec` runs it in a running container, prints its output, and exits non-zero when the command did. It needs an **`admin`** token and works only on image apps. On a protected environment, an AI agent's `exec` is held like any other change.
+Everything after `--` is the command. `exec` runs it in a running container, prints its output, and exits non-zero when the command did. It needs an **`admin`** token. On a protected environment, an AI agent's `exec` is held like any other change.
+
+For a Compose app, name the service with `--service`. The command runs in one of that service's running containers. An app with one service does not need the name. A Compose app with a database, for example:
+
+```bash
+berthy exec postgres -e prod --service postgres -- psql -U todo -d todo -c "select 1"
+```
+
+`--role` is for image apps, and `--service` is refused for them. `--dry-run` prints where the command would run, the Swarm service of the role or the Compose project and service, and runs nothing.
 
 ---
 
@@ -2193,7 +2201,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `job run <name>` | deploy | none | Run a job now and wait. Exit 0 only on success. |
 | `backup run <name>` | deploy | none | Run a volume backup now and wait. Exit 0 only on success. |
 | `alerts test` | deploy | none | Send a test message through Telegram. |
-| `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role` | Run a command in a running container of an image app. |
+| `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--service` | Run a command in a running container: of an image app's role (`--role`), or of a Compose app's service (`--service`). |
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
@@ -2442,7 +2450,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **No web UI, and no long-term logs or metrics.** Berthy keeps the last hour of metrics in memory and stores no logs. Export metrics over OpenTelemetry and send logs to a backend of your choice.
 - **Telegram is the only alert channel.**
 - **Images are not built.** CI builds and pushes them.
-- **A Compose app has no automatic rollback, no `scale`, no `exec` and no `--version`.** A Compose `build:` is refused.
+- **A Compose app has no automatic rollback, no `scale` and no `--version`.** `exec` works on a Compose app with `--service`. A Compose `build:` is refused.
 - **`hostnames` only on image apps.** Compose services are published by a rule you add in Cloudflare.
 - **Release downloads need a published release of that version.** The repository's release workflow publishes one when a version tag (`v*`) is pushed, with the `berthy-<os>-<arch>` CLIs and `checksums.txt`. A release publishes only a commit whose CI run succeeded, and the workflow can also be run by hand as a dry run that publishes nothing. A Linux CLI of the server's architecture uploads itself. A release CLI on another platform downloads its own version from the release site (`BERTHY_RELEASE_URL` overrides it) and checks the checksum. A development build on another platform, or a version with no published release, uses `--binary <path>` instead.
 - **A scheduled restore drill is not built.** You verify restores by hand (steps 10 and 15).

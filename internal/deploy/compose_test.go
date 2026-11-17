@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -537,8 +538,8 @@ func TestComposeRestartRunsRestartAndRefusesScale(t *testing.T) {
 	if _, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "scale", App: "db", Kind: "scale", Replicas: new(int)}); !errors.Is(err, errScaleCompose) {
 		t.Fatalf("scale: %v", err)
 	}
-	if _, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Command: []string{"true"}}); !errors.Is(err, errExecCompose) {
-		t.Fatalf("exec: %v", err)
+	if _, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
+		t.Fatalf("exec with a role: %v", err)
 	}
 	if _, err = c.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{App: "db", Kind: "scale", Replicas: new(int), DryRun: true}); !errors.Is(err, errScaleCompose) {
 		t.Fatalf("scale plan: %v", err)
@@ -954,6 +955,10 @@ func TestComposeTextsAreTheOnlyDynamicPublicMessages(t *testing.T) {
 		"service web reads a host file through config cfg; deploy it with an admin token",
 		"service web shares container data-store; deploy it with an admin token",
 		"service web shares container (path not shown); deploy it with an admin token",
+		"no running container for db/postgres",
+		"no running container for db",
+		string(errExecServices),
+		string(errExecServiceImage),
 	} {
 		if !PublicMessage(text) {
 			t.Errorf("not public: %q", text)
@@ -968,6 +973,8 @@ func TestComposeTextsAreTheOnlyDynamicPublicMessages(t *testing.T) {
 		"service web runs privileged",
 		"service web runs privileged; deploy it",
 		"service web shares container data-store",
+		"no running container for db/post gres",
+		"no running container for DB",
 	} {
 		if PublicMessage(text) {
 			t.Errorf("public: %q", text)
@@ -1005,4 +1012,157 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// composeExecEngine is a Compose engine that also runs exec. It records the container each command ran in.
+type composeExecEngine struct {
+	*composeDocker
+	mu     sync.Mutex
+	ran    []string
+	output string
+}
+
+func (f *composeExecEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{Running: true}, nil
+}
+
+func (f *composeExecEngine) Exec(_ context.Context, id string, _ []string) (engine.ExecResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ran = append(f.ran, id)
+	return engine.ExecResult{Output: []byte(f.output)}, nil
+}
+
+// execComposeController returns a controller whose app db is a Compose app with an applied release, and whose Docker lists
+// the containers given. Exec runs in those containers and records which one it ran in.
+func execComposeController(t *testing.T, containers ...engine.ComposeContainer) (*Controller, *state.Store, *composeExecEngine) {
+	t.Helper()
+	docker := &composeExecEngine{composeDocker: newComposeDocker(containers...)}
+	c, s := composeController(t, &fakeCompose{}, docker.composeDocker)
+	c.Engine = docker
+	ctx := context.Background()
+	b, _ := json.Marshal(composeApp(false))
+	seed, _, err := s.Admit(ctx, state.Admission{RequestID: "seed", ActorID: "ci", Kind: "deploy", App: "db", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, seed.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Digest: digestOf(composeFileOne), Manifest: b}}); err != nil {
+		t.Fatal(err)
+	}
+	return c, s, docker
+}
+
+// TestComposeExecRunsInTheNamedServiceAndStoresTheReceipt: the exec runs in the running container of the named service, and
+// its output and exit code are stored as the operation's receipt.
+func TestComposeExecRunsInTheNamedServiceAndStoresTheReceipt(t *testing.T) {
+	c, s, docker := execComposeController(t,
+		engine.ComposeContainer{ID: "pg-old", Service: "postgres", State: "exited", Number: 1},
+		engine.ComposeContainer{ID: "side-1", Service: "side", State: "running", Number: 1},
+		engine.ComposeContainer{ID: "pg-2", Service: "postgres", State: "running", Number: 2},
+	)
+	docker.output = "42"
+	ctx := context.Background()
+	op, _, err := c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Service: "postgres", Command: []string{"psql", "-tAc", "select 40+2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
+		t.Fatalf("exec %s: %s", got.State, got.Err)
+	}
+	if len(docker.ran) != 1 || docker.ran[0] != "pg-2" {
+		t.Fatalf("exec ran in %v, want [pg-2]", docker.ran)
+	}
+	steps, err := s.Intents(ctx, op.ID)
+	if err != nil || len(steps) != 1 || !strings.Contains(string(steps[0].Receipt), `"output":"42"`) || !strings.Contains(string(steps[0].Receipt), `"exit_code":0`) {
+		t.Fatalf("receipt %v %v", steps, err)
+	}
+}
+
+// TestComposeExecPlanNamesTheServiceAndIsStableAcrossContainers: a dry run names the service, runs nothing, and gives the same
+// plan when the container it would pick changes, so the approval of a held exec still matches.
+func TestComposeExecPlanNamesTheServiceAndIsStableAcrossContainers(t *testing.T) {
+	c, _, docker := execComposeController(t,
+		engine.ComposeContainer{ID: "pg-2", Service: "postgres", State: "running", Number: 2},
+		engine.ComposeContainer{ID: "side-1", Service: "side", State: "running", Number: 1},
+	)
+	ctx := context.Background()
+	req := Request{App: "db", Kind: "exec", Service: "postgres", Command: []string{"psql", "-c", "select 1"}}
+	first, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+	if err != nil || first.Exec == nil || first.Exec.Target != "shop-db/postgres" {
+		t.Fatalf("plan %+v: %v", first, err)
+	}
+	if !slices.Equal(first.Command, req.Command) {
+		t.Fatalf("plan command %v", first.Command)
+	}
+	docker.containers = []engine.ComposeContainer{
+		{ID: "pg-9", Service: "postgres", State: "running", Number: 9},
+		{ID: "pg-8", Service: "postgres", State: "running", Number: 8},
+		{ID: "side-1", Service: "side", State: "running", Number: 1},
+	}
+	second, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+	a, _ := json.Marshal(first)
+	b, _ := json.Marshal(second)
+	if err != nil || string(a) != string(b) {
+		t.Fatalf("plan changed with the container: %s then %s: %v", a, b, err)
+	}
+	if len(docker.ran) != 0 {
+		t.Fatalf("a dry run ran %v", docker.ran)
+	}
+}
+
+// TestComposeExecNeedsAServiceWhenTheAppHasSeveral: without --service an app with two running services is refused, at the
+// plan and as the operation's failure, and nothing runs.
+func TestComposeExecNeedsAServiceWhenTheAppHasSeveral(t *testing.T) {
+	c, s, docker := execComposeController(t,
+		engine.ComposeContainer{ID: "pg-2", Service: "postgres", State: "running", Number: 2},
+		engine.ComposeContainer{ID: "side-1", Service: "side", State: "running", Number: 1},
+	)
+	ctx := context.Background()
+	var r Refusal
+	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{App: "db", Kind: "exec", Command: []string{"true"}}); !errors.As(err, &r) || r != errExecServices {
+		t.Fatalf("plan: %v", err)
+	}
+	op, _, err := c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Command: []string{"true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitComposeOperation(t, s, op.ID); got.State != "failed" || got.Err != string(errExecServices) {
+		t.Fatalf("exec %s: %q", got.State, got.Err)
+	}
+	if len(docker.ran) != 0 {
+		t.Fatalf("exec ran in %v", docker.ran)
+	}
+}
+
+// TestComposeExecNamesAServiceWithNoRunningContainer: a service with only stopped containers is refused with its name.
+func TestComposeExecNamesAServiceWithNoRunningContainer(t *testing.T) {
+	c, _, _ := execComposeController(t,
+		engine.ComposeContainer{ID: "pg-old", Service: "postgres", State: "exited", Number: 1},
+		engine.ComposeContainer{ID: "side-1", Service: "side", State: "running", Number: 1},
+	)
+	var r Refusal
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "db", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.As(err, &r) || r != "no running container for db/postgres" {
+		t.Fatalf("plan: %v", err)
+	}
+}
+
+// TestExecRefusesAFlagTheAppKindDoesNotTake: --role on a Compose app and --service on an image app are refused before anything is
+// journaled, both at Admit and at Plan.
+func TestExecRefusesAFlagTheAppKindDoesNotTake(t *testing.T) {
+	ctx := context.Background()
+	c, _, _ := execComposeController(t)
+	admin := Actor{ID: "admin", Admin: true}
+	if _, _, err := c.Admit(ctx, admin, Request{RequestID: "role", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
+		t.Fatalf("compose app with a role, admit: %v", err)
+	}
+	if _, err := c.Plan(ctx, admin, Request{App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
+		t.Fatalf("compose app with a role, plan: %v", err)
+	}
+	image := Controller{Store: openStore(t), Engine: &positiveEngine{}, Environment: "test"}
+	if _, _, err := image.Admit(ctx, admin, Request{RequestID: "svc", App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
+		t.Fatalf("image app with a service, admit: %v", err)
+	}
+	if _, err := image.Plan(ctx, admin, Request{App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
+		t.Fatalf("image app with a service, plan: %v", err)
+	}
 }

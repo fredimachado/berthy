@@ -82,13 +82,14 @@ const (
 	errComposeEnv           Refusal = "environment value cannot be written to a Compose environment file"
 	errComposeSecret        Refusal = "secret value cannot be written to a Compose environment file"
 	errScaleCompose         Refusal = "scale is for image apps"
-	errExecCompose          Refusal = "exec is for image apps"
+	errExecServiceImage     Refusal = "use --role for an image app"
+	errExecServices         Refusal = "the app has several services: name one with --service"
 	errComposeRole          Refusal = "compose apps have no roles"
 )
 
-// composeMessage matches the refusals a Compose plan or adoption can name a service, port or app in. Only these
+// composeMessage matches the refusals a Compose plan, an adoption or an exec can name a service, port or app in. Only these
 // dynamic texts are public besides the fixed Refusal values.
-var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first)$`)
+var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
 
 // composeHash matches one config hash printed by `compose config --hash`.
 var composeHash = regexp.MustCompile(`^[A-Za-z0-9:._-]{8,256}$`)
@@ -701,12 +702,9 @@ func (c *Controller) planCompose(ctx context.Context, actor Actor, req Request) 
 	return Plan{App: req.App, Roles: []string{}, Compose: &plan}, nil
 }
 
-// planComposeOperation plans a restart, scale or exec of a Compose app. Only restart is supported.
+// planComposeOperation plans a restart or scale of a Compose app. Only restart is supported. An exec is planned by execTarget.
 func (c *Controller) planComposeOperation(ctx context.Context, req Request, m manifest.Manifest) (Plan, error) {
-	switch req.Kind {
-	case "exec":
-		return Plan{}, errExecCompose
-	case "scale":
+	if req.Kind == "scale" {
 		return Plan{}, errScaleCompose
 	}
 	if req.Role != "" {

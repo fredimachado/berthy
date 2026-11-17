@@ -76,7 +76,7 @@ var changeFlagArgs = [][]string{
 	{"--config", "cfg.json"}, {"--json"}, {"--dry-run"}, {"--adopt"}, {"--healthy"}, {"--replace-existing"},
 	{"--allow-recreate"}, {"--volumes"}, {"--tunnel"}, {"--all"}, {"--revert-schema"},
 	{"--confirm", "dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--manifest-dir", "dir"},
-	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--timeout", "1m"},
+	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
 	{"--registry", "ghcr.io"}, {"-m", "reason"}, {"--message", "reason"}, {"--to", "2"}, {"--replicas", "2"},
 }
 
@@ -241,5 +241,37 @@ func TestLockReleaseRefusesMessage(t *testing.T) {
 		if code := Run(args, &out, &errout); code != 2 || strings.TrimSpace(errout.String()) != want || calls.Load() != 0 {
 			t.Errorf("%v: exit %d stderr %q (agent calls %d), want exit 2 with %q and no call", flag, code, errout.String(), calls.Load(), want)
 		}
+	}
+}
+
+// TestExecRefusesRoleAndServiceTogether: a role and a Compose service name different parts of an app, so both are refused
+// before any request reaches the agent.
+func TestExecRefusesRoleAndServiceTogether(t *testing.T) {
+	var calls atomic.Int32
+	server := countingAgent(&calls)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	args := []string{"exec", "api", "--service", "x", "--role", "y", "-e", "dev", "--config", cfg, "--", "true"}
+	if code := Run(args, &out, &errout); code != 2 || strings.TrimSpace(errout.String()) != "--role and --service cannot be combined" || calls.Load() != 0 {
+		t.Fatalf("exit %d stderr %q (agent calls %d), want exit 2 with the refusal and no call", code, errout.String(), calls.Load())
+	}
+}
+
+// TestExecSendsTheServiceToTheAgent: --service reaches the request body as the Compose service the exec runs in.
+func TestExecSendsTheServiceToTheAgent(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		body = string(data)
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"code":"test","message":"answered by the test"}`)
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	Run([]string{"exec", "db", "--service", "postgres", "-e", "dev", "--config", cfg, "--", "psql", "-c", "select 1"}, &out, &errout)
+	if !strings.Contains(body, `"service":"postgres"`) || !strings.Contains(body, `"command":["psql","-c","select 1"]`) {
+		t.Fatalf("request body %s", body)
 	}
 }
