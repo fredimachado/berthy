@@ -104,7 +104,7 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	if manifestErr != nil && !errors.Is(manifestErr, sql.ErrNoRows) {
 		return nil
 	}
-	_, ingressErr := w.store.Ingress(ctx)
+	st, ingressErr := w.store.Ingress(ctx)
 	if ingressErr != nil && !errors.Is(ingressErr, sql.ErrNoRows) {
 		return nil
 	}
@@ -112,8 +112,13 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	if manifestErr == nil {
 		mp = &m
 	}
+	var ingress *state.IngressState
+	if ingressErr == nil {
+		ingress = &st
+	}
 	w.maintainHelper(ctx, mp)
 	out := w.builtins(ctx, ingressErr == nil, mp)
+	out = append(out, w.credentialChecks(mp, ingress)...)
 	if mp != nil {
 		out = append(out, w.manifestChecks(ctx, *mp)...)
 	}

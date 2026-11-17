@@ -359,6 +359,12 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			if netName, ok := doctorNetwork(ctx, c, deployment); ok {
 				checks = append(checks, networkCheck(ctx, e, netName))
 			}
+			// The credential questions run while the tunnel and Compose checks do, so the doctor takes no longer for them.
+			var credentials chan []api.Check
+			if deployment != nil && deployment.Store != nil {
+				credentials = make(chan []api.Check, 1)
+				go func() { credentials <- credentialDoctorChecks(r.Context(), c, deployment.Store, time.Now()) }()
+			}
 			if deployment != nil {
 				ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
 				configured, status := deployment.TunnelHealth(ingressCtx)
@@ -374,6 +380,9 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 				} else {
 					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: composeVersion})
 				}
+			}
+			if credentials != nil {
+				checks = append(checks, <-credentials...)
 			}
 			if deployment != nil && deployment.Store != nil {
 				checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
