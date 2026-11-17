@@ -22,7 +22,7 @@ type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
 
-// Run is "berthy mcp -e ENV --config CONFIG [--manifest-dir DIR]": it serves MCP over stdin and stdout until stdin ends or the
+// Run is "berthy mcp -e ENV [--config CONFIG] [--manifest-dir DIR]": it serves MCP over stdin and stdout until stdin ends or the
 // process is stopped. Nothing but protocol messages goes to stdout; every other line goes to stderr, and none holds the token.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var env, config string
@@ -44,7 +44,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				dir = args[i]
 			}
 		default:
-			fmt.Fprintf(stderr, "unknown argument %s\nusage: mcp -e ENV --config CONFIG [--manifest-dir DIR]\n", args[i])
+			fmt.Fprintf(stderr, "unknown argument %s\nusage: mcp -e ENV [--config CONFIG] [--manifest-dir DIR]\n", args[i])
 			return 2
 		}
 	}
@@ -52,11 +52,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
-	if config == "" {
-		fmt.Fprintln(stderr, "mcp requires --config")
-		return 2
+	path, err := agentclient.ConfigPath(config)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	target, err := agentclient.Load(config, env)
+	target, err := agentclient.Load(path, env)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

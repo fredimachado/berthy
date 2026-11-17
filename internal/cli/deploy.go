@@ -299,11 +299,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		b, _ := json.Marshal(m)
 		return printResponse(out, errout, b, f.json)
 	}
-	if f.config == "" {
-		fmt.Fprintln(errout, "remote commands require --config")
-		return 2
+	cfgPath, err := agentclient.ConfigPath(f.config)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
 	}
-	target, err := agentclient.Load(f.config, f.env)
+	target, err := agentclient.Load(cfgPath, f.env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

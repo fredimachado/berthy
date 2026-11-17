@@ -68,7 +68,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	binary := fset.String("binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
 	keyFile := fset.String("key-file", "", "a saved encryption key to install, when rebuilding a server")
 	newToken := fset.Bool("new-token", false, "add another admin token")
-	cliConfig := fset.String("config", "", "the CLI configuration to add the environment to")
+	cliConfig := fset.String("config", "", "the CLI configuration to add the environment to (by default the one the CLI finds)")
 	noInstall := fset.Bool("no-install-docker", false, "stop when Docker is missing instead of installing it")
 	dry := fset.Bool("dry-run", false, "check and report what would change, without changing anything")
 	asJSON := fset.Bool("json", false, "report as JSON")
@@ -195,27 +195,26 @@ func setupSettings(dir, env, network string, protected bool) (setupFrom, error) 
 }
 
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
-// cfg is the --config path given to setup, quoted for the shell when it needs it; the agent commands need it, so CONFIG stands
-// in for it when none was given.
+// cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
+// without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
 func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
 	read := "sudo cat /var/lib/berthy/key"
 	if !local {
 		read = "ssh " + target + " " + read
 	}
-	if cfg == "" {
-		cfg = "CONFIG"
-	} else {
-		cfg = shellWord(cfg)
+	config := ""
+	if cfg != "" {
+		config = " --config " + shellWord(cfg)
 	}
 	steps := []string{fmt.Sprintf("keep a copy of the encryption key off the server, in a password manager or your provisioning vault: %s > %s.key", read, env)}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
 	}
-	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s --config %s", env, cfg))
+	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s%s", env, config))
 	if ingress {
-		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s --config %s", env, cfg))
+		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s%s", env, config))
 	}
-	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s --config %s --version APP=REF (or one app: berthy deploy APP -e %s --config %s --version REF)", env, cfg, env, cfg))
+	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))
 }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in

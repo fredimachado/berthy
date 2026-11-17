@@ -11,11 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"berthy/deploy/systemd"
 	"berthy/internal/agent"
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/setup"
 )
@@ -145,6 +147,8 @@ func freshServer(t *testing.T, target string) *setupServer {
 // withSetupRunner makes setup use server and returns the arguments the runner was made with.
 func withSetupRunner(t *testing.T, server *setupServer) *[2]any {
 	t.Helper()
+	// Setup writes the CLI configuration when it is not told where, so each test gets a user configuration directory of its own.
+	isolatedUserConfig(t)
 	saved := newSetupRunner
 	t.Cleanup(func() { newSetupRunner = saved })
 	made := &[2]any{}
@@ -267,13 +271,13 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"✓ token       the tokens of /etc/berthy/agent.json are kept\n" +
 		"✓ config      /etc/berthy/agent.json (listen 172.31.250.10:7710, 1 token)\n" +
 		"✓ service     berthy.service is running and enabled\n" +
-		"– cli_config  add {\"url\": \"http://172.31.250.10:7710\", \"token_env\": \"BERTHY_P5_TOKEN\"} to the CLI configuration\n" +
+		"✓ cli_config  wrote p5 at http://172.31.250.10:7710 to config.json (token in $BERTHY_P5_TOKEN)\n" +
 		"✓ verify      the agent answers; run berthy doctor with an admin token to check it fully\n" +
 		"setup of p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
 		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/key > p5.key\n" +
-		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --config CONFIG\n" +
-		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config CONFIG --version APP=REF (or one app: berthy deploy APP -e p5 --config CONFIG --version REF)\n"
+		"  2. set the secrets the manifest names: berthy secret set NAME -e p5\n" +
+		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --version APP=REF (or one app: berthy deploy APP -e p5 --version REF)\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -331,6 +335,51 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	}
 }
 
+func TestSetupWritesTheDefaultConfigWhenNotTold(t *testing.T) {
+	server := freshServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	if code != 0 || errout != "" {
+		t.Fatalf("exit %d: %s\n%s", code, errout, out)
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "berthy", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the default CLI configuration was not written: %v\n%s", err, out)
+	}
+	c, err := agentclient.ParseConfig(data)
+	if err != nil || c.Environments["p5"] != (agentclient.Environment{URL: "http://172.31.250.10:7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+		t.Fatalf("configuration %s: %v", data, err)
+	}
+	if strings.Contains(out, "--config") {
+		t.Errorf("the next steps name --config although it was not given:\n%s", out)
+	}
+	if runtime.GOOS != "windows" {
+		if st, err := os.Stat(filepath.Dir(path)); err != nil || st.Mode().Perm() != 0o700 {
+			t.Errorf("directory of the configuration: %v %v", st, err)
+		}
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("configuration file: %v %v", st, err)
+		}
+	}
+}
+
+func TestSetupSkipsTheConfigWhenThereIsNoDefaultLocation(t *testing.T) {
+	server := freshServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("AppData", "")
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	if code != 0 || errout != "" || !strings.Contains(out, "– cli_config  add {") || !strings.Contains(out, "give --config or set BERTHY_CONFIG") {
+		t.Fatalf("exit %d: %s\n%s", code, errout, out)
+	}
+}
+
 func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
@@ -349,8 +398,11 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 		t.Errorf("next step = %q", got.NextSteps[0])
 	}
 	steps := strings.Join(got.NextSteps, "\n")
-	if !strings.Contains(steps, "berthy secret set NAME -e p5 --config CONFIG") || !strings.Contains(steps, "berthy deploy APP -e p5 --config CONFIG") {
+	if !strings.Contains(steps, "berthy secret set NAME -e p5") || !strings.Contains(steps, "berthy deploy APP -e p5 --version REF") {
 		t.Errorf("next steps = %q", got.NextSteps)
+	}
+	if strings.Contains(steps, "--config") {
+		t.Errorf("next steps name --config although it was not given: %q", got.NextSteps)
 	}
 	for _, step := range got.NextSteps {
 		if strings.Contains(step, got.Token) {
@@ -368,7 +420,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 
 func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) {
 	steps := setupNextSteps("prod", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
-	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod --config CONFIG") {
+	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod") || strings.Contains(steps[3], "--config") {
 		t.Fatalf("steps = %q", steps)
 	}
 	local := setupNextSteps("prod", "", true, "this server", "X", false, false)
@@ -484,12 +536,12 @@ func TestSetupDryRunOutput(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errout)
 	}
 	for _, want := range []string{"· docker      would install Docker with the official script", "· swarm       would turn on Swarm advertising 172.31.250.10",
-		"· network     would create network p5net", "· token       would create an admin token", "– verify      would check the agent"} {
+		"· network     would create network p5net", "· token       would create an admin token", "· cli_config  would write p5 to config.json", "– verify      would check the agent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "dry run, 9 steps would change\n") || strings.Contains(out, "next steps") || strings.Contains(out, "bty.") {
+	if !strings.Contains(out, "dry run, 10 steps would change\n") || strings.Contains(out, "next steps") || strings.Contains(out, "bty.") {
 		t.Errorf("output:\n%s", out)
 	}
 	for _, s := range server.scripts {
@@ -502,7 +554,8 @@ func TestSetupDryRunOutput(t *testing.T) {
 func TestSetupDryRunOfASetUpServer(t *testing.T) {
 	withSetupRunner(t, installedServer(t, "ops@s1"))
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--dry-run")
-	if code != 0 || !strings.HasSuffix(out, "setup of p5 on ops@s1: dry run, nothing would change\n") {
+	// The agent is set up, but this machine has no CLI configuration yet, so the local step would change.
+	if code != 0 || !strings.Contains(out, "· cli_config  would write p5 to config.json\n") || !strings.HasSuffix(out, "setup of p5 on ops@s1: dry run, 1 step would change\n") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }

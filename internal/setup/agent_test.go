@@ -195,9 +195,22 @@ func setUpAgent(t *testing.T, exe string) *agentFake {
 
 func freshAgentServer(t *testing.T) *agentFake { return &agentFake{probe: setUpServer()} }
 
+// isolateUserConfig points the user configuration directory at a new temporary directory for the rest of the test, and clears
+// BERTHY_CONFIG, so a step that writes the default CLI configuration never touches the configuration of the person who runs
+// the tests.
+func isolateUserConfig(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv(agentclient.ConfigEnv, "")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv("AppData", home)
+}
+
 // agentSession is a run of setup against f, as the CLI would make it from an executable exe.
 func agentSession(t *testing.T, f Runner, exe string, dry bool, mod func(*Options)) *Session {
 	t.Helper()
+	isolateUserConfig(t)
 	o := Options{
 		Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710,
 		Build:  Build{OS: "linux", Arch: "amd64", Path: exe, Version: "v0.0.1-test"},
@@ -490,7 +503,7 @@ func TestDryRunOfSetUpServerOnlyReads(t *testing.T) {
 	f := setUpAgent(t, exe)
 	s := agentSession(t, f, exe, true, nil)
 	got, ok := runSteps(s)
-	if !ok || !strings.Contains(statuses(got), "user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=skipped verify=skipped") {
+	if !ok || !strings.Contains(statuses(got), "user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=would_change verify=skipped") {
 		t.Fatalf("got %s ok=%v", statuses(got), ok)
 	}
 	for _, sc := range f.scripts() {
@@ -1299,9 +1312,27 @@ func TestCLIConfigStep(t *testing.T) {
 			t.Errorf("the file was written")
 		}
 	})
-	t.Run("without --config it is skipped and says what to add", func(t *testing.T) {
+	t.Run("without --config it writes the default file", func(t *testing.T) {
 		r := run(t, "", false)
-		if r.Status != StatusSkipped || r.Detail != `add {"url": "http://`+listenIP+`:7710", "token_env": "BERTHY_P5_TOKEN"} to the CLI configuration` {
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := agentclient.ParseConfig(mustRead(t, filepath.Join(dir, "berthy", "config.json")))
+		if r.Status != StatusChanged || err != nil || c.Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+			t.Fatalf("cli_config = %+v, %v", r, err)
+		}
+	})
+	t.Run("without a default location it is skipped and says what to add", func(t *testing.T) {
+		f := setUpAgent(t, exe)
+		s := agentSession(t, f, exe, false, nil)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("HOME", "")
+		t.Setenv("AppData", "")
+		var got []StepResult
+		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+		r := stepOf(t, got, "cli_config")
+		if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} to the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`; r.Status != StatusSkipped || r.Detail != want {
 			t.Fatalf("cli_config = %+v", r)
 		}
 	})

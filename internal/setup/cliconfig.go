@@ -79,16 +79,18 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
-// cliConfigStep adds the environment to the CLI configuration --config names: the agent's address and the variable that holds
-// its token. The file never holds a token, and the other environments are kept as they are.
+// cliConfigStep adds the environment to the CLI configuration: the agent's address and the variable that holds its token. The
+// file is the one --config names, or else the one the CLI finds without it (BERTHY_CONFIG, then the default file). The file
+// never holds a token, and the other environments are kept as they are.
 func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	env := s.Opts.Env
 	url := agentURL(s.Opts.listen())
 	tokenEnv := DefaultTokenEnv(env)
-	path := s.Opts.CLIConfig
-	if path == "" {
+	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
+	if err != nil {
+		// No location is known, so the entry is for the person to add by hand.
 		s.TokenEnv = tokenEnv
-		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} to the CLI configuration`, url, tokenEnv), nil
+		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} to the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`, url, tokenEnv), nil
 	}
 	c, _, err := readCLIConfig(path)
 	if err != nil {
@@ -104,6 +106,12 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	if s.DryRun {
 		return StatusWouldChange, fmt.Sprintf("would write %s to %s", env, filepath.Base(path)), nil
+	}
+	if s.Opts.CLIConfig == "" {
+		// Without --config the file is the person's own location, so its directory is made private when it is missing.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return "", "", fmt.Errorf("creating the CLI configuration directory: %w", err)
+		}
 	}
 	if c.Environments == nil {
 		c.Environments = map[string]agentclient.Environment{}

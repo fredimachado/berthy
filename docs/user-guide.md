@@ -33,11 +33,13 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 ## How to read the commands
 
 - `prod` is the environment in the story. The server is `10.0.0.5`, and its agent listens on `10.0.0.5:7710`.
-- Commands that talk to the agent need two flags: `-e prod` (which environment) and `--config $CFG` (the CLI configuration file, see step 1). Set the variable once:
+- Commands that talk to the agent need `-e prod`, which names the environment. They find the CLI configuration file on their own, from the first of these that is set:
 
-  ```bash
-  export CFG=~/.config/berthy/config.json
-  ```
+  1. `--config <file>`
+  2. the `BERTHY_CONFIG` environment variable
+  3. `berthy/config.json` in your user configuration directory: `~/.config/berthy/config.json` on Linux (or `$XDG_CONFIG_HOME/berthy/config.json` when that is set), `~/Library/Application Support/berthy/config.json` on macOS, and `%AppData%\berthy\config.json` on Windows
+
+  The file maps each environment to its agent and names the variable that holds its token. It never holds a token. When none of the three is set, or the file is missing, the error names the path it looked for.
 
 - `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
 - Flags can come in any order, before or after the app name. The one exception is `exec`: everything after `--` is the command to run.
@@ -214,7 +216,7 @@ The steps run in this order. Each one checks first and only acts when something 
 | `token` | Creates the first `admin` token. It is shown once, at the end. The agent keeps only its digest. |
 | `config` | Writes `/etc/berthy/agent.json`. It sets the environment, the listen address, `docker_socket` (`/var/run/docker.sock`), the state directory and key file, `protected` and `network`, and the tokens. |
 | `service` | Installs, enables and starts `berthy.service`, and waits until the agent answers. |
-| `cli_config` | Adds the environment to the CLI configuration file that `--config` names. Without `--config` this step is skipped, with a hint of the entry to add yourself. |
+| `cli_config` | Adds the environment to the CLI configuration file: the one `--config` names, or else the one the CLI finds (see [How to read the commands](#how-to-read-the-commands)). Without any location it is skipped, with a hint of the entry to add yourself. |
 | `verify` | Runs `doctor` on the new agent (see below). |
 
 Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo`), and the details are what setup prints:
@@ -245,7 +247,7 @@ next steps:
   5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
 ```
 
-The token comes **after** the step lines, once. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. In the next steps, `--config <config>` shows the path you gave to `--config`, or the word `CONFIG` when you gave none. (The sample above is from a run on a test server, shortened where its details differ.)
+The token comes **after** the step lines, once. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
 
 A **second run** shows every line with `✓` and wording such as "kept", "in place" or "running", and no token:
 
@@ -298,7 +300,7 @@ A development build on macOS or Windows has no release to download, so give it `
 
    Keep `prod.key` in a password manager or your provisioning tool's vault.
 
-3. **The CLI configuration file.** The `cli_config` step writes it for you when you pass `--config`. It maps each environment to an agent address and **the name of the environment variable that holds the token**. It never contains a token:
+3. **The CLI configuration file.** The `cli_config` step writes it for you, to the file `--config` names or else to the default file (see [How to read the commands](#how-to-read-the-commands)). It maps each environment to an agent address and **the name of the environment variable that holds the token**. It never contains a token:
 
    ```json
    {
@@ -308,7 +310,7 @@ A development build on macOS or Windows has no release to download, so give it `
    }
    ```
 
-   The default variable name is `BERTHY_<ENVIRONMENT>_TOKEN`. An environment that already has a `token_env` keeps it, and other environments in the file are kept as they are. You can edit this file by hand: unknown keys are refused. `--config` must name this file on every command that talks to an agent.
+   The default variable name is `BERTHY_<ENVIRONMENT>_TOKEN`. An environment that already has a `token_env` keeps it, and other environments in the file are kept as they are. You can edit this file by hand: unknown keys are refused. The commands find this file on their own, so `--config` is only needed for another file.
 
 #### Setup is safe to run again
 
@@ -324,7 +326,7 @@ Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Onl
 | `--host <user>@<server>` | Set up a remote server over SSH. |
 | `--local` | Set up the server the command runs on. Use exactly one of `--host` and `--local`. |
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
-| `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` is skipped. |
+| `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
 | `--manifest-dir <dir>` | Where to read the manifest from. Default: the current directory. |
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
@@ -355,8 +357,8 @@ The agent's configuration is plain JSON. Its keys are listed in the [reference](
 
 ```bash
 berthy version
-berthy doctor -e prod --config $CFG
-berthy agent-info -e prod --config $CFG
+berthy doctor -e prod
+berthy agent-info -e prod
 ```
 
 `berthy version` needs no agent. It prints the CLI's version and platform (`berthy dev linux/amd64` for a development build). `--json` prints an object with `version`, `release`, `os` and `arch`.
@@ -713,11 +715,11 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 ```bash
 # The registry token: a GitHub token that can read packages. Note --registry.
-berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
+berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
 
 # Passwords you make up. They never appear on screen.
-openssl rand -hex 24 | berthy secret set POSTGRES_PASSWORD -e prod --config $CFG
-openssl rand -hex 24 | berthy secret set REDIS_PASSWORD -e prod --config $CFG
+openssl rand -hex 24 | berthy secret set POSTGRES_PASSWORD -e prod
+openssl rand -hex 24 | berthy secret set REDIS_PASSWORD -e prod
 ```
 
 Two rules about `--registry`:
@@ -730,10 +732,10 @@ Secrets are limited to 64 KiB. For a Compose app, a value cannot contain a line 
 Check what is stored (names only):
 
 ```bash
-berthy secret list -e prod --config $CFG
+berthy secret list -e prod
 ```
 
-Remove one with `berthy secret rm <NAME> -e prod --config $CFG` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
+Remove one with `berthy secret rm <NAME> -e prod` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
 
 #### What Berthy does at a terminal
 
@@ -754,7 +756,7 @@ When standard input is a terminal, `berthy secret set` does the steps below in t
 Unless it refuses the value, Berthy then stores it on the agent. Everything the prompt prints goes to standard error, so the command's result still goes to standard output. For the GHCR token, the terminal shows this:
 
 ```text
-$ berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
+$ berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
 GHCR_TOKEN is the password Berthy uses to pull images from ghcr.io.
 Create a GitHub token (classic) that can only read packages:
   https://github.com/settings/tokens/new?description=berthy-todo-prod&scopes=read%3Apackages
@@ -763,7 +765,7 @@ checked: ghcr.io lets this credential pull acme/todo-api
 ok: true
 ```
 
-On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd. Git Bash's default window (mintty) does not give standard input a console, so Berthy reads the value as piped input there. Pipe the value in that window instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`.
+On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd. Git Bash's default window (mintty) does not give standard input a console, so Berthy reads the value as piped input there. Pipe the value in that window instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod`.
 
 #### Which secret is needed when
 
@@ -796,13 +798,13 @@ Berthy tells you first when a credential is refused or about to expire. `berthy 
 **A registry password.** Replace the token when `berthy doctor` or an alert reports `registry:ghcr.io` as refused. If you miss that, a deploy fails with `image resolution failed` or `image pull failed`, or `docker service ps` on a server shows tasks `Rejected`. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`. The command in the alert names it, which does the same.
 
 ```bash
-berthy secret set GHCR_TOKEN -e prod --config $CFG
+berthy secret set GHCR_TOKEN -e prod
 ```
 
 At a terminal, the output looks like this:
 
 ```text
-$ berthy secret set GHCR_TOKEN -e prod --config $CFG
+$ berthy secret set GHCR_TOKEN -e prod
 GHCR_TOKEN is stored as the password for ghcr.io. The new value replaces it.
 GHCR_TOKEN is the password Berthy uses to pull images from ghcr.io.
 Create a GitHub token (classic) that can only read packages:
@@ -827,7 +829,7 @@ When a service is not updated, or the services could not be looked at, the last 
 **The Cloudflare API token.** Set the new token under the same name:
 
 ```bash
-berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
+berthy secret set CLOUDFLARE_API_TOKEN -e prod
 ```
 
 Nothing else needs to change. The agent reads the token from its store on every Cloudflare call and keeps no copy, so `ingress apply`, a deploy of an app with `hostnames`, `ingress status` and the tunnel health check use the new token from their next call. At a terminal, Berthy checks the new token with Cloudflare before it stores it. A token that Cloudflare refuses is not stored: `not stored: Cloudflare does not accept this token: it is wrong, expired or disabled`. If Cloudflare cannot be reached from your machine, Berthy prints a `not checked: …` line and stores the token anyway. Replace the token when `berthy doctor` or an alert reports `cloudflare_token` as refused, or as about to expire. If you miss that, `ingress apply` or a deploy of an app with `hostnames` fails with `Cloudflare token check failed`, or `ingress status` shows Cloudflare as `unavailable`.
@@ -852,7 +854,7 @@ Deploy in this order: **redis, postgres, then the API.** The API reads from both
 Every deploy starts the same way: look at the plan first.
 
 ```bash
-berthy deploy redis -e prod --config $CFG --dry-run
+berthy deploy redis -e prod --dry-run
 ```
 
 `--dry-run` prints the plan and acts on nothing. Many commands that change something accept it (the [reference](#commands) lists which). For a Compose app the plan lists the Compose project (`todo-redis`), each service with its action (`create`, `keep`, `recreate` or `remove`) and each volume with `create` or `keep`.
@@ -860,8 +862,8 @@ berthy deploy redis -e prod --config $CFG --dry-run
 Then run it for real:
 
 ```bash
-berthy deploy redis    -e prod --config $CFG
-berthy deploy postgres -e prod --config $CFG
+berthy deploy redis    -e prod
+berthy deploy postgres -e prod
 ```
 
 A Compose app takes **no** `--version`: the version is whatever its Compose file says. (`berthy deploy redis --version 7` is refused with `--version does not apply to a compose app`.)
@@ -894,7 +896,7 @@ A failed `up` is reported. There is no automatic rollback for Compose apps: the 
 The prod overlay says `protected: true`. A protected environment **refuses a tag**, even a unique one such as a git SHA, because a tag can be moved. You must give the image's **digest**:
 
 ```bash
-berthy deploy api -e prod --config $CFG --dry-run \
+berthy deploy api -e prod --dry-run \
   --version sha256:<64 hex characters>
 ```
 
@@ -927,7 +929,7 @@ The dry run for an image app prints the plan as JSON when you add `--json`:
 Notice that the plan shows the image **pinned by digest**. Now deploy it, with the commit that the manifest came from:
 
 ```bash
-berthy deploy api -e prod --config $CFG \
+berthy deploy api -e prod \
   --version sha256:<64 hex characters> \
   --commit "$(git rev-parse HEAD)"
 ```
@@ -939,8 +941,8 @@ berthy deploy api -e prod --config $CFG \
 Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version:
 
 ```bash
-berthy deploy -e prod --config $CFG --version sha256:<64 hex characters> --dry-run
-berthy deploy -e prod --config $CFG --version sha256:<64 hex characters> \
+berthy deploy -e prod --version sha256:<64 hex characters> --dry-run
+berthy deploy -e prod --version sha256:<64 hex characters> \
   --commit "$(git rev-parse HEAD)"
 ```
 
@@ -1024,8 +1026,8 @@ Read [Step 6](#step-6-ship-a-new-version-of-the-api): `history` and `diagnostics
 All of these are read-only, and work with a `read` token.
 
 ```bash
-berthy ps       -e prod --config $CFG
-berthy describe api -e prod --config $CFG
+berthy ps       -e prod
+berthy describe api -e prod
 ```
 
 `ps` lists every app: its kind, roles, desired and running replicas, health and the running image, plus how old each backup is. `describe <app>` shows one app in full: roles, tasks, the last deploys and the last job results. When a name is ambiguous (a Swarm service and a Compose project with the same name), write `image:api`, `swarm:api` or `compose:api`.
@@ -1035,8 +1037,8 @@ The text output is `key: value` lines. Add `--json` for JSON that scripts and AI
 #### Logs
 
 ```bash
-berthy logs api -e prod --config $CFG --follow
-berthy logs api -e prod --config $CFG --since 10m --grep 'ERROR|panic' --role web --tail 500
+berthy logs api -e prod --follow
+berthy logs api -e prod --since 10m --grep 'ERROR|panic' --role web --tail 500
 ```
 
 Each line is the time in UTC, the source and the message. The source is the role and the first 12 characters of the container's id, the ones `docker ps` shows, so you can tell replicas apart. A line from stderr is marked `[stderr]`:
@@ -1062,10 +1064,10 @@ Berthy reads logs straight from Docker and stores none. Anything that looks like
 #### Server and Docker numbers
 
 ```bash
-berthy stats -e prod --config $CFG            # one sample
-berthy stats -e prod --config $CFG --watch    # a live stream, Ctrl-C to stop
-berthy stats -e prod --config $CFG --since 5m # the last 5 minutes (at most 1h)
-berthy df    -e prod --config $CFG
+berthy stats -e prod            # one sample
+berthy stats -e prod --watch    # a live stream, Ctrl-C to stop
+berthy stats -e prod --since 5m # the last 5 minutes (at most 1h)
+berthy df    -e prod
 ```
 
 `stats` shows CPU, memory, swap, load, network and disk I/O for the server, and CPU, memory against limit, block and network I/O and restarts for each container. The agent samples every 10 seconds and keeps the last hour in memory. `df` shows disk space per mount and what Docker's images, containers, volumes and build cache use.
@@ -1073,7 +1075,7 @@ berthy df    -e prod --config $CFG
 #### History
 
 ```bash
-berthy history api -e prod --config $CFG
+berthy history api -e prod
 ```
 
 `history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`.
@@ -1081,7 +1083,7 @@ berthy history api -e prod --config $CFG
 #### Wait for health
 
 ```bash
-berthy wait api --healthy -e prod --config $CFG --timeout 5m
+berthy wait api --healthy -e prod --timeout 5m
 ```
 
 It blocks until the app (or one `--role`) is healthy, or the timeout passes. The default is 2 minutes, the most is 10. Exit `0` means healthy. CI uses it after a restart or a scale.
@@ -1089,7 +1091,7 @@ It blocks until the app (or one `--role`) is healthy, or the timeout passes. The
 #### Who did what
 
 ```bash
-berthy audit -e prod --config $CFG
+berthy audit -e prod
 ```
 
 `audit` prints the last 100 entries: time, who (the token's name and the caller's address), the action, and the outcome. Scheduled jobs and backups appear with themselves as the caller (`job:cleanup`, `backup:main-db`).
@@ -1204,7 +1206,7 @@ During a deploy: the pre-deploy hooks run, then `version` (the state before), th
 To undo a schema on purpose, with an `admin` token:
 
 ```bash
-berthy rollback api -e prod --config $CFG --revert-schema
+berthy rollback api -e prod --revert-schema
 ```
 
 It runs `revert` with `{target}` set to the state recorded before the failed deploy. It is never automatic, because reverting a migration can delete data.
@@ -1223,9 +1225,9 @@ It runs `revert` with `{target}` set to the state recorded before the failed dep
 A deploy takes the environment's lock automatically. You can also take it by hand to freeze deploys, for example during a database maintenance window:
 
 ```bash
-berthy lock acquire -m "postgres maintenance until 14:00" -e prod --config $CFG
-berthy lock status -e prod --config $CFG
-berthy lock release -e prod --config $CFG
+berthy lock acquire -m "postgres maintenance until 14:00" -e prod
+berthy lock status -e prod
+berthy lock release -e prod
 ```
 
 `acquire` needs `-m` (a message). While the lock is held, every deploy, from CI or an AI agent, is refused with the holder and the message. `lock status` is a read; `acquire` and `release` need a `deploy` token.
@@ -1233,8 +1235,8 @@ berthy lock release -e prod --config $CFG
 If the agent crashes in the middle of an operation, the lock stays and the operation goes to `recovery_required`. The agent tries to finish it by itself at start. If it cannot, look first, then resolve it:
 
 ```bash
-berthy recovery resolve <operation id> -m "checked: nothing half-done" --dry-run -e prod --config $CFG
-berthy recovery resolve <operation id> -m "checked: nothing half-done" -e prod --config $CFG
+berthy recovery resolve <operation id> -m "checked: nothing half-done" --dry-run -e prod
+berthy recovery resolve <operation id> -m "checked: nothing half-done" -e prod
 ```
 
 `recovery resolve` needs an `admin` token. It ends the operation as failed and releases the lock; `--dry-run` shows the journaled steps first.
@@ -1259,8 +1261,8 @@ A new version can fail for reasons only its own output explains: a missing setti
 3. `diagnostics` shows the evidence:
 
    ```bash
-   berthy diagnostics <operation id> -e prod --config $CFG
-   berthy diagnostics <operation id> -e prod --config $CFG --json
+   berthy diagnostics <operation id> -e prod
+   berthy diagnostics <operation id> -e prod --json
    ```
 
    For each role of the new version it shows the newest tasks (at most 5 per role): Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
@@ -1268,9 +1270,9 @@ A new version can fail for reasons only its own output explains: a missing setti
 #### Roll back
 
 ```bash
-berthy rollback api -e prod --config $CFG --dry-run
-berthy rollback api -e prod --config $CFG
-berthy rollback api -e prod --config $CFG --to <release id>
+berthy rollback api -e prod --dry-run
+berthy rollback api -e prod
+berthy rollback api -e prod --to <release id>
 ```
 
 `rollback` redeploys the **previous** recorded digest with the manifest saved at that deploy. `--to` picks an older release: use the `id` column of `history`. **Secrets stay at their current values.** The images of the last `retain` deploys are kept on the server, so a rollback needs no pull.
@@ -1282,9 +1284,9 @@ Rollback works for Compose apps too: it redeploys the Compose file stored with t
 #### Restart and scale
 
 ```bash
-berthy restart api -e prod --config $CFG
-berthy restart api -e prod --config $CFG --role web
-berthy scale api  -e prod --config $CFG --replicas 3 --role web
+berthy restart api -e prod
+berthy restart api -e prod --role web
+berthy scale api  -e prod --replicas 3 --role web
 ```
 
 - `restart` restarts the tasks of an image app, one role at a time (pass `--role` when the app has several). It restarts a Compose app's containers without recreating them (`--role` does not apply to a Compose app).
@@ -1295,8 +1297,8 @@ Both need a `deploy` token and accept `--dry-run`.
 #### Run a command in a container
 
 ```bash
-berthy exec api -e prod --config $CFG -- /app/bin/migrate version
-berthy exec api -e prod --config $CFG --role web -- sh -c 'echo "$LOG_LEVEL"'
+berthy exec api -e prod -- /app/bin/migrate version
+berthy exec api -e prod --role web -- sh -c 'echo "$LOG_LEVEL"'
 ```
 
 Everything after `--` is the command. `exec` runs it in a running container, prints its output, and exits non-zero when the command did. It needs an **`admin`** token and works only on image apps. On a protected environment, an AI agent's `exec` is held like any other change.
@@ -1350,10 +1352,10 @@ apps:
 Store the token, then apply:
 
 ```bash
-berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
-berthy ingress apply -e prod --config $CFG --dry-run
-berthy ingress apply -e prod --config $CFG
-berthy ingress status -e prod --config $CFG
+berthy secret set CLOUDFLARE_API_TOKEN -e prod
+berthy ingress apply -e prod --dry-run
+berthy ingress apply -e prod
+berthy ingress status -e prod
 ```
 
 When you set the token, Berthy prints a link to Cloudflare's form for an account-owned token, with both permissions filled in and the name `berthy-<project>-<env>`, and reminds you to limit the token to the zones that hold your hostnames. The form needs the Super Administrator role on the account; without that role, create a user token by hand with the same two permissions. Before it stores the token, Berthy checks that Cloudflare accepts it, that it can read tunnels in the account and, when `dns` is on, that it sees the zone of each hostname. That check only reads, so `ingress apply --dry-run` is still the test of the edit rights. To replace the token later, see [rotating a secret](#rotating-a-secret).
@@ -1455,8 +1457,8 @@ alerts:
 | `reminder` | How often to repeat while a check keeps failing. `0s` turns reminders off. | `4h` |
 
 ```bash
-berthy secret set TELEGRAM_BOT_TOKEN -e prod --config $CFG
-berthy alerts test -e prod --config $CFG
+berthy secret set TELEGRAM_BOT_TOKEN -e prod
+berthy alerts test -e prod
 ```
 
 `alerts test` sends a test message (it needs a `deploy` token and has no dry run: it refuses `--dry-run`). An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing"). Telegram is the only channel in v1.
@@ -1510,7 +1512,7 @@ Each peer is another agent's base URL (no path). Every 30 seconds the agent asks
 #### See the state
 
 ```bash
-berthy checks -e prod --config $CFG
+berthy checks -e prod
 ```
 
 Example output:
@@ -1588,8 +1590,8 @@ How a job runs:
 #### See and run them
 
 ```bash
-berthy jobs -e prod --config $CFG
-berthy job run dump-db -e prod --config $CFG
+berthy jobs -e prod
+berthy job run dump-db -e prod
 ```
 
 Example output:
@@ -1658,8 +1660,8 @@ backups:
 Create a storage credential limited to the backup bucket, store it, and consider a retention lock on the bucket so a compromised server cannot delete the history:
 
 ```bash
-berthy secret set S3_ACCESS_KEY -e prod --config $CFG
-berthy secret set S3_SECRET_KEY -e prod --config $CFG
+berthy secret set S3_ACCESS_KEY -e prod
+berthy secret set S3_SECRET_KEY -e prod
 ```
 
 A backup of a volume the app does not mount is refused, and a backup of an app that is not deployed is not part of the configuration.
@@ -1667,9 +1669,9 @@ A backup of a volume the app does not mount is refused, and a backup of an app t
 #### Run, list, watch
 
 ```bash
-berthy backup run main-db -e prod --config $CFG
-berthy backup list -e prod --config $CFG
-berthy backup list --backup main-db -e prod --config $CFG
+berthy backup run main-db -e prod
+berthy backup list -e prod
+berthy backup list --backup main-db -e prod
 ```
 
 `backup run` (a `deploy` token) runs the backup now, waits for it, prints the run and **exits 0 only when it succeeded**. Backups of the same volume run one at a time: a second is refused with `409`. `backup list` (a `read` token) shows what is in storage:
@@ -1713,9 +1715,9 @@ Every backup of the deployed manifest has a check, `backup:<name>`, that runs ev
 
 ```bash
 berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
-  -e prod --config $CFG --dry-run
+  -e prod --dry-run
 berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
-  -e prod --config $CFG
+  -e prod
 ```
 
 `restore` needs an **`admin`** token. It streams the archive from storage into a **new** Docker volume, preserving permissions and ownership, and compares the SHA-256 and size to the description file. A mismatch fails the operation with `backup checksum mismatch` and removes the volume. A volume that already exists is refused, and so is a key without a description file. `--dry-run` shows what it would restore: the key, the new volume, the backup, app and volume, when it was taken, its size and checksum.
@@ -1776,7 +1778,7 @@ A snapshot is a consistent copy taken while the agent keeps running, stored as `
 Take one now (an `admin` token). It waits and exits 0 only on success:
 
 ```bash
-berthy state-backup -e prod --config $CFG
+berthy state-backup -e prod
 ```
 
 ```text
@@ -1827,7 +1829,7 @@ What an agent token's CLI sees:
 
 ```bash
 BERTHY_PROD_TOKEN=<claude's token> \
-  berthy deploy api -e prod --config $CFG --version sha256:<digest>
+  berthy deploy api -e prod --version sha256:<digest>
 ```
 
 ```text
@@ -1845,10 +1847,10 @@ The exit code is **`3`**: not done, not failed. With `--json` it prints the answ
 A person with an `admin` token (not an agent token) lists, reviews and decides:
 
 ```bash
-berthy approvals -e prod --config $CFG
-berthy approvals --all -e prod --config $CFG
-berthy approve 5f1c0d2a -e prod --config $CFG
-berthy reject  5f1c0d2a -m "not during the freeze" -e prod --config $CFG
+berthy approvals -e prod
+berthy approvals --all -e prod
+berthy approve 5f1c0d2a -e prod
+berthy reject  5f1c0d2a -m "not during the freeze" -e prod
 ```
 
 `approvals` lists what is waiting: id, age, time left, who asked, and a one-line summary such as `deploy api sha256:...`, `restart api/web` or `secret set DATABASE_URL`. `--all` adds the decided and expired ones, with their status and who decided. A `read` token sees each request without its plan. The **plan**, which can repeat a command line, shows only to a `deploy` token or above.
@@ -1878,7 +1880,7 @@ Put this in the client's `.mcp.json` (adjust the paths):
   "mcpServers": {
     "berthy": {
       "command": "berthy",
-      "args": ["mcp", "-e", "prod", "--config", "/home/me/.config/berthy/config.json", "--manifest-dir", "/home/me/todo"],
+      "args": ["mcp", "-e", "prod", "--manifest-dir", "/home/me/todo"],
       "env": { "BERTHY_PROD_TOKEN": "${BERTHY_PROD_TOKEN}" }
     }
   }
@@ -1919,7 +1921,7 @@ Some commands have no MCP tool on purpose: `scale`, `exec`, `prune`, `remove`, `
 ### Step 12. The terminal UI
 
 ```bash
-berthy ui -e prod --config $CFG
+berthy ui -e prod
 ```
 
 A full-screen live view, built for reading first. It needs a real terminal (it refuses to start without one), works at 80×24 and up, and follows your terminal's light or dark colours. `NO_COLOR=1` turns colours off; every state also has a glyph and a word, so nothing depends on colour. It uses the same configuration and token as every other command. A `read` token shows every view. The token is never drawn, logged or written.
@@ -1973,9 +1975,9 @@ CI deploys only the API. The other two apps change when you decide, usually to t
 A CVE is announced for Redis. Edit `deploy/redis.yml`, bump the tag (for example to `redis:7.4.2-alpine`), commit, and:
 
 ```bash
-berthy deploy redis -e prod --config $CFG --dry-run
-berthy deploy redis -e prod --config $CFG
-berthy ps -e prod --config $CFG
+berthy deploy redis -e prod --dry-run
+berthy deploy redis -e prod
+berthy ps -e prod
 ```
 
 The dry run shows `redis` as `recreate`. That is fine: `redis` is not `stateful`, and a cache can start empty. The API reconnects when it is back. A `deploy` token is enough.
@@ -1985,14 +1987,14 @@ The dry run shows `redis` as `recreate`. That is fine: `redis` is not `stateful`
 The same fix for Postgres is a deliberate act, because `postgres` is `stateful`. Edit `deploy/postgres.yml`, bump the **minor** tag (for example `postgres:17.2-alpine` to `postgres:17.4-alpine`), commit, and look:
 
 ```bash
-berthy deploy postgres -e prod --config $CFG --dry-run
+berthy deploy postgres -e prod --dry-run
 ```
 
 The plan shows `postgres` as `recreate` and a **blocker** that says the stateful app would be recreated and needs `--allow-recreate` and an admin token. Berthy refuses to go on without them. Take a backup first, then say you mean it:
 
 ```bash
-berthy backup run main-db -e prod --config $CFG
-berthy deploy postgres -e prod --config $CFG --allow-recreate     # needs an admin token
+berthy backup run main-db -e prod
+berthy deploy postgres -e prod --allow-recreate     # needs an admin token
 ```
 
 The container is replaced and starts on the same `pgdata` volume, so the data stays. A **major** version change (17 to 18) cannot start on the old data directory. Plan that as a dump and restore instead.
@@ -2006,7 +2008,7 @@ Only an `admin` token can pass `--allow-recreate`. On a protected environment an
 #### Prune
 
 ```bash
-berthy prune -e prod --config $CFG
+berthy prune -e prod
 ```
 
 `prune` removes old images and stopped containers now (it needs an `admin` token). It never removes volumes. A deploy already does this after each success, keeping the images of the last `retain` deploys. Containers of finished migration steps and timed-out commands stay until `prune` removes them; their output is already in the diagnostics.
@@ -2014,8 +2016,8 @@ berthy prune -e prod --config $CFG
 #### Remove one app
 
 ```bash
-berthy remove redis -e prod --config $CFG --dry-run
-berthy remove redis -e prod --config $CFG
+berthy remove redis -e prod --dry-run
+berthy remove redis -e prod
 ```
 
 `remove <app>` takes an app down and removes what Berthy created for it. It needs an `admin` token, takes the deploy lock, and needs no manifest: it works from the app's recorded release. In order:
@@ -2032,8 +2034,8 @@ An app that you delete from the manifest keeps running. `doctor` lists it as `or
 #### Destroy an environment
 
 ```bash
-berthy destroy -e prod --config $CFG --confirm prod --dry-run
-berthy destroy -e prod --config $CFG --confirm prod
+berthy destroy -e prod --confirm prod --dry-run
+berthy destroy -e prod --confirm prod
 ```
 
 `destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must repeat the environment name, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers and images; stopped one-off containers; and images no container uses.
@@ -2096,15 +2098,15 @@ The order:
 
    **Tokens are not part of the state.** They live in the agent's configuration, so setup makes a new first `admin` token. Make new tokens for CI and for your AI agents (step 6, step 11).
 
-4. **Check:** `berthy doctor -e prod --config $CFG`.
+4. **Check:** `berthy doctor -e prod`.
 
 5. **Redeploy the apps.** The new server has no containers. Deploy `redis`, then `postgres`, then `api`, as in step 4. `api` needs a digest as before. The restored state already holds the manifest, so schedules, probes and backups resume as soon as the apps exist. If you use managed ingress, run `berthy ingress apply` to bring the connector back.
 
 6. **Restore the data.** The new `postgres` starts with an empty database. List the backups, restore the newest dump into a new volume, and load it, as in step 10:
 
    ```bash
-   berthy backup list -e prod --config $CFG
-   berthy restore <key> --into todo-restore -e prod --config $CFG
+   berthy backup list -e prod
+   berthy restore <key> --into todo-restore -e prod
    ```
 
    Then follow the PostgreSQL recovery recipe, and run `berthy wait api --healthy` once the API is back.
@@ -2118,7 +2120,7 @@ Practise this on a test server before you need it.
 
 ### Commands
 
-Every command that talks to an agent needs `-e <env>` and `--config <file>`. The tables list only the other flags. Most commands take `--json`.
+Every command that talks to an agent needs `-e <env>`. It reads the CLI configuration file that [How to read the commands](#how-to-read-the-commands) describes; `--config <file>` names another. The tables list only the other flags. Most commands take `--json`.
 
 Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 
@@ -2203,8 +2205,8 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | Code | Meaning |
 | --- | --- |
 | `0` | Done. For `deploy`, `rollback`, `restart` and the like: the operation `succeeded`. For `job run`, `backup run`, `state-backup`: the run succeeded. For `doctor`: no critical check failed. |
-| `1` | Failed: the operation `failed`, `rolled_back`, `interrupted` or needs `recovery_required`; the agent refused (the message says why); the agent could not be reached; a setup step failed. |
-| `2` | The command line is wrong: an unknown flag, a missing argument, a missing `-e` or `--config`. |
+| `1` | Failed: the operation `failed`, `rolled_back`, `interrupted` or needs `recovery_required`; the agent refused (the message says why); the agent could not be reached; the CLI configuration file could not be read (the message names it); a setup step failed. |
+| `2` | The command line is wrong: an unknown flag, a missing argument, a missing `-e`. |
 | `3` | Held for approval: an AI agent's token asked for a change on a protected environment. Not done, not failed. |
 
 ### Manifest keys

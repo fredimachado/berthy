@@ -18,10 +18,11 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
-const usage = "usage: ui -e ENV --config CONFIG"
+const usage = "usage: ui -e ENV [--config CONFIG]"
 
-// Run is "berthy ui -e ENV --config CONFIG": it opens the interface on the terminal and returns when the person quits. It
-// refuses to run when the standard input or output is not a terminal. No line it prints holds the token.
+// Run is "berthy ui -e ENV [--config CONFIG]": it opens the interface on the terminal and returns when the person quits. It
+// refuses to run when the standard input or output is not a terminal, and it reads the configuration first, so a missing file
+// is named even then. No line it prints holds the token.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var env, config string
 	for i := 0; i < len(args); i++ {
@@ -46,17 +47,18 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
-	if config == "" {
-		fmt.Fprintln(stderr, "ui requires --config")
-		return 2
+	path, err := agentclient.ConfigPath(config)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	target, err := agentclient.Load(path, env)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	if !isTerminal(stdin) || !isTerminal(stdout) {
 		fmt.Fprintln(stderr, "berthy ui needs a terminal")
-		return 1
-	}
-	target, err := agentclient.Load(config, env)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

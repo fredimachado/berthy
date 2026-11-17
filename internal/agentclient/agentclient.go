@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -62,12 +63,31 @@ type Target struct {
 	Token string
 }
 
+// ConfigEnv is the environment variable that names the CLI configuration file when --config is not given.
+const ConfigEnv = "BERTHY_CONFIG"
+
+// ConfigPath is the CLI configuration file to use: the flag when it is not empty, else $BERTHY_CONFIG, else berthy/config.json in
+// the user's configuration directory. It fails only when none of them can be found.
+func ConfigPath(flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	if p := os.Getenv(ConfigEnv); p != "" {
+		return p, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", errors.New("no CLI configuration: give --config or set BERTHY_CONFIG")
+	}
+	return filepath.Join(dir, "berthy", "config.json"), nil
+}
+
 // Load reads the configuration file and returns the target of env, with the token from the variable the file names. The
 // errors say what is wrong without repeating any value of the file.
 func Load(path, env string) (*Target, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, errors.New("cannot read config")
+		return nil, fmt.Errorf("cannot read config %s", path)
 	}
 	c, err := ParseConfig(b)
 	if err != nil {

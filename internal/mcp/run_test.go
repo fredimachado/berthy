@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 
+	"berthy/internal/agentclient"
+
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -54,7 +56,6 @@ func TestRunRefusesBadArguments(t *testing.T) {
 	}{
 		{"no environment", []string{"--config", good}, 2, "valid -e environment required"},
 		{"bad environment", []string{"-e", "Dev!", "--config", good}, 2, "valid -e environment required"},
-		{"no config", []string{"-e", "dev"}, 2, "requires --config"},
 		{"unknown flag", []string{"-e", "dev", "--config", good, "--follow"}, 2, "unknown argument --follow"},
 		{"missing value", []string{"-e", "dev", "--config"}, 2, "missing value for --config"},
 		{"unknown environment", []string{"-e", "prod", "--config", good}, 1, "unknown environment"},
@@ -69,6 +70,52 @@ func TestRunRefusesBadArguments(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := Run([]string{"-e", "dev", "--config", good}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "token environment variable is empty") {
 		t.Errorf("empty token: exit %d %q", code, errs.String())
+	}
+}
+
+// isolatedUserConfig points the user configuration directory at a new directory for the rest of the test, clears
+// BERTHY_CONFIG, and returns that directory as os.UserConfigDir reports it.
+func isolatedUserConfig(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv(agentclient.ConfigEnv, "")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv("AppData", home)
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestRunFindsTheDefaultConfigFile(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
+	dir := isolatedUserConfig(t)
+	agent, u := newFakeAgent(t)
+	agent.on("GET", "apps", 200, `[]`)
+	b, err := os.ReadFile(writeConfig(t, u.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "berthy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "berthy", "config.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Run([]string{"-e", "dev"}, strings.NewReader(""), &out, &errs); code != 0 || errs.Len() != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
+	}
+}
+
+func TestRunNamesTheMissingDefaultFile(t *testing.T) {
+	dir := isolatedUserConfig(t)
+	var out, errs bytes.Buffer
+	want := filepath.Join(dir, "berthy", "config.json")
+	if code := Run([]string{"-e", "dev"}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), want) || out.Len() != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
 }
 

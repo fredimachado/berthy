@@ -234,11 +234,16 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		return 0
 	}
-	if env == "" || config == "" {
-		fmt.Fprintln(errout, "remote commands require -e and --config")
+	if env == "" {
+		fmt.Fprintln(errout, "remote commands require -e")
 		return 2
 	}
-	target, err := agentclient.Load(config, env)
+	path, err := agentclient.ConfigPath(config)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	target, err := agentclient.Load(path, env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

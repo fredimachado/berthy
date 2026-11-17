@@ -291,7 +291,7 @@ It works in one of two ways.
 4. **Swarm.** Turn on Swarm mode with the private address as the advertise address, and the Swarm management port listening on that address only, unless the server is already a manager.
 5. **Network.** Create the shared attachable overlay network named in the manifest, unless it exists.
 6. **Agent.** Create the `berthy` system user and add it to the `docker` group (`user`). Put the agent binary on the server (`binary`; see "Same version as the CLI" below). Create the state directory and the encryption key (`key`). Write the agent's configuration (`config`), then install the systemd unit, enable the service and start it, or restart it when the binary, the configuration or the unit changed (`service`). The new agent has to answer its health check; if it does not, setup puts the previous one back.
-7. **First token and CLI configuration.** On a server that has no agent configuration, create one `admin` token and print it once (`token`). With `--config`, add the environment to the CLI's configuration with the agent's address (`cli_config`).
+7. **First token and CLI configuration.** On a server that has no agent configuration, create one `admin` token and print it once (`token`). Add the environment to the CLI's configuration with the agent's address (`cli_config`): the file `--config` names, else the one `BERTHY_CONFIG` names, else the default file.
 8. **Verify.** Call the new agent's `doctor` (`verify`). If this machine cannot reach the private address, setup says so and sends the same request on the server instead.
 
 It ends by printing the next steps: store a copy of the encryption key off the server (the command that copies it, never the key), set the token in the environment variable the CLI configuration names, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
@@ -313,7 +313,7 @@ It ends by printing the next steps: store a copy of the encryption key off the s
 - **The encryption key is never replaced.** `--key-file` reads a saved key of exactly 32 bytes. If the server has a key, it must be the same one, or setup stops with `the server has a different encryption key; setup never replaces it`. If it has none, setup installs the saved key (mode 0600, owned by `berthy`; no key byte appears in a command line or in the output). Without `--key-file`, an existing key is kept; with no key and no state, setup generates one on the server, where it stays; with state but no key it stops with `/var/lib/berthy/state has state but no key: pass --key-file with the saved key`. Setup never reads a key back: it compares hashes.
 - **The configuration is merged, never overwritten.** Setup starts from the server's own `agent.json` and sets only what it owns: `environment`, `listen` on the first run, `docker_socket`, `state_dir` and `key_file` when empty, `network`, and `protected` (set from the manifest or `--protected`, never turned off). Tokens and every other field are kept. A different `--listen` than the agent's is refused (`the agent listens on <address>; setup does not move it`), and `--listen` may be left out once the server has a configuration. A configuration that does not validate stops the run, without printing it. The file is written only when its content changes.
 - **The first token is printed once.** A server without an agent configuration gets one `admin` token named `admin`. The agent's configuration holds its digest; the value exists only in setup's memory and appears once, after the step lines, as `admin token for <env> (shown once, store it now): bty.…`, and as `token` in `--json`. It is never in a step detail, an error or a log, on either side, and never in a command line or script sent to the server. `--new-token` adds another `admin` token named `admin-<UTC date and time>` and keeps the existing ones. If the service fails on a first install, the token is still shown, because the configuration that holds it stays in place. If a failed upgrade puts the previous configuration back, the new token is not shown.
-- **The CLI configuration.** With `--config <path>`, setup adds or updates `environments.<env>` with `url` (`http://<listen address>`) and `token_env` (the variable the entry already names, or `BERTHY_<ENV>_TOKEN`, with `ENV` in upper case and other characters as `_`), keeps every other environment, and replaces the file atomically (a new file has mode 0600). The file never holds a token. Without `--config` the step is `skipped` and its detail says which entry to add.
+- **The CLI configuration.** With `--config <path>`, or else the file the CLI finds (see "CLI" below), setup adds or updates `environments.<env>` with `url` (`http://<listen address>`) and `token_env` (the variable the entry already names, or `BERTHY_<ENV>_TOKEN`, with `ENV` in upper case and other characters as `_`), keeps every other environment, and replaces the file atomically (a new file has mode 0600). Without `--config` and `BERTHY_CONFIG`, the default file's directory is created with mode 0700 when it is missing. The file never holds a token. When no location is known (no home or configuration directory), the step is `skipped` and its detail says which entry to add and how to name the file.
 - **Verify.** With an admin token (the one just made, or the one in the variable the CLI configuration names), setup calls `GET /v1/environments/<env>/doctor` from this machine with a 5 second connect timeout and prints a one-line summary; a critical check that is not ok fails the step and the run exits 1. If this machine cannot reach the agent, setup says so and sends the same request on the server with `curl`; the token goes to `curl` on its standard input, never in a command line. Without a token, setup only checks that `/healthz` answers.
 - **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything on the server: not a package, a service, a setting or a temporary file. A step that would change something reports `would_change`.
 - **Scriptable.** `--json` prints one object on standard output and nothing else. A failed step exits 1 and names the step; a wrong command line exits 2.
@@ -352,7 +352,7 @@ Run from the application's repository, setup reads two values from the merged ma
 | `--binary <path>` | Install this Linux build of Berthy instead of the CLI itself or the release that matches it |
 | `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
 | `--new-token` | Add another `admin` token, for when the first one is lost |
-| `--config <path>` | The CLI configuration to add the environment to. Without it, setup says what to add. |
+| `--config <path>` | The CLI configuration to add the environment to. Without it, setup uses the file the CLI finds (`BERTHY_CONFIG`, else the default file). |
 
 ### What it leaves on the server
 
@@ -697,7 +697,7 @@ A tunnel that is kept stays remembered, and `destroy --tunnel` deletes it once t
 
 ### Deploying every app
 
-`berthy deploy -e <env> --config <cfg>` without an app deploys every app of the manifest, one after another, each exactly as `berthy deploy <app>` would, and stops at the first app that does not succeed. It takes `--version`, `--commit`, `--dry-run`, `--json` and `--manifest-dir`; `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id` need an app and are refused with exit 2 (`--adopt needs an app: berthy deploy APP --adopt`). Each app is its own operation with its own request ID.
+`berthy deploy -e <env>` without an app deploys every app of the manifest, one after another, each exactly as `berthy deploy <app>` would, and stops at the first app that does not succeed. It takes `--version`, `--commit`, `--dry-run`, `--json` and `--manifest-dir`; `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id` need an app and are refused with exit 2 (`--adopt needs an app: berthy deploy APP --adopt`). Each app is its own operation with its own request ID.
 
 ```yaml
 apps:
@@ -733,7 +733,7 @@ The CLI is the complete interface; the TUI and the MCP server are two other ways
 
 ### CLI
 
-Every command takes `-e <env>` and `--json`. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero. A command that an AI agent's token ran on a protected environment, and that the agent held for approval instead of carrying out, exits with code 3: it is neither done nor failed (see "Approval for AI agents on protected environments").
+Every command takes `-e <env>` and `--json`. A command that talks to an agent reads the CLI configuration: the file `--config <file>` names, else the file `BERTHY_CONFIG` names, else `berthy/config.json` in the user configuration directory (`os.UserConfigDir()`: `$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on macOS, `%AppData%` on Windows). The file never holds a token. `-e` has no default. A file that cannot be read fails the command with exit 1, and the message names its path. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero. A command that an AI agent's token ran on a protected environment, and that the agent held for approval instead of carrying out, exits with code 3: it is neither done nor failed (see "Approval for AI agents on protected environments").
 
 Flags are checked before anything is sent. A read command refuses an unknown flag with exit 2 and `unknown flag`, before it reads any configuration. A change command refuses a flag it does not read with exit 2 and `<flag> is not a flag of <command>`, so `approve <id> --dry-run` is refused rather than approving for real.
 
@@ -783,7 +783,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 
 ### TUI
 
-`berthy ui -e <env> --config <cli config>` opens a full-screen live view built for reading first. It reads the same configuration and token as every other command, so a `read` token shows every view; the token is never drawn, logged or written. It needs a terminal on standard input and output and refuses to start without one. It is built with the Charm libraries (Bubble Tea, Bubbles, Lip Gloss, Huh for the confirmations and Glamour for the plans) and works at 80×24 and up; a smaller terminal gets a notice. Colours follow the terminal's light or dark background, and `NO_COLOR` turns them off: every state also has a glyph and a word, so nothing depends on colour.
+`berthy ui -e <env> [--config <cli config>]` opens a full-screen live view built for reading first. It reads the same configuration and token as every other command, so a `read` token shows every view; the token is never drawn, logged or written. It needs a terminal on standard input and output and refuses to start without one. It is built with the Charm libraries (Bubble Tea, Bubbles, Lip Gloss, Huh for the confirmations and Glamour for the plans) and works at 80×24 and up; a smaller terminal gets a notice. Colours follow the terminal's light or dark background, and `NO_COLOR` turns them off: every state also has a glyph and a word, so nothing depends on colour.
 
 The header shows the environment, a badge when it is protected, and the host. Four tabs hold the views:
 
@@ -823,7 +823,7 @@ When an action ends, the apps, the lock, the pending count, the approvals and th
 
 ### MCP server
 
-`berthy mcp -e <env> --config <cli config> [--manifest-dir <dir>]` runs a local MCP server over stdio that calls the agent API with the token it was given. The token comes from the environment variable that the CLI configuration names for `<env>`, as for every other command; it is never printed and never part of a tool result. Only protocol messages go to stdout; diagnostics go to stderr. `--manifest-dir` (default `.`) is where `deploy` reads the manifest, and a Compose app's file, from, exactly as `berthy deploy` does. The server shares the CLI's HTTP client and request code, so an AI agent sees what a person sees, with the same errors.
+`berthy mcp -e <env> [--config <cli config>] [--manifest-dir <dir>]` runs a local MCP server over stdio that calls the agent API with the token it was given. The token comes from the environment variable that the CLI configuration names for `<env>`, as for every other command; it is never printed and never part of a tool result. Only protocol messages go to stdout; diagnostics go to stderr. `--manifest-dir` (default `.`) is where `deploy` reads the manifest, and a Compose app's file, from, exactly as `berthy deploy` does. The server shares the CLI's HTTP client and request code, so an AI agent sees what a person sees, with the same errors.
 
 Tool names follow those of the Aspire MCP server, so an AI agent can ask a deployed environment the same questions it asks a local run. Each tool returns the agent's JSON as structured content (a list is wrapped in an object, `{"resources": [...]}`) and a short text: a summary line followed by the same JSON, or for `list_console_logs` the log lines. Every tool is read-only except `execute_resource_command`, and the tools say so in their MCP annotations.
 
@@ -865,7 +865,7 @@ A client such as Claude Code starts the server itself. With the token in the env
   "mcpServers": {
     "berthy": {
       "command": "berthy",
-      "args": ["mcp", "-e", "prod", "--config", "/home/me/.config/berthy/config.json", "--manifest-dir", "/home/me/shop"],
+      "args": ["mcp", "-e", "prod", "--manifest-dir", "/home/me/shop"],
       "env": { "BERTHY_PROD_TOKEN": "${BERTHY_PROD_TOKEN}" }
     }
   }
@@ -1133,7 +1133,7 @@ The destination must exist, the schedule must parse, `keep` must be from 1 to 10
 
 **Check.** While the block exists, a `state_backup` check runs every 60 seconds and alerts on its first non-ok result. It is critical when the newest run failed, with its detail, such as `upload failed: access denied`. It is also critical when the occurrence after the last success, plus two hours, has passed: `overdue: last snapshot <time> (expected by <time>)`. Before any success it is unknown, and it becomes critical once the first occurrence after the agent first saw the block, plus two hours, has passed. Otherwise it is ok: `last snapshot <age> ago, <size>`. The check appears in `berthy checks`.
 
-**On demand.** `berthy state-backup -e ENV --config CONFIG` takes an `admin` token. It starts a snapshot, waits for it to finish, prints its key, size and checksum, and exits 0 only when it succeeded. The audit log records the token that asked. A request made while another snapshot runs is refused with `409`.
+**On demand.** `berthy state-backup -e ENV [--config CONFIG]` takes an `admin` token. It starts a snapshot, waits for it to finish, prints its key, size and checksum, and exits 0 only when it succeeded. The audit log records the token that asked. A request made while another snapshot runs is refused with `409`.
 
 **Restore.** The procedure needs neither the agent nor its server:
 

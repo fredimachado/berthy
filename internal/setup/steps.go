@@ -45,7 +45,7 @@ type Options struct {
 	Binary     string // --binary: the Linux build of Berthy to install instead of this CLI or the release
 	KeyFile    string // --key-file: the saved encryption key to install
 	NewToken   bool   // --new-token: add another admin token
-	CLIConfig  string // --config: the CLI configuration to write the environment into
+	CLIConfig  string // --config: the CLI configuration to write the environment into; empty means the one the CLI finds
 	Build      Build
 	ReleaseURL string // BERTHY_RELEASE_URL: where releases are downloaded from; empty means GitHub
 

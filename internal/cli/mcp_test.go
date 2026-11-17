@@ -2,14 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // The mcp command is served by the mcp package; here it only has to be reachable, and it must keep stdout for the protocol.
 func TestMCPCommandIsDispatchedAndKeepsStdoutClean(t *testing.T) {
+	dir := isolatedUserConfig(t)
 	var out, errs bytes.Buffer
-	if code := Run([]string{"mcp", "-e", "dev"}, &out, &errs); code != 2 || !strings.Contains(errs.String(), "requires --config") || out.Len() != 0 {
+	want := filepath.Join(dir, "berthy", "config.json")
+	if code := Run([]string{"mcp", "-e", "dev"}, &out, &errs); code != 1 || !strings.Contains(errs.String(), want) || out.Len() != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
 	out.Reset()

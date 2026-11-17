@@ -86,8 +86,50 @@ func TestLoadRefusesWithoutEchoingValues(t *testing.T) {
 			t.Errorf("%s: %v", tc.name, err)
 		}
 	}
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.json"), "dev"); err == nil || err.Error() != "cannot read config" {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := Load(missing, "dev"); err == nil || err.Error() != "cannot read config "+missing {
 		t.Errorf("missing file: %v", err)
+	}
+}
+
+func TestConfigPathFlagWins(t *testing.T) {
+	t.Setenv(ConfigEnv, "/from/env.json")
+	got, err := ConfigPath("/from/flag.json")
+	if err != nil || got != "/from/flag.json" {
+		t.Fatalf("ConfigPath with a flag: %q %v", got, err)
+	}
+}
+
+func TestConfigPathReadsTheEnvironmentVariable(t *testing.T) {
+	t.Setenv(ConfigEnv, "/from/env.json")
+	got, err := ConfigPath("")
+	if err != nil || got != "/from/env.json" {
+		t.Fatalf("ConfigPath with %s: %q %v", ConfigEnv, got, err)
+	}
+}
+
+func TestConfigPathDefaultsToTheUserConfigDirectory(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the XDG_CONFIG_HOME default is Linux")
+	}
+	t.Setenv(ConfigEnv, "")
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	got, err := ConfigPath("")
+	if want := filepath.Join(dir, "berthy", "config.json"); err != nil || got != want {
+		t.Fatalf("ConfigPath: %q %v, want %s", got, err, want)
+	}
+}
+
+func TestConfigPathFailsWithoutAnyLocation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the HOME and XDG_CONFIG_HOME case is Linux")
+	}
+	t.Setenv(ConfigEnv, "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	if got, err := ConfigPath(""); err == nil || got != "" || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("ConfigPath: %q %v", got, err)
 	}
 }
 

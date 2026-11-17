@@ -51,13 +51,11 @@ berthy version
 
 With the GitHub CLI: `gh release download v0.1.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
 
-**2. Set up the server.** Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it.
+**2. Set up the server.** Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default.
 
 ```bash
-mkdir -p ~/.config/berthy
-export CFG=~/.config/berthy/config.json
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --config $CFG --dry-run
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --config $CFG
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
 export BERTHY_PROD_TOKEN=<the admin token setup printed>
 ```
 
@@ -104,19 +102,19 @@ Check both without a server: `berthy config validate -e prod`.
 **4. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
 
 ```bash
-berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
-berthy secret set DATABASE_URL -e prod --config $CFG
+berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
+berthy secret set DATABASE_URL -e prod
 ```
 
-For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`. To replace a token later, run the same `secret set` command again: Berthy keeps the registry, and running services get the new password without a restart.
+For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod`. To replace a token later, run the same `secret set` command again: Berthy keeps the registry, and running services get the new password without a restart.
 
 **5. Deploy.** `prod` is protected, so give the image digest that CI printed, not a tag.
 
 ```bash
-berthy deploy web -e prod --config $CFG --version sha256:<64 hex characters> --dry-run
-berthy deploy web -e prod --config $CFG --version sha256:<64 hex characters> --commit "$(git rev-parse HEAD)"
-berthy ps -e prod --config $CFG
-berthy ui -e prod --config $CFG
+berthy deploy web -e prod --version sha256:<64 hex characters> --dry-run
+berthy deploy web -e prod --version sha256:<64 hex characters> --commit "$(git rev-parse HEAD)"
+berthy ps -e prod
+berthy ui -e prod
 ```
 
 The [user guide](docs/user-guide.md) goes on from here with a todo app that has a database and a cache, CI deploys, public hostnames, alerts, backups, protected environments and AI agents. The finished files are in [`examples/todo/`](examples/todo/), and a runnable app with its CI is in [berthy-examples](https://github.com/fredimachado/berthy-examples).
