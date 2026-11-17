@@ -273,7 +273,7 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"\nnext steps:\n" +
 		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/key > p5.key\n" +
 		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --config CONFIG\n" +
-		"  3. run the first deploy of each app: berthy deploy APP -e p5 --config CONFIG\n"
+		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config CONFIG --version APP=REF (or one app: berthy deploy APP -e p5 --config CONFIG --version REF)\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -305,7 +305,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_P5_TOKEN)",
 		"2. store the admin token above, and set it in $BERTHY_P5_TOKEN when you run berthy",
 		"3. set the secrets the manifest names: berthy secret set NAME -e p5 --config " + shellWord(cfgPath),
-		"4. run the first deploy of each app: berthy deploy APP -e p5 --config " + shellWord(cfgPath)} {
+		"4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config " + shellWord(cfgPath) + " --version APP=REF (or one app: berthy deploy APP -e p5 --config " + shellWord(cfgPath) + " --version REF)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -410,8 +410,8 @@ func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
 			t.Fatalf("steps = %q", steps)
 		}
 		for _, step := range steps[1:] {
-			if !strings.HasSuffix(step, " --config "+want) {
-				t.Errorf("config %q: step %q does not end with --config %s", cfg, step, want)
+			if !strings.Contains(step, " --config "+want) {
+				t.Errorf("config %q: step %q does not name --config %s", cfg, step, want)
 			}
 		}
 	}

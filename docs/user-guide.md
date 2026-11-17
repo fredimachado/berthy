@@ -242,7 +242,7 @@ next steps:
   2. store the admin token above, and set it in $BERTHY_PROD_TOKEN when you run berthy
   3. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
-  5. run the first deploy of each app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json
+  5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
 ```
 
 The token comes **after** the step lines, once. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. In the next steps, `--config <config>` shows the path you gave to `--config`, or the word `CONFIG` when you gave none. (The sample above is from a run on a test server, shortened where its details differ.)

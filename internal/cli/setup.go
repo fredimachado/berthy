@@ -215,7 +215,7 @@ func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeTo
 	if ingress {
 		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s --config %s", env, cfg))
 	}
-	return append(steps, fmt.Sprintf("run the first deploy of each app: berthy deploy APP -e %s --config %s", env, cfg))
+	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s --config %s --version APP=REF (or one app: berthy deploy APP -e %s --config %s --version REF)", env, cfg, env, cfg))
 }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in
