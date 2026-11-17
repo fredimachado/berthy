@@ -62,7 +62,7 @@ old_agent_state() {
   mkdir -p "$RUN/old/state" && chmod 700 "$RUN/old/state" || return 1
   head -c 32 /dev/urandom > "$RUN/old/state.key" && chmod 600 "$RUN/old/state.key" || return 1
   sed -e "s#\"state_dir\":\"[^\"]*\"#\"state_dir\":\"$RUN/old/state\"#" -e "s#\"key_file\":\"[^\"]*\"#\"key_file\":\"$RUN/old/state.key\"#" \
-    "$RUN/agent.json" > "$OLD_CFG" || return 1
+    "$RUN/agent.json" > "$OLD_CFG" && chmod 600 "$OLD_CFG" || return 1
   grep -q "\"state_dir\":\"$RUN/old/state\"" "$OLD_CFG" && grep -q "\"key_file\":\"$RUN/old/state.key\"" "$OLD_CFG"
 }
 
