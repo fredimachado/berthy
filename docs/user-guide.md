@@ -777,6 +777,39 @@ berthy secret list -e prod
 
 Remove one with `berthy secret rm <NAME> -e prod` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
 
+#### Set many secrets at once
+
+`berthy secret import` reads `NAME=value` lines from standard input and stores each line as a secret. Berthy has no password-manager integration: anything that prints `NAME=value` lines can feed it, so one command sets twenty secrets as easily as one:
+
+```bash
+<a command that prints NAME=value lines> | berthy secret import -e prod
+```
+
+Each line is `NAME=value`. The value is everything after the first `=`, so a value may contain `=`. A blank line, and a line that starts with `#`, is skipped.
+
+The import is **all or nothing**. A line without `=`, a name that is not a secret name, a value over 64 KiB, a name that appears twice, or a name the manifest cannot have (`TUNNEL_TOKEN`) stops the whole import before anything is stored. The error names the line, or the secret, and never its value.
+
+Check an import with `--dry-run` first. It prints the names the import would create and the names it would replace, and it never prints a value:
+
+```bash
+<a command that prints NAME=value lines> | berthy secret import -e prod --dry-run
+# would create: API_KEY, DATABASE_URL
+# would replace: REDIS_PASSWORD
+```
+
+- A registry password is not imported. A name that is stored as a registry password is refused, so set that one with `berthy secret set NAME --registry HOST`.
+- One import is one request of at most 1 MiB. A bigger file is refused before anything is sent: split it into two imports.
+- On a protected environment an AI agent's import is held for approval, as a `secret set` is. The plan lists the names and no value.
+
+To see what a deploy will need before you run it, list the secrets the manifest names and mark the ones with no value:
+
+```bash
+berthy secret list -e prod --manifest-dir ./deploy/prod
+# missing: DATABASE_URL (needed by app api)
+```
+
+Each `missing:` line is a secret the manifest needs that is not stored, with what needs it. With `--json` the output is one object, with the stored secrets under `secrets` and the missing ones under `missing`.
+
 #### What Berthy does at a terminal
 
 When standard input is a terminal, `berthy secret set` does the steps below in this order. A piped value skips all of them: it makes one request, with no guide, no prompt and no check, and the agent keeps the stored registry.
@@ -1930,7 +1963,7 @@ The `--agent` flag marks it as an agent token. Add the printed JSON object to `t
 
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
-Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
+Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
 
 Not held: reads; `--dry-run` (it changes nothing, so an agent gets the plan at once); and every request on an unprotected environment. A request the token has no right to make is refused at once, not held.
 
@@ -2280,7 +2313,8 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
 | `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. Setting a registry password again keeps its registry and updates the running services. |
-| `secret list` | admin | none | List secret names (never values). |
+| `secret import` | admin | `--dry-run`; standard input is `NAME=value` lines | Store every line of standard input as a secret, all or nothing. A registry password name is refused. |
+| `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that have no value. |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
 | `restore <key>` | admin | `--dry-run`, `--request-id`, `--into` (required) | Restore a backup into a new volume. |
 | `state-backup` | admin | none | Snapshot the agent's state now and wait. |
@@ -2519,7 +2553,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
 - **No secret interpolation or generated values.** A variable takes one secret's value whole; a value cannot be joined from several secrets, and Berthy generates none. See step 2.
 - **Secrets live in the agent's store.** There is no external secret manager. Back up the encryption key yourself.
-- **No `berthy update`, no `secret import`.** Upgrade the agent by running `berthy setup` again with a newer CLI. Set secrets one at a time.
+- **No `berthy update`.** Upgrade the agent by running `berthy setup` again with a newer CLI.
 - **No starter manifest.** There is no command that writes one. Start from `examples/todo` and check it with `berthy config validate`.
 - **No web UI, and no long-term logs or metrics.** Berthy keeps the last hour of metrics in memory and stores no logs. Export metrics over OpenTelemetry and send logs to a backend of your choice.
 - **Telegram is the only alert channel.**

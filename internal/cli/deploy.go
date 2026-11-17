@@ -62,7 +62,8 @@ var changeFlags = map[string][]string{
 	"ingress apply":    withRemoteFlags("--dry-run", "--manifest-dir", "--request-id", "--replace-existing", "--commit"),
 	"ingress status":   withRemoteFlags(),
 	"alerts test":      withRemoteFlags(),
-	"secret list":      withRemoteFlags(),
+	"secret list":      withRemoteFlags("--manifest-dir"),
+	"secret import":    withRemoteFlags("--dry-run"),
 	"secret set":       withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
 	"secret delete":    withRemoteFlags("--dry-run"),
 	"secret rm":        withRemoteFlags("--dry-run"),
@@ -224,6 +225,9 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		if len(pos) == 1 && sub == "list" {
 			return "secret list", true
 		}
+		if len(pos) == 1 && sub == "import" {
+			return "secret import", true
+		}
 		if len(pos) == 2 && sub == "set" {
 			return "secret set", true
 		}
@@ -330,6 +334,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	}
 	if cmd == "state-backup" {
 		return runStateBackupCommand(f, u, prefix, token, out, errout)
+	}
+	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "list" && slices.Contains(f.given, "--manifest-dir") {
+		return runSecretList(f, u, prefix, token, out, errout)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -554,6 +561,19 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"
+		} else if len(f.pos) == 1 && f.pos[0] == "import" {
+			if stdinTerminal() {
+				fmt.Fprintln(errout, "pipe NAME=value lines into secret import: standard input is a terminal")
+				return 2
+			}
+			imp, err := readSecretImport(f.dry)
+			if err != nil {
+				fmt.Fprintln(errout, err)
+				return 1
+			}
+			endpoint = "secrets/import"
+			method = "POST"
+			body = imp
 		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
 				stored := func() ([]storedSecret, bool) {
@@ -659,6 +679,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		if printSecretSet(out, data) {
 			return 0
 		}
+	}
+	if cmd == "secret" && f.pos[0] == "import" && !f.json {
+		return printSecretImport(out, errout, data, f.dry)
 	}
 	return printResponse(out, errout, data, f.json)
 }

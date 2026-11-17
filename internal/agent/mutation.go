@@ -19,6 +19,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/jobs"
@@ -383,6 +384,8 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && r.Method == "POST":
+			serveSecretImport(w, r, d, sa)
 		case rest[0] == "secrets" && r.Method == "GET":
 			rows, err := d.Store.Secrets(ctx)
 			if err != nil {
@@ -611,6 +614,9 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		} else {
 			method = "POST"
 		}
+	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && httpMethod == "POST":
+		required = "admin"
+		method = "POST"
 	case len(rest) == 2 && rest[0] == "secrets":
 		required = "admin"
 		method = "DELETE"
@@ -692,8 +698,61 @@ func tokenActor(t Token, sum [32]byte, remote string) deploy.Actor {
 	}
 	return deploy.Actor{ID: id, Name: name, Remote: remote, Admin: t.Scope == "admin", Agent: t.Agent}
 }
+
+// serveSecretImport answers POST secrets/import. A dry run plans the import by its names alone. A real import stores every
+// entry in one transaction, so a failure stores none. A name stored as a registry password is refused: a plain write would
+// turn that password into a plain secret.
+func serveSecretImport(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor) {
+	ctx := r.Context()
+	var req api.SecretImport
+	if decodeBody(w, r, &req) != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	if err := api.CheckSecretImport(req.Secrets); err != nil {
+		writeError(w, 400, "bad_request", err.Error())
+		return
+	}
+	// Sorted, so the plan and the audit rows come out in the same order every time.
+	sort.Slice(req.Secrets, func(i, j int) bool { return req.Secrets[i].Name < req.Secrets[j].Name })
+	if req.DryRun {
+		names := make([]string, 0, len(req.Secrets))
+		for _, e := range req.Secrets {
+			names = append(names, e.Name)
+		}
+		create, replace, err := d.Store.ClassifySecrets(ctx, names)
+		if err != nil {
+			secretImportError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(api.SecretImportPlan{Action: "secret import", Create: create, Replace: replace})
+		return
+	}
+	writes := make([]state.SecretWrite, 0, len(req.Secrets))
+	for _, e := range req.Secrets {
+		writes = append(writes, state.SecretWrite{Name: e.Name, Value: []byte(e.Value)})
+	}
+	created, replaced, err := d.Store.PutSecrets(ctx, sa, writes)
+	if err != nil {
+		secretImportError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(api.SecretImportResult{Created: created, Replaced: replaced})
+}
+
+// secretImportError answers a failed import. A registry password name gets a refusal that says what to use instead; any other
+// failure is answered as operationError answers it.
+func secretImportError(w http.ResponseWriter, err error) {
+	var rs state.RegistrySecretError
+	if errors.As(err, &rs) {
+		writeError(w, 400, "bad_request", rs.Name+" is a registry password: use secret set --registry")
+		return
+	}
+	operationError(w, err)
+}
+
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, api.MaxRequestBody)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {

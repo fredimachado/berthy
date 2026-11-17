@@ -58,6 +58,7 @@ var changeCommands = []changeCommand{
 	{name: "ingress status", pos: []string{"ingress", "status"}},
 	{name: "alerts test", pos: []string{"alerts", "test"}},
 	{name: "secret list", pos: []string{"secret", "list"}},
+	{name: "secret import", pos: []string{"secret", "import"}},
 	{name: "secret set", pos: []string{"secret", "set", "DB_URL"}},
 	{name: "secret delete", pos: []string{"secret", "delete", "DB_URL"}},
 	{name: "secret rm", pos: []string{"secret", "rm", "DB_URL"}},
