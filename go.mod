@@ -98,3 +98,7 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// A copy of v0.1.4 that looks for the clipboard tools at the first copy or paste. Upstream looks for them in a package init,
+// which searches every PATH directory in every berthy command. See third_party/clipboard/README.md.
+replace github.com/atotto/clipboard => ./third_party/clipboard
