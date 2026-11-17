@@ -244,3 +244,36 @@ func TestReplicaJSONOmitsLocal(t *testing.T) {
 		}
 	}
 }
+
+func TestLoggingDriverIsTheDaemonsDefault(t *testing.T) {
+	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1.44/info" {
+			t.Errorf("request %s", r.URL.Path)
+		}
+		return response(200, `{"LoggingDriver":"local","Swarm":{"NodeID":"node-1"}}`), nil
+	})
+	if got, err := e.LoggingDriver(context.Background()); err != nil || got != "local" {
+		t.Fatalf("logging driver %q: %v", got, err)
+	}
+}
+
+func TestLoggingDriverFailsWhenTheDaemonDoesNotSayOrFails(t *testing.T) {
+	silent := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		return response(200, `{"Swarm":{"NodeID":"node-1"}}`), nil
+	})
+	if _, err := silent.LoggingDriver(context.Background()); err == nil {
+		t.Fatal("a daemon that reports no log driver was accepted")
+	}
+	down := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})
+	if _, err := down.LoggingDriver(context.Background()); err == nil {
+		t.Fatal("an unreachable daemon was accepted")
+	}
+	failing := fakeEngine(func(r *http.Request) (*http.Response, error) {
+		return response(500, `{}`), nil
+	})
+	if _, err := failing.LoggingDriver(context.Background()); err == nil {
+		t.Fatal("a failed /info was accepted")
+	}
+}

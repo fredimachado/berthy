@@ -369,7 +369,7 @@ The agent's configuration names the environment, its listen address, the Docker 
 
 - It does not create the server, its users, its firewall rules or its private network. The private address must exist before setup runs.
 - It does not install or configure the VPN.
-- It does not configure Docker's log rotation, storage driver or daemon options.
+- It does not configure Docker's storage driver, its default log driver or its daemon options. The log rotation of each image app's services is set per service, not in the daemon (see [Logs](#logs)).
 - It does not write a manifest. Start from the example in Configuration and check it with `berthy config validate`.
 
 ## Managed ingress with Cloudflare Tunnel
@@ -632,6 +632,7 @@ An image app that sets nothing else runs with these Swarm settings.
 | Placement | No constraints |
 | Replicas | 1 |
 | Resource limits | None unless set per role |
+| Log rotation | `max-size` 10m and `max-file` 3 when the daemon's default log driver is `json-file` or `local` and the role sets no `logging`; see [Logs](#logs) |
 | Stop grace period | `drain_timeout`, 30 seconds |
 
 - Thirty seconds gives a web framework's graceful shutdown its full time to finish requests. Docker alone would stop the container after 10.
@@ -903,7 +904,8 @@ telemetry:
 - A text line is the time in UTC, the source and the message. The source is the role and the first 12 characters of the container id (`web.f77449eeec32`), the ones `docker ps` shows; a stderr line is marked `[stderr]`. `--json` prints the records instead.
 - `--replica` names a replica by its task id, its container id, or a prefix of at least 6 characters. A shorter prefix matches only a whole id. A prefix that matches more than one replica of the app, on any node, is refused with `bad_request`.
 - The agent stores no logs. History and search belong to a log backend the apps send to.
-- Log rotation is left to the server's Docker configuration.
+- Image apps get log rotation per service: `max-size: 10m` and `max-file: 3` when the server's default log driver is `json-file` or `local` and the role sets no `logging`. A role's `logging` (`driver` and `options`) replaces it, with any driver. Under any other default driver Berthy sets nothing, so Docker's own settings apply. Compose apps keep their own logging settings; Berthy does not rewrite their files.
+- An adopted service's plan lists the logging change its next deploy applies, as a `changes` line.
 
 ### Health checks
 

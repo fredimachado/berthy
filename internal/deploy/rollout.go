@@ -354,7 +354,7 @@ func mergeServiceSpec(before, desired json.RawMessage, network string) (json.Raw
 			delete(oc, k)
 		}
 	}
-	for _, k := range []string{"Resources", "RestartPolicy"} {
+	for _, k := range []string{"Resources", "RestartPolicy", "LogDriver"} {
 		if v, ok := wt[k]; ok {
 			ot[k] = v
 		} else {

@@ -342,3 +342,16 @@ func (e *Engine) NodeID(ctx context.Context) (string, error) {
 	}
 	return info.Swarm.NodeID, nil
 }
+
+// LoggingDriver returns the daemon's default log driver, as /info reports it ("json-file", "local", "journald", ...). A
+// daemon that reports none is an error, so a caller never takes a missing driver for Docker's default.
+func (e *Engine) LoggingDriver(ctx context.Context) (string, error) {
+	var info struct{ LoggingDriver string }
+	if err := e.Get(ctx, "/info", &info); err != nil {
+		return "", err
+	}
+	if info.LoggingDriver == "" {
+		return "", fmt.Errorf("daemon reports no log driver")
+	}
+	return info.LoggingDriver, nil
+}

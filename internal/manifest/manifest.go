@@ -95,10 +95,17 @@ type Role struct {
 	Volumes   []string   `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 	Resources *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
 	Hostnames []string   `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
+	Logging   *Logging   `json:"logging,omitempty" yaml:"logging,omitempty"`
 }
 type Resources struct {
 	CPU    string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty" yaml:"memory,omitempty"`
+}
+
+// Logging is a role's log driver and options. It replaces Berthy's default log rotation for the role.
+type Logging struct {
+	Driver  string            `json:"driver" yaml:"driver"`
+	Options map[string]string `json:"options,omitempty" yaml:"options,omitempty"`
 }
 type Health struct {
 	Test          []string `json:"test" yaml:"test"`
@@ -279,6 +286,11 @@ var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // ending with a letter or digit.
 var bucketName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$`)
 var regionName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// logDriverName is a Docker log driver: a built-in name such as json-file, or a plugin image such as
+// grafana/loki-docker-driver:latest.
+var logDriverName = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]{0,127}$`)
+var logOptionKey = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // ValidNetwork reports whether name is a valid network name, by the rule the manifest applies to its network.
 func ValidNetwork(name string) bool { return identifier.MatchString(name) }
@@ -674,6 +686,14 @@ func (m *Manifest) Validate() error {
 					}
 				}
 			}
+			if r.Logging != nil {
+				if a.Kind != "image" {
+					return fmt.Errorf("app %s role %s: logging is for image apps", name, rn)
+				}
+				if !logDriverName.MatchString(r.Logging.Driver) || !validLogOptions(r.Logging.Options) {
+					return fmt.Errorf("app %s role %s: invalid logging", name, rn)
+				}
+			}
 			if !identifier.MatchString(rn) || r.Service != "" && !identifier.MatchString(r.Service) || r.Replicas != nil && *r.Replicas < 1 || r.Port < 0 || r.Port > 65535 || len(r.Command) > 0 && !argv(r.Command) {
 				return fmt.Errorf("app %s role %s: invalid settings", name, rn)
 			}
@@ -804,6 +824,17 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("invalid telemetry")
 	}
 	return m.validateMonitoring()
+}
+
+// validLogOptions reports whether every option key and value of a role's logging is one Docker takes: a key of lower-case
+// letters, digits, dots, underscores or hyphens, and a value of at most 1024 bytes with no NUL.
+func validLogOptions(options map[string]string) bool {
+	for k, v := range options {
+		if !logOptionKey.MatchString(k) || len(v) > 1024 || strings.ContainsRune(v, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateStateBackup checks the environment's state backup: its destination, schedule, prefix and retention.

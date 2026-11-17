@@ -79,6 +79,8 @@ type Plan struct {
 	Restore      *RestorePlan         `json:"restore,omitempty"`
 	// Command is what an exec would run, so the person who approves it sees the command and not only the app.
 	Command []string `json:"command,omitempty"`
+	// Changes lists what the next deploy will change on an adopted service, one line per difference.
+	Changes []string `json:"changes,omitempty"`
 }
 type SchemaRevertSummary struct {
 	SourceOperation string `json:"source_operation"`

@@ -3,12 +3,73 @@ package deploy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"berthy/internal/manifest"
 )
 
-func serviceSpec(env, project, app, role, operation, network, image string, values []string, r manifest.Role, drain string, imageHealth json.RawMessage) (json.RawMessage, error) {
+// defaultLogOptions is the rotation Berthy gives a role that sets no logging, when the daemon's driver accepts it.
+var defaultLogOptions = map[string]string{"max-size": "10m", "max-file": "3"}
+
+// roleLogDriver is the Swarm TaskTemplate.LogDriver of a role: the role's own logging when it has one; otherwise the
+// daemon's driver with defaultLogOptions when that driver is json-file or local; otherwise nil, which leaves Docker's
+// default in place with no options.
+func roleLogDriver(r manifest.Role, daemonDriver string) map[string]any {
+	if r.Logging != nil {
+		return logDriverSpec(r.Logging.Driver, r.Logging.Options)
+	}
+	if daemonDriver != "json-file" && daemonDriver != "local" {
+		return nil
+	}
+	return logDriverSpec(daemonDriver, defaultLogOptions)
+}
+
+// logDriverSpec is a LogDriver with its own copy of the options. Options is left out when there are none, as Docker omits
+// an empty map when it stores a service.
+func logDriverSpec(name string, options map[string]string) map[string]any {
+	ld := map[string]any{"Name": name}
+	if len(options) > 0 {
+		opts := make(map[string]any, len(options))
+		for k, v := range options {
+			opts[k] = v
+		}
+		ld["Options"] = opts
+	}
+	return ld
+}
+
+// sameLogDriver reports whether two LogDrivers are the same. A missing one and an empty one are the same, as are null and
+// absent options, because Docker stores neither.
+func sameLogDriver(a, b map[string]any) bool {
+	x, _ := json.Marshal(map[string]any{"LogDriver": a})
+	y, _ := json.Marshal(map[string]any{"LogDriver": b})
+	return sameSpec(x, y)
+}
+
+// describeLogDriver renders a LogDriver as "json-file max-file=3 max-size=10m" (options sorted), or "Docker's default" for
+// none.
+func describeLogDriver(ld map[string]any) string {
+	name, _ := ld["Name"].(string)
+	if name == "" {
+		return "Docker's default"
+	}
+	opts, _ := ld["Options"].(map[string]any)
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := []string{name}
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, opts[k]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func serviceSpec(env, project, app, role, operation, network, image string, values []string, r manifest.Role, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
 
 	grace, err := time.ParseDuration(drain)
 	if err != nil {
@@ -91,6 +152,9 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 			limits["MemoryBytes"] = v
 		}
 		spec["TaskTemplate"].(map[string]any)["Resources"] = map[string]any{"Limits": limits}
+	}
+	if ld := roleLogDriver(r, daemonLogDriver); ld != nil {
+		spec["TaskTemplate"].(map[string]any)["LogDriver"] = ld
 	}
 	return json.Marshal(spec)
 }

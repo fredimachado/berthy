@@ -354,7 +354,7 @@ func TestAdoptionPublishesAfterBinding(t *testing.T) {
 	f.applyIngress("apply", ingressManifest(t, ""))
 	one := 1
 	role := manifest.Role{Service: "existing-api", Port: 8080, Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec(ingressEnv, "demo", "api", "web", "prior", "net", "ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64), nil, role, "1s", nil)
+	spec, err := serviceSpec(ingressEnv, "demo", "api", "web", "prior", "net", "ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64), nil, role, "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

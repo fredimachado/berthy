@@ -349,7 +349,7 @@ If the directory has a manifest, setup reads `network` and `protected` from the 
 
 The agent's configuration is plain JSON. Its keys are listed in the [reference](#agent-configuration).
 
-> **Setup does not do these.** It does not create the server, its users, its firewall or your private network. It does not install the VPN. It does not change Docker's log rotation, storage driver or daemon options. It does not write a manifest: that is step 2. It deploys nothing.
+> **Setup does not do these.** It does not create the server, its users, its firewall or your private network. It does not install the VPN. It does not change Docker's storage driver, its default log driver or its daemon options. Each role's log rotation is set on its service instead, in step 2. It does not write a manifest: that is step 2. It deploys nothing.
 
 #### Check that it works
 
@@ -476,8 +476,21 @@ apps:
 | `resources.memory` | Memory limit, such as `512M`, `1G`, `256MiB`. | no limit |
 | `hostnames` | Public hostnames for managed ingress. See [step 7](#step-7-put-it-on-the-internet). | none |
 | `service` | The name of an existing Swarm service to adopt. See [adoption](#adopting-an-app-that-already-runs). | `<project>-<app>-<role>` |
+| `logging` | The log driver and options of the role's containers. See **Log rotation** below. | `json-file` or `local` with `max-size: 10m`, `max-file: 3` |
 
 Berthy names the Swarm service `<project>-<app>-<role>`. The API's web role is `todo-api-web`. Other containers on the network can reach it at that name.
+
+**Log rotation.** Docker keeps a container's logs in files. Berthy gives each role's containers a limit, so a chatty app cannot fill the disk: at most 3 files of 10 MB each. This applies when the role sets no `logging` and the server's default log driver is `json-file` or `local`. To choose the driver or the limits, set `logging`:
+
+```yaml
+        logging:
+          driver: json-file
+          options:
+            max-size: 50m
+            max-file: "5"
+```
+
+Quote the number in `max-file`, as the example does. A role with `logging` gets exactly those options, and no default is added to them. Any other driver, such as `journald`, gets nothing from Berthy unless the role sets `logging`. Compose apps keep their own logging settings.
 
 **The health check** is a command that runs *inside* the container, with the same fields Docker uses:
 
@@ -2234,6 +2247,8 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `resources.memory` | no limit | Such as `512M`, `1G`, `256MiB`. |
 | `hostnames` | none | Public hostnames. Needs `ingress` and `port`. A hostname belongs to one role. |
 | `service` | `<project>-<app>-<role>` | Existing Swarm service to adopt. |
+| `logging.driver` | none; with no `logging` at all, see step 2 | Docker log driver of the role's containers, such as `json-file`, `local` or `journald`, or a plugin image. Required when `logging` is set. |
+| `logging.options` | none; with no `logging` at all, `max-size: 10m` and `max-file: 3` on `json-file` or `local` | Driver options as strings, such as `max-size: 50m` and `max-file: "5"`. |
 
 #### Hooks and migrations
 

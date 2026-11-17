@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 
 	"berthy/internal/engine"
@@ -18,6 +19,27 @@ type preparedPlan struct {
 	NetworkID string
 	Auth      *engine.RegistryAuth
 	Env       []string
+	// LogDriver is the daemon's default log driver, which decides the rotation of a role that sets no logging.
+	LogDriver string
+}
+
+// logDriverEngine reads the daemon's default log driver. An engine without it gets no default rotation.
+type logDriverEngine interface {
+	LoggingDriver(context.Context) (string, error)
+}
+
+// daemonLogDriver is the daemon's default log driver, or "" when the engine cannot tell. A failed read is an error: a
+// deploy must not silently drop the rotation.
+func (c *Controller) daemonLogDriver(ctx context.Context) (string, error) {
+	le, ok := c.Engine.(logDriverEngine)
+	if !ok {
+		return "", nil
+	}
+	d, err := le.LoggingDriver(ctx)
+	if err != nil {
+		return "", errors.New("Docker log driver unavailable")
+	}
+	return d, nil
 }
 
 // requestedTag returns the tag of a resolved image reference ("ghcr.io/x/y:v1.0.2" -> "v1.0.2"), or "" when the reference has
@@ -130,6 +152,11 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 		out.Env = append(out.Env, k+"="+string(value))
 	}
 	sort.Strings(out.Env)
+	logDriver, err := c.daemonLogDriver(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.LogDriver = logDriver
 	return out, nil
 }
 
@@ -148,6 +175,10 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 	net, err := c.Engine.InspectNetwork(ctx, req.Manifest.Network)
 	if err != nil || net.Driver != "overlay" || net.Scope != "swarm" || !net.Attachable {
 		return Plan{}, nil, errors.New("overlay network unavailable")
+	}
+	daemonDriver, err := c.daemonLogDriver(ctx)
+	if err != nil {
+		return Plan{}, nil, err
 	}
 	expected, err := reference.ParseNormalizedNamed(app.Image)
 	if err != nil {
@@ -188,6 +219,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 					Image       string
 					Healthcheck json.RawMessage
 				}
+				LogDriver map[string]any
 			}
 			Mode struct{ Replicated *struct{ Replicas int } }
 		}
@@ -210,7 +242,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 				return "30s"
 			}
 			return app.Deploy.DrainTimeout
-		}(), spec.TaskTemplate.ContainerSpec.Healthcheck)
+		}(), spec.TaskTemplate.ContainerSpec.Healthcheck, daemonDriver)
 		if e != nil {
 			return Plan{}, nil, errors.New("adoption health configuration unavailable")
 		}
@@ -222,6 +254,9 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		desired, _ = json.Marshal(d)
 		if _, e = mergeServiceSpec(live.Spec, desired, net.ID); e != nil {
 			return Plan{}, nil, errors.New("unsafe or incompatible adoption service")
+		}
+		if want := roleLogDriver(r, daemonDriver); !sameLogDriver(want, spec.TaskTemplate.LogDriver) {
+			p.Changes = append(p.Changes, fmt.Sprintf("role %s: logging %s (now %s), applied by the next deploy", role, describeLogDriver(want), describeLogDriver(spec.TaskTemplate.LogDriver)))
 		}
 		tasks, e := c.Engine.ServiceTasks(ctx, live.ID)
 		if e != nil {

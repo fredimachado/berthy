@@ -195,7 +195,7 @@ func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 }
 
 func TestServiceSpecOmitsEmptyEnv(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "10s", nil)
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "10s", nil, "")
 	if err != nil || strings.Contains(string(b), `"Env"`) {
 		t.Fatalf("spec %s: %v", b, err)
 	}
@@ -231,7 +231,7 @@ func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
 		present bool
 	}{{"0s", false}, {"1s", true}} {
 		role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}, Interval: "5s", Timeout: "2s", StartPeriod: tc.start, Retries: &retries}}
-		b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, role, "10s", nil)
+		b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, role, "10s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
