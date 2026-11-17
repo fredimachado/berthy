@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -58,44 +57,9 @@ func (e *Engine) Attach(ctx context.Context, id string, stdin bool) (io.ReadClos
 	if stdin {
 		q.Set("stdin", "1")
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://docker/v1.44/containers/"+p+"/attach?"+q.Encode(), nil)
+	conn, br, stop, err := e.upgrade(ctx, "POST", "/containers/"+p+"/attach?"+q.Encode(), nil)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid Docker request")
-	}
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "tcp")
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", e.socket)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, nil, nil, ctx.Err()
-		}
-		return nil, nil, nil, fmt.Errorf("Docker unavailable")
-	}
-	// Ending the context drops the connection, which unblocks the handshake and every later read and write.
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	fail := func(err error) (io.ReadCloser, io.WriteCloser, *BoundedBuffer, error) {
-		stop()
-		conn.Close()
-		if ctx.Err() != nil {
-			return nil, nil, nil, ctx.Err()
-		}
 		return nil, nil, nil, err
-	}
-	if err = req.Write(conn); err != nil {
-		return fail(fmt.Errorf("Docker unavailable"))
-	}
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, req)
-	if err != nil {
-		return fail(fmt.Errorf("Docker unavailable"))
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return fail(fmt.Errorf("invalid Docker attach response"))
-		}
-		return fail(&StatusError{Code: resp.StatusCode})
 	}
 	a := &attachedOutput{ctx: ctx, conn: conn, br: br, stop: stop, stderr: NewBoundedBuffer(stderrKept)}
 	var in io.WriteCloser

@@ -496,7 +496,11 @@ func dockerOutput(r io.Reader) ([]byte, error) {
 
 // dockerStream copies the payload of the non-TTY multiplexed stream r to w, validating its framing. A frame is copied
 // whole, so memory stays bounded by w. limit is the most payload to accept, or a negative number for no limit.
-func dockerStream(r io.Reader, w io.Writer, limit int64) error {
+func dockerStream(r io.Reader, w io.Writer, limit int64) error { return demux(r, w, w, limit) }
+
+// demux is dockerStream with the stdout and stderr frames sent to separate writers. A failing writer's error is returned as
+// it is, so a caller can tell a client that went away from a stream that is broken.
+func demux(r io.Reader, stdout, stderr io.Writer, limit int64) error {
 	var total int64
 	for {
 		var hdr [8]byte
@@ -512,11 +516,28 @@ func dockerStream(r io.Reader, w io.Writer, limit int64) error {
 			return fmt.Errorf("Docker output exceeds limit")
 		}
 		total += size
+		dst := stdout
+		if hdr[0] == 2 {
+			dst = stderr
+		}
+		var writeErr error
+		w := writerFunc(func(p []byte) (int, error) {
+			n, err := dst.Write(p)
+			writeErr = err
+			return n, err
+		})
 		if _, err = io.CopyN(w, r, size); err != nil {
+			if writeErr != nil {
+				return writeErr
+			}
 			return fmt.Errorf("invalid Docker output stream")
 		}
 	}
 }
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 func (e *Engine) ContainerLogs(ctx context.Context, id string) ([]byte, error) {
 	p, err := pathID(id)
 	if err != nil {
@@ -551,35 +572,54 @@ func (e *Engine) ExecDiscard(ctx context.Context, id string, command []string) (
 
 // exec creates an exec in a container, starts it, hands the output stream to consume, and returns the exit code.
 func (e *Engine) exec(ctx context.Context, id string, command []string, consume func(io.Reader) error) (int, error) {
-	p, err := pathID(id)
+	execID, err := e.createExec(ctx, id, command, false, false)
 	if err != nil {
 		return 0, err
 	}
-	if len(command) == 0 || command[0] == "" {
-		return 0, fmt.Errorf("empty command")
-	}
-	body, err := json.Marshal(struct {
-		AttachStdout, AttachStderr bool
-		Tty                        bool
-		Cmd                        []string
-	}{true, true, false, command})
-	if err != nil {
-		return 0, err
-	}
-	var x struct{ ID string }
-	if err = e.jsonRequest(ctx, "POST", "/containers/"+p+"/exec", body, nil, &x); err != nil {
-		return 0, err
-	}
-	p, err = pathID(x.ID)
-	if err != nil {
-		return 0, fmt.Errorf("invalid Docker exec response")
-	}
-	resp, err := e.request(ctx, "POST", "/exec/"+p+"/start", []byte(`{"Detach":false,"Tty":false}`), nil, true)
+	resp, err := e.request(ctx, "POST", "/exec/"+execID+"/start", []byte(`{"Detach":false,"Tty":false}`), nil, true)
 	if err != nil {
 		return 0, err
 	}
 	err = consume(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return 0, err
+	}
+	return e.ExecExitCode(ctx, execID)
+}
+
+// createExec creates an exec in a container and returns its id, ready to be put in a path. It always attaches stdout and
+// stderr; stdin and a terminal are the caller's choice.
+func (e *Engine) createExec(ctx context.Context, containerID string, command []string, stdin, tty bool) (string, error) {
+	p, err := pathID(containerID)
+	if err != nil {
+		return "", err
+	}
+	if len(command) == 0 || command[0] == "" {
+		return "", fmt.Errorf("empty command")
+	}
+	body, err := json.Marshal(struct {
+		AttachStdin, AttachStdout, AttachStderr bool
+		Tty                                     bool
+		Cmd                                     []string
+	}{stdin, true, true, tty, command})
+	if err != nil {
+		return "", err
+	}
+	var x struct{ ID string }
+	if err = e.jsonRequest(ctx, "POST", "/containers/"+p+"/exec", body, nil, &x); err != nil {
+		return "", err
+	}
+	execID, err := pathID(x.ID)
+	if err != nil {
+		return "", fmt.Errorf("invalid Docker exec response")
+	}
+	return execID, nil
+}
+
+// ExecExitCode is the exit code of a finished exec. An exec that still runs is an error.
+func (e *Engine) ExecExitCode(ctx context.Context, execID string) (int, error) {
+	p, err := pathID(execID)
 	if err != nil {
 		return 0, err
 	}
