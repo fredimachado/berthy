@@ -192,10 +192,10 @@ func (c *Controller) stageCompose(ctx context.Context, dir string, req Request) 
 		}
 		env.WriteString(k + "=" + v + "\n")
 	}
-	secrets := append([]string(nil), app.Env.Secret...)
-	sort.Strings(secrets)
-	for _, k := range secrets {
-		info, value, err := c.Store.Secret(ctx, k)
+	secrets := append([]manifest.SecretVar(nil), app.Env.Secret...)
+	sort.Slice(secrets, func(i, j int) bool { return secrets[i].Var < secrets[j].Var })
+	for _, s := range secrets {
+		info, value, err := c.Store.Secret(ctx, s.Secret)
 		if err != nil || info.Registry != "" {
 			return "", errComposeSecretMissing
 		}
@@ -203,7 +203,7 @@ func (c *Controller) stageCompose(ctx context.Context, dir string, req Request) 
 		if !ok {
 			return "", errComposeSecret
 		}
-		env.WriteString(k + "=" + v + "\n")
+		env.WriteString(s.Var + "=" + v + "\n")
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env.String()), 0600); err != nil {
 		return "", errComposeFiles

@@ -536,7 +536,16 @@ Quote the number in `max-file`, as the example does. A role with `logging` gets 
 
 The image must contain the command (`curl` here). A new version is first noticed healthy about one `interval` after it starts, so every deploy takes at least that long.
 
-**Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secret **names** only; the values live in the agent. A name cannot be in both. Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's `.env` file, where the Compose file reads them as `${NAME}`.
+**Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
+
+```yaml
+env:
+  secret:
+    - JWT_SIGNING_KEY                  # the variable JWT_SIGNING_KEY gets the secret JWT_SIGNING_KEY
+    - DATABASE_URL: API_DATABASE_URL   # the variable DATABASE_URL gets the secret API_DATABASE_URL
+```
+
+So two apps of one environment can each have their own `DATABASE_URL`, each mapped to its own secret. A variable can be listed once, and it cannot also be in `plain`. Two variables may take the value of the same secret. Both kinds of app take the same `env` block. For a Compose app, Berthy writes each variable and its value into the project's `.env` file, where the Compose file reads it as `${NAME}`.
 
 Berthy also sets these variables in every container of an image app, so the app can tag its error reports, traces and metrics:
 
@@ -551,7 +560,7 @@ Berthy also sets these variables in every container of an image app, so the app 
 
 They change only with the image, so a deploy that keeps the version gives its containers the same variables and replaces none of them for that reason. A rollback sets the tag and digest of the release it returns to. An app deployed before these variables existed gets them at its next deploy, which replaces its tasks once. The containers of a schema revert record no tag, so `BERTHY_VERSION` is empty in them.
 
-A name that starts with `BERTHY_` cannot be used in `env.plain` or `env.secret`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
+A variable whose name starts with `BERTHY_` cannot be used in `env.plain` or `env.secret`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
 
 ```yaml
 services:
@@ -672,7 +681,7 @@ Three details matter:
 
 `examples/todo/deploy/redis.yml` follows the same pattern, with the alias `todo-redis`, `--requirepass` set from `REDIS_PASSWORD`, and nothing saved to disk.
 
-> **There is no secret interpolation yet.** The manifest cannot build `postgres://user:pass@todo-db/todo` out of a secret, and one secret cannot be aliased under a second name. A secret's name is the environment variable's name, and one name is shared by every app in the environment. That is why the API takes `DB_HOST`, `DB_NAME`, `DB_USER` and `POSTGRES_PASSWORD` separately and builds its connection string itself. If your app insists on a single `DATABASE_URL`, store the whole URL as its own secret and keep it in step with the password.
+> **There is no secret interpolation yet.** The manifest cannot build `postgres://user:pass@todo-db/todo` out of several secrets. A variable can take a whole secret's value (`- DATABASE_URL: TODO_DATABASE_URL` in `env.secret`), but no value is joined from parts. That is why the API takes `DB_HOST`, `DB_NAME`, `DB_USER` and `POSTGRES_PASSWORD` separately and builds its connection string itself. If your app insists on a single `DATABASE_URL`, store the whole URL as its own secret, keep it in step with the password, and map it.
 
 #### The overlays
 
@@ -2342,7 +2351,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `stateful` | compose | `false` | Recreating or removing it needs `--allow-recreate` and `admin`. |
 | `depends_on` | both | none | List of apps deployed before this one by `berthy deploy` without an app. Each must be another app of the manifest, listed once, with no cycle. |
 | `env.plain` | both | none | Map of name to string value. |
-| `env.secret` | both | none | List of secret names. No duplicates, and not also in `plain`. |
+| `env.secret` | both | none | List of entries: a secret name, or a one-key map from a variable to a secret name (`DATABASE_URL: API_DATABASE_URL`). No variable twice, and no variable also in `plain`. |
 | `deploy.deploy_timeout` | image | `120s` | Longest to become healthy. |
 | `deploy.drain_timeout` | image | `30s` | Time for the old version to finish requests. |
 | `deploy.start_attempts` | image | `3` | Failed starts tolerated, 1 to 10. |
@@ -2494,7 +2503,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **One server per environment.** Image apps are Swarm services, so a three-server cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
-- **No secret interpolation, aliases or generated values.** A secret's name is the environment variable's name, and it is shared by every app of the environment. See step 2.
+- **No secret interpolation or generated values.** A variable takes one secret's value whole; a value cannot be joined from several secrets, and Berthy generates none. See step 2.
 - **Secrets live in the agent's store.** There is no external secret manager. Back up the encryption key yourself.
 - **No `berthy update`, no `secret import`.** Upgrade the agent by running `berthy setup` again with a newer CLI. Set secrets one at a time.
 - **No starter manifest.** There is no command that writes one. Start from `examples/todo` and check it with `berthy config validate`.

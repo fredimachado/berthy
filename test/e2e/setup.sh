@@ -54,7 +54,7 @@ printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_ADMIN_TOKEN
 printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CI_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ci.json" || die "cannot write ci.json"
 
 # Registry: throwaway and unauthenticated, in memory, so nothing it holds outlives the run.
-d run -d --name e2e-registry --label berthy.e2e=1 -p "$REG:5000" --tmpfs /var/lib/registry registry:2 >/dev/null \
+d run -d --name "$REG_NAME" --label berthy.e2e=1 -p "$REG:5000" --tmpfs /var/lib/registry registry:2 >/dev/null \
   || die "the registry container did not start (is port ${REG##*:} free?)"
 wait_for "registry" curl_local -f -o /dev/null "http://$REG/v2/" || die "the registry does not answer"
 

@@ -86,7 +86,9 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 	if err != nil || len(history) == 0 {
 		return nil, errors.New("managed configuration unavailable")
 	}
-	names := map[string]bool{}
+	// secretNames are the secrets the releases read; variables are the containers' names that take their values.
+	secretNames := map[string]bool{}
+	variables := map[string]bool{}
 	for _, release := range history {
 		m, err := manifest.DecodeRelease(release.Manifest, bindingApp == manifest.ConnectorAppName)
 		if err != nil {
@@ -96,8 +98,11 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 		if !ok {
 			return nil, errors.New("managed configuration unavailable")
 		}
-		for _, name := range a.Env.Secret {
-			names[name] = true
+		for _, name := range a.Env.SecretNames() {
+			secretNames[name] = true
+		}
+		for _, s := range a.Env.Secret {
+			variables[s.Var] = true
 		}
 	}
 	var values []string
@@ -111,7 +116,7 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 		values = append(values, value)
 		return nil
 	}
-	for name := range names {
+	for name := range secretNames {
 		_, value, err := d.Store.Secret(ctx, name)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("secret unavailable")
@@ -127,12 +132,12 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 		if err != nil {
 			return nil, errors.New("container configuration unavailable")
 		}
-		if len(names) > 0 && env == nil {
+		if len(secretNames) > 0 && env == nil {
 			return nil, errors.New("container configuration unavailable")
 		}
 		for _, v := range env {
 			name, value, ok := strings.Cut(v, "=")
-			if ok && names[name] {
+			if ok && variables[name] {
 				if err = add(value); err != nil {
 					return nil, err
 				}

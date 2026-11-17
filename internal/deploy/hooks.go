@@ -306,8 +306,8 @@ func safeVersion(output []byte, p preparedPlan) (string, error) {
 		return "", errors.New("invalid schema version")
 	}
 	private := map[string]bool{}
-	for _, name := range p.Request.Manifest.Apps[p.Request.App].Env.Secret {
-		private[name] = true
+	for _, s := range p.Request.Manifest.Apps[p.Request.App].Env.Secret {
+		private[s.Var] = true
 	}
 	for _, entry := range p.Env {
 		key, value, ok := strings.Cut(entry, "=")

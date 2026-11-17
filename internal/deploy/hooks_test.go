@@ -120,7 +120,7 @@ func TestMigrationVersionRejectsSecret(t *testing.T) {
 	c, f, id, p := hookFixture(t)
 	a := p.Request.Manifest.Apps["app"]
 	a.Migrations = &manifest.Migrations{Version: []string{"version"}, Apply: []string{"apply"}}
-	a.Env.Secret = []string{"TOKEN"}
+	a.Env.Secret = []manifest.SecretVar{{Var: "TOKEN", Secret: "TOKEN"}}
 	p.Request.Manifest.Apps["app"] = a
 	f.exits = []int{0}
 	f.logs = [][]byte{[]byte("secret\n")}
