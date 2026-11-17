@@ -402,6 +402,45 @@ func TestSecretSetRefusesACloudflareTokenThatCannotReadTunnels(t *testing.T) {
 	assertNotPrinted(t, "right-token", out, errout)
 }
 
+// storedWhenCloudflareFails runs secret set with the right token while Cloudflare answers the GET requests on paths with
+// status. It checks that the value is stored and that the check says it could not be asked: a server error or a rate
+// limit is Cloudflare not answering, not Cloudflare refusing the token.
+func storedWhenCloudflareFails(t *testing.T, status int, paths ...string) {
+	t.Helper()
+	fake, _ := fakeCloudflare(t, "right-token", "example.com")
+	for _, p := range paths {
+		fake.FailRequests("GET", p, status)
+	}
+	var bodies []string
+	server := recordingAgent(&bodies)
+	defer server.Close()
+	code, _, errout := secretSetAtTerminal(t, "right-token", server.URL, secretManifestDir(t, ingressBerthyYML), "CF_TOKEN")
+	if code != 0 || len(bodies) != 1 {
+		t.Fatalf("HTTP %d on %v: exit %d, %d agent requests: stderr %q", status, paths, code, len(bodies), errout)
+	}
+	if !strings.Contains(errout, "not checked: Cloudflare could not be asked from this machine") || strings.Contains(errout, "not stored") {
+		t.Fatalf("HTTP %d on %v: stderr %q, want the not-checked note and no refusal", status, paths, errout)
+	}
+}
+
+// TestSecretSetStoresACloudflareTokenWhenCloudflareIsDown checks that a 503 on token verification, on both endpoints the
+// check may ask, stores the value rather than refusing it.
+func TestSecretSetStoresACloudflareTokenWhenCloudflareIsDown(t *testing.T) {
+	storedWhenCloudflareFails(t, http.StatusServiceUnavailable, "/user/tokens/verify", "/accounts/acct/tokens/verify")
+}
+
+// TestSecretSetStoresACloudflareTokenWhenTheTunnelListingFailsWithAServerError checks that a 500 on the tunnel listing is
+// not taken for a refusal of the token.
+func TestSecretSetStoresACloudflareTokenWhenTheTunnelListingFailsWithAServerError(t *testing.T) {
+	storedWhenCloudflareFails(t, http.StatusInternalServerError, "/accounts/acct/cfd_tunnel")
+}
+
+// TestSecretSetStoresACloudflareTokenWhenCloudflareRateLimitsIt checks that a 429 on token verification, on both endpoints,
+// stores the value rather than refusing it.
+func TestSecretSetStoresACloudflareTokenWhenCloudflareRateLimitsIt(t *testing.T) {
+	storedWhenCloudflareFails(t, http.StatusTooManyRequests, "/user/tokens/verify", "/accounts/acct/tokens/verify")
+}
+
 // TestSecretSetStoresACloudflareTokenWhenCloudflareCannotBeReached checks that an unreachable Cloudflare stores the value
 // and says it was not checked.
 func TestSecretSetStoresACloudflareTokenWhenCloudflareCannotBeReached(t *testing.T) {

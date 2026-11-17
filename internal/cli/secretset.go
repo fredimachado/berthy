@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -203,10 +204,16 @@ func cloudflareCheck(m *manifest.Manifest, env string) func(context.Context, str
 	}
 }
 
-// cloudflareRefused reports whether Cloudflare answered and refused, as opposed to not answering at all.
+// cloudflareRefused reports whether Cloudflare answered and refused the token or the request. Only an answer counts: an
+// inactive token, a hostname whose zone the account does not hold, or an API error with a status below 500 other than 429
+// (rate limiting). A server error, a rate limit, a connection failure, a timeout or a malformed answer means Cloudflare
+// could not answer, so the caller reports the check as not made and the value is stored.
 func cloudflareRefused(err error) bool {
+	if errors.Is(err, cloudflare.ErrTokenInactive) || errors.Is(err, cloudflare.ErrZoneNotFound) {
+		return true
+	}
 	var api *cloudflare.APIError
-	return errors.As(err, &api) || errors.Is(err, cloudflare.ErrTokenInactive) || errors.Is(err, cloudflare.ErrZoneNotFound)
+	return errors.As(err, &api) && api.Status < 500 && api.Status != http.StatusTooManyRequests
 }
 
 // cloudflareGuide is the guide for the managed ingress API token: a link to Cloudflare's account token form with the
