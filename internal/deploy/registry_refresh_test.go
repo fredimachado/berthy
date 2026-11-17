@@ -232,6 +232,25 @@ func TestRefreshRegistryAuthReportsABoundServiceThatIsGone(t *testing.T) {
 	}
 }
 
+func TestRefreshRegistryAuthDoesNotReportAGoneServiceOfAnotherRegistry(t *testing.T) {
+	f := newRefreshFixture(t)
+	f.password("REGISTRY_TOKEN", refreshHost, "new")
+	// The manifest lists the host for the whole project, but these apps pull from elsewhere.
+	f.app("elsewhere", "other.example/acme/x:1", ghcr())
+	f.app("hub", "acme/hub:1", ghcr())
+	delete(f.engine.services, "elsewhere-web")
+	f.engine.services["hub-web"].ID = "replaced"
+
+	got, err := f.c.RefreshRegistryAuth(context.Background(), refreshHost)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("refresh: %+v %v", got, err)
+	}
+	names, err := f.c.RegistryServices(context.Background(), refreshHost)
+	if err != nil || len(names) != 0 {
+		t.Fatalf("list: %v %v", names, err)
+	}
+}
+
 func TestRefreshRegistryAuthReportsAMissingCredentialWithoutLeakingPasswords(t *testing.T) {
 	f := newRefreshFixture(t)
 	f.password("REGISTRY_TOKEN", refreshHost, "new")

@@ -28,8 +28,8 @@ type registryTarget struct {
 const registryRefreshTimeout = 30 * time.Second
 
 // registryTargets finds, sorted by service name, the bound Swarm services that pull from host. It is the one place that
-// decides which services a replaced password concerns. A service Berthy cannot classify is listed only when the app's
-// applied manifest names host, so a problem with an unrelated app is not reported here.
+// decides which services a replaced password concerns. A service Berthy cannot read is listed only when its app's own image
+// in the applied manifest is on host, so a problem with an app of another registry is not reported here.
 func (c *Controller) registryTargets(ctx context.Context, host string) ([]registryTarget, error) {
 	if c.Store == nil {
 		return nil, nil
@@ -50,7 +50,7 @@ func (c *Controller) registryTargets(ctx context.Context, host string) ([]regist
 		}
 		live, err := c.Engine.InspectService(ctx, b.Name)
 		if err != nil || live.ID != b.ServiceID {
-			if _, named := m.Registries[host]; named {
+			if h, e := imageHost(m.Apps[b.App].Image); e == nil && h == host {
 				out = append(out, registryTarget{b: b, fail: "bound service unavailable"})
 			}
 			continue

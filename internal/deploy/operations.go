@@ -186,7 +186,12 @@ func serviceImageHost(spec json.RawMessage) (string, error) {
 	if err := json.Unmarshal(spec, &v); err != nil {
 		return "", errors.New("service image unavailable")
 	}
-	ref, err := reference.ParseNormalizedNamed(v.TaskTemplate.ContainerSpec.Image)
+	return imageHost(v.TaskTemplate.ContainerSpec.Image)
+}
+
+// imageHost is the registry host of an image reference.
+func imageHost(image string) (string, error) {
+	ref, err := reference.ParseNormalizedNamed(image)
 	if err != nil {
 		return "", errors.New("service image unavailable")
 	}
