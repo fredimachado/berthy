@@ -175,6 +175,15 @@ func (c *Controller) stageCompose(ctx context.Context, dir string, req Request) 
 		return "", errComposeFiles
 	}
 	var env strings.Builder
+	// The Berthy identity comes first, so a Compose file can pass it on as ${BERTHY_ENVIRONMENT} and the like.
+	composeIdentity := map[string]string{"BERTHY_APP": req.App, "BERTHY_ENVIRONMENT": c.Environment, "BERTHY_PROJECT": req.Manifest.Project}
+	for _, k := range sortedKeys(composeIdentity) {
+		v, ok := composeEnvValue(composeIdentity[k])
+		if !ok {
+			return "", errComposeEnv
+		}
+		env.WriteString(k + "=" + v + "\n")
+	}
 	for _, k := range sortedKeys(app.Env.Plain) {
 		v, ok := composeEnvValue(app.Env.Plain[k])
 		if !ok {

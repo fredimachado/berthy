@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -133,16 +134,10 @@ func TestDockerStoredSpecUpdatesToAppWithoutEnv(t *testing.T) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var live struct {
-		TaskTemplate struct {
-			ContainerSpec map[string]json.RawMessage
-		}
-	}
-	if err := json.Unmarshal(e.spec, &live); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := live.TaskTemplate.ContainerSpec["Env"]; ok {
-		t.Fatalf("env kept after update: %s", e.spec)
+	// The app's own variables are gone. The Berthy identity stays, so the container's environment is never empty.
+	env := specEnv(t, e.spec)
+	if slices.Contains(env, "MODE=fast") || !slices.Contains(env, "BERTHY_IMAGE_DIGEST=sha256:"+strings.Repeat("b", 64)) {
+		t.Fatalf("environment after update: %q", env)
 	}
 }
 

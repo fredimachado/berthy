@@ -19,8 +19,38 @@ type preparedPlan struct {
 	NetworkID string
 	Auth      *engine.RegistryAuth
 	Env       []string
+	// Identity is the BERTHY_* values of the app's containers; Env stays the app's own variables.
+	Identity identity
 	// LogDriver is the daemon's default log driver, which decides the rotation of a role that sets no logging.
 	LogDriver string
+}
+
+// identity is what an image app's container knows about itself, as the BERTHY_* variables. It holds only values that
+// change with the image or never, so a deploy that keeps the version gives its containers the same variables.
+type identity struct {
+	Environment, Project, App, Version, Digest string
+}
+
+// env returns the BERTHY_* variables of a container of role, sorted. role is "" for a one-off container, which belongs to
+// the app rather than a role; BERTHY_ROLE is then set and empty.
+func (i identity) env(role string) []string {
+	vars := []string{
+		"BERTHY_APP=" + i.App,
+		"BERTHY_ENVIRONMENT=" + i.Environment,
+		"BERTHY_IMAGE_DIGEST=" + i.Digest,
+		"BERTHY_PROJECT=" + i.Project,
+		"BERTHY_ROLE=" + role,
+		"BERTHY_VERSION=" + i.Version,
+	}
+	sort.Strings(vars)
+	return vars
+}
+
+// containerEnv is the full environment of a container of role: the app's own variables and the BERTHY_* ones, sorted.
+func (p preparedPlan) containerEnv(role string) []string {
+	env := append(append([]string(nil), p.Env...), p.Identity.env(role)...)
+	sort.Strings(env)
+	return env
 }
 
 // logDriverEngine reads the daemon's default log driver. An engine without it gets no default rotation.
@@ -132,6 +162,12 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 	if err != nil {
 		return out, err
 	}
+	// prepare pins every image, so a reference without a digest is an error rather than an empty BERTHY_IMAGE_DIGEST.
+	canonical, ok := named.(reference.Canonical)
+	if !ok {
+		return out, errors.New("image is not pinned to a digest")
+	}
+	out.Identity = identity{Environment: c.Environment, Project: req.Manifest.Project, App: req.App, Version: p.Tag, Digest: canonical.Digest().String()}
 	host := reference.Domain(named)
 	if reg, ok := req.Manifest.Registries[host]; ok {
 		info, value, e := c.Store.Secret(ctx, reg.PasswordSecret)

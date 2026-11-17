@@ -33,6 +33,9 @@ const TunnelTokenSecret = "TUNNEL_TOKEN"
 // ConnectorAppName is the app Berthy runs for the managed ingress connector.
 const ConnectorAppName = "ingress"
 
+// berthyEnvPrefix starts the environment names Berthy sets in every image app's containers. An app may not declare them.
+const berthyEnvPrefix = "BERTHY_"
+
 // ConnectorMetricsPort is the port the connector serves metrics and its readiness check on, inside its container.
 const ConnectorMetricsPort = 20241
 
@@ -638,6 +641,9 @@ func (m *Manifest) Validate() error {
 			if k == TunnelTokenSecret {
 				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
 			}
+			if strings.HasPrefix(k, berthyEnvPrefix) {
+				return fmt.Errorf("app %s: names starting with BERTHY_ are reserved for Berthy", name)
+			}
 			if !envName.MatchString(k) || strings.ContainsRune(a.Env.Plain[k], 0) {
 				return fmt.Errorf("app %s: invalid environment name or value", name)
 			}
@@ -646,6 +652,9 @@ func (m *Manifest) Validate() error {
 		for _, s := range a.Env.Secret {
 			if s == TunnelTokenSecret && !(m.Connector && name == ConnectorAppName) {
 				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+			}
+			if strings.HasPrefix(s, berthyEnvPrefix) {
+				return fmt.Errorf("app %s: names starting with BERTHY_ are reserved for Berthy", name)
 			}
 			if !envName.MatchString(s) || seen[s] {
 				return fmt.Errorf("app %s: invalid secret", name)

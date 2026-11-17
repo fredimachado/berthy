@@ -128,7 +128,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	work := make([]roleWork, 0, len(p.Roles))
 	for ordinal, role := range p.Roles {
 		r := app.Roles[role]
-		spec, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, op.ID, prepared.NetworkID, prepared.Image, prepared.Env, r, drain, img.Healthcheck, prepared.LogDriver)
+		spec, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, op.ID, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), r, drain, img.Healthcheck, prepared.LogDriver)
 		if e != nil {
 			outcome.Err = "role preflight failed"
 			return

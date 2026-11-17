@@ -625,8 +625,9 @@ func TestIngressApplyCreatesTunnelConnectorRouteAndRecord(t *testing.T) {
 	if !strings.Contains(strings.Join(container.Healthcheck.Test, " "), "tunnel --metrics 127.0.0.1:20241 ready") {
 		t.Fatalf("healthcheck %v", container.Healthcheck.Test)
 	}
-	if want := "TUNNEL_TOKEN=" + f.cf.TunnelToken(tunnel.ID); !reflect.DeepEqual(container.Env, []string{want}) {
-		t.Fatal("connector environment does not carry the tunnel token")
+	// The connector carries the tunnel token and, like every image app, its Berthy identity.
+	if want := "TUNNEL_TOKEN=" + f.cf.TunnelToken(tunnel.ID); !slices.Contains(container.Env, want) || !slices.Contains(container.Env, "BERTHY_APP=ingress") {
+		t.Fatalf("connector environment %q does not carry the tunnel token and the Berthy identity", container.Env)
 	}
 	if spec.Labels["berthy.app"] != "ingress" || spec.Labels["berthy.environment"] != ingressEnv {
 		t.Fatalf("labels %v", spec.Labels)

@@ -238,6 +238,7 @@ A role's health check is a command run inside the container, with the same field
 - A deploy stops before changing anything if a named secret has no value.
 - Values that differ between environments go in the overlays.
 - Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's environment file, where the Compose file reads them as `${NAME}`. Only the agent can read that file.
+- **Identity.** Every container of an image app, the services of its roles and the one-off containers of its `run:` hooks and migrations, also gets `BERTHY_ENVIRONMENT` (the environment name), `BERTHY_PROJECT` (the manifest's `project`), `BERTHY_APP` (the app's name), `BERTHY_ROLE` (the role's name, empty in a one-off container, which belongs to the app), `BERTHY_VERSION` (the tag the deploy asked for, empty for a digest deploy and for the containers of a schema revert, which record no tag) and `BERTHY_IMAGE_DIGEST` (the digest that runs, as `sha256:…`). These values change only with the image, so a deploy that keeps the version gives its containers the same environment. A rollback sets the tag and digest of the release it returns to. A Compose app gets `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` in its environment file and no other identity. An `env.plain` or `env.secret` name that starts with `BERTHY_` is refused.
 - Secrets are stored per environment. Other parts of the manifest refer to them by name as well: registries, backup destinations and telemetry.
 
 ### Registries

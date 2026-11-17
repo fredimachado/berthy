@@ -570,7 +570,8 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "MODE='one'\nNOTE='plain value'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\n"
+	// The Berthy identity comes first, sorted; the app's own variables follow.
+	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\n" + "MODE='one'\nNOTE='plain value'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\n"
 	if string(env) != want {
 		t.Fatalf("environment file %q, want %q", env, want)
 	}

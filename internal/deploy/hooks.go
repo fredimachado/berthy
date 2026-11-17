@@ -152,7 +152,7 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		Env              []string          `json:"Env,omitempty"`
 		Labels           map[string]string `json:"Labels"`
 		NetworkingConfig any               `json:"NetworkingConfig"`
-	}{p.Image, argv[:1], argv[1:], p.Env, labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
+	}{p.Image, argv[:1], argv[1:], p.containerEnv(""), labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
 	}

@@ -508,6 +508,28 @@ The image must contain the command (`curl` here). A new version is first noticed
 
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secret **names** only; the values live in the agent. A name cannot be in both. Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's `.env` file, where the Compose file reads them as `${NAME}`.
 
+Berthy also sets these variables in every container of an image app, so the app can tag its error reports, traces and metrics:
+
+| Variable | Value |
+| --- | --- |
+| `BERTHY_ENVIRONMENT` | The environment name. |
+| `BERTHY_PROJECT` | The manifest's `project`. |
+| `BERTHY_APP` | The app's name. |
+| `BERTHY_ROLE` | The role's name. Empty in the containers of `run:` hooks and migrations, which belong to the app and not to a role. |
+| `BERTHY_VERSION` | The tag the deploy asked for. Empty for a digest deploy. |
+| `BERTHY_IMAGE_DIGEST` | The digest that runs, as `sha256:…`. |
+
+They change only with the image, so a deploy that keeps the version gives its containers the same variables and replaces none of them for that reason. A rollback sets the tag and digest of the release it returns to. An app deployed before these variables existed gets them at its next deploy, which replaces its tasks once. The containers of a schema revert record no tag, so `BERTHY_VERSION` is empty in them.
+
+A name that starts with `BERTHY_` cannot be used in `env.plain` or `env.secret`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
+
+```yaml
+services:
+  web:
+    environment:
+      APP_ENVIRONMENT: ${BERTHY_ENVIRONMENT}
+```
+
 **Deploy settings.**
 
 | Key | Meaning | Default |
@@ -2299,6 +2321,7 @@ One of `http`, `tcp` or `service` (`app`, `role`, `port`, `path`), plus `expect_
 - The manifest, and each overlay, are at most 1 MiB. YAML nesting at most 64 levels.
 - A Compose file is at most 512 KiB, UTF-8, with no NUL.
 - The secret name `TUNNEL_TOKEN` and the app name `ingress` (with managed ingress) are reserved.
+- Environment names that start with `BERTHY_` are reserved for the variables Berthy sets (see Environment in step 2).
 - A secret value is at most 64 KiB.
 
 ### Agent configuration

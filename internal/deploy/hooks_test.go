@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -432,5 +433,30 @@ func TestRecoveryStopsTheContainerOfEveryAttempt(t *testing.T) {
 	}
 	if len(r.stopped) != 5 {
 		t.Fatalf("recovery stopped %v, want both version commands and all three apply attempts", r.stopped)
+	}
+}
+
+// TestOneOffContainersGetTheIdentityWithAnEmptyRole: a hook's container belongs to the app, not a role, so BERTHY_ROLE is
+// set and empty. It keeps the app's own variables too.
+func TestOneOffContainersGetTheIdentityWithAnEmptyRole(t *testing.T) {
+	c, f, id, p := hookFixture(t)
+	p.Identity = identity{Environment: "stage", Project: "proj", App: "app", Digest: "sha256:pinned"}
+	a := p.Request.Manifest.Apps["app"]
+	a.Hooks.PreDeploy = []manifest.Hook{{Run: []string{"pre"}}}
+	p.Request.Manifest.Apps["app"] = a
+	f.exits = []int{0}
+	if _, _, err := c.runPre(context.Background(), id, p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.specs) != 1 {
+		t.Fatalf("%d one-off containers", len(f.specs))
+	}
+	var spec struct{ Env []string }
+	if err := json.Unmarshal(f.specs[0], &spec); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"BERTHY_APP=app", "BERTHY_ENVIRONMENT=stage", "BERTHY_IMAGE_DIGEST=sha256:pinned", "BERTHY_PROJECT=proj", "BERTHY_ROLE=", "BERTHY_VERSION=", "TOKEN=secret"}
+	if !reflect.DeepEqual(spec.Env, want) {
+		t.Fatalf("one-off env %q, want %q", spec.Env, want)
 	}
 }
