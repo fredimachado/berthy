@@ -718,32 +718,128 @@ func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, val
 	if info.Name == "" {
 		return errors.New("empty secret name")
 	}
-	sealed, err := s.seal("secret:"+info.Name+"\x00"+info.Registry, value)
-	if err != nil {
-		return err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.checkNoLock(ctx, tx); err != nil {
+		return err
+	}
+	if err = s.putSecretTx(ctx, tx, actor, info, value); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SecretWrite is one secret of a batch write: the name and the value it takes. A batch write stores plain secrets.
+type SecretWrite struct {
+	Name  string
+	Value []byte
+}
+
+// RegistrySecretError says that a name is stored as a registry password. Only a write that names the registry changes one, so
+// a plain write of that name is refused.
+type RegistrySecretError struct{ Name string }
+
+func (e RegistrySecretError) Error() string { return e.Name + " is a registry password" }
+
+// rowQuerier reads one row, inside a transaction or outside one.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// checkNoLock refuses with ErrConflict while an operation holds the environment's lock.
+func (s *Store) checkNoLock(ctx context.Context, tx *sql.Tx) error {
 	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM locks WHERE environment=?`, s.env).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM locks WHERE environment=?`, s.env).Scan(&count); err != nil {
 		return err
 	}
 	if count != 0 {
 		return ErrConflict
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO secrets VALUES(?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET registry=excluded.registry,sealed=excluded.sealed`, s.env, info.Name, info.Registry, sealed)
+	return nil
+}
+
+// putSecretTx stores one secret inside tx and audits it. The caller holds the transaction and has checked the lock.
+func (s *Store) putSecretTx(ctx context.Context, tx *sql.Tx, actor Actor, info SecretInfo, value []byte) error {
+	sealed, err := s.seal("secret:"+info.Name+"\x00"+info.Registry, value)
 	if err != nil {
 		return err
 	}
-	if actor.ID != "" {
-		if err = auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "secret_set:" + info.Name}, "succeeded"); err != nil {
-			return err
+	if _, err = tx.ExecContext(ctx, `INSERT INTO secrets VALUES(?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET registry=excluded.registry,sealed=excluded.sealed`, s.env, info.Name, info.Registry, sealed); err != nil {
+		return err
+	}
+	return auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "secret_set:" + info.Name}, "succeeded")
+}
+
+// classifySecrets sorts names into those that are new and those that replace a stored plain secret. A name stored as a
+// registry password is refused with a RegistrySecretError, since a plain write would make it a plain secret.
+func (s *Store) classifySecrets(ctx context.Context, q rowQuerier, names []string) (create, replace []string, err error) {
+	create, replace = []string{}, []string{}
+	for _, name := range names {
+		var registry string
+		err := q.QueryRowContext(ctx, `SELECT registry FROM secrets WHERE environment=? AND name=?`, s.env, name).Scan(&registry)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			create = append(create, name)
+		case err != nil:
+			return nil, nil, err
+		case registry != "":
+			return nil, nil, RegistrySecretError{Name: name}
+		default:
+			replace = append(replace, name)
 		}
 	}
-	return tx.Commit()
+	return create, replace, nil
+}
+
+// ClassifySecrets reports which of names are new and which replace a stored plain secret, as PutSecrets would find them. It
+// writes nothing.
+func (s *Store) ClassifySecrets(ctx context.Context, names []string) (create, replace []string, err error) {
+	return s.classifySecrets(ctx, s.db, names)
+}
+
+// PutSecrets stores every write in one transaction: all of them, or none when any one fails. It refuses with ErrConflict while
+// an operation holds the lock, and with a RegistrySecretError when a name is stored as a registry password. It returns the
+// names it created and the names it replaced, in the order of writes, and audits each secret as PutSecret does.
+func (s *Store) PutSecrets(ctx context.Context, actor Actor, writes []SecretWrite) (created, replaced []string, err error) {
+	if actor.ID == "" {
+		return nil, nil, errors.New("actor required")
+	}
+	names := make([]string, 0, len(writes))
+	seen := make(map[string]bool, len(writes))
+	for _, w := range writes {
+		if w.Name == "" {
+			return nil, nil, errors.New("empty secret name")
+		}
+		if seen[w.Name] {
+			return nil, nil, fmt.Errorf("secret %s is written twice", w.Name)
+		}
+		seen[w.Name] = true
+		names = append(names, w.Name)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	if err = s.checkNoLock(ctx, tx); err != nil {
+		return nil, nil, err
+	}
+	created, replaced, err = s.classifySecrets(ctx, tx, names)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, w := range writes {
+		if err = s.putSecretTx(ctx, tx, actor, SecretInfo{Name: w.Name}, w.Value); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return created, replaced, nil
 }
 
 // PutOperationSecret stores a secret for the operation that holds the environment lock, such as the tunnel

@@ -590,11 +590,12 @@ func TestEverySummaryIsOneShortPrintableLine(t *testing.T) {
 		{[]string{"operations", "op1", "resolve"}, `{"reason":"gone"}`, "recovery resolve op1"},
 		{[]string{"deploys"}, "{\"app\":\"api\\u001b[31m\\nevil\",\"version\":\"1\"}", "deploy api?[31m?evil 1"},
 	} {
-		if got := summarize(tc.rest, []byte(tc.body)); got != tc.want {
+		// Every row but the deletes is a POST. A delete of a secret named import is covered by its own test.
+		if got := summarize(tc.rest, "POST", []byte(tc.body)); got != tc.want {
 			t.Errorf("%v %s: %q, want %q", tc.rest, tc.body, got, tc.want)
 		}
 	}
-	long := summarize([]string{"deploys"}, []byte(`{"app":"`+strings.Repeat("x", 500)+`","version":"1"}`))
+	long := summarize([]string{"deploys"}, "POST", []byte(`{"app":"`+strings.Repeat("x", 500)+`","version":"1"}`))
 	if len(long) > 120 {
 		t.Errorf("summary of %d bytes", len(long))
 	}

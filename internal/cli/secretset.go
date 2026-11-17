@@ -17,15 +17,13 @@ import (
 
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
+	"berthy/internal/api"
 	"berthy/internal/cloudflare"
 	"berthy/internal/manifest"
 	"berthy/internal/registrycheck"
 
 	"github.com/charmbracelet/x/term"
 )
-
-// maxSecretValue is the largest value a secret can have, in bytes.
-const maxSecretValue = 65536
 
 // cloudflareTokenTemplate is the start of Cloudflare's account API token form with its permissions filled in. Cloudflare
 // reads the rest of the link as the token's permission groups and name.
@@ -259,8 +257,8 @@ type storedSecret struct {
 func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool)) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
-		data, e := io.ReadAll(io.LimitReader(os.Stdin, maxSecretValue+1))
-		if e != nil || len(data) > maxSecretValue {
+		data, e := io.ReadAll(io.LimitReader(os.Stdin, api.MaxSecretValue+1))
+		if e != nil || len(data) > api.MaxSecretValue {
 			fmt.Fprintln(errout, "secret input unavailable or too large")
 			return "", "", 1
 		}
@@ -298,7 +296,7 @@ func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret
 	fmt.Fprintf(errout, "Value of %s (hidden): ", name)
 	line, err := read()
 	fmt.Fprintln(errout)
-	if err != nil || len(line) > maxSecretValue {
+	if err != nil || len(line) > api.MaxSecretValue {
 		fmt.Fprintln(errout, "secret input unavailable or too large")
 		return "", "", 1
 	}

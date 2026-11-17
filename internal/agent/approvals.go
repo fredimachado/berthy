@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/state"
 )
@@ -87,7 +88,7 @@ func restOf(path string) []string {
 
 // readBody reads a request body of at most 1 MiB and puts it back, so the handler can read it again.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxRequestBody))
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +165,7 @@ func canonicalJSON(b []byte) (json.RawMessage, error) {
 // captured answer and no plan.
 func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, method, path string, body []byte) (json.RawMessage, *capture) {
 	if !supportsDryRun(rest) {
-		b, _ := json.Marshal(describe(rest))
+		b, _ := json.Marshal(describe(rest, method))
 		return b, nil
 	}
 	rec := newCapture()
@@ -255,7 +256,7 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 	now := g.c.now().UTC().Truncate(time.Millisecond)
 	held, err := g.d.Store.CreateApproval(ctx, state.Approval{
 		ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Method: r.Method, Path: r.URL.Path,
-		Summary: summarize(rest, body), Plan: plan, Created: now, Expires: now.Add(g.c.approvalTTL()),
+		Summary: summarize(rest, r.Method, body), Plan: plan, Created: now, Expires: now.Add(g.c.approvalTTL()),
 	}, body)
 	switch {
 	case errors.Is(err, state.ErrTooManyApprovals):
@@ -291,7 +292,7 @@ type approvalView struct {
 }
 
 func viewApproval(a state.Approval) approvalView {
-	v := approvalView{ID: a.ID, Actor: a.ActorName, Kind: routeKind(restOf(a.Path)), Summary: a.Summary, Plan: a.Plan, Created: a.Created, Expires: a.Expires,
+	v := approvalView{ID: a.ID, Actor: a.ActorName, Kind: routeKind(restOf(a.Path), a.Method), Summary: a.Summary, Plan: a.Plan, Created: a.Created, Expires: a.Expires,
 		Status: a.Status, DecidedBy: a.DecidedBy, Result: a.Result}
 	if !a.DecidedAt.IsZero() {
 		t := a.DecidedAt
@@ -554,7 +555,7 @@ func cleanText(s string, n int) string {
 }
 
 // summarize is the one line that says what a held request does, such as "deploy api 1.4.2". It carries no secret value.
-func summarize(rest []string, body []byte) string {
+func summarize(rest []string, method string, body []byte) string {
 	var b struct {
 		App           string   `json:"app"`
 		Version       string   `json:"version"`
@@ -569,13 +570,15 @@ func summarize(rest []string, body []byte) string {
 		Volumes       bool     `json:"volumes"`
 		Service       string   `json:"service"`
 		Command       []string `json:"command"`
+		// Secrets is counted, never read: an import's entries hold values.
+		Secrets []json.RawMessage `json:"secrets"`
 	}
 	_ = json.Unmarshal(body, &b)
 	app := cleanText(b.App, 80)
 	if b.Role != "" {
 		app += "/" + cleanText(b.Role, 40)
 	}
-	switch routeKind(rest) {
+	switch routeKind(rest, method) {
 	case "deploy":
 		if b.KeepVersion && b.Version == "" {
 			if b.KeepDigest != "" {
@@ -618,20 +621,26 @@ func summarize(rest []string, body []byte) string {
 		return "ingress apply"
 	case "secret set":
 		return "secret set " + cleanText(b.Name, 80)
+	case "secret import":
+		if len(b.Secrets) == 1 {
+			return "secret import 1 secret"
+		}
+		return "secret import " + strconv.Itoa(len(b.Secrets)) + " secrets"
 	case "secret delete":
 		return "secret delete " + cleanText(rest[1], 80)
 	case "lock acquire", "lock release", "state backup run", "alerts test":
-		return routeKind(rest)
+		return routeKind(rest, method)
 	case "backup run", "job run":
-		return routeKind(rest) + " " + cleanText(rest[1], 80)
+		return routeKind(rest, method) + " " + cleanText(rest[1], 80)
 	case "recovery resolve":
 		return "recovery resolve " + cleanText(rest[1], 80)
 	}
 	return "change"
 }
 
-// routeKind names what a change route does. It is "" for a route that changes nothing.
-func routeKind(rest []string) string {
+// routeKind names what a change route does, for the method it takes. It is "" for a route that changes nothing. POST
+// secrets/import and DELETE secrets/<name> share a path, so the method tells them apart.
+func routeKind(rest []string, method string) string {
 	switch {
 	case len(rest) == 1 && rest[0] == "deploys":
 		return "deploy"
@@ -647,6 +656,9 @@ func routeKind(rest []string) string {
 	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
 		return "ingress apply"
 	case len(rest) == 2 && rest[0] == "secrets":
+		if method == "POST" && rest[1] == "import" {
+			return "secret import"
+		}
 		return "secret delete"
 	case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):
 		return "lock " + rest[1]
@@ -663,8 +675,8 @@ func routeKind(rest []string) string {
 }
 
 // describe is the plan of a held request whose route has no dry run: what it does, and to what.
-func describe(rest []string) map[string]string {
-	out := map[string]string{"action": routeKind(rest)}
+func describe(rest []string, method string) map[string]string {
+	out := map[string]string{"action": routeKind(rest, method)}
 	switch out["action"] {
 	case "backup run", "job run":
 		out["target"] = rest[1]
