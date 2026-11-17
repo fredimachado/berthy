@@ -33,7 +33,13 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	default:
 		resolved, err := c.resolveKeepVersion(ctx, req)
 		if err != nil {
+			// A public refusal says what to do, as a version that changed since the client read it. Anything else may carry
+			// internals.
 			outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
+			var refusal Refusal
+			if errors.As(err, &refusal) && PublicMessage(string(refusal)) {
+				outcome.Err = string(refusal)
+			}
 			break
 		}
 		outcome = c.runDeploy(ctx, op, actor, resolved, false)

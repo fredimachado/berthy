@@ -257,6 +257,9 @@ func checkKeptVersions(ctx context.Context, client *http.Client, base *url.URL, 
 			fmt.Fprintf(errout, "%s (nothing was deployed)\n", agentclient.Message(resp.StatusCode, data))
 			return 1
 		default:
+			// The agent refuses the deploy if the app runs another version by the time it deploys it, so what the header says is
+			// what is kept.
+			step.req.KeepDigest = answer.Digest
 			step.header = " (keeps " + terminalSafe(keptVersionName(answer.appliedRelease)) + ")"
 		}
 	}
@@ -271,12 +274,5 @@ func keptVersionName(r appliedRelease) string {
 	if r.Tag != "" {
 		return r.Tag
 	}
-	_, digest, found := strings.Cut(r.Digest, "@")
-	if !found {
-		digest = r.Digest
-	}
-	if hex, ok := strings.CutPrefix(digest, "sha256:"); ok && len(hex) > 12 {
-		return "sha256:" + hex[:12]
-	}
-	return digest
+	return deploy.ShortDigest(r.Digest)
 }

@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +50,9 @@ type Request struct {
 	// KeepVersion deploys the version the app runs now: the digest and tag of its applied release. It is for an image app and
 	// excludes Version. The new manifest is applied as in any deploy.
 	KeepVersion bool `json:"keep_version,omitempty"`
+	// KeepDigest is the digest the client saw applied when it asked to keep the version. With KeepVersion the agent refuses the
+	// deploy when the app's applied release has another digest by the time it resolves the version. Empty: no check.
+	KeepDigest string `json:"keep_digest,omitempty"`
 	// recordTag is the tag to record when the version is a digest taken from an earlier release: the tag of the release a
 	// rollback returns to, or of the applied release a keep_version deploy keeps. It is unexported, so a client cannot send
 	// it, and it is not in the request hash.
@@ -123,7 +128,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if req.AllowRecreate && !actor.Admin {
 		return Plan{}, errAllowRecreateAdmin
 	}
-	if req.KeepVersion {
+	if req.KeepVersion || req.KeepDigest != "" {
 		resolved, err := c.resolveKeepVersion(ctx, req)
 		if err != nil {
 			return Plan{}, err
@@ -234,7 +239,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.AllowRecreate && !actor.Admin {
 		return state.Operation{}, false, errAllowRecreateAdmin
 	}
-	if req.KeepVersion {
+	if req.KeepVersion || req.KeepDigest != "" {
 		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
 		if _, err := c.resolveKeepVersion(ctx, req); err != nil {
 			return state.Operation{}, false, err
@@ -305,7 +310,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		RestoreKey      string `json:"restore_key,omitempty"`
 		RestoreInto     string `json:"restore_into,omitempty"`
 		KeepVersion     bool   `json:"keep_version,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion})
+		KeepDigest      string `json:"keep_digest,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -478,13 +484,34 @@ const (
 	errKeepVersionKind    Refusal = "keep_version applies to a deploy"
 	errKeepVersionExclude Refusal = "keep_version and version are exclusive"
 	errKeepVersionImage   Refusal = "keep_version applies to an image app"
+	errKeepDigestAlone    Refusal = "keep_digest applies with keep_version"
 )
 
+// keepChangedMessage matches the refusal of a keep_version deploy whose app runs another digest than the client read. It names
+// the app and two shortened digests, so it is public like the fixed refusals.
+var keepChangedMessage = regexp.MustCompile(`^app [a-z0-9][a-z0-9_-]{0,62} changed since its version was read: it runs sha256:[0-9a-f]{12} now, not sha256:[0-9a-f]{12}; deploy it again$`)
+
+// ShortDigest shortens an image digest, with or without its repository, to sha256: and its first 12 hex characters, for a text
+// a person reads. Anything else, such as a tag, is returned as it is.
+func ShortDigest(v string) string {
+	if _, digest, found := strings.Cut(v, "@"); found {
+		v = digest
+	}
+	if hex, ok := strings.CutPrefix(v, "sha256:"); ok && len(hex) > 12 {
+		return "sha256:" + hex[:12]
+	}
+	return v
+}
+
 // resolveKeepVersion turns a keep_version deploy into one of the version the app runs now: the digest of its applied release,
-// and that release's tag to record. A request without keep_version is returned as it is. The client's own request, not this
-// one, is what the request hash covers.
+// and that release's tag to record. With a keep_digest it refuses the deploy when the app runs another digest, so a
+// deploy that landed after the client read the version is not undone by this one. A request without keep_version is returned as
+// it is. The client's own request, not this one, is what the request hash covers.
 func (c *Controller) resolveKeepVersion(ctx context.Context, req Request) (Request, error) {
 	if !req.KeepVersion {
+		if req.KeepDigest != "" {
+			return Request{}, errKeepDigestAlone
+		}
 		return req, nil
 	}
 	switch {
@@ -504,9 +531,13 @@ func (c *Controller) resolveKeepVersion(ctx context.Context, req Request) (Reque
 	if err != nil {
 		return Request{}, errors.New("applied release unavailable")
 	}
+	if req.KeepDigest != "" && applied.Digest != req.KeepDigest {
+		return Request{}, Refusal("app " + req.App + " changed since its version was read: it runs " + ShortDigest(applied.Digest) + " now, not " + ShortDigest(req.KeepDigest) + "; deploy it again")
+	}
 	req.Version = applied.Digest
 	req.recordTag = applied.Tag
 	req.KeepVersion = false
+	req.KeepDigest = ""
 	return req, nil
 }
 

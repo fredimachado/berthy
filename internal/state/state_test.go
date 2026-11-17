@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -288,6 +289,19 @@ func TestPublicDataRejectsPrivateFields(t *testing.T) {
 	}
 	if err = s.Finish(ctx, op.ID, Outcome{State: "failed", Event: []byte(`{"token":"canary"}`)}); err == nil {
 		t.Fatal("accepted private outcome")
+	}
+}
+
+// TestPublicRequestAcceptsTheKeptVersionAndItsDigest: keep_digest is a digest the client read, not a secret, so a request that
+// carries it is recorded.
+func TestPublicRequestAcceptsTheKeptVersionAndItsDigest(t *testing.T) {
+	s, _, _ := testStore(t)
+	public := []byte(`{"app":"api","keep_version":true,"keep_digest":"example/api@sha256:` + strings.Repeat("a", 64) + `"}`)
+	if _, _, err := s.Admit(context.Background(), Admission{RequestID: "keep", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: public}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Admit(context.Background(), Admission{RequestID: "bad", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{"keep_digest":true}`)}); err == nil {
+		t.Fatal("accepted a keep_digest that is not a string")
 	}
 }
 

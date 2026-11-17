@@ -70,6 +70,7 @@ func TestKeepVersionRefusals(t *testing.T) {
 		{"compose app", Request{RequestID: "c", App: "db", KeepVersion: true, Manifest: composeApp(false), ComposeFile: "services: {}\n"}, "keep_version applies to an image app"},
 		{"other kind", Request{RequestID: "d", App: "web", Kind: "restart", KeepVersion: true, Manifest: dockerManifest(nil)}, "keep_version applies to a deploy"},
 		{"adoption", Request{RequestID: "e", App: "web", Adopt: true, KeepVersion: true, Manifest: dockerManifest(nil)}, "keep_version applies to a deploy"},
+		{"keep_digest alone", Request{RequestID: "f", App: "web", KeepDigest: keepDigest("a"), Manifest: dockerManifest(nil)}, "keep_digest applies with keep_version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refusal Refusal
@@ -129,5 +130,98 @@ func TestKeepVersionIsPartOfTheRequestHash(t *testing.T) {
 	explicit.Version = keepDigest("b")
 	if _, _, err = c.Admit(ctx, Actor{ID: "admin"}, explicit); !errors.Is(err, state.ErrConflict) {
 		t.Fatalf("the same id with a version: %v", err)
+	}
+	checked := keep
+	applied, err := s.Applied(ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked.KeepDigest = applied.Digest
+	if _, _, err = c.Admit(ctx, Actor{ID: "admin"}, checked); !errors.Is(err, state.ErrConflict) {
+		t.Fatalf("the same id with a keep_digest: %v", err)
+	}
+}
+
+// TestKeepVersionWithTheAppliedDigestDeploysIt: a keep_digest equal to the digest the app runs changes nothing.
+func TestKeepVersionWithTheAppliedDigestDeploysIt(t *testing.T) {
+	s := openStore(t)
+	seedTaggedRelease(t, s, "current", keepDigest("b"), "v1.0.2")
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	m := dockerManifest(nil)
+	plan, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "plan", App: "web", KeepVersion: true, KeepDigest: keepDigest("b"), DryRun: true, Manifest: m})
+	if err != nil || !strings.HasSuffix(plan.Image, "@"+keepDigest("b")) {
+		t.Fatalf("plan image %q: %v", plan.Image, err)
+	}
+	op := runBound(t, s, c, Request{RequestID: "keep", App: "web", KeepVersion: true, KeepDigest: keepDigest("b"), Manifest: m})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	release, err := s.Applied(context.Background(), "web")
+	if err != nil || release.Tag != "v1.0.2" || !strings.HasSuffix(release.Digest, "@"+keepDigest("b")) || release.OperationID != op.ID {
+		t.Fatalf("release %+v: %v", release, err)
+	}
+}
+
+const keepDigestChanged = "app web changed since its version was read: it runs sha256:bbbbbbbbbbbb now, not sha256:aaaaaaaaaaaa; deploy it again"
+
+// TestKeepVersionRefusesADigestThatChanged: the client read version a, another deploy made it b, and the request is refused
+// at once, with nothing deployed.
+func TestKeepVersionRefusesADigestThatChanged(t *testing.T) {
+	s := openStore(t)
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	m := dockerManifest(nil)
+	// What a client reads is the applied release's digest, with its repository.
+	seedRelease(t, s, "first", "example/web@"+keepDigest("a"))
+	seedRelease(t, s, "second", "example/web@"+keepDigest("b"))
+	applied, err := s.Applied(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := "example/web@" + keepDigest("a")
+	req := Request{RequestID: "keep", App: "web", KeepVersion: true, KeepDigest: seen, Manifest: m}
+	var refusal Refusal
+	if _, _, err = c.Admit(context.Background(), Actor{ID: "admin"}, req); !errors.As(err, &refusal) || string(refusal) != keepDigestChanged {
+		t.Fatalf("Admit error %v, want %q", err, keepDigestChanged)
+	}
+	req.DryRun = true
+	if _, err = c.Plan(context.Background(), Actor{ID: "admin"}, req); !errors.As(err, &refusal) || string(refusal) != keepDigestChanged {
+		t.Fatalf("Plan error %v, want %q", err, keepDigestChanged)
+	}
+	if after, err := s.Applied(context.Background(), "web"); err != nil || after.ID != applied.ID {
+		t.Fatalf("a release was recorded: %+v: %v", after, err)
+	}
+}
+
+// TestKeepVersionRefusesAtExecuteWhenTheAppChangedAfterStart: the digest was current when the request was admitted, and
+// another deploy landed before it ran. The operation fails with what changed, not with the generic preflight text.
+func TestKeepVersionRefusesAtExecuteWhenTheAppChangedAfterStart(t *testing.T) {
+	s := openStore(t)
+	seedRelease(t, s, "first", keepDigest("a"))
+	seedRelease(t, s, "second", keepDigest("b"))
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "keep", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c.execute(context.Background(), op, Actor{ID: "admin"}, Request{RequestID: "keep", App: "web", KeepVersion: true, KeepDigest: keepDigest("a"), Manifest: dockerManifest(nil)})
+	got, err := s.Operation(context.Background(), op.ID)
+	if err != nil || got.State != "failed" || got.Err != keepDigestChanged {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+	if !PublicMessage(got.Err) {
+		t.Fatalf("%q would not be shown to a client", got.Err)
+	}
+}
+
+func TestShortDigestKeepsSha256AndTwelveHexCharacters(t *testing.T) {
+	for in, want := range map[string]string{
+		keepDigest("a"): "sha256:aaaaaaaaaaaa",
+		"docker.io/library/nginx@" + keepDigest("b"): "sha256:bbbbbbbbbbbb",
+		"1.4.2":        "1.4.2",
+		"sha256:short": "sha256:short",
+	} {
+		if got := ShortDigest(in); got != want {
+			t.Errorf("ShortDigest(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

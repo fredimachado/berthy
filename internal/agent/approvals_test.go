@@ -567,6 +567,8 @@ func TestEverySummaryIsOneShortPrintableLine(t *testing.T) {
 		{[]string{"deploys"}, `{"app":"api","version":"1.4.2"}`, "deploy api 1.4.2"},
 		{[]string{"deploys"}, `{"app":"api","version":"sha256:` + strings.Repeat("b", 64) + `"}`, "deploy api sha256:bbbbbbbbbbbb"},
 		{[]string{"deploys"}, `{"app":"api","keep_version":true}`, "deploy api (keeps the current version)"},
+		{[]string{"deploys"}, `{"app":"api","keep_version":true,"keep_digest":"example/api@sha256:` + strings.Repeat("c", 64) + `"}`, "deploy api (keeps sha256:cccccccccccc)"},
+		{[]string{"deploys"}, `{"app":"api","keep_version":true,"keep_digest":"sha256:` + strings.Repeat("c", 64) + `"}`, "deploy api (keeps sha256:cccccccccccc)"},
 		{[]string{"deploys"}, `{"app":"shop"}`, "deploy shop"},
 		{[]string{"rollback"}, `{"app":"api"}`, "rollback api"},
 		{[]string{"rollback"}, `{"app":"api","target_release":7}`, "rollback api to release 7"},

@@ -156,8 +156,8 @@ func TestDeployAllRunsEveryAppInDependsOnOrder(t *testing.T) {
 			t.Errorf("%s: commit %v", app, d["commit"])
 		}
 		if app == "api" {
-			if d["version"] != "v1.0.2" || d["keep_version"] != nil {
-				t.Errorf("api: version %v keep_version %v", d["version"], d["keep_version"])
+			if d["version"] != "v1.0.2" || d["keep_version"] != nil || d["keep_digest"] != nil {
+				t.Errorf("api: version %v keep_version %v keep_digest %v", d["version"], d["keep_version"], d["keep_digest"])
 			}
 			continue
 		}
@@ -297,6 +297,10 @@ func TestDeployAllKeepsTheVersionAnAppRunsNow(t *testing.T) {
 	for _, d := range agent.deploys {
 		if d["keep_version"] != true || d["version"] != "" {
 			t.Errorf("%v: want keep_version and no version", d)
+		}
+		// The digest the CLI read is the one the agent must still find applied.
+		if want := fmt.Sprintf("example/%s@sha256:%s", d["app"], strings.Repeat("a", 64)); d["keep_digest"] != want {
+			t.Errorf("%v: keep_digest %v, want %s", d["app"], d["keep_digest"], want)
 		}
 	}
 	if len(agent.reads) != 3 {

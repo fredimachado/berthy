@@ -553,20 +553,13 @@ func cleanText(s string, n int) string {
 	return b.String()
 }
 
-// shortVersion shortens an image digest to its first 12 characters, for a summary a person reads.
-func shortVersion(v string) string {
-	if h, ok := strings.CutPrefix(v, "sha256:"); ok && len(h) > 12 {
-		return "sha256:" + h[:12]
-	}
-	return v
-}
-
 // summarize is the one line that says what a held request does, such as "deploy api 1.4.2". It carries no secret value.
 func summarize(rest []string, body []byte) string {
 	var b struct {
 		App           string   `json:"app"`
 		Version       string   `json:"version"`
 		KeepVersion   bool     `json:"keep_version"`
+		KeepDigest    string   `json:"keep_digest"`
 		Role          string   `json:"role"`
 		Replicas      *int     `json:"replicas"`
 		TargetRelease int64    `json:"target_release"`
@@ -584,9 +577,12 @@ func summarize(rest []string, body []byte) string {
 	switch routeKind(rest) {
 	case "deploy":
 		if b.KeepVersion && b.Version == "" {
+			if b.KeepDigest != "" {
+				return "deploy " + cleanText(b.App, 80) + " (keeps " + cleanText(deploy.ShortDigest(b.KeepDigest), 80) + ")"
+			}
 			return "deploy " + cleanText(b.App, 80) + " (keeps the current version)"
 		}
-		return strings.TrimSpace("deploy " + cleanText(b.App, 80) + " " + cleanText(shortVersion(b.Version), 80))
+		return strings.TrimSpace("deploy " + cleanText(b.App, 80) + " " + cleanText(deploy.ShortDigest(b.Version), 80))
 	case "rollback":
 		if b.TargetRelease > 0 {
 			return "rollback " + cleanText(b.App, 80) + " to release " + strconv.FormatInt(b.TargetRelease, 10)
