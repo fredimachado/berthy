@@ -726,6 +726,16 @@ manifest valid
 
 Validation reads the files and checks the merged result. It needs no agent and no `--config`. Add `--manifest-dir <dir>` to read another directory. It exits `1` with the reason when something is wrong.
 
+It reports every problem it can find, not only the first, and says where each one is: the file (`berthy.yml` for the base manifest, `berthy.prod.yml` for the overlay), the line and column, the path in the manifest, and what is wrong. Where an overlay sets a key, the problem is placed in the overlay.
+
+```text
+berthy.yml:9:9: apps.api.roles.web.port: app api role web: invalid settings
+berthy.prod.yml:3:5: backups.data.destination: backup data: unknown destination
+2 problems
+```
+
+A problem about something that is missing, such as a required key, is placed at the nearest key that exists. A value of the wrong type, such as `replicas: "two"`, is reported without checking the rest of the manifest, which cannot be trusted until it is fixed. Every other command that loads the manifest stops at the first problem and prints only its message.
+
 To see the merged result, with secret values hidden (the manifest only holds secret names), run:
 
 ```bash

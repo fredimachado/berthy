@@ -264,7 +264,7 @@ registries:
 
 ### Checking a manifest
 
-- `berthy config validate -e prod` checks the merged manifest without contacting a server.
+- `berthy config validate -e prod` checks the merged manifest without contacting a server. It reports every problem it finds, one per line as `<file>:<line>:<column>: <path>: <message>`, where the file is the base manifest (`berthy.yml`) or the overlay (`berthy.<env>.yml`) that sets the key, followed by a count such as `2 problems`, and exits 1. A part that is not known is left out of the line, and the path is left out when the message already says it. A value of the wrong type stops the check of the rest of the manifest. Other commands that load the manifest, and the agent, stop at the first problem and give its message.
 - `berthy config show -e prod` prints the merged result with secret values hidden.
 
 ## Server setup

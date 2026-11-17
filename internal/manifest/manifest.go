@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"berthy/internal/schedule"
 	"berthy/internal/version"
 
 	"github.com/distribution/reference"
@@ -425,6 +424,8 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// readYAML reads one manifest file, which is nil when it is optional and not there. What is wrong with its content is returned
+// as Problems of that file, each with its line.
 func readYAML(path string, optional bool) (*yaml.Node, error) {
 	f, err := os.Open(path)
 	if optional && os.IsNotExist(err) {
@@ -441,8 +442,22 @@ func readYAML(path string, optional bool) (*yaml.Node, error) {
 	if len(b) > maxInput {
 		return nil, fmt.Errorf("%s exceeds size limit", path)
 	}
-	return parseYAML(b)
+	n, err := parseYAML(b)
+	if err != nil {
+		var ps Problems
+		if !errors.As(err, &ps) {
+			ps = Problems{{Message: err.Error()}}
+		}
+		for i := range ps {
+			ps[i].File = filepath.Base(path)
+		}
+		return nil, ps
+	}
+	return n, nil
 }
+
+// parseYAML parses a manifest, a mapping of one document without aliases, anchors, null or duplicate keys. What it refuses
+// of the content is returned as Problems, each with the line and column in b.
 func parseYAML(b []byte) (*yaml.Node, error) {
 	if len(b) > maxInput {
 		return nil, fmt.Errorf("manifest exceeds size limit")
@@ -462,34 +477,39 @@ func parseYAML(b []byte) (*yaml.Node, error) {
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("manifest must be a mapping")
 	}
-	if err := checkNode(doc.Content[0], 0); err != nil {
-		return nil, err
+	var ps Problems
+	checkNode(doc.Content[0], 0, "", &ps)
+	if len(ps) > 0 {
+		return nil, ps
 	}
 	return doc.Content[0], nil
 }
-func checkNode(n *yaml.Node, depth int) error {
+
+// checkNode records every alias, anchor, null, key that is not a string or is repeated, and level of nesting beyond the limit.
+func checkNode(n *yaml.Node, depth int, path string, p *Problems) {
 	if depth > 64 {
-		return fmt.Errorf("manifest nesting too deep")
+		p.addAt(n, path, "manifest nesting too deep")
+		return
 	}
 	if n.Kind == yaml.AliasNode || n.Anchor != "" || n.Tag == "!!null" {
-		return fmt.Errorf("aliases, anchors and null are not allowed")
+		p.addAt(n, path, "aliases, anchors and null are not allowed")
+		return
 	}
 	if n.Kind == yaml.MappingNode {
 		seen := map[string]bool{}
-		for i := 0; i < len(n.Content); i += 2 {
+		for i := 0; i+1 < len(n.Content); i += 2 {
 			k := n.Content[i]
-			if k.Kind != yaml.ScalarNode || k.Tag != "!!str" || seen[k.Value] {
-				return fmt.Errorf("invalid or duplicate key %q", k.Value)
+			if k.Kind != yaml.ScalarNode || k.Tag != "!!str" || k.Anchor != "" || seen[k.Value] {
+				p.addAt(k, join(path, k.Value), "invalid or duplicate key %q", k.Value)
 			}
 			seen[k.Value] = true
+			checkNode(n.Content[i+1], depth+1, join(path, k.Value), p)
 		}
+		return
 	}
-	for _, c := range n.Content {
-		if err := checkNode(c, depth+1); err != nil {
-			return err
-		}
+	for i, c := range n.Content {
+		checkNode(c, depth+1, join(path, strconv.Itoa(i)), p)
 	}
-	return nil
 }
 func merge(base, overlay *yaml.Node) {
 	for i := 0; i < len(overlay.Content); i += 2 {
@@ -543,24 +563,43 @@ func Files(env string) []string {
 	return []string{"berthy.yml", "berthy." + env + ".yml"}
 }
 
+// Load reads the manifest of env: the base file, and the overlay of env when there is one. A manifest that is not valid is
+// returned as Problems, every one of them with its file and its line, which say whether the base or the overlay is at fault.
 func Load(dir, env string) (*Manifest, error) {
 	if !identifier.MatchString(env) {
 		return nil, fmt.Errorf("invalid environment %q", env)
 	}
 	names := Files(env)
-	base, err := readYAML(filepath.Join(dir, names[0]), false)
+	var parse Problems
+	read := func(name string, optional bool) (*yaml.Node, error) {
+		n, err := readYAML(filepath.Join(dir, name), optional)
+		var ps Problems
+		if errors.As(err, &ps) {
+			parse = append(parse, ps...)
+			return nil, nil
+		}
+		return n, err
+	}
+	base, err := read(names[0], false)
 	if err != nil {
 		return nil, err
 	}
-	overlay, err := readYAML(filepath.Join(dir, names[1]), true)
+	overlay, err := read(names[1], true)
 	if err != nil {
 		return nil, err
 	}
+	if len(parse) > 0 {
+		return nil, parse
+	}
+	// Merge into a copy, so the files' own trees keep their positions to place the problems by.
+	where := locator{base: source{names[0], base}}
+	merged := cloneNode(base)
 	if overlay != nil {
-		merge(base, overlay)
+		where.overlay = &source{names[1], overlay}
+		merge(merged, overlay)
 	}
 	var value any
-	if err = base.Decode(&value); err != nil {
+	if err = merged.Decode(&value); err != nil {
 		return nil, err
 	}
 	data, err := json.Marshal(value)
@@ -569,6 +608,10 @@ func Load(dir, env string) (*Manifest, error) {
 	}
 	m, err := DecodeJSON(data)
 	if err != nil {
+		var ps Problems
+		if errors.As(err, &ps) {
+			where.place(ps)
+		}
 		return nil, err
 	}
 	if err := m.CheckVersion(version.Version); err != nil {
@@ -596,80 +639,39 @@ func decodeManifest(data []byte, connector bool) (*Manifest, error) {
 	if !json.Valid(data) {
 		return nil, fmt.Errorf("invalid JSON manifest")
 	}
-	// Parse once for duplicate keys and explicit null before strict JSON decoding.
+	// Parse once for duplicate keys and explicit null, then walk the tree against the types for unknown fields and values of
+	// the wrong type, before the strict JSON decoding.
 	node, err := parseYAML(data)
 	if err != nil {
 		return nil, err
 	}
-	if err := exactKeys(node, reflect.TypeOf(Manifest{})); err != nil {
-		return nil, err
-	}
+	var w shapeWalk
+	w.walk(node, reflect.TypeOf(Manifest{}), "", "", "")
 	var m Manifest
 	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
+	found := w.found()
+	if len(found) == 0 {
+		d.DisallowUnknownFields()
+	}
 	m.Connector = connector
 	if err := d.Decode(&m); err != nil {
-		return nil, err
+		// The walk names what it finds; the decoder's own error is only a net for what the walk does not know.
+		if len(found) == 0 {
+			found.add("", "%s", err.Error())
+		}
+		return nil, found
 	}
-	if err := m.Validate(); err != nil {
-		return nil, err
+	// Unknown fields are ignored by the decoder, so the manifest it read can still be checked. A value of the wrong type
+	// leaves the manifest unreliable, so it is not.
+	problems := found
+	if len(w.wrong) == 0 {
+		problems = append(problems, m.Check()...)
+	}
+	if len(problems) > 0 {
+		return nil, problems
 	}
 	m.defaults()
 	return &m, nil
-}
-
-// jsonUnmarshaler is the interface of a type that reads its own JSON shape.
-var jsonUnmarshaler = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
-
-func exactKeys(n *yaml.Node, t reflect.Type) error {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	// A type with its own UnmarshalJSON checks its own shape. Its keys are not field names, as a variable's name is not.
-	if reflect.PointerTo(t).Implements(jsonUnmarshaler) {
-		return nil
-	}
-	switch t.Kind() {
-	case reflect.Struct:
-		if n.Kind != yaml.MappingNode {
-			return nil
-		}
-		fields := map[string]reflect.Type{}
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			name := strings.Split(f.Tag.Get("json"), ",")[0]
-			if name != "" && name != "-" {
-				fields[name] = f.Type
-			}
-		}
-		for i := 0; i < len(n.Content); i += 2 {
-			name := n.Content[i].Value
-			ft, ok := fields[name]
-			if !ok {
-				return fmt.Errorf("unknown field %q", name)
-			}
-			if err := exactKeys(n.Content[i+1], ft); err != nil {
-				return err
-			}
-		}
-	case reflect.Map:
-		if n.Kind == yaml.MappingNode {
-			for i := 1; i < len(n.Content); i += 2 {
-				if err := exactKeys(n.Content[i], t.Elem()); err != nil {
-					return err
-				}
-			}
-		}
-	case reflect.Slice:
-		if n.Kind == yaml.SequenceNode {
-			for _, v := range n.Content {
-				if err := exactKeys(v, t.Elem()); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
 }
 func sortedKeys[T any](m map[string]T) []string {
 	k := make([]string, 0, len(m))
@@ -696,367 +698,6 @@ func duration(s string, zero bool) bool {
 	}
 	d, e := time.ParseDuration(s)
 	return e == nil && (d > 0 || zero && d == 0)
-}
-func (m *Manifest) Validate() error {
-	if m.Ingress != nil {
-		c := m.Ingress.Cloudflare
-		if c == nil || c.AccountID == "" || !envName.MatchString(c.APITokenSecret) || c.Image == "" || c.Replicas != nil && *c.Replicas < 1 || c.Tunnel != "" && !identifier.MatchString(c.Tunnel) {
-			return fmt.Errorf("invalid Cloudflare ingress")
-		}
-		if c.APITokenSecret == TunnelTokenSecret {
-			return fmt.Errorf("%s is reserved for managed ingress", TunnelTokenSecret)
-		}
-		ref, err := reference.ParseNormalizedNamed(c.Image)
-		if err != nil {
-			return fmt.Errorf("invalid Cloudflare image")
-		}
-		if reference.IsNameOnly(ref) {
-			return fmt.Errorf("invalid Cloudflare image: a tag or digest is required")
-		}
-	}
-	hostnames := map[string]bool{}
-	if !identifier.MatchString(m.Project) || !identifier.MatchString(m.Network) {
-		return fmt.Errorf("invalid project or network")
-	}
-	if len(m.Apps) == 0 {
-		return fmt.Errorf("at least one app is required")
-	}
-	for _, name := range sortedKeys(m.Registries) {
-		r := m.Registries[name]
-		if r.PasswordSecret == TunnelTokenSecret {
-			return fmt.Errorf("registry %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
-		}
-		if name == "" || strings.ContainsAny(name, "/ @") || r.Username == "" || !envName.MatchString(r.PasswordSecret) {
-			return fmt.Errorf("invalid registry %q", name)
-		}
-	}
-	for _, name := range sortedKeys(m.Apps) {
-		a := m.Apps[name]
-		if !identifier.MatchString(name) {
-			return fmt.Errorf("invalid app %q", name)
-		}
-		if m.Ingress != nil && name == ConnectorAppName {
-			return fmt.Errorf("app name %s is reserved for the managed ingress connector", ConnectorAppName)
-		}
-		if a.ProjectName != "" && !identifier.MatchString(a.ProjectName) {
-			return fmt.Errorf("app %s: invalid project name", name)
-		}
-		if a.Kind != "image" && a.Kind != "compose" {
-			return fmt.Errorf("app %s: invalid kind", name)
-		}
-		if a.Kind == "image" {
-			ref, e := reference.ParseNormalizedNamed(a.Image)
-			if e != nil || reference.IsNameOnly(ref) == false || len(a.Roles) == 0 {
-				return fmt.Errorf("app %s: image must be a repository and roles required", name)
-			}
-		} else if a.File == "" || filepath.IsAbs(a.File) || strings.Contains(strings.ReplaceAll(a.File, `\`, `/`), "../") {
-			return fmt.Errorf("app %s: invalid compose file", name)
-		}
-		if err := m.checkDependsOn(name, a); err != nil {
-			return err
-		}
-		for _, k := range sortedKeys(a.Env.Plain) {
-			if k == TunnelTokenSecret {
-				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
-			}
-			if strings.HasPrefix(k, berthyEnvPrefix) {
-				return fmt.Errorf("app %s: names starting with BERTHY_ are reserved for Berthy", name)
-			}
-			if !envName.MatchString(k) || strings.ContainsRune(a.Env.Plain[k], 0) {
-				return fmt.Errorf("app %s: invalid environment name or value", name)
-			}
-		}
-		seen := map[string]bool{}
-		for _, s := range a.Env.Secret {
-			if (s.Var == TunnelTokenSecret || s.Secret == TunnelTokenSecret) && !(m.Connector && name == ConnectorAppName) {
-				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
-			}
-			if strings.HasPrefix(s.Var, berthyEnvPrefix) {
-				return fmt.Errorf("app %s: names starting with BERTHY_ are reserved for Berthy", name)
-			}
-			if !envName.MatchString(s.Var) || !envName.MatchString(s.Secret) {
-				return fmt.Errorf("app %s: invalid secret", name)
-			}
-			if seen[s.Var] {
-				return fmt.Errorf("app %s: variable %s is listed twice", name, s.Var)
-			}
-			if _, ok := a.Env.Plain[s.Var]; ok {
-				return fmt.Errorf("app %s: duplicate environment name", name)
-			}
-			seen[s.Var] = true
-		}
-		if !duration(a.Deploy.DeployTimeout, false) || !duration(a.Deploy.DrainTimeout, false) || a.Deploy.Retain != nil && *a.Deploy.Retain < 1 {
-			return fmt.Errorf("app %s: invalid deploy settings", name)
-		}
-		if n := a.Deploy.StartAttempts; n != nil && (*n < 1 || *n > maxStartAttempts) {
-			return fmt.Errorf("app %s: invalid start_attempts", name)
-		}
-		for _, rn := range sortedKeys(a.Roles) {
-			r := a.Roles[rn]
-			for _, host := range r.Hostnames {
-				if a.Kind != "image" || m.Ingress == nil || r.Port == 0 || len(host) > 253 || !hostnamePattern.MatchString(host) || hostnames[host] {
-					return fmt.Errorf("app %s role %s: invalid or duplicate hostname", name, rn)
-				}
-				hostnames[host] = true
-			}
-			for _, v := range r.Volumes {
-				if _, err := ParseMount(v); err != nil {
-					return fmt.Errorf("app %s role %s: invalid volume", name, rn)
-				}
-			}
-			if r.Resources != nil {
-				if r.Resources.CPU != "" {
-					if _, err := ParseCPU(r.Resources.CPU); err != nil {
-						return fmt.Errorf("app %s role %s: invalid CPU", name, rn)
-					}
-				}
-				if r.Resources.Memory != "" {
-					if _, err := ParseMemory(r.Resources.Memory); err != nil {
-						return fmt.Errorf("app %s role %s: invalid memory", name, rn)
-					}
-				}
-			}
-			if r.Logging != nil {
-				if a.Kind != "image" {
-					return fmt.Errorf("app %s role %s: logging is for image apps", name, rn)
-				}
-				if !logDriverName.MatchString(r.Logging.Driver) || !validLogOptions(r.Logging.Options) {
-					return fmt.Errorf("app %s role %s: invalid logging", name, rn)
-				}
-			}
-			if !identifier.MatchString(rn) || r.Service != "" && !identifier.MatchString(r.Service) || r.Replicas != nil && *r.Replicas < 1 || r.Port < 0 || r.Port > 65535 || len(r.Command) > 0 && !argv(r.Command) {
-				return fmt.Errorf("app %s role %s: invalid settings", name, rn)
-			}
-			if h := r.Health; h != nil {
-				if !argv(h.Test) || (h.Test[0] != "CMD" && h.Test[0] != "CMD-SHELL") || !duration(h.Interval, false) || !duration(h.Timeout, false) || !duration(h.StartPeriod, true) || !duration(h.StartInterval, false) || h.Retries != nil && *h.Retries < 1 {
-					return fmt.Errorf("app %s role %s: invalid health", name, rn)
-				}
-			}
-		}
-		for _, lh := range []struct {
-			list  string
-			hooks []Hook
-		}{{"pre_deploy", a.Hooks.PreDeploy}, {"post_deploy", a.Hooks.PostDeploy}} {
-			for n, h := range lh.hooks {
-				if (h.Backup == "") == (len(h.Run) == 0) || h.Backup != "" && !identifier.MatchString(h.Backup) || len(h.Run) > 0 && !argv(h.Run) {
-					return fmt.Errorf("app %s: invalid hook", name)
-				}
-				switch {
-				case h.Backup != "" && (h.Timeout != "" || h.Retries != nil):
-					return fmt.Errorf("app %s: %s hook %d: timeout and retries apply to run hooks only", name, lh.list, n+1)
-				case !validCommandTimeout(h.Timeout):
-					return fmt.Errorf("app %s: %s hook %d: invalid timeout", name, lh.list, n+1)
-				case !validCommandRetries(h.Retries):
-					return fmt.Errorf("app %s: %s hook %d: invalid retries", name, lh.list, n+1)
-				}
-				if _, ok := m.Backups[h.Backup]; h.Backup != "" && !ok {
-					return fmt.Errorf("app %s: %s hook %d: unknown backup", name, lh.list, n+1)
-				}
-			}
-		}
-		if x := a.Migrations; x != nil {
-			if !argv(x.Version) || !argv(x.Apply) || len(x.Revert) > 0 && !argv(x.Revert) {
-				return fmt.Errorf("app %s: invalid migrations", name)
-			}
-			if !validCommandTimeout(x.Timeout) {
-				return fmt.Errorf("app %s: invalid migrations timeout", name)
-			}
-			if !validCommandRetries(x.Retries) {
-				return fmt.Errorf("app %s: invalid migrations retries", name)
-			}
-			n := 0
-			for _, s := range x.Revert {
-				if strings.Contains(s, "{target}") && s != "{target}" {
-					return fmt.Errorf("app %s: target must be a standalone argument", name)
-				}
-				n += strings.Count(s, "{target}")
-			}
-			if len(x.Revert) > 0 && n != 1 {
-				return fmt.Errorf("app %s: revert requires one {target}", name)
-			}
-		}
-	}
-	if err := m.checkDependsCycle(); err != nil {
-		return err
-	}
-	for _, name := range sortedKeys(m.Jobs) {
-		j := m.Jobs[name]
-		if !identifier.MatchString(name) || !identifier.MatchString(j.App) || !argv(j.Command) || j.Role != "" && !identifier.MatchString(j.Role) || j.Service != "" && !identifier.MatchString(j.Service) || j.Role != "" && j.Service != "" {
-			return fmt.Errorf("invalid job %q", name)
-		}
-		if err := m.validateJob(name, j); err != nil {
-			return err
-		}
-	}
-	for _, name := range sortedKeys(m.Destinations) {
-		d := m.Destinations[name]
-		if d.AccessKeySecret == TunnelTokenSecret || d.SecretKeySecret == TunnelTokenSecret {
-			return fmt.Errorf("destination %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
-		}
-		if !identifier.MatchString(name) || d.Type != "s3" || !envName.MatchString(d.AccessKeySecret) || !envName.MatchString(d.SecretKeySecret) {
-			return fmt.Errorf("invalid destination %q", name)
-		}
-		if !bucketName.MatchString(d.Bucket) {
-			return fmt.Errorf("destination %s: invalid bucket name", name)
-		}
-		if err := ValidEndpoint(d.Endpoint); err != nil {
-			return fmt.Errorf("destination %s: invalid endpoint: %w", name, err)
-		}
-		if d.Region != "" && !regionName.MatchString(d.Region) {
-			return fmt.Errorf("destination %s: invalid region", name)
-		}
-	}
-	for _, name := range sortedKeys(m.Backups) {
-		b := m.Backups[name]
-		if !identifier.MatchString(name) || !identifier.MatchString(b.App) || b.Volume == "" || !identifier.MatchString(b.Destination) || b.Before != "" && !identifier.MatchString(b.Before) {
-			return fmt.Errorf("invalid backup %q", name)
-		}
-		if _, ok := m.Apps[b.App]; !ok {
-			return fmt.Errorf("backup %s: unknown app", name)
-		}
-		if _, ok := m.Destinations[b.Destination]; !ok {
-			return fmt.Errorf("backup %s: unknown destination", name)
-		}
-		if b.Schedule != "" {
-			if _, err := schedule.Parse(b.Schedule); err != nil {
-				return fmt.Errorf("backup %s: invalid schedule: %w", name, err)
-			}
-		}
-		if b.Before != "" {
-			if _, ok := m.Jobs[b.Before]; !ok {
-				return fmt.Errorf("backup %s: unknown job", name)
-			}
-		}
-		if b.Retention != nil && b.Retention.Keep != nil {
-			switch v := b.Retention.Keep.(type) {
-			case string:
-				if v != "all" {
-					return fmt.Errorf("backup %s: invalid retention", name)
-				}
-			case float64:
-				if v < 1 || v != float64(int64(v)) {
-					return fmt.Errorf("backup %s: invalid retention", name)
-				}
-			default:
-				return fmt.Errorf("backup %s: invalid retention", name)
-			}
-		}
-	}
-	if sb := m.StateBackup; sb != nil {
-		if err := m.validateStateBackup(*sb); err != nil {
-			return err
-		}
-	}
-	if m.Telemetry != nil && m.Telemetry.HeadersSecret == TunnelTokenSecret {
-		return fmt.Errorf("telemetry: %s is reserved for managed ingress", TunnelTokenSecret)
-	}
-	if m.Telemetry != nil && (m.Telemetry.OTLPEndpoint == "" || m.Telemetry.HeadersSecret != "" && !envName.MatchString(m.Telemetry.HeadersSecret)) {
-		return fmt.Errorf("invalid telemetry")
-	}
-	if m.MinVersion != "" && !minVersionPattern.MatchString(m.MinVersion) {
-		return fmt.Errorf("invalid min_version %q: use a version such as 0.9.0", m.MinVersion)
-	}
-	if err := validateAliases(m.Aliases); err != nil {
-		return err
-	}
-	return m.validateMonitoring()
-}
-
-// maxAliases is the most aliases a manifest may hold.
-const maxAliases = 64
-
-// validateAliases checks the shape of the aliases. Each name is an identifier, and each value has at least one word. Words
-// are split on spaces and never quoted, so a value with a quote, an apostrophe or a NUL byte is refused rather than misread.
-// What an alias means is checked by the CLI, which owns the command list.
-func validateAliases(aliases map[string]string) error {
-	if len(aliases) > maxAliases {
-		return fmt.Errorf("at most %d aliases", maxAliases)
-	}
-	for _, name := range sortedKeys(aliases) {
-		value := aliases[name]
-		switch {
-		case !identifier.MatchString(name):
-			return fmt.Errorf("alias %s: invalid name", name)
-		case len(strings.Fields(value)) == 0:
-			return fmt.Errorf("alias %s: a command is required", name)
-		case strings.ContainsAny(value, "'\""):
-			return fmt.Errorf("alias %s: quotes are not interpreted; separate the words with spaces", name)
-		case strings.ContainsRune(value, 0):
-			return fmt.Errorf("alias %s: invalid value", name)
-		}
-	}
-	return nil
-}
-
-// validLogOptions reports whether every option key and value of a role's logging is one Docker takes: a key of lower-case
-// letters, digits, dots, underscores or hyphens, and a value of at most 1024 bytes with no NUL.
-func validLogOptions(options map[string]string) bool {
-	for k, v := range options {
-		if !logOptionKey.MatchString(k) || len(v) > 1024 || strings.ContainsRune(v, 0) {
-			return false
-		}
-	}
-	return true
-}
-
-// validateStateBackup checks the environment's state backup: its destination, schedule, prefix and retention.
-func (m *Manifest) validateStateBackup(sb StateBackup) error {
-	if _, ok := m.Destinations[sb.Destination]; !ok {
-		return fmt.Errorf("state_backup: unknown destination")
-	}
-	if sb.Schedule != "" {
-		if _, err := schedule.Parse(sb.Schedule); err != nil {
-			return fmt.Errorf("state_backup: invalid schedule: %w", err)
-		}
-	}
-	if sb.Keep != nil && (*sb.Keep < 1 || *sb.Keep > 1000) {
-		return fmt.Errorf("state_backup: keep must be from 1 to 1000")
-	}
-	if p := strings.Trim(sb.Prefix, "/"); p != "" {
-		for _, seg := range strings.Split(p, "/") {
-			if seg == "." || seg == ".." || !stateBackupPrefixSegment.MatchString(seg) {
-				return fmt.Errorf("state_backup: invalid prefix")
-			}
-		}
-	}
-	return nil
-}
-
-// validateJob checks a job's schedule, timeout and target. An image app's job names a role, which may be left out when
-// the app has one role. A Compose job names a service, which the manifest cannot check, so only its shape is checked.
-func (m *Manifest) validateJob(name string, j Job) error {
-	if m.Ingress != nil && j.App == ConnectorAppName {
-		return fmt.Errorf("job %s: app %s is reserved for the managed ingress connector", name, ConnectorAppName)
-	}
-	app, ok := m.Apps[j.App]
-	if !ok {
-		return fmt.Errorf("job %s: unknown app", name)
-	}
-	if j.Schedule != "" {
-		if _, err := schedule.Parse(j.Schedule); err != nil {
-			return fmt.Errorf("job %s: invalid schedule: %w", name, err)
-		}
-	}
-	if !validJobTimeout(j.Timeout) {
-		return fmt.Errorf("job %s: invalid timeout", name)
-	}
-	if app.Kind != "image" {
-		if j.Role != "" {
-			return fmt.Errorf("job %s: use service for a Compose app", name)
-		}
-		return nil
-	}
-	switch {
-	case j.Service != "":
-		return fmt.Errorf("job %s: use role for an image app", name)
-	case j.Role != "":
-		if _, known := app.Roles[j.Role]; !known {
-			return fmt.Errorf("job %s: role is not a role of the app", name)
-		}
-	case len(app.Roles) != 1:
-		return fmt.Errorf("job %s: role required for an app with several roles", name)
-	}
-	return nil
 }
 
 // ParseCommandTimeout parses the time limit of a job or of a run: "" is the default (1h); otherwise from 1s to 24h.

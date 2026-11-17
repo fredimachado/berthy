@@ -1,32 +1,36 @@
 package manifest
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 )
 
-// checkDependsOn checks the depends_on of one app: each name is another app of the manifest, listed once.
-func (m *Manifest) checkDependsOn(name string, a App) error {
+// checkDependsOn checks the depends_on of one app: each name is another app of the manifest, listed once. It returns false
+// when one is not.
+func (m *Manifest) checkDependsOn(p *Problems, name string, a App) bool {
+	path := join("apps", name) + ".depends_on"
+	ok := true
 	seen := map[string]bool{}
 	for _, dep := range a.DependsOn {
-		switch {
+		switch _, known := m.Apps[dep]; {
 		case dep == name:
-			return fmt.Errorf("apps.%s.depends_on: an app cannot depend on itself", name)
+			p.add(path, "apps.%s.depends_on: an app cannot depend on itself", name)
 		case seen[dep]:
-			return fmt.Errorf("apps.%s.depends_on: duplicate app %q", name, dep)
+			p.add(path, "apps.%s.depends_on: duplicate app %q", name, dep)
+		case !known:
+			p.add(path, "apps.%s.depends_on: unknown app %q", name, dep)
+		default:
+			seen[dep] = true
+			continue
 		}
-		if _, ok := m.Apps[dep]; !ok {
-			return fmt.Errorf("apps.%s.depends_on: unknown app %q", name, dep)
-		}
-		seen[dep] = true
+		ok = false
 	}
-	return nil
+	return ok
 }
 
 // checkDependsCycle refuses a depends_on cycle and names it: the path of apps, starting from the first by name that is on the
 // cycle and ending where it began. Every depends_on name must already be an app of the manifest.
-func (m *Manifest) checkDependsCycle() error {
+func (m *Manifest) checkDependsCycle(p *Problems) {
 	const (
 		visiting = 1
 		done     = 2
@@ -56,11 +60,11 @@ func (m *Manifest) checkDependsCycle() error {
 	for _, name := range sortedKeys(m.Apps) {
 		if state[name] == 0 {
 			if cycle := visit(name); cycle != nil {
-				return fmt.Errorf("depends_on cycle: %s", strings.Join(cycle, " -> "))
+				p.add(join("apps", cycle[0])+".depends_on", "depends_on cycle: %s", strings.Join(cycle, " -> "))
+				return
 			}
 		}
 	}
-	return nil
 }
 
 // DeployOrder returns every app in the order a deploy of all apps runs them: an app after the apps it depends on, and among

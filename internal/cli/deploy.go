@@ -26,6 +26,18 @@ import (
 	"berthy/internal/session"
 )
 
+// printProblems writes every problem of a manifest, one per line with its file, line and path, and then how many there are.
+func printProblems(w io.Writer, problems manifest.Problems) {
+	for _, p := range problems {
+		fmt.Fprintln(w, p)
+	}
+	if len(problems) == 1 {
+		fmt.Fprintln(w, "1 problem")
+		return
+	}
+	fmt.Fprintf(w, "%d problems\n", len(problems))
+}
+
 func isDeploymentCommand(s string) bool {
 	return slices.Contains(deploymentCommands, s)
 }
@@ -298,6 +310,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		m, err := manifest.Load(f.dir, f.env)
 		if err != nil {
+			var problems manifest.Problems
+			if f.pos[0] == "validate" && errors.As(err, &problems) {
+				printProblems(errout, problems)
+				return 1
+			}
 			fmt.Fprintln(errout, err)
 			return 1
 		}

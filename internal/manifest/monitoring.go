@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
 	"regexp"
@@ -69,13 +68,14 @@ var chatIDPattern = regexp.MustCompile(`^-?[0-9]{1,20}$|^@[A-Za-z0-9_]{5,32}$`)
 
 var digitsPattern = regexp.MustCompile(`^[0-9]+$`)
 
-// probeTimes returns the interval and timeout of a probe, with the defaults applied, and an error when they are invalid.
-func probeTimes(p Probe) (time.Duration, time.Duration, error) {
+// probeTimes returns the interval and timeout of a probe, with the defaults applied. When they are invalid it returns an
+// error, and the name of the field to blame.
+func probeTimes(p Probe) (time.Duration, time.Duration, string, error) {
 	interval := defaultProbeInterval
 	if p.Interval != "" {
 		d, err := time.ParseDuration(p.Interval)
 		if err != nil || d < minProbeInterval {
-			return 0, 0, errors.New("interval must be a duration of at least 5s")
+			return 0, 0, "interval", errors.New("interval must be a duration of at least 5s")
 		}
 		interval = d
 	}
@@ -83,20 +83,20 @@ func probeTimes(p Probe) (time.Duration, time.Duration, error) {
 	if p.Timeout != "" {
 		d, err := time.ParseDuration(p.Timeout)
 		if err != nil || d <= 0 {
-			return 0, 0, errors.New("timeout must be a positive duration")
+			return 0, 0, "timeout", errors.New("timeout must be a positive duration")
 		}
 		timeout = d
 	}
 	if timeout >= interval {
-		return 0, 0, errors.New("timeout must be shorter than interval")
+		return 0, 0, "timeout", errors.New("timeout must be shorter than interval")
 	}
-	return interval, timeout, nil
+	return interval, timeout, "", nil
 }
 
 // Durations returns the probe's interval and timeout, with the defaults applied. The manifest is validated before use,
 // so the values are the configured ones.
 func (p Probe) Durations() (time.Duration, time.Duration) {
-	interval, timeout, err := probeTimes(p)
+	interval, timeout, _, err := probeTimes(p)
 	if err != nil {
 		return defaultProbeInterval, defaultProbeTimeout
 	}
@@ -123,117 +123,115 @@ func (t Telegram) ReminderInterval() time.Duration {
 	return d
 }
 
-// validateMonitoring checks probes, peers and alerts. Names must be identifiers, and every value must be usable without
+// checkMonitoring checks probes, peers and alerts. Names must be identifiers, and every value must be usable without
 // further lookups.
-func (m *Manifest) validateMonitoring() error {
+func (m *Manifest) checkMonitoring(p *Problems) {
 	for _, name := range sortedKeys(m.Probes) {
 		if !identifier.MatchString(name) {
-			return fmt.Errorf("invalid probe %q", name)
+			p.add(join("probes", name), "invalid probe %q", name)
+			continue
 		}
-		if err := m.validateProbe(name, m.Probes[name]); err != nil {
-			return err
-		}
+		m.checkProbe(p, name, m.Probes[name])
 	}
 	for _, name := range sortedKeys(m.Peers) {
 		if !identifier.MatchString(name) {
-			return fmt.Errorf("invalid peer %q", name)
+			p.add(join("peers", name), "invalid peer %q", name)
+			continue
 		}
 		if !validPeerURL(m.Peers[name]) {
-			return fmt.Errorf("peer %s: URL must be http or https with a host and a port, and no path, query or user", name)
+			p.add(join("peers", name), "peer %s: URL must be http or https with a host and a port, and no path, query or user", name)
 		}
 	}
 	if m.Alerts != nil && m.Alerts.Telegram != nil {
-		return validateTelegram(*m.Alerts.Telegram)
+		checkTelegram(p, *m.Alerts.Telegram)
 	}
-	return nil
 }
 
-func (m *Manifest) validateProbe(name string, p Probe) error {
+func (m *Manifest) checkProbe(p *Problems, name string, pr Probe) {
+	path := join("probes", name)
 	kinds := 0
-	for _, set := range []bool{p.HTTP != "", p.TCP != "", p.Service != nil} {
+	for _, set := range []bool{pr.HTTP != "", pr.TCP != "", pr.Service != nil} {
 		if set {
 			kinds++
 		}
 	}
 	if kinds != 1 {
-		return fmt.Errorf("probe %s: exactly one of http, tcp or service is required", name)
+		p.add(path, "probe %s: exactly one of http, tcp or service is required", name)
+		return
 	}
 	switch {
-	case p.HTTP != "":
-		if !validHTTPURL(p.HTTP) {
-			return fmt.Errorf("probe %s: http must be an http or https URL with a host", name)
+	case pr.HTTP != "":
+		if !validHTTPURL(pr.HTTP) {
+			p.add(path+".http", "probe %s: http must be an http or https URL with a host", name)
 		}
-	case p.TCP != "":
-		if !validTCPAddress(p.TCP) {
-			return fmt.Errorf("probe %s: tcp must be host:port with a port from 1 to 65535", name)
+	case pr.TCP != "":
+		if !validTCPAddress(pr.TCP) {
+			p.add(path+".tcp", "probe %s: tcp must be host:port with a port from 1 to 65535", name)
 		}
 	default:
-		if err := m.validateServiceProbe(name, *p.Service); err != nil {
-			return err
-		}
+		m.checkServiceProbe(p, name, *pr.Service)
 	}
-	for _, code := range p.ExpectStatus {
+	for i, code := range pr.ExpectStatus {
 		if code < minProbeExpectStatus || code > maxProbeExpectStatus {
-			return fmt.Errorf("probe %s: expect_status entries must be from 100 to 599", name)
+			p.add(path+".expect_status."+strconv.Itoa(i), "probe %s: expect_status entries must be from 100 to 599", name)
+			break
 		}
 	}
-	_, timeout, err := probeTimes(p)
+	_, timeout, field, err := probeTimes(pr)
 	if err != nil {
-		return fmt.Errorf("probe %s: %w", name, err)
+		p.add(path+"."+field, "probe %s: %v", name, err)
+	} else if pr.Service != nil && (timeout < minServiceProbeTimeout || timeout > maxServiceProbeTimeout) {
+		p.add(path+".timeout", "probe %s: service probe timeout must be from 1s to 25s", name)
 	}
-	if p.Service != nil && (timeout < minServiceProbeTimeout || timeout > maxServiceProbeTimeout) {
-		return fmt.Errorf("probe %s: service probe timeout must be from 1s to 25s", name)
+	if pr.Failures != nil && *pr.Failures < 1 {
+		p.add(path+".failures", "probe %s: failures must be at least 1", name)
 	}
-	if p.Failures != nil && *p.Failures < 1 {
-		return fmt.Errorf("probe %s: failures must be at least 1", name)
-	}
-	return nil
 }
 
-func (m *Manifest) validateServiceProbe(name string, s ServiceProbe) error {
+func (m *Manifest) checkServiceProbe(p *Problems, name string, s ServiceProbe) {
+	path := join("probes", name) + ".service"
 	a, ok := m.Apps[s.App]
 	if !ok {
-		return fmt.Errorf("probe %s: service app is not in the manifest", name)
+		p.add(path+".app", "probe %s: service app is not in the manifest", name)
+		return
 	}
 	if a.Kind == "image" {
 		_, known := a.Roles[s.Role]
 		switch {
 		case s.Role == "" && len(a.Roles) != 1:
-			return fmt.Errorf("probe %s: service role is required when the app has more than one role", name)
+			p.add(path, "probe %s: service role is required when the app has more than one role", name)
 		case s.Role != "" && !known:
-			return fmt.Errorf("probe %s: service role is not a role of the app", name)
+			p.add(path+".role", "probe %s: service role is not a role of the app", name)
 		}
 	} else if s.Role != "" && !identifier.MatchString(s.Role) {
-		return fmt.Errorf("probe %s: invalid service role", name)
+		p.add(path+".role", "probe %s: invalid service role", name)
 	}
 	if s.Port < 1 || s.Port > 65535 {
-		return fmt.Errorf("probe %s: service port must be from 1 to 65535", name)
+		p.add(path+".port", "probe %s: service port must be from 1 to 65535", name)
 	}
 	if s.Path != "" && !strings.HasPrefix(s.Path, "/") {
-		return fmt.Errorf("probe %s: service path must start with /", name)
+		p.add(path+".path", "probe %s: service path must start with /", name)
 	}
-	return nil
 }
 
-func validateTelegram(t Telegram) error {
+func checkTelegram(p *Problems, t Telegram) {
+	const path = "alerts.telegram"
 	if t.BotTokenSecret == TunnelTokenSecret {
-		return fmt.Errorf("alerts.telegram: %s is reserved for managed ingress", TunnelTokenSecret)
-	}
-	if !envName.MatchString(t.BotTokenSecret) {
-		return fmt.Errorf("alerts.telegram: bot_token_secret must name a secret")
+		p.add(path+".bot_token_secret", "alerts.telegram: %s is reserved for managed ingress", TunnelTokenSecret)
+	} else if !envName.MatchString(t.BotTokenSecret) {
+		p.add(path+".bot_token_secret", "alerts.telegram: bot_token_secret must name a secret")
 	}
 	if !chatIDPattern.MatchString(t.ChatID) {
-		return fmt.Errorf("alerts.telegram: chat_id must be a numeric chat ID or a @channel name")
+		p.add(path+".chat_id", "alerts.telegram: chat_id must be a numeric chat ID or a @channel name")
 	}
 	if !duration(t.Reminder, true) {
-		return fmt.Errorf("alerts.telegram: reminder must be a duration such as 4h, or 0s to disable")
+		p.add(path+".reminder", "alerts.telegram: reminder must be a duration such as 4h, or 0s to disable")
 	}
 	switch t.Deploys {
 	case "", deploysFailed, deploysAll, deploysNone:
 	default:
-		return fmt.Errorf("alerts.telegram: deploys must be failed, all or none")
+		p.add(path+".deploys", "alerts.telegram: deploys must be failed, all or none")
 	}
-	return nil
 }
 
 // validHTTPURL accepts an absolute http or https URL with a host and no user information.
