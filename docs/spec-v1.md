@@ -319,6 +319,7 @@ It ends by printing the next steps: store a copy of the encryption key off the s
 - **Verify.** With an admin token (the one just made, or the one in the variable the CLI configuration names), setup calls `GET /v1/environments/<env>/doctor` from this machine with a 5 second connect timeout and prints a one-line summary; a critical check that is not ok fails the step and the run exits 1. If this machine cannot reach the agent, setup says so and sends the same request on the server with `curl`; the token goes to `curl` on its standard input, never in a command line. Without a token, setup only checks that `/healthz` answers.
 - **Dry run.** `--dry-run` connects, runs every check and prints what would change, without changing anything on the server: not a package, a service, a setting or a temporary file. A step that would change something reports `would_change`.
 - **Scriptable.** `--json` prints one object on standard output and nothing else. A failed step exits 1 and names the step; a wrong command line exits 2.
+- **Verbose.** `--verbose` prints each command or script setup sends on standard error: the script before it is sent, and its exit status after. Standard output keeps the step lines and, with `--json`, the report, and the report gains a `commands` list on each step. With `--dry-run` the log holds the reads the dry run runs, and for each step that would change something the scripts a real run would send, each marked `→ not run: dry run`. A dry run lists the health check that `verify` would send when there is no admin token to check with. It cannot list the doctor request that `verify` sends from the server when this machine cannot reach the agent, because only a real run finds out whether it can. The log shows what is sent as the script, never the stdin a script reads and never what it prints, so the token and the encryption key never appear in it.
 
 Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, `binary`, `key`, `token`, `config`, `service`, `cli_config`, `verify`) and ends with one status: `ok` (nothing to change), `changed`, `would_change` (a dry run), `skipped` or `failed`. A failed step stops the run.
 
@@ -328,7 +329,7 @@ Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, 
  "token": "bty.prod.…", "next_steps": ["keep a copy of the encryption key off the server, …"]}
 ```
 
-`token` is present only when this run made a token. `next_steps` is present after a successful run that is not a dry run. A dry run makes no token, writes no file and sends only reads to the server: the steps that would change something report `would_change`, and `verify` reports `skipped` with `would check the agent`.
+`token` is present only when this run made a token. `next_steps` is present after a successful run that is not a dry run. `commands` is present on each step only with `--verbose`: the scripts the step sent, each as it was sent, and in a dry run also the scripts a real run would send. A dry run makes no token, writes no file and sends only reads to the server: the steps that would change something report `would_change`, and `verify` reports `skipped` with `would check the agent`.
 
 ### What it reads from the manifest
 
@@ -351,6 +352,7 @@ Run from the application's repository, setup reads two values from the merged ma
 | `--manifest-dir <dir>` | Where to read the manifest from. The default is the current directory. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
 | `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
+| `--verbose` | Print each command setup sends, and its exit status, on standard error. With `--dry-run`, also the commands a real run would send. Never the token or the key. |
 | `--binary <path>` | Install this Linux build of Berthy instead of the CLI itself or the release that matches it |
 | `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
 | `--new-token` | Add another `admin` token, for when the first one is lost |

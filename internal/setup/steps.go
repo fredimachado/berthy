@@ -105,6 +105,11 @@ type Session struct {
 	// TokenEnv is the environment variable the CLI configuration names for the token, once the cli_config step knows it.
 	TokenEnv string
 
+	// Log records what the run sends, for --verbose. Nil when the run is not verbose.
+	Log *CommandLog
+
+	// dryToken is set in a dry run when the run would make an admin token: a real run then checks with that token.
+	dryToken bool
 	// freshDocker is set in a dry run when Docker is missing: later steps then assume the Docker the install would leave.
 	freshDocker bool
 	// dockerStopped is set in a dry run when Docker is installed but stopped: the Swarm and the network cannot be read until
@@ -124,6 +129,10 @@ type StepResult struct {
 	Step   string `json:"step"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
+	// Commands are the scripts the step sent, in order, each exactly as it was sent; in a dry run they are also the scripts a real
+	// run would send. The verbose log prints each one without its final newline. Nil, so that the report has no commands key,
+	// unless the run is verbose; a verbose step with no scripts has an empty list.
+	Commands *[]string `json:"commands,omitempty"`
 }
 
 // Step checks the facts, says what it would change, and changes it unless it is a dry run. It returns the status and a
@@ -155,11 +164,12 @@ func Steps() []Step {
 // Run runs steps in order and reports each result as it happens. It stops at the first step that fails and returns false.
 func Run(ctx context.Context, s *Session, steps []Step, report func(StepResult)) bool {
 	for _, step := range steps {
+		s.Log.begin(step.Name)
 		status, detail, err := step.Run(ctx, s)
 		if err != nil {
 			status, detail = StatusFailed, clean(err.Error())
 		}
-		report(StepResult{Step: step.Name, Status: status, Detail: detail})
+		report(StepResult{Step: step.Name, Status: status, Detail: detail, Commands: s.Log.end()})
 		if err != nil {
 			return false
 		}
@@ -321,11 +331,18 @@ func dockerStep(ctx context.Context, s *Session) (string, string, error) {
 	if !f.DockerActive {
 		s.dockerStopped = true
 	}
+	scripts := make([]string, len(todo))
+	for i, verb := range todo {
+		scripts[i] = "systemctl " + verb + " docker"
+	}
 	if s.DryRun {
+		for _, sc := range scripts {
+			s.Log.Would(sc)
+		}
 		return StatusWouldChange, "would " + strings.Join(todo, " and ") + " Docker", nil
 	}
-	for _, verb := range todo {
-		if _, err := s.change(ctx, verb+" Docker", "systemctl "+verb+" docker"); err != nil {
+	for i, verb := range todo {
+		if _, err := s.change(ctx, verb+" Docker", scripts[i]); err != nil {
 			return "", "", err
 		}
 	}
@@ -360,11 +377,13 @@ func installDocker(ctx context.Context, s *Session, f *Facts) (string, string, e
 	default:
 		return "", "", errors.New("Docker is not installed, and neither curl nor wget is available to download its install script")
 	}
+	script := installScript(fetch)
 	if s.DryRun {
 		s.freshDocker = true
+		s.Log.Would(script)
 		return StatusWouldChange, "would install Docker with the official script", nil
 	}
-	res, err := s.R.Run(ctx, installScript(fetch), nil)
+	res, err := s.R.Run(ctx, script, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("installing Docker: %w", err)
 	}
@@ -396,10 +415,19 @@ func lastLines(res Result, n int) string {
 	return strings.Join(lines, " | ")
 }
 
+// swarmInitScript turns on Swarm, advertising ip. The management port listens on the private address only, not on every address
+// of the server.
+func swarmInitScript(ip string) string {
+	listen := net.JoinHostPort(ip, "2377")
+	return "docker swarm init --advertise-addr " + shellQuote(ip) + " --listen-addr " + shellQuote(listen) + " 2>&1"
+}
+
 func swarmStep(ctx context.Context, s *Session) (string, string, error) {
 	ip := s.Opts.ListenIP.String()
 	advertise := fmt.Sprintf("would turn on Swarm advertising %s", ip)
+	script := swarmInitScript(ip)
 	if s.freshDocker {
+		s.Log.Would(script)
 		return StatusWouldChange, advertise, nil
 	}
 	if s.dockerStopped && s.DryRun {
@@ -417,11 +445,9 @@ func swarmStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", errors.New("this server is a worker in another Swarm")
 	case "inactive":
 		if s.DryRun {
+			s.Log.Would(script)
 			return StatusWouldChange, advertise, nil
 		}
-		// The management port listens on the private address only, not on every address of the server.
-		listen := net.JoinHostPort(ip, "2377")
-		script := "docker swarm init --advertise-addr " + shellQuote(ip) + " --listen-addr " + shellQuote(listen) + " 2>&1"
 		if _, err := s.change(ctx, "turning on Swarm", script); err != nil {
 			return "", "", err
 		}
@@ -438,10 +464,17 @@ func swarmStep(ctx context.Context, s *Session) (string, string, error) {
 	return "", "", fmt.Errorf("the Swarm state is %s", clean(f.SwarmState))
 }
 
+// networkCreateScript creates the shared network: an overlay network that containers of the apps can attach to.
+func networkCreateScript(name string) string {
+	return "docker network create --driver overlay --attachable " + shellQuote(name) + " 2>&1"
+}
+
 func networkStep(ctx context.Context, s *Session) (string, string, error) {
 	name := s.Opts.Network
 	create := "would create network " + name
+	script := networkCreateScript(name)
 	if s.freshDocker {
+		s.Log.Would(script)
 		return StatusWouldChange, create, nil
 	}
 	if s.dockerStopped && s.DryRun {
@@ -461,9 +494,9 @@ func networkStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", fmt.Errorf("network %s exists but is not an attachable overlay", name)
 	}
 	if s.DryRun {
+		s.Log.Would(script)
 		return StatusWouldChange, create, nil
 	}
-	script := "docker network create --driver overlay --attachable " + shellQuote(name) + " 2>&1"
 	if _, err := s.change(ctx, "creating network "+name, script); err != nil {
 		return "", "", err
 	}

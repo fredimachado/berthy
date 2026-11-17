@@ -30,9 +30,22 @@ type setupServer struct {
 	stdins  [][]byte
 	target  string
 	waits   []int // exit codes of the restart-and-wait scripts
+	// probes, when set, are the probe's answers in turn: the server changes as setup changes it. The last one repeats.
+	probes     []string
+	probeReads int
 }
 
 func (s *setupServer) Target() string { return s.target }
+
+// nextProbe is the probe's answer: the next of probes, or probe when there are none.
+func (s *setupServer) nextProbe() string {
+	if len(s.probes) == 0 {
+		return s.probe
+	}
+	i := min(s.probeReads, len(s.probes)-1)
+	s.probeReads++
+	return s.probes[i]
+}
 
 func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (setup.Result, error) {
 	s.scripts = append(s.scripts, script)
@@ -45,7 +58,9 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	case script == "id -u; id -un":
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "uname -s"):
-		return setup.Result{Stdout: []byte(s.probe)}, nil
+		return setup.Result{Stdout: []byte(s.nextProbe())}, nil
+	case strings.Contains(script, "curl -fsS --max-time 30"):
+		return setup.Result{Stdout: []byte(`{"checks":[{"name":"agent","ok":true,"critical":true,"detail":"v0.0.1-test"}]}`)}, nil
 	case script == "cat /etc/berthy/agent.json":
 		return setup.Result{Stdout: []byte(s.config)}, nil
 	case strings.Contains(script, "cat > /usr/local/bin/berthy.new"):
@@ -658,7 +673,7 @@ func TestSetupIsInTheUsage(t *testing.T) {
 }
 
 func TestSetupUsageNamesTheNewFlags(t *testing.T) {
-	for _, flag := range []string{"--binary", "--key-file", "--new-token", "--config", "[--listen ADDRESS:PORT]"} {
+	for _, flag := range []string{"--binary", "--key-file", "--new-token", "--config", "[--listen ADDRESS:PORT]", "--verbose"} {
 		if !strings.Contains(setupUsage, flag) {
 			t.Errorf("the usage lacks %s", flag)
 		}

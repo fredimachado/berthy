@@ -118,10 +118,12 @@ func userStep(ctx context.Context, s *Session) (string, string, error) {
 	if len(script) == 0 {
 		return StatusOK, "berthy, in the docker group", nil
 	}
+	command := "set -e\n" + strings.Join(script, "\n") + "\n"
 	if s.DryRun {
+		s.Log.Would(command)
 		return StatusWouldChange, "would " + wouldText(did), nil
 	}
-	if _, err := s.change(ctx, "creating the berthy user", "set -e\n"+strings.Join(script, "\n")+"\n"); err != nil {
+	if _, err := s.change(ctx, "creating the berthy user", command); err != nil {
 		return "", "", err
 	}
 	f.UserExists = true
@@ -202,10 +204,11 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	if len(did) == 0 {
 		return StatusOK, "the key and the state directory are in place", nil
 	}
+	script := "set -e\numask 077\n" + strings.Join(fix, "\n") + "\n"
 	if s.DryRun {
+		s.Log.Would(script)
 		return StatusWouldChange, "would " + wouldText(did), nil
 	}
-	script := "set -e\numask 077\n" + strings.Join(fix, "\n") + "\n"
 	res, err := s.R.Run(ctx, script, stdin)
 	if err != nil {
 		return "", "", fmt.Errorf("preparing the key and the state directory: %w", err)
@@ -303,6 +306,7 @@ func tokenStep(ctx context.Context, s *Session) (string, string, error) {
 		what = "another admin token"
 	}
 	if s.DryRun {
+		s.dryToken = true
 		return StatusWouldChange, "would create " + what, nil
 	}
 	token, digest, err := agent.NewToken(s.Opts.Env)
@@ -364,6 +368,21 @@ func tokenCount(n int) string {
 	return strconv.Itoa(n) + " tokens"
 }
 
+// configWriteScript writes the configuration that arrives on the script's standard input to agent.json.new: owned by berthy and
+// private, for the service step to put in place.
+func configWriteScript() string {
+	return "set -e\numask 077\n" +
+		"install -d -o root -g berthy -m 0750 " + agentConfigDir + "\n" +
+		"cat > " + configPath + ".new\n" +
+		"chown berthy:berthy " + configPath + ".new\n" +
+		"chmod 0600 " + configPath + ".new\n"
+}
+
+// configFixScript gives the live configuration the owner and mode the agent insists on.
+func configFixScript() string {
+	return "chown berthy:berthy " + configPath + " && chmod 0600 " + configPath
+}
+
 // configStep writes the agent's configuration next to the live one, only when its content changes; the service step puts it in
 // place. It starts from the server's own configuration and keeps everything setup does not own.
 func configStep(ctx context.Context, s *Session) (string, string, error) {
@@ -400,10 +419,12 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 		if f.AgentConfigStat == wantPrivate {
 			return StatusOK, summary, nil
 		}
+		fix := configFixScript()
 		if s.DryRun {
+			s.Log.Would(fix)
 			return StatusWouldChange, "would fix the owner and mode of " + configPath, nil
 		}
-		if _, err := s.change(ctx, "fixing "+configPath, "chown berthy:berthy "+configPath+" && chmod 0600 "+configPath); err != nil {
+		if _, err := s.change(ctx, "fixing "+configPath, fix); err != nil {
 			return "", "", err
 		}
 		return StatusChanged, "fixed the owner and mode of " + configPath, nil
@@ -412,15 +433,12 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 	if s.existing == nil {
 		verb = "create"
 	}
+	script := configWriteScript()
 	if s.DryRun {
 		s.staged.Config = true
+		s.Log.Would(script)
 		return StatusWouldChange, "would " + verb + " " + summary, nil
 	}
-	script := "set -e\numask 077\n" +
-		"install -d -o root -g berthy -m 0750 " + agentConfigDir + "\n" +
-		"cat > " + configPath + ".new\n" +
-		"chown berthy:berthy " + configPath + ".new\n" +
-		"chmod 0600 " + configPath + ".new\n"
 	res, err := s.R.Run(ctx, script, bytes.NewReader(want))
 	if err != nil {
 		return "", "", fmt.Errorf("writing %s: %w", configPath, err)

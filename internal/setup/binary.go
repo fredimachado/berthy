@@ -183,18 +183,25 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 	if f.BinSHA != "" {
 		verb = "replace the agent binary with"
 	}
+	script, cmdErr := binaryScript(f, src, arch)
 	if s.DryRun {
 		s.staged.Binary = true
+		if cmdErr == nil {
+			s.Log.Would(script)
+		}
 		return StatusWouldChange, "would " + verb + " " + src.desc, nil
+	}
+	if cmdErr != nil {
+		return "", "", cmdErr
 	}
 	var detail string
 	if src.local != "" {
-		if err := uploadBinary(ctx, s, src); err != nil {
+		if err := uploadBinary(ctx, s, src, script); err != nil {
 			return "", "", err
 		}
 		detail = "uploaded " + src.desc + ", sha256 " + shortSHA(src.sha)
 	} else {
-		if err := downloadBinary(ctx, s, f, src, arch); err != nil {
+		if err := downloadBinary(ctx, s, src, script); err != nil {
 			return "", "", err
 		}
 		detail = "downloaded " + src.desc + " and verified its checksum"
@@ -210,18 +217,46 @@ func installedText(src *binarySource) string {
 	return src.desc + " is installed"
 }
 
+// uploadScript installs the binary that arrives on the script's standard input as berthy.new, and prints its SHA-256.
+func uploadScript() string {
+	return "set -e\numask 022\n" +
+		"cat > " + binPath + ".new\n" +
+		"chmod 0755 " + binPath + ".new\n" +
+		"sha256sum " + binPath + ".new\n"
+}
+
+// fetchTool is the command the server downloads a release with: curl, or else wget.
+func fetchTool(f *Facts) (string, error) {
+	switch {
+	case f.Curl:
+		return "curl", nil
+	case f.Wget:
+		return "wget", nil
+	}
+	return "", errors.New("neither curl nor wget is available on the server to download the release: pass --binary")
+}
+
+// binaryScript is the script that puts the agent binary of src next to the live one: the upload, or the download of a release.
+// It fails when the server cannot download a release.
+func binaryScript(f *Facts, src *binarySource, arch string) (string, error) {
+	if src.local != "" {
+		return uploadScript(), nil
+	}
+	fetch, err := fetchTool(f)
+	if err != nil {
+		return "", err
+	}
+	return downloadScript(src.url, "berthy-linux-"+arch, fetch), nil
+}
+
 // uploadBinary streams the local file through the runner's standard input into berthy.new, and compares its SHA-256 with the
 // local one.
-func uploadBinary(ctx context.Context, s *Session, src *binarySource) error {
+func uploadBinary(ctx context.Context, s *Session, src *binarySource, script string) error {
 	file, err := os.Open(src.local)
 	if err != nil {
 		return errors.New("cannot read the binary to upload")
 	}
 	defer file.Close()
-	script := "set -e\numask 022\n" +
-		"cat > " + binPath + ".new\n" +
-		"chmod 0755 " + binPath + ".new\n" +
-		"sha256sum " + binPath + ".new\n"
 	res, err := s.R.Run(ctx, script, file)
 	if err != nil {
 		return fmt.Errorf("uploading the binary: %w", err)
@@ -258,16 +293,8 @@ func downloadScript(base, asset, fetch string) string {
 		"mv -f " + asset + " " + binPath + ".new\n"
 }
 
-func downloadBinary(ctx context.Context, s *Session, f *Facts, src *binarySource, arch string) error {
-	fetch := "curl"
-	switch {
-	case f.Curl:
-	case f.Wget:
-		fetch = "wget"
-	default:
-		return errors.New("neither curl nor wget is available on the server to download the release: pass --binary")
-	}
-	res, err := s.R.Run(ctx, downloadScript(src.url, "berthy-linux-"+arch, fetch), nil)
+func downloadBinary(ctx context.Context, s *Session, src *binarySource, script string) error {
+	res, err := s.R.Run(ctx, script, nil)
 	if err != nil {
 		return fmt.Errorf("downloading %s: %w", src.version, err)
 	}

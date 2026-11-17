@@ -12,6 +12,20 @@ import (
 // unitContent is the unit file setup installs: exactly deploy/systemd/berthy.service, with Unix line endings.
 func unitContent() []byte { return bytes.ReplaceAll(systemd.Unit, []byte("\r\n"), []byte("\n")) }
 
+// unitScript installs the unit that arrives on the script's standard input, and reloads systemd.
+func unitScript() string {
+	return "set -e\numask 022\n" +
+		"tmp=$(mktemp " + unitPath + ".XXXXXX)\n" +
+		"trap 'rm -f \"$tmp\"' EXIT\n" +
+		"cat > \"$tmp\"\n" +
+		"chmod 0644 \"$tmp\"\n" +
+		"mv -f \"$tmp\" " + unitPath + "\n" +
+		"systemctl daemon-reload\n"
+}
+
+// enableScript makes berthy.service start at boot.
+const enableScript = "systemctl enable berthy 2>&1"
+
 // serviceStep installs the unit, enables the service and starts it, or restarts it when the binary, the configuration or the
 // unit changed. It waits for the agent to answer and puts the previous agent back when it does not. Running apps are not
 // touched: only the agent's process restarts.
@@ -50,17 +64,21 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		text = "enable berthy.service"
 	}
 	if s.DryRun {
+		if s.unitChanged {
+			s.Log.Would(unitScript())
+		}
+		if enable {
+			s.Log.Would(enableScript)
+		}
+		if restart {
+			for _, sc := range activateScripts(s.staged, s.Opts.listen(), s.Opts.healthTimeout()) {
+				s.Log.Would(sc)
+			}
+		}
 		return StatusWouldChange, "would " + text, nil
 	}
 	if s.unitChanged {
-		script := "set -e\numask 022\n" +
-			"tmp=$(mktemp " + unitPath + ".XXXXXX)\n" +
-			"trap 'rm -f \"$tmp\"' EXIT\n" +
-			"cat > \"$tmp\"\n" +
-			"chmod 0644 \"$tmp\"\n" +
-			"mv -f \"$tmp\" " + unitPath + "\n" +
-			"systemctl daemon-reload\n"
-		res, err := s.R.Run(ctx, script, bytes.NewReader(unit))
+		res, err := s.R.Run(ctx, unitScript(), bytes.NewReader(unit))
 		if err != nil {
 			return "", "", errors.New("installing berthy.service: " + err.Error())
 		}
@@ -69,7 +87,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 	}
 	if enable {
-		if _, err := s.change(ctx, "enabling berthy.service", "systemctl enable berthy 2>&1"); err != nil {
+		if _, err := s.change(ctx, "enabling berthy.service", enableScript); err != nil {
 			return "", "", err
 		}
 	}
