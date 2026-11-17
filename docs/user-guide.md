@@ -183,6 +183,8 @@ berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 
 `--dry-run` connects and runs every check. It prints what would change and changes nothing on the server: no package, no service, no setting, no temporary file. A step that would change something reports `would_change`. The last line says how many steps would change.
 
+To see the commands behind each step, add `--verbose`. Setup prints the commands it runs on standard error, each with its exit status, and in a dry run it also prints the commands a real run would send for each step that would change something, marked `not run: dry run`. The token and the encryption key never appear in that output.
+
 #### Run it
 
 Make the folder for the CLI configuration first, since setup writes the file into it:
@@ -333,6 +335,7 @@ Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Onl
 | `--no-install-docker` | Stop if Docker is missing instead of installing it. |
 | `--dry-run` | Check and report what would change, without changing anything. |
 | `--json` | Report as JSON. |
+| `--verbose` | Print each command setup sends, and its exit status, on standard error. With `--dry-run`, also the commands a real run would send. Standard output does not change. |
 | `--binary <path>` | Install this Linux build of Berthy instead of this CLI or the release. |
 | `--key-file <path>` | Install a saved encryption key (exactly 32 bytes) instead of generating one. Used when you [rebuild a server](#step-15-rebuild-a-server). It never replaces a different key that is already on the server. |
 | `--new-token` | Add another `admin` token, when the first one is lost. |
@@ -2286,7 +2289,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. |
+| `setup` | `-e`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. |
 | `version` | `--json` | The CLI's version and platform. |
 | `config validate` | `-e`, `--manifest-dir` | Check the merged manifest. Prints `manifest valid`. |
 | `config show` | `-e`, `--manifest-dir`, `--json` | Print the merged manifest. |
