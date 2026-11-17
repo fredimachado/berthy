@@ -55,6 +55,7 @@ type Manifest struct {
 	Peers        map[string]string      `json:"peers,omitempty" yaml:"peers,omitempty"`
 	Alerts       *Alerts                `json:"alerts,omitempty" yaml:"alerts,omitempty"`
 	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
+	Aliases      map[string]string      `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 
 	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
 	Connector bool `json:"-" yaml:"-"`
@@ -832,7 +833,36 @@ func (m *Manifest) Validate() error {
 	if m.Telemetry != nil && (m.Telemetry.OTLPEndpoint == "" || m.Telemetry.HeadersSecret != "" && !envName.MatchString(m.Telemetry.HeadersSecret)) {
 		return fmt.Errorf("invalid telemetry")
 	}
+	if err := validateAliases(m.Aliases); err != nil {
+		return err
+	}
 	return m.validateMonitoring()
+}
+
+// maxAliases is the most aliases a manifest may hold.
+const maxAliases = 64
+
+// validateAliases checks the shape of the aliases. Each name is an identifier, and each value has at least one word. Words
+// are split on spaces and never quoted, so a value with a quote, an apostrophe or a NUL byte is refused rather than misread.
+// What an alias means is checked by the CLI, which owns the command list.
+func validateAliases(aliases map[string]string) error {
+	if len(aliases) > maxAliases {
+		return fmt.Errorf("at most %d aliases", maxAliases)
+	}
+	for _, name := range sortedKeys(aliases) {
+		value := aliases[name]
+		switch {
+		case !identifier.MatchString(name):
+			return fmt.Errorf("alias %s: invalid name", name)
+		case len(strings.Fields(value)) == 0:
+			return fmt.Errorf("alias %s: a command is required", name)
+		case strings.ContainsAny(value, "'\""):
+			return fmt.Errorf("alias %s: quotes are not interpreted; separate the words with spaces", name)
+		case strings.ContainsRune(value, 0):
+			return fmt.Errorf("alias %s: invalid value", name)
+		}
+	}
+	return nil
 }
 
 // validLogOptions reports whether every option key and value of a role's logging is one Docker takes: a key of lower-case

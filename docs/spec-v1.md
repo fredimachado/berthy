@@ -147,6 +147,7 @@ All desired configuration lives in the application's repository as one base mani
 - `berthy.yml` holds what is common.
 - `berthy.<environment>.yml` overrides it per environment: replicas, resources, schedules.
 - Every deploy carries the merged manifest from the commit being deployed. Nothing is configured by hand on the server.
+- A top-level `aliases` map in the manifest names command lines for people at a terminal, for example `console: exec api --role web -- bin/console`. The CLI expands them; see "CLI" below.
 
 The examples in this spec use two environments named `dev` and `prod`. Names and values are placeholders.
 
@@ -734,6 +735,8 @@ The CLI is the complete interface; the TUI and the MCP server are two other ways
 ### CLI
 
 Every command takes `-e <env>` and `--json`. A command that talks to an agent reads the CLI configuration: the file `--config <file>` names, else the file `BERTHY_CONFIG` names, else `berthy/config.json` in the user configuration directory (`os.UserConfigDir()`: `$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on macOS, `%AppData%` on Windows). The file never holds a token. `-e` has no default. A file that cannot be read fails the command with exit 1, and the message names its path. Exit codes are meaningful: a failed or rolled-back deploy exits non-zero. A command that an AI agent's token ran on a protected environment, and that the agent held for approval instead of carrying out, exits with code 3: it is neither done nor failed (see "Approval for AI agents on protected environments").
+
+**Aliases.** The CLI expands a name from the manifest's `aliases` before it checks any flag, so the agent gets an ordinary request, and the scope, the approval and the audit log are those of the command the alias stands for. `berthy console -e prod` runs `berthy exec api --role web -e prod -- bin/console`, and arguments given after the name are appended. The `-e`, `--config` and `--manifest-dir` given with an alias are used to find it, and `--manifest-dir` is passed on only to commands that take it. The words are split on spaces and never quoted, so a value with a quote is refused. `-e` and `--config` are refused inside an alias, so the environment always comes from the command line. An alias may not take the name of a built-in command, and its first word must be a command that talks to the agent. `config validate` checks all of this and names the alias that is wrong. The agent accepts the key and ignores it. Aliases are not an MCP tool.
 
 Flags are checked before anything is sent. A read command refuses an unknown flag with exit 2 and `unknown flag`, before it reads any configuration. A change command refuses a flag it does not read with exit 2 and `<flag> is not a flag of <command>`, so `approve <id> --dry-run` is refused rather than approving for real.
 

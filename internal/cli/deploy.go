@@ -26,11 +26,7 @@ import (
 )
 
 func isDeploymentCommand(s string) bool {
-	switch s {
-	case "config", "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup", "approvals", "approve", "reject":
-		return true
-	}
-	return false
+	return slices.Contains(deploymentCommands, s)
 }
 
 // withRemoteFlags is the flags of a command that calls the agent, which all read -e, --config and --json, with extra.
@@ -293,6 +289,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 1
 		}
 		if f.pos[0] == "validate" {
+			if err := checkAliases(m.Aliases); err != nil {
+				fmt.Fprintln(errout, err)
+				return 1
+			}
 			fmt.Fprintln(out, "manifest valid")
 			return 0
 		}

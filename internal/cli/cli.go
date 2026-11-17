@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,19 @@ func Run(args []string, out, errout io.Writer) int {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if !slices.Contains(builtinCommands, cmd) && !strings.HasPrefix(cmd, "-") {
+		// An alias is expanded before any flag is checked. expandAlias returns no error only for an alias, so the expanded
+		// line starts with a built-in command and is not expanded again.
+		expanded, isAlias, err := expandAlias(cmd, args)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			if isAlias {
+				return 1
+			}
+			return 2
+		}
+		return Run(expanded, out, errout)
+	}
 	if cmd == "version" {
 		// Local: it prints this build's version and needs no agent or config.
 		return runVersion(args, out, errout)
