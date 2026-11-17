@@ -148,6 +148,7 @@ All desired configuration lives in the application's repository as one base mani
 - `berthy.<environment>.yml` overrides it per environment: replicas, resources, schedules.
 - Every deploy carries the merged manifest from the commit being deployed. Nothing is configured by hand on the server. The commit is `HEAD` of the manifest directory's checkout unless `--commit` gives one, and a deploy whose manifest or Compose files have local changes is recorded as modified, which a protected environment refuses.
 - A top-level `aliases` map in the manifest names command lines for people at a terminal, for example `console: exec api --role web -- bin/console`. The CLI expands them; see "CLI" below.
+- The reference of every manifest key, with its type, default and meaning, is not written here. It is generated from one definition, `internal/manifest/keys.go`, and kept in step with the code by a test: `berthy docs [section]` prints it, the user guide's "Manifest keys" holds it, and `berthy config schema` prints a JSON Schema (draft-07) of the manifest for editors. This spec describes the design.
 - A top-level `min_version` (a release such as `0.9.0`) is the oldest Berthy release the manifest works with. The CLI and the agent refuse a manifest that needs a newer release than theirs. `config validate` checks its format and the CLI's own release, without contacting a server.
 
 The examples in this spec use two environments named `dev` and `prod`. Names and values are placeholders.
@@ -219,13 +220,7 @@ protected: true
 
 A role's health check is a command run inside the container, with the same fields Docker uses.
 
-| Field | Meaning | Example |
-| --- | --- | --- |
-| `test` | Command run inside the container; exit code 0 means healthy | `curl -f http://localhost:8080/health` |
-| `interval` | Time between checks | 15s |
-| `timeout` | Longest one check may take | 5s |
-| `start_period` | Grace period after start; failures in it do not count | 30s |
-| `retries` | Consecutive failures before the container is unhealthy | 3 |
+The fields are `test` (a command that starts with `CMD` or `CMD-SHELL`; exit code 0 means healthy), `interval`, `timeout`, `start_period`, `start_interval` and `retries`. Their types and defaults are in the generated reference (`berthy docs roles`).
 
 - Durations are written as `15s`, not in nanoseconds.
 - The check runs inside the container, so the image must contain the command.
@@ -413,15 +408,7 @@ apps:
           - api.example.com
 ```
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `account_id` | The Cloudflare account that owns the tunnel | Required |
-| `api_token_secret` | Name of the secret that holds the Cloudflare API token | Required |
-| `image` | The connector image, pinned by digest at deploy like any image app | Required |
-| `replicas` | Number of connectors | 1 |
-| `tunnel` | The tunnel's name in Cloudflare | `<project>-<environment>` |
-| `dns` | Whether Berthy creates DNS records | `true` |
-| `hostnames`, on a role | Public hostnames that route to that role's `port` | None |
+The fields are `account_id`, `api_token_secret` and `image` (required), and `replicas`, `tunnel` and `dns`; a role's `hostnames` lists the public hostnames that route to its `port`. The connector image is pinned by digest at deploy like any image app. Each field's type and default is in the generated reference (`berthy docs ingress`).
 
 - **One tunnel per environment.** Every published app in the environment shares it.
 - **A hostname belongs to one role.** The same hostname on two roles fails validation.
@@ -795,6 +782,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
+| `config schema [--overlay]`, `docs [section]` | Print the manifest's JSON Schema (draft-07; with `--overlay`, the schema of an overlay, where no key is required), or the reference of the manifest keys. Both are built into the CLI: they need no agent, no manifest and no `-e` | No |
 | `backup list [--backup <name>]` | Backups in object storage: key, size, checksum and when each finished (`read` scope) | No |
 | `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
 | `checks` | Stored state of every probe and built-in condition, with when each state began | No |

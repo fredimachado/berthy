@@ -50,9 +50,11 @@ func TestCheckAliasesRefusesWhatCannotRun(t *testing.T) {
 	}{
 		{"shadows deploy", map[string]string{"deploy": "exec api -- true"}, "deploy"},
 		{"shadows ps", map[string]string{"ps": "logs api"}, "ps"},
+		{"shadows docs", map[string]string{"docs": "logs api"}, "docs"},
 		{"first word is ui", map[string]string{"console": "ui -e prod"}, "console"},
 		{"first word is mcp", map[string]string{"serve": "mcp"}, "serve"},
 		{"first word is version", map[string]string{"v": "version"}, "v"},
+		{"first word is docs", map[string]string{"d": "docs"}, "d"},
 		{"first word is another alias", map[string]string{"a": "logs api", "b": "a api"}, "b"},
 		{"first word is unknown", map[string]string{"x": "nosuch api"}, "x"},
 		{"sets -e", map[string]string{"console": "exec api -e prod -- bin/console"}, "console"},

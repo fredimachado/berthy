@@ -737,6 +737,19 @@ Defaults are filled in, so the output shows `deploy_timeout: 120s`, `retain: 5` 
 
 Run `config validate` in CI too. It is the cheapest check there is.
 
+#### Look up a key, and check it in your editor
+
+`berthy docs` prints every manifest key with its type, default and meaning, and `berthy docs backups` prints one section. It needs no agent and no manifest. Section names are listed when you give one that does not exist.
+
+`berthy config schema` prints a JSON Schema (draft-07) of the manifest, and `berthy config schema --overlay` one for an overlay such as `berthy.prod.yml`, where no key is required. An editor with a YAML language server can use it to complete keys and flag a typo:
+
+```bash
+berthy config schema > berthy.schema.json
+berthy config schema --overlay > berthy.overlay.schema.json
+```
+
+Point the editor at the files: with the Red Hat YAML extension for VS Code, put `# yaml-language-server: $schema=berthy.schema.json` on the first line of `berthy.yml`, and the overlay schema on the first line of each overlay. The schema checks the shape of each key. `config validate` is still the check that counts, because it also checks what a schema cannot, such as that a backup names a destination that exists.
+
 #### The finished example
 
 `examples/todo/berthy.prod.yml` is the finished prod overlay: it has everything this guide adds, in one file. Each later step shows the part it adds. If you copy the finished file as it is, set every secret in the next step's table before you deploy.
@@ -2364,6 +2377,8 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | `version` | `--json` | The CLI's version and platform. |
 | `config validate` | `-e`, `--manifest-dir` | Check the merged manifest. Prints `manifest valid`. |
 | `config show` | `-e`, `--manifest-dir`, `--json` | Print the merged manifest. |
+| `config schema` | `--overlay` | Print a JSON Schema (draft-07) of the manifest, or with `--overlay` of an overlay, for an editor. Needs no `-e`. |
+| `docs` | an optional section name | Print the manifest reference, or one section of it, such as `docs backups`. |
 | `agent token` | `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin` | Make a token and print it once, with its digest and the object for the agent's `tokens` list. No agent, no network. |
 | `state-restore` | `--endpoint`, `--bucket`, `--region`, `--object`, `--out`, `--key-file` | Rebuild the agent's state from a snapshot. Credentials from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. |
 | `agent` | `--config <file>` | Run the agent (Linux only). `berthy.service` runs this. |
@@ -2383,114 +2398,209 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 ### Manifest keys
 
-The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "Required" means the manifest is refused without it.
+The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "Required" means the manifest is refused without the key, once the section that holds it is there. The tables below are generated from one definition, `internal/manifest/keys.go`: do not edit them here. `berthy docs [section]` prints the same reference in a terminal, and `berthy config schema` prints a JSON Schema of the manifest for your editor (see [Look up a key](#look-up-a-key-and-check-it-in-your-editor)).
+
+<!-- BEGIN GENERATED: manifest reference. Edit internal/manifest/keys.go and run: go generate ./internal/manifest -->
 
 #### Top level
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `project` | name | required | Project name. Prefixes service and Compose project names. |
-| `network` | name | required | The shared overlay network. |
-| `protected` | boolean | `false` | Protect the environment (digest-only deploys, agent changes held). |
-| `registries` | map | none | Registry credentials by host. |
-| `apps` | map | required, at least one | The apps. |
-| `jobs` | map | none | Scheduled or on-demand commands. |
-| `backups` | map | none | Volume backups. |
-| `destinations` | map | none | Object storage for backups and state backups. |
-| `state_backup` | map | none | Snapshots of the agent's state. |
+| `project` | name | required | The project's name, which prefixes service and Compose project names. Lowercase letters, digits, `_` and `-`, at most 63 characters, starting with a letter or digit. |
+| `network` | name | required | The shared overlay network that every app joins. `berthy setup` creates it when it does not exist. |
+| `protected` | boolean | `false` | Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval. |
+| `registries` | map | none | Registry credentials, by registry host. |
+| `apps` | map | required | The apps, by name. At least one. |
+| `jobs` | map | none | Scheduled or on-demand commands, by name. |
+| `backups` | map | none | Volume backups, by name. |
+| `destinations` | map | none | Object storage for backups and state backups, by name. |
+| `state_backup` | map | none | Snapshots of the agent's own state. |
 | `telemetry` | map | none | OpenTelemetry export of metrics and operation records. |
-| `probes` | map | none | Scheduled checks. |
-| `peers` | map | none | Other agents to watch. |
+| `probes` | map | none | Scheduled checks, by name. |
+| `peers` | map | none | Other agents to watch, by name. |
 | `alerts` | map | none | Where alerts go. |
 | `ingress` | map | none | Managed Cloudflare Tunnel. |
-| `aliases` | map | none | Short names for command lines, for people. Not in MCP. See [Aliases](#aliases). |
+| `aliases` | map | none | Short names for command lines, for people at a terminal. At most 64. The MCP server does not offer them. See [Aliases](#aliases). |
+| `aliases.<alias>` | string | none | The command line the alias stands for: a command that talks to an agent, then its arguments, separated by spaces. Quotes are not interpreted, and `-e` and `--config` are not allowed. |
 | `min_version` | version | none | The oldest Berthy release the manifest works with, such as `0.9.0`. The CLI and the agent refuse a manifest that needs a newer release. See [the top of `berthy.yml`](#the-top-of-berthyyml). |
 
 #### `registries.<host>`
 
-| Key | Meaning |
-| --- | --- |
-| `username` | Required. |
-| `password_secret` | Required. The secret, stored with `--registry <host>`. |
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `username` | string | required | The user name for the registry. |
+| `password_secret` | secret name | required | The secret that holds the password. Store it with `berthy secret set NAME --registry <host>`. |
 
 #### `apps.<name>`
 
-| Key | Applies to | Default | Meaning |
+| Key | Applies to | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `kind` | both | string | required | The kind of app: an image app runs as Swarm services, a Compose app as a Docker Compose project. One of `image`, `compose`. |
+| `image` | image | string | required | The image's repository, with no tag or digest. |
+| `roles` | image | map | required | The app's roles, by name, at least one. A role is a set of containers that run the image with a command, replicas and health check of its own. |
+| `file` | compose | string | required | The Compose file's path, relative to the manifest directory. No `..`. |
+| `project_name` | compose | name | `<project>-<app>` | The Compose project name. Never change it once the app holds data. |
+| `stateful` | compose | boolean | `false` | Recreating or removing the app needs `--allow-recreate` and an `admin` token. |
+| `depends_on` | both | list | none | The apps that `berthy deploy` without an app deploys before this one. Each must be another app of the manifest, listed once, with no cycle. It orders nothing else. |
+| `env` | both | map | none | The environment of the app's containers. |
+| `env.plain` | both | map | none | Variables with a value written in the manifest, which is reviewed like code. Names that start with `BERTHY_` are reserved. |
+| `env.plain.<VAR>` | both | string | none | The variable's value. |
+| `env.secret` | both | list | none | Secrets whose values the containers get, kept in the agent. An entry is a secret's name, which is also the variable's name, or a one-key map from a variable to a secret's name, such as `DATABASE_URL: API_DATABASE_URL`. No variable twice, and none that is also in `plain`. |
+| `deploy` | image | map | none | How a rollout of a new version runs. |
+| `deploy.deploy_timeout` | image | duration | `120s` | The longest a new version may take to become healthy. |
+| `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. |
+| `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
+| `deploy.retain` | image | integer | `5` | The number of deploys whose images are kept, at least 1. |
+| `hooks` | image | map | none | Steps that run around a deploy. An overlay's list replaces the base manifest's. |
+| `hooks.pre_deploy` | image | list | none | Steps that run in order before the new version starts. A failed step stops the deploy. |
+| `hooks.post_deploy` | image | list | none | Steps that run in order after the new version is serving. |
+| `migrations` | image | map | none | Database migrations, which run as a step of the deploy after the pre-deploy hooks. |
+
+#### `apps.<name>.roles.<role>`
+
+Roles belong to image apps.
+
+| Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `kind` | both | required | `image` or `compose`. |
-| `image` | image | required | Repository, with no tag or digest. |
-| `roles` | image | required | Map of roles. |
-| `file` | compose | required | Compose file path, relative, inside the manifest directory. No `..`. |
-| `project_name` | compose | `<project>-<app>` | Compose project name. Never change it once the app holds data. |
-| `stateful` | compose | `false` | Recreating or removing it needs `--allow-recreate` and `admin`. |
-| `depends_on` | both | none | List of apps deployed before this one by `berthy deploy` without an app. Each must be another app of the manifest, listed once, with no cycle. |
-| `env.plain` | both | none | Map of name to string value. |
-| `env.secret` | both | none | List of entries: a secret name, or a one-key map from a variable to a secret name (`DATABASE_URL: API_DATABASE_URL`). No variable twice, and no variable also in `plain`. |
-| `deploy.deploy_timeout` | image | `120s` | Longest to become healthy. |
-| `deploy.drain_timeout` | image | `30s` | Time for the old version to finish requests. |
-| `deploy.start_attempts` | image | `3` | Failed starts tolerated, 1 to 10. |
-| `deploy.retain` | image | `5` | Deploys whose images are kept, at least 1. |
-| `hooks.pre_deploy`, `hooks.post_deploy` | image | none | Lists of steps. |
-| `migrations` | image | none | `version`, `apply`, optional `revert`, `timeout`, `retries`. |
-
-#### `apps.<name>.roles.<role>` (image apps)
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `replicas` | `1` | At least 1. |
-| `port` | none | 0 to 65535. Needed for `hostnames`. |
-| `command` | the image's | Command as a list. |
-| `health.test`, `interval`, `timeout`, `start_period`, `start_interval`, `retries` | see step 2 | Container health check. |
-| `volumes` | none | `name:/absolute/path[:ro\|:rw]`. A named volume, not a host path. |
-| `resources.cpu` | no limit | Cores, such as `"0.5"`. |
-| `resources.memory` | no limit | Such as `512M`, `1G`, `256MiB`. |
-| `hostnames` | none | Public hostnames. Needs `ingress` and `port`. A hostname belongs to one role. |
-| `service` | `<project>-<app>-<role>` | Existing Swarm service to adopt. |
-| `logging.driver` | none; with no `logging` at all, see step 2 | Docker log driver of the role's containers, such as `json-file`, `local` or `journald`, or a plugin image. Required when `logging` is set. |
-| `logging.options` | none; with no `logging` at all, `max-size: 10m` and `max-file: 3` on `json-file` or `local` | Driver options as strings, such as `max-size: 50m` and `max-file: "5"`. |
+| `service` | name | `<project>-<app>-<role>` | The name of the role's Swarm service. Set it to adopt an existing service. |
+| `command` | list | the image's | The container's command, as a list. |
+| `replicas` | integer | `1` | The number of replicas, at least 1. |
+| `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
+| `health` | map | none | The container health check, with the fields Docker uses. A new version must pass it before it takes traffic. |
+| `health.test` | list | required | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
+| `health.interval` | duration | `30s` | Time between checks. |
+| `health.timeout` | duration | `30s` | The longest one check may take. |
+| `health.start_period` | duration | `0s` | Grace time after the container starts. Failures in it do not count. |
+| `health.start_interval` | duration | `Docker's` | Time between checks during the start period. Check that your Docker version supports it for Swarm services. |
+| `health.retries` | integer | `3` | Failed checks in a row before the container is unhealthy, at least 1. |
+| `volumes` | list | none | Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path. |
+| `resources` | map | none | Resource limits of each container. |
+| `resources.cpu` | string | no limit | Cores, as a string such as `"0.5"`. |
+| `resources.memory` | string | no limit | Memory, such as `512M`, `1G` or `256MiB`. |
+| `hostnames` | list | none | Public hostnames of the role. They need `ingress` and `port`. A hostname belongs to one role. |
+| `logging` | map | none | The log driver and options of the role's containers. They replace Berthy's default log rotation, which is `max-size: 10m` and `max-file: 3` on `json-file` or `local`; any other driver gets nothing from Berthy unless the role sets `logging`. |
+| `logging.driver` | string | required | The Docker log driver, such as `json-file`, `local` or `journald`, or a plugin image. |
+| `logging.options` | map | none | Driver options, as strings, such as `max-size: 50m` and `max-file: "5"`. The role gets exactly these options. Quote a number. |
+| `logging.options.<option>` | string | none | The option's value, at most 1024 bytes. |
 
 #### Hooks and migrations
 
-| Key | Meaning |
-| --- | --- |
-| `backup: <name>` | A step that runs the backup `<name>` and waits. The name must be a key of `backups`. Takes no other setting. |
-| `run: [command]` | A step that runs the command in a container of the new image. |
-| `timeout` | A `run` step: limit of each attempt, `1s` to `24h`. Default `5m`. |
-| `retries` | A `run` step: extra tries after a non-zero exit, 0 to 5. Default `0`. |
-| `migrations.version`, `apply` | Required commands (lists). |
-| `migrations.revert` | Optional command. Exactly one argument must be the standalone word `{target}`. |
-| `migrations.timeout` | Each migration command, `1s` to `24h`. Default `5m`. |
-| `migrations.retries` | Re-runs of a failed `apply`, 0 to 5. Default `0`. |
+Hooks and migrations belong to image apps. A step is either `backup` or `run`, never both.
 
-A step is either `backup` or `run`, never both. A command that runs past its `timeout` is never retried, because it may still be running.
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `hooks.pre_deploy[].backup` | name | none | The step runs the backup of this name and waits for it. The name must be a key of `backups`. A `backup` step takes no other setting. |
+| `hooks.pre_deploy[].run` | list | none | The step runs this command, as a list, in a container of the new image with the app's environment. |
+| `hooks.pre_deploy[].timeout` | duration | `5m` | A `run` step: the time limit of each attempt, from `1s` to `24h`. A command that runs past it is never retried, because it may still be running. |
+| `hooks.pre_deploy[].retries` | integer | `0` | A `run` step: how many more times the command runs after it exits non-zero, from 0 to 5. Set it only for a command that is safe to run again. |
+| `hooks.post_deploy[].backup` | name | none | The step runs the backup of this name and waits for it. The name must be a key of `backups`. A `backup` step takes no other setting. |
+| `hooks.post_deploy[].run` | list | none | The step runs this command, as a list, in a container of the new image with the app's environment. |
+| `hooks.post_deploy[].timeout` | duration | `5m` | A `run` step: the time limit of each attempt, from `1s` to `24h`. A command that runs past it is never retried, because it may still be running. |
+| `hooks.post_deploy[].retries` | integer | `0` | A `run` step: how many more times the command runs after it exits non-zero, from 0 to 5. Set it only for a command that is safe to run again. |
+| `migrations.version` | list | required | The command that prints one line naming the current schema state. Berthy stores the line and never interprets it. |
+| `migrations.apply` | list | required | The command that brings the schema to the latest state the image knows. |
+| `migrations.revert` | list | none | The command that brings the schema back to a given state, which `berthy rollback --revert-schema` uses. Exactly one argument must be the standalone word `{target}`. |
+| `migrations.timeout` | duration | `5m` | The time limit of each migration command, from `1s` to `24h`. |
+| `migrations.retries` | integer | `0` | How many times a failed `apply` runs again, from 0 to 5. `version` and `revert` are never retried. |
 
 #### `jobs.<name>`
 
-`app` (required), `role` (image app) or `service` (Compose app) but not both, `schedule` (five-field UTC cron; none means on demand), `command` (required list), `timeout` (`1s` to `24h`, default `1h`). An image app with several roles needs `role`. The `ingress` app name is reserved.
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `app` | name | required | The app the job runs in. |
+| `role` | name | none | For an image app: the role whose container runs the command. Needed when the app has several roles. Not with `service`. |
+| `service` | name | none | For a Compose app: the service that runs the command. Not with `role`. |
+| `schedule` | string | on demand | A five-field cron expression, in UTC. Without it the job runs only on demand. |
+| `command` | list | required | The command to run, as a list. |
+| `timeout` | duration | `1h` | The time limit of a run, from `1s` to `24h`. |
 
 #### `backups.<name>`
 
-`app`, `volume`, `destination` (all required), `schedule`, `prefix`, `before` (a job name), `retention.keep` (`all` or a whole number of at least 1).
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `app` | name | required | The app that mounts the volume. |
+| `volume` | string | required | For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts. |
+| `schedule` | string | on demand | A five-field cron expression, in UTC. Without it the backup runs only on demand or from a deploy hook. |
+| `destination` | name | required | A key of `destinations`. |
+| `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket. |
+| `before` | name | none | A job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. |
+| `retention` | map | none | How many backups to keep. |
+| `retention.keep` | integer or all | `all` | `all`, or a whole number of at least 1: keep that many of the newest successful backups. |
 
 #### `destinations.<name>`
 
-`type: s3`, `bucket` (3 to 63 characters: lowercase letters, digits, `.`, `-`), `access_key_secret`, `secret_key_secret` (required), `endpoint` (`https://host[:port]` or a loopback `http://`), `region`.
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | required | The kind of storage: any S3-compatible object storage. One of `s3`. |
+| `endpoint` | string | `AWS` | `https://host[:port]`, with no path. `http://` is accepted only for localhost or a loopback address. Leave it out for AWS. |
+| `region` | string | none | The bucket's region, when the storage needs one. |
+| `bucket` | string | required | The bucket's name: 3 to 63 characters of lowercase letters, digits, `.` and `-`, starting and ending with a letter or digit. |
+| `access_key_secret` | secret name | required | The secret that holds the access key. |
+| `secret_key_secret` | secret name | required | The secret that holds the secret key. |
 
 #### `state_backup`
 
-`destination` (required), `prefix`, `schedule`, `keep` (1 to 1000). See step 10.
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `destination` | name | required | A key of `destinations`. |
+| `prefix` | string | `berthy-state/<environment>` | The object prefix of the snapshots. |
+| `schedule` | string | 17 3 * * * | A five-field cron expression, in UTC. The default is daily at 03:17. |
+| `keep` | integer | `14` | The number of snapshots kept, from 1 to 1000. |
 
 #### `probes.<name>`
 
-One of `http`, `tcp` or `service` (`app`, `role`, `port`, `path`), plus `expect_status`, `interval`, `timeout`, `failures`. See step 8.
+A probe has exactly one of `http`, `tcp` and `service`.
 
-#### `peers`, `alerts`, `telemetry`
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `http` | string | none | A URL, `http` or `https`, with a host. |
+| `tcp` | string | none | `host:port`, with a port from 1 to 65535. |
+| `service` | map | none | A role or Compose service on the shared network, reached by the overlay helper. A Compose service must join the shared network. |
+| `service.app` | name | required | The app, which must be in the manifest. |
+| `service.role` | name | none | The role, or for a Compose app the service. May be left out when the app has one role. |
+| `service.port` | integer | required | The port, from 1 to 65535. |
+| `service.path` | string | none | The path to request. It starts with `/`. |
+| `expect_status` | list | any 200 to 399 | The status codes that count as healthy, each from 100 to 599. |
+| `interval` | duration | `30s` | Time between runs. At least `5s`. |
+| `timeout` | duration | `5s` | The longest one run may take. Shorter than `interval`. For a `service` probe, from `1s` to `25s`. |
+| `failures` | integer | `3` | Failed runs in a row before the state changes, at least 1. |
 
-`peers.<name>`: a base URL with host and port and no path. `alerts.telegram`: `bot_token_secret`, `chat_id`, `reminder`, `deploys` (`failed`, `all` or `none`; default `failed`). `telemetry`: `otlp_endpoint` (required), `headers_secret`.
+#### `peers`
 
-#### `ingress.cloudflare`
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `<name>` | string | none | The base URL of another agent to watch: `http` or `https`, a host and a port, and no path, query or user. |
 
-`account_id`, `api_token_secret`, `image` (required), `replicas`, `tunnel`, `dns`. See step 7.
+#### `alerts`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `telegram` | map | none | Alerts to one Telegram chat. Telegram is the only channel in v1. |
+| `telegram.bot_token_secret` | secret name | required | The secret that holds the bot token. |
+| `telegram.chat_id` | string | required | A numeric chat ID, or `@channel_name`. Quote it. |
+| `telegram.reminder` | duration | `4h` | How often to repeat an alert while its check keeps failing. `0s` turns reminders off. |
+| `telegram.deploys` | string | `failed` | Which deploys and rollbacks send a message when they end. One of `failed`, `all`, `none`. |
+
+#### `telemetry`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `otlp_endpoint` | string | required | The collector's OTLP endpoint. The agent runs on the host, so it must be an address the host can reach; a Docker service name does not resolve there. |
+| `headers_secret` | secret name | none | The secret that holds request headers in the `OTEL_EXPORTER_OTLP_HEADERS` form, `name=value,name=value`, for backends that need authorization. |
+
+#### `ingress`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `cloudflare` | map | required | Managed ingress: Berthy owns the tunnel, the connector that runs on the server, the hostname routes and the DNS records. |
+| `cloudflare.account_id` | string | required | The Cloudflare account that owns the tunnel. |
+| `cloudflare.api_token_secret` | secret name | required | The secret that holds the Cloudflare API token. |
+| `cloudflare.image` | string | required | The connector's image, with a tag or a digest. |
+| `cloudflare.replicas` | integer | `1` | The number of connectors, at least 1. |
+| `cloudflare.tunnel` | name | `<project>-<environment>` | The tunnel's name in Cloudflare. |
+| `cloudflare.dns` | boolean | `true` | Whether Berthy creates the DNS records. |
+
+<!-- END GENERATED: manifest reference -->
 
 #### Limits and reserved names
 

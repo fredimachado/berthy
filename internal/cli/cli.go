@@ -40,7 +40,7 @@ var envPattern = agentclient.EnvPattern
 
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <setup|agent|version|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
+		fmt.Fprintln(errout, "usage: berthy <setup|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
 	}
 	cmd := args[0]
@@ -61,6 +61,14 @@ func Run(args []string, out, errout io.Writer) int {
 	if cmd == "version" {
 		// Local: it prints this build's version and needs no agent or config.
 		return runVersion(args, out, errout)
+	}
+	if cmd == "docs" {
+		// Local: it prints the manifest reference built into this binary and needs no agent, manifest or config.
+		return runDocs(args, out, errout)
+	}
+	if cmd == "config" && len(args) > 0 && args[0] == "schema" {
+		// Local too, and the same for every environment, so it takes no -e.
+		return runConfigSchema(args[1:], out, errout)
 	}
 	if cmd == "probe-helper" {
 		// Not in the usage: only the overlay helper container runs it.
