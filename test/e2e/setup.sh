@@ -1,0 +1,81 @@
+#!/bin/bash
+# setup.sh builds a fresh fixture: no e2e services, a new agent with new tokens, a throwaway registry holding the two
+# test images, the manifest, and the fakes. It starts from nothing every time, so running it twice ends in the same state.
+set -uo pipefail
+. "$(dirname "$0")/lib.sh"
+umask 077
+
+die() {
+  echo "setup: $*" >&2
+  exit 1
+}
+
+# setup wipes these directories. Refuse unless they lie under $E2E_ROOT, so a wrong E2E_ROOT deletes nothing else.
+for dir in "$RUN" "$LOG" "$MAN"; do
+  case $dir in
+    "$E2E_ROOT"/?*) ;;
+    *) die "refusing to wipe $dir, which is outside $E2E_ROOT" ;;
+  esac
+done
+
+purge_fixture
+rm -rf "$RUN" "$LOG" "$MAN"
+mkdir -p "$RUN/state" "$LOG" "$MAN" || die "cannot create the fixture directories"
+
+# Tokens. "agent token" prints "token: ...", "sha256: ..." and the JSON entry for the agent's configuration. The token is
+# captured into variables and written only to env.sh; it is never echoed.
+admin_out=$("$BIN" agent token -e "$ENVN" --name admin --scope admin) || die "could not make the admin token"
+ci_out=$("$BIN" agent token -e "$ENVN" --name ci --scope deploy --agent) || die "could not make the ci token"
+admin_token=$(printf '%s\n' "$admin_out" | sed -n 's/^token: //p')
+admin_entry=$(printf '%s\n' "$admin_out" | sed -n '3p')
+ci_token=$(printf '%s\n' "$ci_out" | sed -n 's/^token: //p')
+ci_entry=$(printf '%s\n' "$ci_out" | sed -n '3p')
+case $admin_token in bty.$ENVN.*) ;; *) die "the admin token has an unexpected shape" ;; esac
+case $ci_token in bty.$ENVN.*) ;; *) die "the ci token has an unexpected shape" ;; esac
+case $admin_entry in \{*) ;; *) die "the admin entry has an unexpected shape" ;; esac
+case $ci_entry in \{*) ;; *) die "the ci entry has an unexpected shape" ;; esac
+printf "export BERTHY_ADMIN_TOKEN='%s'\nexport BERTHY_CI_TOKEN='%s'\n" "$admin_token" "$ci_token" > "$RUN/env.sh" || die "cannot write env.sh"
+. "$RUN/env.sh"
+unset admin_out ci_out admin_token ci_token
+
+# Secrets and fake-server credentials. The state key must be exactly 32 bytes; the agent refuses anything else.
+head -c 32 /dev/urandom > "$RUN/state.key" && chmod 600 "$RUN/state.key" || die "cannot write the state key"
+openssl rand -hex 16 > "$RUN/tg-token" || die "cannot write the Telegram token"
+printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP authorization"
+
+# Agent configuration. Keys match agent.Config; the agent rejects unknown keys.
+printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","tokens":[%s,%s]}\n' \
+  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$admin_entry" "$ci_entry" > "$RUN/agent.json" \
+  || die "cannot write agent.json"
+
+# CLI configurations. Each names its token by environment variable, so the token never sits in a file the CLI reads.
+printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_ADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/admin.json" || die "cannot write admin.json"
+printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CI_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ci.json" || die "cannot write ci.json"
+
+# Registry: throwaway and unauthenticated, in memory, so nothing it holds outlives the run.
+d run -d --name e2e-registry --label berthy.e2e=1 -p "$REG:5000" --tmpfs /var/lib/registry registry:2 >/dev/null \
+  || die "the registry container did not start (is port ${REG##*:} free?)"
+wait_for "registry" curl_local -f -o /dev/null "http://$REG/v2/" || die "the registry does not answer"
+
+# Push the two test images under the e2e name and record the digests the registry will serve. The source tags stay;
+# only the e2e tags are removed afterwards.
+: > "$RUN/digests.env"
+for v in v1 v2; do
+  src="127.0.0.1:15001/berthy-phase2/web:$v"
+  dst="$REG/e2e/web:$v"
+  d image inspect "$src" >/dev/null 2>&1 || die "the source image $src is missing on the daemon"
+  d tag "$src" "$dst" || die "tagging $dst failed"
+  d push "$dst" >/dev/null || die "pushing $dst failed"
+  digest=$(d image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$dst" | sed -n "s#^$REG/e2e/web@##p" | head -n 1)
+  case $digest in sha256:*) ;; *) die "no registry digest for $dst" ;; esac
+  d rmi "$dst" >/dev/null || die "removing the tag $dst failed"
+  printf 'WEB_%s_DIGEST=%s\n' "${v^^}" "$digest" >> "$RUN/digests.env"
+done
+
+base_manifest | write_manifest || die "cannot write the manifest"
+"$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" >/dev/null || die "the manifest does not validate"
+
+start_fakes || die "the fakes did not start"
+start_agent || die "the agent did not start"
+
+echo "fixture ready: $("$BIN" version); registry $REG; fakes on $TG_LISTEN and $OTLP_LISTEN; agent on $AGENT_LISTEN"

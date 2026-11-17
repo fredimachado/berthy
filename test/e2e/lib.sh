@@ -1,0 +1,274 @@
+# Shared settings and helpers for the Berthy e2e harness. Source it from a script; never run it.
+#
+# The harness runs in WSL (distro Ubuntu) against an isolated single-node Swarm daemon. It creates only what carries the
+# e2e labels or names below, and it writes only under $E2E_ROOT.
+
+export PATH=/usr/bin:/bin
+
+GO=/var/tmp/berthy-phase1/go/bin/go
+DOCKER_BIN=/var/tmp/berthy-phase1/bin/docker
+SOCK=/var/tmp/berthy-phase2/docker.sock
+
+E2E_ROOT=${E2E_ROOT:-$HOME/berthy-e2e/harness}
+SRC=$E2E_ROOT/src            # rsynced copy of the repo (native fs)
+BIN=$E2E_ROOT/bin/berthy
+TG_BIN=$E2E_ROOT/bin/faketelegram
+OTLP_BIN=$E2E_ROOT/bin/fakeotlp
+RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
+LOG=$E2E_ROOT/logs
+MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
+ENVN=e2e
+PROJECT=e2e
+NETWORK=berthy-phase2-lab
+REG=127.0.0.1:15021          # throwaway unauthenticated registry container "e2e-registry"
+AGENT_LISTEN=127.0.0.1:19501
+TG_LISTEN=127.0.0.1:18901
+OTLP_LISTEN=127.0.0.1:18902
+# The repo is two directories above this file, so the harness works from any checkout, including /mnt/d.
+REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+
+# The tokens that setup.sh wrote. Before setup has run there are none, and the CLI says so.
+if [ -f "$RUN/env.sh" ]; then . "$RUN/env.sh"; fi
+
+# d ARGS: the docker CLI against the isolated daemon. DOCKER_CONFIG is the harness's own (empty) config, so the CLI never
+# asks the credential helper that the user's Windows-side config names, which does not exist in WSL.
+d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" "$@"; }
+
+# adm CMD [ARGS]: berthy as the admin token. Flags go right after the command name, so a "-- cmd" tail stays last.
+adm() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/admin.json" "$@"; }
+
+# ci CMD [ARGS]: berthy as the agent token "ci" (scope deploy, agent: true), for approval scenarios.
+ci() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ci.json" "$@"; }
+
+# curl_local ARGS: curl to the loopback fakes and the registry, never through a proxy.
+curl_local() { curl --noproxy '*' -sS "$@"; }
+
+# owned PIDFILE BINARY: true when PIDFILE holds the pid of a live process that runs BINARY. A stale pid file can name a
+# reused pid, so the command line is checked too. A zombie has an empty command line and counts as gone.
+owned() {
+  local pid cmd
+  [ -f "$1" ] || return 1
+  pid=$(cat "$1") || return 1
+  [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
+  # The process may exit between the test and the read; the redirect is silenced so that race prints nothing.
+  cmd=$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline") || return 1
+  case $cmd in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+
+# stop_proc PIDFILE BINARY: asks the process to exit (SIGTERM), waits up to 10 s, then kills it.
+stop_proc() {
+  local pid i
+  if ! owned "$1" "$2"; then
+    rm -f "$1"
+    return 0
+  fi
+  pid=$(cat "$1")
+  kill -TERM "$pid" 2>/dev/null
+  for i in $(seq 1 50); do
+    owned "$1" "$2" || break
+    sleep 0.2
+  done
+  if owned "$1" "$2"; then
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  rm -f "$1"
+}
+
+# spawn PIDFILE LOGFILE COMMAND [ARGS]: starts COMMAND detached in its own session, appends its output to LOGFILE and
+# writes its pid to PIDFILE. The shell execs the command, so the recorded pid is the command's own.
+spawn() {
+  local pidfile=$1 logfile=$2
+  shift 2
+  setsid sh -c 'echo $$ > "$1"; shift; exec "$@"' sh "$pidfile" "$@" >>"$logfile" 2>&1 </dev/null &
+}
+
+# wait_for WHAT COMMAND [ARGS]: runs COMMAND every 0.25 s for up to 15 s until it succeeds.
+wait_for() {
+  local what=$1 i
+  shift
+  for i in $(seq 1 60); do
+    if "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "$what did not come up (logs in $LOG)" >&2
+  return 1
+}
+
+# start_agent: starts the agent and waits until it answers agent-info. It gives up early when the process has died.
+start_agent() {
+  local i
+  spawn "$RUN/agent.pid" "$LOG/agent.log" "$BIN" agent --config "$RUN/agent.json"
+  for i in $(seq 1 120); do
+    if adm agent-info >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ -s "$RUN/agent.pid" ] && ! owned "$RUN/agent.pid" "$BIN"; then
+      break
+    fi
+    sleep 0.25
+  done
+  echo "agent did not answer (logs in $LOG/agent.log)" >&2
+  return 1
+}
+
+stop_agent() { stop_proc "$RUN/agent.pid" "$BIN"; }
+
+# start_fakes: starts the fake Telegram and the fake OTLP receiver, and waits until both answer.
+start_fakes() {
+  spawn "$RUN/tg.pid" "$LOG/telegram.log" "$TG_BIN" -listen "$TG_LISTEN" -token-file "$RUN/tg-token" -messages "$RUN/tg-messages.json" || return 1
+  spawn "$RUN/otlp.pid" "$LOG/otlp.log" "$OTLP_BIN" -listen "$OTLP_LISTEN" -summary "$RUN/otlp-summary.json" -expect-authorization-file "$RUN/otlp-auth" || return 1
+  wait_for "faketelegram" curl_local -f -o /dev/null "http://$TG_LISTEN/_fake/messages" || return 1
+  wait_for "fakeotlp" curl_local -o /dev/null "http://$OTLP_LISTEN/" || return 1
+}
+
+stop_fakes() {
+  stop_proc "$RUN/tg.pid" "$TG_BIN"
+  stop_proc "$RUN/otlp.pid" "$OTLP_BIN"
+}
+
+# tg_messages: the messages the fake Telegram recorded, as JSON.
+tg_messages() { curl_local "http://$TG_LISTEN/_fake/messages"; }
+
+# tg_reset: clears the fake Telegram's record.
+tg_reset() { curl_local -X POST "http://$TG_LISTEN/_fake/reset" >/dev/null; }
+
+# service_spec NAME: the Swarm service spec as JSON, for example service_spec e2e-web-main.
+service_spec() { d service inspect --format '{{json .Spec}}' "$1"; }
+
+# write_manifest: writes $MAN/berthy.yml from stdin and removes stale overlays (berthy.<env>.yml).
+write_manifest() {
+  mkdir -p "$MAN"
+  rm -f "$MAN"/berthy.*.yml
+  cat > "$MAN/berthy.yml"
+}
+
+# base_manifest: prints the default manifest. Project e2e, network berthy-phase2-lab, one image app "web" from the
+# e2e registry, and one role "main" with a health check that always passes.
+base_manifest() {
+  cat <<YML
+project: $PROJECT
+network: $NETWORK
+apps:
+  web:
+    kind: image
+    image: $REG/e2e/web
+    roles:
+      main:
+        health:
+          test: ["CMD", "true"]
+          interval: 2s
+          timeout: 2s
+          start_period: 1s
+          retries: 3
+YML
+}
+
+# purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
+# containers and volumes labelled berthy.environment=e2e, the e2e-registry container, and volumes named e2e_* or in a
+# compose project e2e*. Nothing else on the daemon matches these filters.
+purge_fixture() {
+  local i v
+  local -a ids
+  stop_agent
+  stop_fakes
+
+  mapfile -t ids < <(d service ls -q --filter label=berthy.environment=$ENVN)
+  if [ ${#ids[@]} -gt 0 ]; then
+    d service rm "${ids[@]}" >/dev/null
+  fi
+  for i in $(seq 1 60); do
+    mapfile -t ids < <(d service ls -q --filter label=berthy.environment=$ENVN)
+    [ ${#ids[@]} -eq 0 ] && break
+    sleep 0.5
+  done
+
+  for i in $(seq 1 60); do
+    mapfile -t ids < <(d ps -aq --filter label=berthy.environment=$ENVN)
+    [ ${#ids[@]} -eq 0 ] && break
+    d rm -f "${ids[@]}" >/dev/null 2>&1
+    sleep 0.5
+  done
+
+  d rm -fv e2e-registry >/dev/null 2>&1
+
+  # References under the e2e registry: tags left by an interrupted setup, and the digest references that stay once a tag is
+  # removed. They are removed by name, never by image id, so an image that a source tag also names keeps its source tag.
+  d images --no-trunc --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}' |
+    awk -v p="$REG/e2e/" 'index($1, p) == 1 { if ($2 == "<none>") print $1 "@" $3; else print $1 ":" $2 }' |
+    while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
+
+  d volume ls --format '{{.Name}} {{.Labels}}' |
+    awk '$1 ~ /^e2e_/ || $2 ~ /(^|,)com\.docker\.compose\.project=e2e/ { print $1 }' |
+    while read -r v; do
+      d volume rm "$v" >/dev/null 2>&1 || echo "volume $v is still in use and was kept" >&2
+    done
+}
+
+# Assertions. Each prints "  ok   NAME" or "  FAIL NAME: DETAIL" and counts the failures in E2E_FAILS.
+E2E_FAILS=0
+
+pass() { printf '  ok   %s\n' "$1"; }
+
+fail() {
+  printf '  FAIL %s: %s\n' "$1" "$2"
+  E2E_FAILS=$((E2E_FAILS + 1))
+}
+
+# detail_block TEXT: shows the start of TEXT under a failure, so the FAIL line stays on one line.
+detail_block() { printf '%s\n' "$1" | head -n 20 | cut -c1-300 | sed 's/^/       | /'; }
+
+# expect_eq NAME WANT GOT
+expect_eq() {
+  if [ "$2" = "$3" ]; then
+    pass "$1"
+  else
+    fail "$1" "want '$2', got '$3'"
+  fi
+}
+
+# expect_contains NAME HAYSTACK NEEDLE
+expect_contains() {
+  if [[ $2 == *"$3"* ]]; then
+    pass "$1"
+  else
+    fail "$1" "does not contain '$3'"
+    detail_block "$2"
+  fi
+}
+
+# expect_not_contains NAME HAYSTACK NEEDLE
+expect_not_contains() {
+  if [[ $2 != *"$3"* ]]; then
+    pass "$1"
+  else
+    fail "$1" "unexpectedly contains '$3'"
+    detail_block "$2"
+  fi
+}
+
+# expect_code NAME WANT_CODE GOT_CODE [OUTPUT]: OUTPUT, when given, is shown under a failure.
+expect_code() {
+  if [ "$2" = "$3" ]; then
+    pass "$1"
+  else
+    fail "$1" "exit $3, want $2"
+    if [ -n "${4:-}" ]; then
+      detail_block "$4"
+    fi
+  fi
+}
+
+# finish: the last line of every scenario. Exits 1 when any assertion failed, else 0.
+finish() {
+  if [ "$E2E_FAILS" -eq 0 ]; then
+    echo "PASS $(basename "$0")"
+    exit 0
+  fi
+  echo "FAIL $(basename "$0"): $E2E_FAILS assertion(s) failed"
+  exit 1
+}
