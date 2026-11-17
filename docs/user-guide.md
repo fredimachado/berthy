@@ -2272,12 +2272,21 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 
 #### Not verified against real services
 
-Berthy's own tests and the phase verification records (`docs/phase-*-verification.md`) ran against a real Docker Swarm, a real registry and fixtures, but **not** against the services below. Expect to find your own edge cases the first time:
+Berthy's own tests and the phase verification records (`docs/phase-*-verification.md`) ran against a real Docker Swarm, a real registry and fixtures. On 2026-11-17 the owner also ran Berthy by hand against real services:
 
-- **Cloudflare:** token scopes, zone lookup, tunnel creation, error codes, rate limits, traffic through a tunnel, a connector update, more than one connector, and the unhealthy-tunnel alert. The tests used a fake Cloudflare API. The readiness command of the pinned connector image was not confirmed against a running, ready connector. Try managed ingress on a non-production tunnel first.
+- `berthy setup` over SSH on a real Ubuntu x86_64 server that already had Docker 28.3.2: 13 of 13 steps, and `doctor` 9 of 9. The server had a broken Swarm left by another tool, which had to be cleared with `docker swarm leave --force` first.
+- Managed ingress against the real Cloudflare API: the tunnel was created, the cloudflared connector was deployed, and a route and a proxied DNS record for one hostname were created at the end of the API deploy. The app was served over HTTPS through the tunnel.
+- A private image pulled from GHCR with a `read:packages` token.
+- Compose deploys of PostgreSQL and Redis.
+- Image deploys by tag, an update to a newer tag, and a rollback.
+
+The items below were **not** run against real services. Expect to find your own edge cases the first time:
+
+- **Cloudflare:** token scopes, error codes, rate limits, `--replace-existing` and DNS conflict handling, a connector update, more than one connector, traffic to several replicas through the tunnel, and the unhealthy-tunnel alert. The tests used a fake Cloudflare API for these. The readiness command of the pinned connector image was not confirmed against a running, ready connector. Try managed ingress on a non-production tunnel first.
 - **Telegram:** real delivery of alerts. The tests used a fake Bot API.
 - **OpenTelemetry backends:** a real collector over `https`, and a backend's own authorization.
 - **S3:** a real provider. The backup, restore and state-snapshot code ran against an in-memory fake S3, so a `kill -9` during a snapshot, big states and provider quirks are untested.
+- **Other hosts:** arm64 servers, SSH through jump hosts, and a server reboot.
 - **Rebuilding a second host** with `state-restore` and `setup --key-file`, end to end (step 15).
 - **A real MCP client** (Claude Code, Claude Desktop) over standard input and output, and the TUI on real terminals other than a terminal emulator (Windows Terminal, macOS Terminal, iTerm2), light backgrounds and `NO_COLOR` by eye.
 - **The default 15-minute approval expiry** (the tests shortened it), and an agent restart while an approval is pending.
