@@ -44,8 +44,9 @@ openssl rand -hex 16 > "$RUN/tg-token" || die "cannot write the Telegram token"
 printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP authorization"
 
 # Agent configuration. Keys match agent.Config; the agent rejects unknown keys.
-printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","tokens":[%s,%s]}\n' \
-  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$admin_entry" "$ci_entry" > "$RUN/agent.json" \
+# The Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
+printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s,%s]}\n' \
+  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$admin_entry" "$ci_entry" > "$RUN/agent.json" \
   || die "cannot write agent.json"
 
 # CLI configurations. Each names its token by environment variable, so the token never sits in a file the CLI reads.

@@ -387,6 +387,13 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			if deployment != nil && deployment.Store != nil {
 				checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
 				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
+				if m, _, mErr := deployedManifest(r.Context(), deployment.Store); mErr == nil {
+					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
+					if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
+						checks = append(checks, check)
+					}
+					cancelLog()
+				}
 			}
 			if tel != nil {
 				if check, ok := telemetryDoctorCheck(tel, time.Now()); ok {

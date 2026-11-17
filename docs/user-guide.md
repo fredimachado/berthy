@@ -378,6 +378,7 @@ berthy agent-info -e prod --config $CFG
 | `lock` | The deploy lock (`free` or who holds it). |
 | `peer:<name>`, `telegram`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the Telegram bot token secret, every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
+| `compose_log_limit` | A warning, not a failure: services of deployed Compose apps whose logs grow without a size limit. See **Log rotation** in step 2. |
 | telemetry | The OTLP exporter, when configured. |
 
 A backup, a credential or an alert in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent.
@@ -490,7 +491,7 @@ Berthy names the Swarm service `<project>-<app>-<role>`. The API's web role is `
             max-file: "5"
 ```
 
-Quote the number in `max-file`, as the example does. A role with `logging` gets exactly those options, and no default is added to them. Any other driver, such as `journald`, gets nothing from Berthy unless the role sets `logging`. Compose apps keep their own logging settings.
+Quote the number in `max-file`, as the example does. A role with `logging` gets exactly those options, and no default is added to them. Any other driver, such as `journald`, gets nothing from Berthy unless the role sets `logging`. Compose apps keep their own logging settings: set `logging` in the Compose file. Berthy does not rewrite that file, so `doctor` warns (`compose_log_limit`) about each service of a deployed Compose app that logs as json-file with no `max-size`. When the service's driver is the server's default driver, the server's `log-opts` `max-size` counts too, even if the service sets other options.
 
 **The health check** is a command that runs *inside* the container, with the same fields Docker uses:
 

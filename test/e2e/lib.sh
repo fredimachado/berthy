@@ -8,6 +8,8 @@ export PATH=/usr/bin:/bin
 GO=/var/tmp/berthy-phase1/go/bin/go
 DOCKER_BIN=/var/tmp/berthy-phase1/bin/docker
 SOCK=/var/tmp/berthy-phase2/docker.sock
+# The standalone Compose v2 CLI of the fixture, which the agent runs as its compose_command.
+COMPOSE_BIN=/var/tmp/berthy-phase1/cli-plugins/docker-compose
 
 E2E_ROOT=${E2E_ROOT:-$HOME/berthy-e2e/harness}
 SRC=$E2E_ROOT/src            # rsynced copy of the repo (native fs)
@@ -201,6 +203,18 @@ purge_fixture() {
   d images --no-trunc --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}' |
     awk -v p="$REG/e2e/" 'index($1, p) == 1 { if ($2 == "<none>") print $1 "@" $3; else print $1 ":" $2 }' |
     while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
+
+  # Compose projects of the harness are named e2e-* (project e2e, app <name>). Berthy labels nothing on them, so their
+  # containers and networks are found by the Compose project label, and only the e2e-* prefix is removed.
+  d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' |
+    awk '$2 ~ /^e2e-/ { print $1 }' |
+    while read -r c; do d rm -f "$c" >/dev/null 2>&1; done
+  d network ls --filter label=com.docker.compose.project -q |
+    while read -r n; do
+      case $(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null) in
+        e2e-*) d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2 ;;
+      esac
+    done
 
   d volume ls --format '{{.Name}} {{.Labels}}' |
     awk '$1 ~ /^e2e_/ || $2 ~ /(^|,)com\.docker\.compose\.project=e2e/ { print $1 }' |

@@ -46,7 +46,7 @@ func doctorDocker(t *testing.T, networks map[string]string) (*engine.Engine, fun
 		case r.URL.Path == "/version":
 			w.Write([]byte(`{"ApiVersion":"1.50","MinAPIVersion":"1.24"}`))
 		case r.URL.Path == "/v1.44/info":
-			w.Write([]byte(`{"Swarm":{"ControlAvailable":true,"LocalNodeState":"active"}}`))
+			w.Write([]byte(`{"LoggingDriver":"json-file","Swarm":{"ControlAvailable":true,"LocalNodeState":"active"}}`))
 		case strings.HasPrefix(r.URL.Path, "/v1.44/networks/"):
 			name := strings.TrimPrefix(r.URL.Path, "/v1.44/networks/")
 			mu.Lock()

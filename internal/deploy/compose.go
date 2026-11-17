@@ -263,6 +263,37 @@ type composeConfigService struct {
 	EnvFile           json.RawMessage      `json:"env_file,omitempty"`
 	Secrets           []composeServiceRef  `json:"secrets,omitempty"`
 	Configs           []composeServiceRef  `json:"configs,omitempty"`
+	Logging           *composeLogging      `json:"logging,omitempty"`
+}
+
+// composeLogging is a service's log driver and options in `compose config --format json`.
+type composeLogging struct {
+	Driver  string            `json:"driver,omitempty"`
+	Options map[string]string `json:"options,omitempty"`
+}
+
+// composeLogUnlimited reports whether a Compose service's logs grow without a size limit. daemonDriver is the daemon's
+// default log driver; daemonMaxSize is log-opts.max-size from the daemon's configuration, "" when none. Only json-file
+// can be unlimited: local rotates by default, and any other driver is the operator's choice, which Berthy does not judge.
+// Docker merges the daemon's log-opts into a container's log config, key by key, when the container's driver is the
+// daemon's default driver. So the service's max-size, or else the daemon's when the drivers match, decides, and the
+// service is unlimited only when that is empty. Other log-opts do not matter here.
+func composeLogUnlimited(l *composeLogging, daemonDriver, daemonMaxSize string) bool {
+	driver, options := daemonDriver, map[string]string(nil)
+	if l != nil {
+		if l.Driver != "" {
+			driver = l.Driver
+		}
+		options = l.Options
+	}
+	if driver != "json-file" {
+		return false
+	}
+	maxSize := options["max-size"]
+	if maxSize == "" && driver == daemonDriver {
+		maxSize = daemonMaxSize
+	}
+	return maxSize == ""
 }
 
 // composeServiceRef is a secret or config a service uses, by its top-level name.
@@ -292,6 +323,30 @@ type composeConfigFile struct {
 func (v composeConfigVolume) external() bool {
 	s := string(v.External)
 	return s != "" && s != "null" && s != "false"
+}
+
+// ComposeServicesWithoutLogLimit returns the sorted names of the services of a deployed Compose project whose logs grow
+// without a size limit, by composeLogUnlimited. It reads the project's stored files and changes nothing.
+func (c *Controller) ComposeServicesWithoutLogLimit(ctx context.Context, project, daemonDriver, daemonMaxSize string) ([]string, error) {
+	if c.Compose == nil || c.StateDir == "" {
+		return nil, errComposeUnavailable
+	}
+	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: c.composeDir(project), Args: []string{"config", "--format", "json", "--no-env-resolution"}})
+	if err != nil {
+		return nil, errComposeConfig
+	}
+	var cfg composeConfigFile
+	if json.Unmarshal(out, &cfg) != nil {
+		return nil, errComposeConfig
+	}
+	var names []string
+	for name, svc := range cfg.Services {
+		if composeLogUnlimited(svc.Logging, daemonDriver, daemonMaxSize) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // composeHashes reads the `<service> <hash>` lines of `compose config --hash *`.
