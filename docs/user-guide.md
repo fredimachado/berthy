@@ -39,7 +39,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
   export CFG=~/.config/berthy/config.json
   ```
 
-- `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. Secrets are always read from standard input, so they stay out of your shell history.
+- `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
 - Flags can come in any order, before or after the app name. The one exception is `exec`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
 
@@ -699,7 +699,7 @@ Remove one with `berthy secret rm <NAME> -e prod --config $CFG` (`delete` also w
 
 #### What Berthy does at a terminal
 
-When standard input is a terminal, `berthy secret set` first reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. A piped value skips all of this: no guide, no prompt and no check.
+When standard input is a terminal, `berthy secret set` first reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. If `berthy.yml` is there but does not load, Berthy prints `manifest not loaded: <reason>`, still asks for the value, and skips the check, which needs the manifest. A piped value skips all of this: no guide, no prompt and no check.
 
 - **Guide.** For `--registry ghcr.io`, Berthy says the secret is the password it uses to pull images from ghcr.io, and prints a link to GitHub's form for a classic token with only `read:packages` selected and the note `berthy-<project>-<env>`. GitHub's container registry accepts only classic tokens, not fine-grained ones. For any other `--registry HOST` it prints one line saying what the secret is, with no link. For the secret that `ingress.cloudflare.api_token_secret` names, it prints a link to Cloudflare's token form with the permissions filled in ([step 7](#step-7-put-it-on-the-internet)).
 - **Hidden prompt.** It prints `Value of NAME (hidden):` and reads the value without showing it. Ctrl-C at the prompt cancels the command with exit code `130` and stores nothing. An empty value is refused with `no value entered`.
@@ -1369,7 +1369,7 @@ alerts:
 | `reminder` | How often to repeat while a check keeps failing. `0s` turns reminders off. | `4h` |
 
 ```bash
-printf '%s' "$BOT_TOKEN" | berthy secret set TELEGRAM_BOT_TOKEN -e prod --config $CFG
+berthy secret set TELEGRAM_BOT_TOKEN -e prod --config $CFG
 berthy alerts test -e prod --config $CFG
 ```
 
@@ -1545,8 +1545,8 @@ backups:
 Create a storage credential limited to the backup bucket, store it, and consider a retention lock on the bucket so a compromised server cannot delete the history:
 
 ```bash
-printf '%s' "$S3_KEY"    | berthy secret set S3_ACCESS_KEY -e prod --config $CFG
-printf '%s' "$S3_SECRET" | berthy secret set S3_SECRET_KEY -e prod --config $CFG
+berthy secret set S3_ACCESS_KEY -e prod --config $CFG
+berthy secret set S3_SECRET_KEY -e prod --config $CFG
 ```
 
 A backup of a volume the app does not mount is refused, and a backup of an app that is not deployed is not part of the configuration.
@@ -2052,7 +2052,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
-| `secret set <NAME>` | admin | `--dry-run`, `--registry`; the value on standard input | Store a secret. |
+| `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. |
 | `secret list` | admin | none | List secret names (never values). |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
 | `restore <key>` | admin | `--dry-run`, `--request-id`, `--into` (required) | Restore a backup into a new volume. |
