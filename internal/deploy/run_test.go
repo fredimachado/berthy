@@ -101,7 +101,7 @@ const runDigest = "example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 func runManifest(roles ...string) manifest.Manifest {
 	one := 1
-	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Env: manifest.Env{Plain: map[string]string{"GREETING": "hi"}, Secret: []string{"TOKEN"}}, Roles: map[string]manifest.Role{}}}}
+	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Env: manifest.Env{Plain: map[string]string{"GREETING": "hi"}, Secret: []manifest.SecretVar{{Var: "TOKEN", Secret: "TOKEN"}}}, Roles: map[string]manifest.Role{}}}}
 	for _, r := range roles {
 		m.Apps["web"].Roles[r] = manifest.Role{Replicas: &one, Resources: &manifest.Resources{CPU: "0.5", Memory: "64M"}}
 	}

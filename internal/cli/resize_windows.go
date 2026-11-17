@@ -4,6 +4,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"syscall"
 	"time"
 )
 
@@ -34,3 +36,6 @@ func terminalResizes(ctx context.Context, fd uintptr) <-chan struct{} {
 	}()
 	return events
 }
+
+// terminationSignals are the signals that end the CLI while the terminal is raw. Windows has SIGTERM for Notify's purposes only.
+var terminationSignals = []os.Signal{syscall.SIGTERM}
