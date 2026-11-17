@@ -88,6 +88,27 @@ func TestMetricsURL(t *testing.T) {
 	}
 }
 
+func TestLogsURL(t *testing.T) {
+	ok := map[string]string{
+		"http://10.0.0.5:4318":            "http://10.0.0.5:4318/v1/logs",
+		"http://10.0.0.5:4318/":           "http://10.0.0.5:4318/v1/logs",
+		"http://10.0.0.5:4318/v1/logs":    "http://10.0.0.5:4318/v1/logs",
+		"http://10.0.0.5:4318/v1/metrics": "http://10.0.0.5:4318/v1/logs",
+		"https://otel.example.com/otlp/":  "https://otel.example.com/otlp/v1/logs",
+	}
+	for in, want := range ok {
+		got, err := LogsURL(in)
+		if err != nil || got != want {
+			t.Errorf("%s: got %s, %v; want %s", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "ftp://collector:4318", "http://user:pass@collector:4318", "http://collector:4318?token=1", "collector:4318"} {
+		if got, err := LogsURL(in); err == nil {
+			t.Errorf("%q accepted as %s", in, got)
+		}
+	}
+}
+
 func TestEndpointTargetHasNoPath(t *testing.T) {
 	if got := endpointTarget("https://otel.example.com:4318/otlp/v1/metrics"); got != "https://otel.example.com:4318" {
 		t.Fatalf("target %s", got)

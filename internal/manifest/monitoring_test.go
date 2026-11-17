@@ -168,3 +168,29 @@ func TestMonitoringDefaultsAndAccessors(t *testing.T) {
 		t.Fatal("zero probe should use the default failure limit")
 	}
 }
+
+func TestTelegramDeploysDefaultsToFailedAndTakesAllOrNone(t *testing.T) {
+	telegram := func(extra string) string {
+		return `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"` + extra + `}}`
+	}
+	for extra, want := range map[string]string{
+		``:                    "failed",
+		`,"deploys":"failed"`: "failed",
+		`,"deploys":"all"`:    "all",
+		`,"deploys":"none"`:   "none",
+	} {
+		m, err := DecodeJSON([]byte(monitoringManifest(telegram(extra))))
+		if err != nil {
+			t.Errorf("%q refused: %v", extra, err)
+			continue
+		}
+		if got := m.Alerts.Telegram.Deploys; got != want {
+			t.Errorf("%q: deploys %q, want %q", extra, got, want)
+		}
+	}
+	for _, extra := range []string{`,"deploys":"always"`, `,"deploys":"ALL"`, `,"deploys":"success"`, `,"deploys":true`} {
+		if _, err := DecodeJSON([]byte(monitoringManifest(telegram(extra)))); err == nil {
+			t.Errorf("%q accepted", extra)
+		}
+	}
+}

@@ -500,7 +500,7 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
 8. **Record and tidy.** Write the deploy record, prune old images, release the lock.
 
-If step 4 fails, the agent rolls back to the previous digest, records the deploy as failed, and sends an alert.
+If step 4 fails, the agent rolls back to the previous digest and records the deploy as failed. Whether anyone is told depends on `alerts.telegram.deploys` (see Alerts): by default a failed deploy sends one Telegram message.
 
 ### When a deploy fails
 
@@ -930,6 +930,7 @@ The agent shows what is happening now and raises alerts. History is kept by an O
 - Sampled every 10 seconds (proposed).
 - The last hour is held in memory for `stats` and the TUI. Nothing is written to disk.
 - Samples are exported over OpenTelemetry when the manifest names an endpoint. Without one, Berthy still shows live metrics and the last hour.
+- Operations are exported too, as log records (see below).
 
 ```yaml
 telemetry:
@@ -939,6 +940,8 @@ telemetry:
 
 - `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form, `name=value,name=value`. Backends that require authorization need it.
 - The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there.
+- With an endpoint, the agent also sends **two log records for every operation, of every kind** (deploy, rollback, restart, scale, exec, run, remove and the rest): one when the operation is admitted and one when it ends. They go to the endpoint's `/v1/logs` as OTLP protobuf over HTTP, with the same headers and the same resource attributes as the metrics (`service.name=berthy-agent`, `deployment.environment.name`, `host.name`). The body reads `<kind> started` or `<kind> <state>`, such as `deploy started` and `deploy rolled back`. The severity is INFO, and WARN when the operation ended as `failed`, `rolled_back`, `interrupted` or `recovery_required`. The attributes are `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version` (the tag, or the short digest), `berthy.image.digest` (`sha256:` and the full digest), `berthy.operation.state` (`running` at the start), `berthy.actor` (the token's name), and, on the end record, `berthy.operation.duration_ms`. An attribute whose value is not known is left out: a restart has no version or digest, and a deploy that failed before its image was resolved has no digest. A record never holds the operation's output or its reason.
+- The records are queued, at most 256, and sent in the background: an operation never waits for the backend. When the queue is full, or the backend does not answer, the records are dropped and the agent logs why, without the headers. Which endpoint they go to is read from the last applied manifest when each batch is sent, so the first deploy that turns telemetry on sends its end record and not its start record, and an operation that ends in the same moment the endpoint is removed sends nothing. An operation that ended as `recovery_required` and is later decided, by recovery or by `recovery resolve`, sends a second end record with the final state.
 
 ### Logs
 
@@ -983,6 +986,7 @@ alerts:
     bot_token_secret: TELEGRAM_BOT_TOKEN    # the name of a secret that holds the bot token
     chat_id: "-1001234567890"               # quote it; or "@channel_name"
     reminder: 4h                            # while a check keeps failing; 0s turns reminders off
+    deploys: failed                         # which deploys and rollbacks send a message: failed (default), all or none
 ```
 
 - A check changes state after it has failed the configured number of times in a row. One success recovers it at once. Unknown results never alert.
@@ -1003,6 +1007,18 @@ alerts:
 
 - Alerts go to Telegram only in v1. Other channels can be added later.
 - An alert is sent when a check changes state, failing or recovering, with a reminder while it stays failing.
+- A deploy or rollback also sends one message when it ends, as `alerts.telegram.deploys` says: `failed` (the default) sends one when it ends as `failed`, `rolled_back`, `interrupted` or `recovery_required`; `all` sends one for a success too; `none` sends none. Which manifest decides: for a deploy, the manifest of the request, so a first deploy that fails still alerts; for a rollback, the manifest of the release it returns to; and for an operation that recovery ends after an agent restart, the last applied manifest. Other kinds of operation never send a message.
+- A message holds the environment, the app, the tag or short digest, who asked (the token's name, or `NAME (approved by NAME)` for an approved request) and how long it took. For a failure it adds the public reason of the operation, never output of the application, and the command that shows the evidence. For example `✅ prod: api v1.4.2 deployed by ci in 48s`, and
+
+  ```
+  🔴 prod: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)
+  by ci in 48s
+  berthy diagnostics <operation id> -e prod
+  ```
+
+  A rollback that succeeds reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`; a failed one `🔴 prod: api rollback to v1.0.1 failed: ...`. An operation that stopped without finishing reads `interrupted`, and one that needs a person reads `needs recovery`.
+- An operation is alerted once. One that ended as `recovery_required` and is later finished by recovery or by `recovery resolve` sends no second message: the channel heard of the failure when it first ended.
+- The message is sent in the background with a 15-second limit. When Telegram cannot be reached, or the bot token secret is missing, the agent logs that the deploy alert was not sent, without the token, and the deploy is unaffected.
 
 ### Peer check
 

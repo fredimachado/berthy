@@ -10,6 +10,9 @@ import (
 // metricsPath is the OTLP/HTTP path that carries metrics.
 const metricsPath = "/v1/metrics"
 
+// logsPath is the OTLP/HTTP path that carries log records.
+const logsPath = "/v1/logs"
+
 // Config is where the exporter sends its data. Endpoint is the OTLP/HTTP base URL, such as http://10.0.0.5:4318, and
 // Headers are added to every request.
 type Config struct {
@@ -82,13 +85,28 @@ func validHeaderValue(s string) bool {
 // already ends with it, and a trailing slash is dropped first. The endpoint must be an http or https URL with a host. It
 // must not carry user information, a query or a fragment, because those could hold credentials.
 func MetricsURL(endpoint string) (string, error) {
+	return signalURL(endpoint, metricsPath, "")
+}
+
+// LogsURL returns the URL that log records are posted to for the same endpoint. The logs path is added unless the endpoint
+// already ends with it; an endpoint that ends with the metrics path is taken as the base of both, so one setting serves both.
+func LogsURL(endpoint string) (string, error) {
+	return signalURL(endpoint, logsPath, metricsPath)
+}
+
+// signalURL puts path on a base endpoint, unless the endpoint already ends with it. When swap is not empty, that path is cut
+// from the end of the endpoint first.
+func signalURL(endpoint, path, swap string) (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", errors.New("OTLP endpoint must be an http or https URL with a host, and no user information, query or fragment")
 	}
 	p := strings.TrimRight(u.Path, "/")
-	if !strings.HasSuffix(p, metricsPath) {
-		p += metricsPath
+	if swap != "" {
+		p = strings.TrimSuffix(p, swap)
+	}
+	if !strings.HasSuffix(p, path) {
+		p += path
 	}
 	u.Path = p
 	u.RawPath = ""

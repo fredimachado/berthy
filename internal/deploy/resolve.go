@@ -77,5 +77,6 @@ func (c *Controller) ResolveRecovery(ctx context.Context, actor Actor, id, reaso
 		return RecoveryReport{}, err
 	}
 	report.Resolved = true
+	c.reportEnd(ctx, op, state.Outcome{State: "failed", Err: "recovery resolved by admin"}, target{})
 	return report, nil
 }

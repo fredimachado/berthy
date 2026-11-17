@@ -140,14 +140,14 @@ func (c *Controller) recoverRestore(ctx context.Context, op state.Operation, int
 		}
 		// A restore that journaled its success finished; only the agent's last write was lost. Its volume is complete.
 		if i.Kind == restoreKind && i.Phase == "finished" && json.Unmarshal(i.Receipt, &r) == nil && r.OK {
-			return c.Store.Finish(ctx, op.ID, state.Outcome{State: "succeeded"})
+			return c.finish(ctx, op, state.Outcome{State: "succeeded"}, target{})
 		}
 	}
 	msg := errRestoreInterrupted
 	if c.cleanRestore(ctx, op, intents) {
 		msg = errRestoreCleaned
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(msg)})
+	return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: string(msg)}, target{})
 }
 
 // cleanRestore reports whether no partial volume of the operation is left.

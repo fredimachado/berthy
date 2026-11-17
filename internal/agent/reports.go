@@ -1,0 +1,210 @@
+package agent
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"berthy/internal/deploy"
+	"berthy/internal/state"
+	"berthy/internal/telemetry"
+)
+
+// Reports tells the alert channel and the telemetry backend about operations. It is the deploy controller's observer. Every
+// operation, of every kind, becomes two log records when telemetry is configured. A deploy or a rollback that ends the way
+// alerts.telegram.deploys says becomes one Telegram message. Neither ever makes an operation wait: the records are queued and
+// the message is sent in the background, and a failure is logged, without the bot token, and dropped.
+type Reports struct {
+	cfg   Config
+	store *state.Store
+	logs  *telemetry.Logs
+	log   func(string)
+	wg    sync.WaitGroup
+}
+
+// NewReports returns the observer of an agent with state. log receives operational messages, which never contain a secret; it
+// may be nil.
+func NewReports(c Config, s *state.Store, log func(string)) *Reports {
+	return &Reports{
+		cfg:   c,
+		store: s,
+		log:   log,
+		logs: &telemetry.Logs{
+			Env:    c.Environment,
+			Config: func(ctx context.Context) (*telemetry.Config, error) { return telemetryConfig(ctx, s) },
+			Log:    log,
+		},
+	}
+}
+
+// Run sends the queued telemetry records until ctx ends, and then the ones still queued.
+func (r *Reports) Run(ctx context.Context) { r.logs.Run(ctx) }
+
+// Wait returns once the Telegram messages that were started have been sent or have failed.
+func (r *Reports) Wait() { r.wg.Wait() }
+
+// OperationStarted queues the start record of an operation.
+func (r *Reports) OperationStarted(_ context.Context, e deploy.OperationEvent) {
+	r.logs.Emit(operationRecord(e, e.Started, e.Kind+" started"))
+}
+
+// OperationEnded queues the end record of an operation and, for a deploy or rollback the policy lets through, sends the
+// message. An operation that already ended as recovery_required and is decided later has its second end recorded and not
+// alerted: the channel heard of the failure when it first ended.
+func (r *Reports) OperationEnded(_ context.Context, e deploy.OperationEvent) {
+	r.logs.Emit(operationRecord(e, e.Ended, e.Kind+" "+strings.ReplaceAll(e.State, "_", " ")))
+	if !alertableKind(e) {
+		return
+	}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.alert(e)
+	}()
+}
+
+// alert sends the message of e when the manifest that decides it asks for one.
+func (r *Reports) alert(e deploy.OperationEvent) {
+	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
+	defer cancel()
+	m := e.Manifest
+	if m == nil {
+		latest, _, err := r.store.LatestManifest(ctx)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return
+		case err != nil:
+			r.logf("deploy alert not sent: " + errAlertConfig.Error())
+			return
+		}
+		m = &latest
+	}
+	tg, _, err := telegramOf(ctx, r.cfg, r.store, *m)
+	if err != nil {
+		r.logf("deploy alert not sent: " + err.Error())
+		return
+	}
+	if tg == nil || !wantsDeployAlert(m.Alerts.Telegram.Deploys, e) {
+		return
+	}
+	if err := tg.Notify(ctx, deployAlertText(e)); err != nil {
+		r.logf("deploy alert not sent: " + err.Error())
+	}
+}
+
+func (r *Reports) logf(msg string) {
+	if r.log != nil {
+		r.log(msg)
+	}
+}
+
+// alertTimeout bounds one message, as the monitor's own messages are bounded.
+const alertTimeout = 15 * time.Second
+
+// alertableKind reports whether the end of e could reach the alert channel at all: a deploy or a rollback, and not the later
+// end of an operation that was reported when it first ended as recovery_required.
+func alertableKind(e deploy.OperationEvent) bool {
+	return (e.Kind == "deploy" || e.Kind == "rollback") && !e.Resumed
+}
+
+// wantsDeployAlert is the policy of alerts.telegram.deploys: failed (also when empty) sends a message when a deploy or
+// rollback ended as failed, rolled_back, interrupted or recovery_required, all sends one for a success too, and none sends
+// none.
+func wantsDeployAlert(deploys string, e deploy.OperationEvent) bool {
+	if !alertableKind(e) {
+		return false
+	}
+	switch deploys {
+	case "none":
+		return false
+	case "all":
+		return true
+	}
+	return e.State != "succeeded"
+}
+
+// deployAlertText is the message of a finished deploy or rollback: the environment, the app and its version, who asked, and
+// how long it took, and for a failure the public reason and the command that shows the operation's evidence. It holds no
+// output of the application, only the reason the deploy package wrote.
+func deployAlertText(e deploy.OperationEvent) string {
+	version := oneLine(e.Version)
+	head := fmt.Sprintf("%s: %s", oneLine(e.Environment), oneLine(e.App))
+	tail := fmt.Sprintf("by %s in %s", oneLine(e.Actor), e.Ended.Sub(e.Started).Round(time.Second))
+	rollback := e.Kind == "rollback"
+	if e.State == "succeeded" {
+		if rollback {
+			return fmt.Sprintf("✅ %s rolled back to %s %s", head, version, tail)
+		}
+		return fmt.Sprintf("✅ %s %s deployed %s", head, version, tail)
+	}
+	reason := safeReason(e.Reason)
+	if reason == "" {
+		reason = safeOperationError(state.Operation{Err: e.Err})
+	}
+	var what string
+	switch {
+	case rollback && version != "":
+		what = "rollback to " + version
+	case rollback:
+		what = "rollback"
+	default:
+		what = version
+	}
+	outcome := map[string]string{"failed": "failed", "rolled_back": "rolled back", "interrupted": "interrupted", "recovery_required": "needs recovery"}[e.State]
+	if outcome == "" {
+		outcome = e.State
+	}
+	line := "🔴 " + head
+	if what != "" {
+		line += " " + what
+	}
+	line += " " + outcome
+	if reason != "" {
+		line += ": " + reason
+	}
+	return fmt.Sprintf("%s\n%s\nberthy diagnostics %s -e %s", line, tail, oneLine(e.OperationID), oneLine(e.Environment))
+}
+
+// oneLine turns every control character into a space, so a name cannot add a line to a message.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// operationRecord is the log record of one operation start or end. Attributes whose value is unknown are left out.
+func operationRecord(e deploy.OperationEvent, at time.Time, body string) telemetry.LogRecord {
+	rec := telemetry.LogRecord{Time: at, Severity: telemetry.SeverityInfo, Body: body}
+	switch e.State {
+	case "failed", "rolled_back", "interrupted", "recovery_required":
+		rec.Severity = telemetry.SeverityWarn
+	}
+	for _, a := range [][2]string{
+		{"berthy.environment", e.Environment},
+		{"berthy.app", e.App},
+		{"berthy.operation.id", e.OperationID},
+		{"berthy.operation.kind", e.Kind},
+		{"berthy.version", e.Version},
+		{"berthy.image.digest", e.Digest},
+		{"berthy.operation.state", e.State},
+		{"berthy.actor", e.Actor},
+	} {
+		if a[1] != "" {
+			rec.Attrs = append(rec.Attrs, telemetry.String(a[0], a[1]))
+		}
+	}
+	if !e.Ended.IsZero() {
+		rec.Attrs = append(rec.Attrs, telemetry.Int("berthy.operation.duration_ms", e.Ended.Sub(e.Started).Milliseconds()))
+	}
+	return rec
+}
+
+var _ deploy.Observer = (*Reports)(nil)

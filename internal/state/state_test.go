@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func testStore(t *testing.T) (*Store, string, string) {
@@ -353,5 +354,21 @@ func TestResolveRecoveryFinishesStuckOperation(t *testing.T) {
 	}
 	if err = s.ResolveRecovery(ctx, admin, op.ID, "again"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second resolve: %v", err)
+	}
+}
+
+func TestAdmitReturnsWhenTheOperationStarted(t *testing.T) {
+	s, _, _ := testStore(t)
+	before := time.Now().Add(-time.Second)
+	op, _, err := s.Admit(context.Background(), Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Operation(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Started.Before(before) || op.Started.After(time.Now().Add(time.Second)) || !op.Started.Equal(stored.Started) {
+		t.Fatalf("admitted %v, stored %v", op.Started, stored.Started)
 	}
 }

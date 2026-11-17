@@ -176,6 +176,16 @@ func Run(args []string, out, errout io.Writer) int {
 		}
 		if deployment != nil {
 			defer deployment.Store.Close()
+			// The observer is set before recovery, so an operation that recovery ends is reported too.
+			reports := agent.NewReports(c, deployment.Store, func(msg string) { fmt.Fprintln(errout, msg) })
+			deployment.Observer = reports
+			reportsDone := make(chan struct{})
+			go func() {
+				defer close(reportsDone)
+				reports.Run(ctx)
+			}()
+			// Registered after the store's Close, so it runs first: the queued records and messages are sent before the store closes.
+			defer func() { cancel(); <-reportsDone; reports.Wait() }()
 			recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
 			err = deployment.Recover(recoveryCtx)
 			done()

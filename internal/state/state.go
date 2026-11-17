@@ -388,7 +388,8 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if err != nil {
 		return Operation{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO operations(id,environment,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", now(), "", "", "", "", boolInt(a.Modified))
+	started := now()
+	_, err = tx.ExecContext(ctx, `INSERT INTO operations(id,environment,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", started, "", "", "", "", boolInt(a.Modified))
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -405,7 +406,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if err = tx.Commit(); err != nil {
 		return Operation{}, false, err
 	}
-	return Operation{ID: id, Admission: a, State: "running"}, true, nil
+	return Operation{ID: id, Admission: a, State: "running", Started: time.UnixMilli(started).UTC()}, true, nil
 }
 func operationQuery(row *sql.Row) (Operation, error) {
 	var o Operation

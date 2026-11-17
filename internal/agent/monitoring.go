@@ -478,6 +478,12 @@ func telegramFor(ctx context.Context, c Config, s *state.Store) (*monitor.Telegr
 	if err != nil {
 		return nil, 0, errAlertConfig
 	}
+	return telegramOf(ctx, c, s, m)
+}
+
+// telegramOf is telegramFor for the manifest m: the sender it configures, or nil when it sends no alerts, and its reminder
+// interval.
+func telegramOf(ctx context.Context, c Config, s *state.Store, m manifest.Manifest) (*monitor.Telegram, time.Duration, error) {
 	if m.Alerts == nil || m.Alerts.Telegram == nil {
 		return nil, 0, nil
 	}

@@ -136,6 +136,8 @@ type Controller struct {
 	recoverMu sync.Mutex
 	// sessions are the interactive sessions that are open.
 	sessions sessionSet
+	// Observer hears every operation start and end. Nil: nobody is told.
+	Observer Observer
 }
 
 // ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.
@@ -395,18 +397,19 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if err != nil || !created {
 		return op, created, err
 	}
+	c.started(ctx, op, req)
 	switch kind {
 	case "deploy", "rollback":
 		go c.execute(context.Background(), op, actor, req)
 	case "ingress":
 		go func() {
 			outcome := c.runIngress(context.Background(), op, actor, req)
-			_ = c.Store.Finish(context.Background(), op.ID, outcome)
+			_ = c.finish(context.Background(), op, outcome, target{})
 		}()
 	default:
 		go func() {
 			outcome := c.runOperation(context.Background(), op, actor, req)
-			_ = c.Store.Finish(context.Background(), op.ID, outcome)
+			_ = c.finish(context.Background(), op, outcome, target{})
 		}()
 	}
 	return op, true, nil
@@ -441,7 +444,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 		if op.State == "recovery_required" {
 			return ErrRecoveryPending
 		}
-		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after, Reason: reason})
+		return c.finish(ctx, op, state.Outcome{State: "recovery_required", Err: msg, SchemaBefore: before, SchemaAfter: after, Reason: reason}, target{})
 	}
 	hasHooks := false
 	composeRun := false
@@ -476,17 +479,17 @@ func (c *Controller) Recover(ctx context.Context) error {
 		if out.SchemaAfter == "" {
 			out.SchemaAfter = after
 		}
-		return c.Store.Finish(ctx, op.ID, out)
+		return c.finish(ctx, op, out, target{})
 	}
 	if composeRun {
 		// Compose has no compensation: the next deploy converges the project, as up is idempotent.
-		return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(errComposeInterrupted), SchemaBefore: before, SchemaAfter: after})
+		return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: string(errComposeInterrupted), SchemaBefore: before, SchemaAfter: after}, target{})
 	}
 	reason = c.captureInterrupted(ctx, op.ID, intents)
 	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
 		return required("service recovery required")
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after, Reason: reason})
+	return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after, Reason: reason}, target{})
 }
 
 // recordedSchema returns the schema states of an operation, falling back to the versions its finished one-offs journaled.

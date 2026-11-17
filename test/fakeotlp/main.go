@@ -1,10 +1,10 @@
-// Command fakeotlp is a loopback OTLP/HTTP metrics receiver for end-to-end checks of the agent's telemetry export. It is a test
-// tool. The agent and the CLI never import it, so it is not part of the production binaries.
+// Command fakeotlp is a loopback OTLP/HTTP metrics and logs receiver for end-to-end checks of the agent's telemetry export. It
+// is a test tool. The agent and the CLI never import it, so it is not part of the production binaries.
 //
-// It accepts POST /v1/metrics, decodes the protobuf request (gzip is accepted), and rewrites a JSON summary after every
-// accepted request. The summary holds counts, names, resource attributes, the names of the request headers, and whether the
-// Authorization header matched the value in the file given by -expect-authorization-file. It never holds a header value, and
-// it never logs one. The file is read once at start and is never printed. There is no control plane: the summary is the record,
+// It accepts POST /v1/metrics and POST /v1/logs, decodes the protobuf request (gzip is accepted), and rewrites a JSON summary
+// after every accepted request. The summary holds counts, names, resource attributes, the body, severity and attributes of
+// each log record, the names of the request headers, and whether the Authorization header matched the value in the file given
+// by -expect-authorization-file. It never holds a header value, and it never logs one. The file is read once at start and is never printed. There is no control plane: the summary is the record,
 // and stopping the process simulates an outage. The listen address must be loopback.
 package main
 
@@ -24,12 +24,15 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -46,6 +49,18 @@ type summary struct {
 	ResourceAttributes   map[string]string `json:"resource_attributes"`
 	MetricNames          []string          `json:"metric_names"`
 	DataPoints           int               `json:"data_points"`
+	// Logs are the log records received, in order, up to maxLogs.
+	Logs []logEntry `json:"logs"`
+}
+
+// maxLogs bounds the log records the summary keeps.
+const maxLogs = 1000
+
+// logEntry is one log record: its body and severity text, and its attributes with integer values written in decimal.
+type logEntry struct {
+	Body       string            `json:"body"`
+	Severity   string            `json:"severity"`
+	Attributes map[string]string `json:"attributes"`
 }
 
 // receiver serves the metrics endpoint and keeps its summary.
@@ -97,7 +112,7 @@ func run(args []string, logw io.Writer) int {
 		summaryPath: *summaryPath,
 		logw:        logw,
 		now:         time.Now,
-		sum:         summary{ResourceAttributes: map[string]string{}, MetricNames: []string{}, HeaderNames: []string{}},
+		sum:         summary{ResourceAttributes: map[string]string{}, MetricNames: []string{}, HeaderNames: []string{}, Logs: []logEntry{}},
 		names:       map[string]bool{},
 	}
 	if err := rc.writeSummary(); err != nil {
@@ -156,13 +171,28 @@ func readExpected(path string) (string, error) {
 }
 
 func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost || r.URL.Path != "/v1/metrics" {
+	if r.Method != http.MethodPost || (r.URL.Path != "/v1/metrics" && r.URL.Path != "/v1/logs") {
 		http.NotFound(w, r)
 		return
 	}
 	body, err := readBody(w, r)
 	if err != nil {
 		http.Error(w, "unreadable request", http.StatusBadRequest)
+		return
+	}
+	if r.URL.Path == "/v1/logs" {
+		var req collogspb.ExportLogsServiceRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			http.Error(w, "not OTLP protobuf", http.StatusBadRequest)
+			return
+		}
+		if err := rc.recordLogs(r, &req); err != nil {
+			fmt.Fprintln(rc.logw, "summary write failed:", err)
+			http.Error(w, "summary unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	var req colmetricspb.ExportMetricsServiceRequest
@@ -200,11 +230,7 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 func (rc *receiver) record(r *http.Request, req *colmetricspb.ExportMetricsServiceRequest) error {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	rc.sum.Requests++
-	rc.sum.LastRequest = rc.now().UTC()
-	rc.sum.HeaderNames = headerNames(r.Header)
-	got := r.Header.Get("Authorization")
-	rc.sum.AuthorizationMatched = got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(rc.expected)) == 1
+	rc.touch(r)
 	for _, rm := range req.GetResourceMetrics() {
 		for _, kv := range rm.GetResource().GetAttributes() {
 			rc.sum.ResourceAttributes[kv.GetKey()] = kv.GetValue().GetStringValue()
@@ -219,6 +245,52 @@ func (rc *receiver) record(r *http.Request, req *colmetricspb.ExportMetricsServi
 	rc.sum.MetricNames = slices.Sorted(maps.Keys(rc.names))
 	fmt.Fprintf(rc.logw, "%s accepted request %d\n", rc.sum.LastRequest.Format(time.RFC3339Nano), rc.sum.Requests)
 	return rc.writeSummary()
+}
+
+// touch counts a request and notes its header names and whether its Authorization value matched. The caller holds rc.mu.
+func (rc *receiver) touch(r *http.Request) {
+	rc.sum.Requests++
+	rc.sum.LastRequest = rc.now().UTC()
+	rc.sum.HeaderNames = headerNames(r.Header)
+	got := r.Header.Get("Authorization")
+	rc.sum.AuthorizationMatched = got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(rc.expected)) == 1
+}
+
+// recordLogs adds one accepted logs request to the summary and rewrites the summary file.
+func (rc *receiver) recordLogs(r *http.Request, req *collogspb.ExportLogsServiceRequest) error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.touch(r)
+	for _, rl := range req.GetResourceLogs() {
+		for _, kv := range rl.GetResource().GetAttributes() {
+			rc.sum.ResourceAttributes[kv.GetKey()] = kv.GetValue().GetStringValue()
+		}
+		for _, sl := range rl.GetScopeLogs() {
+			for _, rec := range sl.GetLogRecords() {
+				if len(rc.sum.Logs) >= maxLogs {
+					continue
+				}
+				attrs := map[string]string{}
+				for _, kv := range rec.GetAttributes() {
+					attrs[kv.GetKey()] = attributeText(kv.GetValue())
+				}
+				rc.sum.Logs = append(rc.sum.Logs, logEntry{Body: rec.GetBody().GetStringValue(), Severity: rec.GetSeverityText(), Attributes: attrs})
+			}
+		}
+	}
+	fmt.Fprintf(rc.logw, "%s accepted request %d\n", rc.sum.LastRequest.Format(time.RFC3339Nano), rc.sum.Requests)
+	return rc.writeSummary()
+}
+
+// attributeText writes a string or integer attribute value as text. Any other kind gives an empty text.
+func attributeText(v *commonpb.AnyValue) string {
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return x.StringValue
+	case *commonpb.AnyValue_IntValue:
+		return strconv.FormatInt(x.IntValue, 10)
+	}
+	return ""
 }
 
 // headerNames returns the sorted names of the headers, never their values.

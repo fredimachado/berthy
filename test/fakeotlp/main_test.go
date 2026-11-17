@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
@@ -220,4 +222,75 @@ func writeFile(t *testing.T, path, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// logsBody returns an OTLP logs request with two records: a deploy start and a failed end.
+func logsBody(t *testing.T) []byte {
+	t.Helper()
+	str := func(k, v string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	req := &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{str("service.name", "berthy-agent")}},
+		ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{
+			{Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "deploy started"}}, SeverityText: "INFO", Attributes: []*commonpb.KeyValue{str("berthy.operation.id", "op1"), str("berthy.operation.state", "running")}},
+			{Body: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "deploy failed"}}, SeverityText: "WARN", Attributes: []*commonpb.KeyValue{str("berthy.operation.id", "op1"), {Key: "berthy.operation.duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 48000}}}}},
+		}}},
+	}}}
+	b, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestAcceptsLogsAndRecordsTheirBodySeverityAndAttributes(t *testing.T) {
+	rc, summaryPath := newTestReceiver(t)
+	srv := httptest.NewServer(rc)
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/logs", bytes.NewReader(logsBody(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("Authorization", testExpected)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	s := readSummary(t, summaryPath)
+	if s.Requests != 1 || !s.AuthorizationMatched || s.ResourceAttributes["service.name"] != "berthy-agent" {
+		t.Fatalf("summary %+v", s)
+	}
+	if len(s.Logs) != 2 {
+		t.Fatalf("logs %+v", s.Logs)
+	}
+	first, second := s.Logs[0], s.Logs[1]
+	if first.Body != "deploy started" || first.Severity != "INFO" || first.Attributes["berthy.operation.id"] != "op1" || first.Attributes["berthy.operation.state"] != "running" {
+		t.Fatalf("first %+v", first)
+	}
+	if second.Body != "deploy failed" || second.Severity != "WARN" || second.Attributes["berthy.operation.duration_ms"] != "48000" {
+		t.Fatalf("second %+v", second)
+	}
+	if len(s.MetricNames) != 0 || s.DataPoints != 0 {
+		t.Fatalf("a logs request counted as metrics: %+v", s)
+	}
+	raw, _ := os.ReadFile(summaryPath)
+	if strings.Contains(string(raw), "TEST-ONLY-FAKEOTLP-7") {
+		t.Fatal("the summary holds the authorization value")
+	}
+
+	bad, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/logs", strings.NewReader("not protobuf"))
+	resp, err = http.DefaultClient.Do(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("garbage answered %d", resp.StatusCode)
+	}
 }

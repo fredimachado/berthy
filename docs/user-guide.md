@@ -817,7 +817,7 @@ On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd.
 | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | `destinations.offsite` | A backup runs, including the pre-deploy backup hook ([step 10](#step-10-backups-and-restore)). |
 | `CLOUDFLARE_API_TOKEN` | `ingress.cloudflare.api_token_secret` | `ingress apply`, and deploying an app that has `hostnames` ([step 7](#step-7-put-it-on-the-internet)). |
 | `TELEGRAM_BOT_TOKEN` | `alerts.telegram.bot_token_secret` | Sending alerts ([step 8](#step-8-keep-it-healthy)). |
-| `OTLP_HEADERS` | `telemetry.headers_secret` | Exporting metrics to a backend that needs authorization. |
+| `OTLP_HEADERS` | `telemetry.headers_secret` | Exporting metrics and operation records to a backend that needs authorization. |
 
 **A deploy stops before changing anything if a secret it lists has no value.** You find out at once, not halfway through a rollout.
 
@@ -1553,6 +1553,7 @@ alerts:
     bot_token_secret: TELEGRAM_BOT_TOKEN
     chat_id: "-1001234567890"
     reminder: 4h
+    deploys: failed
 ```
 
 | Key | Meaning | Default |
@@ -1560,6 +1561,7 @@ alerts:
 | `bot_token_secret` | The name of the secret that holds the bot token. | required |
 | `chat_id` | A numeric chat id, or `@channel_name`. Quote it. | required |
 | `reminder` | How often to repeat while a check keeps failing. `0s` turns reminders off. | `4h` |
+| `deploys` | Which deploys and rollbacks send a message when they end: `failed`, `all` or `none` (see below). | `failed` |
 
 ```bash
 berthy secret set TELEGRAM_BOT_TOKEN -e prod
@@ -1567,6 +1569,28 @@ berthy alerts test -e prod
 ```
 
 `alerts test` sends a test message (it needs a `deploy` token and has no dry run: it refuses `--dry-run`). An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing"). Telegram is the only channel in v1.
+
+##### Deploy messages
+
+A check is not the only thing that sends a message. Nobody hears about a deploy unless they ran it, so the channel hears about deploys and rollbacks too, as `deploys` says:
+
+| `deploys` | A message when a deploy or rollback ends as |
+| --- | --- |
+| `failed` (default) | `failed`, `rolled_back`, `interrupted` or `recovery_required` |
+| `all` | the same, and `succeeded` |
+| `none` | never |
+
+A message names the environment, the app, the tag (or the short digest), who asked (the name of the token) and how long it took. A failure also gives the reason Berthy recorded, the same line `berthy history` shows, and the command to run next. It never holds output of your application.
+
+```
+✅ prod: api v1.4.2 deployed by ci in 48s
+
+🔴 prod: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)
+by ci in 48s
+berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod
+```
+
+`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback, the manifest of the release it returns to; after an agent restart, the last applied one. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If Telegram cannot be reached, the agent logs it and the deploy is not affected.
 
 #### Built-in conditions
 
@@ -1630,7 +1654,7 @@ backup:main-db   ok     2026-11-16T10:30:00Z  last success 3h ago, 38 MiB
 
 `doctor` (step 1) shows the same state for the agent itself.
 
-#### Metrics export
+#### Metrics and deploy events export
 
 The agent shows live metrics and the last hour without any backend. For history, export them over OpenTelemetry:
 
@@ -1641,6 +1665,8 @@ telemetry:
 ```
 
 `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form (`name=value,name=value`), for backends that need authorization. The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there. `doctor` shows a `telemetry` check.
+
+With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the last applied manifest, so the deploy that first turns telemetry on sends its end record only.
 
 ---
 
@@ -2338,7 +2364,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `backups` | map | none | Volume backups. |
 | `destinations` | map | none | Object storage for backups and state backups. |
 | `state_backup` | map | none | Snapshots of the agent's state. |
-| `telemetry` | map | none | OpenTelemetry export. |
+| `telemetry` | map | none | OpenTelemetry export of metrics and operation records. |
 | `probes` | map | none | Scheduled checks. |
 | `peers` | map | none | Other agents to watch. |
 | `alerts` | map | none | Where alerts go. |
@@ -2426,7 +2452,7 @@ One of `http`, `tcp` or `service` (`app`, `role`, `port`, `path`), plus `expect_
 
 #### `peers`, `alerts`, `telemetry`
 
-`peers.<name>`: a base URL with host and port and no path. `alerts.telegram`: `bot_token_secret`, `chat_id`, `reminder`. `telemetry`: `otlp_endpoint` (required), `headers_secret`.
+`peers.<name>`: a base URL with host and port and no path. `alerts.telegram`: `bot_token_secret`, `chat_id`, `reminder`, `deploys` (`failed`, `all` or `none`; default `failed`). `telemetry`: `otlp_endpoint` (required), `headers_secret`.
 
 #### `ingress.cloudflare`
 

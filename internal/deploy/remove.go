@@ -609,5 +609,5 @@ func (c *Controller) recoverRemove(ctx context.Context, op state.Operation, inte
 	if op.Kind == "destroy" {
 		interrupted = errDestroyInterrupted
 	}
-	return c.Store.Finish(ctx, op.ID, state.Outcome{State: "interrupted", Err: string(interrupted)})
+	return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: string(interrupted)}, target{})
 }

@@ -19,6 +19,7 @@ type roleWork struct {
 
 func (c *Controller) execute(ctx context.Context, op state.Operation, actor Actor, req Request) {
 	var outcome state.Outcome
+	var t target
 	switch {
 	case req.Kind == "rollback" && req.RevertSchema:
 		outcome = c.runSchemaRevert(ctx, op, actor, req)
@@ -29,8 +30,13 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			break
 		}
 		resolved.Kind = "deploy"
-		outcome = c.runDeploy(ctx, op, actor, resolved, true)
+		outcome, t = c.runDeploy(ctx, op, actor, resolved, true)
+		t.Manifest = &resolved.Manifest
+		if t.Tag == "" {
+			t.Tag = resolved.recordTag
+		}
 	default:
+		t.Manifest = &req.Manifest
 		resolved, err := c.resolveKeepVersion(ctx, req)
 		if err != nil {
 			// A public refusal says what to do, as a version that changed since the client read it. Anything else may carry
@@ -42,21 +48,25 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			}
 			break
 		}
-		outcome = c.runDeploy(ctx, op, actor, resolved, false)
+		outcome, t = c.runDeploy(ctx, op, actor, resolved, false)
+		t.Manifest = &resolved.Manifest
 	}
-	_ = c.Store.Finish(context.Background(), op.ID, outcome)
+	_ = c.finish(context.Background(), op, outcome, t)
 }
 
-// runDeploy rolls out req and returns the outcome for the caller to record. A rollback runs no migration steps.
-func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome) {
+// runDeploy rolls out req and returns the outcome for the caller to record, and the image and tag it planned, when it got as
+// far as a plan. A rollback runs no migration steps.
+func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome, planned target) {
 	outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
 	if composeRequest(req) {
-		return c.runCompose(ctx, op, actor, req)
+		outcome = c.runCompose(ctx, op, actor, req)
+		return
 	}
 	p, err := c.plan(ctx, actor, req)
 	if err != nil {
 		return
 	}
+	planned = target{Image: p.Image, Tag: p.Tag}
 	if req.Adopt {
 		plan, bindings, e := c.planAdoption(ctx, req)
 		if e != nil {
@@ -393,7 +403,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.State = "failed"
 		outcome.Err = ingressFailure(publishErr, errIngressPublish)
 	}
-	return outcome
+	return
 }
 
 // boundServiceGone reports whether a bound service was removed: its name and its recorded ID are both unknown to Docker.

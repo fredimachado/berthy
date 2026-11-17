@@ -41,6 +41,8 @@ type Telegram struct {
 	BotTokenSecret string `json:"bot_token_secret" yaml:"bot_token_secret"`
 	ChatID         string `json:"chat_id" yaml:"chat_id"`
 	Reminder       string `json:"reminder,omitempty" yaml:"reminder,omitempty"`
+	// Deploys says which deploys and rollbacks the channel hears about: failed (the default), all, or none.
+	Deploys string `json:"deploys,omitempty" yaml:"deploys,omitempty"`
 }
 
 const (
@@ -49,6 +51,10 @@ const (
 	defaultProbeTimeout  = 5 * time.Second
 	defaultProbeFailures = 3
 	defaultReminder      = 4 * time.Hour
+	// The values of alerts.telegram.deploys.
+	deploysFailed = "failed"
+	deploysAll    = "all"
+	deploysNone   = "none"
 	// minProbeExpectStatus and maxProbeExpectStatus bound the status codes a probe may expect.
 	minProbeExpectStatus = 100
 	maxProbeExpectStatus = 599
@@ -222,6 +228,11 @@ func validateTelegram(t Telegram) error {
 	if !duration(t.Reminder, true) {
 		return fmt.Errorf("alerts.telegram: reminder must be a duration such as 4h, or 0s to disable")
 	}
+	switch t.Deploys {
+	case "", deploysFailed, deploysAll, deploysNone:
+	default:
+		return fmt.Errorf("alerts.telegram: deploys must be failed, all or none")
+	}
 	return nil
 }
 
@@ -274,5 +285,8 @@ func (m *Manifest) defaultsMonitoring() {
 	}
 	if m.Alerts != nil && m.Alerts.Telegram != nil && m.Alerts.Telegram.Reminder == "" {
 		m.Alerts.Telegram.Reminder = defaultReminder.String()
+	}
+	if m.Alerts != nil && m.Alerts.Telegram != nil && m.Alerts.Telegram.Deploys == "" {
+		m.Alerts.Telegram.Deploys = deploysFailed
 	}
 }

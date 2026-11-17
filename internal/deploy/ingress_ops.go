@@ -525,7 +525,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if c.connectorCurrent(ctx, connector, cp.Image, changed) {
 		_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: json.RawMessage(`{"step":"connector unchanged"}`)})
 	} else {
-		outcome = c.runDeploy(ctx, op, actor, connector, false)
+		outcome, _ = c.runDeploy(ctx, op, actor, connector, false)
 		if outcome.State != "succeeded" {
 			return outcome
 		}

@@ -87,7 +87,7 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 		}
 		resolved.Kind = "deploy"
 		// The older code must serve on the newer schema before the schema moves back.
-		out = c.runDeploy(ctx, op, actor, resolved, true)
+		out, _ = c.runDeploy(ctx, op, actor, resolved, true)
 		if out.State != "succeeded" {
 			return out
 		}
