@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -994,6 +995,23 @@ func (m *Manifest) TunnelName(environment string) string {
 		return m.Ingress.Cloudflare.Tunnel
 	}
 	return m.Project + "-" + environment
+}
+
+// ImageRepos returns the sorted, distinct repositories ("acme/api") of the image apps whose images are on registry.
+func (m *Manifest) ImageRepos(registry string) []string {
+	var repos []string
+	for _, app := range m.Apps {
+		if app.Image == "" {
+			continue
+		}
+		named, err := reference.ParseNormalizedNamed(app.Image)
+		if err != nil || reference.Domain(named) != registry {
+			continue
+		}
+		repos = append(repos, reference.Path(named))
+	}
+	slices.Sort(repos)
+	return slices.Compact(repos)
 }
 
 // ConnectorApp returns the image app that runs the managed ingress connector, and the version to deploy:

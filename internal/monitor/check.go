@@ -67,7 +67,7 @@ func ProbeHTTP(ctx context.Context, rawURL string, expect []int) Result {
 	req.Header.Set("User-Agent", probeUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{State: Critical, Detail: failureDetail(err)}
+		return Result{State: Critical, Detail: FailureDetail(err)}
 	}
 	resp.Body.Close()
 	detail := fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -92,7 +92,7 @@ func ProbeTCP(ctx context.Context, addr string) Result {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return Result{State: Critical, Detail: failureDetail(err)}
+		return Result{State: Critical, Detail: FailureDetail(err)}
 	}
 	conn.Close()
 	return Result{State: OK, Detail: "connected"}
@@ -120,7 +120,7 @@ func ProbePeer(ctx context.Context, base string, timeout time.Duration) Result {
 	req.Header.Set("User-Agent", probeUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{State: Critical, Detail: "silent: " + failureDetail(err)}
+		return Result{State: Critical, Detail: "silent: " + FailureDetail(err)}
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -142,8 +142,8 @@ func statusExpected(code int, expect []int) bool {
 	return false
 }
 
-// failureDetail says why a probe got no answer. It never includes the error text, which can echo the address.
-func failureDetail(err error) string {
+// FailureDetail says why a probe got no answer. It never includes the error text, which can echo the address.
+func FailureDetail(err error) string {
 	var netErr net.Error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout():

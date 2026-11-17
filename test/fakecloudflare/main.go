@@ -45,6 +45,7 @@ func run(args []string, logw io.Writer) int {
 	tokenFile := fs.String("token-file", "", "file holding the API token; the token is never printed")
 	zones := fs.String("zones", "", "comma-separated zone names the account holds")
 	statePath := fs.String("state", "", "optional path for a JSON dump of the account, rewritten after every change")
+	tokenExpires := fs.String("token-expires", "", "RFC 3339 time the API token expires at, reported by the verify endpoints; empty for no expiry")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -60,12 +61,22 @@ func run(args []string, logw io.Writer) int {
 		fmt.Fprintln(logw, "-account, -token-file and -zones are required")
 		return 2
 	}
+	var expiry time.Time
+	if *tokenExpires != "" {
+		t, err := parseTokenExpiry(*tokenExpires)
+		if err != nil {
+			fmt.Fprintln(logw, err)
+			return 2
+		}
+		expiry = t
+	}
 	token, err := readToken(*tokenFile)
 	if err != nil {
 		fmt.Fprintln(logw, err)
 		return 2
 	}
 	f := cftest.New(token, *account)
+	f.SetTokenExpiry(expiry)
 	for _, z := range strings.Split(*zones, ",") {
 		if z = strings.TrimSpace(z); z != "" {
 			f.AddZone(z)
@@ -126,6 +137,15 @@ func readToken(path string) (string, error) {
 		return "", errors.New("-token-file is empty")
 	}
 	return token, nil
+}
+
+// parseTokenExpiry reads -token-expires: the RFC 3339 time the API token expires at.
+func parseTokenExpiry(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, errors.New("-token-expires must be an RFC 3339 time")
+	}
+	return t, nil
 }
 
 // newMux routes the Cloudflare API under /client/v4 and the control plane under /_fake/. When statePath is set, the state

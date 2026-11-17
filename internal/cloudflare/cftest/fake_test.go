@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"berthy/internal/cloudflare"
 )
@@ -154,4 +155,58 @@ func TestSnapshotCarriesSeededStateWithoutLoggingIt(t *testing.T) {
 	if len(s.Writes) != 0 || s.ConfigPuts != 0 || s.RecordWrites != 0 {
 		t.Fatalf("seeding was logged as API writes: %+v", s.Writes)
 	}
+}
+
+func TestVerifyReportsTheExpiryOnceSet(t *testing.T) {
+	f := New(testToken, "acct")
+	srv := httptest.NewServer(f.Handler())
+	t.Cleanup(srv.Close)
+	verifyEndpoints := []string{"/client/v4/user/tokens/verify", "/client/v4/accounts/acct/tokens/verify"}
+	check := func(wantExpiry string) {
+		t.Helper()
+		for _, path := range verifyEndpoints {
+			result := verifyResult(t, srv.URL+path)
+			if result["status"] != "active" {
+				t.Fatalf("%s: status %v", path, result["status"])
+			}
+			_, has := result["expires_on"]
+			if wantExpiry == "" && has {
+				t.Fatalf("%s: reports expires_on %v with no expiry set", path, result["expires_on"])
+			}
+			if wantExpiry != "" && result["expires_on"] != wantExpiry {
+				t.Fatalf("%s: expires_on %v, want %q", path, result["expires_on"], wantExpiry)
+			}
+		}
+	}
+	check("")
+	f.SetTokenExpiry(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC))
+	check("2026-12-01T00:00:00Z")
+	f.SetTokenExpiry(time.Time{})
+	check("")
+}
+
+// verifyResult asks a verify endpoint with the test token and returns its result. Any other answer fails the test.
+func verifyResult(t *testing.T, url string) map[string]any {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var env struct {
+		Success bool           `json:"success"`
+		Result  map[string]any `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !env.Success {
+		t.Fatalf("%s: HTTP %d, success %v", url, resp.StatusCode, env.Success)
+	}
+	return env.Result
 }

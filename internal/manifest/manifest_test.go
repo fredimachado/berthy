@@ -337,3 +337,22 @@ func TestBackupScheduleIsValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestImageReposListsTheSortedDistinctRepositoriesOfOneRegistry(t *testing.T) {
+	m := Manifest{Project: "demo", Apps: map[string]App{
+		"api":    {Kind: "image", Image: "ghcr.io/acme/api:1.2"},
+		"worker": {Kind: "image", Image: "ghcr.io/acme/api"},
+		"web":    {Kind: "image", Image: "ghcr.io/acme/web:latest"},
+		"proxy":  {Kind: "image", Image: "nginx"},
+		"shop":   {Kind: "compose", File: "compose.yml"},
+	}}
+	if got := strings.Join(m.ImageRepos("ghcr.io"), ","); got != "acme/api,acme/web" {
+		t.Fatalf("ghcr.io repositories %q, want acme/api,acme/web", got)
+	}
+	if got := strings.Join(m.ImageRepos("docker.io"), ","); got != "library/nginx" {
+		t.Fatalf("docker.io repositories %q, want library/nginx", got)
+	}
+	if got := m.ImageRepos("quay.io"); len(got) != 0 {
+		t.Fatalf("quay.io repositories %v, want none", got)
+	}
+}

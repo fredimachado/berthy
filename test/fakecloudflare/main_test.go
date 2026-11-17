@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"berthy/internal/cloudflare/cftest"
 )
@@ -252,5 +253,30 @@ func TestAPIIsServedUnderTheAgentsBasePath(t *testing.T) {
 	wrong.Body.Close()
 	if wrong.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong token: HTTP %d, want 403", wrong.StatusCode)
+	}
+}
+
+func TestTokenExpiresFlagMustBeATime(t *testing.T) {
+	dir := t.TempDir()
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	args := []string{"-account", "acct", "-token-file", token, "-zones", "example.com", "-token-expires", "soon"}
+	if code := run(args, &out); code != 2 || !strings.Contains(out.String(), "-token-expires must be an RFC 3339 time") {
+		t.Fatalf("exit %d, output %q", code, out.String())
+	}
+}
+
+func TestParseTokenExpiryReadsOnlyRFC3339(t *testing.T) {
+	got, err := parseTokenExpiry("2026-12-01T00:00:00Z")
+	if err != nil || !got.Equal(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("parseTokenExpiry = %v, %v", got, err)
+	}
+	for _, bad := range []string{"soon", "2026-12-01", "2026-12-01 00:00:00Z"} {
+		if _, err := parseTokenExpiry(bad); err == nil {
+			t.Errorf("parseTokenExpiry(%q) accepted", bad)
+		}
 	}
 }

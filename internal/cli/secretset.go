@@ -22,7 +22,6 @@ import (
 	"berthy/internal/registrycheck"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/distribution/reference"
 )
 
 // maxSecretValue is the largest value a secret can have, in bytes.
@@ -100,7 +99,7 @@ func registryCheck(m *manifest.Manifest, registry string) func(context.Context, 
 	if !ok {
 		return nil
 	}
-	repos := imageRepos(m, registry)
+	repos := m.ImageRepos(registry)
 	return func(ctx context.Context, value string) checkResult {
 		if len(repos) == 0 {
 			return checkResult{notes: []string{"not checked: no image app in the manifest pulls from " + registry}}
@@ -121,23 +120,6 @@ func registryCheck(m *manifest.Manifest, registry string) func(context.Context, 
 		}
 		return res
 	}
-}
-
-// imageRepos returns the sorted, distinct repositories of the manifest's image apps whose images are on registry.
-func imageRepos(m *manifest.Manifest, registry string) []string {
-	var repos []string
-	for _, app := range m.Apps {
-		if app.Image == "" {
-			continue
-		}
-		named, err := reference.ParseNormalizedNamed(app.Image)
-		if err != nil || reference.Domain(named) != registry {
-			continue
-		}
-		repos = append(repos, reference.Path(named))
-	}
-	slices.Sort(repos)
-	return slices.Compact(repos)
 }
 
 // roleHostnames returns the sorted, distinct hostnames that the manifest's roles publish.
@@ -177,13 +159,13 @@ func cloudflareCheck(m *manifest.Manifest, env string) func(context.Context, str
 			return checkResult{notes: notes, refusal: why}
 		}
 		if err := cf.VerifyToken(ctx, account); err != nil {
-			if cloudflareRefused(err) {
+			if cloudflare.Refused(err) {
 				return refuse("Cloudflare does not accept this token: it is wrong, expired or disabled")
 			}
 			return unreachable(err)
 		}
 		if _, err := cf.FindTunnel(ctx, account, tunnel); err != nil {
-			if cloudflareRefused(err) {
+			if cloudflare.Refused(err) {
 				return refuse("the token cannot read tunnels in account " + account + ": it needs Account > Cloudflare Tunnel > Edit")
 			}
 			return unreachable(err)
@@ -194,7 +176,7 @@ func cloudflareCheck(m *manifest.Manifest, env string) func(context.Context, str
 		}
 		for _, host := range hosts {
 			if _, err := cf.FindZone(ctx, account, host); err != nil {
-				if cloudflareRefused(err) {
+				if cloudflare.Refused(err) {
 					return refuse("the token sees no zone for " + host + " in account " + account + ": it needs Zone > DNS > Edit on that zone")
 				}
 				return unreachable(err)
@@ -203,18 +185,6 @@ func cloudflareCheck(m *manifest.Manifest, env string) func(context.Context, str
 		}
 		return checkResult{notes: notes}
 	}
-}
-
-// cloudflareRefused reports whether Cloudflare answered and refused the token or the request. Only an answer counts: an
-// inactive token, a hostname whose zone the account does not hold, or an API error with a status below 500 other than 429
-// (rate limiting). A server error, a rate limit, a connection failure, a timeout or a malformed answer means Cloudflare
-// could not answer, so the caller reports the check as not made and the value is stored.
-func cloudflareRefused(err error) bool {
-	if errors.Is(err, cloudflare.ErrTokenInactive) || errors.Is(err, cloudflare.ErrZoneNotFound) {
-		return true
-	}
-	var api *cloudflare.APIError
-	return errors.As(err, &api) && api.Status < 500 && api.Status != http.StatusTooManyRequests
 }
 
 // cloudflareGuide is the guide for the managed ingress API token: a link to Cloudflare's account token form with the

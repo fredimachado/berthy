@@ -43,6 +43,9 @@ type Fake struct {
 	zoneOrder   []string
 	records     map[string][]cloudflare.DNSRecord // by zone id, in creation order
 	writes      []Write                           // successful API changes and refused requests, in order
+
+	// tokenExpires is when the verify endpoints say the token expires. The zero time means no expiry.
+	tokenExpires time.Time
 }
 
 // Write is one change the API made, or one request an injected fault refused, in the order they happened. Kind is
@@ -181,6 +184,13 @@ func (f *Fake) SetTunnelStatus(id, status string, connections int) {
 		})
 	}
 	f.tunnels[id] = t
+}
+
+// SetTokenExpiry makes the verify endpoints report that the token expires at t. A zero t removes the expiry.
+func (f *Fake) SetTokenExpiry(t time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenExpires = t
 }
 
 // SetConfig stores a tunnel's configuration document, replacing any earlier one. An empty cfg removes it.
@@ -335,11 +345,11 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(p) == 3 && p[0] == "user" && p[1] == "tokens" && p[2] == "verify":
 		if allow(w, r, http.MethodGet) {
-			writeResult(w, map[string]string{"status": "active"})
+			f.writeVerify(w)
 		}
 	case len(p) == 4 && p[0] == "accounts" && p[2] == "tokens" && p[3] == "verify":
 		if f.ownAccount(w, p[1]) && allow(w, r, http.MethodGet) {
-			writeResult(w, map[string]string{"status": "active"})
+			f.writeVerify(w)
 		}
 	case len(p) == 3 && p[0] == "accounts" && p[2] == "cfd_tunnel":
 		if f.ownAccount(w, p[1]) {
@@ -366,6 +376,16 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeNotFound(w)
 	}
+}
+
+// writeVerify answers a token verification: the token is active, and it names its expiry when one is set. The caller
+// must hold f.mu.
+func (f *Fake) writeVerify(w http.ResponseWriter) {
+	result := map[string]string{"status": "active"}
+	if !f.tokenExpires.IsZero() {
+		result["expires_on"] = f.tokenExpires.UTC().Format(time.RFC3339)
+	}
+	writeResult(w, result)
 }
 
 // ownAccount answers 404 for any account other than the fake's.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"berthy/internal/cloudflare"
 	"berthy/internal/cloudflare/cftest"
@@ -428,5 +429,102 @@ func TestDeleteTunnelRefusesAnActiveOne(t *testing.T) {
 	}
 	if !reflect.DeepEqual(kinds, []string{"tunnel_delete"}) {
 		t.Fatalf("writes %v", kinds)
+	}
+}
+
+func TestTokenStatusReportsTheExpiryCloudflareNames(t *testing.T) {
+	f, c := newFake(t)
+	expiry := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	f.SetTokenExpiry(expiry)
+	st, err := c.TokenStatus(context.Background(), "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != "active" || !st.Expires.Equal(expiry) {
+		t.Fatalf("token status %+v, want active until %s", st, expiry)
+	}
+}
+
+func TestTokenStatusWithoutAnExpiryIsZero(t *testing.T) {
+	_, c := newFake(t)
+	st, err := c.TokenStatus(context.Background(), "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != "active" || !st.Expires.IsZero() {
+		t.Fatalf("token status %+v, want active with no expiry", st)
+	}
+}
+
+func TestTokenStatusIgnoresAnExpiryItCannotRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":{"status":"active","expires_on":"soon"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &cloudflare.Client{BaseURL: srv.URL + "/client/v4", Token: token}
+	st, err := c.TokenStatus(context.Background(), "acct")
+	if err != nil {
+		t.Fatalf("an unreadable expiry failed the check: %v", err)
+	}
+	if st.Status != "active" || !st.Expires.IsZero() {
+		t.Fatalf("token status %+v, want active with no expiry", st)
+	}
+}
+
+func TestTokenStatusFallsBackToTheAccountEndpointWithItsExpiry(t *testing.T) {
+	f := cftest.New(token, "acct")
+	expiry := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	f.SetTokenExpiry(expiry)
+	h := f.Handler()
+	var userCalls, accountCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/v4/user/tokens/verify":
+			userCalls.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1000,"message":"Invalid API Token"}]}`))
+		case "/client/v4/accounts/acct/tokens/verify":
+			accountCalls.Add(1)
+			h.ServeHTTP(w, r)
+		default:
+			h.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := &cloudflare.Client{BaseURL: srv.URL + "/client/v4", Token: token}
+	st, err := c.TokenStatus(context.Background(), "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userCalls.Load() != 1 || accountCalls.Load() != 1 {
+		t.Fatalf("calls user=%d account=%d", userCalls.Load(), accountCalls.Load())
+	}
+	if st.Status != "active" || !st.Expires.Equal(expiry) {
+		t.Fatalf("token status %+v, want the account endpoint's expiry", st)
+	}
+}
+
+func TestRefusedCountsOnlyAnAnswer(t *testing.T) {
+	wrapped := fmt.Errorf("x: %w", &cloudflare.APIError{Status: http.StatusUnauthorized})
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"inactive token", cloudflare.ErrTokenInactive, true},
+		{"zone not found", cloudflare.ErrZoneNotFound, true},
+		{"unauthorized", &cloudflare.APIError{Status: 401}, true},
+		{"forbidden", &cloudflare.APIError{Status: 403}, true},
+		{"rate limited", &cloudflare.APIError{Status: 429}, false},
+		{"server error", &cloudflare.APIError{Status: 500}, false},
+		{"unavailable", &cloudflare.APIError{Status: 503}, false},
+		{"connection failure", errors.New("dial failed"), false},
+		{"timeout", context.DeadlineExceeded, false},
+		{"wrapped refusal", wrapped, true},
+	}
+	for _, tc := range cases {
+		if got := cloudflare.Refused(tc.err); got != tc.want {
+			t.Errorf("Refused(%s) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

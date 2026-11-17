@@ -218,17 +218,30 @@ func IsManaged(r DNSRecord, env string) bool {
 	return r.Comment == RecordComment(env)
 }
 
+// TokenStatus is what Cloudflare says about the API token a client carries.
+type TokenStatus struct {
+	Status  string    // "active", "disabled" or "expired"
+	Expires time.Time // when the token stops working; zero when Cloudflare names no expiry
+}
+
+// TokenStatus asks Cloudflare about the token. It tries the user endpoint first and falls back to the account
+// endpoint when the token is account-owned.
+func (c *Client) TokenStatus(ctx context.Context, accountID string) (TokenStatus, error) {
+	st, err := c.tokenStatus(ctx, "/user/tokens/verify")
+	if err != nil && userEndpointRefused(err) {
+		st, err = c.tokenStatus(ctx, "/accounts/"+url.PathEscape(accountID)+"/tokens/verify")
+	}
+	return st, err
+}
+
 // VerifyToken checks that the token is active. It tries the user endpoint first and falls back to
 // the account endpoint when the token is account-owned.
 func (c *Client) VerifyToken(ctx context.Context, accountID string) error {
-	status, err := c.tokenStatus(ctx, "/user/tokens/verify")
-	if err != nil && userEndpointRefused(err) {
-		status, err = c.tokenStatus(ctx, "/accounts/"+url.PathEscape(accountID)+"/tokens/verify")
-	}
+	st, err := c.TokenStatus(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	if status != "active" {
+	if st.Status != "active" {
 		return ErrTokenInactive
 	}
 	return nil
@@ -242,14 +255,32 @@ func userEndpointRefused(err error) bool {
 	return api.failed || api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Status == http.StatusNotFound
 }
 
-func (c *Client) tokenStatus(ctx context.Context, path string) (string, error) {
+func (c *Client) tokenStatus(ctx context.Context, path string) (TokenStatus, error) {
 	var out struct {
-		Status string `json:"status"`
+		Status    string `json:"status"`
+		ExpiresOn string `json:"expires_on"`
 	}
 	if err := c.call(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
-		return "", err
+		return TokenStatus{}, err
 	}
-	return out.Status, nil
+	st := TokenStatus{Status: out.Status}
+	// An expiry Berthy cannot read is no expiry: a wrong claim is worse than none, and the check must not fail over it.
+	if t, err := time.Parse(time.RFC3339, out.ExpiresOn); err == nil {
+		st.Expires = t
+	}
+	return st, nil
+}
+
+// Refused reports whether Cloudflare answered and refused the token or the request. Only an answer counts: an inactive
+// token, a hostname whose zone the account does not hold, or an API error with a status below 500 other than 429 (rate
+// limiting). A server error, a rate limit, a connection failure, a timeout or a malformed answer means Cloudflare could
+// not be asked, so the caller must treat the check as "Cloudflare could not be asked".
+func Refused(err error) bool {
+	if errors.Is(err, ErrTokenInactive) || errors.Is(err, ErrZoneNotFound) {
+		return true
+	}
+	var api *APIError
+	return errors.As(err, &api) && api.Status < 500 && api.Status != http.StatusTooManyRequests
 }
 
 // FindTunnel returns the non-deleted tunnel with exactly this name, or nil when there is none.
