@@ -426,6 +426,15 @@ registries:
 | `protected` | `true` for a protected environment. Usually set in an overlay. Default `false`. |
 | `registries.<host>` | A credential for a private registry. `username` is the user, `password_secret` names the secret that holds the token. A registry with no entry is pulled from anonymously. |
 | `aliases` | Short names for command lines, for people at a terminal. See [Aliases](#aliases). |
+| `min_version` | The oldest Berthy release this manifest works with, such as `0.9.0`. Set it when the manifest uses a key that an older release does not know. See the paragraph below. Default: none. |
+
+**`min_version`** makes an old release say so, instead of refusing the manifest with `invalid request`. Three checks use it:
+
+- The CLI refuses to load a manifest whose `min_version` is above its own release: `this manifest needs Berthy 0.9.0 or newer; this CLI is v0.8.2`. `config validate` makes this check too, without contacting a server.
+- Before the CLI sends a manifest, it asks the agent for its version and refuses an older agent: `this manifest needs Berthy 0.9.0 or newer; the agent of prod runs v0.8.2: upgrade it with berthy setup`. Upgrade that environment's agent with `berthy setup`.
+- The agent refuses a request whose manifest needs a newer release than the agent's, so a request from another client is refused too. A rollback is not checked, since it runs the manifest the agent stored.
+
+A development build of Berthy has no release version, so it skips every check: a development CLI does not check itself or the agent, and a development agent is not checked. A release CLI does not check a development agent. When an agent refuses a request as invalid and runs an older release than the CLI, the CLI adds the line `the agent runs an older release than this CLI; upgrade it with berthy setup`.
 
 #### Aliases
 
@@ -986,7 +995,7 @@ api  succeeded
 - **Flags that need an app** (`--adopt`, `--replace-existing`, `--allow-recreate`, `--request-id`) are refused with exit `2`.
 - **`--json`** prints one document, `{"apps": [...]}`, with an entry for each app in order: its `app`, its `exit` code and its `result`, which is what `berthy deploy <app> --json` prints. An app that did not run has `"state": "not_run"`.
 
-`depends_on` is a manifest key like the others: an agent that does not know it refuses the manifest. Upgrade the agent with `berthy setup` before you deploy a manifest that uses it.
+`depends_on` is a manifest key like the others: an agent that does not know it refuses the manifest. Upgrade the agent with `berthy setup` before you deploy a manifest that uses it. Set `min_version` in the manifest too, to the release that added the key, so that an old agent is named instead of refusing the manifest with `invalid request` (see [the top of `berthy.yml`](#the-top-of-berthyyml)).
 
 #### What an image deploy does
 
@@ -2253,6 +2262,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `alerts` | map | none | Where alerts go. |
 | `ingress` | map | none | Managed Cloudflare Tunnel. |
 | `aliases` | map | none | Short names for command lines, for people. Not in MCP. See [Aliases](#aliases). |
+| `min_version` | version | none | The oldest Berthy release the manifest works with, such as `0.9.0`. The CLI and the agent refuse a manifest that needs a newer release. See [the top of `berthy.yml`](#the-top-of-berthyyml). |
 
 #### `registries.<host>`
 

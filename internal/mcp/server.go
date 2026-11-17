@@ -547,6 +547,9 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 				}
 				return nil, nil, t.fail("%s", err)
 			}
+			if err := agentclient.CheckAgentVersion(ctx, t.http, t.c.Target, req.Manifest); err != nil {
+				return nil, nil, t.fail("%s", err)
+			}
 			change.path, change.body = "deploys", req
 		}
 	case "backup_run":
@@ -570,7 +573,13 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 		return t.output(change.what, map[string]json.RawMessage{"result": data})
 	case http.StatusAccepted:
 	default:
-		return nil, nil, t.fail("%s", agentclient.Message(status, data))
+		msg := agentclient.Message(status, data)
+		if change.body != nil && agentclient.InvalidRequest(status, data) {
+			if hint := agentclient.OlderAgentHint(ctx, t.http, t.c.Target); hint != "" {
+				msg += "\n" + hint
+			}
+		}
+		return nil, nil, t.fail("%s", msg)
 	}
 	var held struct {
 		ID      string          `json:"approval_id"`

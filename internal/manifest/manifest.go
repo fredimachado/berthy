@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"berthy/internal/schedule"
+	"berthy/internal/version"
 
 	"github.com/distribution/reference"
 	"go.yaml.in/yaml/v3"
@@ -56,6 +57,10 @@ type Manifest struct {
 	Alerts       *Alerts                `json:"alerts,omitempty" yaml:"alerts,omitempty"`
 	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
 	Aliases      map[string]string      `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+
+	// MinVersion is the oldest Berthy release this manifest works with, such as "0.9.0". The CLI and the agent refuse a manifest
+	// that needs a newer release before they send or change anything.
+	MinVersion string `json:"min_version,omitempty" yaml:"min_version,omitempty"`
 
 	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
 	Connector bool `json:"-" yaml:"-"`
@@ -446,6 +451,32 @@ func merge(base, overlay *yaml.Node) {
 		}
 	}
 }
+
+// minVersionPattern is a release version as min_version takes it: a version such as 0.9.0, with an optional "v" and an optional
+// pre-release.
+var minVersionPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
+
+// TooOld is the error of a manifest whose min_version is above the running release: Need is the oldest release the manifest
+// works with, and Have is the running one.
+type TooOld struct{ Need, Have string }
+
+func (e *TooOld) Error() string {
+	return fmt.Sprintf("manifest needs Berthy %s or newer; running %s", e.Need, e.Have)
+}
+
+// CheckVersion reports a *TooOld when running is a release below the manifest's min_version. A manifest without one, or a
+// development build, passes.
+func (m *Manifest) CheckVersion(running string) error {
+	if m.MinVersion == "" {
+		return nil
+	}
+	satisfied, ok := version.Satisfies(running, m.MinVersion)
+	if !ok || satisfied {
+		return nil
+	}
+	return &TooOld{Need: m.MinVersion, Have: running}
+}
+
 func Load(dir, env string) (*Manifest, error) {
 	if !identifier.MatchString(env) {
 		return nil, fmt.Errorf("invalid environment %q", env)
@@ -469,7 +500,18 @@ func Load(dir, env string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return DecodeJSON(data)
+	m, err := DecodeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.CheckVersion(version.Version); err != nil {
+		var old *TooOld
+		if errors.As(err, &old) {
+			return nil, fmt.Errorf("this manifest needs Berthy %s or newer; this CLI is %s", old.Need, old.Have)
+		}
+		return nil, err
+	}
+	return m, nil
 }
 
 // DecodeJSON decodes and validates a manifest sent to the agent. It never sets the connector flag.
@@ -832,6 +874,9 @@ func (m *Manifest) Validate() error {
 	}
 	if m.Telemetry != nil && (m.Telemetry.OTLPEndpoint == "" || m.Telemetry.HeadersSecret != "" && !envName.MatchString(m.Telemetry.HeadersSecret)) {
 		return fmt.Errorf("invalid telemetry")
+	}
+	if m.MinVersion != "" && !minVersionPattern.MatchString(m.MinVersion) {
+		return fmt.Errorf("invalid min_version %q: use a version such as 0.9.0", m.MinVersion)
 	}
 	if err := validateAliases(m.Aliases); err != nil {
 		return err

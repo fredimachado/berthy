@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
+	"berthy/internal/version"
 	"github.com/distribution/reference"
 )
 
@@ -122,8 +124,28 @@ type Controller struct {
 // ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.
 var ErrRecoveryPending = errors.New("recovery still required")
 
-// Plan performs no durable or Docker mutations.
+// checkRequestManifest refuses a manifest whose min_version is above this agent's release. A development build runs any
+// manifest. The refusal says what to do, so it is public.
+func checkRequestManifest(m manifest.Manifest) error {
+	var old *manifest.TooOld
+	if err := m.CheckVersion(version.Version); errors.As(err, &old) {
+		return Refusal(fmt.Sprintf("this manifest needs Berthy %s or newer; this agent runs %s: upgrade it with berthy setup", old.Need, old.Have))
+	}
+	return nil
+}
+
+// Plan performs no durable or Docker mutations. It checks the manifest a client sent. A rollback's manifest is the stored
+// one, so it is not checked, and neither is anything plan calls itself.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if req.Kind != "rollback" {
+		if err := checkRequestManifest(req.Manifest); err != nil {
+			return Plan{}, err
+		}
+	}
+	return c.plan(ctx, actor, req)
+}
+
+func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
 	if req.ReplaceExisting && !actor.Admin {
 		return Plan{}, errReplaceAdmin
 	}
@@ -135,7 +157,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		if err != nil {
 			return Plan{}, err
 		}
-		return c.Plan(ctx, actor, resolved)
+		return c.plan(ctx, actor, resolved)
 	}
 	if req.Kind == "ingress" {
 		return c.planIngress(ctx, actor, req)
@@ -168,7 +190,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 			return Plan{}, err
 		}
 		resolved.Kind = "deploy"
-		return c.Plan(ctx, actor, resolved)
+		return c.plan(ctx, actor, resolved)
 	}
 	if req.Kind != "" && req.Kind != "deploy" && req.Kind != "rollback" {
 		return c.planOperation(ctx, actor, req)
@@ -240,6 +262,11 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	if req.AllowRecreate && !actor.Admin {
 		return state.Operation{}, false, errAllowRecreateAdmin
+	}
+	if req.Kind != "rollback" {
+		if err := checkRequestManifest(req.Manifest); err != nil {
+			return state.Operation{}, false, err
+		}
 	}
 	if req.KeepVersion || req.KeepDigest != "" {
 		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
@@ -625,7 +652,7 @@ func (c *Controller) planSchemaRevert(ctx context.Context, actor Actor, req Requ
 			return Plan{}, err
 		}
 		resolved.Kind = "deploy"
-		if plan, err = c.Plan(ctx, actor, resolved); err != nil {
+		if plan, err = c.plan(ctx, actor, resolved); err != nil {
 			return Plan{}, err
 		}
 		summary.RollbackRelease = sr.Image.ID

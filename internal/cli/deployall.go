@@ -93,7 +93,8 @@ type appliedRelease struct {
 // runDeployAll deploys every app of the manifest, one after another in depends_on order, each as `berthy deploy APP` would.
 // Everything is prepared and checked first, so a request that cannot be made leaves nothing deployed. It stops at the first
 // app that does not succeed. With --dry-run it plans every app and reports the ones that failed.
-func runDeployAll(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Writer) int {
+	base, prefix, token := target.Base, target.Prefix, target.Token
 	for _, needsApp := range []struct {
 		given bool
 		flag  string
@@ -137,6 +138,10 @@ func runDeployAll(f commandFlags, base *url.URL, prefix, token string, out, erro
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
+	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
+		fmt.Fprintln(errout, e)
+		return 1
+	}
 	if code := checkKeptVersions(ctx, client, base, prefix, token, steps, errout); code != 0 {
 		return code
 	}

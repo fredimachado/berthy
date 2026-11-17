@@ -53,7 +53,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if composeRequest(req) {
 		return c.runCompose(ctx, op, actor, req)
 	}
-	p, err := c.Plan(ctx, actor, req)
+	p, err := c.plan(ctx, actor, req)
 	if err != nil {
 		return
 	}

@@ -73,3 +73,50 @@ func TestReleaseNeedsAVersionStartingWithV(t *testing.T) {
 		t.Fatalf("stamped String() = %q", got)
 	}
 }
+
+func TestCompareOrdersReleaseVersions(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{"0.9.0", "v0.9.0", 0},
+		{"v0.9.0", "0.9.0", 0},
+		{"v0.8.2", "v0.9.0", -1},
+		{"v0.9.0", "v0.8.2", 1},
+		{"v1.0.0-rc.1", "v1.0.0", -1},
+		{"v1.0.0", "v1.0.0-rc.1", 1},
+		{"v1.0.0-rc.2", "v1.0.0-rc.10", -1},
+		{"v1.0.0-alpha", "v1.0.0-1", 1},
+		{"v1.10.0", "v1.9.0", 1},
+		{"v10.0.0", "v9.99.99", 1},
+		{"v1.0.0-rc.1", "v1.0.0-rc.1", 0},
+	} {
+		got, ok := Compare(tc.a, tc.b)
+		if !ok || got != tc.want {
+			t.Errorf("Compare(%q, %q) = %d, %v; want %d, true", tc.a, tc.b, got, ok, tc.want)
+		}
+	}
+}
+
+func TestCompareRefusesWhatIsNotAReleaseVersion(t *testing.T) {
+	for _, v := range []string{"dev", "dev (abc1234)", "", "v1", "v1.2", "vx.y.z", "v1.2.3.4"} {
+		if _, ok := Compare(v, "v0.9.0"); ok {
+			t.Errorf("Compare(%q, v0.9.0) is ok; want not ok", v)
+		}
+		if _, ok := Compare("v0.9.0", v); ok {
+			t.Errorf("Compare(v0.9.0, %q) is ok; want not ok", v)
+		}
+	}
+}
+
+func TestSatisfiesComparesARunningReleaseWithAMinimum(t *testing.T) {
+	if ok, known := Satisfies("v0.9.0", "0.9.0"); !known || !ok {
+		t.Errorf("v0.9.0 satisfies 0.9.0: got %v, %v", ok, known)
+	}
+	if ok, known := Satisfies("v0.8.2", "0.9.0"); !known || ok {
+		t.Errorf("v0.8.2 satisfies 0.9.0: got %v, %v", ok, known)
+	}
+	if _, known := Satisfies("dev (abc1234)", "0.9.0"); known {
+		t.Errorf("a development build is known to satisfy a minimum")
+	}
+}

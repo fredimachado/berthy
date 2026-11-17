@@ -331,7 +331,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	switch cmd {
 	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy":
 		if cmd == "deploy" && len(f.pos) == 0 {
-			return runDeployAll(f, u, prefix, token, out, errout)
+			return runDeployAll(f, target, out, errout)
 		}
 		if cmd != "prune" && cmd != "destroy" && len(f.pos) != 1 || (cmd == "prune" || cmd == "destroy") && len(f.pos) != 0 {
 			fmt.Fprintln(errout, "command requires an app")
@@ -406,6 +406,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 					fmt.Fprintln(errout, "--version does not apply to a compose app")
 					return 2
 				}
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			if e := agentclient.CheckAgentVersion(ctx, client, target, req.Manifest); e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
 			}
@@ -484,6 +488,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		} else {
 			m, e := manifest.Load(f.dir, f.env)
 			if e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
 			}
@@ -586,6 +594,11 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if status != http.StatusOK {
 		fmt.Fprintln(errout, agentclient.Message(status, data))
+		if payload != nil && agentclient.InvalidRequest(status, data) {
+			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
+				fmt.Fprintln(errout, hint)
+			}
+		}
 		return 1
 	}
 	if cmd == "diagnostics" && !f.json {
