@@ -108,7 +108,7 @@ berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
 berthy secret set DATABASE_URL -e prod --config $CFG
 ```
 
-For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`.
+For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`. To replace a token later, run the same `secret set` command again: Berthy keeps the registry, and running services get the new password without a restart.
 
 **5. Deploy.** `prod` is protected, so give the image digest that CI printed, not a tag.
 

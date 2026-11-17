@@ -684,8 +684,8 @@ openssl rand -hex 24 | berthy secret set REDIS_PASSWORD -e prod --config $CFG
 
 Two rules about `--registry`:
 
-- A secret that a manifest's `registries.<host>.password_secret` names **must** be set with `--registry <host>` (`ghcr.io` here). A deploy that finds it set without, or for a different host, refuses to use it.
-- A secret listed in an app's `env.secret` **must not** have `--registry`. A secret is one or the other.
+- A secret that a manifest's `registries.<host>.password_secret` names **must** be set with `--registry <host>` (`ghcr.io` here) when it is first set. A deploy that finds it set without, or for a different host, refuses to use it. Setting it again later needs no `--registry`: Berthy keeps the registry the stored secret has ([rotating a secret](#rotating-a-secret)).
+- A secret listed in an app's `env.secret` **must not** have `--registry`. A secret is one or the other. To turn a registry password into a plain secret, remove it with `berthy secret rm` first, then set it.
 
 Secrets are limited to 64 KiB. For a Compose app, a value cannot contain a line break.
 
@@ -695,12 +695,15 @@ Check what is stored (names only):
 berthy secret list -e prod --config $CFG
 ```
 
-Remove one with `berthy secret rm <NAME> -e prod --config $CFG` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything.
+Remove one with `berthy secret rm <NAME> -e prod --config $CFG` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
 
 #### What Berthy does at a terminal
 
-When standard input is a terminal, `berthy secret set` first reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. If `berthy.yml` is there but does not load, Berthy prints `manifest not loaded: <reason>`, still asks for the value, and skips the check, which needs the manifest. A piped value skips all of this: no guide, no prompt and no check.
+When standard input is a terminal, `berthy secret set` does the steps below in this order. A piped value skips all of them: it makes one request, with no guide, no prompt and no check, and the agent keeps the stored registry.
 
+- **Agent.** First, Berthy asks the agent which secrets it holds. If the agent cannot be reached (`agent connection failed`) or refuses the agent token (for example `agent returned HTTP 401: unauthorized`), the command stops with exit code `1` before the prompt, so you never type a value for nothing.
+- **Replaces.** If NAME is already stored, Berthy says so before the guide. For a registry password it prints `NAME is stored as the password for ghcr.io. The new value replaces it.` For any other secret it prints `NAME is already stored. The new value replaces it.` When `--registry` is omitted, Berthy uses the stored registry for the guide and the check.
+- **Manifest.** Berthy reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. If `berthy.yml` is there but does not load, Berthy prints `manifest not loaded: <reason>`, still asks for the value, and skips the check, which needs the manifest.
 - **Guide.** For `--registry ghcr.io`, Berthy says the secret is the password it uses to pull images from ghcr.io, and prints a link to GitHub's form for a classic token with only `read:packages` selected and the note `berthy-<project>-<env>`. GitHub's container registry accepts only classic tokens, not fine-grained ones. For any other `--registry HOST` it prints one line saying what the secret is, with no link. For the secret that `ingress.cloudflare.api_token_secret` names, it prints a link to Cloudflare's token form with the permissions filled in ([step 7](#step-7-put-it-on-the-internet)).
 - **Hidden prompt.** It prints `Value of NAME (hidden):` and reads the value without showing it. Ctrl-C at the prompt cancels the command with exit code `130` and stores nothing. An empty value is refused with `no value entered`.
 - **Check.** Before it stores the value, Berthy tries the value against the service, from your machine:
@@ -748,7 +751,50 @@ The name `TUNNEL_TOKEN` is reserved for managed ingress. You cannot use it for y
 
 #### Rotating a secret
 
-Set the new value, then redeploy the apps that use it so they pick it up. For `POSTGRES_PASSWORD` that is not enough: the database keeps its old password. You must change it in the database too. `berthy exec` does not work on Compose apps, so do that on the server with Docker:
+Rotate a secret by running `berthy secret set` again with the new value. At a terminal, Berthy first says that the new value replaces the stored one. What else happens depends on the kind of secret.
+
+**A registry password.** Replace the token when a deploy fails with `image resolution failed` or `image pull failed`, or when `docker service ps` on a server shows tasks `Rejected`. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`.
+
+```bash
+berthy secret set GHCR_TOKEN -e prod --config $CFG
+```
+
+At a terminal, the output looks like this:
+
+```text
+$ berthy secret set GHCR_TOKEN -e prod --config $CFG
+GHCR_TOKEN is stored as the password for ghcr.io. The new value replaces it.
+GHCR_TOKEN is the password Berthy uses to pull images from ghcr.io.
+Create a GitHub token (classic) that can only read packages:
+  https://github.com/settings/tokens/new?description=berthy-todo-prod&scopes=read%3Apackages
+Value of GHCR_TOKEN (hidden):
+checked: ghcr.io lets this credential pull acme/todo-api
+ok: true
+todo-api-web: now pulls from ghcr.io with the new password
+```
+
+Berthy gives the new password to each running service that pulls from ghcr.io. Swarm keeps its own copy of the pull password with each service, and uses it whenever a server has to pull the image, for example when a second server starts a replica. Berthy updates that copy and restarts nothing: the tasks keep running. A service whose tasks were failing to pull with the old password recovers by itself within seconds. Compose apps are not touched. Nothing runs with their copy of the password, so they get the new one at their next deploy.
+
+The service lines say:
+
+- `NAME: now pulls from ghcr.io with the new password`: the service has the new password.
+- `NAME: not updated (REASON)`: the service still has the old one. The reason is `service update failed`, `bound service unavailable` or `registry credential unavailable`.
+- `services not updated: REASON`: the agent could not look at the services at all.
+- `no running service pulls from ghcr.io yet`: nothing is deployed from that registry yet, so there is nothing to update.
+
+When a service is not updated, or the services could not be looked at, the last line reads `Run the command again to retry the services that were not updated.` The secret is stored in every case, and the command exits with `0`. Running the command again is safe. With `--json`, the command prints the agent's answer instead, such as `{"ok":true,"registry":"ghcr.io","services":[{"name":"todo-api-web","updated":true}]}`.
+
+**The Cloudflare API token.** Set the new token under the same name:
+
+```bash
+berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
+```
+
+Nothing else needs to change. The agent reads the token from its store on every Cloudflare call and keeps no copy, so `ingress apply`, a deploy of an app with `hostnames`, `ingress status` and the tunnel health check use the new token from their next call. At a terminal, Berthy checks the new token with Cloudflare before it stores it. A token that Cloudflare refuses is not stored: `not stored: Cloudflare does not accept this token: it is wrong, expired or disabled`. If Cloudflare cannot be reached from your machine, Berthy prints a `not checked: …` line and stores the token anyway. Replace the token when `ingress apply` or a deploy of an app with `hostnames` fails with `Cloudflare token check failed`, or when `ingress status` shows Cloudflare as `unavailable`.
+
+The running connector is not affected. It runs with the tunnel's own token (`TUNNEL_TOKEN`), not the API token. To replace the tunnel's token, rotate it in Cloudflare's dashboard, then run `berthy ingress apply` to pick up the new one.
+
+**An app secret, such as `POSTGRES_PASSWORD`.** Set the new value with `berthy secret set`, then redeploy the apps that use it so they pick it up. For `POSTGRES_PASSWORD` that is not enough: the database keeps its old password. You must change it in the database too. `berthy exec` does not work on Compose apps, so do that on the server with Docker:
 
 ```bash
 ssh ops@10.0.0.5
@@ -1270,7 +1316,7 @@ berthy ingress apply -e prod --config $CFG
 berthy ingress status -e prod --config $CFG
 ```
 
-When you set the token, Berthy prints a link to Cloudflare's form for an account-owned token, with both permissions filled in and the name `berthy-<project>-<env>`, and reminds you to limit the token to the zones that hold your hostnames. The form needs the Super Administrator role on the account; without that role, create a user token by hand with the same two permissions. Before it stores the token, Berthy checks that Cloudflare accepts it, that it can read tunnels in the account and, when `dns` is on, that it sees the zone of each hostname. That check only reads, so `ingress apply --dry-run` is still the test of the edit rights.
+When you set the token, Berthy prints a link to Cloudflare's form for an account-owned token, with both permissions filled in and the name `berthy-<project>-<env>`, and reminds you to limit the token to the zones that hold your hostnames. The form needs the Super Administrator role on the account; without that role, create a user token by hand with the same two permissions. Before it stores the token, Berthy checks that Cloudflare accepts it, that it can read tunnels in the account and, when `dns` is on, that it sees the zone of each hostname. That check only reads, so `ingress apply --dry-run` is still the test of the edit rights. To replace the token later, see [rotating a secret](#rotating-a-secret).
 
 `ingress apply` creates or repairs the tunnel, deploys the connector, and brings every route and DNS record in line with the manifest. Run it once per environment, and again to change the connector's image or replicas. It needs a `deploy` token. `ingress status` shows the tunnel's health as Cloudflare reports it, the connectors, and each hostname with its target and DNS record.
 
@@ -2052,7 +2098,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
-| `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. |
+| `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. Setting a registry password again keeps its registry and updates the running services. |
 | `secret list` | admin | none | List secret names (never values). |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
 | `restore <key>` | admin | `--dry-run`, `--request-id`, `--into` (required) | Restore a backup into a new volume. |
