@@ -168,12 +168,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid network")
 	}
 	if c.CloudflareAPIURL != "" {
-		if err := validateAPIURL("cloudflare_api_url", c.CloudflareAPIURL); err != nil {
+		if err := ValidateAPIURL("cloudflare_api_url", c.CloudflareAPIURL); err != nil {
 			return err
 		}
 	}
 	if c.TelegramAPIURL != "" {
-		if err := validateAPIURL("telegram_api_url", c.TelegramAPIURL); err != nil {
+		if err := ValidateAPIURL("telegram_api_url", c.TelegramAPIURL); err != nil {
 			return err
 		}
 	}
@@ -197,10 +197,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// validateAPIURL accepts an https base URL, or http for a loopback host, which the in-memory fakes use. It rejects
+// ValidateAPIURL accepts an https base URL, or http for a loopback host, which the in-memory fakes use. It rejects
 // userinfo, queries and fragments, so a token is never sent to an address with credentials in it. name is the config
 // key the error names.
-func validateAPIURL(name, raw string) error {
+func ValidateAPIURL(name, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil || strings.ContainsAny(raw, "?#") {
 		return fmt.Errorf("invalid %s", name)

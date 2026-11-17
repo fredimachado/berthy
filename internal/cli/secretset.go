@@ -1,18 +1,26 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
+	"berthy/internal/agent"
+	"berthy/internal/cloudflare"
 	"berthy/internal/manifest"
+	"berthy/internal/registrycheck"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/distribution/reference"
 )
 
 // maxSecretValue is the largest value a secret can have, in bytes.
@@ -28,10 +36,21 @@ const cloudflareTunnelWritePermission = "c07321b023e944ff818fec44d8203567"
 // cloudflareDNSPermission is Cloudflare's documented short key for the DNS permission.
 const cloudflareDNSPermission = "dns"
 
+// cloudflareURLEnv overrides the Cloudflare API base URL that the check asks. Tests and the end-to-end fixture set it.
+const cloudflareURLEnv = "BERTHY_CLOUDFLARE_API_URL"
+
 // secretGuide is what Berthy knows about a secret before it asks for its value at a terminal.
 type secretGuide struct {
 	// intro is printed before the prompt: what the secret is for and, when Berthy knows one, the link that creates it.
 	intro []string
+	// check tries the value from this machine before it is stored. nil when Berthy has nothing to try.
+	check func(ctx context.Context, value string) checkResult
+}
+
+// checkResult is what trying a value found.
+type checkResult struct {
+	notes   []string // what was checked, or why something could not be; printed either way
+	refusal string   // not empty: the service refused the value, so it is not stored; this says why
 }
 
 // cloudflarePermission is one permission group of a Cloudflare token link.
@@ -54,14 +73,140 @@ func guideFor(m *manifest.Manifest, env, name, registry string) secretGuide {
 			name + " is the password Berthy uses to pull images from ghcr.io.",
 			"Create a GitHub token (classic) that can only read packages:",
 			"  " + link,
-		}}
+		}, check: registryCheck(m, registry)}
 	case registry != "":
-		return secretGuide{intro: []string{name + " is the password Berthy uses to pull images from " + registry + "."}}
+		return secretGuide{
+			intro: []string{name + " is the password Berthy uses to pull images from " + registry + "."},
+			check: registryCheck(m, registry),
+		}
 	case m != nil && m.Ingress != nil && m.Ingress.Cloudflare != nil && m.Ingress.Cloudflare.APITokenSecret == name:
 		c := m.Ingress.Cloudflare
-		return cloudflareGuide(name, token, c.DNS == nil || *c.DNS)
+		g := cloudflareGuide(name, token, c.DNS == nil || *c.DNS)
+		g.check = cloudflareCheck(m, env)
+		return g
 	}
 	return secretGuide{}
+}
+
+// registryCheck returns the check for a registry password: the registry must let the credential pull every repository
+// that an image app of the manifest takes from it. It returns nil when the manifest does not name the registry.
+func registryCheck(m *manifest.Manifest, registry string) func(context.Context, string) checkResult {
+	if m == nil || registry == "" {
+		return nil
+	}
+	reg, ok := m.Registries[registry]
+	if !ok {
+		return nil
+	}
+	repos := imageRepos(m, registry)
+	return func(ctx context.Context, value string) checkResult {
+		if len(repos) == 0 {
+			return checkResult{notes: []string{"not checked: no image app in the manifest pulls from " + registry}}
+		}
+		var res checkResult
+		for _, repo := range repos {
+			probe := registrycheck.Probe{Host: registry, Username: reg.Username, Password: value}
+			err := probe.CanPull(ctx, repo)
+			switch {
+			case err == nil:
+				res.notes = append(res.notes, "checked: "+registry+" lets this credential pull "+repo)
+			case errors.Is(err, registrycheck.ErrDenied):
+				res.refusal = err.Error()
+				return res
+			default:
+				res.notes = append(res.notes, "not checked: "+registry+" could not be asked about "+repo+" from this machine ("+err.Error()+")")
+			}
+		}
+		return res
+	}
+}
+
+// imageRepos returns the sorted, distinct repositories of the manifest's image apps whose images are on registry.
+func imageRepos(m *manifest.Manifest, registry string) []string {
+	var repos []string
+	for _, app := range m.Apps {
+		if app.Image == "" {
+			continue
+		}
+		named, err := reference.ParseNormalizedNamed(app.Image)
+		if err != nil || reference.Domain(named) != registry {
+			continue
+		}
+		repos = append(repos, reference.Path(named))
+	}
+	slices.Sort(repos)
+	return slices.Compact(repos)
+}
+
+// roleHostnames returns the sorted, distinct hostnames that the manifest's roles publish.
+func roleHostnames(m *manifest.Manifest) []string {
+	var hosts []string
+	for _, app := range m.Apps {
+		for _, role := range app.Roles {
+			hosts = append(hosts, role.Hostnames...)
+		}
+	}
+	slices.Sort(hosts)
+	return slices.Compact(hosts)
+}
+
+// cloudflareCheck returns the check for the managed ingress API token. Cloudflare must accept the token and let it read the
+// account's tunnels. When DNS is on, the token must also see the zone of every published hostname.
+func cloudflareCheck(m *manifest.Manifest, env string) func(context.Context, string) checkResult {
+	c := m.Ingress.Cloudflare
+	account := c.AccountID
+	tunnel := m.TunnelName(env)
+	dns := c.DNS == nil || *c.DNS
+	hosts := roleHostnames(m)
+	return func(ctx context.Context, value string) checkResult {
+		base := os.Getenv(cloudflareURLEnv)
+		if base != "" {
+			// A misconfigured override must never receive the token, so it is refused before any request is made.
+			if err := agent.ValidateAPIURL(cloudflareURLEnv, base); err != nil {
+				return checkResult{refusal: err.Error()}
+			}
+		}
+		cf := &cloudflare.Client{BaseURL: base, Token: value}
+		var notes []string
+		unreachable := func(err error) checkResult {
+			return checkResult{notes: append(notes, "not checked: Cloudflare could not be asked from this machine ("+err.Error()+")")}
+		}
+		refuse := func(why string) checkResult {
+			return checkResult{notes: notes, refusal: why}
+		}
+		if err := cf.VerifyToken(ctx, account); err != nil {
+			if cloudflareRefused(err) {
+				return refuse("Cloudflare does not accept this token: it is wrong, expired or disabled")
+			}
+			return unreachable(err)
+		}
+		if _, err := cf.FindTunnel(ctx, account, tunnel); err != nil {
+			if cloudflareRefused(err) {
+				return refuse("the token cannot read tunnels in account " + account + ": it needs Account > Cloudflare Tunnel > Edit")
+			}
+			return unreachable(err)
+		}
+		notes = append(notes, "checked: Cloudflare accepts the token, and it can read tunnels in account "+account)
+		if !dns {
+			return checkResult{notes: notes}
+		}
+		for _, host := range hosts {
+			if _, err := cf.FindZone(ctx, account, host); err != nil {
+				if cloudflareRefused(err) {
+					return refuse("the token sees no zone for " + host + " in account " + account + ": it needs Zone > DNS > Edit on that zone")
+				}
+				return unreachable(err)
+			}
+			notes = append(notes, "checked: the token sees the zone of "+host)
+		}
+		return checkResult{notes: notes}
+	}
+}
+
+// cloudflareRefused reports whether Cloudflare answered and refused, as opposed to not answering at all.
+func cloudflareRefused(err error) bool {
+	var api *cloudflare.APIError
+	return errors.As(err, &api) || errors.Is(err, cloudflare.ErrTokenInactive) || errors.Is(err, cloudflare.ErrZoneNotFound)
 }
 
 // cloudflareGuide is the guide for the managed ingress API token: a link to Cloudflare's account token form with the
@@ -143,7 +288,8 @@ func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
 			fmt.Fprintf(errout, "manifest not loaded: %v\n", err)
 		}
 	}
-	for _, line := range guideFor(m, f.env, name, f.registry).intro {
+	g := guideFor(m, f.env, name, f.registry)
+	for _, line := range g.intro {
 		fmt.Fprintln(errout, line)
 	}
 	fmt.Fprintf(errout, "Value of %s (hidden): ", name)
@@ -157,5 +303,19 @@ func secretValue(f commandFlags, errout io.Writer) (value string, code int) {
 		fmt.Fprintln(errout, "no value entered")
 		return "", 1
 	}
-	return string(line), 0
+	value = string(line)
+	if g.check != nil {
+		// Ctrl-C is not caught here: it ends the process before anything is stored, so an interrupted check stores nothing.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		res := g.check(ctx, value)
+		for _, n := range res.notes {
+			fmt.Fprintln(errout, n)
+		}
+		if res.refusal != "" {
+			fmt.Fprintln(errout, "not stored: "+res.refusal)
+			return "", 1
+		}
+	}
+	return value, 0
 }

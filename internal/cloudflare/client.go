@@ -25,7 +25,8 @@ const ManagedComment = "managed by berthy"
 // ErrZoneNotFound means no zone in the account holds the hostname.
 var ErrZoneNotFound = errors.New("cloudflare zone not found for hostname")
 
-var errTokenInactive = errors.New("cloudflare API token is not active")
+// ErrTokenInactive means Cloudflare answered that the API token is not active.
+var ErrTokenInactive = errors.New("cloudflare API token is not active")
 
 // maxResponse bounds how much of a response body is read.
 const maxResponse = 4 << 20
@@ -228,7 +229,7 @@ func (c *Client) VerifyToken(ctx context.Context, accountID string) error {
 		return err
 	}
 	if status != "active" {
-		return errTokenInactive
+		return ErrTokenInactive
 	}
 	return nil
 }
