@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 )
 
@@ -114,6 +116,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		fmt.Fprintln(errout, err)
 		return 2
 	}
+	var co gitcheck.Checkout
 	steps := make([]deployStep, 0, len(m.Apps))
 	for _, app := range m.DeployOrder() {
 		req := deploy.Request{App: app, Commit: f.commit, DryRun: f.dry}
@@ -127,17 +130,28 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if req.RequestID, err = newRequestID(); err != nil {
 			return 1
 		}
-		if err = agentclient.PrepareDeploy(f.dir, f.env, &req); err != nil {
-			fmt.Fprintf(errout, "app %s: %v (nothing was deployed)\n", app, err)
+		checkout, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
+		if e != nil {
+			fmt.Fprintf(errout, "app %s: %v (nothing was deployed)\n", app, e)
 			return 1
 		}
+		// Every app reads the same base manifest and overlay, so the checkout is one: the files any of the apps reads.
+		co.InWorkTree, co.Head = checkout.InWorkTree, checkout.Head
+		co.Changed = append(co.Changed, checkout.Changed...)
 		step.req = req
 		steps = append(steps, step)
 	}
+	slices.Sort(co.Changed)
+	co.Changed = slices.Compact(co.Changed)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
+	warnCheckout(errout, f.commit, co)
+	if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
+		fmt.Fprintf(errout, "%v (nothing was deployed)\n", e)
+		return 1
+	}
 	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
 		fmt.Fprintln(errout, e)
 		return 1

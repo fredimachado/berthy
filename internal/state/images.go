@@ -119,11 +119,12 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 type HistoryOperation struct {
 	OperationID, Kind, App, Commit, State string
 	SchemaBefore, SchemaAfter, Reason     string
+	Modified                              bool
 	Started                               time.Time
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 	for rows.Next() {
 		var o HistoryOperation
 		var ms int64
-		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason); err != nil {
+		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified); err != nil {
 			return nil, err
 		}
 		o.Started = time.UnixMilli(ms).UTC()

@@ -44,6 +44,8 @@ type historyRow struct {
 	Kind        string    `json:"kind"`
 	State       string    `json:"state"`
 	Reason      string    `json:"reason"`
+	// Modified is set when the deploy came from a checkout with local changes, so Commit does not hold what was deployed.
+	Modified bool `json:"modified"`
 }
 
 // failed is true for a deploy that did not end well.
@@ -53,6 +55,19 @@ func (h historyRow) failed() bool {
 		return h.Reason != ""
 	}
 	return true
+}
+
+// modifiedText marks the commit of a deploy that came from local changes.
+const modifiedText = "(modified)"
+
+// commitText is the commit of the row clipped to n characters, with modifiedText after it when the deploy came from local
+// changes. A row without a commit shows a dash.
+func (h historyRow) commitText(n int) string {
+	text := sanitize(clip(orDash(h.Commit), n))
+	if h.Modified {
+		text += " " + modifiedText
+	}
+	return text
 }
 
 type approvalRow struct {

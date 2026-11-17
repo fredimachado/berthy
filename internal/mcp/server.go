@@ -538,7 +538,7 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 		req := deploy.Request{App: in.ResourceName, Version: in.Version, TargetRelease: in.To, Role: in.Role, RequestID: id, DryRun: in.DryRun}
 		change = changeRequest{path: in.Command, body: req, what: in.Command + " of " + in.ResourceName}
 		if in.Command == "deploy" {
-			if err := agentclient.PrepareDeploy(t.c.ManifestDir, t.c.Target.Env, &req); err != nil {
+			if _, err := agentclient.PrepareDeploy(t.c.ManifestDir, t.c.Target.Env, &req); err != nil {
 				switch {
 				case errors.Is(err, agentclient.ErrVersionRequired):
 					err = errors.New("deploy requires version (the image tag or digest)")

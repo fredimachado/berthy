@@ -44,6 +44,7 @@ type fakeDeployAgent struct {
 	failPlan   map[string]bool  // apps whose dry run is refused
 	undeployed map[string]bool  // apps that have no applied release
 	held       string           // the app whose deploy the agent holds for approval
+	protected  bool             // whether the agent is configured for a protected environment
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -69,6 +70,8 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	const base = "/v1/environments/dev/"
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
+	case r.Method == "GET" && rest == "agent":
+		fmt.Fprintf(w, `{"version":"test","protected":%t}`, f.protected)
 	case r.Method == "POST" && rest == "deploys":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

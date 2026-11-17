@@ -477,15 +477,22 @@ func (m *Manifest) CheckVersion(running string) error {
 	return &TooOld{Need: m.MinVersion, Have: running}
 }
 
+// Files are the names, relative to the manifest directory, of the files Load reads for env: the base manifest, and the overlay
+// of env, which is optional.
+func Files(env string) []string {
+	return []string{"berthy.yml", "berthy." + env + ".yml"}
+}
+
 func Load(dir, env string) (*Manifest, error) {
 	if !identifier.MatchString(env) {
 		return nil, fmt.Errorf("invalid environment %q", env)
 	}
-	base, err := readYAML(filepath.Join(dir, "berthy.yml"), false)
+	names := Files(env)
+	base, err := readYAML(filepath.Join(dir, names[0]), false)
 	if err != nil {
 		return nil, err
 	}
-	overlay, err := readYAML(filepath.Join(dir, "berthy."+env+".yml"), true)
+	overlay, err := readYAML(filepath.Join(dir, names[1]), true)
 	if err != nil {
 		return nil, err
 	}

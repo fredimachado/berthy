@@ -146,7 +146,7 @@ All desired configuration lives in the application's repository as one base mani
 
 - `berthy.yml` holds what is common.
 - `berthy.<environment>.yml` overrides it per environment: replicas, resources, schedules.
-- Every deploy carries the merged manifest from the commit being deployed. Nothing is configured by hand on the server.
+- Every deploy carries the merged manifest from the commit being deployed. Nothing is configured by hand on the server. The commit is `HEAD` of the manifest directory's checkout unless `--commit` gives one, and a deploy whose manifest or Compose files have local changes is recorded as modified, which a protected environment refuses.
 - A top-level `aliases` map in the manifest names command lines for people at a terminal, for example `console: exec api --role web -- bin/console`. The CLI expands them; see "CLI" below.
 - A top-level `min_version` (a release such as `0.9.0`) is the oldest Berthy release the manifest works with. The CLI and the agent refuse a manifest that needs a newer release than theirs. `config validate` checks its format and the CLI's own release, without contacting a server.
 
@@ -208,7 +208,7 @@ apps:
 An environment is one named target: its own server or cluster, agent, overlay, secrets and tokens.
 
 - **No default environment.** Every command names its environment with `-e <name>`. A command that changes something and names no environment is rejected.
-- **Protected environments.** An overlay can set `protected: true`, typically for production. A protected environment rejects every image tag and deploys only by digest, and holds changes requested by AI agents until a person approves them.
+- **Protected environments.** An overlay can set `protected: true`, typically for production. A protected environment rejects every image tag and deploys only by digest, and holds changes requested by AI agents until a person approves them. It refuses a deploy from a checkout whose manifest or Compose files have local changes.
 
 ```yaml
 # berthy.prod.yml
@@ -753,7 +753,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `logs <app>` | Tail or follow logs; `--tail N`, `--follow` (or `-f`), `--since`, `--grep`, `--role`, `--replica` | No |
 | `stats` | Server and container metrics; `--watch` for live, `--since DURATION` for the samples of that time (at most an hour) | No |
 | `df` | Disk space and Docker disk usage | No |
-| `history <app>` | Deploy records, with the reason of each failed deploy | No |
+| `history <app>` | Deploy records, with the reason of each failed deploy; a deploy from local changes is marked `(modified)` next to its commit | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app>` | Block until each service of the app, or of `--role`, has all its replicas running and healthy, or until `--timeout` passes (default 2m, at most 10m; then it exits non-zero). `--healthy` is accepted and changes nothing. A Compose app has no bound services, so it is refused | No |
 | `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, the Compose services whose logs have no size limit, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
@@ -1234,7 +1234,7 @@ In v1, CI pushes deploys to the agent; the agent does not read the repository. A
 ### The deploy step
 
 - A deploy is one command: `berthy deploy api -e dev --version <tag>`. On a protected environment `--version` is the image's digest, `sha256:…`, since a tag is refused.
-- The CLI reads the manifest and Compose files from the checked-out commit and sends them with the commit SHA.
+- The CLI reads the manifest and Compose files from the checkout and sends them with the commit SHA: `HEAD` unless `--commit` gives one (a `--commit` that differs from `HEAD` is kept, with a warning). Inside a git work tree the CLI asks git whether each file it reads (`berthy.yml`, the overlay of the environment and the app's Compose file) is modified, staged, deleted or untracked. If one is, the request carries `modified`, the CLI warns with the file names, and the release and `history` record it. A protected environment refuses such a request with `the manifest has local changes: commit them first`. Ignored files do not count, and outside a git work tree nothing is checked.
 - The command waits for the result and exits non-zero if the deploy fails or rolls back. Later steps, such as tagging a release, then run only after a deploy that succeeded.
 
 ### What stays in CI

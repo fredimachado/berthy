@@ -410,7 +410,8 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 2
 		}
 		if cmd == "deploy" {
-			if e := agentclient.PrepareDeploy(f.dir, f.env, &req); e != nil {
+			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
+			if e != nil {
 				switch {
 				case errors.Is(e, agentclient.ErrVersionRequired):
 					fmt.Fprintln(errout, "deploy requires --version")
@@ -419,6 +420,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 					fmt.Fprintln(errout, "--version does not apply to a compose app")
 					return 2
 				}
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			warnCheckout(errout, f.commit, co)
+			if e := refuseLocalChanges(ctx, client, target, req.Manifest.Protected, co); e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
 			}
@@ -509,6 +515,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 				return 1
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
+			co, e := agentclient.StampCheckout(f.dir, f.env, &req)
+			if e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			warnCheckout(errout, f.commit, co)
+			if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
 			if req.RequestID == "" {
 				if req.RequestID, err = newRequestID(); err != nil {
 					return 1
@@ -625,6 +641,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if cmd == "restore" && f.dry && !f.json {
 		return printRestorePlan(out, errout, data)
+	}
+	if cmd == "history" && !f.json {
+		return printHistory(out, errout, data)
 	}
 	if cmd == "secret" && f.pos[0] == "set" && !f.dry && !f.json {
 		if printSecretSet(out, data) {

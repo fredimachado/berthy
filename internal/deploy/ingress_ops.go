@@ -133,9 +133,9 @@ func (c *Controller) applyRemovable(ctx context.Context, m manifest.Manifest) (f
 	return func(r state.IngressRoute) bool { return !kept[r.App] }, notes, nil
 }
 
-// connectorRequest is the deploy request that runs the connector app. withToken is false only before the tunnel token
-// is stored, so the connector can still be planned.
-func connectorRequest(m manifest.Manifest, commit string, withToken bool) (Request, error) {
+// connectorRequest is the deploy request that runs the connector app, with the commit and checkout flag of from. withToken is
+// false only before the tunnel token is stored, so the connector can still be planned.
+func connectorRequest(m manifest.Manifest, from Request, withToken bool) (Request, error) {
 	app, version, err := m.ConnectorApp()
 	if err != nil {
 		return Request{}, err
@@ -144,7 +144,7 @@ func connectorRequest(m manifest.Manifest, commit string, withToken bool) (Reque
 		app.Env.Secret = nil
 	}
 	synth := manifest.Manifest{Project: m.Project, Network: m.Network, Protected: m.Protected, Registries: m.Registries, Apps: map[string]manifest.App{manifest.ConnectorAppName: app}, Connector: true}
-	return Request{App: manifest.ConnectorAppName, Version: version, Commit: commit, Manifest: synth, Kind: "deploy"}, nil
+	return Request{App: manifest.ConnectorAppName, Version: version, Commit: from.Commit, Modified: from.Modified, Manifest: synth, Kind: "deploy"}, nil
 }
 
 // tokenStored reports whether the connector's tunnel token is already in the secret store.
@@ -417,7 +417,7 @@ func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) 
 	if t.removal {
 		ip.RemoveConnector = true
 	} else {
-		creq, err := connectorRequest(m, req.Commit, c.tokenStored(ctx))
+		creq, err := connectorRequest(m, req, c.tokenStored(ctx))
 		if err != nil {
 			return Plan{}, err
 		}
@@ -487,7 +487,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 		return fail(errIngressConflict)
 	}
 	// The connector must be deployable before anything is created in Cloudflare.
-	preflight, err := connectorRequest(m, req.Commit, c.tokenStored(ctx))
+	preflight, err := connectorRequest(m, req, c.tokenStored(ctx))
 	if err != nil {
 		return fail(err)
 	}
@@ -516,7 +516,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return fail(errTunnelToken)
 	}
-	connector, err := connectorRequest(m, req.Commit, true)
+	connector, err := connectorRequest(m, req, true)
 	if err != nil {
 		return fail(err)
 	}

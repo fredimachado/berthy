@@ -226,16 +226,12 @@ func releaseWhat(h historyRow) string {
 // deployLines is one deploy of the history: when, what, and for a failed one the reason. col is the width of the release label.
 func deployLines(st styles, now time.Time, h historyRow, w, col int) []string {
 	when := fit(agoShort(now, h.Created)+" ago", 9)
-	commit := h.Commit
-	if commit == "" {
-		commit = "-"
-	}
 	if h.failed() {
 		state := h.State
 		if state == "" {
 			state = "failed"
 		}
-		head := st.err.Render(glyphFail+" ") + st.muted.Render(when) + " " + st.err.Render(fit(sanitize(strings.ReplaceAll(state, "_", " ")), 12)) + " " + st.muted.Render(fit("commit "+sanitize(clip(commit, 12)), 19))
+		head := st.err.Render(glyphFail+" ") + st.muted.Render(when) + " " + st.err.Render(fit(sanitize(strings.ReplaceAll(state, "_", " ")), 12)) + " " + st.muted.Render(fit("commit "+sanitize(clip(orDash(h.Commit), 12)), 19)) + modifiedMark(st, h)
 		lines := []string{head}
 		if h.Reason != "" {
 			indent := 4
@@ -244,7 +240,15 @@ func deployLines(st styles, now time.Time, h historyRow, w, col int) []string {
 		return lines
 	}
 	label := fit(sanitize(tagged(h.Tag, releaseWhat(h))), col)
-	return []string{st.ok.Render(glyphOK+" ") + st.muted.Render(when) + " " + st.text.Render(label) + " " + st.muted.Render("commit "+sanitize(clip(commit, 12)))}
+	return []string{st.ok.Render(glyphOK+" ") + st.muted.Render(when) + " " + st.text.Render(label) + " " + st.muted.Render("commit "+sanitize(clip(orDash(h.Commit), 12))) + modifiedMark(st, h)}
+}
+
+// modifiedMark is the mark after the commit of a deploy from local changes, and "" for a clean deploy.
+func modifiedMark(st styles, h historyRow) string {
+	if !h.Modified {
+		return ""
+	}
+	return " " + st.warn.Render(modifiedText)
 }
 
 func jobLines(st styles, now time.Time, j api.JobStatus, w int) []string {

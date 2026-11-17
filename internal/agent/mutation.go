@@ -304,6 +304,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				if r.Tag != "" {
 					row["tag"] = r.Tag
 				}
+				if r.Modified {
+					row["modified"] = true
+				}
 				addSchemaStates(row, r.SchemaBefore, r.SchemaAfter)
 				out = append(out, row)
 			}
@@ -316,6 +319,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
 				if reason := safeReason(op.Reason); reason != "" {
 					row["reason"] = reason
+				}
+				if op.Modified {
+					row["modified"] = true
 				}
 				addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
 				out = append(out, row)

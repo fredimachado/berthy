@@ -72,7 +72,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			outcome.Err = ingressFailure(err, errIngressPublish)
 			return
 		}
-		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Manifest: raw, Bindings: bindings}}
+		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Modified: req.Modified, Manifest: raw, Bindings: bindings}}
 		if ing == nil {
 			return
 		}
@@ -344,7 +344,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			return
 		}
 	}
-	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Manifest: manifestJSON, Bindings: releaseBindings}}
+	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}}
 	barrier, e := json.Marshal(outcome)
 	if e != nil {
 		outcome.State = "recovery_required"

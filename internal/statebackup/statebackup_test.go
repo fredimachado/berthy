@@ -193,7 +193,7 @@ func TestASnapshotIsUploadedWithItsSidecarAndNoKeyOrPlaintext(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(body)
-	if sc.Format != SidecarFormat || sc.Environment != "prod" || sc.SchemaVersion != 13 || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
+	if sc.Format != SidecarFormat || sc.Environment != "prod" || sc.SchemaVersion != 14 || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sidecar %+v for %d bytes", sc, len(body))
 	}
 	if run.Size != sc.Size || run.SHA256 != sc.SHA256 {
@@ -376,7 +376,7 @@ func TestRestoreRebuildsTheStateFromStorageWithTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if rep.Environment != "prod" || rep.SchemaVersion != 13 || !slices.Equal(rep.Secrets, []string{"DB_PASSWORD"}) || rep.Path != filepath.Join(out, "state.db") {
+	if rep.Environment != "prod" || rep.SchemaVersion != 14 || !slices.Equal(rep.Secrets, []string{"DB_PASSWORD"}) || rep.Path != filepath.Join(out, "state.db") {
 		t.Fatalf("report: %+v", rep)
 	}
 	if runtime.GOOS != "windows" {

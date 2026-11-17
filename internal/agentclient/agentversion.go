@@ -64,6 +64,19 @@ func OlderAgentHint(ctx context.Context, c *http.Client, t *Target) string {
 	return "the agent runs an older release than this CLI; upgrade it with berthy setup"
 }
 
+// AgentProtected reports whether the agent of target is configured for a protected environment. A failed lookup reports false:
+// the agent refuses a change on a protected environment by its own rule whatever the CLI knows.
+func AgentProtected(ctx context.Context, c *http.Client, t *Target) bool {
+	data, status, err := Do(ctx, c, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
+	if err != nil || status != http.StatusOK {
+		return false
+	}
+	var answer struct {
+		Protected bool `json:"protected"`
+	}
+	return json.Unmarshal(data, &answer) == nil && answer.Protected
+}
+
 // InvalidRequest reports whether an agent answer refuses a request as invalid: the agent could not decode the request's body,
 // which it does for a field it does not know.
 func InvalidRequest(status int, body []byte) bool {

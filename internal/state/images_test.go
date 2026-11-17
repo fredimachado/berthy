@@ -53,7 +53,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 14 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -179,7 +179,7 @@ func TestUpgradeVersionTwelveAddsReleaseTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 14 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	history, err := upgraded.History(ctx, "app")
@@ -192,7 +192,7 @@ func TestUpgradeVersionTwelveAddsReleaseTag(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	defer again.Close()
-	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 14 {
 		t.Fatalf("second open migration: %d %v", version, err)
 	}
 }
@@ -237,7 +237,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 14 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
@@ -257,7 +257,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 
 func TestUnknownSchemaVersionIsRefused(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`PRAGMA user_version=14`); err != nil {
+	if _, err := s.db.Exec(`PRAGMA user_version=15`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

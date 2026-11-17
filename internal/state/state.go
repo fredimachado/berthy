@@ -29,8 +29,10 @@ type Store struct {
 }
 type Admission struct {
 	RequestID, ActorID, ActorName, Remote, Kind, App, Commit string
-	RequestHash                                              [32]byte
-	PublicRequest                                            json.RawMessage
+	// Modified marks a deploy from a checkout with local changes, so Commit does not hold what was deployed.
+	Modified      bool
+	RequestHash   [32]byte
+	PublicRequest json.RawMessage
 }
 type Operation struct {
 	ID string
@@ -60,6 +62,8 @@ type Binding struct{ App, Role, Name, ServiceID string }
 type Release struct {
 	ID                  int64
 	App, Digest, Commit string
+	// Modified is set when the release was deployed from a checkout with local changes: Commit does not hold what ran.
+	Modified bool
 	// Tag is the tag the deploy asked for (v1.0.2), empty for a digest deploy, a Compose app or an adoption. A label only:
 	// the digest is what runs.
 	Tag                                    string
@@ -154,7 +158,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 13) {
+	if !fresh && (version < 1 || version > 14) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -166,11 +170,11 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS acquired_images (environment TEXT NOT NULL, ref TEXT NOT NULL, image_id TEXT NOT NULL, PRIMARY KEY(environment,ref));
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', UNIQUE(environment,request_id));
+ CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', modified INTEGER NOT NULL DEFAULT 0, UNIQUE(environment,request_id));
  CREATE TABLE IF NOT EXISTS locks (environment TEXT PRIMARY KEY, operation_id TEXT REFERENCES operations(id), holder TEXT NOT NULL, reason TEXT NOT NULL, acquired INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL REFERENCES operations(id), kind TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS intents (operation_id TEXT NOT NULL REFERENCES operations(id), ordinal INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, service_id TEXT NOT NULL, generation TEXT NOT NULL, seen_version INTEGER NOT NULL, deadline INTEGER NOT NULL, before_sealed BLOB, desired_sealed BLOB NOT NULL, phase TEXT NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(operation_id,ordinal));
- CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, app TEXT NOT NULL, digest TEXT NOT NULL, commit_sha TEXT NOT NULL, manifest BLOB NOT NULL, created INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, app TEXT NOT NULL, digest TEXT NOT NULL, commit_sha TEXT NOT NULL, manifest BLOB NOT NULL, created INTEGER NOT NULL, modified INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS applied (environment TEXT NOT NULL, app TEXT NOT NULL, release_id INTEGER NOT NULL REFERENCES releases(id), PRIMARY KEY(environment,app));
  CREATE TABLE IF NOT EXISTS bindings (environment TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL UNIQUE, service_id TEXT NOT NULL UNIQUE, PRIMARY KEY(environment,app,role));
  CREATE TABLE IF NOT EXISTS secrets (environment TEXT NOT NULL, name TEXT NOT NULL, registry TEXT NOT NULL, sealed BLOB NOT NULL, PRIMARY KEY(environment,name));
@@ -260,12 +264,26 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if version < 14 {
+		// A database from before schema 14 lacks the local-changes flag of its releases and operations. The column checks keep a
+		// repeated upgrade harmless.
+		for _, table := range []string{"releases", "operations"} {
+			var has int
+			if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name='modified'`, table).Scan(&has); err == nil && has == 0 {
+				_, err = tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN modified INTEGER NOT NULL DEFAULT 0`)
+			}
+			if err != nil {
+				tx.Rollback()
+				return fail(err)
+			}
+		}
+	}
 	// Each scheduled occurrence of a backup is recorded once.
 	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS backups_occurrence ON backups(environment, backup, scheduled) WHERE scheduled <> 0`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=13`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=14`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -331,7 +349,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
 			}
-		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate", "volumes", "tunnel", "keep_version":
+		case "adopt", "Adopt", "revert_schema", "replace_existing", "allow_recreate", "volumes", "tunnel", "keep_version", "modified":
 			var x bool
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -356,7 +374,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 		return Operation{}, false, err
 	}
 	defer tx.Rollback()
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
 	if err == nil {
 		if op.ActorID != a.ActorID || op.RequestHash != a.RequestHash {
 			return Operation{}, false, ErrConflict
@@ -370,7 +388,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if err != nil {
 		return Operation{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", now(), "", "", "", "")
+	_, err = tx.ExecContext(ctx, `INSERT INTO operations(id,environment,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, s.env, a.RequestID, a.ActorID, a.ActorName, a.Remote, a.Kind, a.App, a.Commit, a.RequestHash[:], []byte(a.PublicRequest), "running", now(), "", "", "", "", boolInt(a.Modified))
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -393,16 +411,16 @@ func operationQuery(row *sql.Row) (Operation, error) {
 	var o Operation
 	var hash []byte
 	var started int64
-	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter, &o.Reason)
+	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified)
 	o.Started = time.UnixMilli(started).UTC()
 	copy(o.RequestHash[:], hash)
 	return o, err
 }
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND id=?`, s.env, id))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND id=?`, s.env, id))
 }
 func (s *Store) Active(ctx context.Context) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
 }
 func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMessage) error {
 	if !publicJSON(data) {
@@ -570,7 +588,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason FROM operations WHERE environment=? AND id=?`, s.env, id))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND id=?`, s.env, id))
 	if err != nil {
 		return err
 	}
@@ -587,7 +605,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			return errors.New("invalid release")
 		}
 		r := o.Release
-		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag) VALUES(?,?,?,?,?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now(), id, o.SchemaBefore, o.SchemaAfter, r.Tag)
+		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now(), id, o.SchemaBefore, o.SchemaAfter, r.Tag, boolInt(r.Modified))
 		if e != nil {
 			return e
 		}
@@ -670,7 +688,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	return tx.Commit()
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -679,7 +697,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 	for rows.Next() {
 		var r Release
 		var ms int64
-		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag); err != nil {
+		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag, &r.Modified); err != nil {
 			return nil, err
 		}
 		r.Created = time.UnixMilli(ms).UTC()
@@ -690,7 +708,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 
 // LatestMigration returns the newest finished deploy of app that recorded a schema state.
 func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {
@@ -906,7 +924,7 @@ func (s *Store) Lock(ctx context.Context) (Lock, error) {
 func (s *Store) Applied(ctx context.Context, app string) (Release, error) {
 	var r Release
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after,r.tag FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag)
+	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after,r.tag,r.modified FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag, &r.Modified)
 	r.Created = time.UnixMilli(ms).UTC()
 	if err != nil {
 		return r, err

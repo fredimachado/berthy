@@ -822,7 +822,7 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return failedWith(errComposeJournal)
 	}
-	release := &state.Release{App: req.App, Digest: composeDigest(req.ComposeFile), Commit: req.Commit, Manifest: manifestJSON}
+	release := &state.Release{App: req.App, Digest: composeDigest(req.ComposeFile), Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON}
 	if req.Adopt {
 		return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release}
 	}

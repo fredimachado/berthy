@@ -962,7 +962,15 @@ berthy deploy api -e prod \
   --commit "$(git rev-parse HEAD)"
 ```
 
-`--commit` is recorded with the release. It shows in `history`, and it is how you find which code a release was.
+`--commit` is recorded with the release. It shows in `history`, and it is how you find which code a release was. Without `--commit`, the CLI records `HEAD` of the manifest directory's git checkout, so a deploy from a clean checkout needs no flag. A `--commit` that is not `HEAD` is kept, with a warning.
+
+**Local changes.** When the manifest directory is inside a git work tree, the CLI asks git whether `berthy.yml`, the overlay for the environment (`berthy.prod.yml`) and the app's Compose file are modified, staged, deleted or untracked. Files that git ignores do not count. If one of them has changes, the CLI prints a warning that names it:
+
+```text
+warning: the manifest has local changes: berthy.prod.yml
+```
+
+The release is recorded as not clean, and `history` shows it next to the commit: `commit: <sha> (modified)`. A **protected** environment refuses such a deploy before anything is sent, and names the files: `the manifest has local changes: commit them first: berthy.prod.yml`. Commit the files and deploy again. Outside a git work tree, and where git is not installed, nothing changes.
 
 #### All the apps in one command
 
@@ -1030,7 +1038,7 @@ Thirty seconds lets a web framework finish its requests. Docker alone would stop
 | Flag | Meaning |
 | --- | --- |
 | `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
-| `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. |
+| `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. Default: `HEAD` of the manifest directory's git checkout, when there is one. |
 | `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Default `.`. |
 | `--dry-run` | Print the plan. Change nothing. |
 | `--allow-recreate` | Allow a `stateful` Compose app's services to be recreated. Needs an `admin` token. |
@@ -1106,7 +1114,7 @@ berthy df    -e prod
 berthy history api -e prod
 ```
 
-`history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`.
+`history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`. A release or a failed deploy from a checkout with local changes shows `(modified)` after its commit.
 
 #### Wait for health
 
@@ -1184,6 +1192,8 @@ commit=$(git rev-parse --verify HEAD)
 "$BERTHY_BIN" deploy "$APP" -e "$BERTHY_ENV" --config "$BERTHY_CONFIG" \
   --manifest-dir "$PWD" --version "$IMAGE_DIGEST" --commit "$commit"
 ```
+
+A clean CI checkout needs no `--commit`: without one, the deploy records `HEAD` of the checkout, which the script passes anyway. If the checkout has local changes to the manifest or the app's Compose file (a generated file, say), the release is recorded as modified, and a protected environment refuses the deploy.
 
 Its inputs are environment variables: `BERTHY_ENV` (`prod`), `BERTHY_CONFIG` (a CLI configuration file), `IMAGE_DIGEST`, `BERTHY_TOKEN`, and optionally `APP` (default `api`) and `BERTHY_BIN`. The CLI configuration in CI names the variable that holds the token:
 
@@ -1854,6 +1864,7 @@ The agent can control Docker, which is as good as root on the server. You may wa
 
 - It **refuses mutable image tags.** You deploy a digest (step 4).
 - It **holds the changes an AI agent asks for** until a person approves them.
+- It **refuses a deploy from a checkout with local changes** to `berthy.yml`, the overlay or the app's Compose file. The release would not record what was deployed. Commit the files first.
 
 Set it in the overlay (`protected: true` in `berthy.prod.yml`), or in the agent's configuration (`"protected": true`, which setup writes from the manifest). Once a deploy of a protected manifest has succeeded, the agent remembers the environment as protected, even if the line is later removed.
 

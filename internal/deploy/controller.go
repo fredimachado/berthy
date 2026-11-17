@@ -20,9 +20,12 @@ import (
 )
 
 type Request struct {
-	App           string            `json:"app"`
-	Version       string            `json:"version"`
-	Commit        string            `json:"commit"`
+	App     string `json:"app"`
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	// Modified marks a deploy from a checkout whose manifest or Compose files have local changes, so Commit does not hold
+	// what is deployed. A protected environment refuses it.
+	Modified      bool              `json:"modified,omitempty"`
 	RequestID     string            `json:"request_id"`
 	Manifest      manifest.Manifest `json:"manifest"`
 	DryRun        bool              `json:"dry_run,omitempty"`
@@ -158,6 +161,9 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 }
 
 func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
+	if err := c.refuseLocalChanges(ctx, req); err != nil {
+		return Plan{}, err
+	}
 	if req.ReplaceExisting && !actor.Admin {
 		return Plan{}, errReplaceAdmin
 	}
@@ -286,6 +292,16 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
+	// A rollback deploys the release it returns to, so that release is what the local-changes rule judges.
+	planned := req
+	if req.Kind == "rollback" && !req.RevertSchema {
+		if resolved, err := c.rollbackRequest(ctx, req); err == nil {
+			planned = resolved
+		}
+	}
+	if err := c.refuseLocalChanges(ctx, planned); err != nil {
+		return state.Operation{}, false, err
+	}
 	if req.Kind == "ingress" {
 		req.App = manifest.ConnectorAppName
 		if err := req.Manifest.Validate(); err != nil {
@@ -350,6 +366,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		App             string `json:"app"`
 		Version         string `json:"version"`
 		Commit          string `json:"commit"`
+		Modified        bool   `json:"modified,omitempty"`
 		Adopt           bool   `json:"adopt"`
 		RevertSchema    bool   `json:"revert_schema,omitempty"`
 		TargetRelease   int64  `json:"target_release,omitempty"`
@@ -361,7 +378,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		RestoreInto     string `json:"restore_into,omitempty"`
 		KeepVersion     bool   `json:"keep_version,omitempty"`
 		KeepDigest      string `json:"keep_digest,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest})
+	}{req.App, req.Version, req.Commit, req.Modified, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -372,7 +389,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if kind == "" {
 		kind = "deploy"
 	}
-	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind, App: req.App, Commit: req.Commit, RequestHash: sum, PublicRequest: public})
+	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind, App: req.App, Commit: req.Commit, Modified: req.Modified, RequestHash: sum, PublicRequest: public})
 	if err != nil || !created {
 		return op, created, err
 	}
@@ -518,6 +535,7 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	req.Version = chosen.Digest
 	req.recordTag = chosen.Tag
 	req.Commit = chosen.Commit
+	req.Modified = chosen.Modified
 	if composeRequest(req) {
 		// A Compose release has no image digest. Its deploy journaled the Compose file it ran.
 		file, err := c.composeSource(ctx, chosen.OperationID)
@@ -528,6 +546,30 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 		req.Version = ""
 	}
 	return req, nil
+}
+
+// errLocalChanges refuses a deploy from a checkout with local changes on a protected environment. The CLI names the files
+// before it sends anything, so the agent says only this.
+const errLocalChanges Refusal = "the manifest has local changes: commit them first"
+
+// refuseLocalChanges refuses a request that comes from a checkout with local changes when its environment is protected: by the
+// agent's configuration, by the request's manifest, or by an earlier protected deploy.
+func (c *Controller) refuseLocalChanges(ctx context.Context, req Request) error {
+	if !req.Modified {
+		return nil
+	}
+	protected := c.Protected || req.Manifest.Protected
+	if !protected && c.Store != nil {
+		sticky, err := c.Store.Protected(ctx)
+		if err != nil {
+			return err
+		}
+		protected = sticky
+	}
+	if protected {
+		return errLocalChanges
+	}
+	return nil
 }
 
 const (
