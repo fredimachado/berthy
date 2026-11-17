@@ -373,12 +373,14 @@ berthy agent-info -e prod --config $CFG
 | `network` | The shared network exists and is an attachable overlay. It checks the network in the agent configuration, or else the one in the last applied manifest. |
 | `ingress_tunnel` | The Cloudflare tunnel, once managed ingress is set up. |
 | `compose` | The Compose plugin answers. |
+| `registry:<host>` | The registry password of each registry that a deployed image app pulls from: whether the registry still accepts it. See [step 8](#step-8-keep-it-healthy). |
+| `cloudflare_token` | The Cloudflare API token, once managed ingress is set up: whether Cloudflare still accepts it, and when it expires. See [step 8](#step-8-keep-it-healthy). |
 | `lock` | The deploy lock (`free` or who holds it). |
 | `peer:<name>`, `telegram`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the Telegram bot token secret, every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
 | telemetry | The OTLP exporter, when configured. |
 
-A backup or alert in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent.
+A backup, a credential or an alert in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent.
 
 `berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version.
 
@@ -753,7 +755,9 @@ The name `TUNNEL_TOKEN` is reserved for managed ingress. You cannot use it for y
 
 Rotate a secret by running `berthy secret set` again with the new value. At a terminal, Berthy first says that the new value replaces the stored one. What else happens depends on the kind of secret.
 
-**A registry password.** Replace the token when a deploy fails with `image resolution failed` or `image pull failed`, or when `docker service ps` on a server shows tasks `Rejected`. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`.
+Berthy tells you first when a credential is refused or about to expire. `berthy doctor` and a Telegram alert name the check, such as `registry:ghcr.io` or `cloudflare_token`, and the command that replaces the value. The checks and their messages are explained in [step 8](#step-8-keep-it-healthy). After you run `secret set` with a working value, `doctor` shows `accepted` at once, and the recovery alert follows within 10 minutes. The failures below are what happens when a check is missed.
+
+**A registry password.** Replace the token when `berthy doctor` or an alert reports `registry:ghcr.io` as refused. If you miss that, a deploy fails with `image resolution failed` or `image pull failed`, or `docker service ps` on a server shows tasks `Rejected`. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`. The command in the alert names it, which does the same.
 
 ```bash
 berthy secret set GHCR_TOKEN -e prod --config $CFG
@@ -790,7 +794,7 @@ When a service is not updated, or the services could not be looked at, the last 
 berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
 ```
 
-Nothing else needs to change. The agent reads the token from its store on every Cloudflare call and keeps no copy, so `ingress apply`, a deploy of an app with `hostnames`, `ingress status` and the tunnel health check use the new token from their next call. At a terminal, Berthy checks the new token with Cloudflare before it stores it. A token that Cloudflare refuses is not stored: `not stored: Cloudflare does not accept this token: it is wrong, expired or disabled`. If Cloudflare cannot be reached from your machine, Berthy prints a `not checked: …` line and stores the token anyway. Replace the token when `ingress apply` or a deploy of an app with `hostnames` fails with `Cloudflare token check failed`, or when `ingress status` shows Cloudflare as `unavailable`.
+Nothing else needs to change. The agent reads the token from its store on every Cloudflare call and keeps no copy, so `ingress apply`, a deploy of an app with `hostnames`, `ingress status` and the tunnel health check use the new token from their next call. At a terminal, Berthy checks the new token with Cloudflare before it stores it. A token that Cloudflare refuses is not stored: `not stored: Cloudflare does not accept this token: it is wrong, expired or disabled`. If Cloudflare cannot be reached from your machine, Berthy prints a `not checked: …` line and stores the token anyway. Replace the token when `berthy doctor` or an alert reports `cloudflare_token` as refused, or as about to expire. If you miss that, `ingress apply` or a deploy of an app with `hostnames` fails with `Cloudflare token check failed`, or `ingress status` shows Cloudflare as `unavailable`.
 
 The running connector is not affected. It runs with the tunnel's own token (`TUNNEL_TOKEN`), not the API token. To replace the tunnel's token, rotate it in Cloudflare's dashboard, then run `berthy ingress apply` to pick up the new one.
 
@@ -1360,7 +1364,7 @@ Berthy checks three kinds of things.
 | --- | --- | --- |
 | **Container health check** | The `health` of a role. | Gates deploys. Swarm replaces an unhealthy container. |
 | **Probe** | An HTTP, TCP or service check the agent runs on a schedule. | Alert. |
-| **Built-in condition** | Disk space, Docker disk, memory, restart loops, overdue backups, silent peers, an unhealthy tunnel. | Alert. |
+| **Built-in condition** | Disk space, Docker disk, memory, restart loops, overdue backups, silent peers, an unhealthy tunnel, a credential that is refused or about to expire. | Alert. |
 
 A check changes state after it fails the configured number of times in a row. One success recovers it at once. Unknown results never alert.
 
@@ -1430,6 +1434,33 @@ They always run:
 - **Restart loops** of the apps Berthy manages: three restarts of one replica, or three failed or rejected Swarm tasks, within 10 minutes, or an out-of-memory kill.
 - **Backups**: failed, overdue or suspiciously small (step 10), and jobs that fail (step 9).
 - **The tunnel**, when managed ingress is set up.
+- **Credentials**: the registry password of each registry that a deployed image app pulls from, and the Cloudflare API token when managed ingress is set up. `doctor` asks each time it runs, and the monitor asks every 10 minutes. A check changes state after two answers in a row that are not ok, so an alert comes 10 to 20 minutes after a credential stops working. A refused or missing credential is critical. The Cloudflare token warns when it expires within 14 days. A registry does not say when its password expires, so Berthy finds an expired password only when the registry refuses it. A check that could not be asked is unknown and never alerts: an outage of the registry or of Cloudflare is not a refused credential.
+
+A refused registry password, and a Cloudflare token that expires in five days, look like this in `berthy doctor`:
+
+```text
+checks:
+  ...
+  critical: false
+  detail: refused: ghcr.io does not let it pull acme/todo-api: run berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
+  name: registry:ghcr.io
+  ok: false
+
+  critical: false
+  detail: expires in 5d (2026-11-23): replace it with berthy secret set CLOUDFLARE_API_TOKEN -e prod
+  name: cloudflare_token
+  ok: false
+```
+
+Telegram sends these alerts for them, and a recovery alert once the registry password is replaced:
+
+```text
+🔴 prod registry:ghcr.io: refused: ghcr.io does not let it pull acme/todo-api: run berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
+🟠 prod cloudflare_token: expires in 5d (2026-11-23): replace it with berthy secret set CLOUDFLARE_API_TOKEN -e prod
+✅ prod registry:ghcr.io recovered
+```
+
+`ingress_tunnel` in `doctor` says `unavailable`, and `ingress status` shows Cloudflare as `unavailable`, both when Cloudflare refuses the token and when Cloudflare cannot be reached. `cloudflare_token` tells the two apart: `refused: ...` means replace the token, and `could not be asked: ...` means Cloudflare could not be reached.
 
 #### Peers
 

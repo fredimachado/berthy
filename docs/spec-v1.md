@@ -255,6 +255,7 @@ registries:
 - The agent uses it to resolve tags to digests and to pull. It hands the credential to Swarm with the service, so every server in a cluster can pull.
 - The password is set with `berthy secret set NAME --registry HOST`, where HOST is the registry's key under `registries`. The agent uses that secret only for that host. An environment secret is set without `--registry`, and an app's environment refuses a secret that has one.
 - At a terminal, `secret set` for a registry password checks it before storing it. For a registry the manifest lists under `registries`, the CLI asks the registry whether the credential can read the repository of each image app that pulls from that host. If the registry refuses the credential, the command stops with exit status 1 and sends nothing to the agent. If the registry cannot be reached from this machine, the CLI reports that the credential was not checked and stores the password. For `ghcr.io`, the CLI also prints a link that creates a classic token with `read:packages` only. A piped value is not checked.
+- The agent checks each registry password as the check `registry:HOST`, one for each registry of the last applied manifest that a deployed image app pulls from. The monitor asks every 10 minutes, and `doctor` asks when it runs. Each check asks the registry whether the stored username and password can read each repository those apps pull from that host, the same question as the terminal check above, and it only reads. It is ok when the registry accepts the password, critical when the registry refuses it or the secret is not stored, and unknown when the registry cannot be asked. A registry does not say when a password expires, so no registry check warns ahead of an expiry. Health checks gives the details and the alert rules.
 - Setting a stored registry password again without `--registry` keeps its registry. `--registry HOST` on an existing secret replaces the registry. To make a registry password a plain secret, remove it with `secret rm` first.
 - Storing a registry password gives it to every running Swarm service of an image app that pulls from that registry, without restarting the tasks. Compose apps get it at their next deploy. The CLI prints one line per service. A service that could not be updated is printed as `not updated` with the reason, and running `secret set` again retries it.
 - A registry password rotation leaves `secret_set:NAME` in the audit log and, when services were involved, `registry_auth_refresh:HOST`, with outcome `succeeded`, or `failed` when a service was not updated.
@@ -465,6 +466,7 @@ The connector publishes no port. It makes outbound connections to Cloudflare onl
 - The connector's health check runs the connector's own readiness command, so its rolling update is gated like any other image app. Confirm the command against the pinned connector version.
 - A second connector can run beside the first, so a connector update starts the new one before it stops the old one.
 - `doctor` reports the tunnel's status as Cloudflare sees it. A tunnel that Cloudflare reports as degraded or down raises an alert.
+- `doctor` (the `ingress_tunnel` check) and `ingress status` report `unavailable` both when Cloudflare refuses the API token and when Cloudflare cannot be reached. The tunnel's alert check is unknown in both cases, so it never alerts. The `cloudflare_token` check tells them apart: it is critical when the token is refused, and unknown when Cloudflare cannot be reached (see Health checks).
 
 ### Adopting an existing tunnel
 
@@ -745,7 +747,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `history <app>` | Deploy records, with the reason of each failed deploy | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app>` | Block until each service of the app, or of `--role`, has all its replicas running and healthy, or until `--timeout` passes (default 2m, at most 10m; then it exits non-zero). `--healthy` is accepted and changes nothing. A Compose app has no bound services, so it is refused | No |
-| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
+| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
 | `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
@@ -909,7 +911,7 @@ telemetry:
 | --- | --- | --- |
 | Container health check | The check declared for a role in the manifest | Gates deploys; an unhealthy container is replaced |
 | Probe | An HTTP or TCP check the agent runs on a schedule, against a service name or a public URL | Alert |
-| Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer, unhealthy tunnel with managed ingress | Alert |
+| Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer, unhealthy tunnel with managed ingress, a credential refused, missing or about to expire | Alert |
 
 Proposed thresholds: disk space and Docker disk usage warn at 80% and go critical at 90%.
 
@@ -943,6 +945,13 @@ alerts:
 - A service probe runs in the overlay helper. When the helper is not running, or the service cannot be named, the probe is unknown and its detail gives the reason. Its timeout is from 1s to 25s.
 - Each peer is asked for `/healthz` every 30 seconds with a 5-second timeout, and is critical after three misses. `/healthz` needs no token and answers `{"ok":true}` and nothing else.
 - Built-in conditions always run: disk and Docker disk (warning from 80%, critical from 90%), memory (warning below 10% available, critical below 5%), restart loops of the apps Berthy manages (three restarts of one replica, or three Swarm tasks that failed or were rejected, within 10 minutes, or an out-of-memory kill; shutdowns, such as a rolling update's old tasks, do not count; unmanaged Swarm services and Compose projects are not checked), and the tunnel when managed ingress is set up.
+- Credential checks run too: `registry:HOST` for each registry of the last applied manifest that a deployed image app pulls from, and `cloudflare_token` when managed ingress is set up. The monitor asks each one every 10 minutes. `doctor` asks when it runs, all of them at once and for no more than 5 seconds. A check changes state after two answers in a row that are not ok, so a refused credential alerts 10 to 20 minutes after it stops working. One accepted answer recovers it at once. The states are:
+  - ok: `accepted`, or `accepted, expires DATE` when the Cloudflare token expires more than 14 days away.
+  - warning: `expires in N (DATE): replace it with berthy secret set NAME -e ENV` when the Cloudflare token expires within 14 days. No registry check warns, because a registry does not say when its password expires.
+  - critical: `refused: REASON: run berthy secret set NAME -e ENV`, or `secret NAME is not stored: run berthy secret set NAME -e ENV` when the secret is missing. For a registry password the command has `--registry HOST`. REASON is `HOST does not let it pull REPO` for a registry; for Cloudflare it is `Cloudflare does not accept the token: it is wrong, expired or disabled`, or `Cloudflare reports the token as expired` (or `disabled`), or `Cloudflare reports the token as not active` for a status Berthy does not know.
+  - unknown: `could not be asked: REASON`, where REASON is `timeout`, `connection refused`, `unreachable`, `secret unavailable` (the agent could not read the secret from its store), or the HTTP status the service answered, such as `ghcr.io answered HTTP 503 to the request for acme/todo-api`. Unknown never alerts, so an outage of the registry or of Cloudflare is never reported as a refused credential.
+
+  In `doctor` the credential checks are never critical, so they do not make it exit non-zero. No detail, log line or alert holds a credential value.
 - Disk checks cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB; smaller mounts are skipped.
 - An alert is sent when a state changes: 🔴 for critical, 🟠 for warning, ✅ on recovery. Reminders read 🔁 still failing. `berthy alerts test -e ENV` sends a test message to check the channel.
 
