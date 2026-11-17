@@ -275,6 +275,23 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+		case rest[0] == "applied":
+			// The release the app runs now: berthy deploy asks before it deploys an app that keeps its version.
+			release, err := d.Store.Applied(ctx, rest[1])
+			if errors.Is(err, sql.ErrNoRows) {
+				// A distinct code, so a client never takes the 404 of an agent without this route for an app that was never deployed.
+				writeError(w, 404, "not_deployed", "app is not deployed")
+				return
+			}
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			row := map[string]any{"id": release.ID, "digest": release.Digest}
+			if release.Tag != "" {
+				row["tag"] = release.Tag
+			}
+			json.NewEncoder(w).Encode(row)
 		case rest[0] == "history":
 			rows, err := d.Store.History(ctx, rest[1])
 			if err != nil {
@@ -530,7 +547,7 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
 		required = "deploy"
 		method = "GET"
-	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait"):
+	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait" || rest[0] == "applied"):
 		required = "read"
 		method = "GET"
 	case len(rest) == 1 && (rest[0] == "audit" || rest[0] == "lock"):

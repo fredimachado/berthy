@@ -31,7 +31,12 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		resolved.Kind = "deploy"
 		outcome = c.runDeploy(ctx, op, actor, resolved, true)
 	default:
-		outcome = c.runDeploy(ctx, op, actor, req, false)
+		resolved, err := c.resolveKeepVersion(ctx, req)
+		if err != nil {
+			outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
+			break
+		}
+		outcome = c.runDeploy(ctx, op, actor, resolved, false)
 	}
 	_ = c.Store.Finish(context.Background(), op.ID, outcome)
 }

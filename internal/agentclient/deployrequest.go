@@ -23,8 +23,9 @@ var (
 )
 
 // PrepareDeploy fills in what a deploy request carries from the manifest directory: the merged manifest for env and, for a
-// Compose app, its Compose file. req.App and req.Version are set. It refuses an image app without a version, a Compose app
-// with one, and an image that the manifest does not allow for the app.
+// Compose app, its Compose file. req.App and req.Version are set. It refuses an image app without a version (unless it keeps
+// the version it runs, req.KeepVersion, which the agent resolves), a Compose app with one, and an image that the manifest
+// does not allow for the app.
 func PrepareDeploy(dir, env string, req *deploy.Request) error {
 	m, err := manifest.Load(dir, env)
 	if err != nil {
@@ -43,6 +44,10 @@ func PrepareDeploy(dir, env string, req *deploy.Request) error {
 		return nil
 	}
 	if req.Version == "" {
+		if req.KeepVersion {
+			// The agent resolves the version from the app's applied release.
+			return nil
+		}
 		return ErrVersionRequired
 	}
 	_, err = m.CheckImageDeploy(req.App, req.Version, false)

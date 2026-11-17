@@ -45,9 +45,13 @@ type Request struct {
 	// RestoreKey is the object key of the backup a restore reads, and RestoreInto the name of the new volume it fills.
 	RestoreKey  string `json:"restore_key,omitempty"`
 	RestoreInto string `json:"restore_into,omitempty"`
-	// rollbackTag is the tag of the release a rollback returns to. It is unexported, so a client cannot send it, and it is not in
-	// the request hash.
-	rollbackTag string
+	// KeepVersion deploys the version the app runs now: the digest and tag of its applied release. It is for an image app and
+	// excludes Version. The new manifest is applied as in any deploy.
+	KeepVersion bool `json:"keep_version,omitempty"`
+	// recordTag is the tag to record when the version is a digest taken from an earlier release: the tag of the release a
+	// rollback returns to, or of the applied release a keep_version deploy keeps. It is unexported, so a client cannot send
+	// it, and it is not in the request hash.
+	recordTag string
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -119,6 +123,13 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if req.AllowRecreate && !actor.Admin {
 		return Plan{}, errAllowRecreateAdmin
 	}
+	if req.KeepVersion {
+		resolved, err := c.resolveKeepVersion(ctx, req)
+		if err != nil {
+			return Plan{}, err
+		}
+		return c.Plan(ctx, actor, resolved)
+	}
 	if req.Kind == "ingress" {
 		return c.planIngress(ctx, actor, req)
 	}
@@ -186,9 +197,9 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if err != nil {
 		return Plan{}, err
 	}
-	if req.rollbackTag != "" {
-		// A rollback records the tag of the release it returns to. The digest it redeploys has no tag of its own.
-		p.Tag = req.rollbackTag
+	if req.recordTag != "" {
+		// The digest of an earlier release has no tag of its own, so the deploy records the one that release had.
+		p.Tag = req.recordTag
 	}
 	return p, nil
 }
@@ -222,6 +233,12 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	if req.AllowRecreate && !actor.Admin {
 		return state.Operation{}, false, errAllowRecreateAdmin
+	}
+	if req.KeepVersion {
+		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
+		if _, err := c.resolveKeepVersion(ctx, req); err != nil {
+			return state.Operation{}, false, err
+		}
 	}
 	if req.Kind == "ingress" {
 		req.App = manifest.ConnectorAppName
@@ -287,7 +304,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		Tunnel          bool   `json:"tunnel,omitempty"`
 		RestoreKey      string `json:"restore_key,omitempty"`
 		RestoreInto     string `json:"restore_into,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto})
+		KeepVersion     bool   `json:"keep_version,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -442,7 +460,7 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	m.Connector = req.App == manifest.ConnectorAppName
 	req.Manifest = m
 	req.Version = chosen.Digest
-	req.rollbackTag = chosen.Tag
+	req.recordTag = chosen.Tag
 	req.Commit = chosen.Commit
 	if composeRequest(req) {
 		// A Compose release has no image digest. Its deploy journaled the Compose file it ran.
@@ -453,6 +471,42 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 		req.ComposeFile = file
 		req.Version = ""
 	}
+	return req, nil
+}
+
+const (
+	errKeepVersionKind    Refusal = "keep_version applies to a deploy"
+	errKeepVersionExclude Refusal = "keep_version and version are exclusive"
+	errKeepVersionImage   Refusal = "keep_version applies to an image app"
+)
+
+// resolveKeepVersion turns a keep_version deploy into one of the version the app runs now: the digest of its applied release,
+// and that release's tag to record. A request without keep_version is returned as it is. The client's own request, not this
+// one, is what the request hash covers.
+func (c *Controller) resolveKeepVersion(ctx context.Context, req Request) (Request, error) {
+	if !req.KeepVersion {
+		return req, nil
+	}
+	switch {
+	case req.Kind != "" && req.Kind != "deploy", req.Adopt:
+		return Request{}, errKeepVersionKind
+	case req.Version != "":
+		return Request{}, errKeepVersionExclude
+	case req.Manifest.Apps[req.App].Kind != "image":
+		return Request{}, errKeepVersionImage
+	case c.Store == nil:
+		return Request{}, errors.New("applied release unavailable")
+	}
+	applied, err := c.Store.Applied(ctx, req.App)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Request{}, Refusal("app " + req.App + " is not deployed yet: give --version " + req.App + "=REF")
+	}
+	if err != nil {
+		return Request{}, errors.New("applied release unavailable")
+	}
+	req.Version = applied.Digest
+	req.recordTag = applied.Tag
+	req.KeepVersion = false
 	return req, nil
 }
 

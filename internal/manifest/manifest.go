@@ -81,6 +81,9 @@ type App struct {
 	Deploy      Deploy          `json:"deploy,omitempty" yaml:"deploy,omitempty"`
 	Hooks       Hooks           `json:"hooks,omitempty" yaml:"hooks,omitempty"`
 	Migrations  *Migrations     `json:"migrations,omitempty" yaml:"migrations,omitempty"`
+	// DependsOn names the apps that a deploy of every app runs before this one. It orders `berthy deploy` without an app
+	// and nothing else: a deploy of one app does not deploy or check its dependencies.
+	DependsOn []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 }
 type Role struct {
 	Service   string     `json:"service,omitempty" yaml:"service,omitempty"`
@@ -615,6 +618,9 @@ func (m *Manifest) Validate() error {
 		} else if a.File == "" || filepath.IsAbs(a.File) || strings.Contains(strings.ReplaceAll(a.File, `\`, `/`), "../") {
 			return fmt.Errorf("app %s: invalid compose file", name)
 		}
+		if err := m.checkDependsOn(name, a); err != nil {
+			return err
+		}
 		for _, k := range sortedKeys(a.Env.Plain) {
 			if k == TunnelTokenSecret {
 				return fmt.Errorf("app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
@@ -718,6 +724,9 @@ func (m *Manifest) Validate() error {
 				return fmt.Errorf("app %s: revert requires one {target}", name)
 			}
 		}
+	}
+	if err := m.checkDependsCycle(); err != nil {
+		return err
 	}
 	for _, name := range sortedKeys(m.Jobs) {
 		j := m.Jobs[name]

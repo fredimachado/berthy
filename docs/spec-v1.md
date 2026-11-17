@@ -133,6 +133,7 @@ Berthy manages two kinds of application: image apps for stateless services and C
 
 - **Roles.** An image app can define several roles that run the same image with different commands, such as `web` and `worker`. Each role has its own replica count, resources and health check, so web replicas can scale without multiplying job workers. An app can start with one role and split later.
 - **Stateful apps are separate.** Deploying an image app never touches a Compose app. Restarting or recreating a Compose app marked `stateful` always takes an explicit command that names it.
+- **Dependencies.** An app can name, in `depends_on`, the apps that must be deployed before it. The list orders `berthy deploy` without an app and nothing else: a deploy of one app does not deploy or check its dependencies. See Deploying every app.
 - **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject every tag, `latest` and a git SHA alike, and deploy only by digest. A release also records the tag the deploy asked for (`--version v1.0.2` records `v1.0.2`), which `history` shows as `tag`. The tag is a label only: the digest is what runs, and nothing decides from it. A digest deploy, a Compose app and an adoption record no tag, and a rollback records the tag of the release it returns to.
 - **Compose project names are explicit.** A Compose app runs under the project name `<project>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
 - **Adoption.** Existing services and Compose projects can be adopted by name without being recreated. See Adopting an existing deployment.
@@ -163,6 +164,7 @@ apps:
   api:
     kind: image
     image: ghcr.io/<org>/<image>
+    depends_on: [postgres]
     roles:
       web:
         replicas: 1
@@ -297,7 +299,7 @@ It ends by printing the next steps: store a copy of the encryption key off the s
 - **Same version as the CLI.** Setup installs the version of Berthy that runs it, chosen in this order:
   1. `--binary <path>`: a local file, which must be an ELF executable for the server's architecture (`x86_64` or `aarch64`) or setup stops.
   2. A Linux CLI of the server's architecture uploads itself.
-  3. A release CLI on any other platform makes the server download the matching release, with `curl` or `wget`, from `<release URL>/<version>/berthy-linux-<arch>` (`amd64` or `arm64`) and `<release URL>/<version>/checksums.txt`, a file in `sha256sum` format with one line per artifact. The server checks the line of the artifact with `sha256sum -c` and stops with `checksum mismatch` if it differs. The release URL is `https://github.com/fredimachado/berthy/releases/download`, or the value of `BERTHY_RELEASE_URL`, which exists for tests and mirrors and must be `https`, or `http` on a loopback or private address. Releases are published by `.github/workflows/release.yml` when a `v*` tag is pushed: it builds static (`CGO_ENABLED=0`) binaries stamped with the tag for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 and windows/amd64, named `berthy-<os>-<arch>` (`.exe` on Windows), writes `checksums.txt` over them, and creates the GitHub release of the tag with them. A tag with a `-` is published as a prerelease, and a tag that does not match the release version pattern fails before anything is published.
+  3. A release CLI on any other platform makes the server download the matching release, with `curl` or `wget`, from `<release URL>/<version>/berthy-linux-<arch>` (`amd64` or `arm64`) and `<release URL>/<version>/checksums.txt`, a file in `sha256sum` format with one line per artifact. The server checks the line of the artifact with `sha256sum -c` and stops with `checksum mismatch` if it differs. The release URL is `https://github.com/fredimachado/berthy/releases/download`, or the value of `BERTHY_RELEASE_URL`, which exists for tests and mirrors and must be `https`, or `http` on a loopback or private address. Releases are published by `.github/workflows/release.yml` when a `v*` tag is pushed: it builds static (`CGO_ENABLED=0`) binaries stamped with the tag for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 and windows/amd64, named `berthy-<os>-<arch>` (`.exe` on Windows), writes `checksums.txt` over them, and creates the GitHub release of the tag with them. A tag with a `-` is published as a prerelease, and a tag that does not match the release version pattern fails before anything is published. A release publishes only a commit whose CI run succeeded, and the workflow can also be run by hand as a dry run that checks and builds a commit and publishes nothing.
   4. A development build on any other platform has nothing to install: setup stops and asks for `--binary`.
 
   An upload streams the file through the SSH session into `berthy.new` and compares the SHA-256 the server computes with the local one. A server that already has that exact binary (by hash, or by version for a download) keeps it: the `binary` step is `ok`.
@@ -682,6 +684,34 @@ What it keeps: all secrets, including the Cloudflare API token, the state databa
 
 A tunnel that is kept stays remembered, and `destroy --tunnel` deletes it once the reasons are gone. With no managed tunnel the command says "no managed tunnel".
 
+### Deploying every app
+
+`berthy deploy -e <env> --config <cfg>` without an app deploys every app of the manifest, one after another, each exactly as `berthy deploy <app>` would, and stops at the first app that does not succeed. It takes `--version`, `--commit`, `--dry-run`, `--json` and `--manifest-dir`; `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id` need an app and are refused with exit 2 (`--adopt needs an app: berthy deploy APP --adopt`). Each app is its own operation with its own request ID.
+
+```yaml
+apps:
+  api:
+    kind: image
+    image: ghcr.io/<org>/<image>
+    depends_on: [postgres, redis]
+```
+
+- **Order.** An app's `depends_on` lists the apps deployed before it. `config validate` refuses a name that is not an app of the manifest, an app that depends on itself, a name listed twice and a cycle (`depends_on cycle: api -> worker -> api`). Among the apps whose dependencies are done, the next one is the first by name, so the example above deploys `postgres`, `redis`, `api`. An overlay replaces the whole list, as it replaces any list. `depends_on` is a manifest key, and an agent refuses a key it does not know, so upgrade the agent with `berthy setup` before the first deploy of a manifest that uses it.
+- **Versions.** `--version REF` is allowed only when the manifest has exactly one image app. Otherwise give `--version <app>=REF`, once for each app that needs one. A plain REF together with `<app>=REF`, an `<app>=` that names an unknown app or a Compose app, an empty REF and a repeated app are refused with exit 2 before any request is sent. A Compose app takes no version.
+- **An app given no version keeps the one it runs.** The CLI sends such an image app with `keep_version`, and the agent deploys the digest of the app's applied release and records that release's tag. The new manifest is applied and the migrations and hooks run as in any deploy; only the image does not change. It is never resolved to `latest`. Before anything is deployed, the CLI asks the agent for the applied release of every app that keeps its version, with `GET /v1/environments/<env>/applied/<app>` (`read` scope; it answers `{"id", "digest", "tag"}`, `tag` only when the release has one, and 404 with code `not_deployed` when the app has no applied release). An app that was never deployed, or was removed, is refused with `image app <app> is not deployed yet: give --version <app>=REF` and exit 2, so a first deploy names a version for every image app. A protected environment accepts it: what the app keeps is a digest.
+- **Everything is prepared first.** Nothing is sent to the agent until every app's request is ready: the manifest loaded, the Compose files read, the versions checked, the kept apps asked about. A bad Compose path or version for the last app leaves the first apps undeployed (`app zstack: compose file unavailable (nothing was deployed)`, exit 1).
+- **Stops at the first failure.** Text output has one `==> deploy <app> (<version, or keeps <tag>>)` header for each app, followed by what `berthy deploy <app>` prints, and at the end one line each, `<app>  succeeded`. When an app fails, the command exits with its code, prints `deploy stopped at <app>; not run: <the apps after it>` on standard error, and runs nothing more. A change held for approval counts as a stop, with exit 3.
+- **Dry run.** `--dry-run` plans every app and does not stop at a plan that fails; it exits 1 when any failed, and its summary lines say `planned` or `failed`.
+- **JSON.** `--json` prints one document, with what `berthy deploy <app> --json` prints for each app as its `result`, in the order they ran; an app that did not run has `"state": "not_run"` and no result:
+
+```json
+{"apps": [
+  {"app": "postgres", "exit": 0, "result": {}},
+  {"app": "api", "exit": 1, "result": {}},
+  {"app": "worker", "state": "not_run"}
+]}
+```
+
 ### Dry run
 
 Every command that changes something accepts `--dry-run` and prints the plan without acting.
@@ -721,6 +751,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
+| `deploy [--version <app>=<tag>]…` | Deploy every app in `depends_on` order and stop at the first failure; an image app given no version keeps the one it runs, and a plain `--version` is for a manifest with one image app (see Deploying every app) | Yes |
 | `rollback <app>` | Return to a previous deploy | Yes |
 | `restart <app>`, `scale <app>` | Restart or change replica count; `scale` is for image apps, and a Compose app is refused | Yes |
 | `exec <app> -- <command>` | Run a command in a running container; image apps only, and a Compose app is refused | Yes |

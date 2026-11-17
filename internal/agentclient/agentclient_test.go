@@ -193,3 +193,11 @@ func mustParse(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+func TestPrepareDeployAcceptsAnImageAppThatKeepsItsVersion(t *testing.T) {
+	image := writeComposeProject(t, imageManifest, "")
+	req := deploy.Request{App: "api", KeepVersion: true}
+	if err := PrepareDeploy(image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.Version != "" {
+		t.Fatalf("keep version: %v %+v", err, req)
+	}
+}

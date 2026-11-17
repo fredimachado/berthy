@@ -566,6 +566,7 @@ func summarize(rest []string, body []byte) string {
 	var b struct {
 		App           string   `json:"app"`
 		Version       string   `json:"version"`
+		KeepVersion   bool     `json:"keep_version"`
 		Role          string   `json:"role"`
 		Replicas      *int     `json:"replicas"`
 		TargetRelease int64    `json:"target_release"`
@@ -582,6 +583,9 @@ func summarize(rest []string, body []byte) string {
 	}
 	switch routeKind(rest) {
 	case "deploy":
+		if b.KeepVersion && b.Version == "" {
+			return "deploy " + cleanText(b.App, 80) + " (keeps the current version)"
+		}
 		return strings.TrimSpace("deploy " + cleanText(b.App, 80) + " " + cleanText(shortVersion(b.Version), 80))
 	case "rollback":
 		if b.TargetRelease > 0 {

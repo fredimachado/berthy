@@ -428,6 +428,7 @@ apps:
   api:
     kind: image
     image: ghcr.io/acme/todo-api
+    depends_on: [postgres, redis]
     roles:
       web:
         replicas: 1
@@ -457,6 +458,8 @@ apps:
 ```
 
 `image` is the repository only, with no tag and no digest. You choose the version at deploy time. `roles` is required for an image app.
+
+`depends_on` names the apps that must be deployed before this one: the database and the cache here. It does one thing: it sets the order of `berthy deploy` run without an app ([step 4](#all-the-apps-in-one-command)). Deploying the API on its own does not deploy or check them. `config validate` refuses a name that is not an app, an app that depends on itself, a name listed twice and a cycle (`depends_on cycle: api -> worker -> api`). An overlay that sets `depends_on` replaces the whole list.
 
 **Roles.** Each role has:
 
@@ -733,7 +736,7 @@ Do the `ALTER USER` first, then `secret set`, then redeploy `api`, in a quiet mo
 ---
 ### Step 4. The first deploy
 
-Deploy in this order: **redis, postgres, then the API.** The API reads from both, and its migrations need the database to exist.
+Deploy in this order: **redis, postgres, then the API.** The API reads from both, and its migrations need the database to exist. (The API's `depends_on` says the same, and [one command](#all-the-apps-in-one-command) can deploy all three.)
 
 Every deploy starts the same way: look at the plan first.
 
@@ -820,6 +823,39 @@ berthy deploy api -e prod --config $CFG \
 
 `--commit` is recorded with the release. It shows in `history`, and it is how you find which code a release was.
 
+#### All the apps in one command
+
+Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version:
+
+```bash
+berthy deploy -e prod --config $CFG --version sha256:<64 hex characters> --dry-run
+berthy deploy -e prod --config $CFG --version sha256:<64 hex characters> \
+  --commit "$(git rev-parse HEAD)"
+```
+
+Each app is deployed exactly as `berthy deploy <app>` would, and the output has a header before each one and a summary at the end:
+
+```text
+==> deploy postgres
+...
+==> deploy redis
+...
+==> deploy api (sha256:<64 hex characters>)
+...
+postgres  succeeded
+redis  succeeded
+api  succeeded
+```
+
+- **Everything is checked first.** Nothing is sent to the agent until every app's request is ready: manifest loaded, Compose files read, versions checked. A missing Compose file or a bad version for the last app leaves the first apps undeployed.
+- **It stops at the first failure.** The command exits with that app's code, prints `deploy stopped at <app>; not run: <the apps after it>` and runs nothing more. With `--dry-run` it plans every app, goes on past a plan that fails, and exits `1` if any failed.
+- **Versions.** A plain `--version` is for a manifest with exactly one image app. With several, name each one: `--version api=sha256:...`, once for each app. A plain version together with `app=version`, an `app=` that names an unknown app or a Compose app, and a repeated app are refused with exit `2` before anything is sent.
+- **An image app given no version keeps the one it runs now.** Berthy deploys the digest of its last release, and the tag it was deployed with, and applies the new manifest, migrations and hooks as in any deploy. This is how a change to the manifest alone reaches every app. An app that was never deployed has no version to keep: the command refuses it with `image app api is not deployed yet: give --version api=REF` and exit `2`, before anything is deployed. A first deploy names a version for every image app.
+- **Flags that need an app** (`--adopt`, `--replace-existing`, `--allow-recreate`, `--request-id`) are refused with exit `2`.
+- **`--json`** prints one document, `{"apps": [...]}`, with an entry for each app in order: its `app`, its `exit` code and its `result`, which is what `berthy deploy <app> --json` prints. An app that did not run has `"state": "not_run"`.
+
+`depends_on` is a manifest key like the others: an agent that does not know it refuses the manifest. Upgrade the agent with `berthy setup` before you deploy a manifest that uses it.
+
 #### What an image deploy does
 
 A deploy either finishes healthy or leaves the previous version running. It never leaves an app half-updated.
@@ -852,7 +888,7 @@ Thirty seconds lets a web framework finish its requests. Docker alone would stop
 
 | Flag | Meaning |
 | --- | --- |
-| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. |
+| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
 | `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. |
 | `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Default `.`. |
 | `--dry-run` | Print the plan. Change nothing. |
@@ -1964,6 +2000,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | Command | Scope | Flags it reads | What it does |
 | --- | --- | --- | --- |
 | `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. |
+| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
 | `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. |
 | `restart <app>` | deploy | `--dry-run`, `--request-id`, `--role` | Restart an app's tasks or containers. |
 | `scale <app>` | deploy | `--dry-run`, `--request-id`, `--role`, `--replicas` (required) | Change the replica count of an image app. (`--manifest-dir` is accepted and not read.) |
@@ -2060,6 +2097,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `file` | compose | required | Compose file path, relative, inside the manifest directory. No `..`. |
 | `project_name` | compose | `<project>-<app>` | Compose project name. Never change it once the app holds data. |
 | `stateful` | compose | `false` | Recreating or removing it needs `--allow-recreate` and `admin`. |
+| `depends_on` | both | none | List of apps deployed before this one by `berthy deploy` without an app. Each must be another app of the manifest, listed once, with no cycle. |
 | `env.plain` | both | none | Map of name to string value. |
 | `env.secret` | both | none | List of secret names. No duplicates, and not also in `plain`. |
 | `deploy.deploy_timeout` | image | `120s` | Longest to become healthy. |
@@ -2219,7 +2257,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **Images are not built.** CI builds and pushes them.
 - **A Compose app has no automatic rollback, no `scale`, no `exec` and no `--version`.** A Compose `build:` is refused.
 - **`hostnames` only on image apps.** Compose services are published by a rule you add in Cloudflare.
-- **Release downloads need a published release of that version.** The repository's release workflow publishes one when a version tag (`v*`) is pushed, with the `berthy-<os>-<arch>` CLIs and `checksums.txt`. A Linux CLI of the server's architecture uploads itself. A release CLI on another platform downloads its own version from the release site (`BERTHY_RELEASE_URL` overrides it) and checks the checksum. A development build on another platform, or a version with no published release, uses `--binary <path>` instead.
+- **Release downloads need a published release of that version.** The repository's release workflow publishes one when a version tag (`v*`) is pushed, with the `berthy-<os>-<arch>` CLIs and `checksums.txt`. A release publishes only a commit whose CI run succeeded, and the workflow can also be run by hand as a dry run that publishes nothing. A Linux CLI of the server's architecture uploads itself. A release CLI on another platform downloads its own version from the release site (`BERTHY_RELEASE_URL` overrides it) and checks the checksum. A development build on another platform, or a version with no published release, uses `--binary <path>` instead.
 - **A scheduled restore drill is not built.** You verify restores by hand (steps 10 and 15).
 
 #### Not verified against real services

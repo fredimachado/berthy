@@ -80,9 +80,9 @@ var changeFlags = map[string][]string{
 }
 
 type commandFlags struct {
-	env, config, dir, version, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                              bool
-	pos, command, given                                                                                          []string
+	env, config, dir, commit, id, role, timeout, registry, message, to, replicas, confirm, backup, into string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all                     bool
+	pos, command, given, versions                                                                       []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -137,7 +137,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			case "--manifest-dir":
 				f.dir = v
 			case "--version":
-				f.version = v
+				f.versions = append(f.versions, v)
 			case "--commit":
 				f.commit = v
 			case "--request-id":
@@ -326,8 +326,19 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	var body any
 	switch cmd {
 	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy":
+		if cmd == "deploy" && len(f.pos) == 0 {
+			return runDeployAll(f, u, prefix, token, out, errout)
+		}
 		if cmd != "prune" && cmd != "destroy" && len(f.pos) != 1 || (cmd == "prune" || cmd == "destroy") && len(f.pos) != 0 {
 			fmt.Fprintln(errout, "command requires an app")
+			return 2
+		}
+		if cmd == "deploy" && len(f.versions) > 1 {
+			fmt.Fprintln(errout, "--version given more than once")
+			return 2
+		}
+		if cmd == "deploy" && len(f.versions) == 1 && strings.Contains(f.versions[0], "=") {
+			fmt.Fprintln(errout, "--version APP=REF is for deploy without an app")
 			return 2
 		}
 		var req deploy.Request
@@ -336,7 +347,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		req.Confirm = f.confirm
 		req.Tunnel = f.tunnel
-		req.Version = f.version
+		if len(f.versions) > 0 {
+			req.Version = f.versions[0]
+		}
 		req.Commit = f.commit
 		req.RequestID = f.id
 		req.DryRun = f.dry
@@ -348,11 +361,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.Volumes = f.volumes
 		req.Command = f.command
 		if f.id == "" {
-			var random [16]byte
-			if _, err = rand.Read(random[:]); err != nil {
+			if req.RequestID, err = newRequestID(); err != nil {
 				return 1
 			}
-			req.RequestID = hex.EncodeToString(random[:])
 		}
 		if f.to != "" {
 			req.TargetRelease, err = strconv.ParseInt(f.to, 10, 64)
@@ -408,11 +419,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		id := f.id
 		if id == "" {
-			var random [16]byte
-			if _, err = rand.Read(random[:]); err != nil {
+			if id, err = newRequestID(); err != nil {
 				return 1
 			}
-			id = hex.EncodeToString(random[:])
 		}
 		method = "POST"
 		endpoint = "restore"
@@ -476,11 +485,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
 			if req.RequestID == "" {
-				var random [16]byte
-				if _, err = rand.Read(random[:]); err != nil {
+				if req.RequestID, err = newRequestID(); err != nil {
 					return 1
 				}
-				req.RequestID = hex.EncodeToString(random[:])
 			}
 			method = "POST"
 			endpoint = "ingress/apply"
@@ -516,6 +523,21 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 2
 		}
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	client := agentclient.NewHTTPClient()
+	if cmd == "wait" {
+		client = agentclient.WithTimeout(client, 11*time.Minute)
+	}
+	return sendCommand(ctx, client, u, prefix, token, method, endpoint, body, f, cmd, out, errout)
+}
+
+// sendCommand sends one change or read request to the agent and follows what the agent answers: a held approval, an
+// operation to watch to its end, or a result to print. It is what runDeployment does once it has built the request. base is
+// the agent's URL, which it does not change.
+func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, endpoint string, body any, f commandFlags, cmd string, out, errout io.Writer) int {
+	copied := *base
+	u := &copied
 	u.Path = prefix + endpoint
 	if cmd == "wait" {
 		q := u.Query()
@@ -530,14 +552,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		u.RawQuery = q.Encode()
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	client := agentclient.NewHTTPClient()
-	if cmd == "wait" {
-		client = agentclient.WithTimeout(client, 11*time.Minute)
-	}
 	var payload []byte
 	if body != nil {
+		var err error
 		payload, err = json.Marshal(body)
 		if err != nil {
 			return 1
@@ -590,6 +607,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		return printRestorePlan(out, errout, data)
 	}
 	return printResponse(out, errout, data, f.json)
+}
+
+// newRequestID is a fresh random request ID, which the agent uses to recognize a retry of the same request.
+func newRequestID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(random[:]), nil
 }
 
 func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {

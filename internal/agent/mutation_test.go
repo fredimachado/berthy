@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -278,5 +279,86 @@ func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
 	}
 	if !seen["tagged"] || !seen["untagged"] {
 		t.Fatalf("history %s", w.Body.String())
+	}
+}
+
+// TestAppliedShowsTheReleaseAnAppRunsNow: the read that tells berthy deploy whether an app can keep its version. A removed or
+// never deployed app has no applied release, even when it has a history.
+func TestAppliedShowsTheReleaseAnAppRunsNow(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	for i, release := range []state.Release{
+		{App: "api", Digest: "repo@sha256:old", Tag: "v1.0.1", Manifest: []byte(`{}`)},
+		{App: "api", Digest: "repo@sha256:new", Tag: "v1.0.2", Manifest: []byte(`{}`)},
+		{App: "worker", Digest: "repo@sha256:w", Manifest: []byte(`{}`)},
+	} {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: fmt.Sprint("r", i), ActorID: "a", Kind: "deploy", App: release.App, PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &release}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := "bty.lab." + strings.Repeat("a", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	get := func(app string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/v1/environments/lab/applied/"+app, nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
+		return w
+	}
+	var got map[string]any
+	if w := get("api"); w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got["digest"] != "repo@sha256:new" || got["tag"] != "v1.0.2" || got["id"] == nil {
+		t.Fatalf("api: %d %s", w.Code, w.Body.String())
+	}
+	got = nil
+	if w := get("worker"); w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got["digest"] != "repo@sha256:w" {
+		t.Fatalf("worker: %d %s", w.Code, w.Body.String())
+	} else if _, ok := got["tag"]; ok {
+		t.Fatalf("an untagged release shows a tag: %s", w.Body.String())
+	}
+	if w := get("missing"); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"not_deployed"`) {
+		t.Fatalf("an app with no applied release: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestKeepVersionDeployOfAnAppNeverDeployedIsRefusedWithItsMessage: berthy deploy prints the agent's refusal as it is.
+func TestKeepVersionDeployOfAnAppNeverDeployedIsRefusedWithItsMessage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	token := "bty.lab." + strings.Repeat("b", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "deploy"}}}
+	body := `{"app":"api","request_id":"r1","keep_version":true,"manifest":{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}}`
+	r := httptest.NewRequest("POST", "/v1/environments/lab/deploys", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "app api is not deployed yet: give --version api=REF") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }
