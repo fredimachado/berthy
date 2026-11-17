@@ -136,20 +136,16 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	restart := map[string]any{"Condition": "any", "Delay": int64(5 * time.Second), "MaxAttempts": 0}
 	spec := map[string]any{"Name": project + "-" + app + "-" + role, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}, "RestartPolicy": restart}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": update, "RollbackConfig": rollback}
 	if r.Resources != nil {
-		limits := map[string]any{}
-		if r.Resources.CPU != "" {
-			v, e := manifest.ParseCPU(r.Resources.CPU)
-			if e != nil {
-				return nil, e
-			}
-			limits["NanoCPUs"] = v
+		nano, memory, e := resourceLimits(r.Resources)
+		if e != nil {
+			return nil, e
 		}
-		if r.Resources.Memory != "" {
-			v, e := manifest.ParseMemory(r.Resources.Memory)
-			if e != nil {
-				return nil, e
-			}
-			limits["MemoryBytes"] = v
+		limits := map[string]any{}
+		if nano != 0 {
+			limits["NanoCPUs"] = nano
+		}
+		if memory != 0 {
+			limits["MemoryBytes"] = memory
 		}
 		spec["TaskTemplate"].(map[string]any)["Resources"] = map[string]any{"Limits": limits}
 	}
@@ -157,4 +153,29 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 		spec["TaskTemplate"].(map[string]any)["LogDriver"] = ld
 	}
 	return json.Marshal(spec)
+}
+
+// resourceLimits parses a role's limits: NanoCPUs and bytes of memory, each 0 when the role sets none. A service takes them
+// as Resources.Limits and a one-off container as HostConfig.
+func resourceLimits(r *manifest.Resources) (nanoCPUs, memory int64, err error) {
+	if r == nil {
+		return 0, 0, nil
+	}
+	if r.CPU != "" {
+		if nanoCPUs, err = manifest.ParseCPU(r.CPU); err != nil {
+			return 0, 0, err
+		}
+	}
+	if r.Memory != "" {
+		if memory, err = manifest.ParseMemory(r.Memory); err != nil {
+			return 0, 0, err
+		}
+	}
+	return nanoCPUs, memory, nil
+}
+
+// hostLimits is the HostConfig of a one-off container that has limits.
+type hostLimits struct {
+	NanoCPUs int64 `json:"NanoCpus,omitempty"`
+	Memory   int64 `json:"Memory,omitempty"`
 }

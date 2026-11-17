@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
@@ -59,7 +60,7 @@ func (c *Controller) runPre(ctx context.Context, opID string, p preparedPlan) (s
 			}
 			continue
 		}
-		if _, err := c.runRetrying(ctx, opID, p, preHookOrdinal+attemptsPerCommand*i, "pre_hook", h.Run, false, h.TimeoutDuration(), h.RetryCount()); err != nil {
+		if _, err := c.runRetrying(ctx, opID, p, oneOff{Ordinal: preHookOrdinal + attemptsPerCommand*i, Kind: "pre_hook", Argv: h.Run, Timeout: h.TimeoutDuration()}, h.RetryCount()); err != nil {
 			return "", "", err
 		}
 	}
@@ -68,17 +69,17 @@ func (c *Controller) runPre(ctx context.Context, opID string, p preparedPlan) (s
 		return "", "", nil
 	}
 	timeout := m.TimeoutDuration()
-	before, err := c.runOneOff(ctx, opID, p, schemaBeforeOrdinal, "schema_before", m.Version, true, timeout)
+	before, err := c.runOneOff(ctx, opID, p, oneOff{Ordinal: schemaBeforeOrdinal, Kind: "schema_before", Argv: m.Version, Version: true, Timeout: timeout})
 	if err != nil {
 		return "", "", err
 	}
 	// Only apply is retried: version only reads, and a half-applied migration is re-run only when the manifest says its
 	// command is safe to run again.
-	_, applyErr := c.runRetrying(ctx, opID, p, migrationApplyOrdinal, "migration_apply", m.Apply, false, timeout, m.RetryCount())
+	_, applyErr := c.runRetrying(ctx, opID, p, oneOff{Ordinal: migrationApplyOrdinal, Kind: "migration_apply", Argv: m.Apply, Timeout: timeout}, m.RetryCount())
 	if errors.Is(applyErr, ErrOneOffUncertain) {
 		return before, "", applyErr
 	}
-	after, afterErr := c.runOneOff(ctx, opID, p, schemaAfterOrdinal, "schema_after", m.Version, true, timeout)
+	after, afterErr := c.runOneOff(ctx, opID, p, oneOff{Ordinal: schemaAfterOrdinal, Kind: "schema_after", Argv: m.Version, Version: true, Timeout: timeout})
 	if applyErr != nil {
 		return before, after, applyErr
 	}
@@ -99,7 +100,7 @@ func (c *Controller) runPost(ctx context.Context, opID string, p preparedPlan) e
 			}
 			continue
 		}
-		if _, err := c.runRetrying(ctx, opID, p, postHookOrdinal+attemptsPerCommand*i, "post_hook", h.Run, false, h.TimeoutDuration(), h.RetryCount()); err != nil {
+		if _, err := c.runRetrying(ctx, opID, p, oneOff{Ordinal: postHookOrdinal + attemptsPerCommand*i, Kind: "post_hook", Argv: h.Run, Timeout: h.TimeoutDuration()}, h.RetryCount()); err != nil {
 			return err
 		}
 	}
@@ -109,10 +110,12 @@ func (c *Controller) runPost(ctx context.Context, opID string, p preparedPlan) e
 // runRetrying runs a command, and runs it again in a new one-off container after a non-zero exit, up to retries more
 // times with oneOffRetryDelay between attempts. An attempt that timed out or whose outcome is otherwise uncertain is never
 // retried: the command may still be running. The error of the last attempt is returned, with the number of attempts in its
-// diagnostic. first is the journal ordinal of the first attempt.
-func (c *Controller) runRetrying(parent context.Context, opID string, p preparedPlan, first int, kind string, argv []string, version bool, timeout time.Duration, retries int) (string, error) {
+// diagnostic. o.Ordinal is the journal ordinal of the first attempt.
+func (c *Controller) runRetrying(parent context.Context, opID string, p preparedPlan, o oneOff, retries int) (string, error) {
+	first, kind := o.Ordinal, o.Kind
 	for attempt := 0; ; attempt++ {
-		v, err := c.runOneOff(parent, opID, p, first+attempt, kind, argv, version, timeout)
+		o.Ordinal = first + attempt
+		v, err := c.runOneOff(parent, opID, p, o)
 		var failure *oneOffFailure
 		if err == nil || !errors.As(err, &failure) {
 			return v, err
@@ -133,7 +136,23 @@ func (c *Controller) runRetrying(parent context.Context, opID string, p prepared
 	}
 }
 
-func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPlan, ordinal int, kind string, argv []string, version bool, timeout time.Duration) (string, error) {
+// oneOff is one command run in a new container of the prepared image.
+type oneOff struct {
+	Ordinal int
+	// Kind is the berthy.oneoff label and the intent's role: pre_hook, post_hook, schema_before, migration_apply, schema_after,
+	// the schema revert steps, or run.
+	Kind string
+	// Role is the role whose environment the container takes. It is empty for a hook or a migration, which belong to the app.
+	Role    string
+	Argv    []string
+	Version bool // the command prints a schema version, which is read from its output
+	Timeout time.Duration
+	// Resources are the limits of the container. Nil means none.
+	Resources *manifest.Resources
+}
+
+func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPlan, o oneOff) (string, error) {
+	ordinal, kind, argv, version, timeout := o.Ordinal, o.Kind, o.Argv, o.Version, o.Timeout
 	if c.Store == nil || len(argv) == 0 || argv[0] == "" {
 		return "", errors.New("invalid one-off command")
 	}
@@ -145,14 +164,23 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 	defer cancel()
 	name := fmt.Sprintf("berthy-%s-%d", opID, ordinal)
 	labels := map[string]string{"berthy.environment": c.Environment, "berthy.operation": opID, "berthy.oneoff": kind}
+	nano, memory, err := resourceLimits(o.Resources)
+	if err != nil {
+		return "", errors.New("one-off preparation failed")
+	}
+	var host *hostLimits
+	if nano != 0 || memory != 0 {
+		host = &hostLimits{NanoCPUs: nano, Memory: memory}
+	}
 	spec, err := json.Marshal(struct {
 		Image            string            `json:"Image"`
 		Entrypoint       []string          `json:"Entrypoint"`
 		Cmd              []string          `json:"Cmd"`
 		Env              []string          `json:"Env,omitempty"`
 		Labels           map[string]string `json:"Labels"`
+		HostConfig       *hostLimits       `json:"HostConfig,omitempty"`
 		NetworkingConfig any               `json:"NetworkingConfig"`
-	}{p.Image, argv[:1], argv[1:], p.containerEnv(""), labels, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
+	}{p.Image, argv[:1], argv[1:], p.containerEnv(o.Role), labels, host, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
 	}

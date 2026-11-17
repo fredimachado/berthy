@@ -981,13 +981,21 @@ func (m *Manifest) validateJob(name string, j Job) error {
 	return nil
 }
 
-// validJobTimeout accepts an empty timeout, which takes the default, or a duration from minJobTimeout to maxJobTimeout.
-func validJobTimeout(s string) bool {
+// ParseCommandTimeout parses the time limit of a job or of a run: "" is the default (1h); otherwise from 1s to 24h.
+func ParseCommandTimeout(s string) (time.Duration, error) {
 	if s == "" {
-		return true
+		s = defaultJobTimeout
 	}
 	d, err := time.ParseDuration(s)
-	return err == nil && d >= minJobTimeout && d <= maxJobTimeout
+	if err != nil || d < minJobTimeout || d > maxJobTimeout {
+		return 0, fmt.Errorf("invalid timeout")
+	}
+	return d, nil
+}
+
+func validJobTimeout(s string) bool {
+	_, err := ParseCommandTimeout(s)
+	return err == nil
 }
 
 func (m *Manifest) defaults() {

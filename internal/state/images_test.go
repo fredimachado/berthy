@@ -328,6 +328,7 @@ func TestCompletedOneOffsIncludeMigrationsAndUnfinishedOnesOfFinishedOperations(
 		{10003, "schema_after", "started", `{"id":"c-after"}`},
 		{10004, "pre_hook", "created", `{"id":"c-created"}`},
 		{10005, "pre_hook", "intent", `{}`},
+		{10006, "run", "finished", `{"id":"c-run","exit":0}`},
 	}
 	for _, step := range steps {
 		if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: step.ordinal, Kind: "oneoff", Role: step.role, Name: "task", Desired: []byte(`{}`)}); err != nil {
@@ -350,7 +351,7 @@ func TestCompletedOneOffsIncludeMigrationsAndUnfinishedOnesOfFinishedOperations(
 	for _, one := range got {
 		ids = append(ids, one.ID)
 	}
-	want := "c-pre,c-before,c-apply,c-after,c-created"
+	want := "c-pre,c-before,c-apply,c-after,c-created,c-run"
 	if strings.Join(ids, ",") != want {
 		t.Fatalf("one-offs %v, want %s (a step that created no container has none)", ids, want)
 	}

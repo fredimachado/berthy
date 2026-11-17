@@ -42,7 +42,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
   The file maps each environment to its agent and names the variable that holds its token. It never holds a token. When none of the three is set, or the file is missing, the error names the path it looked for.
 
 - `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
-- Flags can come in any order, before or after the app name. The one exception is `exec`: everything after `--` is the command to run.
+- Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
 
 ---
@@ -113,7 +113,7 @@ A few decisions shape everything else:
 | --- | --- |
 | `read` | Look: `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `checks`, `jobs`, `backup list`, `ingress status`, `approvals`. |
 | `deploy` | Everything in `read`, plus deploy, roll back, restart, scale, run jobs and backups, take the lock, apply ingress, read diagnostics. |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve` and `reject`. |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `run`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve` and `reject`. |
 
 ## 3. The todo app
 
@@ -1145,7 +1145,7 @@ This is the daily loop. CI builds the image, pushes it, and deploys it.
 
 #### A token for CI
 
-CI needs a `deploy` token for `prod`. It can deploy, roll back and restart, but it cannot touch secrets, run `exec`, restore backups or approve anything.
+CI needs a `deploy` token for `prod`. It can deploy, roll back and restart, but it cannot touch secrets, run `exec` or `run`, restore backups or approve anything.
 
 Create tokens on your laptop. `agent token` needs no agent and no network:
 
@@ -1338,6 +1338,23 @@ berthy exec postgres -e prod --service postgres -- psql -U todo -d todo -c "sele
 ```
 
 `--role` is for image apps, and `--service` is refused for them. `--dry-run` prints where the command would run, the Swarm service of the role or the Compose project and service, and runs nothing.
+
+#### Run a one-off command
+
+```bash
+berthy run api -e prod -- /app/bin/rake db:seed
+berthy run api -e prod --role worker --timeout 30m -- /app/bin/reindex
+```
+
+`exec` runs a command in a serving replica, so it shares that replica's memory. `run` is for a one-off task that should not: it starts a **new container** from the image of the app's applied release (by digest), runs the command in it, prints the output, and exits non-zero when the command did. It is what a `run:` hook or a migration does during a deploy, without a deploy around it.
+
+The container gets the app's environment (`env.plain` and `env.secret`) and the `BERTHY_*` variables of the role, the shared overlay network, and the role's `resources` limits (`cpu` and `memory`). An app with several roles needs `--role`; an app with one does not. The output is redacted of managed secret values, as `exec`'s is, and is kept with the operation.
+
+- `--timeout` is the time limit of the command, from `1s` to `24h`, `1h` by default. A command that runs past it is stopped and removed, and the run fails with `run timed out after <timeout>`.
+- A run is an operation. It holds the environment's deploy lock while it runs, so no deploy starts under it, and it needs an **`admin`** token. On a protected environment, an AI agent's `run` is held until a person approves it, and the plan shows the command, the image digest and the role.
+- The container is removed once its output is recorded, whatever the exit code. If the agent restarts in the middle of a run, recovery stops the container and `prune` removes what is left.
+- `--dry-run` prints the image (digest) and role the command would run in, and runs nothing.
+- `run` is for image apps. For a Compose app it is refused with `run is for image apps; use exec --service`.
 
 ---
 
@@ -1857,7 +1874,7 @@ The `--agent` flag marks it as an agent token. Add the printed JSON object to `t
 
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
-Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
+Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
 
 Not held: reads; `--dry-run` (it changes nothing, so an agent gets the plan at once); and every request on an unprotected environment. A request the token has no right to make is refused at once, not held.
 
@@ -1950,7 +1967,7 @@ Its result is one of:
 - **Plan.** With `dry_run`: `{"dry_run": true, "plan": ...}`. Never held.
 - **Refused.** The wrong scope, a held deploy lock, an unknown app: a tool error with the agent's message.
 
-Some commands have no MCP tool on purpose: `scale`, `exec`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
+Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
 
 ---
 
@@ -2202,6 +2219,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `backup run <name>` | deploy | none | Run a volume backup now and wait. Exit 0 only on success. |
 | `alerts test` | deploy | none | Send a test message through Telegram. |
 | `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--service` | Run a command in a running container: of an image app's role (`--role`), or of a Compose app's service (`--service`). |
+| `run <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--timeout` | Run a command in a new container of the app's applied release, with its environment and the role's limits, and remove the container afterwards. Image apps only. `--timeout` defaults to `1h` and runs from `1s` to `24h`. |
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
@@ -2412,7 +2430,7 @@ The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use se
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `agent-info`, `checks`, `jobs`, `lock status`, `backup list`, `ingress status`, `approvals` (without plans), following an operation's events. |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
-| `admin` | Everything in `deploy`, plus `secret`, `exec`, `prune`, `restore`, `state-backup`, `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
+| `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
 
 A token marked `agent` has the scope it says. The mark only decides whether its changes are held on a protected environment, and that it can never approve or reject.
 

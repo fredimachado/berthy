@@ -35,6 +35,8 @@ type Request struct {
 	Command       []string          `json:"command,omitempty"`
 	// Service names the Compose service an exec runs in. It may be left out when the app has one service.
 	Service string `json:"service,omitempty"`
+	// Timeout is the time limit of a run, such as "30m". Empty means the default.
+	Timeout string `json:"timeout,omitempty"`
 	// ReplaceExisting takes over routes and DNS records that Berthy did not create. It needs administrator access.
 	ReplaceExisting bool `json:"replace_existing,omitempty"`
 	// ComposeFile is the Compose file of a Compose app deploy. The CLI reads it from the manifest directory.
@@ -327,6 +329,12 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.Kind == "exec" {
 		// A flag the app's kind does not take is refused now, so the caller sees it at once instead of in a failed operation.
 		if _, _, err := c.execKind(ctx, req); err != nil {
+			return state.Operation{}, false, err
+		}
+	}
+	if req.Kind == "run" {
+		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
+		if _, err := c.runTarget(ctx, req); err != nil {
 			return state.Operation{}, false, err
 		}
 	}

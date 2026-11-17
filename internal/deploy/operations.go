@@ -158,6 +158,8 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 			return Plan{}, err
 		}
 		return Plan{App: req.App, Command: req.Command, Exec: &ExecPlan{Target: target}}, nil
+	case "run":
+		return c.planRun(ctx, actor, req)
 	case "prune":
 		if !actor.Admin {
 			return Plan{}, errors.New("administrator required")
@@ -234,6 +236,9 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	}
 	if req.Kind == "exec" {
 		return c.runExec(ctx, op, actor, req)
+	}
+	if req.Kind == "run" {
+		return c.runRun(ctx, op, actor, req)
 	}
 	if req.Kind == "prune" {
 		if !actor.Admin {

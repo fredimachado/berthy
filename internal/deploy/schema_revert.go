@@ -49,6 +49,7 @@ func PublicMessage(s string) bool {
 	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
+		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,
 		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,
 		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecServiceImage, errExecServices, errComposeRole,
 		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal,
@@ -56,7 +57,7 @@ func PublicMessage(s string) bool {
 		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
-	return backup.PublicRefusal(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s)
+	return backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")
@@ -109,15 +110,15 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 
 // runRevert records the schema state, runs the revert from the migration's image, and records the state again.
 func (c *Controller) runRevert(ctx context.Context, opID string, sr schemaRevert) (string, string, error) {
-	before, err := c.runOneOff(ctx, opID, sr.Prepared, 30000, "revert_before", sr.Version, true, sr.Timeout)
+	before, err := c.runOneOff(ctx, opID, sr.Prepared, oneOff{Ordinal: 30000, Kind: "revert_before", Argv: sr.Version, Version: true, Timeout: sr.Timeout})
 	if err != nil {
 		return "", "", err
 	}
-	_, revertErr := c.runOneOff(ctx, opID, sr.Prepared, 30001, "migration_revert", sr.Revert, false, sr.Timeout)
+	_, revertErr := c.runOneOff(ctx, opID, sr.Prepared, oneOff{Ordinal: 30001, Kind: "migration_revert", Argv: sr.Revert, Timeout: sr.Timeout})
 	if errors.Is(revertErr, ErrOneOffUncertain) {
 		return before, "", revertErr
 	}
-	after, afterErr := c.runOneOff(ctx, opID, sr.Prepared, 30002, "revert_after", sr.Version, true, sr.Timeout)
+	after, afterErr := c.runOneOff(ctx, opID, sr.Prepared, oneOff{Ordinal: 30002, Kind: "revert_after", Argv: sr.Version, Version: true, Timeout: sr.Timeout})
 	if revertErr != nil {
 		return before, after, revertErr
 	}

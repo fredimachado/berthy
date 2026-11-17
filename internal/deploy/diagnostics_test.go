@@ -451,7 +451,7 @@ func TestFailedHookDiagnosticCarriesExitCodeAndOutput(t *testing.T) {
 	name := fmt.Sprintf("berthy-%s-10000", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "exited", ExitCode: 3}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stderr migration 0042 failed: column exists\n"}
-	_, err = c.runOneOff(context.Background(), op.ID, p, 10000, "pre_hook", []string{"migrate"}, false, time.Minute)
+	_, err = c.runOneOff(context.Background(), op.ID, p, oneOff{Ordinal: 10000, Kind: "pre_hook", Argv: []string{"migrate"}, Timeout: time.Minute})
 	d := failureDiagnostics(err)
 	if err == nil || len(d) != 1 || d[0].ExitCode == nil || *d[0].ExitCode != 3 || !strings.Contains(d[0].Logs, "migration 0042 failed") || d[0].Index != 1 {
 		t.Fatalf("error %v diagnostics %+v", err, d)
@@ -496,7 +496,7 @@ func TestTimedOutOneOffKeepsItsOutputAndIsNotStopped(t *testing.T) {
 	name := fmt.Sprintf("berthy-%s-10001", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "running"}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stdout still migrating\n"}
-	_, err = c.runOneOff(context.Background(), op.ID, p, 10001, "migration_apply", []string{"apply"}, false, 5*time.Minute)
+	_, err = c.runOneOff(context.Background(), op.ID, p, oneOff{Ordinal: 10001, Kind: "migration_apply", Argv: []string{"apply"}, Timeout: 5 * time.Minute})
 	d := failureDiagnostics(err)
 	if !errors.Is(err, ErrOneOffUncertain) || len(d) != 1 || !strings.HasPrefix(d[0].Error, errTimedOut) || !strings.Contains(d[0].Logs, "still migrating") || d[0].ExitCode != nil {
 		t.Fatalf("error %v diagnostics %+v", err, d)

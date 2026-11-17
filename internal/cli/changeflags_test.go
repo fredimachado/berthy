@@ -41,6 +41,7 @@ var changeCommands = []changeCommand{
 	{name: "restart", pos: []string{"restart", "api"}},
 	{name: "scale", pos: []string{"scale", "api"}},
 	{name: "exec", pos: []string{"exec", "api"}, tail: []string{"--", "true"}},
+	{name: "run", pos: []string{"run", "api"}, tail: []string{"--", "true"}},
 	{name: "prune", pos: []string{"prune"}},
 	{name: "remove", pos: []string{"remove", "api"}},
 	{name: "destroy", pos: []string{"destroy"}, fixed: []string{"--confirm", "dev"}},

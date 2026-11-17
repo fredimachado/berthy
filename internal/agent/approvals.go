@@ -112,7 +112,7 @@ func supportsDryRun(rest []string) bool {
 	switch {
 	case len(rest) == 1:
 		switch rest[0] {
-		case "deploys", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "restore", "secrets":
+		case "deploys", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore", "secrets":
 			return true
 		}
 	case len(rest) == 2:
@@ -601,6 +601,8 @@ func summarize(rest []string, body []byte) string {
 			return "exec " + cleanText(b.App, 80) + "/" + cleanText(b.Service, 40)
 		}
 		return "exec " + app
+	case "run":
+		return "run " + app
 	case "prune":
 		return "prune"
 	case "remove":
@@ -635,7 +637,7 @@ func routeKind(rest []string) string {
 		return "deploy"
 	case len(rest) == 1:
 		switch rest[0] {
-		case "rollback", "restart", "scale", "exec", "prune", "remove", "destroy", "restore":
+		case "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore":
 			return rest[0]
 		case "secrets":
 			return "secret set"

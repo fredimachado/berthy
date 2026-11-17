@@ -45,6 +45,7 @@ var changeFlags = map[string][]string{
 	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
 	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
 	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role", "--service"),
+	"run":              withRemoteFlags("--dry-run", "--request-id", "--role", "--timeout"),
 	"prune":            withRemoteFlags("--dry-run", "--request-id"),
 	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
 	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
@@ -331,7 +332,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	endpoint := ""
 	var body any
 	switch cmd {
-	case "deploy", "rollback", "restart", "scale", "exec", "prune", "remove", "destroy":
+	case "deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy":
 		if cmd == "deploy" && len(f.pos) == 0 {
 			return runDeployAll(f, target, out, errout)
 		}
@@ -367,6 +368,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		req.AllowRecreate = f.allowRecreate
 		req.Volumes = f.volumes
 		req.Command = f.command
+		req.Timeout = f.timeout
 		if f.id == "" {
 			if req.RequestID, err = newRequestID(); err != nil {
 				return 1
@@ -401,6 +403,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		if cmd == "exec" && len(req.Command) == 0 {
 			fmt.Fprintln(errout, "exec requires a command after --")
+			return 2
+		}
+		if cmd == "run" && len(req.Command) == 0 {
+			fmt.Fprintln(errout, "run requires a command after --")
 			return 2
 		}
 		if cmd == "deploy" {
@@ -740,13 +746,13 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if json.Unmarshal(data, &v) == nil && v.State != "running" && v.State != "" {
 					exitCode := 0
-					if cmd == "exec" {
+					if cmd == "exec" || cmd == "run" {
 						outputURL := *base
 						outputURL.Path = prefix + "operations/" + url.PathEscape(id) + "/output"
 						outputURL.RawQuery = ""
 						output, e := agentclient.Send(ctx, c, "GET", outputURL.String(), token, nil)
 						if e != nil {
-							fmt.Fprintln(errout, "exec output unavailable")
+							fmt.Fprintln(errout, cmd+" output unavailable")
 							return 1
 						}
 						b, e := io.ReadAll(io.LimitReader(output.Body, (1<<20)+1))
@@ -761,7 +767,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 							ExitCode int    `json:"exit_code"`
 						}
 						if e != nil || len(b) > 1<<20 || output.StatusCode != 200 || json.Unmarshal(b, &result) != nil {
-							fmt.Fprintln(errout, "exec output unavailable")
+							fmt.Fprintln(errout, cmd+" output unavailable")
 							return 1
 						}
 						exitCode = result.ExitCode

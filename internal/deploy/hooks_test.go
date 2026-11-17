@@ -148,7 +148,7 @@ func TestUncertainMigrationDoesNotRunVersionWhileUnconfirmed(t *testing.T) {
 func TestOneOffRunsExactArgv(t *testing.T) {
 	c, f, id, p := hookFixture(t)
 	f.exits = []int{0}
-	if _, err := c.runOneOff(context.Background(), id, p, 1, "pre_hook", []string{"/tool", "two words"}, false, time.Minute); err != nil {
+	if _, err := c.runOneOff(context.Background(), id, p, oneOff{Ordinal: 1, Kind: "pre_hook", Argv: []string{"/tool", "two words"}, Timeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	var spec struct {
@@ -166,7 +166,7 @@ func TestSchemaVersionIsJournaledWithOneOff(t *testing.T) {
 	c, f, id, p := hookFixture(t)
 	f.exits = []int{0}
 	f.logs = [][]byte{[]byte("v7\n")}
-	v, err := c.runOneOff(context.Background(), id, p, 10000, "schema_before", []string{"version"}, true, time.Minute)
+	v, err := c.runOneOff(context.Background(), id, p, oneOff{Ordinal: 10000, Kind: "schema_before", Argv: []string{"version"}, Version: true, Timeout: time.Minute})
 	if err != nil || v != "v7" {
 		t.Fatalf("version %q: %v", v, err)
 	}

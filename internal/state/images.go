@@ -83,7 +83,7 @@ type CompletedOneOff struct{ OperationID, ID, Name, Role string }
 // commands that finished, and any one-off that created a container but never finished, such as one that timed out. Their
 // output lives on in the operation's diagnostics. A step that never created a container has none to list.
 func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after')) ORDER BY i.operation_id,i.ordinal`, s.env)
+	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after','run')) ORDER BY i.operation_id,i.ordinal`, s.env)
 	if err != nil {
 		return nil, err
 	}

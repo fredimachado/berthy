@@ -577,6 +577,8 @@ func TestEverySummaryIsOneShortPrintableLine(t *testing.T) {
 		{[]string{"scale"}, `{"app":"api","role":"web","replicas":3}`, "scale api/web to 3"},
 		{[]string{"exec"}, `{"app":"api","command":["rm","-rf","/"]}`, "exec api"},
 		{[]string{"exec"}, `{"app":"db","service":"postgres","command":["psql"]}`, "exec db/postgres"},
+		{[]string{"run"}, `{"app":"api","role":"web","command":["rake"]}`, "run api/web"},
+		{[]string{"run"}, `{"app":"api","command":["rake"]}`, "run api"},
 		{[]string{"prune"}, `{}`, "prune"},
 		{[]string{"remove"}, `{"app":"api","volumes":true}`, "remove api and its volumes"},
 		{[]string{"destroy"}, `{}`, "destroy the environment"},
