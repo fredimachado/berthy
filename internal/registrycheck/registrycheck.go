@@ -168,6 +168,10 @@ func (p Probe) do(ctx context.Context, rawURL, auth string) (int, http.Header, [
 
 // baseURL is https://host, or http://host for a loopback registry (as Docker does).
 func baseURL(host string) string {
+	// Docker Hub's names (docker.io, index.docker.io) are not its registry API host; this is Docker's own mapping.
+	if h := strings.ToLower(hostname(host)); h == "docker.io" || h == "index.docker.io" {
+		return "https://registry-1.docker.io"
+	}
 	if isLoopback(hostname(host)) {
 		return "http://" + host
 	}

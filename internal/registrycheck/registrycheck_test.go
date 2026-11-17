@@ -345,6 +345,9 @@ func (s *stubTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestBaseURLScheme(t *testing.T) {
 	cases := []struct{ host, want string }{
+		{"docker.io", "https://registry-1.docker.io/v2/acme/api/tags/list?n=1"},
+		{"index.docker.io", "https://registry-1.docker.io/v2/acme/api/tags/list?n=1"},
+		{"Docker.IO:443", "https://registry-1.docker.io/v2/acme/api/tags/list?n=1"},
 		{"ghcr.io", "https://ghcr.io/v2/acme/api/tags/list?n=1"},
 		{"ghcr.io:8443", "https://ghcr.io:8443/v2/acme/api/tags/list?n=1"},
 		{"localhost:5000", "http://localhost:5000/v2/acme/api/tags/list?n=1"},
