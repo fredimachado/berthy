@@ -65,7 +65,7 @@ var changeFlags = map[string][]string{
 	"ingress status":   withRemoteFlags(),
 	"alerts test":      withRemoteFlags(),
 	"secret list":      withRemoteFlags(),
-	"secret set":       withRemoteFlags("--dry-run", "--registry"),
+	"secret set":       withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
 	"secret delete":    withRemoteFlags("--dry-run"),
 	"secret rm":        withRemoteFlags("--dry-run"),
 	"job run":          withRemoteFlags(),
@@ -505,14 +505,13 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			endpoint = "secrets"
 		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
-				data, e := io.ReadAll(io.LimitReader(os.Stdin, 65537))
-				if e != nil || len(data) > 65536 {
-					fmt.Fprintln(errout, "secret input unavailable or too large")
-					return 1
+				value, code := secretValue(f, errout)
+				if code != 0 {
+					return code
 				}
 				endpoint = "secrets"
 				method = "POST"
-				body = map[string]any{"name": f.pos[1], "value": strings.TrimSuffix(string(data), "\n"), "registry": f.registry, "dry_run": f.dry}
+				body = map[string]any{"name": f.pos[1], "value": value, "registry": f.registry, "dry_run": f.dry}
 			} else {
 				endpoint = "secrets/" + url.PathEscape(f.pos[1])
 				method = "DELETE"
