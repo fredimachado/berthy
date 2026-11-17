@@ -24,7 +24,7 @@ put the logic in a script file and run that file by path.
 `$E2E_ROOT` is `~/berthy-e2e/harness` in WSL, unless `E2E_ROOT` is set.
 
 - `src/`: a copy of the repo made by `build.sh`, with CR stripped from `*.go`, `go.mod` and `go.sum`.
-- `bin/`: `berthy`, `faketelegram` and `fakeotlp`.
+- `bin/`: `berthy`, `faketelegram`, `fakeotlp` and `tuidriver` (a program that runs a command in a pseudo-terminal and drives it with keys; see `test/tuidriver`).
 - `run/`: the agent and CLI configs, `env.sh` (the two tokens, mode 0600), the state key, the fake-server files, and pid files.
 - `manifest/`: `berthy.yml`, the manifest that scenarios deploy from.
 - `logs/`: the agent and fake logs of the current scenario. `setup.sh` clears them for each scenario.
@@ -36,7 +36,7 @@ throwaway registry `127.0.0.1:15021`.
 
 ## Scripts
 
-- `build.sh`: copies the repo, strips CR from Go sources, and builds the three binaries. Each is built to `*.new` and moved
+- `build.sh`: copies the repo, strips CR from Go sources, and builds the four binaries. Each is built to `*.new` and moved
   into place, so a failed build keeps the previous binary.
 - `setup.sh`: builds a fresh fixture. It purges the previous e2e objects, makes new tokens, a new state key and configs,
   starts an in-memory registry holding `e2e/web:v1` and `:v2` (pushed from the existing `127.0.0.1:15001` tags), validates

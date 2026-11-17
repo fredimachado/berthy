@@ -418,3 +418,35 @@ func TestDemuxReportsAFailedWriteAsThatWrite(t *testing.T) {
 		t.Fatalf("error %v", err)
 	}
 }
+
+func TestNewStreamWrapsAConnection(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no TCP here: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		b, _ := io.ReadAll(c)
+		c.Write(bytes.ToUpper(b))
+	}()
+	conn, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewStream(context.Background(), conn)
+	defer s.Close()
+	if _, err = io.WriteString(s, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := io.ReadAll(s); err != nil || string(out) != "ABC" {
+		t.Fatalf("output %q %v", out, err)
+	}
+}

@@ -550,6 +550,10 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			gate.serveApprovals(w, r, actor, scope, rest)
 			return
 		}
+		if rest[0] == "sessions" {
+			serveSession(w, r, d, gate, actor)
+			return
+		}
 		// An agent token on a protected environment does not change it: the request is held until a person approves it.
 		if actor.Agent && method != "GET" && gate.hold(w, r, actor, rest) {
 			return
@@ -635,6 +639,9 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		required = "read"
 		method = "GET"
 	case len(rest) == 1 && rest[0] == "restore":
+		required = "admin"
+		method = "POST"
+	case len(rest) == 1 && rest[0] == "sessions":
 		required = "admin"
 		method = "POST"
 	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":

@@ -823,7 +823,7 @@ Rotate a secret by running `berthy secret set` again with the new value. At a te
 
 Berthy tells you first when a credential is refused or about to expire. `berthy doctor` and a Telegram alert name the check, such as `registry:ghcr.io` or `cloudflare_token`, and the command that replaces the value. The checks and their messages are explained in [step 8](#step-8-keep-it-healthy). After you run `secret set` with a working value, `doctor` shows `accepted` at once, and the recovery alert follows within 10 minutes. The failures below are what happens when a check is missed.
 
-**A registry password.** Replace the token when `berthy doctor` or an alert reports `registry:ghcr.io` as refused. If you miss that, a deploy fails with `image resolution failed` or `image pull failed`, or `docker service ps` on a server shows tasks `Rejected`. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`. The command in the alert names it, which does the same.
+**A registry password.** Replace the token when `berthy doctor` or an alert reports `registry:ghcr.io` as refused. If you miss that, a deploy fails with `image resolution failed` or `image pull failed`, or the service's tasks are rejected, which the restart-loop check of `berthy doctor` reports. Then run the command again. You do not need `--registry`: Berthy keeps `ghcr.io`. The command in the alert names it, which does the same.
 
 ```bash
 berthy secret set GHCR_TOKEN -e prod
@@ -1339,6 +1339,23 @@ berthy exec postgres -e prod --service postgres -- psql -U todo -d todo -c "sele
 
 `--role` is for image apps, and `--service` is refused for them. `--dry-run` prints where the command would run, the Swarm service of the role or the Compose project and service, and runs nothing.
 
+**An interactive command.** Add `-i` (`--interactive`) to connect standard input, so a prompt works from your laptop with no shell on the server: an application console, a database shell, a restore.
+
+```bash
+berthy exec api -e prod -i -- /app/bin/console
+berthy exec postgres -e prod --service postgres -i -- psql -U todo -d todo
+berthy exec postgres -e prod --service postgres -i -- pg_restore -U todo -d todo --clean --if-exists --no-owner < latest.dump
+```
+
+- **With a terminal.** When your own standard input and standard output are both terminals, Berthy gives the command a terminal too, puts yours in raw mode (and restores it when the command ends), and sends its size and every change of it. Ctrl-C and the other control keys reach the command.
+- **Piped.** When either is not a terminal, there is no terminal: standard input streams to the command and ends when yours does, and the command's standard output and standard error arrive on yours, apart. `< latest.dump` and `| berthy exec ... -i` are this case.
+- **Exit code.** An `-i` command ends with the command's own exit code, so `exit 5` in the shell gives 5. (Without `-i`, `exec` exits 1 when the command failed.) If the agent cannot start the command, or the connection is lost, the message is on standard error and the exit code is 1.
+- **Leaving.** The session ends when the command does. If your connection drops first, the session ends, but the command may keep running in the container, as it does with `docker exec`.
+- **Not an operation.** A session takes no deploy lock and is not journaled, so it never blocks a deploy, and it can last as long as you need. It needs an **`admin`** token. The audit log records its start with the command, and its end with the exit code (`berthy audit`); never what you typed or what it printed. The command is shortened to about 200 characters and managed secret values in it are replaced by `[redacted]`.
+- **No approval.** A session cannot wait for a person, so on a protected environment an AI agent's token is refused one: `an interactive session cannot be held for approval; use a person's token`. On an unprotected environment an agent token with `admin` scope may open one. An agent has no interactive session through MCP.
+- An agent holds at most 16 sessions at once; the 17th is refused with `too many interactive sessions`.
+- `--dry-run` ignores `-i` and prints the plan of the command.
+
 #### Run a one-off command
 
 ```bash
@@ -1355,6 +1372,19 @@ The container gets the app's environment (`env.plain` and `env.secret`) and the 
 - The container is removed once its output is recorded, whatever the exit code. If the agent restarts in the middle of a run, recovery stops the container and `prune` removes what is left.
 - `--dry-run` prints the image (digest) and role the command would run in, and runs nothing.
 - `run` is for image apps. For a Compose app it is refused with `run is for image apps; use exec --service`.
+
+**An interactive one-off.** `run -i` starts the same new container and connects standard input, with a terminal when yours is one, as `exec -i` does above:
+
+```bash
+berthy run api -e prod -i -- /app/bin/rails console
+berthy run api -e prod --role worker -i -- sh
+```
+
+- A session is not an operation. It does not take the deploy lock, so a deploy can start while it is open, and it is not journaled. It needs an **`admin`** token, an agent token is refused on a protected environment, and the audit log records its start and end only ([see `exec -i`](#run-a-command-in-a-container)).
+- With no `--timeout`, an interactive run has no time limit: it ends when the command does, or when you leave. With `--timeout`, a session past it is stopped and the run fails with `run timed out after <timeout>`.
+- The CLI exits with the command's own exit code.
+- When your connection drops, or the agent stops, the container is stopped and removed. So is it when the command ends. If the agent itself dies, the next agent removes the container at its start.
+- The container is labelled `berthy.session`, and not `berthy.operation`, so `prune` and recovery do not touch it.
 
 ---
 
@@ -1781,29 +1811,32 @@ If the agent stops during a restore, the operation ends `interrupted`, and at it
 
 #### The PostgreSQL recovery recipe
 
-The restored volume holds `latest.dump`. Load it into a **scratch** database first, and look at it, before you touch the real one. On the server:
+The restored volume holds `latest.dump`. Load it into a **scratch** database first, and look at it, before you touch the real one. Everything below runs from your laptop, through the agent, with an `admin` token; none of it needs a shell on the server.
+
+`restore` has checked the archive against its description file and made the volume, but the dump has to reach the machine you run `berthy` on. Download the same archive from your bucket with your own tool, and take the dump out of it:
 
 ```bash
-ssh ops@10.0.0.5
-
-# 1. A throwaway Postgres with the restored volume mounted read-only.
-docker run -d --name pg-scratch -e POSTGRES_PASSWORD=scratch \
-  -v todo-restore:/restore:ro postgres:17.2-alpine
-
-# 2. Load the dump into a scratch database and inspect it.
-docker exec pg-scratch createdb -U postgres todo_check
-docker exec pg-scratch pg_restore -U postgres -d todo_check --no-owner /restore/latest.dump
-docker exec pg-scratch psql -U postgres -d todo_check -c '\dt'
-docker rm -f pg-scratch
+aws s3 cp s3://acme-backups/postgres/todo/main-db/20261116T010000Z-7.tar.gz .
+tar -xzf 20261116T010000Z-7.tar.gz latest.dump
 ```
 
-If it looks right, load it into the real database. Stop the writers first. Berthy cannot scale an app to zero, so do it with Docker (`docker service scale todo-api-web=0`), and bring the API back afterwards with `berthy scale api --replicas 2 --role web`. Then:
+Then load it into a scratch database of the running Postgres and look at it:
 
 ```bash
-docker run --rm -v todo-restore:/restore:ro -v "$PWD":/out alpine cp /restore/latest.dump /out/latest.dump
-docker exec -i "$(docker ps -qf label=com.docker.compose.project=todo-postgres)" \
+berthy exec postgres -e prod --service postgres -i -- createdb -U todo todo_check
+berthy exec postgres -e prod --service postgres -i -- pg_restore -U todo -d todo_check --no-owner < latest.dump
+berthy exec postgres -e prod --service postgres -i -- psql -U todo -d todo_check -c '\dt'
+berthy exec postgres -e prod --service postgres -i -- dropdb -U todo todo_check
+```
+
+If it looks right, load it into the real database. Stop the writers first. Berthy cannot scale an app to zero, so that one step is Docker's: `docker service scale todo-api-web=0` on the server. Bring the API back afterwards with `berthy scale api --replicas 2 --role web`. Then:
+
+```bash
+berthy exec postgres -e prod --service postgres -i -- \
   pg_restore -U todo -d todo --clean --if-exists --no-owner < latest.dump
 ```
+
+The dump streams from your laptop to `pg_restore`, and the command's exit code is `pg_restore`'s. If you lose the connection halfway, the session ends but `pg_restore` may keep running in the container: look at the database before you run it again.
 
 Recovery starts from the backup's capture time. Anything written after the last dump is lost, and missed or failed runs make that window longer.
 

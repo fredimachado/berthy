@@ -515,6 +515,7 @@ A new version can fail to start for reasons only its own output explains: a miss
 - `berthy lock acquire -e prod -m "reason"` freezes deploys until someone releases it.
 - The lock records its holder, message and age. `berthy lock status` shows them.
 - A `berthy run` holds it too, for as long as its command runs (at most its `--timeout`), because the command runs in a container of the applied release and a deploy must not replace that release under it.
+- An interactive session (`exec -i`, `run -i`) does not take it and is not journaled: it can last an hour, and it must not block a deploy.
 
 ### Hooks
 
@@ -726,6 +727,36 @@ apps:
 ]}
 ```
 
+### Interactive sessions
+
+`berthy exec <app> -i -- <command>` and `berthy run <app> -i -- <command>` connect the command's standard input: an application console, a database shell or a restore from a dump works from a laptop with no shell on the server.
+
+- **What the CLI does.** When its own standard input and standard output are both terminals, the session has a terminal: the CLI puts its terminal in raw mode, restores it at the end, and sends the terminal's size when it starts and at every change (`SIGWINCH`; on Windows it polls the size every 250 ms). Otherwise there is no terminal: standard input streams to the command, ends with `CloseStdin` when it ends, and the command's standard output and standard error stay apart. The CLI exits with the command's own exit code. A `Failure` frame prints its message on standard error and exits 1, and a lost connection prints `the session ended unexpectedly` and exits 1. `--dry-run` ignores `-i` and prints the plan of the command.
+- **What the agent does.** An `exec` session runs in the container `exec` would choose, and ends when the command does. When the client leaves, the session ends and the command may keep running in the container, as with `docker exec`. A `run` session creates a new container of the applied release, prepared as `run` prepares it (role environment, limits, the shared network), with its standard input open and attached, and a terminal when asked, labelled `berthy.environment=<env>`, `berthy.session=<id>` and `berthy.oneoff=session`. It attaches before it starts, resizes to the first size, and removes the container when the command ends, when the client leaves (the container is stopped first) and when the agent shuts down. `--timeout` stops a `run` session past it (with the grace of `run`) and reports `run timed out after <timeout>`; without it a `run` session has no time limit.
+- **Not an operation.** A session takes no deploy lock, starts no operation and is not journaled. It needs an `admin` token. It is not in the MCP server and not in the terminal UI.
+- **Orphans.** At start, after recovery, the agent removes every container of its environment that has a `berthy.session` label, in whatever state: a running agent owns no session of an earlier process. On shutdown the agent closes every open session, so the containers of `run` sessions are stopped and removed before it exits (bounded by the shutdown's 5 seconds).
+- **Limit.** An agent holds at most 16 open sessions. The 17th is refused with `429` and `too many interactive sessions`.
+- **Protected environments.** A session cannot wait for a person, so an agent token is refused one on a protected environment with `403` and `an interactive session cannot be held for approval; use a person's token`: nothing is held, queued or recorded. An agent token with `admin` scope may open one on an unprotected environment.
+- **Audit.** The audit log records the start, with the action `session exec <app>[/<role or service>]` or `session run <app>[/<role>]` and the outcome `started: <command>`, and the end with the outcome `ended: exit <code>`, `ended: client disconnected`, `ended: the agent is stopping`, or `ended: <the failure the client was told>`. The command is its words joined by spaces, with managed secret values replaced by `[redacted]` and cut to 200 characters. What was typed and what was printed are never recorded.
+
+The API is `POST /v1/environments/<env>/sessions` (`admin` scope). The request asks to switch protocols, `Connection: Upgrade` and `Upgrade: berthy-session/1`, and its JSON body (at most 64 KiB, unknown fields refused) is:
+
+```json
+{"kind":"exec","app":"api","role":"web","service":"","command":["bin/console"],"tty":true,"size":{"Rows":40,"Cols":120},"timeout":"30m"}
+```
+
+`kind` is `exec` or `run`; `role` and `service` are exclusive, `service` is for `exec`, and `timeout` for `run`. `size` goes with `tty`, from 1 to 1000 rows and columns. A request that is refused is an ordinary error answer (400 for a request without the upgrade headers or an invalid one or a refusal such as `run is for image apps; use exec --service`, 403, 429). Otherwise the agent answers `101 Switching Protocols` and both sides exchange **frames** on the connection until the agent sends `Exit` or `Failure`. A frame is one byte for the kind, four bytes for the payload's length (big-endian, at most 64 KiB), and the payload:
+
+| Kind | Byte | From | Payload |
+| --- | --- | --- | --- |
+| `Stdin` | 1 | client | bytes for the command's standard input |
+| `Resize` | 2 | client | rows, then columns, 2 bytes each, big-endian; only with a terminal |
+| `CloseStdin` | 3 | client | none: the input has ended |
+| `Stdout` | 4 | agent | output; with a terminal, all of it |
+| `Stderr` | 5 | agent | error output; only without a terminal |
+| `Exit` | 6 | agent | `{"code":N}`; the last frame of a command that ended |
+| `Failure` | 7 | agent | a short public message; the last frame of a session that could not start or broke |
+
 ### Dry run
 
 Every command that changes something accepts `--dry-run` and prints the plan without acting.
@@ -772,8 +803,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `deploy [--version <app>=<tag>]…` | Deploy every app in `depends_on` order and stop at the first failure; an image app given no version keeps the one it runs, and a plain `--version` is for a manifest with one image app (see Deploying every app) | Yes |
 | `rollback <app>` | Return to a previous deploy | Yes |
 | `restart <app>`, `scale <app>` | Restart or change replica count; `scale` is for image apps, and a Compose app is refused | Yes |
-| `exec <app> -- <command>` | Run a command in a running container: the role's container for an image app (`--role`), or a service's container for a Compose app (`--service`, which may be left out when the app has one service) | Yes |
-| `run <app> [--role <name>] [--timeout <d>] -- <command>` | Run a command in a new container of the app's applied release, with the role's environment, the shared network and the role's resource limits, and remove the container after its output is recorded. Image apps only; `--timeout` defaults to `1h`, from `1s` to `24h`. An operation under the deploy lock, held while the command runs | Yes |
+| `exec <app> [-i] -- <command>` | Run a command in a running container: the role's container for an image app (`--role`), or a service's container for a Compose app (`--service`, which may be left out when the app has one service); with `-i`, an interactive session (see "Interactive sessions"), and the exit code is the command's own | Yes |
+| `run <app> [--role <name>] [--timeout <d>] [-i] -- <command>` | Run a command in a new container of the app's applied release, with the role's environment, the shared network and the role's resource limits, and remove the container after its output is recorded. Image apps only; `--timeout` defaults to `1h`, from `1s` to `24h`. An operation under the deploy lock, held while the command runs; with `-i`, an interactive session instead, which holds no lock, and with no `--timeout` has no limit | Yes |
 | `secret set`, `secret list`, `secret rm` | Manage secret values; values are never printed | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
 | `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
@@ -1211,6 +1242,8 @@ An environment is protected when the agent's configuration says `"protected": tr
 10. The audit log records `approval_request:<summary>` by the agent when it is held, and `approval_approve`, `approval_reject`, `approval_expired` or `approval_failed` by the person who decided; an expiry that nobody caused is recorded by `berthy`. Expiry is recorded when the approval is next listed or decided.
 11. The CLI exit code of a held command is **3**: not done, not failed. The command prints `held for approval: <id> (expires <time>)` and the plan, and with `--json` prints the answer as JSON.
 
+Interactive sessions are the exception to what an agent token's change does on a protected environment: they are refused, not held (see "Interactive sessions").
+
 The approvals API: `GET /v1/environments/<env>/approvals[?status=pending]` (`read`), which lists the approvals newest first with id, actor, kind, summary, plan (`deploy` scope or higher only), created, expires, status, decided_by, decided_at and result; `POST .../approvals/<id>/approve` and `POST .../approvals/<id>/reject` with an optional `{"reason"}` (`admin`, not an agent token).
 
 ### Other guardrails
@@ -1219,6 +1252,7 @@ The approvals API: `GET /v1/environments/<env>/approvals[?status=pending]` (`rea
 - **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints, and `approve` checks that it still is before it runs the request.
 - **Deploy lock.** A manual lock freezes an environment for everyone, people and AI agents alike.
 - **Stateful protection.** Recreating or removing a `stateful` Compose app needs `--allow-recreate` and an `admin` token. `berthy remove` of a `stateful` Compose app needs the same.
+- **Interactive sessions are not held.** An agent token is refused `exec -i` and `run -i` on a protected environment (see "Interactive sessions"), because a session cannot wait for approval and nothing may queue one. The audit log records a session's start and end, never its input or output.
 - **Audit log.** Every change is recorded with time, command, target and outcome. API requests include the token name and caller's address. Scheduled runs identify the job as the caller.
 
 ### Secrets

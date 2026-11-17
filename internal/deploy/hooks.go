@@ -164,23 +164,7 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 	defer cancel()
 	name := fmt.Sprintf("berthy-%s-%d", opID, ordinal)
 	labels := map[string]string{"berthy.environment": c.Environment, "berthy.operation": opID, "berthy.oneoff": kind}
-	nano, memory, err := resourceLimits(o.Resources)
-	if err != nil {
-		return "", errors.New("one-off preparation failed")
-	}
-	var host *hostLimits
-	if nano != 0 || memory != 0 {
-		host = &hostLimits{NanoCPUs: nano, Memory: memory}
-	}
-	spec, err := json.Marshal(struct {
-		Image            string            `json:"Image"`
-		Entrypoint       []string          `json:"Entrypoint"`
-		Cmd              []string          `json:"Cmd"`
-		Env              []string          `json:"Env,omitempty"`
-		Labels           map[string]string `json:"Labels"`
-		HostConfig       *hostLimits       `json:"HostConfig,omitempty"`
-		NetworkingConfig any               `json:"NetworkingConfig"`
-	}{p.Image, argv[:1], argv[1:], p.containerEnv(o.Role), labels, host, map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}})
+	spec, err := p.oneOffSpec(argv, o.Role, o.Resources, labels, nil)
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
 	}
@@ -249,6 +233,44 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 		return "", ErrOneOffUncertain
 	}
 	return v, nil
+}
+
+// terminal says how a one-off container serves a person: its standard input stays open and is attached, and a terminal is
+// allocated when TTY is set. A batch one-off has none.
+type terminal struct{ TTY bool }
+
+// oneOffSpec is the Docker spec of a one-off container of the prepared image: the command as entrypoint and arguments, the
+// environment of role, the labels, the limits, and the shared network. Every kind of one-off is built here, so a hook, a
+// run and an interactive session differ only in the labels and in term, which is nil for a batch one.
+func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Resources, labels map[string]string, term *terminal) (json.RawMessage, error) {
+	nano, memory, err := resourceLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+	var host *hostLimits
+	if nano != 0 || memory != 0 {
+		host = &hostLimits{NanoCPUs: nano, Memory: memory}
+	}
+	spec := struct {
+		Image            string            `json:"Image"`
+		Entrypoint       []string          `json:"Entrypoint"`
+		Cmd              []string          `json:"Cmd"`
+		Env              []string          `json:"Env,omitempty"`
+		Labels           map[string]string `json:"Labels"`
+		HostConfig       *hostLimits       `json:"HostConfig,omitempty"`
+		NetworkingConfig any               `json:"NetworkingConfig"`
+		Tty              bool              `json:"Tty,omitempty"`
+		OpenStdin        bool              `json:"OpenStdin,omitempty"`
+		StdinOnce        bool              `json:"StdinOnce,omitempty"`
+		AttachStdin      bool              `json:"AttachStdin,omitempty"`
+		AttachStdout     bool              `json:"AttachStdout,omitempty"`
+		AttachStderr     bool              `json:"AttachStderr,omitempty"`
+	}{Image: p.Image, Entrypoint: argv[:1], Cmd: argv[1:], Env: p.containerEnv(role), Labels: labels, HostConfig: host,
+		NetworkingConfig: map[string]any{"EndpointsConfig": map[string]any{p.NetworkID: map[string]any{}}}}
+	if term != nil {
+		spec.Tty, spec.OpenStdin, spec.StdinOnce, spec.AttachStdin, spec.AttachStdout, spec.AttachStderr = term.TTY, true, true, true, true, true
+	}
+	return json.Marshal(spec)
 }
 
 // uncertainOneOff is the error of a one-off whose outcome is unknown, such as one that ran past its time limit. It carries

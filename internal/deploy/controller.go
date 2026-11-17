@@ -131,6 +131,8 @@ type Controller struct {
 	Backups BackupRunner
 	// recoverMu serializes Recover and ResolveRecovery so a resolve never lands during a recovery attempt's Docker changes.
 	recoverMu sync.Mutex
+	// sessions are the interactive sessions that are open.
+	sessions sessionSet
 }
 
 // ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.

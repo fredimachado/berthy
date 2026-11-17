@@ -16,6 +16,7 @@ SRC=$E2E_ROOT/src            # rsynced copy of the repo (native fs)
 BIN=$E2E_ROOT/bin/berthy
 TG_BIN=$E2E_ROOT/bin/faketelegram
 OTLP_BIN=$E2E_ROOT/bin/fakeotlp
+TUI_BIN=$E2E_ROOT/bin/tuidriver
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
 MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
