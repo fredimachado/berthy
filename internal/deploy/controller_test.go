@@ -782,13 +782,19 @@ func (f *boundFake) InspectContainerHealth(context.Context, string) (string, err
 // seedRelease records a succeeded deploy of app web at digest that binds the given services.
 func seedRelease(t *testing.T, s *state.Store, requestID, digest string, bindings ...state.Binding) {
 	t.Helper()
+	seedTaggedRelease(t, s, requestID, digest, "", bindings...)
+}
+
+// seedTaggedRelease records a succeeded deploy of app web at digest, asked for by tag ("" for a digest deploy), that binds the given services.
+func seedTaggedRelease(t *testing.T, s *state.Store, requestID, digest, tag string, bindings ...state.Binding) {
+	t.Helper()
 	ctx := context.Background()
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: requestID, ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(dockerManifest(nil))
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: digest, Manifest: raw, Bindings: bindings}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: digest, Tag: tag, Manifest: raw, Bindings: bindings}}); err != nil {
 		t.Fatal(err)
 	}
 	// Later operations must start after this one, so the timestamps order them.
@@ -975,5 +981,100 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	defer e.mu.Unlock()
 	if !strings.Contains(string(e.spec), strings.Repeat("b", 64)) {
 		t.Fatal("adopted service was not updated")
+	}
+}
+
+// tagResolver is an engine whose registry resolves every tag to one digest. The rest of the engine is the one it wraps.
+type tagResolver struct {
+	Engine
+	digest string
+}
+
+func (r tagResolver) ResolveImage(context.Context, string, *engine.RegistryAuth) (string, error) {
+	return r.digest, nil
+}
+
+func TestRequestedTag(t *testing.T) {
+	for _, tc := range []struct{ image, tag string }{
+		{"ghcr.io/acme/api:v1.0.2", "v1.0.2"},
+		{"ghcr.io/acme/api@sha256:" + strings.Repeat("a", 64), ""},
+		{"docker.io/cloudflare/cloudflared:2026.11.0", "2026.11.0"},
+		{"localhost:5000/a/b:1", "1"},
+	} {
+		if got := requestedTag(tc.image); got != tc.tag {
+			t.Errorf("requestedTag(%q) = %q, want %q", tc.image, got, tc.tag)
+		}
+	}
+}
+
+func TestDeployByTagRecordsTheTag(t *testing.T) {
+	s := openStore(t)
+	f := &boundFake{}
+	c := &Controller{Engine: tagResolver{Engine: f, digest: "sha256:" + strings.Repeat("c", 64)}, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "by-tag", App: "web", Version: "v1.0.2", Manifest: dockerManifest(nil)})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	release, err := s.Applied(context.Background(), "web")
+	if err != nil || release.Tag != "v1.0.2" || !strings.HasSuffix(release.Digest, "@sha256:"+strings.Repeat("c", 64)) {
+		t.Fatalf("release %s tag %q: %v", release.Digest, release.Tag, err)
+	}
+}
+
+func TestDeployByDigestRecordsNoTag(t *testing.T) {
+	s := openStore(t)
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "by-digest", App: "web", Version: "sha256:" + strings.Repeat("d", 64), Manifest: dockerManifest(nil)})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	release, err := s.Applied(context.Background(), "web")
+	if err != nil || release.Tag != "" {
+		t.Fatalf("digest deploy recorded tag %q: %v", release.Tag, err)
+	}
+}
+
+func TestRollbackRecordsTheTagOfTheReleaseItReturnsTo(t *testing.T) {
+	s := openStore(t)
+	seedTaggedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64), "v1.0.1")
+	seedTaggedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), "v1.0.2", boundBinding("legacy-web", "old-id"))
+	f := &boundFake{}
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	release, err := s.Applied(context.Background(), "web")
+	if err != nil || release.Tag != "v1.0.1" || !strings.Contains(release.Digest, strings.Repeat("a", 64)) {
+		t.Fatalf("rollback release %s tag %q: %v", release.Digest, release.Tag, err)
+	}
+}
+
+func TestDryRunPlanCarriesTheTag(t *testing.T) {
+	s := openStore(t)
+	c := &Controller{Engine: tagResolver{Engine: &boundFake{}, digest: "sha256:" + strings.Repeat("c", 64)}, Store: s, Environment: "test"}
+	plan, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "plan", App: "web", Version: "v1.0.2", DryRun: true, Manifest: dockerManifest(nil)})
+	if err != nil || plan.Tag != "v1.0.2" {
+		t.Fatalf("plan tag %q: %v", plan.Tag, err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil || !strings.Contains(string(raw), `"tag":"v1.0.2"`) {
+		t.Fatalf("plan JSON %s: %v", raw, err)
+	}
+}
+
+func TestIngressConnectorRecordsItsTagWhenGivenByTag(t *testing.T) {
+	f := newIngressFixture(t)
+	f.ctrl.Engine = tagResolver{Engine: f.docker, digest: "sha256:" + strings.Repeat("e", 64)}
+	m := ingressManifestImage(t, "cloudflare/cloudflared:2026.11.0", "")
+	// The dry run shows the tag the connector release will record.
+	plan, err := f.ctrl.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "ingress", Manifest: m, DryRun: true})
+	if err != nil || plan.Tag != "2026.11.0" {
+		t.Fatalf("ingress plan tag %q: %v", plan.Tag, err)
+	}
+	f.applyIngress("apply-tag", m)
+	release, err := f.store.Applied(context.Background(), manifest.ConnectorAppName)
+	if err != nil || release.Tag != "2026.11.0" {
+		t.Fatalf("connector release tag %q: %v", release.Tag, err)
 	}
 }

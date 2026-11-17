@@ -53,7 +53,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 12 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -132,6 +132,71 @@ func TestReleaseRecordsSchemaAndOperation(t *testing.T) {
 		t.Fatalf("history %v %v", history, err)
 	}
 }
+func TestReleaseRecordsTag(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	finish := func(id, tag string) {
+		t.Helper()
+		op, _, err := s.Admit(ctx, Admission{RequestID: id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded", Release: &Release{App: "app", Digest: "digest-" + id, Tag: tag, Manifest: []byte(`{}`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish("tagged", "v1.0.2")
+	if applied, err := s.Applied(ctx, "app"); err != nil || applied.Tag != "v1.0.2" {
+		t.Fatalf("applied tag %q: %v", applied.Tag, err)
+	}
+	finish("untagged", "")
+	if applied, err := s.Applied(ctx, "app"); err != nil || applied.Tag != "" {
+		t.Fatalf("applied without a tag %q: %v", applied.Tag, err)
+	}
+	history, err := s.History(ctx, "app")
+	if err != nil || len(history) != 2 || history[0].Tag != "" || history[1].Tag != "v1.0.2" {
+		t.Fatalf("history tags %+v: %v", history, err)
+	}
+}
+
+func TestUpgradeVersionTwelveAddsReleaseTag(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "release", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded", Release: &Release{App: "app", Digest: "digest", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	// A schema 12 database has no tag column.
+	if _, err = s.db.Exec(`ALTER TABLE releases DROP COLUMN tag; PRAGMA user_version=12`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+		t.Fatalf("migration: %d %v", version, err)
+	}
+	history, err := upgraded.History(ctx, "app")
+	if err != nil || len(history) != 1 || history[0].Digest != "digest" || history[0].Tag != "" {
+		t.Fatalf("history after upgrade %+v: %v", history, err)
+	}
+	upgraded.Close()
+	again, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer again.Close()
+	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+		t.Fatalf("second open migration: %d %v", version, err)
+	}
+}
+
 func TestUpgradeVersionTwoPreservesProvenance(t *testing.T) {
 	s, dir, key := testStore(t)
 	ctx := context.Background()
@@ -172,7 +237,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 12 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
@@ -192,7 +257,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 
 func TestUnknownSchemaVersionIsRefused(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`PRAGMA user_version=13`); err != nil {
+	if _, err := s.db.Exec(`PRAGMA user_version=14`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

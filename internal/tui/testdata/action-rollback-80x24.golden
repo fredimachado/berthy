@@ -5,8 +5,8 @@
   │ Roll back api to release 2                                               │  
   │                                                                          │  
   │ · App api                                                                │  
-  │ · From release 3 · sha256:abcdef01 · commit c3 · 10m ago                 │  
-  │ · To release 2 · sha256:01234567 · commit c2 · 2h ago                    │  
+  │ · From release 3 · v1.0.2 · sha256:abcdef01 · commit c3 · 10m ago        │  
+  │ · To release 2 · v1.0.1 · sha256:01234567 · commit c2 · 2h ago           │  
   │ · Image 127.0.0.1:15001/app                                              │  
   │ · Digest sha256:abcdef0123456789abcd…                                    │  
   │ · Roles web                                                              │  

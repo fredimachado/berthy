@@ -103,10 +103,8 @@ func (d *detailModel) content(st styles, now time.Time, w int) string {
 		if len(hist) == 0 {
 			line(st.faint.Render("  no deploys recorded"))
 		}
-		for _, h := range hist {
-			for _, l := range deployLines(st, now, h, w-2) {
-				line("  " + l)
-			}
+		for _, l := range deployHistoryLines(st, now, hist, w-2) {
+			line("  " + l)
 		}
 	}
 	b.WriteString("\n")
@@ -197,17 +195,37 @@ func reasonLines(st styles, text string, indent, w int) []string {
 	return out
 }
 
-// deployLines is one deploy of the history: when, what, and for a failed one the reason.
-func deployLines(st styles, now time.Time, h historyRow, w int) []string {
-	when := fit(agoShort(now, h.Created)+" ago", 9)
-	what := h.Digest
-	switch {
-	case what == "":
-	case strings.Contains(what, "@"):
-		what = shortImage(what)
-	default:
-		what = shortImage("x@" + what)
+// deployHistoryLines is the "Recent deploys" list. Every release label in it shares one column, as wide as the widest tagged
+// label, so a tagged and an untagged release line up on their commit. A list with no tag keeps the 16-cell column.
+func deployHistoryLines(st styles, now time.Time, hist []historyRow, w int) []string {
+	col := 16
+	for _, h := range hist {
+		if !h.failed() && h.Tag != "" {
+			col = max(col, lipgloss.Width(sanitize(tagged(h.Tag, releaseWhat(h)))))
+		}
 	}
+	var lines []string
+	for _, h := range hist {
+		lines = append(lines, deployLines(st, now, h, w, col)...)
+	}
+	return lines
+}
+
+// releaseWhat is the short digest of a release for a table: what shortImage gives for its digest, or "" for none.
+func releaseWhat(h historyRow) string {
+	switch {
+	case h.Digest == "":
+		return ""
+	case strings.Contains(h.Digest, "@"):
+		return shortImage(h.Digest)
+	default:
+		return shortImage("x@" + h.Digest)
+	}
+}
+
+// deployLines is one deploy of the history: when, what, and for a failed one the reason. col is the width of the release label.
+func deployLines(st styles, now time.Time, h historyRow, w, col int) []string {
+	when := fit(agoShort(now, h.Created)+" ago", 9)
 	commit := h.Commit
 	if commit == "" {
 		commit = "-"
@@ -225,7 +243,8 @@ func deployLines(st styles, now time.Time, h historyRow, w int) []string {
 		}
 		return lines
 	}
-	return []string{st.ok.Render(glyphOK+" ") + st.muted.Render(when) + " " + st.text.Render(fit(sanitize(what), 16)) + " " + st.muted.Render("commit "+sanitize(clip(commit, 12)))}
+	label := fit(sanitize(tagged(h.Tag, releaseWhat(h))), col)
+	return []string{st.ok.Render(glyphOK+" ") + st.muted.Render(when) + " " + st.text.Render(label) + " " + st.muted.Render("commit "+sanitize(clip(commit, 12)))}
 }
 
 func jobLines(st styles, now time.Time, j api.JobStatus, w int) []string {

@@ -284,6 +284,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			out := make([]map[string]any, 0, len(rows))
 			for _, r := range rows {
 				row := map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created}
+				if r.Tag != "" {
+					row["tag"] = r.Tag
+				}
 				addSchemaStates(row, r.SchemaBefore, r.SchemaAfter)
 				out = append(out, row)
 			}

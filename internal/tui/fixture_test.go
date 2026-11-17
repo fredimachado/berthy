@@ -68,7 +68,7 @@ func fixtureApps() []api.App {
 
 func fixtureHistory() []historyRow {
 	return []historyRow{
-		{ID: 3, Digest: "sha256:abcdef0123456789", Commit: "c3", Created: testNow.Add(-10 * time.Minute)},
+		{ID: 3, Tag: "v1.0.2", Digest: "sha256:abcdef0123456789", Commit: "c3", Created: testNow.Add(-10 * time.Minute)},
 		{OperationID: "op1", Kind: "deploy", State: "rolled_back", Commit: "cbad", Created: testNow.Add(-40 * time.Minute),
 			Reason: "replica web became unhealthy: health check failed 3 times, the container exited with code 1 and was rolled back"},
 		{ID: 2, Digest: "sha256:0123456789abcdef", Commit: "c2", Created: testNow.Add(-2 * time.Hour)},
@@ -197,4 +197,33 @@ func golden(t *testing.T, name, got string) {
 
 func logRec(sec int, role, replica, stream, msg string) logs.Record {
 	return logs.Record{Identity: logs.Identity{Role: role, Replica: replica}, Timestamp: testNow.Add(time.Duration(sec) * time.Second), Stream: stream, Message: msg}
+}
+
+// TestDeployLinesShowTheTagBeforeTheDigest: a release deployed by tag shows the tag first, and in a list that mixes tagged and
+// untagged releases the commit column starts at the same cell on every row. A list with no tag keeps the 16-cell column.
+func TestDeployLinesShowTheTagBeforeTheDigest(t *testing.T) {
+	st := newStyles(newPalette(true))
+	hist := []historyRow{
+		{ID: 3, Tag: "v1.0.2", Digest: "sha256:111c870af40e0000", Commit: "c3", Created: testNow.Add(-10 * time.Minute)},
+		{ID: 2, Digest: "sha256:0123456789abcdef", Commit: "c2", Created: testNow.Add(-2 * time.Hour)},
+	}
+	lines := deployHistoryLines(st, testNow, hist, 80)
+	if len(lines) != 2 {
+		t.Fatalf("%d lines for two releases", len(lines))
+	}
+	first, second := ansi.Strip(lines[0]), ansi.Strip(lines[1])
+	if !strings.Contains(first, "v1.0.2 "+glyphDot+" sha256:111c870a") {
+		t.Fatalf("a release with a tag: %q", first)
+	}
+	if strings.Contains(second, "v1.0.2") || !strings.Contains(second, "sha256:01234567") {
+		t.Fatalf("a release without a tag: %q", second)
+	}
+	column := func(line string) int { return ansi.StringWidth(line[:strings.Index(line, "commit")]) }
+	if column(first) != column(second) {
+		t.Fatalf("the commit column starts at cell %d and %d:\n%s\n%s", column(first), column(second), first, second)
+	}
+	only := ansi.Strip(deployHistoryLines(st, testNow, hist[1:], 80)[0])
+	if want := column(second) - (ansi.StringWidth("v1.0.2 "+glyphDot+" sha256:111c870a") - 16); column(only) != want {
+		t.Fatalf("an untagged-only list lost its 16-cell column: commit at %d, want %d:\n%s", column(only), want, only)
+	}
 }

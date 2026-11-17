@@ -45,6 +45,9 @@ type Request struct {
 	// RestoreKey is the object key of the backup a restore reads, and RestoreInto the name of the new volume it fills.
 	RestoreKey  string `json:"restore_key,omitempty"`
 	RestoreInto string `json:"restore_into,omitempty"`
+	// rollbackTag is the tag of the release a rollback returns to. It is unexported, so a client cannot send it, and it is not in
+	// the request hash.
+	rollbackTag string
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -53,8 +56,10 @@ type Actor struct {
 	Agent bool
 }
 type Plan struct {
-	App          string               `json:"app"`
-	Image        string               `json:"image"`
+	App   string `json:"app"`
+	Image string `json:"image"`
+	// Tag is the tag the deploy asked for, shown in the plan and recorded with the release. Empty for a digest.
+	Tag          string               `json:"tag,omitempty"`
 	Roles        []string             `json:"roles"`
 	Blockers     []string             `json:"blockers,omitempty"`
 	SchemaRevert *SchemaRevertSummary `json:"schema_revert,omitempty"`
@@ -177,7 +182,15 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if req.Kind != "" && req.Kind != "deploy" {
 		return Plan{}, errors.New("unsupported operation")
 	}
-	return c.prepare(ctx, req, image)
+	p, err := c.prepare(ctx, req, image)
+	if err != nil {
+		return Plan{}, err
+	}
+	if req.rollbackTag != "" {
+		// A rollback records the tag of the release it returns to. The digest it redeploys has no tag of its own.
+		p.Tag = req.rollbackTag
+	}
+	return p, nil
 }
 
 // hasHostnames reports whether the app declares a public hostname on any role.
@@ -429,6 +442,7 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	m.Connector = req.App == manifest.ConnectorAppName
 	req.Manifest = m
 	req.Version = chosen.Digest
+	req.rollbackTag = chosen.Tag
 	req.Commit = chosen.Commit
 	if composeRequest(req) {
 		// A Compose release has no image digest. Its deploy journaled the Compose file it ran.

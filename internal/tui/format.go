@@ -141,6 +141,16 @@ func rateText(perSecond float64) string {
 	return api.HumanSize(int64(perSecond)) + "/s"
 }
 
+// tagged puts the tag a release was deployed with before its short digest, as "v1.0.2 · sha256:111c870a". A release with no
+// tag is the short digest alone.
+func tagged(tag, short string) string {
+	tag = clip(sanitize(tag), 20)
+	if tag == "" {
+		return short
+	}
+	return tag + " " + glyphDot + " " + short
+}
+
 // shortImage is the version of an image reference for a table: its tag, or else the first characters of its digest.
 func shortImage(image string) string {
 	if image == "" {

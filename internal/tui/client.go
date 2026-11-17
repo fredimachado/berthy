@@ -36,6 +36,7 @@ type lockInfo struct {
 // historyRow is one line of an app's deploy history: a release that was deployed, or a deploy that failed with its reason.
 type historyRow struct {
 	ID          int64     `json:"id"`
+	Tag         string    `json:"tag"`
 	Digest      string    `json:"digest"`
 	Commit      string    `json:"commit"`
 	Created     time.Time `json:"created"`

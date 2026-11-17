@@ -223,3 +223,60 @@ func TestValidReasonBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	finish := func(id string, out state.Outcome) {
+		t.Helper()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish("tagged", state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "tagged-digest", Tag: "v1.0.2", Manifest: []byte(`{}`)}})
+	finish("untagged", state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "untagged-digest", Manifest: []byte(`{}`)}})
+	token := "bty.lab." + strings.Repeat("a", 64)
+	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
+	var rows []map[string]any
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rows) != nil {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		switch row["digest"] {
+		case "tagged-digest":
+			seen["tagged"] = true
+			if row["tag"] != "v1.0.2" {
+				t.Fatalf("tagged release row %v", row)
+			}
+		case "untagged-digest":
+			seen["untagged"] = true
+			if _, ok := row["tag"]; ok {
+				t.Fatalf("untagged release shows a tag: %v", row)
+			}
+		}
+	}
+	if !seen["tagged"] || !seen["untagged"] {
+		t.Fatalf("history %s", w.Body.String())
+	}
+}

@@ -333,7 +333,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			return
 		}
 	}
-	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Commit: req.Commit, Manifest: manifestJSON, Bindings: releaseBindings}}
+	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Manifest: manifestJSON, Bindings: releaseBindings}}
 	barrier, e := json.Marshal(outcome)
 	if e != nil {
 		outcome.State = "recovery_required"

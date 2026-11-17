@@ -257,3 +257,27 @@ func TestRecoveryNoticeNamesResolveCommand(t *testing.T) {
 		t.Fatalf("notice without id: %q", got)
 	}
 }
+
+// TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne: the tag a release was deployed with is a line of its history row, both as
+// text and as JSON, and a release with no tag has none.
+func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"id":3,"app":"api","digest":"sha256:111c870af40e","commit":"c3","created":"2026-11-16T12:00:00Z","tag":"v1.0.2"},{"id":2,"app":"api","digest":"sha256:0123456789ab","commit":"c2","created":"2026-11-15T12:00:00Z"}]`)
+	}))
+	defer server.Close()
+	config := diagnosticsConfig(t, server.URL)
+	var out, errs bytes.Buffer
+	if code := Run([]string{"history", "api", "-e", "dev", "--config", config}, &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs.String())
+	}
+	if !strings.Contains(out.String(), "tag: v1.0.2") || strings.Count(out.String(), "tag:") != 1 {
+		t.Fatalf("text history lacks the tag of release 3 or shows one for release 2:\n%s", out.String())
+	}
+	out.Reset()
+	if code := Run([]string{"history", "api", "-e", "dev", "--config", config, "--json"}, &out, &errs); code != 0 {
+		t.Fatalf("json exit %d: %s", code, errs.String())
+	}
+	if strings.Count(out.String(), `"tag"`) != 1 || !strings.Contains(out.String(), `"v1.0.2"`) {
+		t.Fatalf("json history lacks the tag of release 3 or shows one for release 2:\n%s", out.String())
+	}
+}

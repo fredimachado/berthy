@@ -20,8 +20,22 @@ type preparedPlan struct {
 	Env       []string
 }
 
+// requestedTag returns the tag of a resolved image reference ("ghcr.io/x/y:v1.0.2" -> "v1.0.2"), or "" when the reference has
+// none, as a digest has none. The tag is a label only: the digest is what runs.
+func requestedTag(image string) string {
+	ref, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return ""
+	}
+	if t, ok := ref.(reference.NamedTagged); ok {
+		return t.Tag()
+	}
+	return ""
+}
+
 func (c *Controller) prepare(ctx context.Context, req Request, image string) (Plan, error) {
-	p := Plan{App: req.App, Image: image}
+	// The tag is read from the requested image: prepare pins p.Image to its digest below.
+	p := Plan{App: req.App, Image: image, Tag: requestedTag(image)}
 	app := req.Manifest.Apps[req.App]
 	for role := range app.Roles {
 		p.Roles = append(p.Roles, role)

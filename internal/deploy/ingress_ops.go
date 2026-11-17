@@ -425,7 +425,7 @@ func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) 
 		if err != nil {
 			return Plan{}, err
 		}
-		p.Roles, p.Image = cp.Roles, cp.Image
+		p.Roles, p.Image, p.Tag = cp.Roles, cp.Image, cp.Tag
 		ip.Connector = &cp
 		// The token is compared, never shown: an apply would store it only if it differs. A tunnel that does not exist
 		// yet gets a new token, and a token that cannot be read stops the apply, so both count as a change.

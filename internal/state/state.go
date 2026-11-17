@@ -58,8 +58,11 @@ type Event struct {
 }
 type Binding struct{ App, Role, Name, ServiceID string }
 type Release struct {
-	ID                                     int64
-	App, Digest, Commit                    string
+	ID                  int64
+	App, Digest, Commit string
+	// Tag is the tag the deploy asked for (v1.0.2), empty for a digest deploy, a Compose app or an adoption. A label only:
+	// the digest is what runs.
+	Tag                                    string
 	OperationID, SchemaBefore, SchemaAfter string
 	Manifest                               json.RawMessage
 	Created                                time.Time
@@ -151,7 +154,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 12) {
+	if !fresh && (version < 1 || version > 13) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -246,12 +249,23 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if version < 13 {
+		// A database from before schema 13 lacks the tag of a release. The column check keeps a repeated upgrade harmless.
+		var has int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('releases') WHERE name='tag'`).Scan(&has); err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE releases ADD COLUMN tag TEXT NOT NULL DEFAULT ''`)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
 	// Each scheduled occurrence of a backup is recorded once.
 	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS backups_occurrence ON backups(environment, backup, scheduled) WHERE scheduled <> 0`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=12`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=13`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -573,7 +587,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			return errors.New("invalid release")
 		}
 		r := o.Release
-		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after) VALUES(?,?,?,?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now(), id, o.SchemaBefore, o.SchemaAfter)
+		res, e := tx.ExecContext(ctx, `INSERT INTO releases(environment,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag) VALUES(?,?,?,?,?,?,?,?,?,?)`, s.env, r.App, r.Digest, r.Commit, []byte(r.Manifest), now(), id, o.SchemaBefore, o.SchemaAfter, r.Tag)
 		if e != nil {
 			return e
 		}
@@ -656,7 +670,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	return tx.Commit()
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +679,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 	for rows.Next() {
 		var r Release
 		var ms int64
-		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter); err != nil {
+		if err = rows.Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag); err != nil {
 			return nil, err
 		}
 		r.Created = time.UnixMilli(ms).UTC()
@@ -892,7 +906,7 @@ func (s *Store) Lock(ctx context.Context) (Lock, error) {
 func (s *Store) Applied(ctx context.Context, app string) (Release, error) {
 	var r Release
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter)
+	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after,r.tag FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag)
 	r.Created = time.UnixMilli(ms).UTC()
 	if err != nil {
 		return r, err

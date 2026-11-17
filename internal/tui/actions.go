@@ -336,7 +336,7 @@ func (o *actionOverlay) releaseFact(h historyRow) string {
 	if digest != "" && !strings.Contains(digest, "@") {
 		digest = "x@" + digest
 	}
-	return mdText(fmt.Sprintf("release %d %s %s %s commit %s %s %s", h.ID, glyphDot, shortImage(sanitize(digest)), glyphDot, clip(orDash(h.Commit), 12), glyphDot, ago(o.now(), h.Created)))
+	return mdText(fmt.Sprintf("release %d %s %s %s commit %s %s %s", h.ID, glyphDot, tagged(h.Tag, shortImage(sanitize(digest))), glyphDot, clip(orDash(h.Commit), 12), glyphDot, ago(o.now(), h.Created)))
 }
 
 func (o *actionOverlay) releaseLabel(h historyRow) string {
@@ -348,7 +348,7 @@ func (o *actionOverlay) releaseLabel(h historyRow) string {
 	if commit == "" {
 		commit = "-"
 	}
-	return fmt.Sprintf("release %d  %s  commit %s  %s", h.ID, shortImage(sanitize(digest)), sanitize(clip(commit, 12)), ago(o.now(), h.Created))
+	return fmt.Sprintf("release %d  %s  commit %s  %s", h.ID, tagged(h.Tag, shortImage(sanitize(digest))), sanitize(clip(commit, 12)), ago(o.now(), h.Created))
 }
 
 func (o *actionOverlay) releaseForm() tea.Cmd {

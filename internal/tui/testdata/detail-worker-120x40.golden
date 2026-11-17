@@ -10,11 +10,11 @@
 │   ╰── ○ running · no health check · 8 · eeeeeeeeeeee                                                                 │
 │                                                                                                                      │
 │ Recent deploys  last 3                                                                                               │
-│   ✔ 10m ago   sha256:abcdef01  commit c3                                                                             │
+│   ✔ 10m ago   v1.0.2 · sha256:abcdef01 commit c3                                                                     │
 │   ✖ 40m ago   rolled back  commit cbad                                                                               │
 │       → replica web became unhealthy: health check failed 3 times, the container exited with code 1 and was rolled   │
 │         back                                                                                                         │
-│   ✔ 2h ago    sha256:01234567  commit c2                                                                             │
+│   ✔ 2h ago    sha256:01234567          commit c2                                                                     │
 │                                                                                                                      │
 │ Jobs  0 jobs                                                                                                         │
 │   no jobs                                                                                                            │

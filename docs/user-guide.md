@@ -920,7 +920,7 @@ berthy df    -e prod --config $CFG
 berthy history api -e prod --config $CFG
 ```
 
-`history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`.
+`history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`.
 
 #### Wait for health
 

@@ -143,9 +143,9 @@ func actionModel(t *testing.T, w, h int) (*Model, *fakeAgent) {
 	agent := &fakeAgent{approvals: fixtureApprovals(), history: fixtureHistory()}
 	agent.approvals[0].Plan = []byte(`{"action":"deploy","app":"api","image":"127.0.0.1:15001/app@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","roles":["web"]}`)
 	agent.history = []historyRow{
-		{ID: 3, Digest: "sha256:abcdef0123456789", Commit: "c3", Created: testNow.Add(-10 * time.Minute)},
+		{ID: 3, Tag: "v1.0.2", Digest: "sha256:abcdef0123456789", Commit: "c3", Created: testNow.Add(-10 * time.Minute)},
 		{OperationID: "op1", Kind: "deploy", State: "rolled_back", Commit: "cbad", Created: testNow.Add(-40 * time.Minute), Reason: "unhealthy"},
-		{ID: 2, Digest: "sha256:0123456789abcdef", Commit: "c2", Created: testNow.Add(-2 * time.Hour)},
+		{ID: 2, Tag: "v1.0.1", Digest: "sha256:0123456789abcdef", Commit: "c2", Created: testNow.Add(-2 * time.Hour)},
 		{ID: 1, Digest: "sha256:fedcba9876543210", Commit: "c1", Created: testNow.Add(-26 * time.Hour)},
 	}
 	prefix := "/v1/environments/prod/"
@@ -862,7 +862,7 @@ func TestRollbackPlanShowsFromAndTo(t *testing.T) {
 	press(t, m, pickReady(m), "b")
 	press(t, m, stageIs(m, stageConfirm), "enter")
 	out := plain(m)
-	if !strings.Contains(out, "From release 3 · sha256:abcdef01 · commit c3 · 10m ago") || !strings.Contains(out, "To release 2 · sha256:01234567 · commit c2 · 2h ago") {
+	if !strings.Contains(out, "From release 3 · v1.0.2 · sha256:abcdef01 · commit c3 · 10m ago") || !strings.Contains(out, "To release 2 · v1.0.1 · sha256:01234567 · commit c2 · 2h ago") {
 		t.Fatalf("no from and to:\n%s", out)
 	}
 	if strings.Index(out, "From release") > strings.Index(out, "To release") {
