@@ -101,12 +101,14 @@ protected: true
 
 Check both without a server: `berthy config validate -e prod`.
 
-**4. Set the secrets.** Values are read from standard input, so they stay out of your shell history.
+**4. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
 
 ```bash
-read -rs PAT && printf '%s' "$PAT" | berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG; unset PAT
-read -rs DB  && printf '%s' "$DB"  | berthy secret set DATABASE_URL -e prod --config $CFG; unset DB
+berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
+berthy secret set DATABASE_URL -e prod --config $CFG
 ```
+
+For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`.
 
 **5. Deploy.** `prod` is protected, so give the image digest that CI printed, not a tag.
 

@@ -233,7 +233,7 @@ A role's health check is a command run inside the container, with the same field
 ### Environment variables
 
 - **Plain** values are written in the manifest and reviewed like code.
-- **Secret** values are listed in the manifest by name only. The values live in the agent's encrypted store and are set with `berthy secret set NAME`, with `--registry HOST` for a registry password (see Registries).
+- **Secret** values are listed in the manifest by name only. The values live in the agent's encrypted store and are set with `berthy secret set NAME`, with `--registry HOST` for a registry password (see Registries). At a terminal the CLI asks for the value and does not echo it. A piped value is read from standard input, and one trailing newline is removed.
 - A deploy stops before changing anything if a named secret has no value.
 - Values that differ between environments go in the overlays.
 - Both kinds of app take the same `env` block. For a Compose app, Berthy writes the values into the project's environment file, where the Compose file reads them as `${NAME}`. Only the agent can read that file.
@@ -253,6 +253,7 @@ registries:
 - The credential should be read-only.
 - The agent uses it to resolve tags to digests and to pull. It hands the credential to Swarm with the service, so every server in a cluster can pull.
 - The password is set with `berthy secret set NAME --registry HOST`, where HOST is the registry's key under `registries`. The agent uses that secret only for that host. An environment secret is set without `--registry`, and an app's environment refuses a secret that has one.
+- At a terminal, `secret set` for a registry password checks it before storing it. For a registry the manifest lists under `registries`, the CLI asks the registry whether the credential can read the repository of each image app that pulls from that host. If the registry refuses the credential, the command stops with exit status 1 and sends nothing to the agent. If the registry cannot be reached from this machine, the CLI reports that the credential was not checked and stores the password. For `ghcr.io`, the CLI also prints a link that creates a classic token with `read:packages` only. A piped value is not checked.
 - Compose apps use the same credential for images from a listed registry. A Compose deploy needs the credential of every registry the manifest lists, not only of those its images come from, because the agent writes them all for the Compose CLI; a missing one stops the deploy.
 - A registry with no entry is pulled from anonymously.
 
@@ -449,6 +450,7 @@ The connector publishes no port. It makes outbound connections to Cloudflare onl
 
 - The API token needs two permissions: Cloudflare Tunnel edit on the account, and DNS edit on the zones that hold the hostnames. Limit it to those zones.
 - It is stored in the agent's secret store like any other secret, and set with `berthy secret set CLOUDFLARE_API_TOKEN -e prod`.
+- At a terminal, `secret set` for this token prints a link to Cloudflare's account token form with the permissions filled in: Cloudflare Tunnel edit, and DNS edit unless `dns: false`. Before it stores the token, the CLI checks that Cloudflare accepts it, that it can read tunnels in the account and, when DNS is on, that it sees the zone of each hostname. The check only reads.
 - The agent calls Cloudflare itself, so the server needs outbound HTTPS to Cloudflare's API.
 - The tunnel's token is fetched from the API, stored as a secret, and passed to the connector in its environment. It is never printed.
 - **DNS edit is the larger risk.** A token with it can repoint any record in those zones. To avoid granting it, create one wildcard record that points at the tunnel by hand and set `dns: false`; Berthy then manages routes only.

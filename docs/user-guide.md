@@ -671,13 +671,11 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 #### Set the secrets the first deploy needs
 
-Read each value from standard input. The command strips one trailing newline.
+`berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input, with one trailing newline stripped, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
 
 ```bash
 # The registry token: a GitHub token that can read packages. Note --registry.
-read -rs GHCR_PAT
-printf '%s' "$GHCR_PAT" | berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
-unset GHCR_PAT
+berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
 
 # Passwords you make up. They never appear on screen.
 openssl rand -hex 24 | berthy secret set POSTGRES_PASSWORD -e prod --config $CFG
@@ -698,6 +696,33 @@ berthy secret list -e prod --config $CFG
 ```
 
 Remove one with `berthy secret rm <NAME> -e prod --config $CFG` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything.
+
+#### What Berthy does at a terminal
+
+When standard input is a terminal, `berthy secret set` first reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. A piped value skips all of this: no guide, no prompt and no check.
+
+- **Guide.** For `--registry ghcr.io`, Berthy says the secret is the password it uses to pull images from ghcr.io, and prints a link to GitHub's form for a classic token with only `read:packages` selected and the note `berthy-<project>-<env>`. GitHub's container registry accepts only classic tokens, not fine-grained ones. For any other `--registry HOST` it prints one line saying what the secret is, with no link. For the secret that `ingress.cloudflare.api_token_secret` names, it prints a link to Cloudflare's token form with the permissions filled in ([step 7](#step-7-put-it-on-the-internet)).
+- **Hidden prompt.** It prints `Value of NAME (hidden):` and reads the value without showing it. Ctrl-C at the prompt cancels the command with exit code `130` and stores nothing. An empty value is refused with `no value entered`.
+- **Check.** Before it stores the value, Berthy tries the value against the service, from your machine:
+  - A registry password, for a registry the manifest lists under `registries`: for each image app that pulls from that host, Berthy asks the registry whether the credential can read that app's repository. A line such as `checked: ghcr.io lets this credential pull acme/todo-api` says what it found.
+  - The Cloudflare token: Berthy checks that Cloudflare accepts it, that it can read tunnels in the account and, when DNS is on, that it sees the zone of each hostname in the manifest. The lines look like `checked: Cloudflare accepts the token, and it can read tunnels in account …` and `checked: the token sees the zone of todo.example.com`. The check only reads, so it cannot prove the edit rights. `ingress apply --dry-run` is still the next test.
+  - If the service **refuses** the value, Berthy prints `not stored: <reason>`, exits with status `1` and sends nothing to the agent.
+  - If the service **cannot be reached** from this machine (a registry on a private network, or no internet), Berthy prints a `not checked: …` line and stores the value anyway.
+  - Other secrets, such as database passwords, are not checked.
+
+Unless it refuses the value, Berthy then stores it on the agent. Everything the prompt prints goes to standard error, so the command's result still goes to standard output. For the GHCR token, the terminal shows this:
+
+```text
+$ berthy secret set GHCR_TOKEN --registry ghcr.io -e prod --config $CFG
+GHCR_TOKEN is the password Berthy uses to pull images from ghcr.io.
+Create a GitHub token (classic) that can only read packages:
+  https://github.com/settings/tokens/new?description=berthy-todo-prod&scopes=read%3Apackages
+Value of GHCR_TOKEN (hidden):
+checked: ghcr.io lets this credential pull acme/todo-api
+ok: true
+```
+
+On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd. Git Bash's default window (mintty) does not give standard input a console, so Berthy reads the value as piped input there. Pipe the value in that window instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod --config $CFG`.
 
 #### Which secret is needed when
 
@@ -1201,7 +1226,7 @@ Without it, publishing an app means creating a tunnel in a dashboard, copying a 
 #### What you need
 
 - A Cloudflare account, with the domain (`example.com`) already in it. Berthy finds the zone from the hostname and does not add domains.
-- A Cloudflare **API token** with two permissions: *Cloudflare Tunnel: Edit* on the account, and *DNS: Edit* on the zones with your hostnames. Limit it to those zones.
+- A Cloudflare **API token** with two permissions: *Cloudflare Tunnel: Edit* on the account, and *DNS: Edit* on the zones with your hostnames. Limit it to those zones. When you set the secret, Berthy prints a link that opens Cloudflare's token form with both permissions filled in.
 - The server must reach Cloudflare's API over HTTPS (outbound). The connector makes outbound connections to Cloudflare on port 7844, and publishes no port.
 
 #### Configure it
@@ -1239,11 +1264,13 @@ apps:
 Store the token, then apply:
 
 ```bash
-printf '%s' "$CF_TOKEN" | berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
+berthy secret set CLOUDFLARE_API_TOKEN -e prod --config $CFG
 berthy ingress apply -e prod --config $CFG --dry-run
 berthy ingress apply -e prod --config $CFG
 berthy ingress status -e prod --config $CFG
 ```
+
+When you set the token, Berthy prints a link to Cloudflare's form for an account-owned token, with both permissions filled in and the name `berthy-<project>-<env>`, and reminds you to limit the token to the zones that hold your hostnames. The form needs the Super Administrator role on the account; without that role, create a user token by hand with the same two permissions. Before it stores the token, Berthy checks that Cloudflare accepts it, that it can read tunnels in the account and, when `dns` is on, that it sees the zone of each hostname. That check only reads, so `ingress apply --dry-run` is still the test of the edit rights.
 
 `ingress apply` creates or repairs the tunnel, deploys the connector, and brings every route and DNS record in line with the manifest. Run it once per environment, and again to change the connector's image or replicas. It needs a `deploy` token. `ingress status` shows the tunnel's health as Cloudflare reports it, the connectors, and each hostname with its target and DNS record.
 
