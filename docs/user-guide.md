@@ -1168,7 +1168,7 @@ ingress:
   cloudflare:
     account_id: 0123456789abcdef0123456789abcdef
     api_token_secret: CLOUDFLARE_API_TOKEN
-    image: cloudflare/cloudflared:2024.12.2
+    image: cloudflare/cloudflared:2026.11.0
     replicas: 1
     tunnel: todo-prod
     dns: true
