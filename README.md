@@ -133,7 +133,7 @@ Berthy's author wrote this section, so read it with that in mind. Every cell bel
 | Orchestration | Docker Swarm for image apps, Compose for stateful apps | Plain Docker over SSH | Docker Swarm, Compose or Stack | Docker and Compose. Swarm is deprecated | Plain Docker on one server. An optional k3s scheduler | Docker Swarm |
 | Databases | Compose apps marked `stateful`, from your own Compose file | Accessories, managed separately from the app | Managed MySQL, PostgreSQL, MongoDB, MariaDB, libSQL, Redis | One-click databases | Plugins | Deployed as apps or one-click apps |
 | Multi-server | One server per environment. A Swarm cluster is not set up by Berthy yet | Yes, a list of hosts | Remote servers, or Swarm nodes | Yes, standalone servers. Swarm is deprecated | One server, or the k3s scheduler | Yes, Swarm nodes |
-| License | Not chosen yet | MIT | Apache-2.0, except a proprietary directory | Apache-2.0 | MIT | Apache-2.0 with an appendix |
+| License | MIT | MIT | Apache-2.0, except a proprietary directory | Apache-2.0 | MIT | Apache-2.0 with an appendix |
 | Written in | Go, one binary | Ruby | TypeScript | PHP | Shell | TypeScript |
 
 ### How they run things
@@ -159,7 +159,7 @@ Main documentation and sources:
 ### Which one to choose
 
 - **Choose Berthy when** CI already builds your images, you run one server (or a few, one per environment) behind a VPN, and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.1.0.
-- **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram. It also needs a private network to reach the agent, and it has no license yet.
+- **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram. It also needs a private network to reach the agent.
 - **Choose Kamal when** you want deploys over plain SSH with nothing but Docker on the servers, builds in your own pipeline, and several hosts in one config file. It runs from your machine over SSH, with no agent of its own on the server.
 - **Choose Dokploy when** you want a web UI with builds on the server, managed databases with backups, templates, notifications, and Swarm or remote servers.
 - **Choose Coolify when** you want the broadest self-hosted PaaS: web UI, teams, 300+ one-click services, databases with scheduled backups, monitoring and many notification channels.
@@ -182,4 +182,4 @@ Berthy's tests run against a real Docker Swarm, a real registry and fakes for th
 
 ## License
 
-Not chosen yet.
+MIT. See [LICENSE](LICENSE).
