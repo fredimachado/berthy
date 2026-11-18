@@ -238,7 +238,7 @@ func apiBinding() state.Binding {
 // run admits an ingress request and waits for it to finish.
 func (f *ingressFixture) run(req Request) state.Operation {
 	f.t.Helper()
-	op, _, err := f.ctrl.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	op, _, err := admit(f.t, f.ctrl, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -1162,7 +1162,7 @@ func TestReplaceExistingNeedsAdministrator(t *testing.T) {
 	if _, err := c.Plan(context.Background(), Actor{ID: "deploy"}, req); !errors.Is(err, errReplaceAdmin) {
 		t.Fatalf("plan: %v", err)
 	}
-	if _, _, err := c.Admit(context.Background(), Actor{ID: "deploy"}, req); !errors.Is(err, errReplaceAdmin) {
+	if _, _, err := admit(t, &c, context.Background(), Actor{ID: "deploy"}, req); !errors.Is(err, errReplaceAdmin) {
 		t.Fatalf("admit: %v", err)
 	}
 	deploy := Request{RequestID: "deploy", App: "api", Version: "v1", ReplaceExisting: true, Manifest: ingressManifest(t, "")}

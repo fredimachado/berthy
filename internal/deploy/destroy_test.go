@@ -433,7 +433,7 @@ func TestDestroyNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	f := newDestroyFixture(t, true)
 	ctx := context.Background()
 	req := Request{RequestID: "d", Kind: "destroy", Confirm: ingressEnv}
-	if _, _, err := f.ctrl.Admit(ctx, Actor{ID: "ci"}, req); !errors.Is(err, errDestroyAdmin) {
+	if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "ci"}, req); !errors.Is(err, errDestroyAdmin) {
 		t.Fatalf("admit as deploy: %v", err)
 	}
 	if _, err := f.ctrl.Plan(ctx, Actor{ID: "ci"}, Request{Kind: "destroy", Confirm: ingressEnv, DryRun: true}); !errors.Is(err, errDestroyAdmin) {
@@ -441,7 +441,7 @@ func TestDestroyNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	}
 	for _, confirm := range []string{"", "other", "TEST", ingressEnv + " "} {
 		req.Confirm = confirm
-		if _, _, err := f.ctrl.Admit(ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errDestroyConfirm) {
+		if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errDestroyConfirm) {
 			t.Fatalf("admit with %q: %v", confirm, err)
 		}
 		if _, err := f.ctrl.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{Kind: "destroy", Confirm: confirm, DryRun: true}); !errors.Is(err, errDestroyConfirm) {

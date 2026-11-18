@@ -136,6 +136,8 @@ type Controller struct {
 	recoverMu sync.Mutex
 	// sessions are the interactive sessions that are open.
 	sessions sessionSet
+	// running counts the goroutines of the operations Admit started.
+	running sync.WaitGroup
 	// Observer hears every operation start and end. Nil: nobody is told.
 	Observer Observer
 }
@@ -400,19 +402,45 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	c.started(ctx, op, req)
 	switch kind {
 	case "deploy", "rollback":
-		go c.execute(context.Background(), op, actor, req)
+		c.start(func() { c.execute(context.Background(), op, actor, req) })
 	case "ingress":
-		go func() {
+		c.start(func() {
 			outcome := c.runIngress(context.Background(), op, actor, req)
 			_ = c.finish(context.Background(), op, outcome, target{})
-		}()
+		})
 	default:
-		go func() {
+		c.start(func() {
 			outcome := c.runOperation(context.Background(), op, actor, req)
 			_ = c.finish(context.Background(), op, outcome, target{})
-		}()
+		})
 	}
 	return op, true, nil
+}
+
+// start runs an admitted operation in its own goroutine, which Drain waits for: the goroutine writes to the state until it has
+// recorded the outcome and told the observer, so whoever closes the store has to wait for it first.
+func (c *Controller) start(run func()) {
+	c.running.Add(1)
+	go func() {
+		defer c.running.Done()
+		run()
+	}()
+}
+
+// Drain returns nil when every operation that Admit started has ended, or ctx's error when ctx ends first. The agent calls it
+// before it closes the store, and so does a test.
+func (c *Controller) Drain(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		c.running.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 func (c *Controller) Recover(ctx context.Context) error {
 	c.recoverMu.Lock()

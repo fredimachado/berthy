@@ -104,7 +104,7 @@ func waitOperation(t *testing.T, s *state.Store, id string) state.Operation {
 func TestDockerStoredSpecDeploysAppWithoutEnv(t *testing.T) {
 	s := openStore(t)
 	c := Controller{Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestDockerStoredSpecUpdatesToAppWithoutEnv(t *testing.T) {
 		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(map[string]string{"MODE": "fast"})},
 		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)},
 	} {
-		op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +208,7 @@ func TestRoleHealthWithoutStartPeriodDeploys(t *testing.T) {
 	}
 	s := openStore(t)
 	c := Controller{Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-start-period", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: *m})
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-start-period", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: *m})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestRoleWithANamedVolumeDeploysAndUpdates(t *testing.T) {
 		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: volumeManifest()},
 		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: volumeManifest()},
 	} {
-		op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, req)
 		if err != nil {
 			t.Fatal(err)
 		}

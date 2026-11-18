@@ -51,7 +51,7 @@ func TestModifiedDeployIsRefusedOnAProtectedEnvironment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := Request{RequestID: "modified", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Commit: "abc123", Modified: true, Manifest: tc.m}
 			var refusal Refusal
-			if _, _, err := tc.c.Admit(ctx, actor, req); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
+			if _, _, err := admit(t, tc.c, ctx, actor, req); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
 				t.Fatalf("Admit: %v", err)
 			}
 			req.DryRun = true
@@ -73,7 +73,7 @@ func TestModifiedDeployIsRefusedOnAProtectedEnvironment(t *testing.T) {
 	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
 	var refusal Refusal
 	req := Request{RequestID: "sticky", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Modified: true, Manifest: dockerManifest(nil)}
-	if _, _, err = c.Admit(ctx, actor, req); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
+	if _, _, err = admit(t, c, ctx, actor, req); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
 		t.Fatalf("sticky protection: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestRollbackCarriesTheFlagOfTheReleaseItReturnsTo(t *testing.T) {
 	protected := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}
 	actor := Actor{ID: "admin", Admin: true}
 	var refusal Refusal
-	if _, _, err = protected.Admit(ctx, actor, Request{RequestID: "rollback", App: "web", Kind: "rollback"}); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
+	if _, _, err = admit(t, protected, ctx, actor, Request{RequestID: "rollback", App: "web", Kind: "rollback"}); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
 		t.Fatalf("Admit of a rollback to local changes: %v", err)
 	}
 	if _, err = protected.Plan(ctx, actor, Request{App: "web", Kind: "rollback", DryRun: true}); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {

@@ -183,7 +183,16 @@ func Run(args []string, out, errout io.Writer) int {
 			return 1
 		}
 		if deployment != nil {
-			defer deployment.Store.Close()
+			// The store is closed only when no operation is left running: one that is would write to a closed store. It is left open
+			// otherwise, as it is when the agent is killed, and the next start recovers the operation.
+			operationsEnded := false
+			defer func() {
+				if operationsEnded {
+					deployment.Store.Close()
+				} else {
+					fmt.Fprintln(errout, "operations still running at exit: they are recovered at the next start")
+				}
+			}()
 			// The observer is set before recovery, so an operation that recovery ends is reported too.
 			reports := agent.NewReports(c, deployment.Store, func(msg string) { fmt.Fprintln(errout, msg) })
 			deployment.Observer = reports
@@ -194,6 +203,13 @@ func Run(args []string, out, errout io.Writer) int {
 			}()
 			// Registered after the store's Close, so it runs first: the queued records and messages are sent before the store closes.
 			defer func() { cancel(); <-reportsDone; reports.Wait() }()
+			// Registered after the reports' stop, so it runs first: a running operation records its outcome and the reports hear of
+			// it. The agent no longer takes requests by now, so no operation starts after this wait.
+			defer func() {
+				waitCtx, done := context.WithTimeout(context.Background(), operationGrace)
+				defer done()
+				operationsEnded = deployment.Drain(waitCtx) == nil
+			}()
 			recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
 			err = deployment.Recover(recoveryCtx)
 			done()
@@ -457,6 +473,10 @@ func runProbeHelper(errout io.Writer) int {
 	}
 	return 0
 }
+
+// operationGrace is how long a stopping agent lets a running operation record its outcome before it leaves it to the recovery of the
+// next start.
+const operationGrace = 30 * time.Second
 
 func retryRecovery(ctx context.Context, interval time.Duration, active func(context.Context) (state.Operation, error), recover func(context.Context) error) {
 	ticker := time.NewTicker(interval)

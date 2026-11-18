@@ -188,7 +188,7 @@ func webManifest(timeout string, hooks func(*manifest.App)) manifest.Manifest {
 
 func deployWeb(t *testing.T, c *Controller, s *state.Store, request, digest string, m manifest.Manifest) state.Operation {
 	t.Helper()
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: request, App: "web", Version: "sha256:" + strings.Repeat(digest, 64), Manifest: m})
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin"}, Request{RequestID: request, App: "web", Version: "sha256:" + strings.Repeat(digest, 64), Manifest: m})
 	if err != nil {
 		t.Fatal(err)
 	}

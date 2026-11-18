@@ -162,7 +162,7 @@ func runOutput(t *testing.T, s *state.Store, op string) (output string, exit int
 func TestRunExecutesInANewContainerOfTheAppliedRelease(t *testing.T) {
 	c, f, s := runFixture(t, runManifest("main"))
 	f.logs = []byte("hi main v1 s3cret\n")
-	op, _, err := c.Admit(context.Background(), runAdmin, runRequest("r1", "sh", "-c", "echo $GREETING"))
+	op, _, err := admit(t, c, context.Background(), runAdmin, runRequest("r1", "sh", "-c", "echo $GREETING"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestRunExecutesInANewContainerOfTheAppliedRelease(t *testing.T) {
 func TestRunRemovesTheContainerAndFailsOnANonzeroExit(t *testing.T) {
 	c, f, s := runFixture(t, runManifest("main"))
 	f.exit, f.logs = 3, []byte("boom\n")
-	op, _, err := c.Admit(context.Background(), runAdmin, runRequest("r1", "false"))
+	op, _, err := admit(t, c, context.Background(), runAdmin, runRequest("r1", "false"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestRunTimeoutStopsAndRemovesTheContainerAndReleasesTheLock(t *testing.T) {
 	f.block, f.logs = true, []byte("partial\n")
 	req := runRequest("r1", "sleep", "30")
 	req.Timeout = "1s"
-	op, _, err := c.Admit(context.Background(), runAdmin, req)
+	op, _, err := admit(t, c, context.Background(), runAdmin, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestRunIsRefusedBeforeItIsJournaled(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, f, s := runFixture(t, tc.manifest)
-			_, _, err := c.Admit(context.Background(), runAdmin, tc.req)
+			_, _, err := admit(t, c, context.Background(), runAdmin, tc.req)
 			var r Refusal
 			if !errors.As(err, &r) || r != tc.want || !PublicMessage(string(r)) {
 				t.Fatalf("admit: %v, want %q", err, tc.want)
@@ -311,7 +311,7 @@ func TestRunIsRefusedBeforeItIsJournaled(t *testing.T) {
 
 func TestRunNeedsAnAdministrator(t *testing.T) {
 	c, f, s := runFixture(t, runManifest("main"))
-	op, _, err := c.Admit(context.Background(), Actor{ID: "dev"}, runRequest("r1", "true"))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "dev"}, runRequest("r1", "true"))
 	if err != nil {
 		t.Fatal(err)
 	}

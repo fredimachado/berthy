@@ -37,12 +37,12 @@ func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{}
 	c := Controller{Engine: e, Store: store, Environment: "test"}
 	one := 1
 	req := Request{RequestID: "one", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "actor"}, req)
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,12 +135,12 @@ func TestUnhealthyFirstReleaseRemovesCreatedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{unhealthy: true}
 	c := Controller{Engine: e, Store: store, Environment: "test"}
 	one := 1
 	req := Request{RequestID: "bad", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "100ms", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "actor"}, req)
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestRecoveryCleansObservedCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	e := &positiveEngine{}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	one := 1
@@ -225,7 +225,7 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 		if id == "second" {
 			req.Version = "sha256:" + strings.Repeat("b", 64)
 		}
-		op, _, err := c.Admit(context.Background(), Actor{ID: "actor"}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +267,7 @@ func TestRecoveryKeepsLockOnForeignUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestRollbackSelectsPriorSuccessfulRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	c := Controller{Store: s}
 	app := manifest.Manifest{Project: "p", Network: "n", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {}}}}}
 	b, _ := json.Marshal(app)
@@ -345,7 +345,7 @@ func TestRecoveryCleansExactUnacknowledgedCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestRecoveryPreservesVerifiedReleaseAfterPostHookInterruption(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
@@ -461,7 +461,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	e := &positiveEngine{spec: append(json.RawMessage(nil), spec...)}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	req := Request{RequestID: "adopt", Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": role}}}}}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
@@ -525,7 +525,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
-		op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -567,7 +567,7 @@ func TestSchemaRevertRequiresKnownTargetBeforeRollout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	c := Controller{Store: s}
 	m := manifest.Manifest{Project: "p", Network: "n", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {}}}}}
 	b, _ := json.Marshal(m)
@@ -583,6 +583,24 @@ func TestSchemaRevertRequiresKnownTargetBeforeRollout(t *testing.T) {
 	if _, err := c.schemaRevertPlan(context.Background(), Request{App: "web", RevertSchema: true}); err == nil {
 		t.Fatal("unknown target accepted")
 	}
+}
+
+// admit is c.Admit, and the test waits for the operation's goroutine before its cleanups close the store, however the test
+// ends: one that fails while an operation runs would otherwise close the store under it, and the goroutine's panic would hide
+// the failure. A cleanup runs before the ones registered earlier, as the store's close, which openStore registered.
+func admit(t *testing.T, c *Controller, ctx context.Context, actor Actor, req Request) (state.Operation, bool, error) {
+	t.Helper()
+	op, created, err := c.Admit(ctx, actor, req)
+	if created {
+		t.Cleanup(func() {
+			waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := c.Drain(waitCtx); err != nil {
+				t.Errorf("an operation is still running at the end of the test: %v", err)
+			}
+		})
+	}
+	return op, created, err
 }
 
 func openStore(t *testing.T) *state.Store {
@@ -809,7 +827,7 @@ func boundBinding(name, serviceID string) state.Binding {
 // runBound admits a deploy or rollback of app web and returns the operation once it has finished.
 func runBound(t *testing.T, s *state.Store, c *Controller, req Request) state.Operation {
 	t.Helper()
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin"}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -969,7 +987,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
-		op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 		if err != nil {
 			t.Fatal(err)
 		}

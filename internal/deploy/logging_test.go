@@ -99,7 +99,7 @@ func TestDeployGivesNewServicesDefaultLogRotation(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
 	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "json-file", nil}, Store: s, Environment: "test"}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestDeployReplacesLogRotationWithTheRolesLogging(t *testing.T) {
 		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)},
 		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: withLogging},
 	} {
-		op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func TestDeployFailsWithoutTheDaemonLogDriver(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
 	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "", errors.New("daemon down")}, Store: s, Environment: "test"}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-driver", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
+	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-driver", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}

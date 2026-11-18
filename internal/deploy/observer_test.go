@@ -62,7 +62,7 @@ func TestObserverHearsASuccessfulDeploy(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("c", 64)
 	obs := &recordingObserver{}
 	c := &Controller{Engine: tagResolver{Engine: &boundFake{}, digest: digest}, Store: s, Environment: "prod", Observer: obs}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "ok", App: "web", Version: "v1.4.2", Manifest: dockerManifest(nil)})
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "ok", App: "web", Version: "v1.4.2", Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestObserverHearsAFailedDeployWithItsPublicReason(t *testing.T) {
 	one := 1
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "100ms", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}
 	c := &Controller{Engine: &positiveEngine{unhealthy: true}, Store: s, Environment: "prod", Observer: obs}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "bad", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m})
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "bad", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m})
 	if err != nil {
 		t.Fatal(err)
 	}

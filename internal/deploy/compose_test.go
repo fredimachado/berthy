@@ -92,7 +92,7 @@ func TestComposeRegistryAuthExistsOnlyForUp(t *testing.T) {
 	}
 	m := composeApp(false)
 	m.Registries = map[string]manifest.Registry{"registry.example": {Username: "robot", PasswordSecret: "REGISTRY_TOKEN"}}
-	op, _, err := c.Admit(ctx, Actor{ID: "ci"}, composeReq("auth", composeFileOne, m))
+	op, _, err := admit(t, c, ctx, Actor{ID: "ci"}, composeReq("auth", composeFileOne, m))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestComposeMissingRegistryCredentialStopsBeforeCompose(t *testing.T) {
 	c, s := composeController(t, runner, newComposeDocker())
 	m := composeApp(false)
 	m.Registries = map[string]manifest.Registry{"registry.example": {Username: "robot", PasswordSecret: "ABSENT"}}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, composeReq("no-cred", composeFileOne, m))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("no-cred", composeFileOne, m))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func digestOf(file string) string {
 func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
 	c, s := composeController(t, runner, newComposeDocker())
-	op, created, err := c.Admit(context.Background(), Actor{ID: "ci", Name: "ci"}, composeReq("one", composeFileOne, composeApp(true)))
+	op, created, err := admit(t, c, context.Background(), Actor{ID: "ci", Name: "ci"}, composeReq("one", composeFileOne, composeApp(true)))
 	if err != nil || !created {
 		t.Fatalf("admit: %v %v", created, err)
 	}
@@ -274,7 +274,7 @@ func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 func TestComposeUpFailureIsReported(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, upErr: errors.New("exit status 1")}
 	c, s := composeController(t, runner, newComposeDocker())
-	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, composeReq("up-fail", composeFileOne, composeApp(false)))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("up-fail", composeFileOne, composeApp(false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestComposeStatefulRecreateNeedsAdministratorAndFlag(t *testing.T) {
 	stale := newComposeDocker(engine.ComposeContainer{ID: "c1", Service: "database", ConfigHash: "hash-old-000000000000"})
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
 	c, s := composeController(t, runner, stale)
-	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, composeReq("no-flag", composeFileOne, composeApp(true)))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("no-flag", composeFileOne, composeApp(true)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestComposeStatefulRecreateNeedsAdministratorAndFlag(t *testing.T) {
 	// A deploy token cannot ask for the recreation even with the flag.
 	req := composeReq("flag-no-admin", composeFileOne, composeApp(true))
 	req.AllowRecreate = true
-	if _, _, err = c.Admit(context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) {
+	if _, _, err = admit(t, c, context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) {
 		t.Fatalf("flag without admin: %v", err)
 	}
 	if _, err = c.Plan(context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) {
@@ -321,7 +321,7 @@ func TestComposeStatefulRecreateNeedsAdministratorAndFlag(t *testing.T) {
 	// An administrator with the flag recreates the service.
 	req = composeReq("admin-flag", composeFileOne, composeApp(true))
 	req.AllowRecreate = true
-	op, _, err = c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	op, _, err = admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestComposePublicPortBlocksBeforeAnyChange(t *testing.T) {
 	public := `{"services":{"database":{"image":"alpine:3.20","ports":[{"mode":"ingress","host_ip":"0.0.0.0","target":80,"published":"8080","protocol":"tcp"}]}},"volumes":{}}`
 	runner := &fakeCompose{config: public, hashes: hashOne}
 	c, s := composeController(t, runner, newComposeDocker())
-	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, composeReq("public", composeFileOne, composeApp(false)))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("public", composeFileOne, composeApp(false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestComposeRefusesFileWithoutContentOrForImageApps(t *testing.T) {
 	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
 	ctx := context.Background()
 	for _, file := range []string{"", "a\x00b", strings.Repeat("x", manifest.MaxComposeFile+1)} {
-		if _, _, err := c.Admit(ctx, Actor{ID: "ci"}, composeReq("bad", file, composeApp(false))); !errors.Is(err, errComposeFile) {
+		if _, _, err := admit(t, c, ctx, Actor{ID: "ci"}, composeReq("bad", file, composeApp(false))); !errors.Is(err, errComposeFile) {
 			t.Fatalf("file %q: %v", file[:min(len(file), 8)], err)
 		}
 	}
@@ -400,7 +400,7 @@ func TestComposeAdoptionRecordsReleaseWithoutUp(t *testing.T) {
 	if err != nil || plan.Compose == nil || len(plan.Compose.Blockers) != 0 {
 		t.Fatalf("adoption plan %+v: %v", plan.Compose, err)
 	}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestComposeAdoptionRefusesDifferences(t *testing.T) {
 	c, s := composeController(t, runner, stale)
 	req := composeReq("adopt-diff", composeFileOne, composeApp(true))
 	req.Adopt = true
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestComposeRollbackRedeploysStoredFile(t *testing.T) {
 	ctx := context.Background()
 	admin := Actor{ID: "admin", Admin: true}
 	for _, tc := range []struct{ id, file string }{{"first", composeFileOne}, {"second", composeFileTwo}} {
-		op, _, err := c.Admit(ctx, admin, composeReq(tc.id, tc.file, composeApp(false)))
+		op, _, err := admit(t, c, ctx, admin, composeReq(tc.id, tc.file, composeApp(false)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -455,7 +455,7 @@ func TestComposeRollbackRedeploysStoredFile(t *testing.T) {
 	if runner.upFile != composeFileTwo {
 		t.Fatalf("second deploy ran %q", runner.upFile)
 	}
-	op, _, err := c.Admit(ctx, admin, Request{RequestID: "back", App: "db", Kind: "rollback", Manifest: composeApp(false)})
+	op, _, err := admit(t, c, ctx, admin, Request{RequestID: "back", App: "db", Kind: "rollback", Manifest: composeApp(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestComposeRestartRunsRestartAndRefusesScale(t *testing.T) {
 	if _, err = c.Plan(ctx, Actor{ID: "ci"}, Request{App: "db", Kind: "restart", DryRun: true}); err != nil {
 		t.Fatalf("restart plan: %v", err)
 	}
-	op, _, err := c.Admit(ctx, Actor{ID: "ci"}, Request{RequestID: "restart", App: "db", Kind: "restart"})
+	op, _, err := admit(t, c, ctx, Actor{ID: "ci"}, Request{RequestID: "restart", App: "db", Kind: "restart"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,10 +535,10 @@ func TestComposeRestartRunsRestartAndRefusesScale(t *testing.T) {
 	if !restarted || runner.upRuns() != 0 {
 		t.Fatalf("runs %+v", runner.runs)
 	}
-	if _, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "scale", App: "db", Kind: "scale", Replicas: new(int)}); !errors.Is(err, errScaleCompose) {
+	if _, _, err = admit(t, c, ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "scale", App: "db", Kind: "scale", Replicas: new(int)}); !errors.Is(err, errScaleCompose) {
 		t.Fatalf("scale: %v", err)
 	}
-	if _, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
+	if _, _, err = admit(t, c, ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
 		t.Fatalf("exec with a role: %v", err)
 	}
 	if _, err = c.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{App: "db", Kind: "scale", Replicas: new(int), DryRun: true}); !errors.Is(err, errScaleCompose) {
@@ -824,7 +824,7 @@ func TestHostAccessDeployEndToEnd(t *testing.T) {
 	runner := &fakeCompose{config: privileged, hashes: "database hash-0000000000000003\n"}
 	c, s := composeController(t, runner, newComposeDocker())
 	ctx := context.Background()
-	op, _, err := c.Admit(ctx, Actor{ID: "ci"}, composeReq("priv-ci", composeFileOne, composeApp(false)))
+	op, _, err := admit(t, c, ctx, Actor{ID: "ci"}, composeReq("priv-ci", composeFileOne, composeApp(false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +835,7 @@ func TestHostAccessDeployEndToEnd(t *testing.T) {
 	if runner.upRuns() != 0 {
 		t.Fatal("refused deploy ran up")
 	}
-	op, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, composeReq("priv-admin", composeFileOne, composeApp(false)))
+	op, _, err = admit(t, c, ctx, Actor{ID: "admin", Admin: true}, composeReq("priv-admin", composeFileOne, composeApp(false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -993,7 +993,7 @@ func TestAllowRecreateAdminCheckedBeforeEngine(t *testing.T) {
 	if _, err := c.Plan(context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) || !strings.Contains(err.Error(), "administrator access") {
 		t.Fatalf("plan: %v", err)
 	}
-	if _, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) {
+	if _, _, err := admit(t, &c, context.Background(), Actor{ID: "ci"}, req); !errors.Is(err, errAllowRecreateAdmin) {
 		t.Fatalf("admit: %v", err)
 	}
 }
@@ -1062,7 +1062,7 @@ func TestComposeExecRunsInTheNamedServiceAndStoresTheReceipt(t *testing.T) {
 	)
 	docker.output = "42"
 	ctx := context.Background()
-	op, _, err := c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Service: "postgres", Command: []string{"psql", "-tAc", "select 40+2"}})
+	op, _, err := admit(t, c, ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Service: "postgres", Command: []string{"psql", "-tAc", "select 40+2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1122,7 @@ func TestComposeExecNeedsAServiceWhenTheAppHasSeveral(t *testing.T) {
 	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{App: "db", Kind: "exec", Command: []string{"true"}}); !errors.As(err, &r) || r != errExecServices {
 		t.Fatalf("plan: %v", err)
 	}
-	op, _, err := c.Admit(ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Command: []string{"true"}})
+	op, _, err := admit(t, c, ctx, Actor{ID: "admin", Admin: true}, Request{RequestID: "exec", App: "db", Kind: "exec", Command: []string{"true"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1152,14 +1152,14 @@ func TestExecRefusesAFlagTheAppKindDoesNotTake(t *testing.T) {
 	ctx := context.Background()
 	c, _, _ := execComposeController(t)
 	admin := Actor{ID: "admin", Admin: true}
-	if _, _, err := c.Admit(ctx, admin, Request{RequestID: "role", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
+	if _, _, err := admit(t, c, ctx, admin, Request{RequestID: "role", App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
 		t.Fatalf("compose app with a role, admit: %v", err)
 	}
 	if _, err := c.Plan(ctx, admin, Request{App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
 		t.Fatalf("compose app with a role, plan: %v", err)
 	}
 	image := Controller{Store: openStore(t), Engine: &positiveEngine{}, Environment: "test"}
-	if _, _, err := image.Admit(ctx, admin, Request{RequestID: "svc", App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
+	if _, _, err := admit(t, &image, ctx, admin, Request{RequestID: "svc", App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
 		t.Fatalf("image app with a service, admit: %v", err)
 	}
 	if _, err := image.Plan(ctx, admin, Request{App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {

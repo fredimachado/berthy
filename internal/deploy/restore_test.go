@@ -81,12 +81,12 @@ func stepsOf(t *testing.T, s *state.Store, id string) []string {
 func TestRestoreRunsUnderTheDeployLockAndReportsItsSteps(t *testing.T) {
 	r := &fakeRestorer{block: make(chan struct{})}
 	c := restoreController(t, r)
-	op, created, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r1"))
+	op, created, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r1"))
 	if err != nil || !created || op.Kind != "restore" {
 		t.Fatalf("admit: %+v %v %v", op, created, err)
 	}
 	// The environment is locked while the restore runs.
-	if _, _, err = c.Admit(context.Background(), restoreAdmin, Request{RequestID: "r2", Kind: "prune"}); !errors.Is(err, state.ErrConflict) {
+	if _, _, err = admit(t, c, context.Background(), restoreAdmin, Request{RequestID: "r2", Kind: "prune"}); !errors.Is(err, state.ErrConflict) {
 		t.Fatalf("a second operation during the restore: %v", err)
 	}
 	close(r.block)
@@ -115,7 +115,7 @@ func TestRestoreNeedsAnAdministratorAndBothNames(t *testing.T) {
 	r := &fakeRestorer{}
 	c := restoreController(t, r)
 	deployer := Actor{ID: "ci", Name: "ci"}
-	if _, _, err := c.Admit(context.Background(), deployer, restoreRequest("r1")); !errors.Is(err, errRestoreAdmin) {
+	if _, _, err := admit(t, c, context.Background(), deployer, restoreRequest("r1")); !errors.Is(err, errRestoreAdmin) {
 		t.Fatalf("a deploy token: %v", err)
 	}
 	if _, err := c.Plan(context.Background(), deployer, restoreRequest("r1")); !errors.Is(err, errRestoreAdmin) {
@@ -127,7 +127,7 @@ func TestRestoreNeedsAnAdministratorAndBothNames(t *testing.T) {
 	} {
 		req := restoreRequest("r2")
 		mutate(&req)
-		if _, _, err := c.Admit(context.Background(), restoreAdmin, req); !errors.Is(err, errRestoreArgs) {
+		if _, _, err := admit(t, c, context.Background(), restoreAdmin, req); !errors.Is(err, errRestoreArgs) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -135,7 +135,7 @@ func TestRestoreNeedsAnAdministratorAndBothNames(t *testing.T) {
 		t.Fatalf("a refused restore reached the restorer: %v %v", r.checks, r.restores)
 	}
 	c.Restorer = nil
-	if _, _, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r3")); !errors.Is(err, errRestoreUnavailable) {
+	if _, _, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r3")); !errors.Is(err, errRestoreUnavailable) {
 		t.Fatalf("without a restorer: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestRestoreNeedsAnAdministratorAndBothNames(t *testing.T) {
 func TestRestoreRefusesAtAdmissionWhatTheCheckRefuses(t *testing.T) {
 	r := &fakeRestorer{checkErr: backup.ErrVolumeExists}
 	c := restoreController(t, r)
-	_, _, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r1"))
+	_, _, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r1"))
 	var refusal Refusal
 	if !errors.As(err, &refusal) || string(refusal) != backup.ErrVolumeExists.Error() || !PublicMessage(string(refusal)) {
 		t.Fatalf("admission: %v", err)
@@ -152,7 +152,7 @@ func TestRestoreRefusesAtAdmissionWhatTheCheckRefuses(t *testing.T) {
 		t.Fatalf("a refused restore holds the lock: %+v", active)
 	}
 	r.checkErr = errors.New("secret-bearing storage detail")
-	if _, _, err = c.Admit(context.Background(), restoreAdmin, restoreRequest("r2")); !errors.As(err, &refusal) || strings.Contains(err.Error(), "secret") {
+	if _, _, err = admit(t, c, context.Background(), restoreAdmin, restoreRequest("r2")); !errors.As(err, &refusal) || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("an unexpected check failure: %v", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestAFailedRestoreIsReportedWithAPublicReason(t *testing.T) {
 	} {
 		r := &fakeRestorer{err: tc.err}
 		c := restoreController(t, r)
-		op, _, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r1"))
+		op, _, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r1"))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -252,13 +252,14 @@ func (d *restoreDocker) RemoveVolume(_ context.Context, name string) error {
 func interruptedRestore(t *testing.T, docker *restoreDocker, label func(opID string) map[string]string) (*Controller, state.Operation) {
 	t.Helper()
 	r := &fakeRestorer{block: make(chan struct{})}
-	// The worker stays blocked for good, as the worker of a dead agent does; the store closes under it.
+	// The worker stays blocked, as the worker of a dead agent does, until the test ends.
 	c := restoreController(t, r)
 	c.Engine = docker
-	op, _, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r1"))
+	op, _, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r1"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseAtEnd(t, r)
 	waitForRestore(t, r)
 	if labels := label(op.ID); labels != nil {
 		docker.volumes["restored-1"] = labels
@@ -349,11 +350,12 @@ func TestARestoreThatJournaledItsSuccessIsNotUndoneByRecovery(t *testing.T) {
 func TestAnInterruptedRestoreWithoutVolumeAccessEndsInterrupted(t *testing.T) {
 	r := &fakeRestorer{block: make(chan struct{})}
 	c := restoreController(t, r)
-	op, _, err := c.Admit(context.Background(), restoreAdmin, restoreRequest("r1"))
+	op, _, err := admit(t, c, context.Background(), restoreAdmin, restoreRequest("r1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The agent died: the worker is gone, and the operation is still running.
+	releaseAtEnd(t, r)
 	waitForRestore(t, r)
 	if err = c.Recover(context.Background()); err != nil {
 		t.Fatalf("recover: %v", err)
@@ -365,6 +367,13 @@ func TestAnInterruptedRestoreWithoutVolumeAccessEndsInterrupted(t *testing.T) {
 	if _, err = c.Store.Active(context.Background()); err == nil {
 		t.Fatal("the lock is still held")
 	}
+}
+
+// releaseAtEnd lets a blocked restore worker go when the test ends, so that the operation's goroutine ends before the store closes.
+// Registered after admit, it runs before admit's wait. The operation was ended by recovery, so the worker's write is refused.
+func releaseAtEnd(t *testing.T, r *fakeRestorer) {
+	t.Helper()
+	t.Cleanup(func() { close(r.block) })
 }
 
 func waitForRestore(t *testing.T, r *fakeRestorer) {

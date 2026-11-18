@@ -47,7 +47,7 @@ func TestAgentRefusesAManifestNewerThanItsRelease(t *testing.T) {
 	if !errors.As(err, &refusal) || string(refusal) != agentRefusal {
 		t.Errorf("deploy plan: %v", err)
 	}
-	op, _, err := c.Admit(ctx, actor, Request{RequestID: "admit", App: "web", Version: "v1", Manifest: newerManifest()})
+	op, _, err := admit(t, c, ctx, actor, Request{RequestID: "admit", App: "web", Version: "v1", Manifest: newerManifest()})
 	if !errors.As(err, &refusal) || string(refusal) != agentRefusal {
 		t.Errorf("deploy admit: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAgentRefusesAManifestNewerThanItsRelease(t *testing.T) {
 	if !errors.As(err, &refusal) || string(refusal) != agentRefusal {
 		t.Errorf("ingress plan: %v", err)
 	}
-	_, _, err = c.Admit(ctx, actor, Request{RequestID: "ingress-admit", Kind: "ingress", Manifest: newerManifest()})
+	_, _, err = admit(t, c, ctx, actor, Request{RequestID: "ingress-admit", Kind: "ingress", Manifest: newerManifest()})
 	if !errors.As(err, &refusal) || string(refusal) != agentRefusal {
 		t.Errorf("ingress admit: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestAgentSkipsTheVersionCheckInADevelopmentBuild(t *testing.T) {
 	if needsBerthy(err) {
 		t.Errorf("deploy plan: %v", err)
 	}
-	op, _, err := c.Admit(ctx, actor, Request{RequestID: "admit", App: "web", Version: "v1", Manifest: newerManifest()})
+	op, _, err := admit(t, c, ctx, actor, Request{RequestID: "admit", App: "web", Version: "v1", Manifest: newerManifest()})
 	if needsBerthy(err) {
 		t.Errorf("deploy admit: %v", err)
 	}

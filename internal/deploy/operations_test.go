@@ -91,7 +91,7 @@ func TestRestartJournalAndRecoveryLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s.Close()
+			t.Cleanup(func() { s.Close() })
 			ctx := context.Background()
 			first, _, err := s.Admit(ctx, state.Admission{RequestID: "first", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 			if err != nil {
@@ -156,7 +156,7 @@ func TestExecStoresRedactedOutputPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	if err = s.PutSecret(ctx, state.Actor{ID: "a"}, state.SecretInfo{Name: "TOKEN"}, []byte("secret-value")); err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestPruneProtectsContainersAndRetainedReleases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {
@@ -283,7 +283,7 @@ func TestPruneLeavesTheHelperAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	deploy, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestPruneRemovesOnlyJournaledStoppedHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	previous, _, err := s.Admit(ctx, state.Admission{RequestID: "h", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
 	if err != nil {
@@ -387,7 +387,7 @@ func TestWaitWithoutRoleChecksAllBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {
@@ -482,7 +482,7 @@ func TestExecPlanNamesTheCommandSoAPersonCanReviewIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	first, _, err := s.Admit(ctx, state.Admission{RequestID: "first", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 	if err != nil {

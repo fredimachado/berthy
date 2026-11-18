@@ -74,7 +74,7 @@ func TestKeepVersionRefusals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refusal Refusal
-			_, _, err := c.Admit(ctx, actor, tc.req)
+			_, _, err := admit(t, c, ctx, actor, tc.req)
 			if !errors.As(err, &refusal) || string(refusal) != tc.want {
 				t.Fatalf("Admit error %v, want %q", err, tc.want)
 			}
@@ -121,14 +121,14 @@ func TestKeepVersionIsPartOfTheRequestHash(t *testing.T) {
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
 	}
-	again, created, err := c.Admit(ctx, Actor{ID: "admin"}, keep)
+	again, created, err := admit(t, c, ctx, Actor{ID: "admin"}, keep)
 	if err != nil || created || again.ID != op.ID {
 		t.Fatalf("a retry of the same request: op %s created %v: %v", again.ID, created, err)
 	}
 	explicit := keep
 	explicit.KeepVersion = false
 	explicit.Version = keepDigest("b")
-	if _, _, err = c.Admit(ctx, Actor{ID: "admin"}, explicit); !errors.Is(err, state.ErrConflict) {
+	if _, _, err = admit(t, c, ctx, Actor{ID: "admin"}, explicit); !errors.Is(err, state.ErrConflict) {
 		t.Fatalf("the same id with a version: %v", err)
 	}
 	checked := keep
@@ -137,7 +137,7 @@ func TestKeepVersionIsPartOfTheRequestHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	checked.KeepDigest = applied.Digest
-	if _, _, err = c.Admit(ctx, Actor{ID: "admin"}, checked); !errors.Is(err, state.ErrConflict) {
+	if _, _, err = admit(t, c, ctx, Actor{ID: "admin"}, checked); !errors.Is(err, state.ErrConflict) {
 		t.Fatalf("the same id with a keep_digest: %v", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestKeepVersionRefusesADigestThatChanged(t *testing.T) {
 	seen := "example/web@" + keepDigest("a")
 	req := Request{RequestID: "keep", App: "web", KeepVersion: true, KeepDigest: seen, Manifest: m}
 	var refusal Refusal
-	if _, _, err = c.Admit(context.Background(), Actor{ID: "admin"}, req); !errors.As(err, &refusal) || string(refusal) != keepDigestChanged {
+	if _, _, err = admit(t, c, context.Background(), Actor{ID: "admin"}, req); !errors.As(err, &refusal) || string(refusal) != keepDigestChanged {
 		t.Fatalf("Admit error %v, want %q", err, keepDigestChanged)
 	}
 	req.DryRun = true

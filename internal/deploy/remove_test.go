@@ -355,7 +355,7 @@ func TestRemoveTwiceIsHarmless(t *testing.T) {
 func TestRemoveOfAnAppThatNeverRanIsRefused(t *testing.T) {
 	f := newRemoveFixture(t)
 	req := Request{RequestID: "never", Kind: "remove", App: "ghost"}
-	if _, _, err := f.ctrl.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errRemoveNotDeployed) {
+	if _, _, err := admit(t, f.ctrl, context.Background(), Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errRemoveNotDeployed) {
 		t.Fatalf("admit: %v", err)
 	}
 	req.DryRun = true
@@ -369,7 +369,7 @@ func TestRemoveRefusesTheConnectorApp(t *testing.T) {
 	ctx := context.Background()
 	want := Refusal("use ingress apply without an ingress block to remove managed ingress")
 	req := Request{RequestID: "connector", Kind: "remove", App: "ingress"}
-	if _, _, err := f.ctrl.Admit(ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, want) {
+	if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, want) {
 		t.Fatalf("admit: %v", err)
 	}
 	req.DryRun = true
@@ -384,7 +384,7 @@ func TestRemoveRefusesTheConnectorApp(t *testing.T) {
 func TestRemoveNeedsAnAdministrator(t *testing.T) {
 	f := newRemoveFixture(t)
 	ctx := context.Background()
-	if _, _, err := f.ctrl.Admit(ctx, Actor{ID: "ci"}, Request{RequestID: "ci", Kind: "remove", App: "api"}); !errors.Is(err, errRemoveAdmin) {
+	if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "ci"}, Request{RequestID: "ci", Kind: "remove", App: "api"}); !errors.Is(err, errRemoveAdmin) {
 		t.Fatalf("admit: %v", err)
 	}
 	if _, err := f.ctrl.Plan(ctx, Actor{ID: "ci"}, Request{Kind: "remove", App: "api", DryRun: true}); !errors.Is(err, errRemoveAdmin) {
@@ -559,7 +559,7 @@ func composeRemoveFixture(t *testing.T, stateful bool) (*Controller, *state.Stor
 	runner.onDown = func(r engine.ComposeRun) { docker.containers = nil }
 	c, s := composeController(t, runner, docker)
 	m := composeApp(stateful)
-	op, _, err := c.Admit(context.Background(), Actor{ID: "ci", Admin: true}, composeReq("deploy", composeFileOne, m))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci", Admin: true}, composeReq("deploy", composeFileOne, m))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func removeCompose(t *testing.T, c *Controller, s *state.Store, id string, admin
 	if mutate != nil {
 		mutate(&req)
 	}
-	op, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: admin}, req)
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: admin}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
