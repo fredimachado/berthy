@@ -34,6 +34,8 @@ alerts:
   webhook:
     url_secret: HOOK_URL
     headers_secret: HOOK_HEADERS
+  heartbeat:
+    url_secret: BEAT_URL
 ingress:
   cloudflare:
     account_id: acct
@@ -73,6 +75,7 @@ apps:
 	got := m.SecretNeeds()
 	want := []SecretNeed{
 		{Name: "API_DB", NeededBy: []string{"app api", "app shop"}},
+		{Name: "BEAT_URL", NeededBy: []string{"alerts heartbeat"}},
 		{Name: "BOT_TOKEN", NeededBy: []string{"alerts telegram"}},
 		{Name: "CF_TOKEN", NeededBy: []string{"ingress cloudflare"}},
 		{Name: "GHCR_TOKEN", NeededBy: []string{"app api", "registry ghcr.io"}},

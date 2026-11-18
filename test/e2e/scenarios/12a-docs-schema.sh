@@ -217,6 +217,9 @@ alerts:
   webhook:
     url_secret: HOOK_URL
     headers_secret: HOOK_HEADERS
+  heartbeat:
+    url_secret: BEAT_URL
+    interval: 1m
 ingress:
   cloudflare:
     account_id: abc123

@@ -25,7 +25,6 @@ var errAlertConfig = errors.New("alerts configuration unavailable")
 // What a channel says while a secret it needs cannot be used. The messages name the kind of secret, never a value.
 const (
 	missingTelegramSecret       = "telegram bot token secret missing"
-	missingWebhookURLSecret     = "webhook url secret missing"
 	missingWebhookHeadersSecret = "webhook headers secret missing"
 )
 
@@ -104,6 +103,19 @@ func plainSecret(ctx context.Context, s *state.Store, name string) ([]byte, bool
 	return value, true
 }
 
+// urlSecret returns the URL that a channel's secret holds. The error says what is wrong with the secret, by name, and never
+// holds a value. channel is the word the message starts with, such as webhook or heartbeat.
+func urlSecret(ctx context.Context, s *state.Store, channel, name string) (string, error) {
+	raw, ok := plainSecret(ctx, s, name)
+	if !ok {
+		return "", fmt.Errorf("%s url secret missing", channel)
+	}
+	if u, err := url.Parse(string(raw)); err != nil || u.Hostname() == "" || u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("%s url secret %s is not an http or https URL", channel, name)
+	}
+	return string(raw), nil
+}
+
 // telegramOf returns the Telegram sender of a channel's settings, or the error that says why it cannot send.
 func telegramOf(ctx context.Context, c Config, s *state.Store, t manifest.Telegram) (monitor.Notifier, error) {
 	token, ok := plainSecret(ctx, s, t.BotTokenSecret)
@@ -116,14 +128,11 @@ func telegramOf(ctx context.Context, c Config, s *state.Store, t manifest.Telegr
 // webhookOf returns the webhook sender of a channel's settings, or the error that says why it cannot send. The URL and the
 // headers are parsed here, once, where they are read. An error names the secret and never a value.
 func webhookOf(ctx context.Context, s *state.Store, w manifest.Webhook) (monitor.Notifier, error) {
-	raw, ok := plainSecret(ctx, s, w.URLSecret)
-	if !ok {
-		return nil, errors.New(missingWebhookURLSecret)
+	target, err := urlSecret(ctx, s, "webhook", w.URLSecret)
+	if err != nil {
+		return nil, err
 	}
-	if u, err := url.Parse(string(raw)); err != nil || u.Hostname() == "" || u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("webhook url secret %s is not an http or https URL", w.URLSecret)
-	}
-	out := &monitor.Webhook{URL: string(raw)}
+	out := &monitor.Webhook{URL: target}
 	if w.HeadersSecret != "" {
 		value, ok := plainSecret(ctx, s, w.HeadersSecret)
 		if !ok {

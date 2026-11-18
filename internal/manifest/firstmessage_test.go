@@ -181,6 +181,8 @@ func firstMessageCases() []brokenCase {
 		broken("telegram chat", "alerts.telegram: chat_id must be a numeric chat ID or a @channel name", "alerts", `json:{"telegram":{"bot_token_secret":"BOT","chat_id":"x"}}`),
 		broken("alerts deploys", "alerts: deploys must be failed, all or none", "alerts", `json:{"deploys":"some"}`),
 		broken("alerts reminder", "alerts: reminder must be a duration such as 4h, or 0s to disable", "alerts", `json:{"reminder":"soon"}`),
+		broken("heartbeat url secret", "alerts.heartbeat: url_secret must name a secret", "alerts", `json:{"heartbeat":{"url_secret":"x y"}}`),
+		broken("heartbeat interval", "alerts.heartbeat: interval must be a duration of at least 10s", "alerts", `json:{"heartbeat":{"url_secret":"BEAT","interval":"1s"}}`),
 		broken("webhook url secret", "alerts.webhook: url_secret must name a secret", "alerts", `json:{"webhook":{"url_secret":"x y"}}`),
 		broken("webhook reserved secret", "alerts.webhook: TUNNEL_TOKEN is reserved for managed ingress", "alerts", `json:{"webhook":{"url_secret":"TUNNEL_TOKEN"}}`),
 		broken("unknown field", `unknown field "wat"`, "wat", true),

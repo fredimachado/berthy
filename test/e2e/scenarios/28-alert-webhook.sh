@@ -5,14 +5,20 @@
 # The manifest has alerts.telegram (the fake Bot API) and alerts.webhook (the fake webhook, its URL and one header in secrets).
 # `alerts test` reports each channel and sends to both. A probe that fails is one POST and one Telegram message. A deploy that
 # fails is one POST with kind deploy and one message; `alerts.deploys: all` also sends the success. A webhook that is down
-# costs a deploy nothing and Telegram its message nothing; the agent logs the failure without the URL. The URL, the header
-# value and the bot token appear in no log line, no check and no `doctor` answer.
+# costs a deploy nothing and Telegram its message nothing; the agent logs the failure without the URL.
+#
+# The heartbeat (alerts.heartbeat, every 10 s) is a GET to the fake webhook about every interval, and `checks` and `doctor` show
+# when the last one was accepted. While the endpoint is down the check is unknown and nobody is alerted. Stopping the agent
+# stops the pings.
+#
+# The URLs, the header value and the bot token appear in no log line, no check and no `doctor` answer.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
 hook_path=/hooks/s3cr3t-e2e-token
 hook_header='Bearer e2e-hook-header-value'
+beat_path=/beat/s3cr3t-e2e-beat-token
 
 # alerts_manifest DEPLOYS HEALTH_CMD: the web app with a probe that always fails, and alerts to both channels. DEPLOYS is the
 # value of alerts.deploys; HEALTH_CMD is the role's health command ("true" passes, "false" never does).
@@ -28,6 +34,9 @@ alerts:
   webhook:
     url_secret: ALERT_WEBHOOK_URL
     headers_secret: ALERT_WEBHOOK_HEADERS
+  heartbeat:
+    url_secret: HEARTBEAT_URL
+    interval: 10s
 probes:
   broken:
     tcp: 127.0.0.1:1
@@ -54,6 +63,22 @@ YML
 # posts KIND: the JSON bodies of the webhook's POSTs of that kind, as a JSON array.
 posts() { hook_requests | jq -c --arg k "$1" '[.[] | select(.method == "POST") | .body | fromjson | select(.kind == $k)]'; }
 
+# beats: how many GETs of the heartbeat the fake webhook has recorded.
+beats() { hook_requests | jq "[.[] | select(.method == \"GET\" and .path == \"$beat_path\")] | length"; }
+
+# beat_state FIELD: a field of the heartbeat check in `checks`, as the agent stores it.
+beat_state() { adm checks --json | jq -r --arg f "$1" '.[] | select(.name == "heartbeat") | .[$f]'; }
+
+# wait_beat_state STATE SECONDS: waits up to SECONDS for the heartbeat check to be in STATE.
+wait_beat_state() {
+  local i
+  for i in $(seq 1 $(($2 * 2))); do
+    [ "$(beat_state state)" = "$1" ] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
 # wait_posts KIND N SECONDS: waits up to SECONDS for N posts of that kind, then 3 s more so a surplus one would show, and prints
 # the count.
 wait_posts() {
@@ -69,6 +94,7 @@ wait_posts() {
 adm secret set TELEGRAM_BOT_TOKEN < "$RUN/tg-token" >/dev/null
 printf '%s' "http://$HOOK_LISTEN$hook_path" | adm secret set ALERT_WEBHOOK_URL >/dev/null
 printf 'Authorization=%s' "$hook_header" | adm secret set ALERT_WEBHOOK_HEADERS >/dev/null
+printf '%s' "http://$HOOK_LISTEN$beat_path" | adm secret set HEARTBEAT_URL >/dev/null
 
 alerts_manifest failed true | write_manifest
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
@@ -138,6 +164,48 @@ expect_eq "deploys: all sends the success as one POST" 1 "$(wait_posts deploy 1 
 expect_eq "the success POST says succeeded" succeeded "$(posts deploy | jq -r '.[0].state')"
 expect_eq "the success POST gives the version" v2 "$(posts deploy | jq -r '.[0].detail')"
 
+# 4b. The heartbeat is a GET about every 10 seconds, and checks and doctor show when the last one was accepted. The monitor reads
+# the manifest every minute, so the first ping can take a while.
+if wait_beat_state ok 120; then pass "the heartbeat check turns ok once the agent has read the manifest"; else fail "the heartbeat check turns ok once the agent has read the manifest" "state $(beat_state state): $(beat_state detail)"; fi
+hook_reset
+sleep 28
+count=$(beats)
+echo "  heartbeat GETs in 28 s: $count"
+if [ "$count" -ge 2 ] && [ "$count" -le 4 ]; then pass "the heartbeat pings about every 10 seconds"; else fail "the heartbeat pings about every 10 seconds" "got $count GETs in 28 s"; fi
+first=$(hook_requests | jq -c '[.[] | select(.method == "GET")][0]')
+expect_eq "the ping is a GET with no body" "" "$(printf '%s' "$first" | jq -r '.body')"
+expect_eq "the ping goes to the path of the URL secret" "$beat_path" "$(printf '%s' "$first" | jq -r '.path')"
+expect_eq "the heartbeat check is ok" ok "$(beat_state state)"
+detail=$(beat_state detail)
+echo "  heartbeat detail: $detail"
+expect_contains "checks shows when the last ping was accepted" "$detail" "last ping accepted at 20"
+doc=$(adm doctor --json 2>&1)
+expect_eq "doctor shows the heartbeat as ok" true "$(printf '%s' "$doc" | jq -r '.checks[] | select(.name == "heartbeat") | .ok')"
+expect_contains "doctor shows when the last ping was accepted" "$(printf '%s' "$doc" | jq -r '.checks[] | select(.name == "heartbeat") | .detail')" "last ping accepted at 20"
+
+# 4c. While the endpoint is down the heartbeat check is unknown, with the time of the last accepted ping, and nobody is alerted.
+tg_reset
+stop_hook
+if wait_beat_state unknown 60; then pass "the heartbeat check turns unknown when the URL cannot be reached"; else fail "the heartbeat check turns unknown when the URL cannot be reached" "state $(beat_state state)"; fi
+detail=$(beat_state detail)
+echo "  heartbeat detail: $detail"
+expect_contains "the detail says the ping failed" "$detail" "ping failed: unreachable"
+expect_contains "the detail keeps the time of the last accepted ping" "$detail" "last ping accepted at 20"
+sleep 30
+expect_eq "an unknown heartbeat never alerts" 0 "$(tg_messages | jq '[.[] | select(.text | contains("heartbeat"))] | length')"
+expect_eq "the heartbeat check is still unknown, not worse" unknown "$(beat_state state)"
+start_hook || fail "the fake webhook restarts" "it did not answer"
+if wait_beat_state ok 60; then pass "the heartbeat check recovers when the URL answers again"; else fail "the heartbeat check recovers when the URL answers again" "state $(beat_state state)"; fi
+expect_eq "recovery sends no message either" 0 "$(tg_messages | jq '[.[] | select(.text | contains("heartbeat"))] | length')"
+
+# 4d. Stopping the agent stops the pings.
+stop_agent
+sleep 3
+hook_reset
+sleep 25
+expect_eq "a stopped agent sends no ping" 0 "$(beats)"
+start_agent || fail "the agent restarts" "it did not answer"
+
 # 5. A webhook that is down costs a deploy nothing and Telegram its message nothing, and the failure is logged without the URL.
 stop_hook
 tg_reset
@@ -172,10 +240,10 @@ expect_contains "alerts test says why the webhook cannot send" "$out3" "webhook:
 
 # 7. The URL, the header value and the bot token appear nowhere.
 checks=$(adm checks 2>&1)
-for secret in "s3cr3t-e2e-token" "e2e-hook-header-value" "$(cat "$RUN/tg-token")"; do
+for secret in "s3cr3t-e2e-token" "s3cr3t-e2e-beat-token" "e2e-hook-header-value" "$(cat "$RUN/tg-token")"; do
   expect_not_contains "the logs hold no secret" "$(cat "$LOG"/agent.log "$LOG"/webhook.log)" "$secret"
   expect_not_contains "checks holds no secret" "$checks" "$secret"
-  expect_not_contains "doctor holds no secret" "$out$out2$out3" "$secret"
+  expect_not_contains "doctor holds no secret" "$out$out2$out3$doc" "$secret"
 done
 
 finish

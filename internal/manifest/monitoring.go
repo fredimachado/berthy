@@ -34,9 +34,10 @@ type ServiceProbe struct {
 type Alerts struct {
 	Reminder string `json:"reminder,omitempty" yaml:"reminder,omitempty"`
 	// Deploys says which deploys and rollbacks the channels hear about: failed (the default), all, or none.
-	Deploys  string    `json:"deploys,omitempty" yaml:"deploys,omitempty"`
-	Telegram *Telegram `json:"telegram,omitempty" yaml:"telegram,omitempty"`
-	Webhook  *Webhook  `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Deploys   string     `json:"deploys,omitempty" yaml:"deploys,omitempty"`
+	Telegram  *Telegram  `json:"telegram,omitempty" yaml:"telegram,omitempty"`
+	Webhook   *Webhook   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Heartbeat *Heartbeat `json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
 }
 
 // Telegram sends alerts to one chat. The bot token is a secret; the chat is named in the manifest.
@@ -52,12 +53,21 @@ type Webhook struct {
 	HeadersSecret string `json:"headers_secret,omitempty" yaml:"headers_secret,omitempty"`
 }
 
+// Heartbeat has the agent send one GET to a URL every interval while it runs and Docker answers, so a service that watches for
+// the pings can raise the alarm when they stop. The URL is a secret. The heartbeat is not an alert channel: it never alerts.
+type Heartbeat struct {
+	URLSecret string `json:"url_secret" yaml:"url_secret"`
+	Interval  string `json:"interval,omitempty" yaml:"interval,omitempty"`
+}
+
 const (
-	defaultProbeInterval = 30 * time.Second
-	minProbeInterval     = 5 * time.Second
-	defaultProbeTimeout  = 5 * time.Second
-	defaultProbeFailures = 3
-	defaultReminder      = 4 * time.Hour
+	defaultHeartbeatInterval = time.Minute
+	minHeartbeatInterval     = 10 * time.Second
+	defaultProbeInterval     = 30 * time.Second
+	minProbeInterval         = 5 * time.Second
+	defaultProbeTimeout      = 5 * time.Second
+	defaultProbeFailures     = 3
+	defaultReminder          = 4 * time.Hour
 	// The values of alerts.deploys.
 	deploysFailed = "failed"
 	deploysAll    = "all"
@@ -117,6 +127,18 @@ func (p Probe) FailureLimit() int {
 		return *p.Failures
 	}
 	return defaultProbeFailures
+}
+
+// Every returns how often the heartbeat pings, with the default applied.
+func (h Heartbeat) Every() time.Duration {
+	if h.Interval == "" {
+		return defaultHeartbeatInterval
+	}
+	d, err := time.ParseDuration(h.Interval)
+	if err != nil || d < minHeartbeatInterval {
+		return defaultHeartbeatInterval
+	}
+	return d
 }
 
 // ReminderInterval returns how often an alert repeats while its check keeps failing. Zero disables reminders.
@@ -238,6 +260,9 @@ func (a Alerts) check(p *Problems) {
 	if a.Webhook != nil {
 		checkWebhook(p, *a.Webhook)
 	}
+	if a.Heartbeat != nil {
+		checkHeartbeat(p, *a.Heartbeat)
+	}
 }
 
 func checkTelegram(p *Problems, t Telegram) {
@@ -256,6 +281,16 @@ func checkWebhook(p *Problems, w Webhook) {
 	const path = "alerts.webhook"
 	checkSecretName(p, path, "url_secret", w.URLSecret, false)
 	checkSecretName(p, path, "headers_secret", w.HeadersSecret, true)
+}
+
+func checkHeartbeat(p *Problems, h Heartbeat) {
+	const path = "alerts.heartbeat"
+	checkSecretName(p, path, "url_secret", h.URLSecret, false)
+	if h.Interval != "" {
+		if d, err := time.ParseDuration(h.Interval); err != nil || d < minHeartbeatInterval {
+			p.add(path+".interval", "alerts.heartbeat: interval must be a duration of at least 10s")
+		}
+	}
 }
 
 // checkSecretName reports the key of a block that does not name a secret, or names the reserved tunnel token. An empty name
@@ -322,5 +357,8 @@ func (m *Manifest) defaultsMonitoring() {
 	}
 	if m.Alerts != nil && m.Alerts.Deploys == "" {
 		m.Alerts.Deploys = deploysFailed
+	}
+	if m.Alerts != nil && m.Alerts.Heartbeat != nil && m.Alerts.Heartbeat.Interval == "" {
+		m.Alerts.Heartbeat.Interval = defaultHeartbeatInterval.String()
 	}
 }

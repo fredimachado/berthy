@@ -383,7 +383,7 @@ berthy agent-info -e prod
 | `registry:<host>` | The registry password of each registry that a deployed image app pulls from: whether the registry still accepts it. See [step 8](#step-8-keep-it-healthy). |
 | `cloudflare_token` | The Cloudflare API token, once managed ingress is set up: whether Cloudflare still accepts it, and when it expires. See [step 8](#step-8-keep-it-healthy). |
 | `lock` | The deploy lock (`free` or who holds it). |
-| `peer:<name>`, `telegram`, `webhook`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the secrets of the Telegram and webhook channels, every backup, and the probe helper, once the manifest uses them. |
+| `peer:<name>`, `telegram`, `webhook`, `heartbeat`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the secrets of the Telegram and webhook channels, the heartbeat (when its last ping was accepted), every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
 | `compose_log_limit` | A warning, not a failure: services of deployed Compose apps whose logs grow without a size limit. See **Log rotation** in step 2. |
 | telemetry | The OTLP exporter, when configured. |
@@ -943,6 +943,7 @@ On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd.
 | `CLOUDFLARE_API_TOKEN` | `ingress.cloudflare.api_token_secret` | `ingress apply`, and deploying an app that has `hostnames` ([step 7](#step-7-put-it-on-the-internet)). |
 | `TELEGRAM_BOT_TOKEN` | `alerts.telegram.bot_token_secret` | Sending alerts to Telegram ([step 8](#step-8-keep-it-healthy)). |
 | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_HEADERS` | `alerts.webhook.url_secret`, `alerts.webhook.headers_secret` | Sending alerts to a webhook. The headers are optional. |
+| `HEARTBEAT_URL` | `alerts.heartbeat.url_secret` | Pinging a dead man's switch service. |
 | `OTLP_HEADERS` | `telemetry.headers_secret` | Exporting metrics and operation records to a backend that needs authorization. |
 
 **A deploy stops before changing anything if a secret it lists has no value.** You find out at once, not halfway through a rollout.
@@ -1821,6 +1822,27 @@ The webhook gets one `POST` of a small JSON document for each alert, with `Conte
 | `text` | The line Telegram would get, ready to show. |
 
 None of them holds output of your application or the value of a secret. A delivery that fails is logged without the URL and is not retried by itself; a check that is still failing sends its next reminder as usual. When a state change reaches one channel and not the other, it counts as delivered, so a channel that is down does not make the other one repeat itself. `doctor` shows a `telegram` and a `webhook` check, which fail while a secret of the channel is not stored or the headers cannot be read.
+
+##### Heartbeat
+
+A server that is completely down cannot report itself. The peer check covers that only when a second environment watches the first. With one server, an outage of the server, of the agent or of its network is silent until someone notices the application is gone. The heartbeat closes that gap: the agent pings a URL, and a dead man's switch service raises the alarm when the pings stop.
+
+```yaml
+alerts:
+  heartbeat:
+    url_secret: HEARTBEAT_URL
+    interval: 1m        # default 1m, at least 10s
+```
+
+```bash
+berthy secret set HEARTBEAT_URL -e prod
+```
+
+- The agent sends one `GET` to the URL every `interval` while it runs and Docker answers. Nothing else decides it: the health of your apps has its own checks. When Docker does not answer, no ping is sent.
+- A ping has a 5-second timeout and is never retried. A missed ping is simply missed, which is the signal. Any `2xx` answer counts as accepted. A redirect does not.
+- `berthy checks` and `berthy doctor` show a `heartbeat` entry with the time of the last ping that was accepted, such as `last ping accepted at 2026-11-19T10:00:00Z`. It is `unknown` when the URL cannot be reached, with the reason (`ping failed: unreachable`, `ping failed: timeout`, `ping not accepted: HTTP 503`, or `Docker unavailable: no ping sent`) and when a ping was last accepted. It never alerts, because the channel it would use may be down for the same reason.
+- The URL is a secret. It appears in no log line, check or error. `doctor` fails the `heartbeat` entry while the secret is not stored.
+- A change of `interval` applies within a minute, with the next read of the manifest.
 
 ##### Deploy messages
 
@@ -2861,6 +2883,9 @@ A probe has exactly one of `http`, `tcp` and `service`.
 | `telegram.chat_id` | string | required | A numeric chat ID, or `@channel_name`. Quote it. |
 | `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
 | `webhook.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. The URL is often the credential, so it is never in the manifest. |
+| `heartbeat` | map | none | Dead man's switch: the agent sends one `GET` to a URL every `interval` while it runs and Docker answers, with a 5-second timeout and no retries. A service that watches for the pings raises the alarm when they stop. `berthy checks` and `doctor` show a `heartbeat` entry with the time of the last accepted ping. It is `unknown` when the URL cannot be reached, and it never alerts. |
+| `heartbeat.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. A 2xx answer counts as accepted. |
+| `heartbeat.interval` | duration | `1m` | Time between pings. At least `10s`. A change applies within a minute. |
 | `webhook.headers_secret` | secret name | none | The secret that holds request headers, `name=value,name=value`, for example an `Authorization` header. |
 
 #### `telemetry`

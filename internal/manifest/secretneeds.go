@@ -45,6 +45,9 @@ func (m *Manifest) SecretNeeds() []SecretNeed {
 		add(m.Alerts.Webhook.URLSecret, "alerts webhook")
 		add(m.Alerts.Webhook.HeadersSecret, "alerts webhook")
 	}
+	if m.Alerts != nil && m.Alerts.Heartbeat != nil {
+		add(m.Alerts.Heartbeat.URLSecret, "alerts heartbeat")
+	}
 	if m.Ingress != nil && m.Ingress.Cloudflare != nil {
 		add(m.Ingress.Cloudflare.APITokenSecret, "ingress cloudflare")
 	}

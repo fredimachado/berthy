@@ -49,6 +49,9 @@ func TestMonitoringValidation(t *testing.T) {
 		"webhook":                 `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL"}}`,
 		"webhook with headers":    `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"ALERT_WEBHOOK_HEADERS"}}`,
 		"both channels":           `,"alerts":{"deploys":"all","telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"},"webhook":{"url_secret":"ALERT_WEBHOOK_URL"}}`,
+		"heartbeat":               `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL"}}`,
+		"heartbeat at the least":  `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"10s"}}`,
+		"heartbeat every hour":    `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"1h"}}`,
 		"telegram channel":        `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"@berthy_alerts"}}`,
 		"empty alerts":            `,"alerts":{}`,
 	}
@@ -104,6 +107,13 @@ func TestMonitoringValidation(t *testing.T) {
 		"webhook reserved headers secret":    `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"TUNNEL_TOKEN"}}`,
 		"webhook headers secret name":        `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"bad name"}}`,
 		"webhook url in the manifest":        `,"alerts":{"webhook":{"url":"https://hooks.example.com/x"}}`,
+		"heartbeat without a url secret":     `,"alerts":{"heartbeat":{}}`,
+		"heartbeat url secret name":          `,"alerts":{"heartbeat":{"url_secret":"beat url"}}`,
+		"heartbeat reserved url secret":      `,"alerts":{"heartbeat":{"url_secret":"TUNNEL_TOKEN"}}`,
+		"heartbeat interval below 10s":       `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"9s"}}`,
+		"heartbeat interval zero":            `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"0s"}}`,
+		"heartbeat interval text":            `,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"often"}}`,
+		"heartbeat url in the manifest":      `,"alerts":{"heartbeat":{"url":"https://hc.example.com/x"}}`,
 	}
 	for name, members := range invalid {
 		if _, err := DecodeJSON([]byte(monitoringManifest(members))); err == nil {
@@ -189,6 +199,23 @@ func TestAlertsDefaultsApplyWhateverTheChannels(t *testing.T) {
 	}
 	if m.Alerts.Reminder != "4h0m0s" || m.Alerts.Deploys != "failed" || m.Alerts.Telegram != nil || m.Alerts.Webhook.HeadersSecret != "" {
 		t.Fatalf("alerts %+v", m.Alerts)
+	}
+}
+
+func TestHeartbeatIntervalDefaultsToAMinuteAndIsAtLeastTenSeconds(t *testing.T) {
+	m, err := DecodeJSON([]byte(monitoringManifest(`,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb := m.Alerts.Heartbeat; hb.Interval != "1m0s" || hb.Every() != time.Minute {
+		t.Fatalf("heartbeat %+v every %v", hb, hb.Every())
+	}
+	m, err = DecodeJSON([]byte(monitoringManifest(`,"alerts":{"heartbeat":{"url_secret":"HEARTBEAT_URL","interval":"10s"}}`)))
+	if err != nil || m.Alerts.Heartbeat.Every() != 10*time.Second {
+		t.Fatalf("10s: %v %+v", err, m.Alerts)
+	}
+	if (Heartbeat{Interval: "1s"}).Every() != time.Minute || (Heartbeat{}).Every() != time.Minute {
+		t.Fatal("an unusable interval should fall back to the default")
 	}
 }
 

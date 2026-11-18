@@ -45,6 +45,8 @@ type Monitoring struct {
 	seen      backupSeen
 	stateSeen backupSeen
 	now       func() time.Time
+	// beat sends the heartbeat pings, and remembers when one was last accepted across the monitor's rebuilds of its checks.
+	beat *monitor.Heartbeat
 }
 
 // NewMonitoring returns the monitoring of an agent with state, or nil for an agent without state. log receives
@@ -55,6 +57,7 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	}
 	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), helper: newHelperManager(c.Environment, e, log)}
 	w.composeServices = w.projectServices
+	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers}
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
 	return w
 }
@@ -208,7 +211,24 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 			}))
 		}
 	}
+	if m.Alerts != nil && m.Alerts.Heartbeat != nil {
+		hb := *m.Alerts.Heartbeat
+		out = append(out, w.beat.Check(hb.Every(), func(ctx context.Context) (string, error) {
+			return urlSecret(ctx, w.store, "heartbeat", hb.URLSecret)
+		}))
+	}
 	return out
+}
+
+// dockerAnswers reports whether Docker answers now. The heartbeat is sent only while it does.
+func (w *Monitoring) dockerAnswers(ctx context.Context) bool {
+	if w.engine == nil {
+		return false
+	}
+	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var version struct{}
+	return w.engine.Get(dctx, "/version", &version) == nil
 }
 
 // serviceCheck returns the check of a probe against a service name. The name is resolved now; when it cannot be, the check
@@ -498,6 +518,9 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 		}
 		out = append(out, c)
 	}
+	if m.Alerts != nil && m.Alerts.Heartbeat != nil {
+		out = append(out, heartbeatDoctorCheck(ctx, s, *m.Alerts.Heartbeat, states))
+	}
 	if hasServiceProbe(m.Probes) {
 		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)
 		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
@@ -506,6 +529,21 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 		out = append(out, check)
 	}
 	return out
+}
+
+// heartbeatDoctorCheck reports the heartbeat for the doctor: a secret that cannot be used is a failure, and otherwise the monitor's
+// stored state, which says when the last ping was accepted. It mirrors that state, so the doctor and `berthy checks` agree, and
+// it is never critical: an unknown heartbeat is no failure of the agent.
+func heartbeatDoctorCheck(ctx context.Context, s *state.Store, h manifest.Heartbeat, states map[string]state.CheckState) api.Check {
+	c := api.Check{Name: "heartbeat", OK: true, Detail: "not checked yet"}
+	if _, err := urlSecret(ctx, s, "heartbeat", h.URLSecret); err != nil {
+		c.OK, c.Detail = false, err.Error()
+		return c
+	}
+	if st, ok := states["heartbeat"]; ok && st.State != "" {
+		c.Detail = st.State + ": " + st.Detail
+	}
+	return c
 }
 
 // peerDoctorCheck reports one peer for the doctor.
