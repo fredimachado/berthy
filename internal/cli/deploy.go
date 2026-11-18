@@ -77,6 +77,7 @@ var changeFlags = map[string][]string{
 	"secret list":      withRemoteFlags("--manifest-dir"),
 	"secret import":    withRemoteFlags("--dry-run"),
 	"secret set":       withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
+	"secret generate":  withRemoteFlags("--dry-run", "--replace", "--bytes", "--format"),
 	"secret delete":    withRemoteFlags("--dry-run"),
 	"secret rm":        withRemoteFlags("--dry-run"),
 	"job run":          withRemoteFlags(),
@@ -93,8 +94,11 @@ var changeFlags = map[string][]string{
 
 type commandFlags struct {
 	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into string
+	bytes, format                                                                                                string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive                 bool
-	pos, command, given, versions                                                                                []string
+	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
+	replaceGenerated              bool
+	pos, command, given, versions []string
 }
 
 func parseDeploymentArgs(args []string) (commandFlags, error) {
@@ -121,6 +125,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.healthy = true
 		case "--replace-existing":
 			f.replace = true
+		case "--replace":
+			f.replaceGenerated = true
 		case "--allow-recreate":
 			f.allowRecreate = true
 		case "--volumes":
@@ -131,13 +137,17 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.all = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
 			i++
 			v := args[i]
 			switch a {
+			case "--bytes":
+				f.bytes = v
+			case "--format":
+				f.format = v
 			case "-e":
 				f.env = v
 			case "--config":
@@ -247,6 +257,9 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		}
 		if len(pos) == 2 && sub == "set" {
 			return "secret set", true
+		}
+		if len(pos) == 2 && sub == "generate" {
+			return "secret generate", true
 		}
 		if len(pos) == 2 && (sub == "delete" || sub == "rm") {
 			return "secret " + sub, true
@@ -621,6 +634,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 				method = "DELETE"
 				body = map[string]any{"dry_run": f.dry}
 			}
+		} else if len(f.pos) == 2 && f.pos[0] == "generate" {
+			req, code := secretGenerateRequest(f, errout)
+			if code != 0 {
+				return code
+			}
+			endpoint = "secrets/generate"
+			method = "POST"
+			body = req
 		} else {
 			fmt.Fprintln(errout, "invalid secret command")
 			return 2
@@ -715,6 +736,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if cmd == "secret" && f.pos[0] == "import" && !f.json {
 		return printSecretImport(out, errout, data, f.dry)
+	}
+	if cmd == "secret" && f.pos[0] == "generate" && !f.json {
+		return printSecretGenerate(out, errout, data, f.dry, f.replaceGenerated)
 	}
 	return printResponse(out, errout, data, f.json)
 }

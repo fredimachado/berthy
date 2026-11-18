@@ -703,10 +703,46 @@ func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, val
 	if err = s.checkNoLock(ctx, tx); err != nil {
 		return err
 	}
-	if err = s.putSecretTx(ctx, tx, actor, info, value); err != nil {
+	if err = s.putSecretTx(ctx, tx, actor, info, value, "secret_set:"+info.Name); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ErrSecretExists says that a generate names a secret that is stored, and the request did not say to replace it.
+var ErrSecretExists = errors.New("secret exists")
+
+// GenerateSecret stores value as the plain secret name, as a generated value, and audits it as secret_generate:NAME. It refuses
+// with ErrConflict while an operation holds the lock, with a RegistrySecretError when the name is a registry password, and with
+// ErrSecretExists when the name is stored and replace is false. The check and the write share one transaction, so two generates
+// of one name cannot both create it. It reports whether the value replaced a stored secret.
+func (s *Store) GenerateSecret(ctx context.Context, actor Actor, name string, replace bool, value []byte) (replaced bool, err error) {
+	if actor.ID == "" {
+		return false, errors.New("actor required")
+	}
+	if name == "" {
+		return false, errors.New("empty secret name")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err = s.checkNoLock(ctx, tx); err != nil {
+		return false, err
+	}
+	_, existing, err := s.classifySecrets(ctx, tx, []string{name})
+	if err != nil {
+		return false, err
+	}
+	replaced = len(existing) == 1
+	if replaced && !replace {
+		return false, ErrSecretExists
+	}
+	if err = s.putSecretTx(ctx, tx, actor, SecretInfo{Name: name}, value, "secret_generate:"+name); err != nil {
+		return false, err
+	}
+	return replaced, tx.Commit()
 }
 
 // SecretWrite is one secret of a batch write: the name and the value it takes. A batch write stores plain secrets.
@@ -738,8 +774,9 @@ func (s *Store) checkNoLock(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// putSecretTx stores one secret inside tx and audits it. The caller holds the transaction and has checked the lock.
-func (s *Store) putSecretTx(ctx context.Context, tx *sql.Tx, actor Actor, info SecretInfo, value []byte) error {
+// putSecretTx stores one secret inside tx and audits it under kind, such as secret_set:NAME. The caller holds the transaction and
+// has checked the lock.
+func (s *Store) putSecretTx(ctx context.Context, tx *sql.Tx, actor Actor, info SecretInfo, value []byte, kind string) error {
 	sealed, err := s.seal(secretRecord(info.Name, info.Registry), value)
 	if err != nil {
 		return err
@@ -747,7 +784,7 @@ func (s *Store) putSecretTx(ctx context.Context, tx *sql.Tx, actor Actor, info S
 	if _, err = tx.ExecContext(ctx, `INSERT INTO secrets VALUES(?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET registry=excluded.registry,sealed=excluded.sealed`, s.env, info.Name, info.Registry, sealed); err != nil {
 		return err
 	}
-	return auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "secret_set:" + info.Name}, "succeeded")
+	return auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind}, "succeeded")
 }
 
 // classifySecrets sorts names into those that are new and those that replace a stored plain secret. A name stored as a
@@ -809,7 +846,7 @@ func (s *Store) PutSecrets(ctx context.Context, actor Actor, writes []SecretWrit
 		return nil, nil, err
 	}
 	for _, w := range writes {
-		if err = s.putSecretTx(ctx, tx, actor, SecretInfo{Name: w.Name}, w.Value); err != nil {
+		if err = s.putSecretTx(ctx, tx, actor, SecretInfo{Name: w.Name}, w.Value, "secret_set:"+w.Name); err != nil {
 			return nil, nil, err
 		}
 	}

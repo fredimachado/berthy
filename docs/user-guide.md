@@ -794,6 +794,25 @@ Two rules about `--registry`:
 
 Secrets are limited to 64 KiB. For a Compose app, a value cannot contain a line break.
 
+#### Generate a random secret
+
+`berthy secret generate` makes a random secret on the server, so the value never passes through your terminal or a shell:
+
+```bash
+berthy secret generate POSTGRES_PASSWORD -e prod
+# generated POSTGRES_PASSWORD (32 bytes, hex)
+```
+
+The agent makes the value from a cryptographic random source and stores it. It is never printed, logged, or shown in a plan or the audit log, and like every secret it cannot be read back. A deploy gives the app the value.
+
+- `--bytes N` sets the length, from 16 to 256. The default is 32.
+- `--format` sets the characters. `hex` is the default and is safe inside a URL. `base64` is URL-safe, without padding. `alnum` is letters and digits, and for `alnum` `--bytes` counts characters.
+- A secret that is already stored is **refused**, because replacing a password that is in use breaks the app. Pass `--replace` to replace it on purpose. Then read [rotating a secret](#rotating-a-secret) first: a database keeps its old password until you change it there too.
+- A registry password cannot be generated. Set it with `secret set --registry`.
+- `--dry-run` shows what would happen, and says when a real run would be refused without `--replace`.
+
+On a protected environment an AI agent's generate is held for approval, as a `secret set` is. Its plan names the secret and no value.
+
 Check what is stored (names only):
 
 ```bash
@@ -2406,6 +2425,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
 | `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. Setting a registry password again keeps its registry and updates the running services. |
+| `secret generate <NAME>` | admin | `--dry-run`, `--replace`, `--bytes` (16 to 256, default 32), `--format` (`hex`, `base64` or `alnum`) | Make a random secret on the server and store it. The value is never shown. A stored name is refused unless `--replace`. A registry password is refused. |
 | `secret import` | admin | `--dry-run`; standard input is `NAME=value` lines | Store every line of standard input as a secret, all or nothing. A registry password name is refused. |
 | `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that have no value. |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
@@ -2420,7 +2440,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
@@ -2745,7 +2765,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **One server per environment.** Image apps are Swarm services, so a three-server cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
-- **No secret interpolation or generated values.** A variable takes one secret's value whole; a value cannot be joined from several secrets, and Berthy generates none. See step 2.
+- **No secret interpolation.** A variable takes one secret's value whole, and a value cannot be joined from several secrets. Berthy can make a random secret on the server with `berthy secret generate`, but not one built from other values. See step 2 and [generating a random secret](#generate-a-random-secret).
 - **Secrets live in the agent's store.** There is no external secret manager. Back up the encryption key yourself.
 - **No `berthy update`.** Upgrade the agent by running `berthy setup` again with a newer CLI.
 - **No starter manifest.** There is no command that writes one. Start from `examples/todo` and check it with `berthy config validate`.

@@ -621,6 +621,8 @@ func summarize(rest []string, method string, body []byte) string {
 		return "ingress apply"
 	case "secret set":
 		return "secret set " + cleanText(b.Name, 80)
+	case "secret generate":
+		return "secret generate " + cleanText(b.Name, 80)
 	case "secret import":
 		if len(b.Secrets) == 1 {
 			return "secret import 1 secret"
@@ -638,8 +640,8 @@ func summarize(rest []string, method string, body []byte) string {
 	return "change"
 }
 
-// routeKind names what a change route does, for the method it takes. It is "" for a route that changes nothing. POST
-// secrets/import and DELETE secrets/<name> share a path, so the method tells them apart.
+// routeKind names what a change route does, for the method it takes. It is "" for a route that changes nothing. A POST to
+// secrets/import or secrets/generate and a DELETE of secrets/<name> share a path shape, so the method and the name tell them apart.
 func routeKind(rest []string, method string) string {
 	switch {
 	case len(rest) == 1 && rest[0] == "deploys":
@@ -656,8 +658,13 @@ func routeKind(rest []string, method string) string {
 	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
 		return "ingress apply"
 	case len(rest) == 2 && rest[0] == "secrets":
-		if method == "POST" && rest[1] == "import" {
-			return "secret import"
+		if method == "POST" {
+			switch rest[1] {
+			case "import":
+				return "secret import"
+			case "generate":
+				return "secret generate"
+			}
 		}
 		return "secret delete"
 	case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):

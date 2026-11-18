@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"berthy/internal/manifest"
@@ -44,6 +45,72 @@ type SecretImportPlan struct {
 type SecretImportResult struct {
 	Created  []string `json:"created"`
 	Replaced []string `json:"replaced"`
+}
+
+// The length and the formats of a generated secret. Bytes is the number of random bytes for hex and base64, and the number of
+// characters for alnum.
+const (
+	GenerateDefaultBytes  = 32
+	GenerateMinBytes      = 16
+	GenerateMaxBytes      = 256
+	GenerateDefaultFormat = "hex"
+)
+
+// GenerateFormats are the formats a generated secret may take: hex and URL-safe base64 without padding, which are safe inside a
+// URL, and letters and digits.
+var GenerateFormats = []string{"hex", "base64", "alnum"}
+
+// SecretGenerate is the body of POST secrets/generate. Bytes and Format may be left out, and then take their defaults. The agent
+// makes the value and the request never carries one.
+type SecretGenerate struct {
+	Name    string `json:"name"`
+	Bytes   *int   `json:"bytes,omitempty"`
+	Format  string `json:"format,omitempty"`
+	Replace bool   `json:"replace,omitempty"`
+	DryRun  bool   `json:"dry_run,omitempty"`
+}
+
+// SecretGenerated is what a generate stored: the name, the length, the format and whether it replaced a stored secret. It
+// never holds the value.
+type SecretGenerated struct {
+	Name     string `json:"name"`
+	Bytes    int    `json:"bytes"`
+	Format   string `json:"format"`
+	Replaced bool   `json:"replaced"`
+}
+
+// SecretGeneratePlan is the dry run of a generate and the plan a held one shows. It names the secret and whether it exists, and
+// never holds a value.
+type SecretGeneratePlan struct {
+	Action string `json:"action"`
+	Name   string `json:"name"`
+	Exists bool   `json:"exists"`
+	Bytes  int    `json:"bytes"`
+	Format string `json:"format"`
+}
+
+// CheckSecretGenerate checks a generate request where it enters the agent, and fills in the defaults. The name must be a secret
+// name other than the tunnel token, bytes must be from GenerateMinBytes to GenerateMaxBytes, and the format must be one of
+// GenerateFormats. It returns the length and the format to generate.
+func CheckSecretGenerate(req SecretGenerate) (bytes int, format string, err error) {
+	if err := CheckSecretName(req.Name); err != nil {
+		return 0, "", err
+	}
+	bytes = GenerateDefaultBytes
+	if req.Bytes != nil {
+		bytes = *req.Bytes
+	}
+	if bytes < GenerateMinBytes || bytes > GenerateMaxBytes {
+		return 0, "", fmt.Errorf("bytes must be from %d to %d", GenerateMinBytes, GenerateMaxBytes)
+	}
+	format = req.Format
+	if format == "" {
+		format = GenerateDefaultFormat
+	}
+	if !slices.Contains(GenerateFormats, format) {
+		return 0, "", errors.New("format must be hex, base64 or alnum")
+	}
+	return bytes, format, nil
 }
 
 // CheckSecretName reports whether name may be a secret: a name a container variable can take, other than the tunnel token,

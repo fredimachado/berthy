@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -354,6 +355,64 @@ type secretService struct {
 	Name    string `json:"name"`
 	Updated bool   `json:"updated"`
 	Error   string `json:"error"`
+}
+
+// secretGenerateRequest is the request of secret generate, from its flags. A --bytes that is not a whole number is refused here,
+// before anything is sent. The agent checks the range of --bytes and the format, so those rules are stated once.
+func secretGenerateRequest(f commandFlags, errout io.Writer) (api.SecretGenerate, int) {
+	req := api.SecretGenerate{Name: f.pos[1], Format: f.format, Replace: f.replaceGenerated, DryRun: f.dry}
+	if slices.Contains(f.given, "--bytes") {
+		n, err := strconv.Atoi(f.bytes)
+		if err != nil {
+			fmt.Fprintln(errout, "invalid --bytes")
+			return req, 2
+		}
+		req.Bytes = &n
+	}
+	return req, 0
+}
+
+// printSecretGenerate says what a generate did, or what a dry run says it would do. It prints the name, the length and the format,
+// and never a value, since the agent never sends one. A dry run for a stored secret says that a real run is refused without
+// --replace, which is the one thing it would refuse.
+func printSecretGenerate(out, errout io.Writer, data []byte, dry, replace bool) int {
+	if dry {
+		var plan api.SecretGeneratePlan
+		if json.Unmarshal(data, &plan) != nil || plan.Name == "" {
+			fmt.Fprintln(errout, "invalid agent response")
+			return 1
+		}
+		name, size := terminalSafe(plan.Name), generatedSize(plan.Bytes, plan.Format)
+		switch {
+		case plan.Exists && !replace:
+			fmt.Fprintf(out, "%s exists: a real run is refused unless --replace is given\n", name)
+		case plan.Exists:
+			fmt.Fprintf(out, "would replace %s (%s)\n", name, size)
+		default:
+			fmt.Fprintf(out, "would generate %s (%s)\n", name, size)
+		}
+		return 0
+	}
+	var res api.SecretGenerated
+	if json.Unmarshal(data, &res) != nil || res.Name == "" {
+		fmt.Fprintln(errout, "invalid agent response")
+		return 1
+	}
+	verb := "generated"
+	if res.Replaced {
+		verb = "replaced"
+	}
+	fmt.Fprintf(out, "%s %s (%s)\n", verb, terminalSafe(res.Name), generatedSize(res.Bytes, res.Format))
+	return 0
+}
+
+// generatedSize says the length of a generated secret as the CLI prints it: bytes for hex and base64, and characters for alnum,
+// whose length is in characters.
+func generatedSize(n int, format string) string {
+	if format == "alnum" {
+		return fmt.Sprintf("%d characters, %s", n, format)
+	}
+	return fmt.Sprintf("%d bytes, %s", n, format)
 }
 
 // printSecretSet says what the agent did with the services of a registry password it stored. It returns false, printing
