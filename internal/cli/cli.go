@@ -486,6 +486,10 @@ func retryRecovery(ctx context.Context, interval time.Duration, active func(cont
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// A tick can be waiting when the context ends, and select picks between two ready cases at random.
+			if ctx.Err() != nil {
+				return
+			}
 			attempt, done := context.WithTimeout(ctx, 30*time.Second)
 			op, err := active(attempt)
 			if err == nil && op.State == "recovery_required" {

@@ -179,23 +179,36 @@ func TestScaleRefusesNegativeReplicasBeforeAnyRequest(t *testing.T) {
 func TestRecoveryRetryOnlyForRequired(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var calls atomic.Int32
-	done := make(chan struct{})
+	var calls, recovered atomic.Int32
 	active := func(context.Context) (state.Operation, error) {
 		if calls.Add(1) == 1 {
 			return state.Operation{State: "running"}, nil
 		}
 		return state.Operation{State: "recovery_required"}, nil
 	}
-	recover := func(context.Context) error { close(done); cancel(); return nil }
-	go retryRecovery(ctx, time.Millisecond, active, recover)
+	// The recovery ends the retrying and takes longer than the interval, so another tick is waiting when it returns: the loop
+	// must still stop, and must not recover a second time.
+	recover := func(context.Context) error {
+		recovered.Add(1)
+		cancel()
+		time.Sleep(5 * time.Millisecond)
+		return nil
+	}
+	finished := make(chan struct{})
+	go func() {
+		retryRecovery(ctx, time.Millisecond, active, recover)
+		close(finished)
+	}()
 	select {
-	case <-done:
-	case <-time.After(time.Second):
+	case <-finished:
+	case <-time.After(10 * time.Second):
 		t.Fatal("recovery not retried")
 	}
 	if calls.Load() < 2 {
 		t.Fatal("retried a running operation")
+	}
+	if n := recovered.Load(); n != 1 {
+		t.Fatalf("recovered %d times, want once", n)
 	}
 }
 
