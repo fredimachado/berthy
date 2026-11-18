@@ -114,7 +114,18 @@ The one exception is `berthy setup`. It reaches a server over SSH to install the
 | Volume backups | Object storage |
 | Tunnel, public hostnames and DNS records, with managed ingress | Cloudflare; the manifest says what they should be |
 
-The agent keeps a copy of the last applied manifest so schedules keep running between deploys. Git remains the source of truth.
+The agent keeps what it runs from, so schedules and checks keep running between deploys. Git remains the source of truth. The next section says what it keeps.
+
+### Two scopes of the manifest
+
+The manifest has two scopes, and the agent stores each one on its own.
+
+- **App scope.** `apps.<name>`, the `jobs` and `backups` that name the app, and the `probes` whose `service.app` is the app. A deploy of the app applies it. It is stored with the app's release, so a rollback of the app takes it back with the app and changes nothing of any other app.
+- **Environment scope.** Everything else: `project`, `network`, `protected`, `registries`, `destinations`, `state_backup`, `telemetry`, `peers`, `alerts`, the probes that name no app, `min_version`, `aliases` and `ingress`. The agent stores it as one record per environment, with the commit it came from and whether that checkout had local changes. Every deploy that records a release writes it, in the same transaction as the release: an image app, a Compose app and an adoption. `berthy apply` writes it too, and deploys nothing. A rollback, the ingress connector's own deploy and a schema revert never write it. The `ingress` block is stored here like the rest; `ingress apply` still does the Cloudflare work.
+
+The agent runs from the environment record plus, for each app that has an applied release, the app scope of that release. No release of any app decides for the others. So a rollback of one app changes that app's jobs, backups and probes and nothing else, and the alerts, peers, probes of the environment and the other settings stay as the last deploy or `apply` left them. A deploy of an app applies the environment scope of its manifest and the app scope of that app only: a changed job of another app takes effect with that app's next deploy. A deploy from an older commit applies that commit's environment scope, as any deploy does; `berthy apply` from a newer checkout puts the settings right without a deploy.
+
+**One project per environment.** The environment record remembers the `project`. A deploy, with or without `--dry-run`, and an `apply` whose manifest names another project are refused before anything changes, with `environment <env> runs project <a>; this manifest is for project <b>`. While no app is applied, as on a fresh environment and after every app was removed, any project is accepted, and the new one replaces the old.
 
 ## Application model
 
@@ -257,7 +268,7 @@ registries:
 - The agent uses it to resolve tags to digests and to pull. It hands the credential to Swarm with the service, so every server in a cluster can pull.
 - The password is set with `berthy secret set NAME --registry HOST`, where HOST is the registry's key under `registries`. The agent uses that secret only for that host. An environment secret is set without `--registry`, and an app's environment refuses a secret that has one.
 - At a terminal, `secret set` for a registry password checks it before storing it. For a registry the manifest lists under `registries`, the CLI asks the registry whether the credential can read the repository of each image app that pulls from that host. If the registry refuses the credential, the command stops with exit status 1 and sends nothing to the agent. If the registry cannot be reached from this machine, the CLI reports that the credential was not checked and stores the password. For `ghcr.io`, the CLI also prints a link that creates a classic token with `read:packages` only. A piped value is not checked.
-- The agent checks each registry password as the check `registry:HOST`, one for each registry of the last applied manifest that a deployed image app pulls from. The monitor asks every 10 minutes, and `doctor` asks when it runs. Each check asks the registry whether the stored username and password can read each repository those apps pull from that host, the same question as the terminal check above, and it only reads. It is ok when the registry accepts the password, critical when the registry refuses it or the secret is not stored, and unknown when the registry cannot be asked. A registry does not say when a password expires, so no registry check warns ahead of an expiry. Health checks gives the details and the alert rules.
+- The agent checks each registry password as the check `registry:HOST`, one for each registry of the environment's settings that a deployed image app pulls from. The monitor asks every 10 minutes, and `doctor` asks when it runs. Each check asks the registry whether the stored username and password can read each repository those apps pull from that host, the same question as the terminal check above, and it only reads. It is ok when the registry accepts the password, critical when the registry refuses it or the secret is not stored, and unknown when the registry cannot be asked. A registry does not say when a password expires, so no registry check warns ahead of an expiry. Health checks gives the details and the alert rules.
 - Setting a stored registry password again without `--registry` keeps its registry. `--registry HOST` on an existing secret replaces the registry. To make a registry password a plain secret, remove it with `secret rm` first.
 - Storing a registry password gives it to every running Swarm service of an image app that pulls from that registry, without restarting the tasks. Compose apps get it at their next deploy. The CLI prints one line per service. A service that could not be updated is printed as `not updated` with the reason, and running `secret set` again retries it.
 - A registry password rotation leaves `secret_set:NAME` in the audit log and, when services were involved, `registry_auth_refresh:HOST`, with outcome `succeeded`, or `failed` when a service was not updated.
@@ -367,7 +378,7 @@ Run from the application's repository, setup reads two values from the merged ma
 | Encryption key | `/var/lib/berthy/key`, 32 bytes, owned by `berthy`, mode 0600 |
 | Service | `/etc/systemd/system/berthy.service`, the file the repository ships as `deploy/systemd/berthy.service`, running as the `berthy` user in the `docker` group |
 
-The agent's configuration names the environment, its listen address, the Docker socket, the state directory and key file, `protected`, the tokens, and `network`: the shared overlay network the apps join. Setup writes `network` from the manifest. `doctor` checks the network the configuration names, and when it names none, the network of the last applied manifest. With neither, the check is left out, as on a fresh agent before its first deploy. The agent's version is in its `agent` check and in `GET /v1/environments/<env>/agent`.
+The agent's configuration names the environment, its listen address, the Docker socket, the state directory and key file, `protected`, the tokens, and `network`: the shared overlay network the apps join. Setup writes `network` from the manifest. `doctor` checks the network the configuration names, and when it names none, the network of the environment's settings. With neither, the check is left out, as on a fresh agent before its first deploy. The agent's version is in its `agent` check and in `GET /v1/environments/<env>/agent`.
 
 ### What it does not do
 
@@ -505,7 +516,7 @@ A new version can fail to start for reasons only its own output explains: a miss
 ### Deploy lock
 
 - One lock per environment, taken automatically for the length of a deploy.
-- `berthy lock acquire -e prod -m "reason"` freezes deploys until someone releases it.
+- `berthy lock acquire -e prod -m "reason"` freezes deploys until someone releases it. It holds back `berthy apply` too.
 - The lock records its holder, message and age. `berthy lock status` shows them.
 - A `berthy run` holds it too, for as long as its command runs (at most its `--timeout`), because the command runs in a container of the applied release and a deploy must not replace that release under it.
 - An interactive session (`exec -i`, `run -i`) does not take it and is not journaled: it can last an hour, and it must not block a deploy.
@@ -642,7 +653,17 @@ An image app that sets nothing else runs with these Swarm settings.
 
 ### Rollback
 
-`berthy rollback <app> -e <env>` redeploys the previous recorded digest with the manifest saved at that deploy. `--to <release id>` picks an older one: the `id` column of `berthy history`, not an operation id. Secrets stay at their current values.
+`berthy rollback <app> -e <env>` redeploys the previous recorded digest with the manifest saved at that deploy. `--to <release id>` picks an older one: the `id` column of `berthy history`, not an operation id. Secrets stay at their current values. The app comes back with its own part of that manifest: its roles, hooks, jobs, backups and service probes. The environment's settings, such as the alerts, the peers and the other probes, stay as they are; the old manifest does not apply them.
+
+### Applying environment settings
+
+`berthy apply -e <env>` applies the environment scope of the manifest in `--manifest-dir` without deploying an app: it is how a probe, a peer, the alert chat, a destination or the telemetry endpoint changes with no release (see Two scopes of the manifest). It is synchronous and starts no operation, like `lock acquire`.
+
+- It validates the manifest as a deploy does, including `min_version` and the rule of one project per environment, and applies the local-changes rule of a protected environment.
+- It is refused with `409` while the deploy lock is held, by an operation or by `lock acquire`. The write and the audit row `apply` happen in one transaction.
+- It needs the `deploy` scope. An agent token on a protected environment is held for approval like any change, with the summary `apply the environment settings`, and the plan is the dry run.
+- `--dry-run` prints what would change and writes nothing. The plan and the answer list one line per change, such as `alerts: changed`, `probes: + api-up`, `destinations: ~ offsite`, `registries: - ghcr.io` and `network: a -> b`; a secret appears by name only. With nothing to change the command prints `no changes`. `--json` prints `{"changes": [...]}`. The API is `POST /v1/environments/<env>/apply` with `{manifest, commit, modified, dry_run}`.
+- The apps, and the jobs, backups and service probes of the manifest, are not applied: they come with the deploy of their app.
 
 ### Retain and prune
 
@@ -801,6 +822,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
 | `deploy [--version <app>=<tag>]…` | Deploy every app in `depends_on` order and stop at the first failure; an image app given no version keeps the one it runs, and a plain `--version` is for a manifest with one image app (see Deploying every app) | Yes |
+| `apply` | Apply the environment settings of the manifest, such as probes, peers, alerts, destinations and telemetry, without deploying an app; `--dry-run` lists the changes | Yes |
 | `rollback <app>` | Return to a previous deploy | Yes |
 | `restart <app>`, `scale <app>` | Restart or change replica count; `scale` is for image apps, and a Compose app is refused | Yes |
 | `exec <app> [-i] -- <command>` | Run a command in a running container: the role's container for an image app (`--role`), or a service's container for a Compose app (`--service`, which may be left out when the app has one service); with `-i`, an interactive session (see "Interactive sessions"), and the exit code is the command's own | Yes |
@@ -943,7 +965,7 @@ telemetry:
 - `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form, `name=value,name=value`. Backends that require authorization need it.
 - The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there.
 - With an endpoint, the agent also sends **two log records for every operation, of every kind** (deploy, rollback, restart, scale, exec, run, remove and the rest): one when the operation is admitted and one when it ends. They go to the endpoint's `/v1/logs` as OTLP protobuf over HTTP, with the same headers and the same resource attributes as the metrics (`service.name=berthy-agent`, `deployment.environment.name`, `host.name`). The body reads `<kind> started` or `<kind> <state>`, such as `deploy started` and `deploy rolled back`. The severity is INFO, and WARN when the operation ended as `failed`, `rolled_back`, `interrupted` or `recovery_required`. The attributes are `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version` (the tag, or the short digest), `berthy.image.digest` (`sha256:` and the full digest), `berthy.operation.state` (`running` at the start), `berthy.actor` (the token's name), and, on the end record, `berthy.operation.duration_ms`. An attribute whose value is not known is left out: a restart has no version or digest, and a deploy that failed before its image was resolved has no digest. A record never holds the operation's output or its reason.
-- The records are queued, at most 256, and sent in the background: an operation never waits for the backend. When the queue is full, or the backend does not answer, the records are dropped and the agent logs why, without the headers. Which endpoint they go to is read from the last applied manifest when each batch is sent, so the first deploy that turns telemetry on sends its end record and not its start record, and an operation that ends in the same moment the endpoint is removed sends nothing. An operation that ended as `recovery_required` and is later decided, by recovery or by `recovery resolve`, sends a second end record with the final state.
+- The records are queued, at most 256, and sent in the background: an operation never waits for the backend. When the queue is full, or the backend does not answer, the records are dropped and the agent logs why, without the headers. Which endpoint they go to is read from the environment's settings when each batch is sent, so the first deploy that turns telemetry on sends its end record and not its start record, and an operation that ends in the same moment the endpoint is removed sends nothing. An operation that ended as `recovery_required` and is later decided, by recovery or by `recovery resolve`, sends a second end record with the final state.
 
 ### Logs
 
@@ -971,7 +993,7 @@ Proposed thresholds: disk space and Docker disk usage warn at 80% and go critica
 
 #### Configuration
 
-Probes, peers and alerts are part of the manifest, so they are reviewed like code. Monitoring uses the last applied manifest: the one stored with the most recent release of any app, except the managed ingress connector. A release the agent cannot read keeps the checks that are already running.
+Probes, peers and alerts are part of the manifest, so they are reviewed like code. Monitoring uses the manifest the agent runs from (see Two scopes of the manifest): the environment's settings and the app scope of each deployed app's own release. A probe of the environment changes with a deploy of any app or with `berthy apply`; a service probe changes with a deploy of its app, and goes back with that app on a rollback. A release or settings the agent cannot read keep the checks that are already running.
 
 ```yaml
 probes:
@@ -995,7 +1017,7 @@ alerts:
 - A service probe runs in the overlay helper. When the helper is not running, or the service cannot be named, the probe is unknown and its detail gives the reason. Its timeout is from 1s to 25s.
 - Each peer is asked for `/healthz` every 30 seconds with a 5-second timeout, and is critical after three misses. `/healthz` needs no token and answers `{"ok":true}` and nothing else.
 - Built-in conditions always run: disk and Docker disk (warning from 80%, critical from 90%), memory (warning below 10% available, critical below 5%), restart loops of the apps Berthy manages (three restarts of one replica, or three Swarm tasks that failed or were rejected, within 10 minutes, or an out-of-memory kill; shutdowns, such as a rolling update's old tasks, do not count; unmanaged Swarm services and Compose projects are not checked), and the tunnel when managed ingress is set up.
-- Credential checks run too: `registry:HOST` for each registry of the last applied manifest that a deployed image app pulls from, and `cloudflare_token` when managed ingress is set up. The monitor asks each one every 10 minutes. `doctor` asks when it runs, all of them at once and for no more than 5 seconds. A check changes state after two answers in a row that are not ok, so a refused credential alerts 10 to 20 minutes after it stops working. One accepted answer recovers it at once. The states are:
+- Credential checks run too: `registry:HOST` for each registry of the environment's settings that a deployed image app pulls from, and `cloudflare_token` when managed ingress is set up. The monitor asks each one every 10 minutes. `doctor` asks when it runs, all of them at once and for no more than 5 seconds. A check changes state after two answers in a row that are not ok, so a refused credential alerts 10 to 20 minutes after it stops working. One accepted answer recovers it at once. The states are:
   - ok: `accepted`, or `accepted, expires DATE` when the Cloudflare token expires more than 14 days away.
   - warning: `expires in N (DATE): replace it with berthy secret set NAME -e ENV` when the Cloudflare token expires within 14 days. No registry check warns, because a registry does not say when its password expires.
   - critical: `refused: REASON: run berthy secret set NAME -e ENV`, or `secret NAME is not stored: run berthy secret set NAME -e ENV` when the secret is missing. For a registry password the command has `--registry HOST`. REASON is `HOST does not let it pull REPO` for a registry; for Cloudflare it is `Cloudflare does not accept the token: it is wrong, expired or disabled`, or `Cloudflare reports the token as expired` (or `disabled`), or `Cloudflare reports the token as not active` for a status Berthy does not know.
@@ -1010,7 +1032,7 @@ alerts:
 
 - Alerts go to Telegram only in v1. Other channels can be added later.
 - An alert is sent when a check changes state, failing or recovering, with a reminder while it stays failing.
-- A deploy or rollback also sends one message when it ends, as `alerts.telegram.deploys` says: `failed` (the default) sends one when it ends as `failed`, `rolled_back`, `interrupted` or `recovery_required`; `all` sends one for a success too; `none` sends none. Which manifest decides: for a deploy, the manifest of the request, so a first deploy that fails still alerts; for a rollback, the manifest of the release it returns to; and for an operation that recovery ends after an agent restart, the last applied manifest. Other kinds of operation never send a message.
+- A deploy or rollback also sends one message when it ends, as `alerts.telegram.deploys` says: `failed` (the default) sends one when it ends as `failed`, `rolled_back`, `interrupted` or `recovery_required`; `all` sends one for a success too; `none` sends none. Which settings decide: for a deploy, the manifest of the request, so a first deploy that fails still alerts; and for a rollback and for an operation that recovery ends after an agent restart, the alert settings the environment stores, which a rollback never changes. Other kinds of operation never send a message.
 - A message holds the environment, the app, the tag or short digest, who asked (the token's name, or `NAME (approved by NAME)` for an approved request) and how long it took. For a failure it adds the public reason of the operation, never output of the application, and the command that shows the evidence. For example `✅ prod: api v1.4.2 deployed by ci in 48s`, and
 
   ```
@@ -1043,7 +1065,7 @@ jobs:
 ```
 
 - Select the app with `app`. For a Compose app, use `service` to select the service. For an image app, use `role` to select the role. The selector can be omitted when the app has exactly one service or role.
-- Jobs come from the last applied manifest, which the agent re-reads every minute, so a changed schedule takes effect at the next minute after its deploy.
+- Jobs come from the manifest the agent runs from, which it re-reads every minute, so a changed schedule takes effect at the next minute after the deploy of the job's app. A rollback of the app brings back the schedule of the release it returns to; no other app is touched.
 - At each scheduled time, Berthy runs `command` once in a running container for the target, even when the role has several replicas. For an image app it picks the running replica with the lowest slot on the agent's node. For a Compose app it picks the lowest-numbered running container of the service; if the app has several services running and no `service` is named, the run fails and says so. The command uses the container's environment and mounts. Include a shell explicitly if the command needs shell syntax.
 - `timeout` (default `1h`, from `1s` to `24h`) limits a run. A run that exceeds it fails with `timed out after <timeout>`. The wait ends, but the command may still be running inside the container, because Docker has no way to stop one exec.
 - Each scheduled occurrence runs at most once. The agent records the occurrence in its state before it runs, so restarting the agent in the same minute cannot run it twice. Occurrences that pass while the agent is down are not made up.
@@ -1127,7 +1149,7 @@ Each backup of the deployed manifest has a check named `backup:<name>`, run ever
 - `berthy backup list -e prod` shows what is in object storage, with the key of each backup.
 - `berthy restore <key> --into <volume> -e prod` takes an `admin` token. It is an operation of kind `restore` under the deploy lock, with events like `remove` and `destroy`, and the audit log records it with the token that asked. It streams the archive from storage into a new Docker volume, preserving file permissions and ownership, and compares the SHA-256 and size it read with the sidecar's. A mismatch fails the operation with `backup checksum mismatch` and removes the new volume. Choose an unused name: a volume that exists is refused, and so is a key whose sidecar is missing.
 - `--dry-run` checks that the key names a backup with a valid sidecar and that the volume does not exist, and shows the backup it would restore.
-- `backup list` and `restore` read the backups and destinations of the last applied manifest whether or not the app is still deployed, so backups stay restorable after `berthy remove` or `destroy`. Running a backup needs the app deployed.
+- `backup list` and `restore` read the backups of the newest release of every app that was ever deployed, and the destinations of the environment's settings, whether or not the app is still deployed, so backups stay restorable after `berthy remove` or `destroy`. Running a backup needs the app deployed.
 - The volume a restore creates carries the label `berthy.restore-operation=<operation id>`. If the agent stops or crashes during a restore, the operation ends `interrupted`, and the recovery at the next start removes the restore container the agent left and the volume that carries that operation's label, and no other volume. If it cannot remove the volume, the operation says so: remove it and run the restore again.
 - When the agent starts it also removes the archive and restore containers that a killed agent left running in its environment. A multipart upload that a killed agent left in storage is not removed; a lifecycle rule on the bucket that aborts incomplete uploads does that.
 - Inspect the restored volume before mounting it in an app. If it contains an export, use the app's own restore command to import it.
@@ -1186,7 +1208,7 @@ The key check says which key the state is sealed with, so a crash leaves a state
 
 The previous key is deleted after a state snapshot made with the current key succeeds. The agent answers with the IDs of the old and the new key, how many values it sealed again and where the key file is, never a key. The CLI prints the command that copies the new key off the server. The doctor shows a `state_key` check while a previous key is kept. `setup --key-file` never replaces a key on the server: a rotation happens only through the agent. The agent's user owns `/var/lib/berthy`, where the key and its two companions live.
 
-**Configuration.** The last applied manifest may have one `state_backup` block. It belongs to the environment, so it stays in force whatever apps are deployed:
+**Configuration.** The environment's settings may have one `state_backup` block, which a deploy or `berthy apply` writes. It belongs to the environment, so it stays in force whatever apps are deployed:
 
 ```yaml
 state_backup:

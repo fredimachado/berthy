@@ -377,7 +377,7 @@ berthy agent-info -e prod
 | `disk` | The root disk has more than 10 percent free. |
 | `docker`, `docker_api` | Docker answers, and its API version is compatible. |
 | `swarm_manager` | This server is a Swarm manager. |
-| `network` | The shared network exists and is an attachable overlay. It checks the network in the agent configuration, or else the one in the last applied manifest. |
+| `network` | The shared network exists and is an attachable overlay. It checks the network in the agent configuration, or else the one in the environment's settings. |
 | `ingress_tunnel` | The Cloudflare tunnel, once managed ingress is set up. |
 | `compose` | The Compose plugin answers. |
 | `registry:<host>` | The registry password of each registry that a deployed image app pulls from: whether the registry still accepts it. See [step 8](#step-8-keep-it-healthy). |
@@ -1458,9 +1458,34 @@ berthy rollback api -e prod --to <release id>
 
 `rollback` redeploys the **previous** recorded digest with the manifest saved at that deploy. `--to` picks an older release: use the `id` column of `history`. **Secrets stay at their current values.** The images of the last `retain` deploys are kept on the server, so a rollback needs no pull.
 
+A rollback takes back the app, with its jobs, its backups and its service probes, and nothing else. The environment's settings (the alerts, the peers, the other probes, the destinations, telemetry and the rest, see [Apply environment settings](#apply-environment-settings)) stay as the last deploy or `apply` left them, and so does every other app.
+
 `--revert-schema` also reverts the database (see above). Rollback takes the lock like a deploy and exits non-zero if it does not finish healthy.
 
 Rollback works for Compose apps too: it redeploys the Compose file stored with the earlier release. If that would recreate a `stateful` app's service, it needs `--allow-recreate` and an `admin` token, like a deploy does.
+
+#### Apply environment settings
+
+Some settings belong to the environment, not to an app: `registries`, `destinations`, `state_backup`, `telemetry`, `peers`, `alerts`, and the probes that name no app. A deploy of any app applies them from its manifest. To change one without deploying an app, run:
+
+```bash
+berthy apply -e prod --dry-run
+berthy apply -e prod
+```
+
+```text
+changed the environment settings:
+  probes: + public-site
+  alerts: changed
+```
+
+`apply` reads the manifest in `--manifest-dir` (the current directory by default) and stores its environment settings. It deploys nothing and records no release, and the agent starts using the new settings within a minute. The dry run prints what would change in the same lines, and `no changes` when the settings are already what the manifest says. A secret shows by name, never by value. `--json` prints `{"changes": [...]}`.
+
+What an app owns is not applied: its own `apps` entry, the `jobs` and `backups` that name it, and the probes whose `service` is that app change with its next deploy. A rollback of an app does not change the environment's settings, and it takes back only that app's own part.
+
+`apply` needs the `deploy` scope and is refused while the deploy lock is held. On a protected environment an agent token's `apply` is held for approval like any change.
+
+An environment runs one project. A manifest whose `project` differs from the one deployed is refused by `deploy` and by `apply`, before anything changes, with `environment prod runs project todo; this manifest is for project other`. Once every app is removed, the environment takes a new project.
 
 #### Restart and scale
 
@@ -1664,6 +1689,8 @@ probes:
     expect_status: [200, 204]
 ```
 
+A probe that names no app is an environment setting: a deploy of any app applies it, and so does [`berthy apply`](#apply-environment-settings), which deploys nothing. A `service` probe belongs to its app and comes with that app's deploy.
+
 Exactly one of `http`, `tcp` and `service` per probe:
 
 | Key | Meaning | Default |
@@ -1723,7 +1750,7 @@ by ci in 48s
 berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod
 ```
 
-`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback, the manifest of the release it returns to; after an agent restart, the last applied one. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If Telegram cannot be reached, the agent logs it and the deploy is not affected.
+`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback and after an agent restart, the alert settings the environment stores, which a rollback never changes. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If Telegram cannot be reached, the agent logs it and the deploy is not affected.
 
 #### Built-in conditions
 
@@ -1807,7 +1834,7 @@ telemetry:
 
 `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form (`name=value,name=value`), for backends that need authorization. The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there. `doctor` shows a `telemetry` check.
 
-With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the last applied manifest, so the deploy that first turns telemetry on sends its end record only.
+With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the environment's settings, so the deploy that first turns telemetry on sends its end record only.
 
 ---
 
@@ -1994,7 +2021,7 @@ berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-resto
 
 `restore` needs an **`admin`** token. It streams the archive from storage into a **new** Docker volume, preserving permissions and ownership, and compares the SHA-256 and size to the description file. A mismatch fails the operation with `backup checksum mismatch` and removes the volume. A volume that already exists is refused, and so is a key without a description file. `--dry-run` shows what it would restore: the key, the new volume, the backup, app and volume, when it was taken, its size and checksum.
 
-Restore never overwrites a live volume. It always makes a new one, and you decide what to do with it. `backup list` and `restore` work from the last applied manifest even after `berthy remove`, so backups stay restorable.
+Restore never overwrites a live volume. It always makes a new one, and you decide what to do with it. `backup list` and `restore` read the backups of every app that was ever deployed, even after `berthy remove`, so backups stay restorable.
 
 If the agent stops during a restore, the operation ends `interrupted`, and at its next start the agent removes the half-built volume (it carries the label `berthy.restore-operation=<operation id>`).
 
@@ -2123,7 +2150,7 @@ The `--agent` flag marks it as an agent token. It works at once, as for any toke
 
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
-Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
+Held: `deploy`, `apply`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
 
 `key rotate` is not held: an agent token is refused with `an agent token cannot rotate the state key`, whatever its scope, on every environment.
 
@@ -2459,7 +2486,8 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | --- | --- | --- | --- |
 | `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. |
 | `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
-| `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. |
+| `apply` | deploy | `--dry-run`, `--manifest-dir`, `--commit` | Apply the environment settings of the manifest (probes, peers, alerts, destinations, telemetry and the rest) without deploying an app. Prints the changes, or `no changes`. Refused while the lock is held. |
+| `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. The environment's settings stay as they are. |
 | `restart <app>` | deploy | `--dry-run`, `--request-id`, `--role` | Restart an app's tasks or containers. |
 | `scale <app>` | deploy | `--dry-run`, `--request-id`, `--role`, `--replicas` (required) | Change the replica count of an image app. (`--manifest-dir` is accepted and not read.) |
 | `diagnostics <operation id>` | deploy | none | Evidence of a failed operation. |
@@ -2493,7 +2521,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
