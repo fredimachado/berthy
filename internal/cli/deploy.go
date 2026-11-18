@@ -865,6 +865,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	if cmd == "history" && !f.json {
 		return printHistory(out, errout, data)
 	}
+	if cmd == "alerts" {
+		return printAlertsTest(out, errout, data, f.json)
+	}
 	if cmd == "key" && !f.json {
 		return printKeyRotation(out, errout, data, f.env)
 	}

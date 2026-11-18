@@ -24,15 +24,21 @@ put the logic in a script file and run that file by path.
 `$E2E_ROOT` is `~/berthy-e2e/harness` in WSL, unless `E2E_ROOT` is set.
 
 - `src/`: a copy of the repo made by `build.sh`, with CR stripped from `*.go`, `go.mod` and `go.sum`.
-- `bin/`: `berthy`, `faketelegram`, `fakeotlp` and `tuidriver` (a program that runs a command in a pseudo-terminal and drives it with keys; see `test/tuidriver`).
+- `bin/`: `berthy`, `faketelegram`, `fakeotlp`, `fakewebhook` and `tuidriver` (a program that runs a command in a pseudo-terminal and drives it with keys; see `test/tuidriver`).
 - `run/`: the agent and CLI configs, `env.sh` (the two tokens, mode 0600), the state key, the fake-server files, and pid files.
 - `manifest/`: `berthy.yml`, the manifest that scenarios deploy from.
 - `logs/`: the agent and fake logs of the current scenario. `setup.sh` clears them for each scenario.
 - `runs/<scenario>/`: a copy of those logs, kept by `run.sh` after each scenario.
 - `docker-config/`: an empty Docker CLI config, so the Windows credential helper is never asked.
 
-Loopback ports: agent `127.0.0.1:19501`, fake Telegram `127.0.0.1:18901`, fake OTLP `127.0.0.1:18902`, and the
-throwaway registry `127.0.0.1:15021`.
+Loopback ports: agent `127.0.0.1:19501`, fake Telegram `127.0.0.1:18901`, fake OTLP `127.0.0.1:18902`, fake webhook
+`127.0.0.1:18903`, and the throwaway registry `127.0.0.1:15021`. A run that shares the daemon with others sets its own:
+`AGENT_LISTEN=127.0.0.1:1951<SLOT>`, `TG_LISTEN=127.0.0.1:1891<SLOT>`, `OTLP_LISTEN=127.0.0.1:1892<SLOT>`,
+`HOOK_LISTEN=127.0.0.1:1895<SLOT>` and `REG=127.0.0.1:1503<SLOT>`.
+
+The fake webhook (`test/fakewebhook`) takes the agent's webhook alerts and heartbeat pings. It records each request's method,
+path, headers and body to `run/hook-requests.jsonl`; `hook_requests` and `hook_reset` in `lib.sh` read and clear the record,
+`/_fake/fail` makes it answer an error status, and `stop_hook` and `start_hook` take it down and bring it back.
 
 ## Scripts
 

@@ -83,4 +83,4 @@ printf "export BERTHY_CI_TOKEN='%s'\n" "$ci_token" >> "$RUN/env.sh" || die "cann
 . "$RUN/env.sh"
 unset ci_token
 
-echo "fixture ready: $("$BIN" version); registry $REG; fakes on $TG_LISTEN and $OTLP_LISTEN; agent on $AGENT_LISTEN"
+echo "fixture ready: $("$BIN" version); registry $REG; fakes on $TG_LISTEN, $OTLP_LISTEN and $HOOK_LISTEN; agent on $AGENT_LISTEN"

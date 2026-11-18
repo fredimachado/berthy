@@ -270,11 +270,14 @@ probes:
 peers:
   dev: http://10.0.0.4:7710
 alerts:
+  reminder: 4h
+  deploys: all
   telegram:
     bot_token_secret: TG_TOKEN
     chat_id: "-1001"
-    reminder: 4h
-    deploys: all
+  webhook:
+    url_secret: HOOK_URL
+    headers_secret: HOOK_HEADERS
 ingress:
   cloudflare:
     account_id: abc123
@@ -458,8 +461,8 @@ apps:
 	"destinations.<name>.type": func(v string) string {
 		return strings.Replace(bareManifest, "type: s3", "type: "+v, 1)
 	},
-	"alerts.telegram.deploys": func(v string) string {
-		return strings.Replace(bareManifest, "chat_id: \"1\"", "chat_id: \"1\"\n    deploys: "+v, 1)
+	"alerts.deploys": func(v string) string {
+		return strings.Replace(bareManifest, "alerts:\n", "alerts:\n  deploys: "+v+"\n", 1)
 	},
 	"apps.<name>.deploy.order": func(v string) string {
 		return strings.Replace(bareManifest, "    hooks:\n", "    deploy:\n      order: "+v+"\n    hooks:\n", 1)

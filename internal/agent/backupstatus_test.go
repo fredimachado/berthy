@@ -115,7 +115,7 @@ func TestDoctorShowsEachBackupsCheckAndNeverFailsTheExitCode(t *testing.T) {
 	recordRelease(t, s, "release-backups", statusManifest)
 	byName := func() map[string]api.Check {
 		out := map[string]api.Check{}
-		for _, c := range monitoringChecks(ctx, s, nil, "lab") {
+		for _, c := range monitoringChecks(ctx, monitoringConfig(""), s, nil, "lab") {
 			out[c.Name] = c
 		}
 		return out

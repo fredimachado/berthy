@@ -45,7 +45,10 @@ func TestMonitoringValidation(t *testing.T) {
 		"service timeout 25s":     `,"probes":{"web":{"service":{"app":"api","port":8080},"interval":"60s","timeout":"25s"}}`,
 		"explicit intervals":      `,"probes":{"site":{"http":"http://h:80/","interval":"5s","timeout":"4s","failures":1}}`,
 		"peers":                   `,"peers":{"prod":"https://prod.example.com:443","staging":"http://10.0.0.6:8080/"}`,
-		"telegram":                `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"-1001234567890","reminder":"0s"}}`,
+		"telegram":                `,"alerts":{"reminder":"0s","telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"-1001234567890"}}`,
+		"webhook":                 `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL"}}`,
+		"webhook with headers":    `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"ALERT_WEBHOOK_HEADERS"}}`,
+		"both channels":           `,"alerts":{"deploys":"all","telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"},"webhook":{"url_secret":"ALERT_WEBHOOK_URL"}}`,
 		"telegram channel":        `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"@berthy_alerts"}}`,
 		"empty alerts":            `,"alerts":{}`,
 	}
@@ -91,8 +94,16 @@ func TestMonitoringValidation(t *testing.T) {
 		"telegram secret name":               `,"alerts":{"telegram":{"bot_token_secret":"bot-token","chat_id":"1"}}`,
 		"telegram chat id text":              `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"chat one"}}`,
 		"telegram short channel":             `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"@ab"}}`,
-		"telegram negative remind":           `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1","reminder":"-1h"}}`,
-		"telegram reminder text":             `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1","reminder":"soon"}}`,
+		"negative reminder":                  `,"alerts":{"reminder":"-1h"}`,
+		"reminder text":                      `,"alerts":{"reminder":"soon"}`,
+		"the old telegram reminder":          `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1","reminder":"1h"}}`,
+		"the old telegram deploys":           `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1","deploys":"all"}}`,
+		"webhook without a url secret":       `,"alerts":{"webhook":{}}`,
+		"webhook url secret name":            `,"alerts":{"webhook":{"url_secret":"alert-url"}}`,
+		"webhook reserved url secret":        `,"alerts":{"webhook":{"url_secret":"TUNNEL_TOKEN"}}`,
+		"webhook reserved headers secret":    `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"TUNNEL_TOKEN"}}`,
+		"webhook headers secret name":        `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","headers_secret":"bad name"}}`,
+		"webhook url in the manifest":        `,"alerts":{"webhook":{"url":"https://hooks.example.com/x"}}`,
 	}
 	for name, members := range invalid {
 		if _, err := DecodeJSON([]byte(monitoringManifest(members))); err == nil {
@@ -106,6 +117,7 @@ func TestMonitoringRejectsUnknownFieldsInJSON(t *testing.T) {
 		"probe field":    `,"probes":{"x":{"http":"http://h/","bogus":1}}`,
 		"service field":  `,"probes":{"x":{"service":{"app":"api","port":80,"bogus":true}}}`,
 		"telegram field": `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1","bogus":1}}}`,
+		"webhook field":  `,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL","bogus":1}}}`,
 		"alerts field":   `,"alerts":{"email":{}}`,
 	} {
 		if _, err := DecodeJSON([]byte(monitoringManifest(members))); err == nil {
@@ -119,6 +131,7 @@ func TestMonitoringRejectsUnknownFieldsInYAML(t *testing.T) {
 	for name, block := range map[string]string{
 		"probe field":    "probes:\n  site:\n    http: http://h/\n    retries: 3\n",
 		"telegram field": "alerts:\n  telegram:\n    bot_token_secret: TELEGRAM_BOT_TOKEN\n    chat_id: \"1\"\n    unknown: x\n",
+		"old reminder":   "alerts:\n  telegram:\n    bot_token_secret: TELEGRAM_BOT_TOKEN\n    chat_id: \"1\"\n    reminder: 1h\n",
 		"peers nested":   "peers:\n  prod:\n    url: http://h:8080\n",
 	} {
 		dir := t.TempDir()
@@ -158,10 +171,10 @@ func TestMonitoringDefaultsAndAccessors(t *testing.T) {
 	if interval, timeout := m.Probes["fast"].Durations(); interval != 10*time.Second || timeout != 2*time.Second || m.Probes["fast"].FailureLimit() != 2 {
 		t.Fatalf("fast durations %v %v", interval, timeout)
 	}
-	if got := m.Alerts.Telegram.ReminderInterval(); got != 4*time.Hour || m.Alerts.Telegram.Reminder != "4h0m0s" {
-		t.Fatalf("reminder %v (%q)", got, m.Alerts.Telegram.Reminder)
+	if got := m.Alerts.ReminderInterval(); got != 4*time.Hour || m.Alerts.Reminder != "4h0m0s" {
+		t.Fatalf("reminder %v (%q)", got, m.Alerts.Reminder)
 	}
-	if (Telegram{Reminder: "0s"}).ReminderInterval() != 0 {
+	if (Alerts{Reminder: "0s"}).ReminderInterval() != 0 {
 		t.Fatal("0s reminder should disable reminders")
 	}
 	if (Probe{}).FailureLimit() != 3 {
@@ -169,9 +182,19 @@ func TestMonitoringDefaultsAndAccessors(t *testing.T) {
 	}
 }
 
-func TestTelegramDeploysDefaultsToFailedAndTakesAllOrNone(t *testing.T) {
+func TestAlertsDefaultsApplyWhateverTheChannels(t *testing.T) {
+	m, err := DecodeJSON([]byte(monitoringManifest(`,"alerts":{"webhook":{"url_secret":"ALERT_WEBHOOK_URL"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Alerts.Reminder != "4h0m0s" || m.Alerts.Deploys != "failed" || m.Alerts.Telegram != nil || m.Alerts.Webhook.HeadersSecret != "" {
+		t.Fatalf("alerts %+v", m.Alerts)
+	}
+}
+
+func TestAlertsDeploysDefaultsToFailedAndTakesAllOrNone(t *testing.T) {
 	telegram := func(extra string) string {
-		return `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"` + extra + `}}`
+		return `,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"}` + extra + `}`
 	}
 	for extra, want := range map[string]string{
 		``:                    "failed",
@@ -184,7 +207,7 @@ func TestTelegramDeploysDefaultsToFailedAndTakesAllOrNone(t *testing.T) {
 			t.Errorf("%q refused: %v", extra, err)
 			continue
 		}
-		if got := m.Alerts.Telegram.Deploys; got != want {
+		if got := m.Alerts.Deploys; got != want {
 			t.Errorf("%q: deploys %q, want %q", extra, got, want)
 		}
 	}

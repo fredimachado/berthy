@@ -6,6 +6,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -51,11 +52,6 @@ type Check interface {
 	// Failures is how many non-ok results in a row change the stored state. Unknown results count too, but never alert.
 	Failures() int
 	Run(ctx context.Context) Result
-}
-
-// Notifier delivers alert text.
-type Notifier interface {
-	Notify(ctx context.Context, text string) error
 }
 
 // Monitor runs the checks that Checks returns and records their states in Store. Its fields are set before Run.
@@ -336,7 +332,9 @@ func (m *Monitor) notify(ctx context.Context, t *tracker, now time.Time) {
 	if reminding && (reminder <= 0 || now.Sub(cur.Notified) < reminder) {
 		return
 	}
-	if err = n.Notify(nctx, message(m.Env, t.name, cur, reminding)); err != nil {
+	var partial *DeliveryError
+	err = n.Notify(nctx, alertOf(m.Env, t.name, cur, reminding))
+	if err != nil && !errors.As(err, &partial) {
 		m.alertFailed(t, now, err.Error())
 		return
 	}
@@ -355,6 +353,11 @@ func (m *Monitor) notify(ctx context.Context, t *tracker, now time.Time) {
 	m.mu.Unlock()
 	if storeErr != nil {
 		m.logOnce(t, "alert state not stored for "+t.name+": "+storeErr.Error())
+	}
+	// An alert that some channel took is delivered, and is not sent again to the channels that took it. The channels that
+	// refused it are named once.
+	if partial != nil {
+		m.logOnce(t, "alert for "+t.name+" not delivered to every channel: "+partial.Error())
 	}
 }
 
@@ -415,6 +418,11 @@ func normalize(r Result) Result {
 	}
 	r.Detail = truncate(r.Detail, maxDetail)
 	return r
+}
+
+// alertOf is the alert for a stored state of a check. reminding selects the text sent again while a check keeps failing.
+func alertOf(env, name string, c state.CheckState, reminding bool) Alert {
+	return Alert{Environment: env, Kind: "check", Name: name, State: c.State, Detail: c.Detail, Since: c.Since, Text: message(env, name, c, reminding)}
 }
 
 // message is the alert for a stored state. reminding selects the text sent again while a check keeps failing.

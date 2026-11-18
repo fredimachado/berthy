@@ -184,11 +184,14 @@ var Keys = slices.Concat(
 
 		{Path: "peers.<name>", Section: "peers", Type: "string", Description: "The base URL of another agent to watch: `http` or `https`, a host and a port, and no path, query or user."},
 
-		{Path: "alerts.telegram", Section: "alerts", Type: "map", Description: "Alerts to one Telegram chat. Telegram is the only channel in v1."},
+		{Path: "alerts.reminder", Section: "alerts", Type: "duration", Default: "4h", Description: "How often to repeat an alert while its check keeps failing, on every channel. `0s` turns reminders off."},
+		{Path: "alerts.deploys", Section: "alerts", Type: "string", Default: deploysFailed, Enum: []string{deploysFailed, deploysAll, deploysNone}, Description: "Which deploys and rollbacks send a message when they end, on every channel."},
+		{Path: "alerts.telegram", Section: "alerts", Type: "map", Description: "Alerts to one Telegram chat."},
 		{Path: "alerts.telegram.bot_token_secret", Section: "alerts", Type: "secret name", Required: true, Description: "The secret that holds the bot token."},
 		{Path: "alerts.telegram.chat_id", Section: "alerts", Type: "string", Required: true, Description: "A numeric chat ID, or `@channel_name`. Quote it."},
-		{Path: "alerts.telegram.reminder", Section: "alerts", Type: "duration", Default: "4h", Description: "How often to repeat an alert while its check keeps failing. `0s` turns reminders off."},
-		{Path: "alerts.telegram.deploys", Section: "alerts", Type: "string", Default: deploysFailed, Enum: []string{deploysFailed, deploysAll, deploysNone}, Description: "Which deploys and rollbacks send a message when they end."},
+		{Path: "alerts.webhook", Section: "alerts", Type: "map", Description: "Alerts as an HTTP POST of a small JSON document: `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value."},
+		{Path: "alerts.webhook.url_secret", Section: "alerts", Type: "secret name", Required: true, Description: "The secret that holds the URL, an `http` or `https` URL with a host. The URL is often the credential, so it is never in the manifest."},
+		{Path: "alerts.webhook.headers_secret", Section: "alerts", Type: "secret name", Description: "The secret that holds request headers, `name=value,name=value`, for example an `Authorization` header."},
 
 		{Path: "telemetry.otlp_endpoint", Section: "telemetry", Type: "string", Required: true, Description: "The collector's OTLP endpoint. The agent runs on the host, so it must be an address the host can reach; a Docker service name does not resolve there."},
 		{Path: "telemetry.headers_secret", Section: "telemetry", Type: "secret name", Description: "The secret that holds request headers in the `OTEL_EXPORTER_OTLP_HEADERS` form, `name=value,name=value`, for backends that need authorization."},

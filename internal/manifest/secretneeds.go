@@ -41,6 +41,10 @@ func (m *Manifest) SecretNeeds() []SecretNeed {
 	if m.Alerts != nil && m.Alerts.Telegram != nil {
 		add(m.Alerts.Telegram.BotTokenSecret, "alerts telegram")
 	}
+	if m.Alerts != nil && m.Alerts.Webhook != nil {
+		add(m.Alerts.Webhook.URLSecret, "alerts webhook")
+		add(m.Alerts.Webhook.HeadersSecret, "alerts webhook")
+	}
 	if m.Ingress != nil && m.Ingress.Cloudflare != nil {
 		add(m.Ingress.Cloudflare.APITokenSecret, "ingress cloudflare")
 	}

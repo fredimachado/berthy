@@ -1,7 +1,7 @@
 #!/bin/bash
 # 11-deploy-reports proves that people hear about deploys they did not run, and that the telemetry backend sees every operation.
 #
-# Telegram: with alerts.telegram.deploys unset (failed), a successful deploy sends nothing and a forced failed deploy sends
+# Telegram: with alerts.deploys unset (failed), a successful deploy sends nothing and a forced failed deploy sends
 # exactly one message with the environment, the app, the version, who asked, the public reason and the diagnostics command.
 # `deploys: all` also sends one for a success, and `deploys: none` sends none even for a failure. The manifest of the request
 # decides, not the one applied before.
@@ -13,7 +13,7 @@ set -uo pipefail
 . "$RUN/digests.env"
 
 # reports_manifest DEPLOYS HEALTH_CMD: the base manifest with alerts and telemetry, and a role whose health check runs
-# HEALTH_CMD ("true" passes, "false" never does). DEPLOYS is the value of alerts.telegram.deploys, or empty to leave it out.
+# HEALTH_CMD ("true" passes, "false" never does). DEPLOYS is the value of alerts.deploys, or empty to leave it out.
 reports_manifest() {
   cat <<YML
 project: $PROJECT
@@ -23,7 +23,7 @@ alerts:
     bot_token_secret: TELEGRAM_BOT_TOKEN
     chat_id: "1"
 YML
-  [ -n "$1" ] && printf '    deploys: %s\n' "$1"
+  [ -n "$1" ] && printf '  deploys: %s\n' "$1"
   cat <<YML
 telemetry:
   otlp_endpoint: http://$OTLP_LISTEN

@@ -24,7 +24,7 @@ v1 is deliberately small. It covers what it takes to run a web application and i
 - Image deploys with no downtime: new version starts first, must pass its health check, and rolls back automatically if it does not.
 - Live logs per app.
 - Live metrics per server and per container: CPU, memory, disk space, Docker disk usage, block I/O and network I/O.
-- Health checks with alerts to Telegram.
+- Health checks with alerts to Telegram and to an HTTP webhook.
 - Cron jobs that run commands inside image app or Compose service containers.
 - Opt-in scheduled backups of app volumes to S3-compatible object storage, with a restore command.
 - Every function available from the CLI with JSON output, and through MCP.
@@ -504,7 +504,7 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
 8. **Record and tidy.** Write the deploy record, prune old images, release the lock.
 
-If step 4 fails, the agent rolls back to the previous digest and records the deploy as failed. Whether anyone is told depends on `alerts.telegram.deploys` (see Alerts): by default a failed deploy sends one Telegram message.
+If step 4 fails, the agent rolls back to the previous digest and records the deploy as failed. Whether anyone is told depends on `alerts.deploys` (see Alerts): by default a failed deploy sends one message on every alert channel.
 
 ### When a deploy fails
 
@@ -820,7 +820,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `history <app>` | Deploy records, with the reason of each failed deploy; a deploy from local changes is marked `(modified)` next to its commit. `--diff <release id> [<release id>]` prints what a release changes compared with another (see "Release diff") | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app>` | Block until each service of the app, or of `--role`, has all its replicas running and healthy, or until `--timeout` passes (default 2m, at most 10m; then it exits non-zero). `--healthy` is accepted and changes nothing. A Compose app has no bound services, so it is refused | No |
-| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the Telegram bot token secret when alerts need it, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, the Compose services whose logs have no size limit, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
+| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the secrets of each alert channel (Telegram, webhook) when alerts need them, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, the Compose services whose logs have no size limit, and telemetry when configured. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
 | `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
@@ -829,7 +829,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `ingress status` | Tunnel health, connectors, hostnames and DNS records, with managed ingress | No |
 | `checks` | Stored state of every probe and built-in condition, with when each state began | No |
 | `jobs` | Every job with its target, schedule, next occurrence and last run | No |
-| `alerts test` | Send a test message through the Telegram channel | Yes |
+| `alerts test` | Send a test message to every alert channel and report each (exit 1 when one failed) | Yes |
 | `job run <name>` | Run a job now, wait for it to finish and exit 0 only when it succeeded | Yes |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
@@ -1021,11 +1021,14 @@ probes:
 peers:
   prod: https://prod.example.com:8443       # the other agent's base URL, with no path
 alerts:
+  reminder: 4h                              # while a check keeps failing; 0s turns reminders off; every channel
+  deploys: failed                           # which deploys and rollbacks send a message: failed (default), all or none; every channel
   telegram:
     bot_token_secret: TELEGRAM_BOT_TOKEN    # the name of a secret that holds the bot token
     chat_id: "-1001234567890"               # quote it; or "@channel_name"
-    reminder: 4h                            # while a check keeps failing; 0s turns reminders off
-    deploys: failed                         # which deploys and rollbacks send a message: failed (default), all or none
+  webhook:
+    url_secret: ALERT_WEBHOOK_URL           # the name of a secret that holds the URL, which is often the credential
+    headers_secret: ALERT_WEBHOOK_HEADERS   # optional: a secret that holds name=value,name=value
 ```
 
 - A check changes state after it has failed the configured number of times in a row. One success recovers it at once. Unknown results never alert.
@@ -1041,13 +1044,13 @@ alerts:
   In `doctor` the credential checks are never critical, so they do not make it exit non-zero. No detail, log line or alert holds a credential value.
 - A token check, `token:NAME`, runs for each token made through the API that has an expiry, every hour. It is ok (`expires DATE`) until 14 days before the expiry, then a warning: `token NAME expires in N (DATE): create a new one with berthy token create`. After the expiry it is still a warning, `token NAME expired on DATE: create a new one with berthy token create`, until the token is revoked. It is not in `doctor`.
 - Disk checks cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB; smaller mounts are skipped.
-- An alert is sent when a state changes: 🔴 for critical, 🟠 for warning, ✅ on recovery. Reminders read 🔁 still failing. `berthy alerts test -e ENV` sends a test message to check the channel.
+- An alert is sent when a state changes: 🔴 for critical, 🟠 for warning, ✅ on recovery. Reminders read 🔁 still failing. `berthy alerts test -e ENV` sends a test message to every channel and reports each one.
 
 ### Alerts
 
-- Alerts go to Telegram only in v1. Other channels can be added later.
+- Alerts go to Telegram, to an HTTP webhook, or to both. `reminder` and `deploys` are set once under `alerts`, for every channel.
 - An alert is sent when a check changes state, failing or recovering, with a reminder while it stays failing.
-- A deploy or rollback also sends one message when it ends, as `alerts.telegram.deploys` says: `failed` (the default) sends one when it ends as `failed`, `rolled_back`, `interrupted` or `recovery_required`; `all` sends one for a success too; `none` sends none. Which settings decide: for a deploy, the manifest of the request, so a first deploy that fails still alerts; and for a rollback and for an operation that recovery ends after an agent restart, the alert settings the environment stores, which a rollback never changes. Other kinds of operation never send a message.
+- A deploy or rollback also sends one message when it ends, as `alerts.deploys` says: `failed` (the default) sends one when it ends as `failed`, `rolled_back`, `interrupted` or `recovery_required`; `all` sends one for a success too; `none` sends none. Which settings decide: for a deploy, the manifest of the request, so a first deploy that fails still alerts; and for a rollback and for an operation that recovery ends after an agent restart, the alert settings the environment stores, which a rollback never changes. Other kinds of operation never send a message.
 - A message holds the environment, the app, the tag or short digest, who asked (the token's name, or `NAME (approved by NAME)` for an approved request) and how long it took. For a failure it adds the public reason of the operation, never output of the application, and the command that shows the evidence. For example `✅ prod: api v1.4.2 deployed by ci in 48s`, and
 
   ```
@@ -1058,7 +1061,8 @@ alerts:
 
   A rollback that succeeds reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`; a failed one `🔴 prod: api rollback to v1.0.1 failed: ...`. An operation that stopped without finishing reads `interrupted`, and one that needs a person reads `needs recovery`.
 - An operation is alerted once. One that ended as `recovery_required` and is later finished by recovery or by `recovery resolve` sends no second message: the channel heard of the failure when it first ended.
-- The message is sent in the background with a 15-second limit. When Telegram cannot be reached, or the bot token secret is missing, the agent logs that the deploy alert was not sent, without the token, and the deploy is unaffected.
+- The message is sent in the background with a 15-second limit, to every channel at the same time. When a channel cannot be reached, or a secret of it is missing, the agent logs that the alert was not sent, naming the channel and never the URL or the token, and the deploy is unaffected. An alert that one channel took counts as delivered, so a channel that is down does not make the others repeat it.
+- The webhook gets one `POST` of `{"environment", "kind", "name", "state", "detail", "since", "text"}`. `kind` is `check` or `deploy` (`test` for a test alert), `name` is the check or the app, `state` is the state of the check or how the deploy ended, `detail` is the detail of the check, or for a deploy the public reason or the version, `since` is when the state began, and `text` is the line Telegram gets. No field holds application output or a secret value. The URL (`alerts.webhook.url_secret`) and the optional headers (`alerts.webhook.headers_secret`, `name=value,name=value`) are secrets. Any 2xx counts as delivered, a redirect does not, and nothing is retried.
 
 ### Peer check
 
@@ -1472,7 +1476,7 @@ later-phase features still need implementation and verification.
 | Shared network name | Set in the manifest, so an adopted deployment keeps its existing network. |
 | Metrics format | OpenTelemetry. |
 | Long-term logs and metrics | Not stored by Berthy. Exported to a backend of the user's choice. |
-| Alert channel | Telegram only in v1. |
+| Alert channel | Telegram and an HTTP webhook. |
 | Secret values | Kept in the agent's store for now. |
 | Implementation language | Go. |
 | How the agent gets onto a server | `berthy setup`, over SSH or on the server. It installs Docker when missing, turns on Swarm mode, creates the shared network and installs the agent. |

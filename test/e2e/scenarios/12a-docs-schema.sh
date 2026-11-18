@@ -209,11 +209,14 @@ probes:
 peers:
   dev: http://10.0.0.4:7710
 alerts:
+  reminder: 4h
+  deploys: all
   telegram:
     bot_token_secret: TG_TOKEN
     chat_id: "-1001"
-    reminder: 4h
-    deploys: all
+  webhook:
+    url_secret: HOOK_URL
+    headers_secret: HOOK_HEADERS
 ingress:
   cloudflare:
     account_id: abc123
@@ -251,24 +254,24 @@ rejects "the schema refuses apps.web.rolez" schema.json typo/berthy.yml
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$WORK/typo" 2>&1); code=$?
 expect_code "config validate refuses apps.web.rolez" 1 "$code" "$out"
 
-# A value outside an enum: alerts.telegram.deploys.
+# A value outside an enum: alerts.deploys.
 mkdir -p enum
 {
   cat base.yml
   cat <<YML
 alerts:
+  deploys: sometimes
   telegram:
     bot_token_secret: TG_TOKEN
     chat_id: "1"
-    deploys: sometimes
 YML
 } > enum/berthy.yml
-rejects "the schema refuses alerts.telegram.deploys: sometimes" schema.json enum/berthy.yml
+rejects "the schema refuses alerts.deploys: sometimes" schema.json enum/berthy.yml
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$WORK/enum" 2>&1); code=$?
-expect_code "config validate refuses alerts.telegram.deploys: sometimes" 1 "$code" "$out"
+expect_code "config validate refuses alerts.deploys: sometimes" 1 "$code" "$out"
 sed -i 's/sometimes/all/' enum/berthy.yml
-accepts "the schema accepts alerts.telegram.deploys: all" schema.json enum/berthy.yml
+accepts "the schema accepts alerts.deploys: all" schema.json enum/berthy.yml
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$WORK/enum" 2>&1); code=$?
-expect_code "config validate accepts alerts.telegram.deploys: all" 0 "$code" "$out"
+expect_code "config validate accepts alerts.deploys: all" 0 "$code" "$out"
 
 finish

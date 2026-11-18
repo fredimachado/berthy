@@ -16,6 +16,7 @@ SRC=$E2E_ROOT/src            # rsynced copy of the repo (native fs)
 BIN=$E2E_ROOT/bin/berthy
 TG_BIN=$E2E_ROOT/bin/faketelegram
 OTLP_BIN=$E2E_ROOT/bin/fakeotlp
+HOOK_BIN=$E2E_ROOT/bin/fakewebhook
 TUI_BIN=$E2E_ROOT/bin/tuidriver
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
@@ -31,6 +32,7 @@ REG_NAME=${REG_NAME:-e2e-registry}   # its container name
 AGENT_LISTEN=${AGENT_LISTEN:-127.0.0.1:19501}
 TG_LISTEN=${TG_LISTEN:-127.0.0.1:18901}
 OTLP_LISTEN=${OTLP_LISTEN:-127.0.0.1:18902}
+HOOK_LISTEN=${HOOK_LISTEN:-127.0.0.1:18903}   # fake webhook for alerts and heartbeat; per slot: 1895<SLOT>
 # The repo is two directories above this file, so the harness works from any checkout, including /mnt/d.
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 
@@ -146,18 +148,34 @@ start_agent() {
 
 stop_agent() { stop_proc "$RUN/agent.pid" "$BIN"; }
 
-# start_fakes: starts the fake Telegram and the fake OTLP receiver, and waits until both answer.
+# start_hook: starts the fake webhook and waits until it answers. It records to $RUN/hook-requests.jsonl.
+start_hook() {
+  spawn "$RUN/hook.pid" "$LOG/webhook.log" "$HOOK_BIN" -listen "$HOOK_LISTEN" -requests "$RUN/hook-requests.jsonl" || return 1
+  wait_for "fakewebhook" curl_local -f -o /dev/null "http://$HOOK_LISTEN/_fake/requests"
+}
+
+stop_hook() { stop_proc "$RUN/hook.pid" "$HOOK_BIN"; }
+
+# start_fakes: starts the fake Telegram, the fake OTLP receiver and the fake webhook, and waits until all answer.
 start_fakes() {
   spawn "$RUN/tg.pid" "$LOG/telegram.log" "$TG_BIN" -listen "$TG_LISTEN" -token-file "$RUN/tg-token" -messages "$RUN/tg-messages.json" || return 1
   spawn "$RUN/otlp.pid" "$LOG/otlp.log" "$OTLP_BIN" -listen "$OTLP_LISTEN" -summary "$RUN/otlp-summary.json" -expect-authorization-file "$RUN/otlp-auth" || return 1
   wait_for "faketelegram" curl_local -f -o /dev/null "http://$TG_LISTEN/_fake/messages" || return 1
   wait_for "fakeotlp" curl_local -o /dev/null "http://$OTLP_LISTEN/" || return 1
+  start_hook || return 1
 }
 
 stop_fakes() {
   stop_proc "$RUN/tg.pid" "$TG_BIN"
   stop_proc "$RUN/otlp.pid" "$OTLP_BIN"
+  stop_hook
 }
+
+# hook_requests: the requests the fake webhook recorded, as one JSON array.
+hook_requests() { curl_local "http://$HOOK_LISTEN/_fake/requests"; }
+
+# hook_reset: clears the fake webhook's record.
+hook_reset() { curl_local -X POST "http://$HOOK_LISTEN/_fake/reset" >/dev/null; }
 
 # tg_messages: the messages the fake Telegram recorded, as JSON.
 tg_messages() { curl_local "http://$TG_LISTEN/_fake/messages"; }

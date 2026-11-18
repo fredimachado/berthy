@@ -412,7 +412,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 				if check, ok := stateKeyCheck(deployment.Store); ok {
 					checks = append(checks, check)
 				}
-				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
+				checks = append(checks, monitoringChecks(r.Context(), c, deployment.Store, e, c.Environment)...)
 				if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
 					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
 					if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {

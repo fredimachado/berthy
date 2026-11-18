@@ -60,15 +60,15 @@ func (f *reportsTelegram) texts() []string {
 	return append([]string(nil), f.messages...)
 }
 
-// alertStore returns a store whose last applied manifest sends alerts with the given extra telegram members, and that
-// holds the bot token.
+// alertStore returns a store whose last applied manifest sends alerts to Telegram, with the given extra members of the alerts
+// block, and that holds the bot token.
 func alertStore(t *testing.T, deploysMember string) *state.Store {
 	t.Helper()
 	s := openIngressStore(t)
 	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "TELEGRAM_BOT_TOKEN"}, []byte(reportsBotToken)); err != nil {
 		t.Fatal(err)
 	}
-	recordRelease(t, s, "alerts", monitoredManifest(`,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"-1001234567890"`+deploysMember+`}}`))
+	recordRelease(t, s, "alerts", monitoredManifest(`,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"-1001234567890"}`+deploysMember+`}`))
 	return s
 }
 
@@ -222,7 +222,7 @@ func TestDeployReportsFollowTheManifestOfTheEvent(t *testing.T) {
 	tg := newReportsTelegram(t)
 	r := NewReports(monitoringConfig(tg.srv.URL), alertStore(t, `,"deploys":"none"`), nil)
 	e := failedDeploy()
-	e.Manifest = &manifest.Manifest{Alerts: &manifest.Alerts{Telegram: &manifest.Telegram{BotTokenSecret: "TELEGRAM_BOT_TOKEN", ChatID: "-1001234567890", Deploys: "failed"}}}
+	e.Manifest = &manifest.Manifest{Alerts: &manifest.Alerts{Deploys: "failed", Telegram: &manifest.Telegram{BotTokenSecret: "TELEGRAM_BOT_TOKEN", ChatID: "-1001234567890"}}}
 	r.OperationEnded(context.Background(), e)
 	r.Wait()
 	if got := tg.texts(); len(got) != 1 {

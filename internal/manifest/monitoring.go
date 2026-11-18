@@ -30,18 +30,26 @@ type ServiceProbe struct {
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
-// Alerts configures where alerts go. Telegram is the only channel in v1.
+// Alerts configures where alerts go and what they are about. Reminder and Deploys apply to every channel.
 type Alerts struct {
+	Reminder string `json:"reminder,omitempty" yaml:"reminder,omitempty"`
+	// Deploys says which deploys and rollbacks the channels hear about: failed (the default), all, or none.
+	Deploys  string    `json:"deploys,omitempty" yaml:"deploys,omitempty"`
 	Telegram *Telegram `json:"telegram,omitempty" yaml:"telegram,omitempty"`
+	Webhook  *Webhook  `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 }
 
 // Telegram sends alerts to one chat. The bot token is a secret; the chat is named in the manifest.
 type Telegram struct {
 	BotTokenSecret string `json:"bot_token_secret" yaml:"bot_token_secret"`
 	ChatID         string `json:"chat_id" yaml:"chat_id"`
-	Reminder       string `json:"reminder,omitempty" yaml:"reminder,omitempty"`
-	// Deploys says which deploys and rollbacks the channel hears about: failed (the default), all, or none.
-	Deploys string `json:"deploys,omitempty" yaml:"deploys,omitempty"`
+}
+
+// Webhook sends each alert as an HTTP POST of a JSON document. The URL is often the credential, so it is a secret, and so
+// are the optional headers.
+type Webhook struct {
+	URLSecret     string `json:"url_secret" yaml:"url_secret"`
+	HeadersSecret string `json:"headers_secret,omitempty" yaml:"headers_secret,omitempty"`
 }
 
 const (
@@ -50,7 +58,7 @@ const (
 	defaultProbeTimeout  = 5 * time.Second
 	defaultProbeFailures = 3
 	defaultReminder      = 4 * time.Hour
-	// The values of alerts.telegram.deploys.
+	// The values of alerts.deploys.
 	deploysFailed = "failed"
 	deploysAll    = "all"
 	deploysNone   = "none"
@@ -112,11 +120,11 @@ func (p Probe) FailureLimit() int {
 }
 
 // ReminderInterval returns how often an alert repeats while its check keeps failing. Zero disables reminders.
-func (t Telegram) ReminderInterval() time.Duration {
-	if t.Reminder == "" {
+func (a Alerts) ReminderInterval() time.Duration {
+	if a.Reminder == "" {
 		return defaultReminder
 	}
-	d, err := time.ParseDuration(t.Reminder)
+	d, err := time.ParseDuration(a.Reminder)
 	if err != nil || d < 0 {
 		return defaultReminder
 	}
@@ -142,8 +150,8 @@ func (m *Manifest) checkMonitoring(p *Problems) {
 			p.add(join("peers", name), "peer %s: URL must be http or https with a host and a port, and no path, query or user", name)
 		}
 	}
-	if m.Alerts != nil && m.Alerts.Telegram != nil {
-		checkTelegram(p, *m.Alerts.Telegram)
+	if m.Alerts != nil {
+		m.Alerts.check(p)
 	}
 }
 
@@ -214,6 +222,24 @@ func (m *Manifest) checkServiceProbe(p *Problems, name string, s ServiceProbe) {
 	}
 }
 
+// check validates the alert settings that every channel shares, then each channel that is set.
+func (a Alerts) check(p *Problems) {
+	if !duration(a.Reminder, true) {
+		p.add("alerts.reminder", "alerts: reminder must be a duration such as 4h, or 0s to disable")
+	}
+	switch a.Deploys {
+	case "", deploysFailed, deploysAll, deploysNone:
+	default:
+		p.add("alerts.deploys", "alerts: deploys must be failed, all or none")
+	}
+	if a.Telegram != nil {
+		checkTelegram(p, *a.Telegram)
+	}
+	if a.Webhook != nil {
+		checkWebhook(p, *a.Webhook)
+	}
+}
+
 func checkTelegram(p *Problems, t Telegram) {
 	const path = "alerts.telegram"
 	if t.BotTokenSecret == TunnelTokenSecret {
@@ -224,13 +250,23 @@ func checkTelegram(p *Problems, t Telegram) {
 	if !chatIDPattern.MatchString(t.ChatID) {
 		p.add(path+".chat_id", "alerts.telegram: chat_id must be a numeric chat ID or a @channel name")
 	}
-	if !duration(t.Reminder, true) {
-		p.add(path+".reminder", "alerts.telegram: reminder must be a duration such as 4h, or 0s to disable")
-	}
-	switch t.Deploys {
-	case "", deploysFailed, deploysAll, deploysNone:
-	default:
-		p.add(path+".deploys", "alerts.telegram: deploys must be failed, all or none")
+}
+
+func checkWebhook(p *Problems, w Webhook) {
+	const path = "alerts.webhook"
+	checkSecretName(p, path, "url_secret", w.URLSecret, false)
+	checkSecretName(p, path, "headers_secret", w.HeadersSecret, true)
+}
+
+// checkSecretName reports the key of a block that does not name a secret, or names the reserved tunnel token. An empty name
+// is accepted when optional is true.
+func checkSecretName(p *Problems, block, key, name string, optional bool) {
+	switch {
+	case name == "" && optional:
+	case name == TunnelTokenSecret:
+		p.add(block+"."+key, "%s: %s is reserved for managed ingress", block, TunnelTokenSecret)
+	case !envName.MatchString(name):
+		p.add(block+"."+key, "%s: %s must name a secret", block, key)
 	}
 }
 
@@ -281,10 +317,10 @@ func (m *Manifest) defaultsMonitoring() {
 		}
 		m.Probes[name] = p
 	}
-	if m.Alerts != nil && m.Alerts.Telegram != nil && m.Alerts.Telegram.Reminder == "" {
-		m.Alerts.Telegram.Reminder = defaultReminder.String()
+	if m.Alerts != nil && m.Alerts.Reminder == "" {
+		m.Alerts.Reminder = defaultReminder.String()
 	}
-	if m.Alerts != nil && m.Alerts.Telegram != nil && m.Alerts.Telegram.Deploys == "" {
-		m.Alerts.Telegram.Deploys = deploysFailed
+	if m.Alerts != nil && m.Alerts.Deploys == "" {
+		m.Alerts.Deploys = deploysFailed
 	}
 }

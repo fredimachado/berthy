@@ -144,12 +144,20 @@ func TestTunnelStatusMapping(t *testing.T) {
 
 func TestAlertSecretCheckWarnsWhenMissing(t *testing.T) {
 	present := false
-	check := AlertSecretCheck(func(context.Context) bool { return present })
-	if got := check.Run(context.Background()); got.State != Warning || got.Detail != "telegram bot token secret missing" {
+	check := AlertSecretCheck("webhook", func(context.Context) (bool, string) {
+		if present {
+			return true, "url secret present"
+		}
+		return false, "webhook url secret missing"
+	})
+	if check.Name() != "webhook" {
+		t.Fatalf("name %q", check.Name())
+	}
+	if got := check.Run(context.Background()); got.State != Warning || got.Detail != "webhook url secret missing" {
 		t.Fatalf("missing secret: %+v", got)
 	}
 	present = true
-	if got := check.Run(context.Background()); got.State != OK {
+	if got := check.Run(context.Background()); got.State != OK || got.Detail != "url secret present" {
 		t.Fatalf("present secret: %+v", got)
 	}
 }

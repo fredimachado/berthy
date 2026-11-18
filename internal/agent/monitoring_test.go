@@ -199,7 +199,7 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 	h := NewDeploymentHandler(monitoringConfig(fake.URL), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 
 	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
-	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"sent":true}` {
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"channels":[{"channel":"telegram","ok":true}]}` {
 		t.Fatalf("send: %d %s", w.Code, w.Body.String())
 	}
 	mu.Lock()
@@ -210,14 +210,14 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 
 	status.Store(http.StatusUnauthorized)
 	w = serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "telegram returned HTTP 401") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `{"channel":"telegram","ok":false,"error":"telegram returned HTTP 401"}`) {
 		t.Fatalf("rejected: %d %s", w.Code, w.Body.String())
 	}
 
 	// A second handler points at an address with nothing listening on it.
 	down := NewDeploymentHandler(monitoringConfig("http://"+closedLoopbackAddress(t)), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w = serveRequest(t, down, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "telegram unavailable") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"error":"telegram unavailable"`) {
 		t.Fatalf("unreachable: %d %s", w.Code, w.Body.String())
 	}
 
@@ -236,12 +236,12 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 	}
 }
 
-func TestAlertTestWithoutSecretIsNotConfigured(t *testing.T) {
+func TestAlertTestWithoutSecretNamesTheChannelThatLacksIt(t *testing.T) {
 	s := openIngressStore(t)
 	recordRelease(t, s, "release-no-secret", monitoredManifest(`,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"}}`))
 	h := NewDeploymentHandler(monitoringConfig("https://api.telegram.org"), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "alerts are not configured") {
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"channels":[{"channel":"telegram","ok":false,"error":"telegram bot token secret missing"}]}` {
 		t.Fatalf("secret missing: %d %s", w.Code, w.Body.String())
 	}
 }

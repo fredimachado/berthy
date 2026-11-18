@@ -76,10 +76,10 @@ peers:
   dev: http://10.0.0.4:7710
 
 alerts:
+  reminder: 4h
   telegram:
     bot_token_secret: TELEGRAM_BOT_TOKEN
     chat_id: "-1001234567890"
-    reminder: 4h
 
 # Metrics go to an OpenTelemetry collector on the private network.
 telemetry:

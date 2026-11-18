@@ -63,18 +63,25 @@ func (c *scripted) Run(context.Context) Result {
 type recorder struct {
 	mu       sync.Mutex
 	sent     []string
+	alerts   []Alert
 	attempts int
 	down     bool
+	// partial makes every send reach the recorder and still report a failure of another channel, as Notifiers does.
+	partial bool
 }
 
-func (n *recorder) Notify(_ context.Context, text string) error {
+func (n *recorder) Notify(_ context.Context, a Alert) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.attempts++
 	if n.down {
 		return ErrTelegramUnavailable
 	}
-	n.sent = append(n.sent, text)
+	n.sent = append(n.sent, a.Text)
+	n.alerts = append(n.alerts, a)
+	if n.partial {
+		return &DeliveryError{Err: errors.New("webhook: webhook unavailable"), Delivered: 1}
+	}
 	return nil
 }
 
@@ -317,6 +324,52 @@ func TestFailedSendIsRetriedAndStateAdvances(t *testing.T) {
 		t.Fatalf("a successful alert was retried: %d attempts", r.notifier.attempts)
 	}
 	if len(r.logs) != 1 || !strings.Contains(r.logs[0], "probe:api") {
+		t.Fatalf("log lines: %q", r.logs)
+	}
+}
+
+func TestAlertCarriesTheCheckAsFields(t *testing.T) {
+	r := newRig(t, openStore(t))
+	r.reminder = time.Hour
+	c := &scripted{name: "probe:site", interval: 30 * time.Second, failures: 1}
+	r.checks = []Check{c}
+	c.set(Critical, "HTTP 503")
+	r.step(0)
+	failedAt := r.now
+	r.step(time.Hour)
+	c.set(OK, "HTTP 200")
+	r.step(30 * time.Second)
+	if len(r.notifier.alerts) != 3 {
+		t.Fatalf("alerts: %+v", r.notifier.alerts)
+	}
+	first, reminder, recovered := r.notifier.alerts[0], r.notifier.alerts[1], r.notifier.alerts[2]
+	if first != (Alert{Environment: "lab", Kind: "check", Name: "probe:site", State: Critical, Detail: "HTTP 503", Since: failedAt, Text: "🔴 lab probe:site: HTTP 503"}) {
+		t.Fatalf("first alert %+v", first)
+	}
+	if reminder.State != Critical || reminder.Kind != "check" || reminder.Since != failedAt || reminder.Text != "🔁 still failing: lab probe:site: HTTP 503" {
+		t.Fatalf("reminder %+v", reminder)
+	}
+	if recovered.State != OK || recovered.Detail != "HTTP 200" || recovered.Text != "✅ lab probe:site recovered" {
+		t.Fatalf("recovery %+v", recovered)
+	}
+}
+
+func TestAlertReachingOneChannelIsDeliveredAndTheFailureIsLoggedOnce(t *testing.T) {
+	r := newRig(t, openStore(t))
+	r.notifier.partial = true
+	c := &scripted{name: "probe:api", interval: time.Second, failures: 1}
+	r.checks = []Check{c}
+	c.set(Critical, "connection refused")
+	for i := 0; i < 70; i++ {
+		r.step(time.Second)
+	}
+	if got := r.stored("probe:api"); got.NotifiedState != Critical {
+		t.Fatalf("a delivered alert is not recorded: %+v", got)
+	}
+	if r.notifier.attempts != 1 {
+		t.Fatalf("a delivered alert was sent again: %d attempts", r.notifier.attempts)
+	}
+	if len(r.logs) != 1 || r.logs[0] != "alert for probe:api not delivered to every channel: webhook: webhook unavailable" {
 		t.Fatalf("log lines: %q", r.logs)
 	}
 }

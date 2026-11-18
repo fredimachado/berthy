@@ -227,7 +227,7 @@ func TestDoctorReportsTheOverlayHelper(t *testing.T) {
 		wantDetail = "service probes need a Linux agent"
 	}
 	var found *api.Check
-	for _, c := range monitoringChecks(ctx, s, nil, "lab") {
+	for _, c := range monitoringChecks(ctx, monitoringConfig(""), s, nil, "lab") {
 		if c.Name == "probe_helper" {
 			c := c
 			found = &c
@@ -243,7 +243,7 @@ func TestDoctorReportsTheOverlayHelper(t *testing.T) {
 		"worker":{"kind":"image","image":"ghcr.io/acme/worker","roles":{"job":{}}},
 		"db":{"kind":"compose","file":"db/compose.yml"}},
 		"probes":{"site":{"http":"http://127.0.0.1:1/"}}}`, nil)
-	for _, c := range monitoringChecks(ctx, s, nil, "lab") {
+	for _, c := range monitoringChecks(ctx, monitoringConfig(""), s, nil, "lab") {
 		if c.Name == "probe_helper" {
 			t.Fatalf("probe_helper without a service probe: %+v", c)
 		}

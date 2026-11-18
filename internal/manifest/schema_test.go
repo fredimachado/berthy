@@ -123,7 +123,7 @@ func TestJSONSchemaDescribesKeys(t *testing.T) {
 	if desc == "" || strings.Contains(desc, "`") {
 		t.Errorf("kind description is %q", desc)
 	}
-	deploys := at(t, s, "alerts", "telegram", "deploys")
+	deploys := at(t, s, "alerts", "deploys")
 	if got := stringsOf(deploys["enum"]); strings.Join(got, ",") != "failed,all,none" || deploys["default"] != "failed" {
 		t.Errorf("deploys: %v", deploys)
 	}

@@ -41,15 +41,18 @@ func (t Telegram) String() string { return "telegram(chat " + t.ChatID + ")" }
 // GoString hides the token for %#v.
 func (t Telegram) GoString() string { return t.String() }
 
-// Notify sends text to the chat with the sendMessage method.
-func (t *Telegram) Notify(ctx context.Context, text string) error {
+// Channel names the channel in an error or a log line.
+func (Telegram) Channel() string { return "telegram" }
+
+// Notify sends the alert's text to the chat with the sendMessage method.
+func (t *Telegram) Notify(ctx context.Context, a Alert) error {
 	base := strings.TrimRight(t.BaseURL, "/")
 	if base == "" {
 		base = DefaultTelegramURL
 	}
 	form := url.Values{}
 	form.Set("chat_id", t.ChatID)
-	form.Set("text", text)
+	form.Set("text", a.Text)
 	form.Set("disable_web_page_preview", "true")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/bot"+t.Token+"/sendMessage", strings.NewReader(form.Encode()))
 	if err != nil {

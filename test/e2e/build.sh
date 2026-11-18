@@ -1,6 +1,6 @@
 #!/bin/bash
 # build.sh copies the repo into WSL's native filesystem and builds the binaries the harness runs: berthy, the fake Telegram,
-# the fake OTLP receiver and the terminal driver. Each binary is built to a .new file and moved into place, so a failed
+# the fake OTLP receiver, the fake webhook and the terminal driver. Each binary is built to a .new file and moved into place, so a failed
 # build leaves nothing half-written and keeps the previous binary.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -28,5 +28,6 @@ cd "$SRC" || exit 1
 build_to "$BIN" ./cmd/berthy || exit 1
 build_to "$TG_BIN" ./test/faketelegram || exit 1
 build_to "$OTLP_BIN" ./test/fakeotlp || exit 1
+build_to "$HOOK_BIN" ./test/fakewebhook || exit 1
 build_to "$TUI_BIN" ./test/tuidriver || exit 1
 "$BIN" version

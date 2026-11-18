@@ -71,14 +71,15 @@ func TestChecksRefusalExitsNonZero(t *testing.T) {
 func TestAlertsTestSendsAndReportsTheOutcome(t *testing.T) {
 	var method, path, auth string
 	status := http.StatusOK
+	answer := `{"channels":[{"channel":"telegram","ok":true},{"channel":"webhook","ok":true}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, path, auth = r.Method, r.URL.Path, r.Header.Get("Authorization")
 		if status != http.StatusOK {
 			w.WriteHeader(status)
-			fmt.Fprint(w, `{"code":"telegram_unavailable","message":"telegram unavailable"}`)
+			fmt.Fprint(w, `{"code":"alerts_not_configured","message":"alerts are not configured"}`)
 			return
 		}
-		fmt.Fprint(w, `{"sent":true}`)
+		fmt.Fprint(w, answer)
 	}))
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
@@ -90,14 +91,26 @@ func TestAlertsTestSendsAndReportsTheOutcome(t *testing.T) {
 	if method != "POST" || path != "/v1/environments/dev/alerts/test" || auth != "Bearer test-token" {
 		t.Fatalf("request %s %s %q", method, path, auth)
 	}
-	if strings.TrimSpace(out.String()) != "sent: true" {
+	if out.String() != "telegram: ok\nwebhook: ok\n" {
 		t.Fatalf("output %q", out.String())
+	}
+
+	// A channel that failed is named with its reason, and the exit code says so.
+	answer = `{"channels":[{"channel":"telegram","ok":true},{"channel":"webhook","ok":false,"error":"webhook returned HTTP 502"}]}`
+	out.Reset()
+	errout.Reset()
+	if code := Run([]string{"alerts", "test", "-e", "dev", "--config", cfg}, &out, &errout); code != 1 || out.String() != "telegram: ok\nwebhook: failed: webhook returned HTTP 502\n" {
+		t.Fatalf("one channel down: exit %d output %q stderr %q", code, out.String(), errout.String())
+	}
+	out.Reset()
+	if code := Run([]string{"alerts", "test", "-e", "dev", "--config", cfg, "--json"}, &out, &errout); code != 1 || !strings.Contains(out.String(), `"error": "webhook returned HTTP 502"`) {
+		t.Fatalf("json: exit %d output %q", code, out.String())
 	}
 
 	status = http.StatusBadRequest
 	out.Reset()
 	errout.Reset()
-	if code := Run([]string{"alerts", "test", "-e", "dev", "--config", cfg}, &out, &errout); code != 1 || strings.TrimSpace(errout.String()) != "agent returned HTTP 400: telegram unavailable" {
+	if code := Run([]string{"alerts", "test", "-e", "dev", "--config", cfg}, &out, &errout); code != 1 || strings.TrimSpace(errout.String()) != "agent returned HTTP 400: alerts are not configured" {
 		t.Fatalf("refused: exit %d stderr %q", code, errout.String())
 	}
 }

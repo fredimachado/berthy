@@ -11,14 +11,15 @@ import (
 	"unicode"
 
 	"berthy/internal/deploy"
+	"berthy/internal/monitor"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 )
 
 // Reports tells the alert channel and the telemetry backend about operations. It is the deploy controller's observer. Every
 // operation, of every kind, becomes two log records when telemetry is configured. A deploy or a rollback that ends the way
-// alerts.telegram.deploys says becomes one Telegram message. Neither ever makes an operation wait: the records are queued and
-// the message is sent in the background, and a failure is logged, without the bot token, and dropped.
+// alerts.deploys says becomes one message on every alert channel. Neither ever makes an operation wait: the records are queued
+// and the messages are sent in the background, and a failure is logged, without the bot token or the URL, and dropped.
 type Reports struct {
 	cfg   Config
 	store *state.Store
@@ -45,7 +46,7 @@ func NewReports(c Config, s *state.Store, log func(string)) *Reports {
 // Run sends the queued telemetry records until ctx ends, and then the ones still queued.
 func (r *Reports) Run(ctx context.Context) { r.logs.Run(ctx) }
 
-// Wait returns once the Telegram messages that were started have been sent or have failed.
+// Wait returns once the alert messages that were started have been sent or have failed.
 func (r *Reports) Wait() { r.wg.Wait() }
 
 // OperationStarted queues the start record of an operation.
@@ -84,15 +85,15 @@ func (r *Reports) alert(e deploy.OperationEvent) {
 		}
 		m = &latest
 	}
-	tg, _, err := telegramOf(ctx, r.cfg, r.store, *m)
-	if err != nil {
-		r.logf("deploy alert not sent: " + err.Error())
+	if m.Alerts == nil || !wantsDeployAlert(m.Alerts.Deploys, e) {
 		return
 	}
-	if tg == nil || !wantsDeployAlert(m.Alerts.Telegram.Deploys, e) {
+	notifiers := alertNotifiers(ctx, r.cfg, r.store, *m.Alerts)
+	if len(notifiers) == 0 {
 		return
 	}
-	if err := tg.Notify(ctx, deployAlertText(e)); err != nil {
+	// The failure names the channel, never its URL or token.
+	if err := notifiers.Notify(ctx, deployAlert(e)); err != nil {
 		r.logf("deploy alert not sent: " + err.Error())
 	}
 }
@@ -112,7 +113,7 @@ func alertableKind(e deploy.OperationEvent) bool {
 	return (e.Kind == "deploy" || e.Kind == "rollback") && !e.Resumed
 }
 
-// wantsDeployAlert is the policy of alerts.telegram.deploys: failed (also when empty) sends a message when a deploy or
+// wantsDeployAlert is the policy of alerts.deploys: failed (also when empty) sends a message when a deploy or
 // rollback ended as failed, rolled_back, interrupted or recovery_required, all sends one for a success too, and none sends
 // none.
 func wantsDeployAlert(deploys string, e deploy.OperationEvent) bool {
@@ -126,6 +127,25 @@ func wantsDeployAlert(deploys string, e deploy.OperationEvent) bool {
 		return true
 	}
 	return e.State != "succeeded"
+}
+
+// deployAlert is the alert of a finished deploy or rollback: the fields a webhook gets, and the text Telegram gets. The detail
+// is the public reason for a failure, and the version for a success.
+func deployAlert(e deploy.OperationEvent) monitor.Alert {
+	detail := oneLine(e.Version)
+	if e.State != "succeeded" {
+		detail = deployReason(e)
+	}
+	return monitor.Alert{Environment: oneLine(e.Environment), Kind: "deploy", Name: oneLine(e.App), State: e.State, Detail: detail, Since: e.Ended, Text: deployAlertText(e)}
+}
+
+// deployReason is the public reason a deploy or rollback did not succeed, or empty.
+func deployReason(e deploy.OperationEvent) string {
+	reason := safeReason(e.Reason)
+	if reason == "" {
+		reason = safeOperationError(state.Operation{Err: e.Err})
+	}
+	return reason
 }
 
 // deployAlertText is the message of a finished deploy or rollback: the environment, the app and its version, who asked, and
@@ -142,10 +162,7 @@ func deployAlertText(e deploy.OperationEvent) string {
 		}
 		return fmt.Sprintf("✅ %s %s deployed %s", head, version, tail)
 	}
-	reason := safeReason(e.Reason)
-	if reason == "" {
-		reason = safeOperationError(state.Operation{Err: e.Err})
-	}
+	reason := deployReason(e)
 	var what string
 	switch {
 	case rollback && version != "":

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -21,15 +20,6 @@ import (
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
-
-// errAlertsNotConfigured means no alert channel is set up for the environment, or its bot token secret is not stored.
-var errAlertsNotConfigured = errors.New("alerts are not configured")
-
-// errTelegramSecret means the bot token secret of the running manifest's Telegram channel is not stored.
-var errTelegramSecret = errors.New(monitor.MissingTelegramSecret)
-
-// errAlertConfig means the running manifest could not be read, so the alert settings are unknown.
-var errAlertConfig = errors.New("alerts configuration unavailable")
 
 // Monitoring runs the agent's health checks. The checks come from the running manifest and from the built-in
 // conditions, and their states are stored in the agent's state. Monitoring needs state, so NewMonitoring returns nil
@@ -210,9 +200,13 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
 		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))
 	}
-	if m.Alerts != nil && m.Alerts.Telegram != nil {
-		secret := m.Alerts.Telegram.BotTokenSecret
-		out = append(out, monitor.AlertSecretCheck(func(ctx context.Context) bool { return w.secretStored(ctx, secret) }))
+	if m.Alerts != nil {
+		alerts := *m.Alerts
+		for _, ch := range alertChannels(ctx, w.cfg, w.store, alerts) {
+			out = append(out, monitor.AlertSecretCheck(ch.name, func(ctx context.Context) (bool, string) {
+				return alertChannelStatus(ctx, w.cfg, w.store, alerts, ch.name)
+			}))
+		}
 	}
 	return out
 }
@@ -445,95 +439,29 @@ func (w *Monitoring) tunnelStatus(ctx context.Context) string {
 	return status
 }
 
-// secretStored reports whether a plain secret with this name is stored. A registry credential does not count.
-func (w *Monitoring) secretStored(ctx context.Context, name string) bool {
-	return plainSecretStored(ctx, w.store, name)
-}
-
-func plainSecretStored(ctx context.Context, s *state.Store, name string) bool {
-	secrets, err := s.Secrets(ctx)
-	if err != nil {
-		return false
-	}
-	for _, info := range secrets {
-		if info.Name == name && info.Registry == "" {
-			return true
-		}
-	}
-	return false
-}
-
-// notifier is the monitor's alert sender. It returns nil when no alerts are configured.
+// notifier is the monitor's alert sender. It returns nil when no alert channel is configured.
 func (w *Monitoring) notifier(ctx context.Context) (monitor.Notifier, time.Duration, error) {
-	tg, reminder, err := telegramFor(ctx, w.cfg, w.store)
-	if err != nil || tg == nil {
-		return nil, 0, err
-	}
-	return tg, reminder, nil
-}
-
-// telegramFor returns the Telegram sender of the running manifest and its reminder interval. It returns a nil sender
-// when no alerts are configured, errTelegramSecret when the bot token secret is not stored, and errAlertConfig when the
-// manifest cannot be read.
-func telegramFor(ctx context.Context, c Config, s *state.Store) (*monitor.Telegram, time.Duration, error) {
-	m, err := settingsManifest(ctx, s)
+	m, err := settingsManifest(ctx, w.store)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, nil
 	}
 	if err != nil {
 		return nil, 0, errAlertConfig
 	}
-	return telegramOf(ctx, c, s, m)
-}
-
-// telegramOf is telegramFor for the manifest m: the sender it configures, or nil when it sends no alerts, and its reminder
-// interval.
-func telegramOf(ctx context.Context, c Config, s *state.Store, m manifest.Manifest) (*monitor.Telegram, time.Duration, error) {
-	if m.Alerts == nil || m.Alerts.Telegram == nil {
+	if m.Alerts == nil {
 		return nil, 0, nil
 	}
-	t := m.Alerts.Telegram
-	info, token, err := s.Secret(ctx, t.BotTokenSecret)
-	if err != nil || info.Registry != "" || len(token) == 0 {
-		return nil, 0, errTelegramSecret
+	notifiers := alertNotifiers(ctx, w.cfg, w.store, *m.Alerts)
+	if len(notifiers) == 0 {
+		return nil, 0, nil
 	}
-	return &monitor.Telegram{BaseURL: c.TelegramAPIURL, Token: string(token), ChatID: t.ChatID}, t.ReminderInterval(), nil
+	return notifiers, m.Alerts.ReminderInterval(), nil
 }
 
-// sendTestAlert sends one test message through the configured Telegram channel.
-func sendTestAlert(ctx context.Context, c Config, s *state.Store) error {
-	tg, _, err := telegramFor(ctx, c, s)
-	if errors.Is(err, errTelegramSecret) {
-		return errAlertsNotConfigured
-	}
-	if err != nil {
-		return err
-	}
-	if tg == nil {
-		return errAlertsNotConfigured
-	}
-	return tg.Notify(ctx, fmt.Sprintf("🧪 %s test alert from berthy", c.Environment))
-}
-
-// alertError answers a failed test alert. The messages name only the outcome, never the URL or the token.
-func alertError(w http.ResponseWriter, err error) {
-	var status *monitor.TelegramStatusError
-	switch {
-	case errors.Is(err, errAlertsNotConfigured):
-		writeError(w, http.StatusBadRequest, "alerts_not_configured", "alerts are not configured")
-	case errors.Is(err, monitor.ErrTelegramUnavailable):
-		writeError(w, http.StatusBadRequest, "telegram_unavailable", "telegram unavailable")
-	case errors.As(err, &status):
-		writeError(w, http.StatusBadRequest, "telegram_rejected", status.Error())
-	default:
-		writeError(w, http.StatusServiceUnavailable, "alerts_unavailable", "alerts unavailable")
-	}
-}
-
-// monitoringChecks returns the doctor's non-critical checks of the running manifest: one per peer, the bot token
-// secret when alerts need it, and the overlay helper when a service probe needs it. A peer's stored state is used when
+// monitoringChecks returns the doctor's non-critical checks of the running manifest: one per peer, one per alert channel for the
+// secrets it needs, and the overlay helper when a service probe needs it. A peer's stored state is used when
 // the monitor has one; otherwise the peer is asked now.
-func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, environment string) []api.Check {
+func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.Engine, environment string) []api.Check {
 	m, err := runningManifest(ctx, s)
 	if err != nil {
 		return nil
@@ -554,13 +482,11 @@ func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, env
 		}()
 	}
 	wg.Wait()
-	if m.Alerts != nil && m.Alerts.Telegram != nil {
-		present := plainSecretStored(ctx, s, m.Alerts.Telegram.BotTokenSecret)
-		detail := "bot token secret present"
-		if !present {
-			detail = monitor.MissingTelegramSecret
+	if m.Alerts != nil {
+		for _, ch := range alertChannels(ctx, c, s, *m.Alerts) {
+			ok, detail := alertChannelStatus(ctx, c, s, *m.Alerts, ch.name)
+			out = append(out, api.Check{Name: ch.name, OK: ok, Detail: detail})
 		}
-		out = append(out, api.Check{Name: "telegram", OK: present, Detail: detail})
 	}
 	// A backup's doctor check mirrors the state of its monitor check, so the doctor and the alerts always agree. It is never
 	// critical for the doctor's exit code: a failed backup is an alert, and the agent itself is healthy.

@@ -536,10 +536,15 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			}
 			json.NewEncoder(w).Encode(out)
 		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-			sendErr := sendTestAlert(ctx, c, d.Store)
+			results, sendErr := sendTestAlert(ctx, c, d.Store)
 			outcome := "succeeded"
 			if sendErr != nil {
 				outcome = "failed"
+			}
+			for _, res := range results {
+				if !res.OK {
+					outcome = "failed"
+				}
 			}
 			if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
 				writeError(w, 503, "state_unavailable", "state unavailable")
@@ -549,7 +554,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				alertError(w, sendErr)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]bool{"sent": true})
+			json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
 		default:
 			writeError(w, 501, "unavailable", "operation unavailable")
 		}

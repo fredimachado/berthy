@@ -31,6 +31,9 @@ alerts:
   telegram:
     bot_token_secret: BOT_TOKEN
     chat_id: "42"
+  webhook:
+    url_secret: HOOK_URL
+    headers_secret: HOOK_HEADERS
 ingress:
   cloudflare:
     account_id: acct
@@ -73,6 +76,8 @@ apps:
 		{Name: "BOT_TOKEN", NeededBy: []string{"alerts telegram"}},
 		{Name: "CF_TOKEN", NeededBy: []string{"ingress cloudflare"}},
 		{Name: "GHCR_TOKEN", NeededBy: []string{"app api", "registry ghcr.io"}},
+		{Name: "HOOK_HEADERS", NeededBy: []string{"alerts webhook"}},
+		{Name: "HOOK_URL", NeededBy: []string{"alerts webhook"}},
 		{Name: "JWT_KEY", NeededBy: []string{"app api"}},
 		{Name: "OTLP_HEADERS", NeededBy: []string{"telemetry"}},
 		{Name: "S3_KEY", NeededBy: []string{"destination backups"}},

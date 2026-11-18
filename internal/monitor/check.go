@@ -326,16 +326,14 @@ func TunnelResult(status string) Result {
 	}
 }
 
-// AlertSecretCheck returns the check that warns while the Telegram bot token secret is missing. present reports whether
-// the secret is stored.
-func AlertSecretCheck(present func(context.Context) bool) Check {
-	return NewFunc("telegram", time.Minute, 1, func(ctx context.Context) Result {
-		if present(ctx) {
-			return Result{State: OK, Detail: "bot token secret present"}
+// AlertSecretCheck returns the check of an alert channel, named after the channel, that warns while a secret the channel
+// needs is not stored. status says whether the secrets are stored, and the detail to show either way.
+func AlertSecretCheck(channel string, status func(context.Context) (bool, string)) Check {
+	return NewFunc(channel, time.Minute, 1, func(ctx context.Context) Result {
+		ok, detail := status(ctx)
+		if !ok {
+			return Result{State: Warning, Detail: detail}
 		}
-		return Result{State: Warning, Detail: MissingTelegramSecret}
+		return Result{State: OK, Detail: detail}
 	})
 }
-
-// MissingTelegramSecret is the detail reported while the Telegram bot token secret is missing.
-const MissingTelegramSecret = "telegram bot token secret missing"

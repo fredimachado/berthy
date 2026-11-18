@@ -383,7 +383,7 @@ berthy agent-info -e prod
 | `registry:<host>` | The registry password of each registry that a deployed image app pulls from: whether the registry still accepts it. See [step 8](#step-8-keep-it-healthy). |
 | `cloudflare_token` | The Cloudflare API token, once managed ingress is set up: whether Cloudflare still accepts it, and when it expires. See [step 8](#step-8-keep-it-healthy). |
 | `lock` | The deploy lock (`free` or who holds it). |
-| `peer:<name>`, `telegram`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the Telegram bot token secret, every backup, and the probe helper, once the manifest uses them. |
+| `peer:<name>`, `telegram`, `webhook`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the secrets of the Telegram and webhook channels, every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
 | `compose_log_limit` | A warning, not a failure: services of deployed Compose apps whose logs grow without a size limit. See **Log rotation** in step 2. |
 | telemetry | The OTLP exporter, when configured. |
@@ -941,7 +941,8 @@ On Windows the prompt needs a real console: PowerShell, Windows Terminal or cmd.
 | `REDIS_PASSWORD` | `api` and `redis` `env.secret` | Deploying `api` and `redis`. |
 | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | `destinations.offsite` | A backup runs, including the pre-deploy backup hook ([step 10](#step-10-backups-and-restore)). |
 | `CLOUDFLARE_API_TOKEN` | `ingress.cloudflare.api_token_secret` | `ingress apply`, and deploying an app that has `hostnames` ([step 7](#step-7-put-it-on-the-internet)). |
-| `TELEGRAM_BOT_TOKEN` | `alerts.telegram.bot_token_secret` | Sending alerts ([step 8](#step-8-keep-it-healthy)). |
+| `TELEGRAM_BOT_TOKEN` | `alerts.telegram.bot_token_secret` | Sending alerts to Telegram ([step 8](#step-8-keep-it-healthy)). |
+| `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_HEADERS` | `alerts.webhook.url_secret`, `alerts.webhook.headers_secret` | Sending alerts to a webhook. The headers are optional. |
 | `OTLP_HEADERS` | `telemetry.headers_secret` | Exporting metrics and operation records to a backend that needs authorization. |
 
 **A deploy stops before changing anything if a secret it lists has no value.** You find out at once, not halfway through a rollout.
@@ -1760,34 +1761,70 @@ Exactly one of `http`, `tcp` and `service` per probe:
 
 The agent runs on the host, where Docker service names do not resolve. It runs `http` and `tcp` probes itself. A `service` probe runs in the **overlay helper**: one small container per environment, built by the agent from its own binary (no registry, no internet), attached to the shared network and published on `127.0.0.1` only. A Compose service must join the shared network to be probed. If the helper is not running, the probe's state is `unknown` with the reason, and `doctor` shows a `probe_helper` check.
 
-#### Alerts to Telegram
+#### Alerts
+
+Alerts go to Telegram, to an HTTP webhook, or to both. Both channels follow the same rules, and `reminder` and `deploys` are set once, for every channel.
 
 ```yaml
 alerts:
+  reminder: 4h
+  deploys: failed
   telegram:
     bot_token_secret: TELEGRAM_BOT_TOKEN
     chat_id: "-1001234567890"
-    reminder: 4h
-    deploys: failed
+  webhook:
+    url_secret: ALERT_WEBHOOK_URL            # the URL is often the credential, so it is a secret
+    headers_secret: ALERT_WEBHOOK_HEADERS    # optional: name=value,name=value
 ```
 
 | Key | Meaning | Default |
 | --- | --- | --- |
-| `bot_token_secret` | The name of the secret that holds the bot token. | required |
-| `chat_id` | A numeric chat id, or `@channel_name`. Quote it. | required |
 | `reminder` | How often to repeat while a check keeps failing. `0s` turns reminders off. | `4h` |
 | `deploys` | Which deploys and rollbacks send a message when they end: `failed`, `all` or `none` (see below). | `failed` |
+| `telegram.bot_token_secret` | The name of the secret that holds the bot token. | required |
+| `telegram.chat_id` | A numeric chat id, or `@channel_name`. Quote it. | required |
+| `webhook.url_secret` | The name of the secret that holds the URL, `http` or `https`. | required |
+| `webhook.headers_secret` | The name of the secret that holds request headers, `name=value,name=value`. A value may be percent-encoded. | none |
 
 ```bash
 berthy secret set TELEGRAM_BOT_TOKEN -e prod
+berthy secret set ALERT_WEBHOOK_URL -e prod
 berthy alerts test -e prod
 ```
 
-`alerts test` sends a test message (it needs a `deploy` token and has no dry run: it refuses `--dry-run`). An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing"). Telegram is the only channel in v1.
+`alerts test` sends a test message to every configured channel and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
+
+##### The webhook
+
+The webhook gets one `POST` of a small JSON document for each alert, with `Content-Type: application/json` and the headers of `headers_secret`. Any status from 200 to 299 counts as delivered. Redirects are not followed.
+
+```json
+{
+  "environment": "prod",
+  "kind": "check",
+  "name": "probe:site",
+  "state": "critical",
+  "detail": "HTTP 503",
+  "since": "2026-11-19T10:00:00Z",
+  "text": "🔴 prod probe:site: HTTP 503"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `environment` | The environment that sent the alert. |
+| `kind` | `check` for a check, `deploy` for a deploy or rollback. A test alert says `test`. |
+| `name` | The check, such as `probe:site`, or the app of a deploy. |
+| `state` | The state of the check (`critical`, `warning`, `ok`), or how the deploy ended (`failed`, `rolled_back`, `interrupted`, `recovery_required`, `succeeded`). |
+| `detail` | The detail of the check. For a deploy, the reason it did not succeed, or the version when it did. |
+| `since` | When the state began. |
+| `text` | The line Telegram would get, ready to show. |
+
+None of them holds output of your application or the value of a secret. A delivery that fails is logged without the URL and is not retried by itself; a check that is still failing sends its next reminder as usual. When a state change reaches one channel and not the other, it counts as delivered, so a channel that is down does not make the other one repeat itself. `doctor` shows a `telegram` and a `webhook` check, which fail while a secret of the channel is not stored or the headers cannot be read.
 
 ##### Deploy messages
 
-A check is not the only thing that sends a message. Nobody hears about a deploy unless they ran it, so the channel hears about deploys and rollbacks too, as `deploys` says:
+A check is not the only thing that sends a message. Nobody hears about a deploy unless they ran it, so every channel hears about deploys and rollbacks too, as `deploys` says:
 
 | `deploys` | A message when a deploy or rollback ends as |
 | --- | --- |
@@ -1795,7 +1832,7 @@ A check is not the only thing that sends a message. Nobody hears about a deploy 
 | `all` | the same, and `succeeded` |
 | `none` | never |
 
-A message names the environment, the app, the tag (or the short digest), who asked (the name of the token) and how long it took. A failure also gives the reason Berthy recorded, the same line `berthy history` shows, and the command to run next. It never holds output of your application.
+A message names the environment, the app, the tag (or the short digest), who asked (the name of the token) and how long it took. A failure also gives the reason Berthy recorded, the same line `berthy history` shows, and the command to run next. It never holds output of your application. A message goes out in the background, so a channel that is down never delays a deploy.
 
 ```
 ✅ prod: api v1.4.2 deployed by ci in 48s
@@ -1805,7 +1842,7 @@ by ci in 48s
 berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod
 ```
 
-`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback and after an agent restart, the alert settings the environment stores, which a rollback never changes. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If Telegram cannot be reached, the agent logs it and the deploy is not affected.
+`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback and after an agent restart, the alert settings the environment stores, which a rollback never changes. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If a channel cannot be reached, the agent logs it and the deploy is not affected.
 
 #### Built-in conditions
 
@@ -2576,7 +2613,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `ingress apply` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--commit`, `--replace-existing` | Create or repair the tunnel and connector, and sync routes and DNS. |
 | `job run <name>` | deploy | none | Run a job now and wait. Exit 0 only on success. |
 | `backup run <name>` | deploy | none | Run a volume backup now and wait. Exit 0 only on success. |
-| `alerts test` | deploy | none | Send a test message through Telegram. |
+| `alerts test` | deploy | none | Send a test message to every alert channel (Telegram, webhook) and report each. Exits 1 when a channel failed. |
 | `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--service` | Run a command in a running container: of an image app's role (`--role`), or of a Compose app's service (`--service`). |
 | `run <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--timeout` | Run a command in a new container of the app's applied release, with its environment and the role's limits, and remove the container afterwards. Image apps only. `--timeout` defaults to `1h` and runs from `1s` to `24h`. |
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
@@ -2817,11 +2854,14 @@ A probe has exactly one of `http`, `tcp` and `service`.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `telegram` | map | none | Alerts to one Telegram chat. Telegram is the only channel in v1. |
+| `reminder` | duration | `4h` | How often to repeat an alert while its check keeps failing, on every channel. `0s` turns reminders off. |
+| `deploys` | string | `failed` | Which deploys and rollbacks send a message when they end, on every channel. One of `failed`, `all`, `none`. |
+| `telegram` | map | none | Alerts to one Telegram chat. |
 | `telegram.bot_token_secret` | secret name | required | The secret that holds the bot token. |
 | `telegram.chat_id` | string | required | A numeric chat ID, or `@channel_name`. Quote it. |
-| `telegram.reminder` | duration | `4h` | How often to repeat an alert while its check keeps failing. `0s` turns reminders off. |
-| `telegram.deploys` | string | `failed` | Which deploys and rollbacks send a message when they end. One of `failed`, `all`, `none`. |
+| `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
+| `webhook.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. The URL is often the credential, so it is never in the manifest. |
+| `webhook.headers_secret` | secret name | none | The secret that holds request headers, `name=value,name=value`, for example an `Authorization` header. |
 
 #### `telemetry`
 
@@ -2935,7 +2975,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **No `berthy update`.** Upgrade the agent by running `berthy setup` again with a newer CLI.
 - **No starter manifest.** There is no command that writes one. Start from `examples/todo` and check it with `berthy config validate`.
 - **No web UI, and no long-term logs or metrics.** Berthy keeps the last hour of metrics in memory and stores no logs. Export metrics over OpenTelemetry and send logs to a backend of your choice.
-- **Telegram is the only alert channel.**
+- **Telegram and one HTTP webhook are the only alert channels.** Email, Slack and the others are reached through the webhook.
 - **Images are not built.** CI builds and pushes them.
 - **A Compose app has no automatic rollback, no `scale` and no `--version`.** `exec` works on a Compose app with `--service`. A Compose `build:` is refused.
 - **`hostnames` only on image apps.** Compose services are published by a rule you add in Cloudflare.
@@ -2955,7 +2995,7 @@ Berthy's own tests and the phase verification records (`docs/phase-*-verificatio
 The items below were **not** run against real services. Expect to find your own edge cases the first time:
 
 - **Cloudflare:** token scopes, error codes, rate limits, `--replace-existing` and DNS conflict handling, a connector update, more than one connector, traffic to several replicas through the tunnel, and the unhealthy-tunnel alert. The tests used a fake Cloudflare API for these. The readiness command of the pinned connector image was not confirmed against a running, ready connector. Try managed ingress on a non-production tunnel first.
-- **Telegram:** real delivery of alerts. The tests used a fake Bot API.
+- **Telegram and webhooks:** real delivery of alerts. The tests used a fake Bot API and a fake webhook.
 - **OpenTelemetry backends:** a real collector over `https`, and a backend's own authorization.
 - **S3:** a real provider. The backup, restore and state-snapshot code ran against an in-memory fake S3, so a `kill -9` during a snapshot, big states and provider quirks are untested.
 - **Other hosts:** arm64 servers, SSH through jump hosts, and a server reboot.
