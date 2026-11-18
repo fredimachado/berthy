@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -214,6 +215,26 @@ func (m *Manifest) checkEnv(p *Problems, name string, a App) {
 				p.add(sp, "app %s: duplicate environment name", name)
 			}
 			seen[s.Var] = true
+		}
+	}
+	for _, k := range sortedKeys(a.Env.Template) {
+		kp := path + ".template." + k
+		t := a.Env.Template[k]
+		refs, err := TemplateRefs(t)
+		_, inPlain := a.Env.Plain[k]
+		switch {
+		case k == TunnelTokenSecret:
+			p.add(kp, "app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
+		case strings.HasPrefix(k, berthyEnvPrefix):
+			p.add(kp, "app %s: names starting with BERTHY_ are reserved for Berthy", name)
+		case !envName.MatchString(k) || strings.ContainsRune(t, 0):
+			p.add(kp, "app %s: invalid environment name or value", name)
+		case seen[k] || inPlain:
+			p.add(kp, "app %s: duplicate environment name", name)
+		case err != nil:
+			p.add(kp, "app %s: %s", name, err)
+		case slices.Contains(refs, TunnelTokenSecret):
+			p.add(kp, "app %s: %s is reserved for managed ingress", name, TunnelTokenSecret)
 		}
 	}
 }

@@ -552,6 +552,26 @@ env:
 
 So two apps of one environment can each have their own `DATABASE_URL`, each mapped to its own secret. A variable can be listed once, and it cannot also be in `plain`. Two variables may take the value of the same secret. Both kinds of app take the same `env` block. For a Compose app, Berthy writes each variable and its value into the project's `.env` file, where the Compose file reads it as `${NAME}`.
 
+**A value built from secrets.** `env.template` makes a variable out of text that refers to secrets by name, so an app that wants one `DATABASE_URL` does not need a second secret kept in step with the password:
+
+```yaml
+env:
+  plain:
+    LOG_LEVEL: info
+  secret:
+    - JWT_SIGNING_KEY
+  template:
+    DATABASE_URL: "postgres://todo:${POSTGRES_PASSWORD}@todo-db:5432/todo"
+```
+
+- A reference is `${NAME}`, where NAME is the name of a secret of the environment, written as a secret name is (letters, digits and `_`, not starting with a digit). `$$` writes one `$`. Any other `$` is an error. There are no defaults, no nesting and no references to other variables.
+- The agent fills the template in when it deploys. The manifest and the release keep the template, and never the result.
+- The filled value is a secret. `config show` prints the template, which holds no secret value. Plans, diagnostics, `exec` output and logs show the filled value as `[redacted]`, as they show any secret's value, and the secret inside it is redacted too.
+- `config validate` refuses a malformed reference and names its file and line. `secret list --manifest-dir` lists a secret that only a template reads when it is not stored, and a deploy stops before it changes anything when one is missing: `secret POSTGRES_PASSWORD is not set`.
+- A variable is in one of `plain`, `secret` and `template`.
+- A reference cannot ask for URL encoding. A value from `berthy secret generate`, which is hex unless you ask for another format, needs none. A password with `@`, `/` or `:` in it does, so do not use one in a URL template.
+- Setting a secret again does not change the apps that read it. Deploy them again to pick up the new value.
+
 Berthy also sets these variables in every container of an image app, so the app can tag its error reports, traces and metrics:
 
 | Variable | Value |
@@ -565,7 +585,7 @@ Berthy also sets these variables in every container of an image app, so the app 
 
 They change only with the image, so a deploy that keeps the version gives its containers the same variables and replaces none of them for that reason. A rollback sets the tag and digest of the release it returns to. An app deployed before these variables existed gets them at its next deploy, which replaces its tasks once. The containers of a schema revert record no tag, so `BERTHY_VERSION` is empty in them.
 
-A variable whose name starts with `BERTHY_` cannot be used in `env.plain` or `env.secret`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
+A variable whose name starts with `BERTHY_` cannot be used in `env.plain`, `env.secret` or `env.template`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
 
 ```yaml
 services:
@@ -686,7 +706,15 @@ Three details matter:
 
 `examples/todo/deploy/redis.yml` follows the same pattern, with the alias `todo-redis`, `--requirepass` set from `REDIS_PASSWORD`, and nothing saved to disk.
 
-> **There is no secret interpolation yet.** The manifest cannot build `postgres://user:pass@todo-db/todo` out of several secrets. A variable can take a whole secret's value (`- DATABASE_URL: TODO_DATABASE_URL` in `env.secret`), but no value is joined from parts. That is why the API takes `DB_HOST`, `DB_NAME`, `DB_USER` and `POSTGRES_PASSWORD` separately and builds its connection string itself. If your app insists on a single `DATABASE_URL`, store the whole URL as its own secret, keep it in step with the password, and map it.
+> **An app that wants one `DATABASE_URL`.** The todo API takes `DB_HOST`, `DB_NAME`, `DB_USER` and `POSTGRES_PASSWORD` separately and builds its connection string itself. If your app insists on a single `DATABASE_URL`, build it from the password with a template, and keep no second secret in step with it:
+>
+> ```yaml
+> env:
+>   template:
+>     DATABASE_URL: "postgres://todo:${POSTGRES_PASSWORD}@todo-db:5432/todo"
+> ```
+>
+> The agent fills in `${POSTGRES_PASSWORD}` when it deploys. See [Environment](#step-2-write-the-manifest) above.
 
 #### The overlays
 
@@ -1490,7 +1518,7 @@ berthy run api -e prod --role worker --timeout 30m -- /app/bin/reindex
 
 `exec` runs a command in a serving replica, so it shares that replica's memory. `run` is for a one-off task that should not: it starts a **new container** from the image of the app's applied release (by digest), runs the command in it, prints the output, and exits non-zero when the command did. It is what a `run:` hook or a migration does during a deploy, without a deploy around it.
 
-The container gets the app's environment (`env.plain` and `env.secret`) and the `BERTHY_*` variables of the role, the shared overlay network, and the role's `resources` limits (`cpu` and `memory`). An app with several roles needs `--role`; an app with one does not. The output is redacted of managed secret values, as `exec`'s is, and is kept with the operation.
+The container gets the app's environment (`env.plain`, `env.secret` and `env.template`) and the `BERTHY_*` variables of the role, the shared overlay network, and the role's `resources` limits (`cpu` and `memory`). An app with several roles needs `--role`; an app with one does not. The output is redacted of managed secret values, as `exec`'s is, and is kept with the operation.
 
 - `--timeout` is the time limit of the command, from `1s` to `24h`, `1h` by default. A command that runs past it is stopped and removed, and the run fails with `run timed out after <timeout>`.
 - A run is an operation. It holds the environment's deploy lock while it runs, so no deploy starts under it, and it needs an **`admin`** token. On a protected environment, an AI agent's `run` is held until a person approves it, and the plan shows the command, the image digest and the role.
@@ -2544,6 +2572,8 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `env.plain` | both | map | none | Variables with a value written in the manifest, which is reviewed like code. Names that start with `BERTHY_` are reserved. |
 | `env.plain.<VAR>` | both | string | none | The variable's value. |
 | `env.secret` | both | list | none | Secrets whose values the containers get, kept in the agent. An entry is a secret's name, which is also the variable's name, or a one-key map from a variable to a secret's name, such as `DATABASE_URL: API_DATABASE_URL`. No variable twice, and none that is also in `plain`. |
+| `env.template` | both | map | none | Variables whose value is built from secrets. The agent fills a template in when it deploys. The manifest and the release keep the template, and the filled value is a secret: it is redacted like one. A variable is in one of `plain`, `secret` and `template`. Names that start with `BERTHY_` are reserved. |
+| `env.template.<VAR>` | both | string | none | The variable's template: text with `${NAME}` where the value of the secret NAME goes, such as `postgres://app:${DB_PASSWORD}@db:5432/app`. `$$` writes one `$`, and any other `$` is an error. There are no defaults, no nesting and no references to variables. A reference cannot ask for URL encoding: the hex value `berthy secret generate` makes by default needs none, but a password with `@` or `/` does, so use one that has none. |
 | `deploy` | image | map | none | How a rollout of a new version runs. |
 | `deploy.deploy_timeout` | image | duration | `120s` | The longest a new version may take to become healthy. |
 | `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. |
@@ -2788,7 +2818,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<a
 - **One server per environment.** Image apps are Swarm services, so a three-server cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
-- **No secret interpolation.** A variable takes one secret's value whole, and a value cannot be joined from several secrets. Berthy can make a random secret on the server with `berthy secret generate`, but not one built from other values. See step 2 and [generating a random secret](#generate-a-random-secret).
+- **Limited secret interpolation.** A template (`env.template`) joins secrets into one value with `${NAME}` only: no defaults, no nesting, no URL encoding and no references to variables. Berthy can make a random secret on the server with `berthy secret generate`. See step 2 and [generating a random secret](#generate-a-random-secret).
 - **Secrets live in the agent's store.** There is no external secret manager. Back up the encryption key yourself.
 - **No `berthy update`.** Upgrade the agent by running `berthy setup` again with a newer CLI.
 - **No starter manifest.** There is no command that writes one. Start from `examples/todo` and check it with `berthy config validate`.

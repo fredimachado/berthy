@@ -120,12 +120,8 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		auth = &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}
 	}
 	for _, name := range app.Env.SecretNames() {
-		if c.Store == nil {
-			return Plan{}, errors.New("workload secret unavailable")
-		}
-		info, _, err := c.Store.Secret(ctx, name)
-		if err != nil || info.Registry != "" {
-			return Plan{}, errors.New("workload secret unavailable")
+		if _, err := c.workloadSecret(ctx, name); err != nil {
+			return Plan{}, err
 		}
 	}
 	if _, ok := named.(reference.Canonical); !ok {
@@ -176,15 +172,12 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 		out.Auth = &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}
 	}
 	app := req.Manifest.Apps[req.App]
-	for k, v := range app.Env.Plain {
-		out.Env = append(out.Env, k+"="+v)
+	vars, err := c.resolveEnv(ctx, app.Env)
+	if err != nil {
+		return out, err
 	}
-	for _, s := range app.Env.Secret {
-		info, value, e := c.Store.Secret(ctx, s.Secret)
-		if e != nil || info.Registry != "" {
-			return out, errors.New("workload secret unavailable")
-		}
-		out.Env = append(out.Env, s.Var+"="+string(value))
+	for _, v := range vars {
+		out.Env = append(out.Env, v.Name+"="+v.Value)
 	}
 	sort.Strings(out.Env)
 	logDriver, err := c.daemonLogDriver(ctx)

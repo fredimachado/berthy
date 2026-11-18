@@ -51,20 +51,20 @@ func TestMappedSecretGivesItsVariableTheSecretsValue(t *testing.T) {
 }
 
 // TestMappedSecretMustBeStoredBeforeThePlan: a mapped secret is checked by its own name. Storing the variable's name
-// does not satisfy the mapping, and the plan refuses with the workload message until the secret has a value.
+// does not satisfy the mapping, and the plan refuses, naming the secret, until the secret has a value.
 func TestMappedSecretMustBeStoredBeforeThePlan(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
 	req := Request{App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: mappedManifest(manifest.SecretVar{Var: "DATABASE_URL", Secret: "API_DATABASE_URL"})}
 	admin := Actor{ID: "admin", Admin: true}
-	if _, err := c.Plan(ctx, admin, req); err == nil || err.Error() != "workload secret unavailable" {
+	if _, err := c.Plan(ctx, admin, req); err == nil || err.Error() != "secret API_DATABASE_URL is not set" {
 		t.Fatalf("plan without the secret: %v", err)
 	}
 	if err := s.PutSecret(ctx, state.Actor{ID: "admin"}, state.SecretInfo{Name: "DATABASE_URL"}, []byte("postgres://wrong")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Plan(ctx, admin, req); err == nil || err.Error() != "workload secret unavailable" {
+	if _, err := c.Plan(ctx, admin, req); err == nil || err.Error() != "secret API_DATABASE_URL is not set" {
 		t.Fatalf("plan with only the variable's name stored: %v", err)
 	}
 	if err := s.PutSecret(ctx, state.Actor{ID: "admin"}, state.SecretInfo{Name: "API_DATABASE_URL"}, []byte("postgres://api")); err != nil {

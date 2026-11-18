@@ -78,7 +78,6 @@ const (
 	errComposeSourceMissing Refusal = "compose source unavailable for rollback"
 	errComposeInterrupted   Refusal = "compose deploy interrupted"
 	errComposeRegistry      Refusal = "registry credential unavailable"
-	errComposeSecretMissing Refusal = "workload secret unavailable"
 	errComposeEnv           Refusal = "environment value cannot be written to a Compose environment file"
 	errComposeSecret        Refusal = "secret value cannot be written to a Compose environment file"
 	errScaleCompose         Refusal = "scale is for image apps"
@@ -185,25 +184,23 @@ func (c *Controller) stageCompose(ctx context.Context, dir string, req Request) 
 		}
 		env.WriteString(k + "=" + v + "\n")
 	}
-	for _, k := range sortedKeys(app.Env.Plain) {
-		v, ok := composeEnvValue(app.Env.Plain[k])
-		if !ok {
+	vars, err := c.resolveEnv(ctx, app.Env)
+	if err != nil {
+		var r Refusal
+		if errors.As(err, &r) {
+			return "", r
+		}
+		return "", errComposeEnv
+	}
+	for _, e := range vars {
+		v, ok := composeEnvValue(e.Value)
+		switch {
+		case !ok && e.Sensitive:
+			return "", errComposeSecret
+		case !ok:
 			return "", errComposeEnv
 		}
-		env.WriteString(k + "=" + v + "\n")
-	}
-	secrets := append([]manifest.SecretVar(nil), app.Env.Secret...)
-	sort.Slice(secrets, func(i, j int) bool { return secrets[i].Var < secrets[j].Var })
-	for _, s := range secrets {
-		info, value, err := c.Store.Secret(ctx, s.Secret)
-		if err != nil || info.Registry != "" {
-			return "", errComposeSecretMissing
-		}
-		v, ok := composeEnvValue(string(value))
-		if !ok {
-			return "", errComposeSecret
-		}
-		env.WriteString(s.Var + "=" + v + "\n")
+		env.WriteString(e.Name + "=" + v + "\n")
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env.String()), 0600); err != nil {
 		return "", errComposeFiles

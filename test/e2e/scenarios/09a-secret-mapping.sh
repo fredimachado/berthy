@@ -1,7 +1,7 @@
 #!/bin/bash
 # 09a-secret-mapping proves an env.secret mapping on the real Swarm and in a Compose app. Two image apps, web and api, each map
 # DATABASE_URL to their own secret, so each container has its own DATABASE_URL and no variable named after a secret. A mapping
-# whose secret has no value stops its deploy before anything runs. A manifest that lists a variable twice fails config validate,
+# whose secret has no value stops its deploy before anything runs, and the refusal names the secret. A manifest that lists a variable twice fails config validate,
 # and names it. A Compose app's .env file gives the mapped variable the secret's value.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
@@ -103,7 +103,7 @@ if [ "$code" -ne 0 ]; then
 else
   fail "deploy of a mapping whose secret is unset is refused" "exit 0"
 fi
-expect_contains "the refusal is a failed preflight" "$out" "deployment preflight failed"
+expect_contains "the refusal names the secret that has no value" "$out" "secret LATE_DB is not set"
 if d service inspect "$PROJECT-late-main" >/dev/null 2>&1; then
   fail "no service was created for late" "$PROJECT-late-main exists"
 else

@@ -708,17 +708,9 @@ func (c *Controller) runExec(ctx context.Context, op state.Operation, actor Acto
 		}
 		return state.Outcome{State: "failed", Err: "exec target unavailable"}
 	}
-	infos, err := c.Store.Secrets(ctx)
+	secrets, err := c.redactionValues(ctx)
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "secret redaction unavailable"}
-	}
-	var secrets [][]byte
-	for _, info := range infos {
-		_, value, e := c.Store.Secret(ctx, info.Name)
-		if e != nil {
-			return state.Outcome{State: "failed", Err: "secret redaction unavailable"}
-		}
-		secrets = append(secrets, value)
 	}
 	desired, err := json.Marshal(struct {
 		Command     []string `json:"command"`

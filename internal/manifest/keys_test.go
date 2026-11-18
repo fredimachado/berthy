@@ -184,6 +184,8 @@ apps:
       secret:
         - API_KEY
         - DB_URL: DATABASE_URL
+      template:
+        DATABASE_DSN: "postgres://app:${DATABASE_URL}@db:5432/app"
     deploy:
       deploy_timeout: 120s
       drain_timeout: 30s

@@ -128,6 +128,9 @@ type Health struct {
 type Env struct {
 	Plain  map[string]string `json:"plain,omitempty" yaml:"plain,omitempty"`
 	Secret []SecretVar       `json:"secret,omitempty" yaml:"secret,omitempty"`
+	// Template holds variables whose value is text that refers to secrets as ${NAME}. The agent fills it in when it deploys,
+	// and the filled value is a secret.
+	Template map[string]string `json:"template,omitempty" yaml:"template,omitempty"`
 }
 
 // SecretVar is one entry of env.secret: the variable a container gets and the secret whose value it takes. In a manifest it
@@ -175,14 +178,24 @@ func (s *SecretVar) UnmarshalJSON(b []byte) error {
 
 var errSecretEntry = errors.New("env.secret entry must be a name or VARIABLE: SECRET")
 
-// SecretNames returns the names of the secrets the entries read, sorted and without duplicates.
+// SecretNames returns the names of the secrets the entries and the templates read, sorted and without duplicates. A malformed
+// template adds nothing: validation refuses it.
 func (e Env) SecretNames() []string {
 	seen := map[string]bool{}
 	var names []string
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
 	for _, s := range e.Secret {
-		if !seen[s.Secret] {
-			seen[s.Secret] = true
-			names = append(names, s.Secret)
+		add(s.Secret)
+	}
+	for _, t := range e.Template {
+		refs, _ := TemplateRefs(t)
+		for _, name := range refs {
+			add(name)
 		}
 	}
 	sort.Strings(names)

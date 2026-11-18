@@ -38,8 +38,8 @@ func adoptableService(live json.RawMessage, network string) error {
 }
 
 // adoptionEnv is the environment of an adopted role's release as far as an adoption plan can tell, for specChanges: the
-// manifest's plain variables, and for each secret variable the service's own value of it, because a secret is read only
-// when a deploy runs.
+// manifest's plain variables, and for each secret or template variable the service's own value of it, because a secret is
+// read only when a deploy runs.
 func adoptionEnv(env manifest.Env, live []string) []string {
 	have := map[string]string{}
 	for _, e := range live {
@@ -50,9 +50,9 @@ func adoptionEnv(env manifest.Env, live []string) []string {
 	for k, v := range env.Plain {
 		out = append(out, k+"="+v)
 	}
-	for _, s := range env.Secret {
-		if value, ok := have[s.Var]; ok {
-			out = append(out, s.Var+"="+value)
+	for _, name := range env.SensitiveVars() {
+		if value, ok := have[name]; ok {
+			out = append(out, name+"="+value)
 		}
 	}
 	sort.Strings(out)

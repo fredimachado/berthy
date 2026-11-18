@@ -92,17 +92,9 @@ func (c *Controller) redactor(ctx context.Context) (func(string) string, bool) {
 	if c.Store == nil {
 		return nil, false
 	}
-	infos, err := c.Store.Secrets(ctx)
+	secrets, err := c.redactionValues(ctx)
 	if err != nil {
 		return nil, false
-	}
-	var secrets [][]byte
-	for _, info := range infos {
-		_, value, e := c.Store.Secret(ctx, info.Name)
-		if e != nil {
-			return nil, false
-		}
-		secrets = append(secrets, value)
 	}
 	return func(s string) string { return redactOutput([]byte(s), secrets) }, true
 }

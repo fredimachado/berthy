@@ -571,8 +571,8 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The Berthy identity comes first, sorted; the app's own variables follow.
-	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\n" + "MODE='one'\nNOTE='plain value'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\n"
+	// The Berthy identity comes first, sorted; the app's own variables follow, sorted by name.
+	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\nMODE='one'\nNOTE='plain value'\n"
 	if string(env) != want {
 		t.Fatalf("environment file %q, want %q", env, want)
 	}
@@ -616,9 +616,9 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 	if _, err = c.stageCompose(ctx, t.TempDir(), composeReq("nl", composeFileOne, m)); !errors.Is(err, errComposeSecret) {
 		t.Fatalf("secret with newline: %v", err)
 	}
-	// A missing secret stops the deploy with the workload message.
+	// A missing secret stops the deploy with a refusal that names it.
 	m.Apps["db"] = manifest.App{Kind: "compose", File: "compose.yaml", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "ABSENT", Secret: "ABSENT"}}}}
-	if _, err = c.stageCompose(ctx, t.TempDir(), composeReq("missing", composeFileOne, m)); !errors.Is(err, errComposeSecretMissing) {
+	if _, err = c.stageCompose(ctx, t.TempDir(), composeReq("missing", composeFileOne, m)); !errors.Is(err, Refusal("secret ABSENT is not set")) {
 		t.Fatalf("missing secret: %v", err)
 	}
 }

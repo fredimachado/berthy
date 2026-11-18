@@ -101,8 +101,8 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 		for _, name := range a.Env.SecretNames() {
 			secretNames[name] = true
 		}
-		for _, s := range a.Env.Secret {
-			variables[s.Var] = true
+		for _, name := range a.Env.SensitiveVars() {
+			variables[name] = true
 		}
 	}
 	var values []string

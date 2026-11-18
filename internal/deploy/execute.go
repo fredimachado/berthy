@@ -64,6 +64,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	p, err := c.plan(ctx, actor, req)
 	if err != nil {
+		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
+		var refusal Refusal
+		if errors.As(err, &refusal) && secretMessage.MatchString(string(refusal)) {
+			outcome.Err = string(refusal)
+		}
 		return
 	}
 	planned = target{Image: p.Image, Tag: p.Tag}
