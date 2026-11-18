@@ -109,14 +109,14 @@ func serveSession(w http.ResponseWriter, r *http.Request, d *deploy.Controller, 
 		_ = d.Store.RecordAudit(ctx, sa, action, "ended: client disconnected")
 		return
 	}
-	outcome := bridge(ctx, s, conn, brw.Reader)
-	_ = conn.Close()
+	outcome, end := bridge(ctx, s, conn, brw.Reader)
 	err = closeSession()
 	if err != nil {
 		outcome += " (cleanup failed)"
 	}
 	// The session is over and the client has been told; a failure to record its end has nobody left to be reported to.
 	_ = d.Store.RecordAudit(context.WithoutCancel(ctx), sa, action, "ended: "+outcome)
+	end()
 }
 
 // sessionAction is the audit action of a session: session exec api/web, or session run api/web.
@@ -143,8 +143,9 @@ func headerHasToken(h http.Header, name, token string) bool {
 }
 
 // bridge carries the frames between the client and the session until the command ends or the client leaves, and returns how
-// it ended, for the audit log: "exit N", "client disconnected", or the failure the client was told.
-func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Reader) string {
+// it ended, for the audit log: "exit N", "client disconnected", or the failure the client was told. It also returns what ends the
+// connection, to run once the session has been cleaned up: after a last frame it waits for the client to have read it.
+func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Reader) (string, func()) {
 	out := session.NewWriter(conn)
 	stream := s.Stream()
 	var gone atomic.Bool
@@ -155,10 +156,13 @@ func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Rea
 		defer cancel()
 		_ = s.Close(closeCtx)
 	}
+	// clientDone is closed when the client's frames are no longer read, whether it left or sent what ends the session.
+	clientDone := make(chan struct{})
 	go func() {
 		for {
 			kind, payload, err := session.ReadFrame(in)
 			if err != nil {
+				close(clientDone)
 				leave()
 				return
 			}
@@ -174,11 +178,15 @@ func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Rea
 			case session.CloseStdin:
 				_ = stream.CloseWrite()
 			default:
+				close(clientDone)
 				leave()
 				return
 			}
 		}
 	}()
+	// After the last frame, Exit or Failure, end closes the connection once the client has read it (see session.End). The
+	// caller runs it after it has cleaned up, so the cleanup does not wait for the client.
+	end := func() { session.End(conn, clientDone) }
 	stdout, stderr := watched{out.Output(session.Stdout), &gone, leave}, watched{out.Output(session.Stderr), &gone, leave}
 	if s.TTY {
 		_, _ = io.Copy(stdout, stream)
@@ -187,10 +195,11 @@ func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Rea
 	}
 	switch {
 	case gone.Load():
-		return "client disconnected"
+		_ = conn.Close()
+		return "client disconnected", func() {}
 	case s.Closed():
 		_ = out.Frame(session.Failure, []byte(errAgentStopping))
-		return errAgentStopping
+		return errAgentStopping, end
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, sessionWaitTime)
 	defer cancel()
@@ -202,11 +211,11 @@ func bridge(ctx context.Context, s *deploy.Session, conn net.Conn, in *bufio.Rea
 			message = string(refusal)
 		}
 		_ = out.Frame(session.Failure, []byte(message))
-		return message
+		return message, end
 	}
 	status, _ := json.Marshal(session.ExitStatus{Code: code})
 	_ = out.Frame(session.Exit, status)
-	return "exit " + strconv.Itoa(code)
+	return "exit " + strconv.Itoa(code), end
 }
 
 // watched is a writer to the client that ends the session when the client cannot take what is written.

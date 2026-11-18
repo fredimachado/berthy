@@ -76,8 +76,8 @@ func newSessionAgent(t *testing.T, script func(conn io.Writer)) *sessionAgent {
 			}
 		}()
 		a.script(conn)
-		conn.Close()
-		<-done
+		// session.End is how the real agent ends a session, so the fake cannot drift from it.
+		session.End(conn, done)
 	}))
 	t.Cleanup(a.Close)
 	return a

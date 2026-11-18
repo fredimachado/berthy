@@ -748,6 +748,8 @@ The API is `POST /v1/environments/<env>/sessions` (`admin` scope). The request a
 | `Exit` | 6 | agent | `{"code":N}`; the last frame of a command that ended |
 | `Failure` | 7 | agent | a short public message; the last frame of a session that could not start or broke |
 
+**The ending.** After the last frame the agent half-closes the connection, keeps reading and discarding what the client sends, and closes only when the client has closed or 5 seconds have passed. The client closes as soon as it has read `Exit` or `Failure`. The agent does not close first because closing a socket that still holds unread input resets the connection, and the client, which may still be sending input, could then lose the last frame before it read it.
+
 ### Dry run
 
 Every command that changes something accepts `--dry-run` and prints the plan without acting.

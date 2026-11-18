@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Upgrade is the protocol named in the Upgrade header of a session request.
@@ -193,4 +195,26 @@ func (r Request) Check() error {
 		return errors.New("timeout is only for run")
 	}
 	return nil
+}
+
+// endTime bounds how long End waits for the peer to close. It is a variable so a test can shorten it.
+var endTime = 5 * time.Second
+
+// End closes the connection of the side that wrote the last frame, Exit or Failure. Closing a socket that still holds
+// unread data resets the connection, and the peer, which may still be sending input, can then lose the last frame before it
+// reads it. So End half-closes the connection, keeps reading what the peer sends until it closes (the peer does as soon as
+// it has read the last frame) or endTime has passed, and only then closes. peerDone is closed when the goroutine that reads
+// the peer's frames from conn has stopped; End does not read conn itself.
+func End(conn net.Conn, peerDone <-chan struct{}) {
+	defer conn.Close()
+	if c, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = c.CloseWrite()
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(endTime))
+	timer := time.NewTimer(endTime)
+	defer timer.Stop()
+	select {
+	case <-peerDone:
+	case <-timer.C:
+	}
 }
