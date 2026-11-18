@@ -110,3 +110,25 @@ func TestTimezoneIsInTheEnvironmentScope(t *testing.T) {
 		t.Errorf("AppScope timezone %q", got)
 	}
 }
+
+// Some systems look zone files up without regard to case, so LoadLocation accepts "europe/lisbon" there and refuses it on
+// Linux. The spelling is checked on its own, so every system gives the same answer.
+func TestTimezoneMustBeWrittenInTheCanonicalIANAForm(t *testing.T) {
+	for _, name := range []string{"UTC", "GMT", "CET", "EST5EDT", "Japan", "Etc/UTC", "Etc/GMT+3", "Etc/GMT-14", "Europe/Lisbon", "US/Pacific", "Australia/NSW",
+		"America/Argentina/Buenos_Aires", "America/Port-au-Prince", "Asia/Ho_Chi_Minh", "America/Indiana/Indianapolis", "Australia/Lord_Howe"} {
+		if !canonicalZoneName(name) {
+			t.Errorf("%q is refused", name)
+		}
+	}
+	for _, name := range []string{"", "utc", "europe/lisbon", "Europe/lisbon", "europe/Lisbon", "EUROPE/LISBON", "Europe/LISBON", "asia/tokyo",
+		"America/argentina/Buenos_Aires", "/Europe/Lisbon", "Europe//Lisbon", "Europe/", "etc/GMT+3", "Etc/gmt+3"} {
+		if canonicalZoneName(name) {
+			t.Errorf("%q is accepted", name)
+		}
+	}
+	for _, name := range []string{"europe/lisbon", "EUROPE/LISBON", "Europe/lisbon"} {
+		if _, err := loadZone(name); err == nil {
+			t.Errorf("loadZone accepts %q", name)
+		}
+	}
+}

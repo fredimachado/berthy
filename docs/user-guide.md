@@ -1907,7 +1907,7 @@ With that line, `schedule: "0 2 * * *"` runs at 02:00 in Lisbon, in winter and i
 - A time that **does not exist** on a day, because the clocks go forward, is skipped that day. `30 1 * * *` does not run on the day Lisbon goes from 01:00 to 02:00.
 - A time that **happens twice**, because the clocks go back, runs **once**, the first time.
 - An occurrence is still recorded by its instant in UTC, so "at most once" does not change. Run records, logs and the audit log stay in UTC.
-- `berthy config validate` refuses a name that is not a zone, and names the file and line. The binary carries its own zone data, so the result does not depend on the server.
+- `berthy config validate` refuses a name that is not a zone, and names the file and line. Write the name as the IANA database does (`Europe/Lisbon`, not `europe/lisbon`); it is refused on every system, whatever the system does with case. The binary carries its own zone data, so the result does not depend on the server.
 - A change of `timezone` takes effect within a minute of its `berthy apply` or deploy, and `berthy apply --dry-run` shows it as `timezone: UTC -> Europe/Lisbon`.
 
 `berthy jobs` shows the next occurrence in the zone and in UTC, and `berthy describe` and `--json` give both `next` (UTC) and `next_local`, with the `timezone`.

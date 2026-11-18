@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +21,7 @@ func loadZone(name string) (*time.Location, error) {
 	if loc, ok := zones.Load(name); ok {
 		return loc.(*time.Location), nil
 	}
-	if name == "Local" {
+	if name == "Local" || !canonicalZoneName(name) {
 		return nil, fmt.Errorf("unknown time zone %s", name)
 	}
 	loc, err := time.LoadLocation(name)
@@ -29,6 +30,29 @@ func loadZone(name string) (*time.Location, error) {
 	}
 	zones.Store(name, loc)
 	return loc, nil
+}
+
+// upperSegments are the segments of zone names that the database writes in capitals: US/Pacific, and the links
+// Australia/ACT, Australia/LHI and Australia/NSW.
+var upperSegments = map[string]bool{"US": true, "ACT": true, "LHI": true, "NSW": true}
+
+// canonicalZoneName reports whether name is written the way the IANA database writes zone names. Some systems look zone files
+// up without regard to case, and LoadLocation takes "europe/lisbon" there while Linux refuses it, so the spelling is checked
+// here and a manifest means the same on every system. Each "/"-separated segment starts with an uppercase letter. In a name
+// of several segments a segment holds a lowercase letter too, so "EUROPE/LISBON" is refused, except below Etc, whose zones
+// are written "Etc/GMT+3", and the segments in upperSegments. A name of one segment ("UTC", "EST5EDT", "Japan") may be all
+// uppercase.
+func canonicalZoneName(name string) bool {
+	segments := strings.Split(name, "/")
+	for i, seg := range segments {
+		if seg == "" || seg[0] < 'A' || seg[0] > 'Z' {
+			return false
+		}
+		if len(segments) > 1 && !(i > 0 && segments[0] == "Etc") && !upperSegments[seg] && !strings.ContainsFunc(seg, func(r rune) bool { return r >= 'a' && r <= 'z' }) {
+			return false
+		}
+	}
+	return true
 }
 
 // Location is the zone every schedule of the manifest is read in: Timezone, and UTC when it is empty. A manifest that
