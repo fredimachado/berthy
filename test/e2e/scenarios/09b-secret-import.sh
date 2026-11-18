@@ -117,17 +117,7 @@ expect_contains "it names the missing secret and what needs it" "$out" "missing:
 expect_not_contains "it does not name the stored S01 as missing" "$out" "missing: S01"
 
 # On a protected environment an agent token's import is held. A deploy makes the environment protected, as 08b-run does.
-token_out=$("$BIN" agent token -e "$ENVN" --name ci-admin --scope admin --agent) || fail "make an agent admin token" "agent token failed"
-ciadmin_token=$(printf '%s\n' "$token_out" | sed -n 's/^token: //p')
-ciadmin_entry=$(printf '%s\n' "$token_out" | sed -n '3p')
-sed -i "s|]}\$|,$ciadmin_entry]}|" "$RUN/agent.json"
-printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$ciadmin_token" >> "$RUN/env.sh"
-export BERTHY_CIADMIN_TOKEN=$ciadmin_token
-printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json"
-unset token_out ciadmin_token ciadmin_entry
-cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
-stop_agent
-start_agent || fail "restart the agent" "the agent did not answer"
+make_ciadmin || fail "make an agent admin token" "token create failed"
 
 manifest_web protected | write_manifest
 out=$(adm deploy web --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?

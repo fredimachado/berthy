@@ -22,21 +22,17 @@ purge_fixture
 rm -rf "$RUN" "$LOG" "$MAN"
 mkdir -p "$RUN/state" "$LOG" "$MAN" || die "cannot create the fixture directories"
 
-# Tokens. "agent token" prints "token: ...", "sha256: ..." and the JSON entry for the agent's configuration. The token is
-# captured into variables and written only to env.sh; it is never echoed.
+# Tokens. Only the admin token is in the agent's configuration, as berthy setup writes it. "agent token" prints "token: ...",
+# "sha256: ..." and the JSON entry for the agent's configuration. The token is captured into variables and written only to
+# env.sh; it is never echoed. The ci token is made through the API once the agent runs (below).
 admin_out=$("$BIN" agent token -e "$ENVN" --name admin --scope admin) || die "could not make the admin token"
-ci_out=$("$BIN" agent token -e "$ENVN" --name ci --scope deploy --agent) || die "could not make the ci token"
 admin_token=$(printf '%s\n' "$admin_out" | sed -n 's/^token: //p')
 admin_entry=$(printf '%s\n' "$admin_out" | sed -n '3p')
-ci_token=$(printf '%s\n' "$ci_out" | sed -n 's/^token: //p')
-ci_entry=$(printf '%s\n' "$ci_out" | sed -n '3p')
 case $admin_token in bty.$ENVN.*) ;; *) die "the admin token has an unexpected shape" ;; esac
-case $ci_token in bty.$ENVN.*) ;; *) die "the ci token has an unexpected shape" ;; esac
 case $admin_entry in \{*) ;; *) die "the admin entry has an unexpected shape" ;; esac
-case $ci_entry in \{*) ;; *) die "the ci entry has an unexpected shape" ;; esac
-printf "export BERTHY_ADMIN_TOKEN='%s'\nexport BERTHY_CI_TOKEN='%s'\n" "$admin_token" "$ci_token" > "$RUN/env.sh" || die "cannot write env.sh"
+printf "export BERTHY_ADMIN_TOKEN='%s'\n" "$admin_token" > "$RUN/env.sh" || die "cannot write env.sh"
 . "$RUN/env.sh"
-unset admin_out ci_out admin_token ci_token
+unset admin_out admin_token
 
 # Secrets and fake-server credentials. The state key must be exactly 32 bytes; the agent refuses anything else.
 head -c 32 /dev/urandom > "$RUN/state.key" && chmod 600 "$RUN/state.key" || die "cannot write the state key"
@@ -45,8 +41,8 @@ printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP author
 
 # Agent configuration. Keys match agent.Config; the agent rejects unknown keys.
 # The Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
-printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s,%s]}\n' \
-  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$admin_entry" "$ci_entry" > "$RUN/agent.json" \
+printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s]}\n' \
+  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$admin_entry" > "$RUN/agent.json" \
   || die "cannot write agent.json"
 
 # CLI configurations. Each names its token by environment variable, so the token never sits in a file the CLI reads.
@@ -78,5 +74,13 @@ base_manifest | write_manifest || die "cannot write the manifest"
 
 start_fakes || die "the fakes did not start"
 start_agent || die "the agent did not start"
+
+# The ci token, an agent token that may deploy, is made the way a person makes one: through the API, with no shell on the
+# server and no restart.
+ci_token=$(api_token ci --scope deploy --agent) || die "could not make the ci token"
+case $ci_token in bty.$ENVN.*) ;; *) die "the ci token has an unexpected shape" ;; esac
+printf "export BERTHY_CI_TOKEN='%s'\n" "$ci_token" >> "$RUN/env.sh" || die "cannot write env.sh"
+. "$RUN/env.sh"
+unset ci_token
 
 echo "fixture ready: $("$BIN" version); registry $REG; fakes on $TG_LISTEN and $OTLP_LISTEN; agent on $AGENT_LISTEN"

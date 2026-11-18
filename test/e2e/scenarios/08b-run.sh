@@ -79,18 +79,8 @@ expect_code "a timeout above 24h is refused" 1 "$code" "$out"
 out=$(adm run web 2>&1); code=$?
 expect_code "run without a command is refused" 2 "$code" "$out"
 
-# Approval. An agent token needs scope admin to run, so the scenario adds one to the agent's tokens and restarts the agent.
-token_out=$("$BIN" agent token -e "$ENVN" --name ci-admin --scope admin --agent) || fail "make an agent admin token" "agent token failed"
-ciadmin_token=$(printf '%s\n' "$token_out" | sed -n 's/^token: //p')
-ciadmin_entry=$(printf '%s\n' "$token_out" | sed -n '3p')
-sed -i "s|]}\$|,$ciadmin_entry]}|" "$RUN/agent.json"
-printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$ciadmin_token" >> "$RUN/env.sh"
-export BERTHY_CIADMIN_TOKEN=$ciadmin_token
-printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json"
-unset token_out ciadmin_token ciadmin_entry
-cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
-stop_agent
-start_agent || fail "restart the agent" "the agent did not answer"
+# Approval. An agent token needs scope admin to run, so the scenario makes one through the API.
+make_ciadmin || fail "make an agent admin token" "token create failed"
 
 run_manifest protected | write_manifest
 out=$(adm deploy web --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?

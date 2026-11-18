@@ -98,8 +98,8 @@ A few decisions shape everything else:
 | **Digest** | A `sha256:` hash that names one exact image. A tag such as `1.4.2` can move. A digest cannot. Berthy pins every deploy to a digest. |
 | **Stateful** | A Compose app marked `stateful: true`. It holds data, so Berthy never recreates or removes it unless the command says so with `--allow-recreate`. |
 | **Protected** | An environment marked `protected: true`. It refuses mutable tags (you deploy a digest), and it holds changes that AI agents ask for until a person approves them. |
-| **Token** | The secret a client sends to the agent. Each token has one environment and one scope: `read`, `deploy` or `admin`. |
-| **Agent token** | A token marked as belonging to an AI agent. On a protected environment its changes are held. It can never approve anything. |
+| **Token** | The secret a client sends to the agent. Each token has one environment and one scope: `read`, `deploy` or `admin`. Setup makes the first `admin` token; every other token is made with `berthy token create`, kept as a digest in the agent's state, and can expire. |
+| **Agent token** | A token marked as belonging to an AI agent. On a protected environment its changes are held. It can never approve anything, and it can never make or revoke a token. |
 | **Approval** | A change that an agent token asked for on a protected environment. It waits for a person to approve or reject it, and expires after 15 minutes. |
 | **Lock** | The environment's deploy lock. A deploy takes it for its length. You can also take it by hand to freeze deploys. |
 | **Manifest** | The YAML that says what you want: `berthy.yml` plus one overlay per environment. |
@@ -113,7 +113,7 @@ A few decisions shape everything else:
 | --- | --- |
 | `read` | Look: `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `checks`, `jobs`, `backup list`, `ingress status`, `approvals`. |
 | `deploy` | Everything in `read`, plus deploy, roll back, restart, scale, run jobs and backups, take the lock, apply ingress, read diagnostics. |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `run`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve` and `reject`. |
+| `admin` | Everything in `deploy`, plus secrets, `exec`, `run`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve`, `reject` and `token`. |
 
 ## 3. The todo app
 
@@ -291,7 +291,7 @@ A development build on macOS or Windows has no release to download, so give it `
    export BERTHY_PROD_TOKEN=<token>
    ```
 
-   Lost it? Run setup again with `--new-token`. It adds another `admin` token and leaves the others alone.
+   Setup writes this token into `/etc/berthy/agent.json`. Every other token you make through the agent (step 6). Lost it? Run setup again with `--new-token`. It adds another `admin` token to the file and leaves the others alone.
 
 2. **The encryption key.** It lives on the server at `/var/lib/berthy/key` (32 bytes). It seals every secret in the agent's state. The agent never uploads it. If the server dies and you do not have it, the secrets are gone. Copy it somewhere off the server, as the next steps say:
 
@@ -1256,32 +1256,44 @@ This is the daily loop. CI builds the image, pushes it, and deploys it.
 
 CI needs a `deploy` token for `prod`. It can deploy, roll back and restart, but it cannot touch secrets, run `exec` or `run`, restore backups or approve anything.
 
-Create tokens on your laptop. `agent token` needs no agent and no network:
+Make it from your laptop, with your `admin` token. There is no shell on the server and no restart:
 
 ```bash
-berthy agent token -e prod --name ci --scope deploy
+berthy token create ci -e prod --scope deploy --expires 90d
 ```
 
 ```text
-token: bty.prod.<64 hex characters>
-sha256: <64 hex characters>
-{"name":"ci","digest":"<64 hex characters>","scope":"deploy"}
+token ci (deploy, expires 2027-02-16), shown once, store it now: bty.prod.<64 hex characters>
 ```
 
-Three lines:
+- The token is the secret. It is printed once. Put it in your CI's secret store. The agent keeps only its digest, in its state, so a [state snapshot](#step-15-rebuild-a-server) carries it too.
+- The token works at once. A token that is revoked or has expired is refused at its next request.
+- `NAME` is a label shown in the audit log and in the list (letters, digits, `.`, `-`, `_`). It is unique in the environment.
+- `--scope` is `read`, `deploy` or `admin` (default `read`). `--agent` marks an AI agent's token (step 11).
+- `--expires` is optional: `90d` (days), `36h` (any Go duration) or a date such as `2027-02-16`, which is the start of that day in UTC. Without it the token never expires. A check named `token:<name>` warns 14 days before the expiry, so you can make a new token first. `--dry-run` shows what would be made and makes nothing. With `--json` the answer holds the token in its `token` field, for a script to read.
 
-- The `token` is the secret. It is printed once. Put it in your CI's secret store. Berthy keeps no copy.
-- The `sha256` is its digest.
-- The JSON object is what the agent stores. Add it to the `tokens` list in `/etc/berthy/agent.json` on the server and restart the agent:
+See who has access, and revoke a token you no longer want:
 
-  ```bash
-  sudo nano /etc/berthy/agent.json
-  sudo systemctl restart berthy
-  ```
+```bash
+berthy token list -e prod
+berthy token revoke ci -e prod
+```
 
-  The agent keeps only digests, never tokens. The file must stay readable only by the agent's user. Apps keep running while the agent restarts.
+```text
+NAME    SCOPE   AGENT  ORIGIN  CREATED     EXPIRES     LAST USED
+admin   admin   no     config  -           never       2m ago
+ci      deploy  no     api     2026-11-18  2027-02-16  1h ago
+```
 
-`--scope` is `read`, `deploy` or `admin` (default `read`). `--name` is a label shown in the audit log (letters, digits, `.`, `-`, `_`). `--agent` marks an AI agent's token (step 11).
+`ORIGIN` says where the token is defined. `api` tokens are the ones `berthy token create` made. `config` tokens are in `/etc/berthy/agent.json`: the first `admin` token that setup wrote. A `config` token cannot be revoked through the API; the agent says which file to edit. `LAST USED` is kept to the minute.
+
+Rules that keep access safe:
+
+- `create` and `revoke` need an `admin` token that is **not** an agent token. An agent token is refused at once, on any environment, and its request is never held for approval. `list` needs `admin`; an agent's admin token may list.
+- Revoking the last `admin` token is refused. If every admin token is lost, `berthy setup --new-token` is the way back.
+- The audit log records `token_create:<name>` and `token_revoke:<name>` with the name of the token that asked.
+
+`berthy agent token` still exists. It makes a token offline and prints the object for the `tokens` list of `agent.json`, for a token you want written there by hand.
 
 #### The CI script
 
@@ -1720,6 +1732,14 @@ Telegram sends these alerts for them, and a recovery alert once the registry pas
 
 `ingress_tunnel` in `doctor` says `unavailable`, and `ingress status` shows Cloudflare as `unavailable`, both when Cloudflare refuses the token and when Cloudflare cannot be reached. `cloudflare_token` tells the two apart: `refused: ...` means replace the token, and `could not be asked: ...` means Cloudflare could not be reached.
 
+A token with an expiry has a check too, named `token:<name>` (`berthy checks` lists it). It warns 14 days before the token expires, and keeps warning after it has expired, until you revoke it:
+
+```text
+🟠 prod token:ci: token ci expires in 13d (2027-02-16): create a new one with berthy token create
+```
+
+Make the new token, give it to CI, then `berthy token revoke` the old one.
+
 #### Peers
 
 ```yaml
@@ -2059,10 +2079,10 @@ Set it in the overlay (`protected: true` in `berthy.prod.yml`), or in the agent'
 #### Make a token for an AI agent
 
 ```bash
-berthy agent token -e prod --agent --name claude --scope deploy
+berthy token create claude -e prod --agent --scope deploy
 ```
 
-The `--agent` flag marks it as an agent token. Add the printed JSON object to `tokens` in `/etc/berthy/agent.json` and restart the agent, as for any token (step 6). Give the token to the AI agent's tool through an environment variable; never write it into a file.
+The `--agent` flag marks it as an agent token. It works at once, as for any token (step 6). Give the token to the AI agent's tool through an environment variable; never write it into a file. An agent token cannot make or revoke tokens, so an AI agent cannot give itself, or anyone, more access.
 
 - `--scope read` lets the AI agent only look. This is the safe default.
 - `--scope deploy` lets it ask for deploys, rollbacks, restarts, backups and so on.
@@ -2350,7 +2370,7 @@ The order:
 
    Setup installs your key instead of making one, gives the restored state to the `berthy` user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.
 
-   **Tokens are not part of the state.** They live in the agent's configuration, so setup makes a new first `admin` token. Make new tokens for CI and for your AI agents (step 6, step 11).
+   **The tokens you made with `berthy token create` are part of the state.** The snapshot holds their digests, so your CI and AI agent tokens work again as soon as the restored agent starts, with the values you already gave them. Only the first `admin` token lives in the agent's configuration, so setup makes a new one: it is printed once, as on the first run. A token whose expiry has passed is still refused.
 
 4. **Check:** `berthy doctor -e prod`.
 
@@ -2433,6 +2453,9 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `state-backup` | admin | none | Snapshot the agent's state now and wait. |
 | `key rotate` | admin, not an agent token | `--dry-run` | Replace the encryption key of the agent's state, [as step 10 says](#rotate-the-encryption-key). |
 | `recovery resolve <operation id>` | admin | `--dry-run`, `-m`/`--message` (required) | End an operation stuck in recovery as failed and release its lock. |
+| `token create <name>` | admin, not an agent token | `--dry-run`, `--scope` (default `read`), `--agent`, `--expires` | Make a token. The value is printed once. It works at once. `--expires` is `90d`, a Go duration such as `36h`, or a date. |
+| `token list` | admin | none | Every token: name, scope, agent mark, where it is defined (`config` or `api`), created, expires and last used. Never a token or digest. |
+| `token revoke <name>` | admin, not an agent token | `--dry-run` | Remove an `api` token. A `config` token, and the last `admin` token, are refused. |
 | `approve <id>` | admin, not an agent token | none | Run a held change as the agent that asked, and follow it. |
 | `reject <id>` | admin, not an agent token | `-m`/`--message` | Refuse a held change. |
 
@@ -2440,7 +2463,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
@@ -2454,7 +2477,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | `config show` | `-e`, `--manifest-dir`, `--json` | Print the merged manifest. |
 | `config schema` | `--overlay` | Print a JSON Schema (draft-07) of the manifest, or with `--overlay` of an overlay, for an editor. Needs no `-e`. |
 | `docs` | an optional section name | Print the manifest reference, or one section of it, such as `docs backups`. |
-| `agent token` | `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin` | Make a token and print it once, with its digest and the object for the agent's `tokens` list. No agent, no network. |
+| `agent token` | `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin` | Make a token offline and print it once, with its digest and the object for the `tokens` list of `agent.json`. No agent, no network. To make a token on a running agent, use `token create`. |
 | `state-restore` | `--endpoint`, `--bucket`, `--region`, `--object`, `--out`, `--key-file` | Rebuild the agent's state from a snapshot. Credentials from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. |
 | `agent` | `--config <file>` | Run the agent (Linux only). `berthy.service` runs this. |
 | `ui` | `-e`, `--config` | The terminal UI. |
@@ -2689,7 +2712,7 @@ A probe has exactly one of `http`, `tcp` and `service`.
 
 ### Agent configuration
 
-The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` writes. It must not be readable by group or others (mode `0600`). Unknown keys are errors. You normally edit it only to add a token.
+The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` writes. It must not be readable by group or others (mode `0600`). Unknown keys are errors. You normally do not edit it: tokens are made with `berthy token create`.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -2704,7 +2727,7 @@ The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` wr
 | `compose_command` | no | The Compose command as a list. Default `["docker", "compose"]`. The Compose plugin must be installed system-wide, or this must name a standalone Compose binary. |
 | `cloudflare_api_url` | no | Overrides the Cloudflare API base URL. `https`, or `http` on a loopback host. For tests. |
 | `telegram_api_url` | no | Overrides the Telegram Bot API base URL. Same rule. For tests. |
-| `tokens` | yes, at least one | List of `{"name": ..., "digest": <64 hex>, "scope": "read"\|"deploy"\|"admin", "agent": true\|false}`. `name` and `agent` are optional. Digests must be unique. |
+| `tokens` | yes, at least one | List of `{"name": ..., "digest": <64 hex>, "scope": "read"\|"deploy"\|"admin", "agent": true\|false}`. `name` and `agent` are optional. Digests must be unique, and so must names (letters, digits, `.`, `-`, `_`). Setup writes the first `admin` token here, and `--new-token` adds one. A token here never expires and cannot be revoked through the API: remove it from the file and restart the agent. Every token made with `berthy token create` is in the agent's state instead, and the agent accepts both. A token name is unique across the two. |
 
 Example (the digest is a placeholder):
 
@@ -2733,7 +2756,7 @@ The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use se
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `agent-info`, `checks`, `jobs`, `lock status`, `backup list`, `ingress status`, `approvals` (without plans), following an operation's events. |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
-| `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `key rotate` (not for an agent token), `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
+| `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `key rotate` (not for an agent token), `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, `token list`, `token create`, `token revoke` (the last two never for an agent token), and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
 
 A token marked `agent` has the scope it says. The mark only decides whether its changes are held on a protected environment, and that it can never approve or reject.
 

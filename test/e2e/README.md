@@ -38,9 +38,9 @@ throwaway registry `127.0.0.1:15021`.
 
 - `build.sh`: copies the repo, strips CR from Go sources, and builds the four binaries. Each is built to `*.new` and moved
   into place, so a failed build keeps the previous binary.
-- `setup.sh`: builds a fresh fixture. It purges the previous e2e objects, makes new tokens, a new state key and configs,
+- `setup.sh`: builds a fresh fixture. It purges the previous e2e objects, makes the admin token (the only one in agent.json), a new state key and configs,
   starts an in-memory registry holding `e2e/web:v1` and `:v2` (pushed from the existing `127.0.0.1:15001` tags), validates
-  the manifest, and starts the fakes and the agent. Running it twice ends in the same state.
+  the manifest, and starts the fakes and the agent, then makes the `ci` agent token through the API (`api_token` in lib.sh; `make_ciadmin` makes an agent admin token the same way). Running it twice ends in the same state.
 - `stop.sh`: stops the agent and the fakes, and removes the e2e Swarm services, containers, volumes and registry. It leaves
   `$E2E_ROOT` in place.
 - `run.sh`: builds (unless `--no-build`), then runs `setup.sh` and one scenario per name, each on a fresh fixture. It stops

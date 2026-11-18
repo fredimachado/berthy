@@ -547,6 +547,20 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			refuseToken(w, status)
 			return
 		}
+		// An agent token never makes or revokes a token, whatever its scope, so an AI agent cannot mint access. The refusal comes
+		// before the scope and the hold: the request is never held for a person to approve, and it is refused on an unprotected
+		// environment too.
+		if rest[0] == "tokens" && r.Method != "GET" && actor.Agent {
+			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
+			return
+		}
+		// An agent token never makes or revokes a token, whatever its scope, so an AI agent cannot mint access. The refusal comes
+		// before the scope and the hold: the request is never held for a person to approve, and it is refused on an unprotected
+		// environment too.
+		if rest[0] == "tokens" && r.Method != "GET" && actor.Agent {
+			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
+			return
+		}
 		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 		if levels[scope] < levels[required] {
 			writeError(w, 403, "forbidden", "forbidden")
@@ -571,12 +585,6 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		// The state key is a person's to replace, on any environment: an agent token is refused, never held for approval.
 		if actor.Agent && isKeyRotation(rest) {
 			writeError(w, 403, "forbidden", "an agent token cannot rotate the state key")
-			return
-		}
-		// An agent token never makes or revokes a token, so an AI agent cannot mint access. The refusal comes before the hold:
-		// the request is not held for a person to approve, and it is refused on an unprotected environment too.
-		if rest[0] == "tokens" && method != "GET" && actor.Agent {
-			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
 			return
 		}
 		// An agent token on a protected environment does not change it: the request is held until a person approves it.

@@ -223,17 +223,7 @@ start_agent || fail "restart the agent" "the agent did not answer"
 if no_session_containers; then pass "the restarted agent removed the orphan"; else fail "the restarted agent removed the orphan" "$(session_containers)"; fi
 
 # An agent token: an admin one may open a session on an unprotected environment, and is refused on a protected one.
-token_out=$("$BIN" agent token -e "$ENVN" --name ci-admin --scope admin --agent) || fail "make an agent admin token" "agent token failed"
-ciadmin_token=$(printf '%s\n' "$token_out" | sed -n 's/^token: //p')
-ciadmin_entry=$(printf '%s\n' "$token_out" | sed -n '3p')
-sed -i "s|]}\$|,$ciadmin_entry]}|" "$RUN/agent.json"
-printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$ciadmin_token" >> "$RUN/env.sh"
-export BERTHY_CIADMIN_TOKEN=$ciadmin_token
-printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json"
-unset token_out ciadmin_token ciadmin_entry
-cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
-stop_agent
-start_agent || fail "restart the agent" "the agent did not answer"
+make_ciadmin || fail "make an agent admin token" "token create failed"
 
 out=$(cia exec web -i -- echo agent-ok </dev/null 2>&1); code=$?
 expect_code "an agent token with admin scope opens a session on an unprotected environment" 0 "$code" "$out"

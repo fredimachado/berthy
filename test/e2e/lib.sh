@@ -44,8 +44,29 @@ d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" 
 # adm CMD [ARGS]: berthy as the admin token. Flags go right after the command name, so a "-- cmd" tail stays last.
 adm() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/admin.json" "$@"; }
 
-# ci CMD [ARGS]: berthy as the agent token "ci" (scope deploy, agent: true), for approval scenarios.
+# ci CMD [ARGS]: berthy as the agent token "ci" (scope deploy, agent: true), for approval scenarios. setup.sh makes it
+# through the API.
 ci() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ci.json" "$@"; }
+
+# api_token NAME [FLAGS]: makes a token through the API as the admin token ("token create"), and prints its value. Nothing
+# else is printed, so the caller can capture it.
+api_token() {
+  local out
+  out=$(adm token create "$@" --json) || return 1
+  printf '%s\n' "$out" | sed -n 's/^ *"token": "\(bty\.[^"]*\)".*/\1/p'
+}
+
+# make_ciadmin: makes the agent admin token "ci-admin" through the API, writes its CLI configuration ciadmin.json and its
+# environment variable, and defines cia: berthy as that token. It needs no restart of the agent.
+make_ciadmin() {
+  local t
+  t=$(api_token ci-admin --scope admin --agent) || return 1
+  case $t in bty.$ENVN.*) ;; *) return 1 ;; esac
+  printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$t" >> "$RUN/env.sh" || return 1
+  export BERTHY_CIADMIN_TOKEN=$t
+  printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json" || return 1
+  cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
+}
 
 # curl_local ARGS: curl to the loopback fakes and the registry, never through a proxy.
 curl_local() { curl --noproxy '*' -sS "$@"; }

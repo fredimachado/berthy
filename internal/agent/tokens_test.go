@@ -148,7 +148,7 @@ func TestAnAgentTokenCannotManageTokensAndIsNeverHeld(t *testing.T) {
 				t.Fatalf("protected=%v %v: %d %v %s", protected, call, w.Code, w.Header(), w.Body.String())
 			}
 		}
-		if w := f.call("POST", "/tokens", apAgentDeploy, `{"name":"mine","scope":"admin"}`); w.Code != http.StatusForbidden {
+		if w := f.call("POST", "/tokens", apAgentDeploy, `{"name":"mine","scope":"admin"}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "an agent token cannot manage tokens") {
 			t.Fatalf("an agent deploy token: %d", w.Code)
 		}
 		if w := f.call("GET", "/tokens", apAgentAdmin, ""); w.Code != http.StatusOK {
