@@ -105,6 +105,18 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			w.Header().Set("Location", path)
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+		case len(rest) == 1 && rest[0] == "apply":
+			var req deploy.ApplyRequest
+			if err := decodeBody(w, r, &req); err != nil {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+			result, err := d.ApplySettings(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(result)
 		case len(rest) == 1 && rest[0] == "restore":
 			var body struct {
 				Key       string `json:"key"`
@@ -603,7 +615,7 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	case len(rest) == 1 && rest[0] == "deploys":
 		required = "deploy"
 		method = "POST"
-	case len(rest) == 1 && (rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
+	case len(rest) == 1 && (rest[0] == "apply" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
 		required = "deploy"
 		method = "POST"
 	case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):

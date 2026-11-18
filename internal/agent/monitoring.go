@@ -25,13 +25,13 @@ import (
 // errAlertsNotConfigured means no alert channel is set up for the environment, or its bot token secret is not stored.
 var errAlertsNotConfigured = errors.New("alerts are not configured")
 
-// errTelegramSecret means the bot token secret of the last applied manifest's Telegram channel is not stored.
+// errTelegramSecret means the bot token secret of the running manifest's Telegram channel is not stored.
 var errTelegramSecret = errors.New(monitor.MissingTelegramSecret)
 
-// errAlertConfig means the last applied manifest could not be read, so the alert settings are unknown.
+// errAlertConfig means the running manifest could not be read, so the alert settings are unknown.
 var errAlertConfig = errors.New("alerts configuration unavailable")
 
-// Monitoring runs the agent's health checks. The checks come from the last applied manifest and from the built-in
+// Monitoring runs the agent's health checks. The checks come from the running manifest and from the built-in
 // conditions, and their states are stored in the agent's state. Monitoring needs state, so NewMonitoring returns nil
 // without it.
 type Monitoring struct {
@@ -100,7 +100,7 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	if _, ok := w.samples(); !ok && w.metrics != nil {
 		return nil
 	}
-	m, _, manifestErr := deployedManifest(ctx, w.store)
+	m, manifestErr := runningManifest(ctx, w.store)
 	if manifestErr != nil && !errors.Is(manifestErr, sql.ErrNoRows) {
 		return nil
 	}
@@ -130,7 +130,7 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	return out
 }
 
-// maintainHelper creates or repairs the overlay helper while the last applied manifest has a service probe, and removes it
+// maintainHelper creates or repairs the overlay helper while the running manifest has a service probe, and removes it
 // otherwise. The probes report the outcome, so nothing is returned.
 func (w *Monitoring) maintainHelper(ctx context.Context, m *manifest.Manifest) {
 	if m != nil && hasServiceProbe(m.Probes) {
@@ -151,7 +151,7 @@ func hasServiceProbe(probes map[string]manifest.Probe) bool {
 }
 
 // builtins returns the conditions that always run: disk and memory from the host sample, Docker's data disk, restart
-// loops of the apps Berthy manages, and the managed tunnel when managed is true. m is the last applied manifest, or nil.
+// loops of the apps Berthy manages, and the managed tunnel when managed is true. m is the running manifest, or nil.
 func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Manifest) []monitor.Check {
 	sample, ok := w.samples()
 	var mounts []string
@@ -179,7 +179,7 @@ func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Man
 	return out
 }
 
-// manifestChecks returns the probes, the peer checks, and the alert configuration of the last applied manifest.
+// manifestChecks returns the probes, the peer checks, and the alert configuration of the running manifest.
 func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []monitor.Check {
 	var out []monitor.Check
 	for _, name := range slices.Sorted(maps.Keys(m.Probes)) {
@@ -337,7 +337,7 @@ func (w *Monitoring) previousRestartChecks(ctx context.Context) []monitor.Check 
 }
 
 // managedRestartApps keeps the apps Berthy manages: image apps, which appear in the inventory only through their bindings
-// (the ingress connector among them), and Compose apps of the last applied manifest, matched by project name. Unmanaged
+// (the ingress connector among them), and Compose apps of the running manifest, matched by project name. Unmanaged
 // Swarm services and Compose projects that no manifest names are left out.
 func managedRestartApps(apps []api.App, m *manifest.Manifest) []api.App {
 	projects := map[string]bool{}
@@ -472,11 +472,11 @@ func (w *Monitoring) notifier(ctx context.Context) (monitor.Notifier, time.Durat
 	return tg, reminder, nil
 }
 
-// telegramFor returns the Telegram sender of the last applied manifest and its reminder interval. It returns a nil sender
+// telegramFor returns the Telegram sender of the running manifest and its reminder interval. It returns a nil sender
 // when no alerts are configured, errTelegramSecret when the bot token secret is not stored, and errAlertConfig when the
 // manifest cannot be read.
 func telegramFor(ctx context.Context, c Config, s *state.Store) (*monitor.Telegram, time.Duration, error) {
-	m, _, err := s.LatestManifest(ctx)
+	m, err := settingsManifest(ctx, s)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, nil
 	}
@@ -530,11 +530,11 @@ func alertError(w http.ResponseWriter, err error) {
 	}
 }
 
-// monitoringChecks returns the doctor's non-critical checks of the last applied manifest: one per peer, the bot token
+// monitoringChecks returns the doctor's non-critical checks of the running manifest: one per peer, the bot token
 // secret when alerts need it, and the overlay helper when a service probe needs it. A peer's stored state is used when
 // the monitor has one; otherwise the peer is asked now.
 func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, environment string) []api.Check {
-	m, _, err := deployedManifest(ctx, s)
+	m, err := runningManifest(ctx, s)
 	if err != nil {
 		return nil
 	}
@@ -576,7 +576,7 @@ func monitoringChecks(ctx context.Context, s *state.Store, e *engine.Engine, env
 		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)
 		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
 	}
-	if check, ok := orphanAppsCheck(ctx, s, m); ok {
+	if check, ok := orphanAppsCheck(ctx, s); ok {
 		out = append(out, check)
 	}
 	return out

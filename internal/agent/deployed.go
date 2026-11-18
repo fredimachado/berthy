@@ -2,12 +2,13 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
@@ -16,67 +17,81 @@ import (
 	"berthy/internal/state"
 )
 
-// deployedApps returns the apps of m that have an applied release. An app without one runs nothing: it was never deployed,
-// or berthy remove took it down. The last applied manifest is the newest release of any app, so it can still name such an
-// app.
-func deployedApps(ctx context.Context, s *state.Store, m manifest.Manifest) (map[string]bool, error) {
+// settingsManifest is the environment's stored settings as a manifest without apps. It returns sql.ErrNoRows while nothing was
+// ever applied. Whatever needs only the environment's own settings, such as the alerts or the telemetry, reads it.
+func settingsManifest(ctx context.Context, s *state.Store) (manifest.Manifest, error) {
+	st, ok, err := s.Settings(ctx)
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	if !ok {
+		return manifest.Manifest{}, sql.ErrNoRows
+	}
+	return manifest.DecodeSettings(st.Manifest)
+}
+
+// assembled is the environment's settings with the app scope of the newest release of each app that keep accepts. The
+// ingress connector is not an app of the manifest.
+func assembled(ctx context.Context, s *state.Store, keep func(app string) bool) (manifest.Manifest, error) {
+	env, err := settingsManifest(ctx, s)
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	releases, err := s.LatestReleases(ctx)
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	parts := map[string]manifest.Manifest{}
+	for app, r := range releases {
+		if app == manifest.ConnectorAppName || !keep(app) {
+			continue
+		}
+		m, err := manifest.DecodeRelease(r.Manifest, false)
+		if err != nil {
+			return manifest.Manifest{}, fmt.Errorf("stored manifest of %s unreadable: %w", app, err)
+		}
+		parts[app] = m.AppScope(app)
+	}
+	return manifest.Assemble(env, parts), nil
+}
+
+// runningManifest is the manifest the agent runs from: the environment's settings and, for each app that has an applied
+// release, the app's part of that release. An app that has none runs nothing, because it was never deployed or berthy remove
+// took it down, so its jobs, backups and probes are not here. Monitoring, scheduling and the app listings read it. It returns
+// sql.ErrNoRows while nothing was ever applied.
+func runningManifest(ctx context.Context, s *state.Store) (manifest.Manifest, error) {
 	applied, err := s.AppliedApps(ctx)
 	if err != nil {
-		return nil, err
+		return manifest.Manifest{}, err
 	}
-	out := map[string]bool{}
-	for _, name := range applied {
-		if _, ok := m.Apps[name]; ok {
-			out[name] = true
-		}
-	}
-	return out, nil
+	return assembled(ctx, s, func(app string) bool { return slices.Contains(applied, app) })
 }
 
-// deployedManifest is the last applied manifest without the apps that have no applied release, and without their jobs, their
-// backups and the service probes aimed at them. Monitoring, scheduling and the app listings read it, so a removed app is never
-// monitored or scheduled while the manifest still names it. Settings that belong to the environment, such as peers, alerts
-// and telemetry, stay as they are.
-func deployedManifest(ctx context.Context, s *state.Store) (manifest.Manifest, time.Time, error) {
-	m, at, err := s.LatestManifest(ctx)
-	if err != nil {
-		return m, at, err
+// recordedManifest is runningManifest with the app part of every app ever deployed, whether or not it is applied now. Listing
+// and restoring read it, so that a backup stays restorable after berthy remove or destroy. Running a backup needs the app, and
+// reads runningManifest instead. It is empty when nothing was ever applied.
+func recordedManifest(ctx context.Context, s *state.Store) (manifest.Manifest, error) {
+	m, err := assembled(ctx, s, func(string) bool { return true })
+	if errors.Is(err, sql.ErrNoRows) {
+		return manifest.Manifest{}, nil
 	}
-	deployed, err := deployedApps(ctx, s, m)
-	if err != nil {
-		return manifest.Manifest{}, time.Time{}, err
-	}
-	m.Apps = filtered(m.Apps, func(name string, _ manifest.App) bool { return deployed[name] })
-	m.Jobs = filtered(m.Jobs, func(_ string, j manifest.Job) bool { return deployed[j.App] })
-	m.Probes = filtered(m.Probes, func(_ string, p manifest.Probe) bool { return p.Service == nil || deployed[p.Service.App] })
-	m.Backups = filtered(m.Backups, func(_ string, b manifest.Backup) bool { return deployed[b.App] })
-	return m, at, nil
+	return m, err
 }
 
-// filtered returns the entries of in that keep accepts. A map with no entry left stays non-nil only when in was.
-func filtered[V any](in map[string]V, keep func(string, V) bool) map[string]V {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]V, len(in))
-	for k, v := range in {
-		if keep(k, v) {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-// orphanAppsCheck is the doctor's check of apps that are deployed but that the last applied manifest does not name. They
+// orphanAppsCheck is the doctor's check of apps that are deployed but that the last apply or deploy did not name. They
 // keep running and keep their routes until berthy remove takes them down. It reports nothing when there are none.
-func orphanAppsCheck(ctx context.Context, s *state.Store, m manifest.Manifest) (api.Check, bool) {
+func orphanAppsCheck(ctx context.Context, s *state.Store) (api.Check, bool) {
 	applied, err := s.AppliedApps(ctx)
 	if err != nil {
 		return api.Check{}, false
 	}
+	st, ok, err := s.Settings(ctx)
+	if err != nil || !ok {
+		return api.Check{}, false
+	}
 	var orphans []string
 	for _, name := range applied {
-		if _, ok := m.Apps[name]; !ok && name != manifest.ConnectorAppName {
+		if !slices.Contains(st.Apps, name) && name != manifest.ConnectorAppName {
 			orphans = append(orphans, name)
 		}
 	}

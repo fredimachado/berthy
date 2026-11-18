@@ -22,7 +22,7 @@ import (
 )
 
 // Backups is the agent's volume backups: the runner, the credentials and volume resolution it needs, and the runs started
-// through the API, which continue after their request ends. Configuration comes from the last applied manifest restricted to
+// through the API, which continue after their request ends. Configuration comes from the running manifest restricted to
 // the apps that are deployed.
 type Backups struct {
 	Runner *backup.Runner
@@ -79,7 +79,7 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		Store:  d.Store,
 		Runner: b.Runner,
 		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
-			m, _, err := deployedManifest(ctx, d.Store)
+			m, err := runningManifest(ctx, d.Store)
 			return m, err
 		},
 		Log: log,
@@ -270,17 +270,6 @@ func (r restorer) manifest(ctx context.Context) (manifest.Manifest, error) {
 	return recordedManifest(ctx, r.store)
 }
 
-// recordedManifest is the last applied manifest as it was, with every backup and destination it names, whether or not the app
-// of a backup is still deployed. Listing and restoring read it, so that a backup stays restorable after berthy remove or destroy.
-// Running a backup needs the app, and reads deployedManifest instead. It is empty when nothing was ever deployed.
-func recordedManifest(ctx context.Context, s *state.Store) (manifest.Manifest, error) {
-	m, _, err := s.LatestManifest(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return manifest.Manifest{}, nil
-	}
-	return m, err
-}
-
 func (r restorer) CheckRestore(ctx context.Context, key, into string) (deploy.RestorePlan, error) {
 	m, err := r.manifest(ctx)
 	if err != nil {
@@ -338,7 +327,7 @@ func serveBackups(w http.ResponseWriter, r *http.Request, rest []string, d *depl
 		json.NewEncoder(w).Encode(entries)
 		return
 	}
-	m, _, err := deployedManifest(ctx, d.Store)
+	m, err := runningManifest(ctx, d.Store)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeError(w, 503, "state_unavailable", "state unavailable")
 		return

@@ -158,6 +158,20 @@ func checkRequestManifest(m manifest.Manifest) error {
 	return nil
 }
 
+// checkProject refuses a deploy whose manifest names another project than the one the environment runs, before anything
+// changes. Only a deploy carries a manifest to apply: a rollback, an ingress apply and the other operations do not.
+func (c *Controller) checkProject(ctx context.Context, req Request) error {
+	if c.Store == nil || req.Kind != "" && req.Kind != "deploy" {
+		return nil
+	}
+	err := c.Store.CheckProject(ctx, req.Manifest.Project)
+	var wrong *state.ProjectError
+	if errors.As(err, &wrong) {
+		return Refusal(wrong.Error())
+	}
+	return err
+}
+
 // Plan performs no durable or Docker mutations. It checks the manifest a client sent. A rollback's manifest is the stored
 // one, so it is not checked, and neither is anything plan calls itself.
 func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
@@ -165,6 +179,9 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		if err := checkRequestManifest(req.Manifest); err != nil {
 			return Plan{}, err
 		}
+	}
+	if err := c.checkProject(ctx, req); err != nil {
+		return Plan{}, err
 	}
 	return c.plan(ctx, actor, req)
 }
@@ -294,6 +311,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		if err := checkRequestManifest(req.Manifest); err != nil {
 			return state.Operation{}, false, err
 		}
+	}
+	if err := c.checkProject(ctx, req); err != nil {
+		return state.Operation{}, false, err
 	}
 	if req.KeepVersion || req.KeepDigest != "" {
 		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.

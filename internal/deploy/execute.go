@@ -30,8 +30,8 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 			break
 		}
 		resolved.Kind = "deploy"
+		// The alert settings are the environment's, which a rollback never changes, so its manifest does not decide them.
 		outcome, t = c.runDeploy(ctx, op, actor, resolved, true)
-		t.Manifest = &resolved.Manifest
 		if t.Tag == "" {
 			t.Tag = resolved.recordTag
 		}
@@ -54,12 +54,22 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	_ = c.finish(context.Background(), op, outcome, t)
 }
 
+// releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
+// applies none, since its manifest is an old one, and neither does the ingress connector's deploy, whose manifest Berthy
+// builds and holds nothing of the environment.
+func releaseSettings(req Request, rollback bool) (*state.Settings, error) {
+	if rollback || req.App == manifest.ConnectorAppName {
+		return nil, nil
+	}
+	return state.NewSettings(req.Manifest, req.Commit, req.Modified)
+}
+
 // runDeploy rolls out req and returns the outcome for the caller to record, and the image and tag it planned, when it got as
 // far as a plan. A rollback runs no migration steps.
 func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome, planned target) {
 	outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
 	if composeRequest(req) {
-		outcome = c.runCompose(ctx, op, actor, req)
+		outcome = c.runCompose(ctx, op, actor, req, rollback)
 		return
 	}
 	p, err := c.plan(ctx, actor, req)
@@ -87,7 +97,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			outcome.Err = ingressFailure(err, errIngressPublish)
 			return
 		}
-		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Modified: req.Modified, Manifest: raw, Bindings: bindings}}
+		settings, e := releaseSettings(req, rollback)
+		if e != nil {
+			return
+		}
+		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Modified: req.Modified, Manifest: raw, Bindings: bindings}, Settings: settings}
 		if ing == nil {
 			return
 		}
@@ -329,6 +343,12 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = "release recording failed"
 		return
 	}
+	settings, err := releaseSettings(req, rollback)
+	if err != nil {
+		outcome.State = "recovery_required"
+		outcome.Err = "release recording failed"
+		return
+	}
 	for _, w := range work {
 		live, e := c.Engine.InspectService(rollCtx, w.intent.Name)
 		if e != nil {
@@ -350,7 +370,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			return
 		}
 	}
-	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}}
+	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
 	barrier, e := json.Marshal(outcome)
 	if e != nil {
 		outcome.State = "recovery_required"

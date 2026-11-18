@@ -16,7 +16,7 @@ type JobRun struct {
 	Container string     `json:"container,omitempty"`
 }
 
-// JobStatus is a job of the last applied manifest with its newest run (of any status) and, for a scheduled job, its next
+// JobStatus is a job of the running manifest with its newest run (of any status) and, for a scheduled job, its next
 // occurrence.
 type JobStatus struct {
 	Name     string     `json:"name"`

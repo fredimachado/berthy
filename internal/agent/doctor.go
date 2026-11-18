@@ -13,8 +13,8 @@ import (
 	"berthy/internal/state"
 )
 
-// doctorNetwork returns the shared network the doctor checks: the configured one, else the network of the last applied
-// manifest. It returns false when neither is known, as on a fresh agent before its first deploy.
+// doctorNetwork returns the shared network the doctor checks: the configured one, else the network of the environment's
+// settings. It returns false when neither is known, as on a fresh agent before its first deploy.
 func doctorNetwork(ctx context.Context, c Config, deployment *deploy.Controller) (string, bool) {
 	if c.Network != "" {
 		return c.Network, true
@@ -22,7 +22,7 @@ func doctorNetwork(ctx context.Context, c Config, deployment *deploy.Controller)
 	if deployment == nil || deployment.Store == nil {
 		return "", false
 	}
-	m, _, err := deployment.Store.LatestManifest(ctx)
+	m, err := settingsManifest(ctx, deployment.Store)
 	if err != nil || m.Network == "" {
 		return "", false
 	}

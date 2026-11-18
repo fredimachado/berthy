@@ -49,7 +49,7 @@ func stateBackupResult(sb manifest.StateBackup, h state.StateBackupHistory, firs
 	return monitor.Result{State: monitor.OK, Detail: fmt.Sprintf("last snapshot %s ago, %s", api.HumanAge(now.Sub(h.Success.Finished)), api.HumanSize(h.Success.Size))}
 }
 
-// stateBackupCheck returns the monitor check of the state backup. It exists only while the last applied manifest has the block.
+// stateBackupCheck returns the monitor check of the state backup. It exists only while the running manifest has the block.
 func stateBackupCheck(store *state.Store, sb manifest.StateBackup, seen *backupSeen, now func() time.Time) monitor.Check {
 	first := seen.first("state_backup", now())
 	return monitor.NewFunc("state_backup", backupCheckEvery, 1, func(ctx context.Context) monitor.Result {

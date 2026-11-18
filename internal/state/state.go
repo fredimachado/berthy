@@ -87,6 +87,9 @@ type Outcome struct {
 	State   string
 	Event   json.RawMessage
 	Release *Release
+	// Settings are the environment settings the release applies. A release without them, such as a rollback's, leaves the
+	// settings as they are. It needs a Release.
+	Settings *Settings
 }
 type Lock struct {
 	OperationID, Holder, Reason string
@@ -186,6 +189,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS diagnostics (operation_id TEXT NOT NULL REFERENCES operations(id), seq INTEGER NOT NULL, sealed BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(operation_id, seq));
  CREATE TABLE IF NOT EXISTS state_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, object_key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS state_backups_occurrence ON state_backups(environment, scheduled) WHERE scheduled <> 0;
+ CREATE TABLE IF NOT EXISTS environment_settings (environment TEXT PRIMARY KEY, project TEXT NOT NULL, manifest BLOB NOT NULL, apps BLOB NOT NULL, commit_sha TEXT NOT NULL, modified INTEGER NOT NULL DEFAULT 0, operation_id TEXT NOT NULL DEFAULT '', updated INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, environment TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, request_sealed BLOB NOT NULL, summary TEXT NOT NULL, plan BLOB NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, status TEXT NOT NULL, decided_by TEXT NOT NULL, decided_at INTEGER NOT NULL, result TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS approvals_environment ON approvals(environment, status, created);
  CREATE TABLE IF NOT EXISTS tokens (environment TEXT NOT NULL, name TEXT NOT NULL, digest TEXT NOT NULL UNIQUE, scope TEXT NOT NULL, agent INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER, PRIMARY KEY(environment,name));
@@ -580,6 +584,9 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			return err
 		}
 	}
+	if o.Settings != nil && o.Release == nil {
+		return errors.New("settings require a release")
+	}
 	if o.Release != nil {
 		if (o.State != "succeeded" && o.State != "failed") || o.Release.App == "" || o.Release.App != op.App || !validJSON(o.Release.Manifest) {
 			return errors.New("invalid release")
@@ -604,6 +611,11 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 				return errors.New("invalid binding")
 			}
 			if _, e = tx.ExecContext(ctx, `INSERT INTO bindings VALUES(?,?,?,?,?)`, s.env, b.App, b.Role, b.Name, b.ServiceID); e != nil {
+				return e
+			}
+		}
+		if o.Settings != nil {
+			if e = s.putSettings(ctx, tx, *o.Settings, id); e != nil {
 				return e
 			}
 		}

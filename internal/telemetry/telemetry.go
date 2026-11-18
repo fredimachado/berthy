@@ -1,6 +1,6 @@
 // Package telemetry exports the agent's host and container samples, and its check states, over OpenTelemetry (OTLP over
 // HTTP). The agent runs on the host, so the endpoint must be reachable from the host. The exporter reads its configuration
-// from the last applied manifest, rebuilds its meter provider when that configuration changes, and keeps the outcome of its
+// from the running manifest, rebuilds its meter provider when that configuration changes, and keeps the outcome of its
 // last export for the doctor. Its errors never include a header value.
 package telemetry
 
@@ -28,7 +28,7 @@ import (
 const (
 	// defaultExportInterval matches the collector's sampling interval, so each sample is exported once.
 	defaultExportInterval = 10 * time.Second
-	// defaultConfigInterval is how often the last applied manifest is read again.
+	// defaultConfigInterval is how often the running manifest is read again.
 	defaultConfigInterval = time.Minute
 	exportTimeout         = 5 * time.Second
 	shutdownTimeout       = 5 * time.Second
@@ -47,7 +47,7 @@ type Exporter struct {
 	Collector *metrics.Collector
 	// Checks returns the stored check states. Nil leaves them out.
 	Checks func(ctx context.Context) ([]state.CheckState, error)
-	// Config returns the export settings of the last applied manifest. Nil, or a nil config, means export is off.
+	// Config returns the export settings of the running manifest. Nil, or a nil config, means export is off.
 	Config func(ctx context.Context) (*Config, error)
 	// Log receives operational messages. They never contain a header value. Nil discards them.
 	Log func(string)

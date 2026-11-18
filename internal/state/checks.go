@@ -3,10 +3,7 @@ package state
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
-
-	"berthy/internal/manifest"
 )
 
 // CheckState is the stored state of one monitored check. State is ok, warning, critical or unknown, and Since is when
@@ -73,23 +70,6 @@ func (s *Store) PutCheck(ctx context.Context, c CheckState) error {
 func (s *Store) DeleteCheck(ctx context.Context, name string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM checks WHERE environment=? AND name=?`, s.env, name)
 	return err
-}
-
-// LatestManifest returns the manifest of the newest release of any app except the ingress connector, and when it was
-// applied. The monitor reads its probes, peers and alerts from it. The connector's release carries only the connector,
-// so it is never the source. It returns sql.ErrNoRows when nothing is deployed.
-func (s *Store) LatestManifest(ctx context.Context) (manifest.Manifest, time.Time, error) {
-	var raw []byte
-	var created int64
-	err := s.db.QueryRowContext(ctx, `SELECT manifest,created FROM releases WHERE environment=? AND app<>? ORDER BY id DESC LIMIT 1`, s.env, manifest.ConnectorAppName).Scan(&raw, &created)
-	if err != nil {
-		return manifest.Manifest{}, time.Time{}, err
-	}
-	m, err := manifest.DecodeRelease(raw, false)
-	if err != nil {
-		return manifest.Manifest{}, time.Time{}, fmt.Errorf("stored manifest unreadable: %w", err)
-	}
-	return *m, fromMilli(created), nil
 }
 
 // RecordAudit records an action that starts no operation, such as a test alert. outcome is succeeded or failed.

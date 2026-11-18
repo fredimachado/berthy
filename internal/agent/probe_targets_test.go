@@ -32,6 +32,20 @@ const probeTargetsManifest = `{"project":"demo","network":"demo",
 		"named":{"service":{"app":"db","role":"postgres","port":5432},"interval":"10s","timeout":"2s"}}}`
 
 // recordBoundRelease stores a successful deploy of app api whose Swarm services are bindings, as a deploy does.
+// releaseSettings are the environment settings that a deploy of manifestJSON applies.
+func releaseSettings(t *testing.T, manifestJSON string) *state.Settings {
+	t.Helper()
+	m, err := manifest.DecodeRelease([]byte(manifestJSON), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.NewSettings(*m, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
 func recordBoundRelease(t *testing.T, s *state.Store, id, manifestJSON string, bindings []state.Binding) {
 	t.Helper()
 	ctx := context.Background()
@@ -53,7 +67,7 @@ func recordBoundRelease(t *testing.T, s *state.Store, id, manifestJSON string, b
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON), Bindings: own}}); err != nil {
+		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON), Bindings: own}, Settings: releaseSettings(t, manifestJSON)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,7 +237,12 @@ func TestDoctorReportsTheOverlayHelper(t *testing.T) {
 		t.Fatalf("probe_helper check: %+v", found)
 	}
 
-	recordBoundRelease(t, s, "release-doctor-http", monitoredManifest(`,"probes":{"site":{"http":"http://127.0.0.1:1/"}}`), nil)
+	// Every app is deployed again from a manifest whose only probe is an HTTP one: each app's own probes go back with its release.
+	recordBoundRelease(t, s, "release-doctor-http", `{"project":"demo","network":"demo","apps":{
+		"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}},
+		"worker":{"kind":"image","image":"ghcr.io/acme/worker","roles":{"job":{}}},
+		"db":{"kind":"compose","file":"db/compose.yml"}},
+		"probes":{"site":{"http":"http://127.0.0.1:1/"}}}`, nil)
 	for _, c := range monitoringChecks(ctx, s, nil, "lab") {
 		if c.Name == "probe_helper" {
 			t.Fatalf("probe_helper without a service probe: %+v", c)

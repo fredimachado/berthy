@@ -59,7 +59,7 @@ type LogRecord struct {
 }
 
 // Logs sends log records to the same OpenTelemetry backend as the metrics. Emit queues a record and never waits; Run sends the
-// queue in batches until its context ends. Config returns the export settings of the last applied manifest and is read for
+// queue in batches until its context ends. Config returns the export settings of the running manifest and is read for
 // every batch, so a change of endpoint is followed at once; a nil config, or no Config function, drops the record. The zero
 // value is ready to use, and records emitted before Run starts are kept, up to the queue's size.
 type Logs struct {

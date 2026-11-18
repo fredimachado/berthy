@@ -23,7 +23,7 @@ type Scheduler struct {
 	Env    string
 	Store  *state.Store
 	Runner *Runner
-	// Manifest returns the last applied manifest, whose state_backup block is environment-wide. It returns sql.ErrNoRows when
+	// Manifest returns the running manifest, whose state_backup block is environment-wide. It returns sql.ErrNoRows when
 	// nothing was ever applied, which means no state backup.
 	Manifest func(ctx context.Context) (manifest.Manifest, error)
 	// Now is the clock. Nil means time.Now.

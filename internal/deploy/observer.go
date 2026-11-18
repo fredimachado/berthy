@@ -27,7 +27,7 @@ type OperationEvent struct {
 	// Resumed marks the end of an operation that had already ended as recovery_required: a person or a later recovery
 	// decided it. The alert channel was told when it first ended, so it does not hear it again.
 	Resumed bool
-	// Manifest is the manifest that decides the alert policy, when the controller knows it. Nil: the last applied one.
+	// Manifest is the manifest that decides the alert policy, when the controller knows it. Nil: the environment's stored settings.
 	Manifest *manifest.Manifest
 }
 

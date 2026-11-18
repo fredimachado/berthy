@@ -753,7 +753,7 @@ func composeDigest(file string) string {
 
 // runCompose deploys a Compose app, or with adoption records it when nothing would change. Nothing changes when the
 // plan has a blocker.
-func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) state.Outcome {
 	if err := req.Manifest.Validate(); err != nil {
 		return failedWith(errComposeConfig)
 	}
@@ -820,8 +820,12 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 		return failedWith(errComposeJournal)
 	}
 	release := &state.Release{App: req.App, Digest: composeDigest(req.ComposeFile), Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON}
+	settings, err := releaseSettings(req, rollback)
+	if err != nil {
+		return failedWith(errComposeJournal)
+	}
 	if req.Adopt {
-		return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release}
+		return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release, Settings: settings}
 	}
 	// The run is journaled before up starts, so recovery knows a run may have changed the project.
 	if err = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: composeRunOrdinal, Kind: "compose", Name: project, Desired: source}); err != nil {
@@ -845,7 +849,7 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if err = c.Store.MarkStep(ctx, op.ID, composeRunOrdinal, "finished", json.RawMessage(`{"ok":true}`)); err != nil {
 		return failedWith(errComposeJournal)
 	}
-	return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release}
+	return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release, Settings: settings}
 }
 
 // replaceProjectDir moves the staged files into the project's directory. The new contents are written beside it first.

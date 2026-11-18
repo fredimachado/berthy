@@ -51,7 +51,7 @@ func recordAppRelease(t *testing.T, s *state.Store, id, app, manifestJSON string
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON)}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(manifestJSON)}, Settings: releaseSettings(t, manifestJSON)}); err != nil {
 		t.Fatal(err)
 	}
 }

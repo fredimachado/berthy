@@ -13,7 +13,7 @@ import (
 	"berthy/internal/telemetry"
 )
 
-// missingHeadersSecret is why export stays off when the headers secret of the last applied manifest is not stored as a
+// missingHeadersSecret is why export stays off when the headers secret of the running manifest is not stored as a
 // plain secret.
 const missingHeadersSecret = "OTLP headers secret missing"
 
@@ -21,7 +21,7 @@ const missingHeadersSecret = "OTLP headers secret missing"
 const telemetryWindow = time.Minute
 
 // NewTelemetry returns the OpenTelemetry export of an agent with state, or nil without state. The export reads its settings
-// from the last applied manifest, and its samples and check states from the collector and the store. log receives
+// from the running manifest, and its samples and check states from the collector and the store. log receives
 // operational messages, which never contain secrets.
 func NewTelemetry(c Config, col *metrics.Collector, d *deploy.Controller, log func(string)) *telemetry.Exporter {
 	if d == nil || d.Store == nil || col == nil {
@@ -37,10 +37,10 @@ func NewTelemetry(c Config, col *metrics.Collector, d *deploy.Controller, log fu
 	}
 }
 
-// telemetryConfig returns the export settings of the last applied manifest, or nil when it names no endpoint. The headers
+// telemetryConfig returns the export settings of the running manifest, or nil when it names no endpoint. The headers
 // come from the secret the manifest names, which must be a plain secret. Its error never includes the secret's value.
 func telemetryConfig(ctx context.Context, s *state.Store) (*telemetry.Config, error) {
-	m, _, err := s.LatestManifest(ctx)
+	m, err := settingsManifest(ctx, s)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

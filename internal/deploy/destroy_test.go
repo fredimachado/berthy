@@ -165,7 +165,9 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 	if op := f.deploy("deploy-api", "api", apiFirst, m); op.State != "succeeded" {
 		t.Fatalf("deploy api %s: %s", op.State, op.Err)
 	}
-	if op := f.run(composeReq("deploy-db", composeFileOne, composeApp(true))); op.State != "succeeded" {
+	db := composeApp(true)
+	db.Project = m.Project // one environment runs one project
+	if op := f.run(composeReq("deploy-db", composeFileOne, db)); op.State != "succeeded" {
 		t.Fatalf("deploy db %s: %s", op.State, op.Err)
 	}
 	ctx := context.Background()
@@ -340,7 +342,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 		t.Fatalf("order of removals: %v", calls)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"api: deleted service demo-api-web", "db: brought down Compose project shop-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef, "kept image " + helperTag + ": in use"} {
+	for _, want := range []string{"api: deleted service demo-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef, "kept image " + helperTag + ": in use"} {
 		if !hasStep(got, want) {
 			t.Errorf("no step %q in %v", want, got)
 		}

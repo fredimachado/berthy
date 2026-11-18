@@ -189,7 +189,7 @@ func (w *Monitoring) credentialChecks(m *manifest.Manifest, ingress *state.Ingre
 // a credential in trouble is the operator's to replace, and the agent itself is healthy. now is the clock for expiry.
 func credentialDoctorChecks(ctx context.Context, c Config, s *state.Store, now time.Time) []api.Check {
 	var m *manifest.Manifest
-	if dm, _, err := deployedManifest(ctx, s); err == nil {
+	if dm, err := runningManifest(ctx, s); err == nil {
 		m = &dm
 	}
 	var ingress *state.IngressState

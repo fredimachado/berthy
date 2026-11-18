@@ -59,8 +59,7 @@ func jobScheduler(s *state.Store, exec jobs.Executor) *jobs.Scheduler {
 		Env:   "lab",
 		Store: s,
 		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
-			m, _, err := s.LatestManifest(ctx)
-			return m, err
+			return runningManifest(ctx, s)
 		},
 		Target: fixedTarget{},
 		Exec:   exec,

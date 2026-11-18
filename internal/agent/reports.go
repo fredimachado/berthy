@@ -74,7 +74,7 @@ func (r *Reports) alert(e deploy.OperationEvent) {
 	defer cancel()
 	m := e.Manifest
 	if m == nil {
-		latest, _, err := r.store.LatestManifest(ctx)
+		latest, err := settingsManifest(ctx, r.store)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return

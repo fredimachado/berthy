@@ -61,6 +61,7 @@ func withRemoteFlags(extra ...string) []string {
 // scale accepts --manifest-dir and does not read it: a scale needs no checkout, and TestScaleDoesNotLoadCheckoutManifest relies on that.
 var changeFlags = map[string][]string{
 	"deploy":           withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
+	"apply":            withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
 	"rollback":         withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
 	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
 	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
@@ -528,6 +529,35 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			endpoint = "deploys"
 		}
 		body = req
+	case "apply":
+		if len(f.pos) != 0 {
+			fmt.Fprintln(errout, "usage: apply -e ENV [--manifest-dir DIR] [--dry-run] [--json]")
+			return 2
+		}
+		m, e := manifest.Load(f.dir, f.env)
+		if e != nil {
+			fmt.Fprintln(errout, e)
+			return 1
+		}
+		if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
+			fmt.Fprintln(errout, e)
+			return 1
+		}
+		// The request carries the checkout's commit and local-changes flag as a deploy does.
+		stamp := deploy.Request{Commit: f.commit}
+		co, e := agentclient.StampCheckout(f.dir, f.env, &stamp)
+		if e != nil {
+			fmt.Fprintln(errout, e)
+			return 1
+		}
+		warnCheckout(errout, f.commit, co)
+		if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
+			fmt.Fprintln(errout, e)
+			return 1
+		}
+		method = "POST"
+		endpoint = "apply"
+		body = deploy.ApplyRequest{Manifest: *m, Commit: stamp.Commit, Modified: stamp.Modified, DryRun: f.dry}
 	case "restore":
 		if len(f.pos) != 1 || f.pos[0] == "" || f.into == "" {
 			fmt.Fprintln(errout, "usage: restore KEY --into VOLUME [--dry-run]")
@@ -761,6 +791,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if cmd == "key" && !f.json {
 		return printKeyRotation(out, errout, data, f.env)
+	}
+	if cmd == "apply" && !f.json {
+		return printApply(out, errout, data, f.dry)
 	}
 	if cmd == "secret" && f.pos[0] == "set" && !f.dry && !f.json {
 		if printSecretSet(out, data) {

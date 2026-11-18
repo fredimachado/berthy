@@ -2,8 +2,6 @@ package state
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -97,42 +95,6 @@ func TestUpgradeVersionFourAddsChecksTable(t *testing.T) {
 	}
 	if err = upgraded.PutCheck(context.Background(), CheckState{Name: "memory", State: "ok"}); err != nil {
 		t.Fatalf("checks table unusable after upgrade: %v", err)
-	}
-}
-
-func TestLatestManifestPicksNewestNonConnectorRelease(t *testing.T) {
-	s, _, _ := testStore(t)
-	ctx := context.Background()
-	if _, _, err := s.LatestManifest(ctx); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("manifest before any deploy: %v", err)
-	}
-	release := func(id, app, manifest string) {
-		t.Helper()
-		op, _, err := s.Admit(ctx, Admission{RequestID: id, ActorID: "a", Kind: "deploy", App: app, PublicRequest: []byte(`{}`)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded", Release: &Release{App: app, Manifest: []byte(manifest)}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	first := `{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}},"probes":{"site":{"http":"http://127.0.0.1:8080/"}}}`
-	connector := `{"project":"demo","network":"demo","apps":{"ingress":{"kind":"image","image":"cloudflare/cloudflared","roles":{"connector":{}}}}}`
-	release("first", "api", first)
-	release("connector", "ingress", connector)
-	m, applied, err := s.LatestManifest(ctx)
-	if err != nil || m.Probes["site"].HTTP != "http://127.0.0.1:8080/" || applied.IsZero() {
-		t.Fatalf("connector release used as the source: %+v %v %v", m, applied, err)
-	}
-	second := `{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}},"probes":{"other":{"tcp":"10.0.0.5:5432"}}}`
-	release("second", "api", second)
-	m, _, err = s.LatestManifest(ctx)
-	if err != nil || len(m.Probes) != 1 || m.Probes["other"].TCP != "10.0.0.5:5432" {
-		t.Fatalf("newest release not chosen: %+v %v", m.Probes, err)
-	}
-	release("broken", "api", `{"project":"demo"}`)
-	if _, _, err = s.LatestManifest(ctx); err == nil {
-		t.Fatal("unreadable stored manifest accepted")
 	}
 }
 

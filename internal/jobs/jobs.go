@@ -23,7 +23,7 @@ import (
 var (
 	// ErrJobRunning means a run of the job is in progress.
 	ErrJobRunning = errors.New("job is already running")
-	// ErrUnknownJob means the last applied manifest has no job with that name.
+	// ErrUnknownJob means the running manifest has no job with that name.
 	ErrUnknownJob = errors.New("unknown job")
 )
 
@@ -42,11 +42,11 @@ type Executor interface {
 	ExecDiscard(ctx context.Context, containerID string, command []string) (exitCode int, err error)
 }
 
-// Scheduler runs the jobs of the last applied manifest. Its fields are set before Run or Start.
+// Scheduler runs the jobs of the running manifest. Its fields are set before Run or Start.
 type Scheduler struct {
 	Env   string
 	Store *state.Store
-	// Manifest returns the last applied manifest. It returns sql.ErrNoRows when nothing is deployed, which means no jobs.
+	// Manifest returns the running manifest. It returns sql.ErrNoRows when nothing is deployed, which means no jobs.
 	Manifest func(ctx context.Context) (manifest.Manifest, error)
 	Target   Target
 	Exec     Executor

@@ -19,7 +19,7 @@ import (
 )
 
 // NewJobs returns the scheduler of an agent with state and Docker, or nil for an agent without either. Its jobs come from
-// the last applied manifest. log receives operational messages, which never contain secrets.
+// the running manifest. log receives operational messages, which never contain secrets.
 func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string)) *jobs.Scheduler {
 	if e == nil || d == nil || d.Store == nil {
 		return nil
@@ -29,7 +29,7 @@ func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string))
 		Env:   c.Environment,
 		Store: store,
 		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
-			m, _, err := deployedManifest(ctx, store)
+			m, err := runningManifest(ctx, store)
 			return m, err
 		},
 		Target: jobs.EngineTarget{Store: store, Docker: e},
@@ -38,14 +38,14 @@ func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string))
 	}
 }
 
-// appJobs returns the jobs of the last applied manifest that belong to an app of the inventory, or nil when there are
+// appJobs returns the jobs of the running manifest that belong to an app of the inventory, or nil when there are
 // none or the manifest cannot be read. An image app is listed under its manifest name, and a Compose app under its
 // Compose project name.
 func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Time) []api.JobStatus {
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	m, _, err := deployedManifest(ctx, d.Store)
+	m, err := runningManifest(ctx, d.Store)
 	if err != nil {
 		return nil
 	}
@@ -73,13 +73,13 @@ func manifestAppName(m manifest.Manifest, ref api.AppRef) string {
 	return ""
 }
 
-// appBackups returns the backups of the last applied manifest that belong to an app of the inventory, with their ages, or nil
+// appBackups returns the backups of the running manifest that belong to an app of the inventory, with their ages, or nil
 // when there are none or the manifest cannot be read.
 func appBackups(ctx context.Context, d *deploy.Controller, app api.App, now time.Time) []api.BackupStatus {
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	m, _, err := deployedManifest(ctx, d.Store)
+	m, err := runningManifest(ctx, d.Store)
 	if err != nil {
 		return nil
 	}
@@ -119,7 +119,7 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 	ctx := r.Context()
 	switch {
 	case len(rest) == 1:
-		m, _, err := deployedManifest(ctx, d.Store)
+		m, err := runningManifest(ctx, d.Store)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
@@ -147,7 +147,7 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 		}
 		if len(runs) == 0 {
 			// A job with no runs is known only through the manifest.
-			if m, _, err := deployedManifest(ctx, d.Store); err != nil {
+			if m, err := runningManifest(ctx, d.Store); err != nil {
 				writeError(w, 404, "not_found", "not found")
 				return
 			} else if _, ok := m.Jobs[rest[1]]; !ok {

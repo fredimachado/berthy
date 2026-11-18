@@ -46,7 +46,7 @@ type Refusal string
 func (r Refusal) Error() string { return string(r) }
 
 var (
-	// ErrNotConfigured means the last applied manifest has no state_backup block.
+	// ErrNotConfigured means the running manifest has no state_backup block.
 	ErrNotConfigured = Refusal("state backup is not configured")
 	// ErrRunning means a state backup is already running. Runs take one at a time.
 	ErrRunning = Refusal("a state backup is already running")

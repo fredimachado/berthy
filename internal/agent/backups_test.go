@@ -355,7 +355,7 @@ func TestBackupOfAComposeVolumeResolvesTheProjectsDockerName(t *testing.T) {
 		t.Fatalf("compose runs: %+v", g.compose.runs)
 	}
 	// An external volume resolves to its own name, and a key the Compose file lacks is not mounted.
-	m, _, err := deployedManifest(context.Background(), g.store)
+	m, err := runningManifest(context.Background(), g.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestBackupOfAComposeVolumeResolvesTheProjectsDockerName(t *testing.T) {
 
 func TestBackupVolumeResolutionForImageApps(t *testing.T) {
 	g := newBackupRig(t)
-	m, _, _ := deployedManifest(context.Background(), g.store)
+	m, _ := runningManifest(context.Background(), g.store)
 	for volume, want := range map[string]string{"uploads": "uploads", "cache": "cache"} {
 		got, err := resolveVolume(context.Background(), g.ctrl, m, manifestBackup(m, "uploads", volume))
 		if err != nil || got != want {
@@ -571,7 +571,7 @@ func TestRestoreOfATamperedArchiveFailsAndRemovesTheVolume(t *testing.T) {
 
 func TestDeployedManifestDropsBackupsOfAppsThatAreNotDeployed(t *testing.T) {
 	g := newBackupRig(t)
-	m, _, err := deployedManifest(context.Background(), g.store)
+	m, err := runningManifest(context.Background(), g.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +616,7 @@ func TestListAndRestoreStillWorkAfterTheAppsAreRemoved(t *testing.T) {
 	uploads := g.run("uploads")
 	docs := g.run("docs")
 	g.removeApps("api", "files")
-	if m, _, err := deployedManifest(context.Background(), g.store); err == nil && len(m.Backups) != 0 {
+	if m, err := runningManifest(context.Background(), g.store); err == nil && len(m.Backups) != 0 {
 		t.Fatalf("backups of removed apps are still configured: %v", m.Backups)
 	}
 	// Running a backup needs the app.

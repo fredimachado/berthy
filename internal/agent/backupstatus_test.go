@@ -159,7 +159,7 @@ func TestTheAgentsSchedulerRunsADueBackupAsTheBackup(t *testing.T) {
 	if len(runs) != 1 || runs[0].Trigger != "schedule" || runs[0].Status != "succeeded" || !runs[0].Scheduled.Equal(time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)) {
 		t.Fatalf("runs: %+v", runs)
 	}
-	if m, _, _ := deployedManifest(ctx, g.store); m.Backups["docs"].Schedule != "" {
+	if m, _ := runningManifest(ctx, g.store); m.Backups["docs"].Schedule != "" {
 		t.Fatal("a backup without a schedule has one")
 	}
 	audit, _ := g.store.AuditLog(ctx, 10)
@@ -180,7 +180,7 @@ func TestADeployHookBacksUpThroughTheAgent(t *testing.T) {
 		t.Fatal("the controller cannot run backup hooks")
 	}
 	var m manifest.Manifest
-	m, _, _ = deployedManifest(context.Background(), g.store)
+	m, _ = runningManifest(context.Background(), g.store)
 	res, err := g.ctrl.Backups.RunBackup(context.Background(), m, "uploads")
 	if err != nil || res.Status != "succeeded" || res.RunID == 0 || res.Detail != "" {
 		t.Fatalf("hook backup: %+v %v", res, err)

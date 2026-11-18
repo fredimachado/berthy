@@ -136,8 +136,8 @@ func TestObserverHearsARollbackWithTheVersionItReturnsTo(t *testing.T) {
 	if start.Kind != "rollback" || end.Kind != "rollback" || end.State != "succeeded" || end.Version != "v1.0.1" || end.Digest != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("start %+v end %+v", start, end)
 	}
-	if end.Manifest == nil || end.Manifest.Project != "proj" {
-		t.Fatalf("a rollback is judged by the manifest of the release it returns to: %+v", end.Manifest)
+	if end.Manifest != nil {
+		t.Fatalf("a rollback is judged by the environment's settings, not by the release it returns to: %+v", end.Manifest)
 	}
 }
 

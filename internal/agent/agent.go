@@ -44,7 +44,7 @@ type Config struct {
 	KeyFile      string `json:"key_file,omitempty"`
 	Protected    bool   `json:"protected,omitempty"`
 	// Network is the shared overlay network the apps join; berthy setup writes it. When it is empty, the network of the
-	// last applied manifest is used, and with neither, the network check is left out.
+	// running manifest is used, and with neither, the network check is left out.
 	Network string `json:"network,omitempty"`
 	// CloudflareAPIURL overrides the Cloudflare API base URL. https is required, except for a loopback host, which tests use.
 	CloudflareAPIURL string `json:"cloudflare_api_url,omitempty"`
@@ -413,7 +413,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					checks = append(checks, check)
 				}
 				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
-				if m, _, mErr := deployedManifest(r.Context(), deployment.Store); mErr == nil {
+				if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
 					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
 					if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
 						checks = append(checks, check)
