@@ -28,7 +28,7 @@ func serveKeyRotate(w http.ResponseWriter, r *http.Request, d *deploy.Controller
 	rep, err := d.Store.RotateKey(r.Context(), actor, req.DryRun)
 	switch {
 	case errors.Is(err, state.ErrConflict):
-		writeError(w, 409, "conflict", "environment or request conflict")
+		writeError(w, 409, "conflict", "the state key cannot be rotated while an operation runs or the deploy lock is held")
 		return
 	case errors.Is(err, state.ErrKeyFiles):
 		writeError(w, 500, "key_rotation_incomplete", state.ErrKeyFiles.Error())

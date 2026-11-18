@@ -99,7 +99,8 @@ func TestRotateKeyIsRefusedWhileTheEnvironmentIsLocked(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	id := f.s.KeyID()
-	if w := f.call("POST", "/key/rotate", apAdminToken, `{}`); w.Code != http.StatusConflict {
+	w := f.call("POST", "/key/rotate", apAdminToken, `{}`)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "the state key cannot be rotated while an operation runs or the deploy lock is held") {
 		t.Fatalf("rotate while locked: %d %s", w.Code, w.Body.String())
 	}
 	if f.s.KeyID() != id {

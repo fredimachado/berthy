@@ -79,9 +79,9 @@ func TestKeyRotateJSONPrintsTheAnswer(t *testing.T) {
 }
 
 func TestKeyRotateReportsARefusal(t *testing.T) {
-	a := &rotateAgent{status: 409, body: `{"code":"conflict","message":"environment or request conflict"}`}
+	a := &rotateAgent{status: 409, body: `{"code":"conflict","message":"the state key cannot be rotated while an operation runs or the deploy lock is held"}`}
 	code, out, errout := runKeyRotate(t, a)
-	if code != 1 || out != "" || !strings.Contains(errout, "conflict") {
+	if code != 1 || out != "" || !strings.Contains(errout, "the state key cannot be rotated while an operation runs or the deploy lock is held") {
 		t.Fatalf("exit %d out %q err %q", code, out, errout)
 	}
 }
