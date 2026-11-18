@@ -1079,11 +1079,39 @@ protected environment requires a digest
 
 In **dev**, which is not protected, `--version 1.4.2` (a tag) works. `--version` also accepts a full reference such as `ghcr.io/acme/todo-api:1.4.2` as long as the repository matches the app's `image`. An image app without `--version` is refused with `deploy requires --version`.
 
-The dry run for an image app prints the plan as JSON when you add `--json`:
+The dry run says what the deploy changes compared with the release the app runs now:
+
+```text
+api
+  image    sha256:41ab1c2d3e4f… -> sha256:9f2c0d1e2f3a…   (v1.4.2 -> v1.4.3)
+  web      replicas 2 -> 3
+  web      health.start_period 30s -> 60s
+  env      + FEATURE_X (plain)
+  env      - LEGACY_MODE (plain)
+  env      ~ DATABASE_URL now from secret API_DATABASE_URL
+  hooks    + pre_deploy: backup main-db
+  ingress  + api.example.com
+```
+
+Each line is one difference. What is compared is the image (digest and tag), each role's settings, the names of the variables and where each value comes from, the hooks, the migrations, the hostnames, and the app's jobs, backups and service probes. A first deploy says `new app`. A deploy that changes nothing says `no changes: the same release would be recorded`. A Compose app also lists the services the deploy would `create`, `recreate` or `remove`.
+
+**A secret value is never in it.** A plain variable shows by name, and its value only when it changes. A variable from a secret shows by its name and the name of its secret. A template variable shows by name and its template text, which holds secret names and no value. A change of the value stored under a secret name is not a difference of the manifest, so the diff does not show it.
+
+`berthy rollback <app> --dry-run` shows the same lines for the release that runs now and the one it returns to. An `--adopt` dry run keeps its own list of differences.
+
+The dry run for an image app prints the plan as JSON when you add `--json`. The diff is its `diff` key, as a list of `{"area", "change"}` entries:
 
 ```json
 {
   "app": "api",
+  "diff": {
+    "changes": [
+      {
+        "area": "image",
+        "change": "sha256:41ab1c2d3e4f… -> sha256:9f2c0d1e2f3a…   (v1.4.2 -> v1.4.3)"
+      }
+    ]
+  },
   "image": "ghcr.io/acme/todo-api@sha256:<64 hex characters>",
   "roles": [
     "web"
@@ -1264,6 +1292,15 @@ berthy history api -e prod
 ```
 
 `history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`. A release or a failed deploy from a checkout with local changes shows `(modified)` after its commit.
+
+To see what a release changed, compare it with another:
+
+```bash
+berthy history api -e prod --diff <release id>
+berthy history api -e prod --diff <release id> <other release id>
+```
+
+The first form compares the release with the one before it, and the first release of an app is `new app`. The second compares it with the other one, whichever is older. The answer is the same lines a dry run prints: what the first release changes compared with the second. Both ids must be releases of the app, from the `id` column of `history`. A secret value is never in it. `--json` prints `{"changes": [{"area", "change"}]}`.
 
 #### Wait for health
 
@@ -2204,10 +2241,15 @@ BERTHY_PROD_TOKEN=<claude's token> \
 ```text
 held for approval: 5f1c0d2a... (expires 2026-11-16T10:45:12Z)
 plan:
+  diff:
+    image    sha256:41ab1c2d3e4f… -> sha256:9f2c0d1e2f3a…   (v1.4.2 -> v1.4.3)
+    web      replicas 2 -> 3
   app: api
   image: ghcr.io/acme/todo-api@sha256:<digest>
   ...
 ```
+
+A held deploy or rollback carries what it changes, so the person who approves it sees the difference and not only the target: a changed command, a removed health check or a new hostname looks different from a version bump.
 
 The exit code is **`3`**: not done, not failed. With `--json` it prints the answer as JSON.
 
@@ -2222,11 +2264,11 @@ berthy approve 5f1c0d2a -e prod
 berthy reject  5f1c0d2a -m "not during the freeze" -e prod
 ```
 
-`approvals` lists what is waiting: id, age, time left, who asked, and a one-line summary such as `deploy api sha256:...`, `restart api/web` or `secret set DATABASE_URL`. `--all` adds the decided and expired ones, with their status and who decided. A `read` token sees each request without its plan. The **plan**, which can repeat a command line, shows only to a `deploy` token or above.
+`approvals` lists what is waiting: id, age, time left, who asked, and a one-line summary such as `deploy api sha256:...`, `restart api/web` or `secret set DATABASE_URL`. Under the table, each deploy or rollback that has a diff lists what it changes (`<id>: changes of <app>`, then the lines of a dry run). `--all` adds the decided and expired ones, with their status and who decided. A `read` token sees each request without its plan. The **plan**, which can repeat a command line, shows only to a `deploy` token or above.
 
 The plan is the same object that `--dry-run` of the same request prints. Read it before you approve.
 
-`approve` shows the plan, then runs the request **as the agent that asked**, and follows the operation it starts. Before it runs, the agent plans the stored request again. If the plan is no longer the one that was stored (for example because a release was recorded in between), nothing runs, the approval is marked `failed`, and you ask for a new request. The audit log shows the agent, with `(approved by <you>)` after its name.
+`approve` shows the plan, then runs the request **as the agent that asked**, and follows the operation it starts. Before it runs, the agent plans the stored request again. If the plan is no longer the one that was stored (for example because a release was recorded in between, which changes the diff), nothing runs, the approval is marked `failed`, and you ask for a new request. The audit log shows the agent, with `(approved by <you>)` after its name.
 
 `reject` refuses it; nothing runs. `-m` records a reason (up to 200 characters).
 
@@ -2279,7 +2321,7 @@ The tools:
 Its result is one of:
 
 - **Done or failed.** The operation is followed for at most 10 minutes: `{"operation_id", "state", "reason"}`. Any state but `succeeded` is marked as a tool error, with a pointer to `get_deploy_diagnostics`.
-- **Held.** On a protected environment: `{"status": "held for approval", "approval_id", "expires", "plan"}`. It is not an error. The AI agent must tell the person to run `berthy approve <id>`, and must not retry. `list_approvals` shows later whether it was approved, rejected or expired.
+- **Held.** On a protected environment: `{"status": "held for approval", "approval_id", "expires", "plan"}`. It is not an error. The AI agent must tell the person to run `berthy approve <id>`, and must not retry. The plan of a deploy or rollback has a `diff`, and the text of the answer lists its lines (`changes of <app>:` and one line each), as the text of a `dry_run` of a deploy or rollback does. `list_approvals` shows later whether it was approved, rejected or expired.
 - **Plan.** With `dry_run`: `{"dry_run": true, "plan": ...}`. Never held.
 - **Refused.** The wrong scope, a held deploy lock, an unknown app: a tool error with the agent's message.
 
@@ -2504,7 +2546,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 | `logs <app>` | read | `--follow`/`-f`, `--tail <n>`, `--since <duration or time>`, `--grep <regex>`, `--role <name>`, `--replica <id>` | Container logs, read from Docker. |
 | `stats` | read | `--watch`, `--since <duration up to 1h>` | Server and container metrics. |
 | `df` | read | | Disk space and Docker disk usage. |
-| `history <app>` | read | | Releases and failed deploys, with reasons and operation ids. |
+| `history <app>` | read | `--diff <release id> [<other release id>]` | Releases and failed deploys, with reasons and operation ids. With `--diff`, what a release changes compared with another. |
 | `wait <app>` | read | `--healthy`, `--role <name>`, `--timeout <duration up to 10m>` | Block until the app is healthy. Exit 0 when it is. |
 | `doctor` | read | | The agent's own checks. Exit 1 when a critical one fails. |
 | `checks` | read | | Stored state of every probe and built-in condition. |

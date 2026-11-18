@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,6 +305,19 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				row["tag"] = release.Tag
 			}
 			json.NewEncoder(w).Encode(row)
+		case len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
+			// What release `release` of the app changes compared with release `base`, or with the release before it.
+			id, base, ok := historyDiffIDs(r.URL.Query())
+			if !ok {
+				writeError(w, 400, "bad_request", "release and base must be release numbers")
+				return
+			}
+			diff, err := d.DiffReleases(ctx, rest[1], id, base)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(diff)
 		case rest[0] == "history":
 			rows, err := d.Store.History(ctx, rest[1])
 			if err != nil {
@@ -607,6 +621,21 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 	})
 }
 
+// historyDiffIDs reads the release numbers of a history diff: release is required, base is optional and means the release
+// before it when it is left out.
+func historyDiffIDs(q url.Values) (id, base int64, ok bool) {
+	id, err := strconv.ParseInt(q.Get("release"), 10, 64)
+	if err != nil || id < 1 {
+		return 0, 0, false
+	}
+	if raw := q.Get("base"); raw != "" {
+		if base, err = strconv.ParseInt(raw, 10, 64); err != nil || base < 1 {
+			return 0, 0, false
+		}
+	}
+	return id, base, true
+}
+
 // routeScope is the route table of the deployment API. rest is the path after the environment. It returns the scope the
 // route needs and the one HTTP method it takes. ok is false for a path that is not one of these routes. Every route whose
 // method is not GET changes something.
@@ -634,7 +663,7 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
 		required = "deploy"
 		method = "GET"
-	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait" || rest[0] == "applied"):
+	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait" || rest[0] == "applied"), len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
 		required = "read"
 		method = "GET"
 	case len(rest) == 1 && (rest[0] == "audit" || rest[0] == "lock"):

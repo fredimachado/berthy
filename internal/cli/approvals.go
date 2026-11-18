@@ -123,6 +123,12 @@ func printPlan(out io.Writer, plan json.RawMessage) {
 		return
 	}
 	fmt.Fprintln(out, "plan:")
+	if m, ok := v.(map[string]any); ok {
+		if lines := takeDiffLines(m); lines != nil {
+			fmt.Fprintln(out, "  diff:")
+			printLines(out, "    ", lines)
+		}
+	}
 	printText(out, v, "  ")
 }
 
@@ -294,6 +300,17 @@ func printApprovals(out, errout io.Writer, data []byte, all, asJSON bool) int {
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
+	}
+	for _, r := range rows {
+		var plan map[string]any
+		if json.Unmarshal(r.Plan, &plan) != nil {
+			continue
+		}
+		app, _ := plan["app"].(string)
+		if lines := takeDiffLines(plan); lines != nil {
+			fmt.Fprintf(out, "\n%s: changes of %s\n", terminalSafe(r.ID), terminalSafe(app))
+			printLines(out, "  ", lines)
+		}
 	}
 	return 0
 }

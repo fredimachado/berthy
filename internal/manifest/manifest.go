@@ -754,6 +754,22 @@ func validJobTimeout(s string) bool {
 	return err == nil
 }
 
+// Defaulted returns a copy of m with the defaults a stored manifest takes, without checking it. Two manifests compare by what
+// they run once both are defaulted, whether or not they were when they were written.
+func (m Manifest) Defaulted() Manifest {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var out Manifest
+	if json.Unmarshal(b, &out) != nil {
+		return m
+	}
+	out.Connector = m.Connector
+	out.defaults()
+	return out
+}
+
 func (m *Manifest) defaults() {
 	m.defaultsMonitoring()
 	if sb := m.StateBackup; sb != nil {

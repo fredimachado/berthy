@@ -1,0 +1,40 @@
+ berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+   1 Apps   2 Logs   3 Server ▐ 4 Approvals ▌ 1                                                                  ? help 
+╭─ Approvals → a1b2c3d4 ───────────────────────────────────────────────────────────────────────────────────────── 100% ╮
+│ deploy api → sha256:abc123456789                                                                         ▐ pending ▌ │
+│ requested by claude · 3m ago · deploy                                                                                │
+│ ⏳ 12:00 left to decide · expires 12:12:00                                                                           │
+│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ Plan                                                                                                                 │
+│ What changes                                                                                                         │
+│   image    sha256:41ab1c2d3e4f… -> sha256:9f2c0d1e2f3a…   (v1.4.2 -> v1.4.3)                                         │
+│   web      replicas 2 -> 3                                                                                           │
+│   env      + FEATURE_X (plain)                                                                                       │
+│   env      - LEGACY_MODE (plain)                                                                                     │
+│   env      ~ NOTE (plain) "a" -> "red"                                                                               │
+│                                                                                                                      │
+│ {                                                                                                                    │
+│   "action": "deploy",                                                                                                │
+│   "app": "api",                                                                                                      │
+│   "image": "127.0.0.1:15001/app@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",            │
+│   "roles": [                                                                                                         │
+│     "web"                                                                                                            │
+│   ]                                                                                                                  │
+│ }                                                                                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● connected │ 🔒 locked by ci: migrating │ backup failed │ 1 pending                                    updated 0s ago 
+↑/k up • a approve • x reject • esc back • ? help • q quit                                                              

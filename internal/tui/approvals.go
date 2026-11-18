@@ -98,7 +98,9 @@ type approvalDetail struct {
 	// raw is the plan as indented JSON, one entry per line; note says why there is none. plan is raw wrapped and coloured for
 	// the width of the pane.
 	raw, note []string
-	plan      []string
+	// changes is what the deploy changes, one line each, drawn above the rest of the plan; it is not in raw.
+	changes []string
+	plan    []string
 }
 
 func newApprovalDetail(st styles, r approvalRow, now time.Time) (*approvalDetail, tea.Cmd) {
@@ -122,8 +124,10 @@ func (d *approvalDetail) load(st styles) {
 			" " + st.faint.Render("Review it with a deploy-scope token, or with `berthy approvals`.")}
 		return
 	}
+	var rest []byte
+	d.changes, rest = splitDiff(raw)
 	var pretty bytes.Buffer
-	if json.Indent(&pretty, raw, "", "  ") != nil {
+	if json.Indent(&pretty, rest, "", "  ") != nil {
 		d.note = []string{" " + st.err.Render("The plan could not be read.")}
 		return
 	}
@@ -140,9 +144,37 @@ func (d *approvalDetail) render(st styles, w int) {
 		return
 	}
 	d.plan = d.plan[:0]
+	if len(d.changes) > 0 {
+		d.plan = append(d.plan, " "+st.bold.Render("What changes"))
+		for _, l := range d.changes {
+			d.plan = append(d.plan, wrapLine("   "+changeLine(st, l), w-1)...)
+		}
+		d.plan = append(d.plan, "")
+	}
 	for _, l := range d.raw {
 		d.plan = append(d.plan, wrapJSONLine(st, l, w)...)
 	}
+}
+
+// changeLine draws one line of a diff: the area in the accent colour, and the change in the colour of its mark, green for an
+// addition, red for a removal and yellow for a difference.
+func changeLine(st styles, line string) string {
+	area, rest, ok := strings.Cut(line, " ")
+	if !ok {
+		return st.text.Render(line)
+	}
+	pad := len(rest) - len(strings.TrimLeft(rest, " "))
+	change := rest[pad:]
+	style := st.text
+	switch {
+	case strings.HasPrefix(change, "+ "):
+		style = st.ok
+	case strings.HasPrefix(change, "- "):
+		style = st.err
+	case strings.HasPrefix(change, "~ "):
+		style = st.warn
+	}
+	return st.accent.Render(area) + " " + rest[:pad] + style.Render(change)
 }
 
 // wrapJSONLine breaks one line of indented JSON into lines of at most w-1 cells, with a margin of one cell on the left. The continuation lines

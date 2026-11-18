@@ -108,7 +108,7 @@ var changeFlags = map[string][]string{
 	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
 	"restore":          withRemoteFlags("--dry-run", "--request-id", "--into"),
 	"wait":             withRemoteFlags("--role", "--timeout", "--healthy"),
-	"history":          withRemoteFlags(),
+	"history":          withRemoteFlags("--diff"),
 	"diagnostics":      withRemoteFlags(),
 	"audit":            withRemoteFlags(),
 	"lock status":      withRemoteFlags(),
@@ -141,7 +141,7 @@ var changeFlags = map[string][]string{
 
 type commandFlags struct {
 	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires string
-	bytes, format                                                                                                                string
+	bytes, format, diff                                                                                                          string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                  bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
@@ -188,7 +188,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.origin = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -235,6 +235,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.scope = v
 			case "--expires":
 				f.expires = v
+			case "--diff":
+				f.diff = v
 			}
 		default:
 			if strings.HasPrefix(a, "-") {
@@ -625,6 +627,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		endpoint = "restore"
 		body = map[string]any{"key": f.pos[0], "into": f.into, "dry_run": f.dry, "request_id": id}
 	case "history", "wait":
+		if cmd == "history" && f.diff != "" {
+			if len(f.pos) < 1 || len(f.pos) > 2 || !releaseNumber(f.diff) || len(f.pos) == 2 && !releaseNumber(f.pos[1]) {
+				fmt.Fprintln(errout, "usage: history APP --diff RELEASE [BASE]")
+				return 2
+			}
+			endpoint = "history/" + url.PathEscape(f.pos[0]) + "/diff"
+			break
+		}
 		if len(f.pos) != 1 {
 			fmt.Fprintln(errout, "command requires an app")
 			return 2
@@ -786,6 +796,14 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		}
 		u.RawQuery = q.Encode()
 	}
+	if cmd == "history" && f.diff != "" {
+		q := u.Query()
+		q.Set("release", f.diff)
+		if len(f.pos) == 2 {
+			q.Set("base", f.pos[1])
+		}
+		u.RawQuery = q.Encode()
+	}
 	var payload []byte
 	if body != nil {
 		var err error
@@ -837,6 +855,12 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if cmd == "restore" && f.dry && !f.json {
 		return printRestorePlan(out, errout, data)
+	}
+	if cmd == "history" && f.diff != "" && !f.json {
+		return printDiff(out, errout, data)
+	}
+	if (cmd == "deploy" || cmd == "rollback") && f.dry && !f.json {
+		return printDryRun(out, errout, data)
 	}
 	if cmd == "history" && !f.json {
 		return printHistory(out, errout, data)

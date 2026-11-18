@@ -13,6 +13,8 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
+
+	"berthy/internal/deploy"
 )
 
 // This file turns what an action will do into what the person reads before confirming: a small Markdown document that Glamour
@@ -46,6 +48,29 @@ type planFact struct {
 	short string
 }
 
+// splitDiff takes the diff out of a plan: what the deploy changes, as the text lines the CLI prints (made safe for the screen),
+// and the plan without it. A plan that has no diff, or is not an object, comes back as it is with no lines.
+func splitDiff(raw []byte) (lines []string, rest []byte) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil, raw
+	}
+	diffRaw, ok := obj["diff"]
+	var d deploy.Diff
+	if !ok || json.Unmarshal(diffRaw, &d) != nil {
+		return nil, raw
+	}
+	delete(obj, "diff")
+	rest, err := json.Marshal(obj)
+	if err != nil {
+		return nil, raw
+	}
+	for _, l := range d.Lines() {
+		lines = append(lines, sanitize(l))
+	}
+	return lines, rest
+}
+
 // planFacts reads the meaningful top-level fields of a plan: the app, the image, the roles and whatever else the plan names.
 // Anything that is not a plain value is pointed at the full plan below.
 func planFacts(raw []byte) []planFact {
@@ -75,7 +100,7 @@ func planFacts(raw []byte) []planFact {
 	var out []planFact
 	for _, k := range keys {
 		v := bytes.TrimSpace(obj[k])
-		if k == "action" {
+		if k == "action" || k == "diff" {
 			continue
 		}
 		label := mdLabel(strings.ToUpper(k[:1]) + strings.ReplaceAll(k[1:], "_", " "))
@@ -178,6 +203,12 @@ func planDocument(heading string, facts []planFact, effect string, raw []byte, n
 	}
 	if effect != "" {
 		b.WriteString("\n" + effect + "\n")
+	}
+	changes, raw := splitDiff(raw)
+	if len(changes) > 0 {
+		text := strings.Join(changes, "\n")
+		fence := fenceFor(text)
+		b.WriteString("\n#### What changes\n\n" + fence + "\n" + text + "\n" + fence + "\n")
 	}
 	if pretty := prettyPlan(raw); pretty != "" {
 		fence := fenceFor(pretty)

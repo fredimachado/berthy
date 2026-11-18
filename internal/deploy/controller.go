@@ -96,6 +96,9 @@ type Plan struct {
 	// Notes says what the deploy will do that the person may not expect: one line per role that is stopped before its new
 	// version starts, with the reason.
 	Notes []string `json:"notes,omitempty"`
+	// Diff says what a deploy or rollback of the app changes compared with the release the app runs now. A plan of either has it;
+	// an adoption has Changes instead.
+	Diff *Diff `json:"diff,omitempty"`
 }
 type ExecPlan struct {
 	// Target is the Swarm service of the role for an image app, and the Compose project and service, such as shop-db/postgres,
@@ -243,7 +246,14 @@ func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		return Plan{}, err
 	}
 	if composeRequest(req) {
-		return c.planCompose(ctx, actor, req)
+		p, err := c.planCompose(ctx, actor, req)
+		if err != nil {
+			return Plan{}, err
+		}
+		if err = c.addDiff(ctx, &p, req, composeDigest(req.ComposeFile), ""); err != nil {
+			return Plan{}, err
+		}
+		return p, nil
 	}
 	if err := checkComposeRequest(req); err != nil {
 		return Plan{}, err
@@ -274,7 +284,36 @@ func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		// The digest of an earlier release has no tag of its own, so the deploy records the one that release had.
 		p.Tag = req.recordTag
 	}
+	if err = c.addDiff(ctx, &p, req, p.Image, p.Tag); err != nil {
+		return Plan{}, err
+	}
 	return p, nil
+}
+
+// addDiff puts into a plan what the request changes compared with the app's applied release. image and tag are what the
+// request would run: the pinned image and its tag, or the digest of the Compose file. Nothing is added when the release the app
+// runs cannot be read as a manifest.
+func (c *Controller) addDiff(ctx context.Context, p *Plan, req Request, image, tag string) error {
+	if c.Store == nil {
+		return nil
+	}
+	var prev *ReleaseSide
+	release, err := c.Store.Applied(ctx, req.App)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return errors.New("applied release unavailable")
+	default:
+		if prev, err = releaseSide(release); err != nil {
+			return nil
+		}
+	}
+	d := ReleaseDiff(req.App, prev, &ReleaseSide{Manifest: req.Manifest, Image: image, Tag: tag})
+	if p.Compose != nil {
+		d = d.WithCompose(*p.Compose)
+	}
+	p.Diff = &d
+	return nil
 }
 
 // hasHostnames reports whether the app declares a public hostname on any role.

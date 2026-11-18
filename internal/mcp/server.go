@@ -568,7 +568,7 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 			return nil, nil, t.fail("invalid agent response")
 		}
 		if in.DryRun {
-			return t.output("dry run of "+change.what+": the plan, nothing changed", map[string]any{"dry_run": true, "plan": json.RawMessage(data)})
+			return t.output(withChanges("dry run of "+change.what+": the plan, nothing changed", data), map[string]any{"dry_run": true, "plan": json.RawMessage(data)})
 		}
 		return t.output(change.what, map[string]json.RawMessage{"result": data})
 	case http.StatusAccepted:
@@ -587,7 +587,7 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 		Plan    json.RawMessage `json:"plan"`
 	}
 	if json.Unmarshal(data, &held) == nil && held.ID != "" {
-		return t.output(fmt.Sprintf("held for approval %s: a person must run berthy approve %s (or berthy reject %s); nothing has changed yet", held.ID, held.ID, held.ID),
+		return t.output(withChanges(fmt.Sprintf("held for approval %s: a person must run berthy approve %s (or berthy reject %s); nothing has changed yet", held.ID, held.ID, held.ID), held.Plan),
 			map[string]any{"status": "held for approval", "approval_id": held.ID, "expires": held.Expires, "plan": held.Plan})
 	}
 	if in.Command == "backup_run" {
@@ -606,6 +606,29 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 		return nil, nil, t.fail("invalid agent response")
 	}
 	return t.followOperation(ctx, change.what, in.Command, started.ID)
+}
+
+// withChanges adds to a summary what the plan says the deploy changes, one line each, as the CLI prints it. A plan without a
+// diff leaves the summary as it is. A line is text for a model and a person, so a control character in a value is shown as ?.
+func withChanges(summary string, plan []byte) string {
+	var p struct {
+		App  string       `json:"app"`
+		Diff *deploy.Diff `json:"diff"`
+	}
+	if json.Unmarshal(plan, &p) != nil || p.Diff == nil {
+		return summary
+	}
+	var b strings.Builder
+	b.WriteString(summary + "\nchanges of " + p.App + ":")
+	for _, l := range p.Diff.Lines() {
+		b.WriteString("\n  " + strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 {
+				return '?'
+			}
+			return r
+		}, l))
+	}
+	return b.String()
 }
 
 // pause waits one poll interval. It returns false when the caller stopped waiting or the bound has passed.
