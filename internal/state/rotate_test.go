@@ -328,7 +328,7 @@ func TestSnapshotNamesTheKeyThatSealedIt(t *testing.T) {
 func TestEverySealedColumnIsRotated(t *testing.T) {
 	s, _, _ := keyedStore(t, randomKey(t))
 	// BLOB columns that hold plain data. A new BLOB column is either one of these or a sealed column in sealedColumns.
-	plain := map[string]bool{"operations.request_hash": true, "operations.public_request": true, "events.data": true, "releases.manifest": true, "approvals.plan": true}
+	plain := map[string]bool{"operations.request_hash": true, "operations.public_request": true, "events.data": true, "releases.manifest": true, "environment_settings.manifest": true, "environment_settings.apps": true, "approvals.plan": true}
 	rotated := map[string]bool{}
 	for _, c := range sealedColumns {
 		rotated[c.table+"."+c.column] = true
