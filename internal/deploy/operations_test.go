@@ -493,13 +493,13 @@ func waitFixture(t *testing.T) *state.Store {
 // A role stopped by scale --replicas 0 has no replicas and no berthy.operation label, and is ready at once.
 func TestWaitReturnsAtOnceForStoppedRole(t *testing.T) {
 	c := Controller{Store: waitFixture(t), Engine: &runtimeEngine{spec: []byte(`{"Name":"one","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":0}}}`)}}
-	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	deadline, cancel := context.WithTimeout(context.Background(), testWait)
 	defer cancel()
 	started := time.Now()
 	if err := c.Wait(deadline, "app", ""); err != nil {
 		t.Fatalf("stopped role not ready: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Fatalf("stopped role waited %v", elapsed)
 	}
 }
@@ -511,7 +511,7 @@ func TestWaitRefusesMissingOrNegativeReplicas(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Controller{Store: waitFixture(t), Engine: &runtimeEngine{spec: []byte(spec)}}
-			deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			deadline, cancel := context.WithTimeout(context.Background(), testWait)
 			defer cancel()
 			if err := c.Wait(deadline, "app", ""); err == nil || err.Error() != "invalid bound service" {
 				t.Fatalf("got %v, want invalid bound service", err)

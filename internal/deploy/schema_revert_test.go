@@ -22,7 +22,7 @@ var (
 // revertManifest declares the migrations every fixture release carries.
 func revertManifest() manifest.Manifest {
 	one := 1
-	return manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"app": {Kind: "image", Image: "example/app", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}, Migrations: &manifest.Migrations{Version: []string{"version"}, Apply: []string{"apply"}, Revert: []string{"migrate", "down", "{target}"}}}}}
+	return manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"app": {Kind: "image", Image: "example/app", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}, Migrations: &manifest.Migrations{Version: []string{"version"}, Apply: []string{"apply"}, Revert: []string{"migrate", "down", "{target}"}}}}}
 }
 
 // revertFake runs one-offs through hookEngine and serves one service through positiveEngine.

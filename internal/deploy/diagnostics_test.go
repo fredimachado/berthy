@@ -293,7 +293,7 @@ func TestUpdatedRoleThatNeverBecameHealthyRecordsItsHealthLog(t *testing.T) {
 	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
 		t.Fatal(err)
 	}
-	if op := deployWeb(t, c, s, "first", "a", webManifest("2s", nil)); op.State != "succeeded" {
+	if op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil)); op.State != "succeeded" {
 		t.Fatalf("first deploy %s %s", op.State, op.Err)
 	}
 	op := deployWeb(t, c, s, "second", "b", webManifest("300ms", nil))
@@ -416,7 +416,7 @@ func TestFailedPreDeployCommandStoresItsOutputAndReason(t *testing.T) {
 	f.exits = []int{3}
 	f.diagnose = map[string]engine.ContainerDiagnosis{}
 	c, s := diagController(t, f)
-	op := deployWeb(t, c, s, "first", "a", webManifest("2s", func(a *manifest.App) {
+	op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, func(a *manifest.App) {
 		a.Hooks.PreDeploy = []manifest.Hook{{Run: []string{"/bin/migrate"}}}
 	}))
 	f.fmu.Lock()
@@ -447,7 +447,7 @@ func TestFailedHookDiagnosticCarriesExitCodeAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest("1s", nil)}}
+	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest(testDeployTimeout, nil)}}
 	name := fmt.Sprintf("berthy-%s-10000", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "exited", ExitCode: 3}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stderr migration 0042 failed: column exists\n"}
@@ -469,7 +469,7 @@ func TestFailedMigrationApplyStoresOutputAndNamesTheMigration(t *testing.T) {
 	f.exits = []int{0, 2, 0}
 	f.versions = []string{"v41\n", "v41\n"}
 	c, s := diagController(t, f)
-	op := deployWeb(t, c, s, "first", "a", webManifest("2s", func(a *manifest.App) {
+	op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, func(a *manifest.App) {
 		a.Migrations = &manifest.Migrations{Version: []string{"version"}, Apply: []string{"apply"}}
 	}))
 	if op.State != "failed" || op.Err != "pre-deploy command failed" || op.Reason != "migration apply exited with code 2" {
@@ -492,7 +492,7 @@ func TestTimedOutOneOffKeepsItsOutputAndIsNotStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest("1s", nil)}}
+	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest(testDeployTimeout, nil)}}
 	name := fmt.Sprintf("berthy-%s-10001", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "running"}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stdout still migrating\n"}
@@ -660,7 +660,7 @@ func TestUpdatedRoleGivesUpAfterItsStartAttemptsAndKeepsThePreviousVersion(t *te
 	f.diagnose = exitedContainers(2, "starting")
 	f.tails = map[string]string{"c1": "boom\n", "c2": "boom\n"}
 	c, s := diagController(t, f)
-	if op := deployWeb(t, c, s, "first", "a", webManifest("2s", nil)); op.State != "succeeded" {
+	if op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil)); op.State != "succeeded" {
 		t.Fatalf("first deploy %s %s", op.State, op.Err)
 	}
 	start := time.Now()

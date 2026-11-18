@@ -378,7 +378,7 @@ func releaseAtEnd(t *testing.T, r *fakeRestorer) {
 
 func waitForRestore(t *testing.T, r *fakeRestorer) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()
 		n := len(r.restores)

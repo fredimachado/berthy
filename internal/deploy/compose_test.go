@@ -183,7 +183,7 @@ func composeReq(id, file string, m manifest.Manifest) Request {
 // waitComposeOperation waits until the operation leaves the running state.
 func waitComposeOperation(t *testing.T, s *state.Store, id string) state.Operation {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for time.Now().Before(deadline) {
 		op, err := s.Operation(context.Background(), id)
 		if err != nil {

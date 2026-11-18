@@ -36,7 +36,7 @@ func (r *recordingObserver) OperationEnded(_ context.Context, e OperationEvent) 
 // waitEnded returns the first n end events, waiting for them: the observer is told just after the state is written.
 func (r *recordingObserver) waitEnded(t *testing.T, n int) []OperationEvent {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for {
 		r.mu.Lock()
 		got := append([]OperationEvent(nil), r.ended...)

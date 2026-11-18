@@ -84,7 +84,7 @@ func TestFailedStopFirstRolloutSaysTheRoleWasDown(t *testing.T) {
 	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
 	f.tails = map[string]string{"c-bad": "2026-11-16T10:00:01Z stdout waiting\n"}
 	c, s := diagController(t, f)
-	if op := deployWeb(t, c, s, "first", "a", webManifest("2s", writableWeb)); op.State != "succeeded" {
+	if op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, writableWeb)); op.State != "succeeded" {
 		t.Fatalf("first deploy %s %s", op.State, op.Err)
 	}
 	op := deployWeb(t, c, s, "second", "b", webManifest("300ms", writableWeb))

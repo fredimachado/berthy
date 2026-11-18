@@ -25,11 +25,7 @@ func TestDrainReturnsWhenTheOperationsHaveEnded(t *testing.T) {
 	s := openStore(t)
 	obs := &holdingObserver{release: make(chan struct{})}
 	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
-	// The fixture's 2s deploy timeout fails on a loaded runner, so this test gives its deploy room of its own.
 	m := dockerManifest(nil)
-	app := m.Apps["web"]
-	app.Deploy.DeployTimeout = "30s"
-	m.Apps["web"] = app
 	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, Request{RequestID: "wait", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +39,7 @@ func TestDrainReturnsWhenTheOperationsHaveEnded(t *testing.T) {
 		t.Fatal("Drain returned while the operation's goroutine was still running")
 	}
 	close(obs.release)
-	long, cancelLong := context.WithTimeout(context.Background(), 10*time.Second)
+	long, cancelLong := context.WithTimeout(context.Background(), testWait)
 	defer cancelLong()
 	if err = c.Drain(long); err != nil {
 		t.Fatalf("Drain after the operation ended: %v", err)

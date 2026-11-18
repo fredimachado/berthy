@@ -41,12 +41,12 @@ func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 	e := &positiveEngine{}
 	c := Controller{Engine: e, Store: store, Environment: "test"}
 	one := 1
-	req := Request{RequestID: "one", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	req := Request{RequestID: "one", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for time.Now().Before(deadline) {
 		got, err := store.Operation(context.Background(), op.ID)
 		if err != nil {
@@ -144,7 +144,7 @@ func TestUnhealthyFirstReleaseRemovesCreatedService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for time.Now().Before(deadline) {
 		got, err := store.Operation(context.Background(), op.ID)
 		if err != nil {
@@ -219,7 +219,7 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 	e := &positiveEngine{}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	one := 1
-	req := Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	req := Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	for _, id := range []string{"first", "second"} {
 		req.RequestID = id
 		if id == "second" {
@@ -229,7 +229,7 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(testWait)
 		for {
 			got, err := s.Operation(context.Background(), op.ID)
 			if err != nil {
@@ -271,7 +271,7 @@ func TestDeployRestoresManifestReplicasAfterScaleToZero(t *testing.T) {
 	e := &positiveEngine{}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	// The role sets no replicas, so the manifest count is the default of one.
-	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	deployVersion := func(id, digit string) {
 		t.Helper()
 		req.RequestID = id
@@ -280,7 +280,7 @@ func TestDeployRestoresManifestReplicasAfterScaleToZero(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(testWait)
 		for {
 			got, err := s.Operation(context.Background(), op.ID)
 			if err != nil {
@@ -396,7 +396,7 @@ func TestDeployOverStoppedRoleSucceeds(t *testing.T) {
 	e := &stoppedServiceEngine{positiveEngine: &positiveEngine{}}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
 	// The role sets no replicas, so the manifest count is the default of one.
-	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	deployVersion := func(id, digit string) {
 		t.Helper()
 		req.RequestID = id
@@ -405,7 +405,7 @@ func TestDeployOverStoppedRoleSucceeds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(testWait)
 		for {
 			got, err := s.Operation(context.Background(), op.ID)
 			if err != nil {
@@ -693,7 +693,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for {
 		got, err := s.Operation(context.Background(), op.ID)
 		if err != nil {
@@ -751,13 +751,13 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	spec, _ = json.Marshal(body)
 	e := &positiveEngine{spec: spec}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
-	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
+	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
 		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(testWait)
 		for {
 			got, err := s.Operation(context.Background(), op.ID)
 			if err != nil {
@@ -1213,7 +1213,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	spec, _ = json.Marshal(body)
 	e := &positiveEngine{spec: spec}
 	c := Controller{Engine: e, Store: s, Environment: "test"}
-	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
+	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
 		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 		if err != nil {

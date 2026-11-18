@@ -93,16 +93,24 @@ func (e dockerSpecs) UpdateService(ctx context.Context, id string, version uint6
 	return e.positiveEngine.UpdateService(ctx, id, version, withDockerDefaults(storedAsDocker(spec)), auth)
 }
 
+// testWait is how long a test waits for something that must happen; testDeployTimeout is the deploy timeout of a fixture whose
+// deploy has to succeed. Both are far beyond what a deploy against the fakes takes, so that a loaded machine does not fail a
+// test that is not about a timeout. A test of a timeout sets its own short one.
+const (
+	testWait          = 30 * time.Second
+	testDeployTimeout = "30s"
+)
+
 // dockerManifest declares one web role with the given plain environment, which may be empty.
 func dockerManifest(plain map[string]string) manifest.Manifest {
 	one := 1
-	return manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Env: manifest.Env{Plain: plain}, Deploy: manifest.Deploy{DeployTimeout: "2s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}
+	return manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Env: manifest.Env{Plain: plain}, Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}
 }
 
 // waitOperation polls until the operation leaves the running state.
 func waitOperation(t *testing.T, s *state.Store, id string) state.Operation {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for {
 		got, err := s.Operation(context.Background(), id)
 		if err != nil {

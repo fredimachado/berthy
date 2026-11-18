@@ -565,7 +565,7 @@ func TestCloseSessionsWaitsForTheHandlersOfTheSessions(t *testing.T) {
 	done() // a second call changes nothing
 	select {
 	case <-returned:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("CloseSessions did not return once the handler was done")
 	}
 }
