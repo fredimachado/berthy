@@ -65,6 +65,7 @@ var changeCommands = []changeCommand{
 	{name: "secret delete", pos: []string{"secret", "delete", "DB_URL"}},
 	{name: "secret rm", pos: []string{"secret", "rm", "DB_URL"}},
 	{name: "job run", pos: []string{"job", "run", "dump-db"}},
+	{name: "job logs", pos: []string{"job", "logs", "dump-db"}},
 	{name: "backup list", pos: []string{"backup", "list"}},
 	{name: "backup run", pos: []string{"backup", "run", "main-db"}},
 	{name: "state-backup", pos: []string{"state-backup"}},
@@ -83,7 +84,7 @@ var changeFlagArgs = [][]string{
 	{"--confirm", "dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--manifest-dir", "dir"},
 	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
 	{"--registry", "ghcr.io"}, {"-m", "reason"}, {"--message", "reason"}, {"--to", "2"}, {"--replicas", "2"},
-	{"--replace"}, {"--bytes", "32"}, {"--format", "hex"}, {"--origin"}, {"--diff", "2"},
+	{"--replace"}, {"--bytes", "32"}, {"--format", "hex"}, {"--origin"}, {"--diff", "2"}, {"--run", "3"},
 }
 
 // refusalMessage is what a flag that a command does not use gets. A flag with its own check keeps that check's message.

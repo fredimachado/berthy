@@ -32,8 +32,7 @@ func NewJobs(c Config, e *engine.Engine, d *deploy.Controller, log func(string))
 			m, err := runningManifest(ctx, store)
 			return m, err
 		},
-		Target: jobs.EngineTarget{Store: store, Docker: e},
-		Exec:   e,
+		Runner: jobs.RunnerFunc(d.RunJob),
 		Log:    log,
 	}
 }
@@ -107,13 +106,13 @@ func jobCheck(store *state.Store, name string) monitor.Check {
 		case !ok:
 			return monitor.Result{State: monitor.Unknown, Detail: "not run yet"}
 		case run.Status == "failed":
-			return monitor.Result{State: monitor.Critical, Detail: run.Detail}
+			return monitor.Result{State: monitor.Critical, Detail: run.Detail + jobs.LogsHint(name, run)}
 		}
 		return monitor.Result{State: monitor.OK, Detail: "last run succeeded"}
 	})
 }
 
-// serveJobs answers the job routes: the list of jobs, one job's runs, and an on-demand run. rest is the path after the
+// serveJobs answers the job routes: the list of jobs, one job's runs, the output kept of a failed run, and an on-demand run. rest is the path after the
 // environment, and the caller has checked the method and the scope.
 func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.Controller, sched *jobs.Scheduler, actor state.Actor) {
 	ctx := r.Context()
@@ -160,6 +159,30 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 			out = append(out, jobs.RunStatus(run))
 		}
 		json.NewEncoder(w).Encode(out)
+	case rest[2] == "logs":
+		var id int64
+		if v := r.URL.Query().Get("run"); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 1 {
+				writeError(w, 400, "bad_request", "invalid run")
+				return
+			}
+			id = n
+		}
+		run, output, err := d.Store.JobOutput(ctx, rest[1], id)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 404, "not_found", "no output kept")
+			return
+		}
+		if err != nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		logs := api.JobLogs{Job: run.Job, RunID: run.ID, Status: run.Status, Detail: run.Detail, Output: output}
+		if !run.Finished.IsZero() {
+			logs.Finished = &run.Finished
+		}
+		json.NewEncoder(w).Encode(logs)
 	default:
 		if sched == nil {
 			writeError(w, 503, "jobs_unavailable", "jobs unavailable")

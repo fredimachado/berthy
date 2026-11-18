@@ -143,11 +143,11 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.migrations.retries", Section: "hooks", Type: "integer", Default: "0", Description: "How many times a failed `apply` runs again, from 0 to 5. `version` and `revert` are never retried."},
 
 		{Path: "jobs.<name>.app", Section: "jobs", Type: "name", Required: true, Description: "The app the job runs in."},
-		{Path: "jobs.<name>.role", Section: "jobs", Type: "name", Description: "For an image app: the role whose container runs the command. Needed when the app has several roles. Not with `service`."},
+		{Path: "jobs.<name>.role", Section: "jobs", Type: "name", Description: "For an image app: the role whose environment, limits and named volumes the job container takes. Needed when the app has several roles. Not with `service`."},
 		{Path: "jobs.<name>.service", Section: "jobs", Type: "name", Description: "For a Compose app: the service that runs the command. Not with `role`."},
 		{Path: "jobs.<name>.schedule", Section: "jobs", Type: "string", Default: "on demand", Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the job runs only on demand."},
-		{Path: "jobs.<name>.command", Section: "jobs", Type: "list", Required: true, Description: "The command to run, as a list."},
-		{Path: "jobs.<name>.timeout", Section: "jobs", Type: "duration", Default: defaultJobTimeout, Description: "The time limit of a run, from `1s` to `24h`."},
+		{Path: "jobs.<name>.command", Section: "jobs", Type: "list", Required: true, Description: "The command to run, as a list. An image app runs it in a new container of its applied release, and a Compose app in its service's container."},
+		{Path: "jobs.<name>.timeout", Section: "jobs", Type: "duration", Default: defaultJobTimeout, Description: "The time limit of a run, from `1s` to `24h`. A run past it is stopped; for an image app that stops its container."},
 
 		{Path: "backups.<name>.app", Section: "backups", Type: "name", Required: true, Description: "The app that mounts the volume."},
 		{Path: "backups.<name>.volume", Section: "backups", Type: "string", Required: true, Description: "For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts."},

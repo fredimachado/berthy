@@ -711,6 +711,10 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
 		required = "deploy"
 		method = "POST"
+	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "logs":
+		// The output of a failed run may hold what a read token should not see, so it needs the deploy scope.
+		required = "deploy"
+		method = "GET"
 	case len(rest) == 1 && rest[0] == "backups", len(rest) == 3 && rest[0] == "backups" && rest[2] == "runs":
 		required = "read"
 		method = "GET"

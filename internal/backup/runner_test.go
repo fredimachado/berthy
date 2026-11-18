@@ -369,6 +369,18 @@ func TestAFailedBeforeJobFailsThePreparationAndNeverArchives(t *testing.T) {
 	}
 }
 
+func TestAFailedBeforeJobThatKeptItsOutputNamesTheCommandThatShowsIt(t *testing.T) {
+	g := newRig(t)
+	b := g.m.Backups["uploads"]
+	b.Before = "dump"
+	g.m.Backups["uploads"] = b
+	g.jobs.run = state.JobRun{ID: 9, Status: "failed", Detail: "exit status 3", HasOutput: true}
+	res := g.run("uploads")
+	if want := "preparation failed: exit status 3: berthy job logs dump shows its output"; res.Run.Detail != want {
+		t.Fatalf("detail %q, want %q", res.Run.Detail, want)
+	}
+}
+
 func TestABeforeJobThatCannotRunFailsThePreparation(t *testing.T) {
 	g := newRig(t)
 	b := g.m.Backups["uploads"]

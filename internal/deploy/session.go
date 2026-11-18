@@ -32,9 +32,6 @@ const errSessionAdmin Refusal = "administrator required"
 // errSessionsStopped is the refusal of a session once the agent has begun to stop.
 const errSessionsStopped Refusal = "the agent is stopping"
 
-// errSessionPrepare is the refusal of a run session that could not be prepared.
-const errSessionPrepare Refusal = "run preflight failed"
-
 // execSessionEngine is what an exec session needs of Docker beyond choosing the container.
 type execSessionEngine interface {
 	StartExecSession(ctx context.Context, containerID string, command []string, tty bool) (*engine.Stream, string, error)
@@ -254,30 +251,23 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 	if !ok {
 		return errors.New("interactive sessions unavailable")
 	}
-	t, err := c.runTarget(ctx, Request{App: req.App, Role: req.Role, Command: req.Command, Timeout: req.Timeout})
+	t, p, err := c.prepareRun(ctx, Request{App: req.App, Role: req.Role, Command: req.Command, Timeout: req.Timeout})
 	if err != nil {
-		return publicOr(err, errSessionPrepare)
+		return publicOr(err, errRunPrepare)
 	}
 	limit := t.Timeout
 	if req.Timeout == "" {
 		limit = 0 // runTarget gives the default hour; an interactive run ends when the person leaves
 	}
-	p, err := c.prepareExecution(ctx, Request{App: req.App, Manifest: t.Manifest}, Plan{Image: t.Release.Digest, Tag: t.Release.Tag})
-	if err != nil {
-		return errSessionPrepare
-	}
-	if _, msg, err := c.ensureImage(ctx, p); err != nil {
-		return Refusal(msg)
-	}
 	var random [12]byte
 	if _, err = rand.Read(random[:]); err != nil {
-		return errSessionPrepare
+		return errRunPrepare
 	}
 	id := hex.EncodeToString(random[:])
 	labels := map[string]string{"berthy.environment": c.Environment, "berthy.session": id, "berthy.oneoff": "session"}
-	spec, err := p.oneOffSpec(req.Command, t.Role, t.Limits, labels, &terminal{TTY: req.TTY})
+	spec, err := p.oneOffSpec(req.Command, t.Role, t.Limits, t.Volumes, labels, &terminal{TTY: req.TTY})
 	if err != nil {
-		return errSessionPrepare
+		return errRunPrepare
 	}
 	container, err := e.CreateContainer(ctx, "berthy-session-"+id, spec)
 	if err != nil || container == "" {
@@ -402,8 +392,8 @@ func (c *Controller) CloseSessions(ctx context.Context) {
 	}
 }
 
-// RemoveOrphanSessions removes the containers of run sessions an earlier agent process left behind: a running agent owns no
-// session of an earlier process, whatever state its container is in. Containers of other environments are left alone.
+// RemoveOrphanSessions removes the containers of run sessions and of job runs an earlier agent process left behind: a running
+// agent owns neither of an earlier process, whatever state its container is in. Containers of other environments are left alone.
 func (c *Controller) RemoveOrphanSessions(ctx context.Context) error {
 	e, ok := c.Engine.(orphanEngine)
 	if !ok {
@@ -415,7 +405,8 @@ func (c *Controller) RemoveOrphanSessions(ctx context.Context) error {
 	}
 	var failed error
 	for _, ct := range containers {
-		if _, ok := ct.Labels["berthy.session"]; !ok || ct.Labels["berthy.environment"] != c.Environment {
+		_, session := ct.Labels["berthy.session"]
+		if !session && ct.Labels["berthy.oneoff"] != "job" || ct.Labels["berthy.environment"] != c.Environment {
 			continue
 		}
 		if err = e.RemoveContainer(ctx, ct.ID); err != nil {

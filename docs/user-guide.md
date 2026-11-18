@@ -1602,7 +1602,7 @@ berthy run api -e prod --role worker --timeout 30m -- /app/bin/reindex
 
 `exec` runs a command in a serving replica, so it shares that replica's memory. `run` is for a one-off task that should not: it starts a **new container** from the image of the app's applied release (by digest), runs the command in it, prints the output, and exits non-zero when the command did. It is what a `run:` hook or a migration does during a deploy, without a deploy around it.
 
-The container gets the app's environment (`env.plain`, `env.secret` and `env.template`) and the `BERTHY_*` variables of the role, the shared overlay network, and the role's `resources` limits (`cpu` and `memory`). An app with several roles needs `--role`; an app with one does not. The output is redacted of managed secret values, as `exec`'s is, and is kept with the operation.
+The container gets the app's environment (`env.plain`, `env.secret` and `env.template`) and the `BERTHY_*` variables of the role, the shared overlay network, the role's `resources` limits (`cpu` and `memory`) and the role's named `volumes`. An app with several roles needs `--role`; an app with one does not. The output is redacted of managed secret values, as `exec`'s is, and is kept with the operation.
 
 - `--timeout` is the time limit of the command, from `1s` to `24h`, `1h` by default. A command that runs past it is stopped and removed, and the run fails with `run timed out after <timeout>`.
 - A run is an operation. It holds the environment's deploy lock while it runs, so no deploy starts under it, and it needs an **`admin`** token. On a protected environment, an AI agent's `run` is held until a person approves it, and the plan shows the command, the image digest and the role.
@@ -2010,12 +2010,13 @@ With that line, `schedule: "0 2 * * *"` runs at 02:00 in Lisbon, in winter and i
 
 How a job runs:
 
-- The command runs **once** per occurrence, in one running container for the target, even when a role has several replicas. For an image app it picks the replica with the lowest slot. It uses that container's environment and mounts. That is why `dump-db` can read `$POSTGRES_PASSWORD`: the Compose file passes it in.
+- The command runs **once** per occurrence. A job of an **image app** runs in a **new container of its own**, of the app's applied release, the way `berthy run` does. The container has the role's environment, the shared network, the role's resource limits and the role's named volumes, so a job that reads files the replica wrote sees them. It is labelled with the job and removed when the command ends. A job of a **Compose app** runs as an exec in the service's container, and uses that container's environment and mounts. That is why `dump-db` can read `$POSTGRES_PASSWORD`: the Compose file passes it in. There is no way to make an image app's job run inside a replica.
+- An image app's job needs no running replica, so it runs while the role is scaled to 0 or restarting. A deploy of the app does not touch it: the job finishes on the release it started with. A job that writes a volume that the role's replica writes shares it with the replica while it runs.
 - The agent re-reads the manifest every minute, so a changed schedule takes effect within a minute of its deploy. An occurrence is recorded **before** it runs, so a restart in the same minute cannot run it twice. Occurrences that pass while the agent is down are **not** made up.
-- A run that exceeds `timeout` fails with `timed out after <timeout>`. Docker cannot stop an exec, so the command may still be running.
+- A run that exceeds `timeout` fails with `timed out after <timeout>`. For an image app Berthy stops the job's container and removes it, so nothing of the command is left running. Docker cannot stop an exec, so a Compose job's command may still be running.
 - If a run is still going at the next scheduled time, that occurrence is skipped and recorded. A skip never alerts.
-- The command's output is read and thrown away, because it may hold secrets. The record keeps the exit code and a fixed reason such as `exit status 3` or `no running container for api/web`.
-- A non-zero exit, a missing container, an exec error or a timeout **fails the run and raises an alert** through the `job:<name>` check, which stays critical until a later run succeeds.
+- The output of a run that **succeeds** is thrown away. The output of a run that **fails or times out** is kept: its last 200 lines (at most 64 KiB), with every secret value replaced by `[redacted]`, sealed in the agent's state. The record keeps the exit code and a fixed reason such as `exit status 3` or `timed out after 5s`. Read the output with `berthy job logs <name>`.
+- A non-zero exit, a missing container, a run that could not start or a timeout **fails the run and raises an alert** through the `job:<name>` check, which stays critical until a later run succeeds. When the run kept output, the alert ends with `berthy job logs <name> shows its output`. A backup's `before` job works the same way.
 - Jobs do not take the deploy lock, so they can run during a deploy. Every run is written to the audit log with `job:<name>` as the caller.
 
 #### See and run them
@@ -2023,6 +2024,7 @@ How a job runs:
 ```bash
 berthy jobs -e prod
 berthy job run dump-db -e prod
+berthy job logs dump-db -e prod
 ```
 
 Example output:
@@ -2036,6 +2038,8 @@ dump-db  postgres/postgres on demand  -                              -          
 With the default zone, NEXT shows only the UTC time, as in `2026-11-17 02:30 UTC`. The example above has `timezone: Europe/Lisbon`.
 
 `jobs` needs a `read` token. `job run <name>` starts the job now, waits until it finishes or its `timeout` plus 30 seconds pass, prints the status, exit code and reason, and **exits 0 only when the run succeeded**. It fails at once if a run of that job is already going. It needs a `deploy` token. `dump-db` has no schedule: it runs on demand, and as the `before` step of the volume backup (step 10).
+
+`job logs <name>` prints the output kept of a failed or timed-out run: the newest run that kept any, or the one named by `--run <id>`. The run's line goes to stderr and the output to stdout, so you can pipe it. `--json` prints the run and its output as JSON. It needs a `deploy` token, because output can hold more than a `read` token should see. It says so when nothing was kept: a run that succeeded, or one that printed nothing, keeps no output.
 
 ---
 ### Step 10. Backups and restore
@@ -2634,10 +2638,11 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `lock release` | deploy | `--dry-run` | Let deploys run again. It refuses `-m`. |
 | `ingress apply` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--commit`, `--replace-existing` | Create or repair the tunnel and connector, and sync routes and DNS. |
 | `job run <name>` | deploy | none | Run a job now and wait. Exit 0 only on success. |
+| `job logs <name>` | deploy | `--run` | Print the output kept of a failed or timed-out run of a job. `--run` names a run; without it, the newest run that kept output. |
 | `backup run <name>` | deploy | none | Run a volume backup now and wait. Exit 0 only on success. |
 | `alerts test` | deploy | none | Send a test message to every alert channel (Telegram, webhook) and report each. Exits 1 when a channel failed. |
 | `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--service` | Run a command in a running container: of an image app's role (`--role`), or of a Compose app's service (`--service`). |
-| `run <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--timeout` | Run a command in a new container of the app's applied release, with its environment and the role's limits, and remove the container afterwards. Image apps only. `--timeout` defaults to `1h` and runs from `1s` to `24h`. |
+| `run <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--timeout` | Run a command in a new container of the app's applied release, with its environment and the role's limits and named volumes, and remove the container afterwards. Image apps only. `--timeout` defaults to `1h` and runs from `1s` to `24h`. |
 | `prune` | admin | `--dry-run`, `--request-id` | Remove old images and stopped containers now. |
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
@@ -2660,7 +2665,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
@@ -2809,11 +2814,11 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `app` | name | required | The app the job runs in. |
-| `role` | name | none | For an image app: the role whose container runs the command. Needed when the app has several roles. Not with `service`. |
+| `role` | name | none | For an image app: the role whose environment, limits and named volumes the job container takes. Needed when the app has several roles. Not with `service`. |
 | `service` | name | none | For a Compose app: the service that runs the command. Not with `role`. |
 | `schedule` | string | on demand | A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the job runs only on demand. |
-| `command` | list | required | The command to run, as a list. |
-| `timeout` | duration | `1h` | The time limit of a run, from `1s` to `24h`. |
+| `command` | list | required | The command to run, as a list. An image app runs it in a new container of its applied release, and a Compose app in its service's container. |
+| `timeout` | duration | `1h` | The time limit of a run, from `1s` to `24h`. A run past it is stopped; for an image app that stops its container. |
 
 #### `backups.<name>`
 
@@ -2962,7 +2967,7 @@ The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use se
 | Scope | Allows |
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `agent-info`, `checks`, `jobs`, `lock status`, `backup list`, `ingress status`, `approvals` (without plans), following an operation's events. |
-| `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
+| `deploy` | Everything in `read`, plus `diagnostics`, `job logs`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
 | `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `key rotate` (not for an agent token), `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, `token list`, `token create`, `token revoke` (the last two never for an agent token), and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
 
 A token marked `agent` has the scope it says. The mark only decides whether its changes are held on a protected environment, and that it can never approve or reject.

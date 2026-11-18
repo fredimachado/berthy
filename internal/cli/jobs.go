@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -96,11 +98,74 @@ func nextCell(j api.JobStatus) string {
 	return text + " (" + utc.Format(layout) + ")"
 }
 
+// runJobLogs runs "job logs NAME [--run ID]": it prints the output kept of a failed or timed-out run, the newest one that kept
+// any unless a run is named. The run's line goes to stderr, so the output can be piped.
+func runJobLogs(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+	query := ""
+	if f.run != "" {
+		if n, err := strconv.ParseInt(f.run, 10, 64); err != nil || n < 1 {
+			fmt.Fprintln(errout, "--run needs a run id")
+			return 2
+		}
+		query = "run=" + url.QueryEscape(f.run)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
+	data, status, err := call("GET", "jobs/"+url.PathEscape(f.pos[1])+"/logs", query)
+	if err != nil {
+		fmt.Fprintln(errout, "agent connection failed")
+		return 1
+	}
+	if status == http.StatusNotFound {
+		fmt.Fprintf(errout, "no output kept for %s: only a failed or timed-out run keeps its output\n", terminalSafe(f.pos[1]))
+		return 1
+	}
+	var logs api.JobLogs
+	if status != http.StatusOK {
+		fmt.Fprintln(errout, agentclient.Message(status, data))
+		return 1
+	}
+	if json.Unmarshal(data, &logs) != nil || logs.RunID == 0 {
+		fmt.Fprintln(errout, "invalid agent response")
+		return 1
+	}
+	if f.json {
+		pretty, err := json.MarshalIndent(logs, "", "  ")
+		if err != nil {
+			fmt.Fprintln(errout, "invalid agent response")
+			return 1
+		}
+		fmt.Fprintln(out, string(pretty))
+		return 0
+	}
+	line := fmt.Sprintf("run %d of %s %s", logs.RunID, terminalSafe(logs.Job), terminalSafe(logs.Status))
+	if logs.Detail != "" {
+		line += ": " + terminalSafe(logs.Detail)
+	}
+	if logs.Finished != nil {
+		line += " at " + logs.Finished.UTC().Format(time.RFC3339)
+	}
+	fmt.Fprintln(errout, line)
+	if logs.Output == "" {
+		fmt.Fprintln(errout, "this run kept no output")
+		return 0
+	}
+	// The output is the job's own: no control character of it reaches the terminal.
+	for _, l := range strings.Split(strings.TrimSuffix(logs.Output, "\n"), "\n") {
+		fmt.Fprintln(out, terminalSafe(l))
+	}
+	return 0
+}
+
 // runJobCommand runs "job run NAME": it asks the agent to start the job, waits for the run to finish, and prints the
-// result. It exits 0 only when the run succeeded.
+// result. It exits 0 only when the run succeeded. "job logs NAME" shows what a failed run printed.
 func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+	if len(f.pos) == 2 && f.pos[0] == "logs" && f.pos[1] != "" {
+		return runJobLogs(f, base, prefix, token, out, errout)
+	}
 	if len(f.pos) != 2 || f.pos[0] != "run" || f.pos[1] == "" {
-		fmt.Fprintln(errout, "usage: job run NAME")
+		fmt.Fprintln(errout, "usage: job run NAME | job logs NAME [--run ID]")
 		return 2
 	}
 	name := url.PathEscape(f.pos[1])
@@ -203,6 +268,9 @@ func printRun(out, errout io.Writer, run api.JobRun, asJSON bool) int {
 		}
 		if run.Detail != "" {
 			fmt.Fprintf(out, "detail: %s\n", run.Detail)
+		}
+		if run.HasOutput {
+			fmt.Fprintf(out, "output: berthy job logs %s\n", terminalSafe(run.Job))
 		}
 	}
 	if run.Status == "succeeded" {

@@ -490,23 +490,26 @@ func TestAtMostSixteenSessionsAreOpen(t *testing.T) {
 	}
 }
 
-func TestRemoveOrphanSessionsRemovesOnlyThisEnvironmentsSessionContainers(t *testing.T) {
+func TestRemoveOrphanSessionsRemovesOnlyThisEnvironmentsSessionAndJobContainers(t *testing.T) {
 	c, f := runSessionFixture(t)
 	f.labels["mine-exited"] = map[string]string{"berthy.environment": "test", "berthy.session": "a", "berthy.oneoff": "session"}
 	f.labels["mine-running"] = map[string]string{"berthy.environment": "test", "berthy.session": "b"}
 	f.running["mine-running"] = true
+	f.labels["mine-job"] = map[string]string{"berthy.environment": "test", "berthy.job": "report", "berthy.oneoff": "job"}
+	f.running["mine-job"] = true
+	f.labels["other-env-job"] = map[string]string{"berthy.environment": "prod", "berthy.job": "report", "berthy.oneoff": "job"}
 	f.labels["other-env"] = map[string]string{"berthy.environment": "prod", "berthy.session": "c"}
 	f.labels["a-hook"] = map[string]string{"berthy.environment": "test", "berthy.operation": "op1", "berthy.oneoff": "pre_hook"}
 	f.labels["unrelated"] = map[string]string{"app": "x"}
 	if err := c.RemoveOrphanSessions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"mine-exited", "mine-running"} {
+	for _, gone := range []string{"mine-exited", "mine-running", "mine-job"} {
 		if _, ok := f.labels[gone]; ok {
 			t.Errorf("%s was kept", gone)
 		}
 	}
-	for _, kept := range []string{"other-env", "a-hook", "unrelated"} {
+	for _, kept := range []string{"other-env", "other-env-job", "a-hook", "unrelated"} {
 		if _, ok := f.labels[kept]; !ok {
 			t.Errorf("%s was removed", kept)
 		}

@@ -46,17 +46,8 @@ func (c *clock) Add(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// fakeTarget names a fixed container, or fails.
-type fakeTarget struct {
-	id  string
-	err error
-}
-
-func (f fakeTarget) Container(context.Context, manifest.Manifest, manifest.Job) (string, error) {
-	return f.id, f.err
-}
-
-// fakeExec records the commands it is asked to run and answers through fn, which defaults to success.
+// fakeExec records the commands it is asked to run and answers through fn, which defaults to success. It plays the Runner:
+// every command runs in container-1, and the result of fn becomes the outcome.
 type fakeExec struct {
 	mu    sync.Mutex
 	calls [][]string
@@ -64,18 +55,31 @@ type fakeExec struct {
 	fn    func(ctx context.Context, id string, cmd []string) (engine.ExecResult, error)
 }
 
-func (f *fakeExec) ExecDiscard(ctx context.Context, id string, cmd []string) (int, error) {
+func (f *fakeExec) Run(ctx context.Context, _ manifest.Manifest, _ string, job manifest.Job, _ int64) (Outcome, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, cmd)
-	f.ids = append(f.ids, id)
+	f.calls = append(f.calls, job.Command)
+	f.ids = append(f.ids, "container-1")
 	fn := f.fn
 	f.mu.Unlock()
 	if fn == nil {
-		return 0, nil
+		zero := 0
+		return Outcome{Exit: &zero, Container: "container-1"}, nil
 	}
-	res, err := fn(ctx, id, cmd)
-	return res.ExitCode, err
+	res, err := fn(ctx, "container-1", job.Command)
+	if err != nil {
+		return Outcome{}, err
+	}
+	code := res.ExitCode
+	return Outcome{Exit: &code, Container: "container-1", Output: string(res.Output)}, nil
 }
+
+// runnerFunc makes a Runner of a function of the job alone.
+func runnerFunc(f func(ctx context.Context, job manifest.Job) (Outcome, error)) Runner {
+	return RunnerFunc(func(ctx context.Context, _ manifest.Manifest, _ string, job manifest.Job, _ int64) (Outcome, error) {
+		return f(ctx, job)
+	})
+}
+
 func (f *fakeExec) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
 
 func testManifest(jobs map[string]manifest.Job) manifest.Manifest {
@@ -110,7 +114,7 @@ func newRig(t *testing.T, jobs map[string]manifest.Job) *rig {
 	return r
 }
 
-func (r *rig) newScheduler(store *state.Store, exec Executor) *Scheduler {
+func (r *rig) newScheduler(store *state.Store, exec Runner) *Scheduler {
 	return &Scheduler{
 		Env:   "test",
 		Store: store,
@@ -124,8 +128,7 @@ func (r *rig) newScheduler(store *state.Store, exec Executor) *Scheduler {
 			m.Timezone = r.zone
 			return m, nil
 		},
-		Target: fakeTarget{id: "container-1"},
-		Exec:   exec,
+		Runner: exec,
 		Now:    r.clock.Now,
 		Log:    func(string) {},
 		tick:   5 * time.Millisecond,
@@ -266,7 +269,7 @@ func TestFailuresAreRecordedWithAFixedDetail(t *testing.T) {
 	t.Run("nonzero exit", func(t *testing.T) {
 		r := newRig(t, map[string]manifest.Job{"fail": tickJob()})
 		r.exec.fn = func(context.Context, string, []string) (engine.ExecResult, error) {
-			return engine.ExecResult{ExitCode: 3, Output: []byte("password=hunter2")}, nil
+			return engine.ExecResult{ExitCode: 3, Output: []byte("boom")}, nil
 		}
 		r.settle(ctx)
 		runs := r.runs(t, "fail")
@@ -274,30 +277,24 @@ func TestFailuresAreRecordedWithAFixedDetail(t *testing.T) {
 			t.Fatalf("runs: %+v", runs)
 		}
 	})
-	t.Run("no running container", func(t *testing.T) {
+	t.Run("the command did not run", func(t *testing.T) {
 		r := newRig(t, map[string]manifest.Job{"fail": tickJob()})
-		r.sched.Target = fakeTarget{err: TargetError("no running container for api/web")}
+		r.sched.Runner = runnerFunc(func(context.Context, manifest.Job) (Outcome, error) {
+			return Outcome{Detail: "no running container for api/web"}, nil
+		})
 		r.settle(ctx)
 		runs := r.runs(t, "fail")
 		if len(runs) != 1 || runs[0].Status != "failed" || runs[0].Detail != "no running container for api/web" || runs[0].ExitCode != nil || r.exec.count() != 0 {
 			t.Fatalf("runs: %+v", runs)
 		}
 	})
-	t.Run("lookup error is not echoed", func(t *testing.T) {
+	t.Run("a runner error is not echoed", func(t *testing.T) {
 		r := newRig(t, map[string]manifest.Job{"fail": tickJob()})
-		r.sched.Target = fakeTarget{err: errors.New("Docker said secret-detail")}
+		r.sched.Runner = runnerFunc(func(context.Context, manifest.Job) (Outcome, error) {
+			return Outcome{}, errors.New("Docker said secret-detail")
+		})
 		r.settle(ctx)
-		if runs := r.runs(t, "fail"); len(runs) != 1 || runs[0].Detail != "container lookup failed" {
-			t.Fatalf("runs: %+v", runs)
-		}
-	})
-	t.Run("exec error", func(t *testing.T) {
-		r := newRig(t, map[string]manifest.Job{"fail": tickJob()})
-		r.exec.fn = func(context.Context, string, []string) (engine.ExecResult, error) {
-			return engine.ExecResult{}, errors.New("Docker said secret-detail")
-		}
-		r.settle(ctx)
-		if runs := r.runs(t, "fail"); len(runs) != 1 || runs[0].Status != "failed" || runs[0].Detail != "exec failed" || runs[0].ExitCode != nil {
+		if runs := r.runs(t, "fail"); len(runs) != 1 || runs[0].Status != "failed" || runs[0].Detail != "run failed" || runs[0].ExitCode != nil {
 			t.Fatalf("runs: %+v", runs)
 		}
 	})
@@ -315,6 +312,78 @@ func TestFailuresAreRecordedWithAFixedDetail(t *testing.T) {
 		}
 	})
 }
+
+func TestARunnerGivesTheJobItsTimeoutAsTheDeadline(t *testing.T) {
+	job := tickJob()
+	job.Timeout = "1s"
+	r := newRig(t, map[string]manifest.Job{"slow": job})
+	var left time.Duration
+	r.sched.Runner = runnerFunc(func(ctx context.Context, _ manifest.Job) (Outcome, error) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("no deadline")
+		}
+		left = time.Until(d)
+		<-ctx.Done()
+		return Outcome{}, ctx.Err()
+	})
+	start := time.Now()
+	r.settle(context.Background())
+	if left <= 0 || left > time.Second || time.Since(start) > 5*time.Second {
+		t.Fatalf("deadline %v away, run took %v", left, time.Since(start))
+	}
+}
+
+func TestAFailedOrTimedOutRunKeepsItsOutputAndASuccessfulOneKeepsNone(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		outcome Outcome
+		status  string
+		detail  string
+		kept    string
+	}{
+		{"failed", Outcome{Exit: intp(3), Output: "boom [redacted]"}, "failed", "exit status 3", "boom [redacted]"},
+		{"timed out", Outcome{TimedOut: true, Output: "last lines"}, "failed", "timed out after 1s", "last lines"},
+		{"succeeded", Outcome{Exit: intp(0), Output: "noise"}, "succeeded", "", ""},
+		{"no output to read", Outcome{Exit: intp(1)}, "failed", "exit status 1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := tickJob()
+			job.Timeout = "1s"
+			r := newRig(t, map[string]manifest.Job{"tick": job})
+			r.sched.Runner = runnerFunc(func(context.Context, manifest.Job) (Outcome, error) { return tc.outcome, nil })
+			r.settle(ctx)
+			runs := r.runs(t, "tick")
+			if len(runs) != 1 || runs[0].Status != tc.status || runs[0].Detail != tc.detail {
+				t.Fatalf("runs: %+v", runs)
+			}
+			_, out, err := r.store.JobOutput(ctx, "tick", runs[0].ID)
+			if err != nil || out != tc.kept {
+				t.Fatalf("kept output %q, want %q (%v)", out, tc.kept, err)
+			}
+		})
+	}
+}
+
+func TestACanceledRunKeepsNoOutput(t *testing.T) {
+	r := newRig(t, map[string]manifest.Job{"slow": tickJob()})
+	r.sched.Runner = runnerFunc(func(ctx context.Context, _ manifest.Job) (Outcome, error) {
+		<-ctx.Done()
+		return Outcome{Output: "partial"}, ctx.Err()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	run, err := r.sched.RunAndWait(ctx, "slow", "manual")
+	if err != nil || run.Status != "failed" || run.Detail != "run canceled" {
+		t.Fatalf("run: %+v %v", run, err)
+	}
+	if _, out, err := r.store.JobOutput(context.Background(), "slow", run.ID); err != nil || out != "" {
+		t.Fatalf("output %q %v", out, err)
+	}
+}
+
+func intp(n int) *int { return &n }
 
 func TestRunsAreAuditedAsTheJob(t *testing.T) {
 	ctx := context.Background()

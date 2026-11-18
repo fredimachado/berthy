@@ -27,7 +27,8 @@ func intentRecord(opID string, ordinal int, part string) string {
 func diagnosticRecord(opID string, seq int) string {
 	return "diagnostic:" + opID + ":" + strconv.Itoa(seq)
 }
-func approvalRecord(id string) string { return "approval:" + id + ":request" }
+func approvalRecord(id string) string     { return "approval:" + id + ":request" }
+func jobOutputRecord(runID string) string { return "job_output:" + runID }
 
 func intentPart(part string) func(a, b string) string {
 	return func(opID, ordinal string) string {
@@ -48,6 +49,7 @@ var sealedColumns = []sealedColumn{
 		n, _ := strconv.Atoi(seq)
 		return diagnosticRecord(opID, n)
 	}},
+	{"job_runs", "output_sealed", `SELECT rowid,environment,CAST(id AS TEXT),'',output_sealed FROM job_runs WHERE output_sealed IS NOT NULL`, func(id, _ string) string { return jobOutputRecord(id) }},
 	{"approvals", "request_sealed", `SELECT rowid,environment,id,'',request_sealed FROM approvals`, func(id, _ string) string { return approvalRecord(id) }},
 }
 

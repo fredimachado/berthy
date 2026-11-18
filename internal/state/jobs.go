@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,8 +21,11 @@ type JobRun struct {
 	Started, Finished time.Time
 	Status            string // running, succeeded, failed, skipped or interrupted
 	ExitCode          *int
-	// Detail is a short fixed reason, such as "exit status 3". The command's output is never stored.
+	// Detail is a short fixed reason, such as "exit status 3". The output of the run is kept apart, for a failed run only:
+	// see FinishJobRunWithOutput.
 	Detail, Container string
+	// HasOutput is true when output was kept for the run. JobOutput reads it.
+	HasOutput bool
 }
 
 const (
@@ -29,6 +34,8 @@ const (
 	// maxRunsKept is how many runs of one job, backup or state backup are kept. Runs that readers need beyond that window
 	// are kept too; see pruneRuns.
 	maxRunsKept = 500
+	// MaxJobOutput is the most bytes of output kept for one failed run.
+	MaxJobOutput = 64 << 10
 	// AbandonedJobDetail is the detail of a run that a previous agent process left running.
 	AbandonedJobDetail = "agent restarted during the run"
 )
@@ -97,10 +104,16 @@ func pruneRuns(ctx context.Context, tx *sql.Tx, table, scope, keep string, keepN
 	return err
 }
 
-// FinishJobRun ends a running run with status succeeded, failed or interrupted. A run is interrupted when the agent stopped
-// in an orderly way while it ran; like a skipped run, it says nothing about the job. It returns ErrConflict when the run
-// is not running.
+// FinishJobRun ends a running run with status succeeded, failed or interrupted, keeping no output. A run is interrupted when the
+// agent stopped in an orderly way while it ran; like a skipped run, it says nothing about the job. It returns ErrConflict when
+// the run is not running.
 func (s *Store) FinishJobRun(ctx context.Context, id int64, status string, exit *int, detail string) error {
+	return s.FinishJobRunWithOutput(ctx, id, status, exit, detail, "")
+}
+
+// FinishJobRunWithOutput is FinishJobRun for a run that has output to keep, which the caller has redacted: the last
+// MaxJobOutput bytes of it are sealed with the run. An empty output keeps nothing.
+func (s *Store) FinishJobRunWithOutput(ctx context.Context, id int64, status string, exit *int, detail, output string) error {
 	if status != "succeeded" && status != "failed" && status != "interrupted" {
 		return errors.New("invalid job run status")
 	}
@@ -111,7 +124,17 @@ func (s *Store) FinishJobRun(ctx context.Context, id int64, status string, exit 
 	if exit != nil {
 		code = *exit
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE job_runs SET status=?,exit_code=?,detail=?,finished=? WHERE environment=? AND id=? AND status='running'`, status, code, detail, now(), s.env, id)
+	var sealed []byte
+	if output != "" {
+		if len(output) > MaxJobOutput {
+			output = strings.ToValidUTF8(output[len(output)-MaxJobOutput:], "")
+		}
+		var err error
+		if sealed, err = s.seal(jobOutputRecord(strconv.FormatInt(id, 10)), []byte(output)); err != nil {
+			return err
+		}
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE job_runs SET status=?,exit_code=?,detail=?,finished=?,output_sealed=? WHERE environment=? AND id=? AND status='running'`, status, code, detail, now(), sealed, s.env, id)
 	if err != nil {
 		return err
 	}
@@ -119,6 +142,30 @@ func (s *Store) FinishJobRun(ctx context.Context, id int64, status string, exit 
 		return ErrConflict
 	}
 	return nil
+}
+
+// JobOutput returns a run of the job and the output kept for it: the run with that id, or with id 0 the newest run of the
+// job that kept output. The output is empty for a run that kept none. It returns sql.ErrNoRows when there is no such run.
+func (s *Store) JobOutput(ctx context.Context, job string, id int64) (JobRun, string, error) {
+	query := `SELECT ` + jobRunColumns + `,output_sealed FROM job_runs WHERE environment=? AND job=? AND id=?`
+	args := []any{s.env, job, id}
+	if id == 0 {
+		query = `SELECT ` + jobRunColumns + `,output_sealed FROM job_runs WHERE environment=? AND job=? AND output_sealed IS NOT NULL ORDER BY id DESC LIMIT 1`
+		args = args[:2]
+	}
+	var sealed []byte
+	r, err := scanJobRun(s.db.QueryRowContext(ctx, query, args...), &sealed)
+	if err != nil {
+		return JobRun{}, "", err
+	}
+	if sealed == nil {
+		return r, "", nil
+	}
+	plain, err := s.open(jobOutputRecord(strconv.FormatInt(r.ID, 10)), sealed)
+	if err != nil {
+		return JobRun{}, "", err
+	}
+	return r, string(plain), nil
 }
 
 // AbandonRunningJobs fails every run a previous process left running, and returns how many it failed. The command may
@@ -132,13 +179,14 @@ func (s *Store) AbandonRunningJobs(ctx context.Context) (int, error) {
 	return int(n), err
 }
 
-const jobRunColumns = `id,job,app,trigger,scheduled,started,finished,status,exit_code,detail,container`
+const jobRunColumns = `id,job,app,trigger,scheduled,started,finished,status,exit_code,detail,container,output_sealed IS NOT NULL`
 
-func scanJobRun(row interface{ Scan(...any) error }) (JobRun, error) {
+// scanJobRun reads the jobRunColumns of a row, then the extra values after them.
+func scanJobRun(row interface{ Scan(...any) error }, extra ...any) (JobRun, error) {
 	var r JobRun
 	var scheduled, started, finished int64
 	var exit sql.NullInt64
-	if err := row.Scan(&r.ID, &r.Job, &r.App, &r.Trigger, &scheduled, &started, &finished, &r.Status, &exit, &r.Detail, &r.Container); err != nil {
+	if err := row.Scan(append([]any{&r.ID, &r.Job, &r.App, &r.Trigger, &scheduled, &started, &finished, &r.Status, &exit, &r.Detail, &r.Container, &r.HasOutput}, extra...)...); err != nil {
 		return JobRun{}, err
 	}
 	r.Scheduled, r.Started, r.Finished = fromMilli(scheduled), fromMilli(started), fromMilli(finished)

@@ -149,6 +149,8 @@ type oneOff struct {
 	Timeout time.Duration
 	// Resources are the limits of the container. Nil means none.
 	Resources *manifest.Resources
+	// Volumes are the named volumes of the container, as the role writes them. Empty means none.
+	Volumes []string
 }
 
 func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPlan, o oneOff) (string, error) {
@@ -164,7 +166,7 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 	defer cancel()
 	name := fmt.Sprintf("berthy-%s-%d", opID, ordinal)
 	labels := map[string]string{"berthy.environment": c.Environment, "berthy.operation": opID, "berthy.oneoff": kind}
-	spec, err := p.oneOffSpec(argv, o.Role, o.Resources, labels, nil)
+	spec, err := p.oneOffSpec(argv, o.Role, o.Resources, o.Volumes, labels, nil)
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
 	}
@@ -240,16 +242,21 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 type terminal struct{ TTY bool }
 
 // oneOffSpec is the Docker spec of a one-off container of the prepared image: the command as entrypoint and arguments, the
-// environment of role, the labels, the limits, and the shared network. Every kind of one-off is built here, so a hook, a
-// run and an interactive session differ only in the labels and in term, which is nil for a batch one.
-func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Resources, labels map[string]string, term *terminal) (json.RawMessage, error) {
+// environment of role, the labels, the limits, the named volumes of the role, and the shared network. Every kind of one-off is
+// built here, so a hook, a run, a job and an interactive session differ only in the labels and in term, which is nil for a
+// batch one. A hook belongs to the app and has no role, so it has no limits and no volumes.
+func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Resources, volumes []string, labels map[string]string, term *terminal) (json.RawMessage, error) {
 	nano, memory, err := resourceLimits(limits)
 	if err != nil {
 		return nil, err
 	}
-	var host *hostLimits
-	if nano != 0 || memory != 0 {
-		host = &hostLimits{NanoCPUs: nano, Memory: memory}
+	mounts, err := volumeMounts(volumes)
+	if err != nil {
+		return nil, err
+	}
+	var host *hostConfig
+	if nano != 0 || memory != 0 || len(mounts) > 0 {
+		host = &hostConfig{NanoCPUs: nano, Memory: memory, Mounts: mounts}
 	}
 	spec := struct {
 		Image            string            `json:"Image"`
@@ -257,7 +264,7 @@ func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Re
 		Cmd              []string          `json:"Cmd"`
 		Env              []string          `json:"Env,omitempty"`
 		Labels           map[string]string `json:"Labels"`
-		HostConfig       *hostLimits       `json:"HostConfig,omitempty"`
+		HostConfig       *hostConfig       `json:"HostConfig,omitempty"`
 		NetworkingConfig any               `json:"NetworkingConfig"`
 		Tty              bool              `json:"Tty,omitempty"`
 		OpenStdin        bool              `json:"OpenStdin,omitempty"`

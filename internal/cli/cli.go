@@ -228,7 +228,7 @@ func Run(args []string, out, errout io.Writer) int {
 			err = deployment.RemoveOrphanSessions(cleanupCtx)
 			cleaned()
 			if err != nil {
-				fmt.Fprintln(errout, "interactive session cleanup failed")
+				fmt.Fprintln(errout, "session and job container cleanup failed")
 			}
 			stopped := make(chan struct{})
 			go func() {

@@ -29,6 +29,7 @@ const (
 	errRunRoles       Refusal = "the app has several roles: name one with --role"
 	errRunRoleUnknown Refusal = "role is not a role of the app"
 	errRunNonzero     Refusal = "run returned nonzero"
+	errRunPrepare     Refusal = "run preflight failed"
 )
 
 // errRunNotDeployed is the refusal of a remove of an app that is not deployed, for a run of one too.
@@ -50,6 +51,7 @@ type runTarget struct {
 	Manifest manifest.Manifest
 	Role     string
 	Limits   *manifest.Resources
+	Volumes  []string
 	Timeout  time.Duration
 }
 
@@ -95,8 +97,25 @@ func (c *Controller) runTarget(ctx context.Context, req Request) (runTarget, err
 	if !ok {
 		return runTarget{}, errRunRoleUnknown
 	}
-	t.Limits = role.Resources
+	t.Limits, t.Volumes = role.Resources, role.Volumes
 	return t, nil
+}
+
+// prepareRun readies a run of the applied release: it resolves the target, prepares the image's execution and makes sure the
+// image is on the host. An error that may be shown to the person is a Refusal; any other is not.
+func (c *Controller) prepareRun(ctx context.Context, req Request) (runTarget, preparedPlan, error) {
+	t, err := c.runTarget(ctx, req)
+	if err != nil {
+		return runTarget{}, preparedPlan{}, err
+	}
+	p, err := c.prepareExecution(ctx, Request{App: req.App, Manifest: t.Manifest}, Plan{Image: t.Release.Digest, Tag: t.Release.Tag})
+	if err != nil {
+		return runTarget{}, preparedPlan{}, errRunPrepare
+	}
+	if _, msg, err := c.ensureImage(ctx, p); err != nil {
+		return runTarget{}, preparedPlan{}, Refusal(msg)
+	}
+	return t, p, nil
 }
 
 // planRun is the dry run and the approval plan of a run: the applied release's image and the role, never a container, so the
@@ -117,30 +136,19 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	if !actor.Admin {
 		return state.Outcome{State: "failed", Err: "administrator required"}
 	}
-	t, err := c.runTarget(ctx, req)
-	if err != nil {
-		var r Refusal
-		if errors.As(err, &r) {
-			return state.Outcome{State: "failed", Err: string(r)}
-		}
-		return state.Outcome{State: "failed", Err: "run preflight failed"}
-	}
 	e, ok := c.Engine.(runEngine)
 	if !ok {
 		return state.Outcome{State: "failed", Err: "one-off containers unavailable"}
 	}
-	p, err := c.prepareExecution(ctx, Request{App: req.App, Manifest: t.Manifest}, Plan{Image: t.Release.Digest, Tag: t.Release.Tag})
+	t, p, err := c.prepareRun(ctx, req)
 	if err != nil {
-		return state.Outcome{State: "failed", Err: "run preflight failed"}
-	}
-	if _, msg, err := c.ensureImage(ctx, p); err != nil {
-		return state.Outcome{State: "failed", Err: msg}
+		return state.Outcome{State: "failed", Err: publicOr(err, errRunPrepare).Error()}
 	}
 	redact, ok := c.redactor(ctx)
 	if !ok {
 		return state.Outcome{State: "failed", Err: "secret redaction unavailable"}
 	}
-	_, runErr := c.runOneOff(ctx, op.ID, p, oneOff{Ordinal: runOrdinal, Kind: "run", Role: t.Role, Argv: req.Command, Timeout: t.Timeout, Resources: t.Limits})
+	_, runErr := c.runOneOff(ctx, op.ID, p, oneOff{Ordinal: runOrdinal, Kind: "run", Role: t.Role, Argv: req.Command, Timeout: t.Timeout, Resources: t.Limits, Volumes: t.Volumes})
 	container, exit, finished, err := c.runContainer(ctx, op.ID)
 	if err != nil {
 		return state.Outcome{State: "recovery_required", Err: "run journal requires recovery"}

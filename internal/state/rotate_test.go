@@ -47,6 +47,13 @@ func fillState(t *testing.T, s *Store) (opID string) {
 	if _, err = s.CreateApproval(ctx, newApproval("secret set DATABASE_URL"), []byte(`{"name":"DATABASE_URL","value":"held-value"}`)); err != nil {
 		t.Fatal(err)
 	}
+	run, err := s.StartJobRun(ctx, JobRun{Job: "tick", App: "web", Trigger: "manual", Started: minute(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.FinishJobRunWithOutput(ctx, run, "failed", nil, "timed out after 5s", "the last lines"); err != nil {
+		t.Fatal(err)
+	}
 	return op.ID
 }
 
@@ -78,6 +85,9 @@ func readsEverything(t *testing.T, s *Store, opID string) {
 	if request, err := s.ApprovalRequest(ctx, approvals[0].ID); err != nil || !strings.Contains(string(request), "held-value") {
 		t.Fatalf("approval request: %q %v", request, err)
 	}
+	if _, out, err := s.JobOutput(ctx, "tick", 0); err != nil || out != "the last lines" {
+		t.Fatalf("job output: %q %v", out, err)
+	}
 }
 
 func TestRotateKeyResealsEverything(t *testing.T) {
@@ -92,8 +102,8 @@ func TestRotateKeyResealsEverything(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 	// 2 secrets, 2 intents x 3 columns less the one before that was never set... a missing before is sealed empty, so 6, 2
-	// diagnostics, 1 approval and the key check.
-	if rep.OldKeyID != oldID || rep.NewKeyID == oldID || rep.NewKeyID != s.KeyID() || rep.Values != 2+6+2+1+1 || rep.KeyFile != keyFile {
+	// diagnostics, 1 approval, 1 job output and the key check.
+	if rep.OldKeyID != oldID || rep.NewKeyID == oldID || rep.NewKeyID != s.KeyID() || rep.Values != 2+6+2+1+1+1 || rep.KeyFile != keyFile {
 		t.Fatalf("report %+v (old %s)", rep, oldID)
 	}
 	readsEverything(t, s, opID)
@@ -135,7 +145,7 @@ func TestRotateKeyReportsWhatItWouldDoAndChangesNothing(t *testing.T) {
 	before := s.KeyID()
 	auditBefore := len(auditActions(t, s))
 	rep, err := s.RotateKey(ctx, rotator, true)
-	if err != nil || rep.Values != 12 || rep.OldKeyID != before || rep.NewKeyID != "" {
+	if err != nil || rep.Values != 13 || rep.OldKeyID != before || rep.NewKeyID != "" {
 		t.Fatalf("dry run: %+v %v", rep, err)
 	}
 	if s.KeyID() != before || len(auditActions(t, s)) != auditBefore {

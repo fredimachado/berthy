@@ -13,7 +13,7 @@ import (
 
 // RunStatus converts a stored run to its API form.
 func RunStatus(r state.JobRun) api.JobRun {
-	out := api.JobRun{ID: r.ID, Job: r.Job, Trigger: r.Trigger, Started: r.Started, Status: r.Status, ExitCode: r.ExitCode, Detail: r.Detail, Container: r.Container}
+	out := api.JobRun{ID: r.ID, Job: r.Job, Trigger: r.Trigger, Started: r.Started, Status: r.Status, ExitCode: r.ExitCode, Detail: r.Detail, Container: r.Container, HasOutput: r.HasOutput}
 	if !r.Scheduled.IsZero() {
 		t := r.Scheduled
 		out.Scheduled = &t
@@ -72,4 +72,13 @@ func Statuses(ctx context.Context, store *state.Store, m manifest.Manifest, app 
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+// LogsHint ends the detail of a failed run that kept its output with the command that shows it. It is empty for a run that
+// kept none.
+func LogsHint(job string, run state.JobRun) string {
+	if !run.HasOutput {
+		return ""
+	}
+	return ": berthy job logs " + job + " shows its output"
 }

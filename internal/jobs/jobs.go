@@ -1,8 +1,9 @@
-// Package jobs runs the manifest's named commands in a running container of their target, on their cron schedules or on
-// demand, and records each run in the agent's state. A job runs in one container only, even when its role has several
-// replicas. Each scheduled occurrence runs at most once: the state's unique index decides, so a restart or a second
-// scheduler cannot run it twice. Occurrences missed while the agent was down are not made up. A command's output is
-// never stored, because it may hold secrets.
+// Package jobs runs the manifest's named commands on their cron schedules or on demand, and records each run in the agent's
+// state. How a command runs is the Runner's business: a job of an image app runs in a container of its own, and a job of a
+// Compose app in the service's container. Each scheduled occurrence runs at most once: the state's unique index decides, so
+// a restart or a second scheduler cannot run it twice. Occurrences missed while the agent was down are not made up. The
+// output of a run that failed or timed out is kept, sealed, with the secrets in it redacted by the Runner; the output of a
+// run that succeeded is thrown away.
 package jobs
 
 import (
@@ -27,19 +28,36 @@ var (
 	ErrUnknownJob = errors.New("unknown job")
 )
 
-// TargetError is a reason a job has no container to run in, worded for the job's run record.
-type TargetError string
-
-func (e TargetError) Error() string { return string(e) }
-
-// Target finds the container a job runs in.
-type Target interface {
-	Container(ctx context.Context, m manifest.Manifest, job manifest.Job) (id string, err error)
+// Outcome is how a run of a job ended.
+type Outcome struct {
+	// Exit is the command's exit code. It is nil when the command did not run to an end.
+	Exit *int
+	// TimedOut means the run was stopped at its time limit: the command is over.
+	TimedOut bool
+	// Detail is the reason the command did not run to an end, worded for the run record. It is empty when Exit is set.
+	Detail string
+	// Container is the container the command ran in, or "".
+	Container string
+	// Output is the last lines of a failed or timed-out run, with every managed secret value replaced. It is empty for a run
+	// that succeeded and for one with no output to read.
+	Output string
 }
 
-// Executor runs a command inside a container and returns its exit code. The command's output is read and discarded.
-type Executor interface {
-	ExecDiscard(ctx context.Context, containerID string, command []string) (exitCode int, err error)
+// Runner runs the command of a job.
+type Runner interface {
+	// Run runs the job's command and returns how it ended. The run is bounded by ctx's deadline, which is the job's timeout:
+	// when it passes, the command is stopped and the outcome says TimedOut. When ctx is canceled for any other reason, the
+	// command is stopped and the error is ctx's. An error that is not ctx's means the run could not be made, and its text is
+	// never recorded; a reason that belongs in the run record is Outcome.Detail instead.
+	Run(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, runID int64) (Outcome, error)
+}
+
+// RunnerFunc is a Runner that is one function, such as a method of the component that knows how to run a command.
+type RunnerFunc func(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, runID int64) (Outcome, error)
+
+// Run calls f.
+func (f RunnerFunc) Run(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, runID int64) (Outcome, error) {
+	return f(ctx, m, name, job, runID)
 }
 
 // Scheduler runs the jobs of the running manifest. Its fields are set before Run or Start.
@@ -48,8 +66,7 @@ type Scheduler struct {
 	Store *state.Store
 	// Manifest returns the running manifest. It returns sql.ErrNoRows when nothing is deployed, which means no jobs.
 	Manifest func(ctx context.Context) (manifest.Manifest, error)
-	Target   Target
-	Exec     Executor
+	Runner   Runner
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Log receives operational messages. They never contain secrets.
@@ -281,50 +298,41 @@ func (s *Scheduler) RunHeld(ctx context.Context, name string) (state.JobRun, fun
 // context when the agent stops, which says nothing about the job, so it is interrupted. A caller that waits for the run
 // wants an incomplete run to be a failure.
 func (s *Scheduler) execute(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, run state.JobRun, canceledStatus, canceled string) state.JobRun {
+	timeout := job.TimeoutDuration()
+	ectx, cancel := context.WithTimeout(ctx, timeout)
+	out, err := s.Runner.Run(ectx, m, name, job, run.ID)
+	deadline := errors.Is(ectx.Err(), context.DeadlineExceeded)
+	cancel()
 	status, detail := "succeeded", ""
-	var exit *int
-	container, err := s.Target.Container(ctx, m, job)
-	if err != nil {
-		status, detail = "failed", "container lookup failed"
-		var te TargetError
-		switch {
-		case errors.As(err, &te):
-			detail = string(te)
-		case ctx.Err() != nil:
-			status, detail = canceledStatus, canceled
+	var output string
+	switch {
+	case ctx.Err() != nil && (err != nil || out.TimedOut):
+		status, detail = canceledStatus, canceled
+	case out.TimedOut || err != nil && deadline:
+		status, detail, output = "failed", "timed out after "+timeout.String(), out.Output
+	case err != nil:
+		status, detail = "failed", "run failed"
+	case out.Exit == nil:
+		status, detail = "failed", out.Detail
+		if detail == "" {
+			detail = "run failed"
 		}
-	} else {
-		run.Container = container
-		if err := s.Store.SetJobRunContainer(ctx, run.ID, container); err != nil {
-			s.logf("jobs: cannot record the container of %s: %v", name, err)
-		}
-		timeout := job.TimeoutDuration()
-		ectx, cancel := context.WithTimeout(ctx, timeout)
-		code, err := s.Exec.ExecDiscard(ectx, container, job.Command)
-		timedOut := errors.Is(ectx.Err(), context.DeadlineExceeded)
-		cancel()
-		switch {
-		case err != nil && timedOut && ctx.Err() == nil:
-			status, detail = "failed", "timed out after "+timeout.String()
-		case err != nil && ctx.Err() != nil:
-			status, detail = canceledStatus, canceled
-		case err != nil:
-			status, detail = "failed", "exec failed"
-		default:
-			exit = &code
-			if code != 0 {
-				status, detail = "failed", fmt.Sprintf("exit status %d", code)
-			}
-		}
+	case *out.Exit != 0:
+		status, detail, output = "failed", fmt.Sprintf("exit status %d", *out.Exit), out.Output
 	}
 	// The result is recorded even when the agent is stopping.
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.Store.FinishJobRun(fctx, run.ID, status, exit, detail); err != nil {
+	if out.Container != "" {
+		if err := s.Store.SetJobRunContainer(fctx, run.ID, out.Container); err != nil {
+			s.logf("jobs: cannot record the container of %s: %v", name, err)
+		}
+	}
+	if err := s.Store.FinishJobRunWithOutput(fctx, run.ID, status, out.Exit, detail, output); err != nil {
 		s.logf("jobs: cannot record the result of %s: %v", name, err)
 	}
 	s.audit(fctx, name, status)
-	run.Status, run.ExitCode, run.Detail, run.Finished = status, exit, detail, s.now().UTC()
+	run.Container, run.Status, run.ExitCode, run.Detail, run.HasOutput, run.Finished = out.Container, status, out.Exit, detail, output != "", s.now().UTC()
 	return run
 }
 

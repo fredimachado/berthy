@@ -125,6 +125,7 @@ var changeFlags = map[string][]string{
 	"secret delete":    withRemoteFlags("--dry-run"),
 	"secret rm":        withRemoteFlags("--dry-run"),
 	"job run":          withRemoteFlags(),
+	"job logs":         withRemoteFlags("--run"),
 	"backup list":      withRemoteFlags("--backup"),
 	"backup run":       withRemoteFlags(),
 	"state-backup":     withRemoteFlags(),
@@ -140,9 +141,9 @@ var changeFlags = map[string][]string{
 }
 
 type commandFlags struct {
-	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires string
-	bytes, format, diff                                                                                                          string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                  bool
+	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires, run string
+	bytes, format, diff                                                                                                               string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                       bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
 	pos, command, given, versions []string
@@ -188,7 +189,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.origin = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -237,6 +238,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.expires = v
 			case "--diff":
 				f.diff = v
+			case "--run":
+				f.run = v
 			}
 		default:
 			if strings.HasPrefix(a, "-") {
@@ -295,8 +298,8 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 			return "key rotate", true
 		}
 	case "job":
-		if len(pos) == 2 && sub == "run" {
-			return "job run", true
+		if len(pos) == 2 && (sub == "run" || sub == "logs") {
+			return "job " + sub, true
 		}
 	case "backup":
 		if len(pos) == 1 && sub == "list" {

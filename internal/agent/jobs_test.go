@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +37,7 @@ type blockingExec struct {
 	started chan struct{}
 }
 
-func (b *blockingExec) ExecDiscard(ctx context.Context, id string, cmd []string) (int, error) {
+func (b *blockingExec) Run(ctx context.Context, _ manifest.Manifest, _ string, _ manifest.Job, _ int64) (jobs.Outcome, error) {
 	if b.started != nil {
 		b.started <- struct{}{}
 	}
@@ -45,24 +46,18 @@ func (b *blockingExec) ExecDiscard(ctx context.Context, id string, cmd []string)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.code, nil
+	code := b.code
+	return jobs.Outcome{Exit: &code, Container: "container-1"}, nil
 }
 
-type fixedTarget struct{}
-
-func (fixedTarget) Container(context.Context, manifest.Manifest, manifest.Job) (string, error) {
-	return "container-1", nil
-}
-
-func jobScheduler(s *state.Store, exec jobs.Executor) *jobs.Scheduler {
+func jobScheduler(s *state.Store, exec jobs.Runner) *jobs.Scheduler {
 	return &jobs.Scheduler{
 		Env:   "lab",
 		Store: s,
 		Manifest: func(ctx context.Context) (manifest.Manifest, error) {
 			return runningManifest(ctx, s)
 		},
-		Target: fixedTarget{},
-		Exec:   exec,
+		Runner: exec,
 		Log:    func(string) {},
 	}
 }
@@ -100,6 +95,14 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 	if got := tick.Run(ctx); got.State != monitor.Critical || got.Detail != "exit status 3" {
 		t.Fatalf("after a failure: %+v", got)
 	}
+	// A failed run that kept its output names the command that shows it.
+	again, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	if err := s.FinishJobRunWithOutput(ctx, again, "failed", &three, "exit status 3", "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tick.Run(ctx); got.State != monitor.Critical || got.Detail != "exit status 3: berthy job logs tick shows its output" {
+		t.Fatalf("after a failure with output: %+v", got)
+	}
 	if got := checks["job:dump"].Run(ctx); got.State != monitor.Unknown {
 		t.Fatalf("another job is affected: %+v", got)
 	}
@@ -135,7 +138,7 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 	}
 }
 
-func jobsHandler(t *testing.T, s *state.Store, exec jobs.Executor) http.Handler {
+func jobsHandler(t *testing.T, s *state.Store, exec jobs.Runner) http.Handler {
 	t.Helper()
 	return NewDeploymentHandlerWithJobs(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, nil, jobScheduler(s, exec))
 }
@@ -219,6 +222,56 @@ func TestJobRunsListNewestFirstWithALimit(t *testing.T) {
 	}
 	if code, _ = get("/v1/environments/lab/jobs/nothing/runs"); code != 404 {
 		t.Fatalf("unknown job: %d", code)
+	}
+}
+
+func TestJobLogsNeedDeployScopeAndShowTheOutputOfAFailedRun(t *testing.T) {
+	s := openIngressStore(t)
+	ctx := context.Background()
+	recordRelease(t, s, "release-jobs", jobsManifest)
+	three := 3
+	failed, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	if err := s.FinishJobRunWithOutput(ctx, failed, "failed", &three, "exit status 3", "boom [redacted]\n"); err != nil {
+		t.Fatal(err)
+	}
+	ok, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	if err := s.FinishJobRun(ctx, ok, "succeeded", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	h := jobsHandler(t, s, &blockingExec{})
+	path := "/v1/environments/lab/jobs/tick/logs"
+	if w := serveRequest(t, h, http.MethodGet, path, monitoringToken("a")); w.Code != http.StatusForbidden {
+		t.Fatalf("read token: %d", w.Code)
+	}
+	if w := serveRequest(t, h, http.MethodGet, path, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", w.Code)
+	}
+	if w := serveRequest(t, h, http.MethodPost, path, monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST logs: %d", w.Code)
+	}
+	get := func(path string) (int, api.JobLogs) {
+		w := serveRequest(t, h, http.MethodGet, path, monitoringToken("b"))
+		var logs api.JobLogs
+		_ = json.Unmarshal(w.Body.Bytes(), &logs)
+		return w.Code, logs
+	}
+	// Without a run, the newest run that kept output answers, though a newer one succeeded.
+	code, logs := get(path)
+	if code != 200 || logs.Job != "tick" || logs.RunID != failed || logs.Status != "failed" || logs.Detail != "exit status 3" || logs.Finished == nil || logs.Output != "boom [redacted]\n" {
+		t.Fatalf("newest: %d %+v", code, logs)
+	}
+	if code, logs = get(path + "?run=" + strconv.FormatInt(ok, 10)); code != 200 || logs.RunID != ok || logs.Status != "succeeded" || logs.Output != "" {
+		t.Fatalf("a successful run: %d %+v", code, logs)
+	}
+	for _, bad := range []string{"x", "-1", "0"} {
+		if code, _ = get(path + "?run=" + bad); code != 400 {
+			t.Errorf("run %s: %d", bad, code)
+		}
+	}
+	for _, missing := range []string{"/v1/environments/lab/jobs/dump/logs", "/v1/environments/lab/jobs/nothing/logs", path + "?run=999"} {
+		if code, _ = get(missing); code != 404 {
+			t.Errorf("%s: %d", missing, code)
+		}
 	}
 }
 

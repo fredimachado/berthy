@@ -115,13 +115,9 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 		container["Env"] = values
 	}
 	if len(r.Volumes) > 0 {
-		mounts := make([]any, 0, len(r.Volumes))
-		for _, raw := range r.Volumes {
-			m, e := manifest.ParseMount(raw)
-			if e != nil {
-				return nil, e
-			}
-			mounts = append(mounts, map[string]any{"Type": "volume", "Source": m.Source, "Target": m.Target, "ReadOnly": m.ReadOnly})
+		mounts, e := volumeMounts(r.Volumes)
+		if e != nil {
+			return nil, e
 		}
 		container["Mounts"] = mounts
 	}
@@ -182,8 +178,23 @@ func resourceLimits(r *manifest.Resources) (nanoCPUs, memory int64, err error) {
 	return nanoCPUs, memory, nil
 }
 
-// hostLimits is the HostConfig of a one-off container that has limits.
-type hostLimits struct {
+// volumeMounts is the Docker mounts of a role's named volumes, each written as name:/path or name:/path:ro. A service takes
+// them in its container spec and a one-off container in its host config, so a command of the role sees the files the role does.
+func volumeMounts(volumes []string) ([]any, error) {
+	mounts := make([]any, 0, len(volumes))
+	for _, raw := range volumes {
+		m, err := manifest.ParseMount(raw)
+		if err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, map[string]any{"Type": "volume", "Source": m.Source, "Target": m.Target, "ReadOnly": m.ReadOnly})
+	}
+	return mounts, nil
+}
+
+// hostConfig is the HostConfig of a one-off container that has limits or volumes.
+type hostConfig struct {
 	NanoCPUs int64 `json:"NanoCpus,omitempty"`
 	Memory   int64 `json:"Memory,omitempty"`
+	Mounts   []any `json:"Mounts,omitempty"`
 }

@@ -584,6 +584,36 @@ func (e *Engine) ExecDiscard(ctx context.Context, id string, command []string) (
 	return e.exec(ctx, id, command, func(r io.Reader) error { return dockerStream(r, io.Discard, -1) })
 }
 
+// ExecTail runs a command in a container like ExecDiscard, but keeps the last maxBytes of its stdout and stderr, interleaved
+// as they came, and returns them with the exit code. Memory use is bounded by maxBytes whatever the command prints. When the
+// run fails, or ctx ends it, the tail of what was read is returned with the error. ctx must have a deadline.
+func (e *Engine) ExecTail(ctx context.Context, id string, command []string, maxBytes int) (int, string, error) {
+	tail := &tailBuffer{max: maxBytes}
+	code, err := e.exec(ctx, id, command, func(r io.Reader) error { return dockerStream(r, tail, -1) })
+	return code, strings.ToValidUTF8(string(tail.bytes()), ""), err
+}
+
+// tailBuffer keeps the last max bytes written to it. It compacts when it holds twice that, so a write costs O(1) on average.
+type tailBuffer struct {
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 2*t.max {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) bytes() []byte {
+	if len(t.buf) > t.max {
+		return t.buf[len(t.buf)-t.max:]
+	}
+	return t.buf
+}
+
 // exec creates an exec in a container, starts it, hands the output stream to consume, and returns the exit code.
 func (e *Engine) exec(ctx context.Context, id string, command []string, consume func(io.Reader) error) (int, error) {
 	execID, err := e.createExec(ctx, id, command, false, false)

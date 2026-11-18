@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"berthy/internal/api"
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/objectstore"
 	"berthy/internal/state"
@@ -387,7 +388,7 @@ func (p *Pending) prepare(ctx context.Context) (func(), error) {
 		if detail == "" {
 			detail = job.Status
 		}
-		return nil, errors.New(detail)
+		return nil, errors.New(detail + jobs.LogsHint(p.backup.Before, job))
 	}
 	return release, nil
 }
