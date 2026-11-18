@@ -31,13 +31,14 @@ type Monitoring struct {
 	metrics *metrics.Collector
 	deploy  *deploy.Controller
 	watch   *monitor.RestartWatch
+	down    *monitor.DownWatch
 	mon     *monitor.Monitor
 	// helper runs the service probes from the overlay network. It is never nil.
 	helper *helperManager
 	// composeServices lists the services of a Compose project that have containers.
 	composeServices func(ctx context.Context, project string) ([]string, error)
-	// restarts holds the restart checks of the last successful inventory, kept while Docker cannot be asked.
-	restarts []monitor.Check
+	// lastApp holds the restart and down checks of the last successful inventory, kept while Docker cannot be asked.
+	lastApp []monitor.Check
 	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
 	root string
 	// seen is when each backup was first in the manifest, and now is the clock of the backup checks. stateSeen is the same for
@@ -55,7 +56,7 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), helper: newHelperManager(c.Environment, e, log)}
+	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.Environment, e, log)}
 	w.composeServices = w.projectServices
 	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers}
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
@@ -145,7 +146,8 @@ func hasServiceProbe(probes map[string]manifest.Probe) bool {
 }
 
 // builtins returns the conditions that always run: disk and memory from the host sample, Docker's data disk, restart
-// loops of the apps Berthy manages, and the managed tunnel when managed is true. m is the running manifest, or nil.
+// loops and missing replicas of the apps Berthy manages, and the managed tunnel when managed is true. m is the running
+// manifest, or nil.
 func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Manifest) []monitor.Check {
 	sample, ok := w.samples()
 	var mounts []string
@@ -166,7 +168,7 @@ func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Man
 		out = append(out, monitor.DockerDiskCheck(w.samples, ""))
 	}
 	out = append(out, monitor.MemoryCheck(w.samples))
-	out = append(out, w.restartChecks(ctx, m)...)
+	out = append(out, w.appChecks(ctx, m)...)
 	out = append(out, hostChecks(w.engine, w.cfg.Listen)...)
 	if managed {
 		out = append(out, monitor.TunnelCheck(w.tunnelStatus))
@@ -319,37 +321,44 @@ func (w *Monitoring) projectServices(ctx context.Context, project string) ([]str
 	return slices.Sorted(maps.Keys(names)), nil
 }
 
-// restartChecks returns the restart check of every role of the apps Berthy manages. While the inventory or the task list
-// cannot be read, the checks of the last good read keep running, and their results turn unknown as they age.
-func (w *Monitoring) restartChecks(ctx context.Context, m *manifest.Manifest) []monitor.Check {
+// appChecks returns the restart check of every role of the apps Berthy manages, and their down checks. Both are fed by the
+// one inventory read here. While the inventory, the task list or the operation state cannot be read, the checks of the last
+// good read keep running, and their results turn unknown as they age.
+func (w *Monitoring) appChecks(ctx context.Context, m *manifest.Manifest) []monitor.Check {
 	apps, err := w.inventory(ctx)
 	if err != nil {
-		return w.previousRestartChecks(ctx)
+		return w.previousAppChecks(ctx)
 	}
 	now := time.Now()
 	failures, err := w.taskFailures(ctx, now)
 	if err != nil {
-		return w.previousRestartChecks(ctx)
+		return w.previousAppChecks(ctx)
+	}
+	quiet, err := w.quietApps(ctx, m, now)
+	if err != nil {
+		return w.previousAppChecks(ctx)
 	}
 	managed := managedRestartApps(apps, m)
 	w.watch.Observe(now, managed, failures)
+	w.down.Observe(now, downApps(managed, m), quiet)
 	var out []monitor.Check
 	for _, app := range managed {
 		for _, role := range app.Roles {
 			out = append(out, w.watch.Check(app.Ref, role.Name))
 		}
 	}
-	w.restarts = out
+	out = append(out, w.down.Checks()...)
+	w.lastApp = out
 	return out
 }
 
-// previousRestartChecks are the restart checks to keep while the inventory cannot be read: those of the last good read,
-// or, after a restart of the agent, placeholders for the stored restart checks that report unknown.
-func (w *Monitoring) previousRestartChecks(ctx context.Context) []monitor.Check {
-	if len(w.restarts) > 0 {
-		return w.restarts
+// previousAppChecks are the checks to keep while the inventory cannot be read: those of the last good read, or, after a
+// restart of the agent, placeholders for the stored restart and down checks that report unknown.
+func (w *Monitoring) previousAppChecks(ctx context.Context) []monitor.Check {
+	if len(w.lastApp) > 0 {
+		return w.lastApp
 	}
-	return w.staleRestartChecks(ctx)
+	return w.staleAppChecks(ctx)
 }
 
 // managedRestartApps keeps the apps Berthy manages: image apps, which appear in the inventory only through their bindings
@@ -399,16 +408,16 @@ func (w *Monitoring) taskFailures(ctx context.Context, now time.Time) (map[strin
 	return out, nil
 }
 
-// staleRestartChecks keeps the stored restart checks of an earlier run in place, unknown, when no inventory has been read
-// since the agent started. Their stored states survive, so a restart does not send their alerts again.
-func (w *Monitoring) staleRestartChecks(ctx context.Context) []monitor.Check {
+// staleAppChecks keeps the stored restart and down checks of an earlier run in place, unknown, when no inventory has been
+// read since the agent started. Their stored states survive, so a restart does not send their alerts again.
+func (w *Monitoring) staleAppChecks(ctx context.Context) []monitor.Check {
 	stored, err := w.store.Checks(ctx)
 	if err != nil {
 		return nil
 	}
 	var out []monitor.Check
 	for _, s := range stored {
-		if strings.HasPrefix(s.Name, "restarts:") {
+		if strings.HasPrefix(s.Name, "restarts:") || strings.HasPrefix(s.Name, "down:") {
 			out = append(out, monitor.NewFunc(s.Name, time.Minute, 1, func(context.Context) monitor.Result {
 				return monitor.Result{State: monitor.Unknown, Detail: "Docker inventory unavailable"}
 			}))

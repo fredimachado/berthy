@@ -562,6 +562,36 @@ func (s *Store) EventsAfter(ctx context.Context, id string, after uint64, limit 
 	}
 	return out, rows.Err()
 }
+
+// LatestEvents returns, for each app that an operation of one of kinds has an event for at or after since, the time of its
+// latest such event. A running operation counts through the events it has so far. The answer is empty when kinds is.
+func (s *Store) LatestEvents(ctx context.Context, kinds []string, since time.Time) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	if len(kinds) == 0 {
+		return out, nil
+	}
+	args := []any{s.env, since.UnixMilli()}
+	marks := make([]string, len(kinds))
+	for i, k := range kinds {
+		marks[i] = "?"
+		args = append(args, k)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT o.app,MAX(e.created) FROM events e JOIN operations o ON o.id=e.operation_id WHERE o.environment=? AND e.created>=? AND o.kind IN (`+strings.Join(marks, ",")+`) GROUP BY o.app`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var app string
+		var ms int64
+		if err = rows.Scan(&app, &ms); err != nil {
+			return nil, err
+		}
+		out[app] = time.UnixMilli(ms).UTC()
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if o.State != "succeeded" && o.State != "failed" && o.State != "rolled_back" && o.State != "interrupted" && o.State != "recovery_required" {
 		return errors.New("invalid outcome")

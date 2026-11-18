@@ -1725,7 +1725,7 @@ Berthy checks three kinds of things.
 | --- | --- | --- |
 | **Container health check** | The `health` of a role. | Gates deploys. Swarm replaces an unhealthy container. |
 | **Probe** | An HTTP, TCP or service check the agent runs on a schedule. | Alert. |
-| **Built-in condition** | Disk space, Docker disk, memory, restart loops, overdue backups, silent peers, an unhealthy tunnel, a credential that is refused or about to expire. | Alert. |
+| **Built-in condition** | Disk space, Docker disk, memory, restart loops, apps that are down, overdue backups, silent peers, an unhealthy tunnel, a credential that is refused or about to expire. | Alert. |
 
 A check changes state after it fails the configured number of times in a row. One success recovers it at once. Unknown results never alert.
 
@@ -1876,6 +1876,7 @@ They always run:
 - **Disk** and **Docker disk**: warning from 80 percent used, critical from 90 percent. They cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB.
 - **Memory**: warning below 10 percent available, critical below 5 percent.
 - **Restart loops** of the apps Berthy manages: three restarts of one replica, or three failed or rejected Swarm tasks, within 10 minutes, or an out-of-memory kill.
+- **Down**: each role of an image app and each service of a Compose app, named `down:<app>/<role or service>`. It is critical when fewer replicas run and are healthy than the app should run, for two minutes. An image role should run the replicas its service is set to, so a scale to 0 is fine. A Compose service should run the containers it has, so a container that is stopped by hand is down, and so is a service whose containers are gone. A container that runs and is unhealthy is not healthy. The app is named as its restart checks name it: a Compose app by its Compose project. Nothing is judged while a deploy, rollback, restart, scale, remove or ingress change of that app runs, or for two minutes after it ends. The detail says what was seen, for example `0 of 2 replicas running for 2m`, `1 of 2 replicas healthy (1 unhealthy) for 2m` or `container exited for 2m`. Berthy does not read exit codes, so an exited container is reported as exited, without its code.
 - **Backups**: failed, overdue or suspiciously small (step 10), and jobs that fail (step 9).
 - **The tunnel**, when managed ingress is set up.
 - **Credentials**: the registry password of each registry that a deployed image app pulls from, and the Cloudflare API token when managed ingress is set up. `doctor` asks each time it runs, and the monitor asks every 10 minutes. A check changes state after two answers in a row that are not ok, so an alert comes 10 to 20 minutes after a credential stops working. A refused or missing credential is critical. The Cloudflare token warns when it expires within 14 days. A registry does not say when its password expires, so Berthy finds an expired password only when the registry refuses it. A check that could not be asked is unknown and never alerts: an outage of the registry or of Cloudflare is not a refused credential.
