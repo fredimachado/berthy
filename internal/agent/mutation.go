@@ -493,6 +493,8 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			serveBackups(w, r, rest, d, backups, sa)
 		case rest[0] == "state-backup":
 			serveStateBackup(w, r, rest, d, backups, sa)
+		case isKeyRotation(rest):
+			serveKeyRotate(w, r, d, sa)
 		case len(rest) == 1 && rest[0] == "checks":
 			rows, err := d.Store.Checks(ctx)
 			if err != nil {
@@ -561,6 +563,11 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		}
 		if rest[0] == "sessions" {
 			serveSession(w, r, d, gate, actor)
+			return
+		}
+		// The state key is a person's to replace, on any environment: an agent token is refused, never held for approval.
+		if actor.Agent && isKeyRotation(rest) {
+			writeError(w, 403, "forbidden", "an agent token cannot rotate the state key")
 			return
 		}
 		// An agent token on a protected environment does not change it: the request is held until a person approves it.
@@ -651,6 +658,9 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		required = "read"
 		method = "GET"
 	case len(rest) == 1 && rest[0] == "restore":
+		required = "admin"
+		method = "POST"
+	case isKeyRotation(rest):
 		required = "admin"
 		method = "POST"
 	case len(rest) == 1 && rest[0] == "sessions":

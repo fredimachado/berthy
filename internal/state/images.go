@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -97,7 +96,7 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 		if err = rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &phase, &sealed); err != nil {
 			return nil, err
 		}
-		plain, e := s.open(fmt.Sprintf("intent:%s:%d:receipt", x.OperationID, ordinal), sealed)
+		plain, e := s.open(intentRecord(x.OperationID, ordinal, "receipt"), sealed)
 		if e != nil {
 			return nil, e
 		}

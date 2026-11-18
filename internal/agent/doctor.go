@@ -52,6 +52,15 @@ func networkCheck(ctx context.Context, e *engine.Engine, name string) api.Check 
 	return c
 }
 
+// stateKeyCheck reports that a state key from before the last rotation is still on the server. It is not a failure: the key goes
+// when the next state snapshot succeeds. There is no check for a state that holds only its one key.
+func stateKeyCheck(s *state.Store) (api.Check, bool) {
+	if !s.HasPreviousKey() {
+		return api.Check{}, false
+	}
+	return api.Check{Name: "state_key", OK: true, Detail: "previous key kept until the next state snapshot succeeds"}, true
+}
+
 // lockCheck reports the deploy lock: free, or held by its holder for its age, with the reason it was taken. A held lock is a
 // state, not a failure, so the check is never critical. It never shows a token.
 func lockCheck(ctx context.Context, s *state.Store, now time.Time) api.Check {

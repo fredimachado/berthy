@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 const (
@@ -86,8 +85,4 @@ func (s *Store) Diagnostics(ctx context.Context, opID string) ([]json.RawMessage
 		out = append(out, json.RawMessage(plain))
 	}
 	return out, rows.Err()
-}
-
-func diagnosticRecord(opID string, seq int) string {
-	return fmt.Sprintf("diagnostic:%s:%d", opID, seq)
 }

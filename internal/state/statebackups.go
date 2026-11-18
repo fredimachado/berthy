@@ -158,22 +158,30 @@ func (s *Store) StateBackupHistory(ctx context.Context) (StateBackupHistory, err
 }
 
 // Snapshot writes a consistent copy of the database to path, which must not exist yet. The copy holds every secret still sealed
-// and never the key, which is not in the database. It is taken while the agent keeps running.
-func (s *Store) Snapshot(ctx context.Context, path string) error {
+// and never the key, which is not in the database. It is taken while the agent keeps running. It returns the ID of the key
+// the copy is sealed with, which is the key a restore needs. A rotation cannot run between the copy and that answer: both
+// happen while this call holds the store's only connection.
+func (s *Store) Snapshot(ctx context.Context, path string) (keyID string, err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	keyID = s.KeyID()
 	// The file is created here, private, because VACUUM INTO accepts only a path that is missing or an empty file.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err = f.Close(); err != nil {
 		os.Remove(path)
-		return err
+		return "", err
 	}
-	if _, err = s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+	if _, err = conn.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
 		os.Remove(path)
-		return err
+		return "", err
 	}
-	return nil
+	return keyID, nil
 }
 
 // SchemaVersion returns the database's schema version, which the snapshot records.

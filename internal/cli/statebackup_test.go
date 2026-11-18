@@ -192,7 +192,11 @@ func TestStateRestoreRebuildsTheStateAndPrintsWhatItHolds(t *testing.T) {
 }
 
 func TestStateRestoreWithAWrongKeyExitsNonZero(t *testing.T) {
-	endpoint, object, _ := snapshotInBucket(t)
+	endpoint, object, saved := snapshotInBucket(t)
+	need, err := state.KeyIDOfFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
 	other := filepath.Join(t.TempDir(), "key")
 	if err := os.WriteFile(other, bytes.Repeat([]byte{3}, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -201,7 +205,11 @@ func TestStateRestoreWithAWrongKeyExitsNonZero(t *testing.T) {
 	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
 	var stdout, stderr bytes.Buffer
 	code := Run(stateRestoreArgs(endpoint, object, filepath.Join(t.TempDir(), "restored"), other), &stdout, &stderr)
-	if code == 0 || strings.TrimSpace(stderr.String()) != "the key does not open this state" {
-		t.Fatalf("wrong key: exit %d, %q", code, stderr.String())
+	have, err := state.KeyIDOfFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "the snapshot needs key " + need + "; " + other + " is key " + have; code == 0 || strings.TrimSpace(stderr.String()) != want {
+		t.Fatalf("wrong key: exit %d, %q, want %q", code, stderr.String(), want)
 	}
 }

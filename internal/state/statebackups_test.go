@@ -47,7 +47,7 @@ func TestSnapshotOpensWithTheSameKeyAndHoldsNoKeyOrPlaintext(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(copyDir, "state.db")
-	if err := s.Snapshot(ctx, path); err != nil {
+	if _, err := s.Snapshot(ctx, path); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -62,7 +62,7 @@ func TestSnapshotOpensWithTheSameKeyAndHoldsNoKeyOrPlaintext(t *testing.T) {
 			t.Fatalf("snapshot mode %v", info.Mode().Perm())
 		}
 	}
-	if err = s.Snapshot(ctx, path); err == nil {
+	if _, err = s.Snapshot(ctx, path); err == nil {
 		t.Fatal("a snapshot over an existing file was written")
 	}
 	keyPath := filepath.Join(t.TempDir(), "key")

@@ -2,18 +2,16 @@ package state
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -22,10 +20,17 @@ import (
 var ErrConflict = errors.New("state conflict")
 
 type Store struct {
-	db    *sql.DB
-	key   cipher.AEAD
-	env   string
-	owner *os.File
+	db      *sql.DB
+	env     string
+	owner   *os.File
+	keyFile string
+	// keys is the keyring. mu guards it: a rotation holds the write lock while it reseals the values and swaps the ring, so no
+	// value is sealed with the old key after the new one is committed. That holds for a value sealed after its transaction began,
+	// since the rotation holds the only connection until it commits; a value sealed before BeginTx must belong to a lock holder,
+	// which a rotation refuses. rotate serializes the rotation with ForgetPreviousKey.
+	mu     sync.RWMutex
+	keys   keyring
+	rotate sync.Mutex
 }
 type Admission struct {
 	RequestID, ActorID, ActorName, Remote, Kind, App, Commit string
@@ -122,15 +127,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err := checkDir(stateDir); err != nil {
 		return nil, err
 	}
-	key, err := readKey(keyFile)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
+	keys, err := loadKeyFiles(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +146,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, key: aead, env: environment, owner: owner}
+	s := &Store{db: db, env: environment, owner: owner, keyFile: keyFile}
 	fail := func(err error) (*Store, error) { s.Close(); return nil, err }
 	if _, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;`); err != nil {
 		return fail(err)
@@ -194,19 +191,18 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
+	// The key check names the key the state is sealed with, which settles which key file is current.
 	var check []byte
+	rotationCommitted := false
 	err = tx.QueryRow(`SELECT value FROM metadata WHERE name='key_check'`).Scan(&check)
 	if errors.Is(err, sql.ErrNoRows) && fresh {
-		check, err = s.seal("key_check", []byte("berthy-state"))
+		s.keys = keyring{current: keys.main}
+		check, err = s.seal(keyCheckName, []byte(keyCheckPlain))
 		if err == nil {
 			_, err = tx.Exec(`INSERT INTO metadata VALUES('key_check',?)`, check)
 		}
 	} else if err == nil {
-		var plain []byte
-		plain, err = s.open("key_check", check)
-		if err != nil || string(plain) != "berthy-state" {
-			err = ErrWrongKey
-		}
+		s.keys, rotationCommitted, err = chooseKeys(keys, check)
 	}
 	if err != nil {
 		tx.Rollback()
@@ -290,6 +286,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = tx.Commit(); err != nil {
 		return fail(err)
 	}
+	if err = settleKeyFiles(keyFile, rotationCommitted, keys.main); err != nil {
+		return fail(fmt.Errorf("state key files: %w", err))
+	}
 	return s, nil
 }
 func (s *Store) Close() error {
@@ -306,26 +305,6 @@ func (s *Store) Close() error {
 		}
 	}
 	return err
-}
-func (s *Store) associated(record string) string {
-	if record == "key_check" {
-		return "berthy-state-key-check"
-	}
-	return s.env + "\x00" + record
-}
-func (s *Store) seal(record string, p []byte) ([]byte, error) {
-	nonce := make([]byte, s.key.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return s.key.Seal(nonce, nonce, p, []byte(s.associated(record))), nil
-}
-func (s *Store) open(record string, b []byte) ([]byte, error) {
-	n := s.key.NonceSize()
-	if len(b) < n {
-		return nil, errors.New("invalid ciphertext")
-	}
-	return s.key.Open(nil, b[:n], b[n:], []byte(s.associated(record)))
 }
 func randomID() (string, error) {
 	b := make([]byte, 16)
@@ -446,12 +425,11 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	if i.Ordinal < 0 || !validJSON(i.Desired) || (len(i.Before) > 0 && !validJSON(i.Before)) {
 		return errors.New("invalid intent")
 	}
-	record := fmt.Sprintf("intent:%s:%d:", id, i.Ordinal)
-	before, err := s.seal(record+"before", i.Before)
+	before, err := s.seal(intentRecord(id, i.Ordinal, "before"), i.Before)
 	if err != nil {
 		return err
 	}
-	desired, err := s.seal(record+"desired", i.Desired)
+	desired, err := s.seal(intentRecord(id, i.Ordinal, "desired"), i.Desired)
 	if err != nil {
 		return err
 	}
@@ -463,7 +441,7 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	receipt, err := s.seal(record+"receipt", []byte(`{}`))
+	receipt, err := s.seal(intentRecord(id, i.Ordinal, "receipt"), []byte(`{}`))
 	if err != nil {
 		return err
 	}
@@ -485,7 +463,7 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	sealed, err := s.seal(fmt.Sprintf("intent:%s:%d:receipt", id, ordinal), receipt)
+	sealed, err := s.seal(intentRecord(id, ordinal, "receipt"), receipt)
 	if err != nil {
 		return err
 	}
@@ -514,16 +492,15 @@ func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
 			return nil, err
 		}
 		i.Deadline = time.UnixMilli(deadline).UTC()
-		record := fmt.Sprintf("intent:%s:%d:", id, i.Ordinal)
-		i.Before, err = s.open(record+"before", before)
+		i.Before, err = s.open(intentRecord(id, i.Ordinal, "before"), before)
 		if err != nil {
 			return nil, err
 		}
-		i.Desired, err = s.open(record+"desired", desired)
+		i.Desired, err = s.open(intentRecord(id, i.Ordinal, "desired"), desired)
 		if err != nil {
 			return nil, err
 		}
-		i.Receipt, err = s.open(record+"receipt", i.Receipt)
+		i.Receipt, err = s.open(intentRecord(id, i.Ordinal, "receipt"), i.Receipt)
 		if err != nil {
 			return nil, err
 		}
@@ -763,7 +740,7 @@ func (s *Store) checkNoLock(ctx context.Context, tx *sql.Tx) error {
 
 // putSecretTx stores one secret inside tx and audits it. The caller holds the transaction and has checked the lock.
 func (s *Store) putSecretTx(ctx context.Context, tx *sql.Tx, actor Actor, info SecretInfo, value []byte) error {
-	sealed, err := s.seal("secret:"+info.Name+"\x00"+info.Registry, value)
+	sealed, err := s.seal(secretRecord(info.Name, info.Registry), value)
 	if err != nil {
 		return err
 	}
@@ -848,7 +825,7 @@ func (s *Store) PutOperationSecret(ctx context.Context, opID, name string, value
 	if name == "" {
 		return errors.New("empty secret name")
 	}
-	sealed, err := s.seal("secret:"+name+"\x00", value)
+	sealed, err := s.seal(secretRecord(name, ""), value)
 	if err != nil {
 		return err
 	}
@@ -913,7 +890,7 @@ func (s *Store) Secret(ctx context.Context, name string) (SecretInfo, []byte, er
 	if err := s.db.QueryRowContext(ctx, `SELECT registry,sealed FROM secrets WHERE environment=? AND name=?`, s.env, name).Scan(&info.Registry, &b); err != nil {
 		return info, nil, err
 	}
-	v, err := s.open("secret:"+name+"\x00"+info.Registry, b)
+	v, err := s.open(secretRecord(name, info.Registry), b)
 	return info, v, err
 }
 func (s *Store) Secrets(ctx context.Context) ([]SecretInfo, error) {

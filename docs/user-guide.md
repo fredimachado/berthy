@@ -302,6 +302,8 @@ A development build on macOS or Windows has no release to download, so give it `
 
    Keep `prod.key` in a password manager or your provisioning tool's vault.
 
+   If the copy leaks, or someone who had it leaves, replace the key with [`berthy key rotate`](#rotate-the-encryption-key).
+
 3. **The CLI configuration file.** The `cli_config` step writes it for you, to the file `--config` names or else to the default file (see [How to read the commands](#how-to-read-the-commands)). It maps each environment to an agent address and **the name of the environment variable that holds the token**. It never contains a token:
 
    ```json
@@ -1985,7 +1987,29 @@ size: 412000
 sha256: <hash>
 ```
 
-Restoring a snapshot needs neither the agent nor its server (step 15).
+Restoring a snapshot needs neither the agent nor its server (step 15). The description file names the key the snapshot needs, by ID: after a [key rotation](#rotate-the-encryption-key), a snapshot taken before it needs the old key and one taken after it needs the new one.
+
+#### Rotate the encryption key
+
+Every sealed value in the state says which key sealed it, so the key can be replaced without losing anything. Run, with an `admin` token that is not an agent token:
+
+```bash
+berthy key rotate -e prod
+```
+
+```text
+rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33
+the previous key is kept on the server until the next state snapshot succeeds
+copy the new key off the server now: sudo cat /var/lib/berthy/key > prod.key
+```
+
+The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Copy the new key off the server as the last line says, and replace your old copy.
+
+The old key stays on the server as `/var/lib/berthy/key.prev` until the next state snapshot succeeds with the new key. Then the agent deletes it. Until then `berthy doctor` shows a `state_key` check. Without a `state_backup` block no snapshot runs, so the previous key stays; delete it yourself when you no longer need it.
+
+The rotation is refused with a conflict while an operation runs or the deploy lock is held. `--dry-run` checks the same and says how many values would be sealed again, and changes nothing. A crash in the middle leaves a state that one of the two keys opens completely, and the agent settles the key files when it starts again. `berthy setup --key-file` never replaces the key of a server: rotate through the agent.
+
+A snapshot taken before the rotation needs the old key. `state-restore` names the key it needs before it downloads anything: `the snapshot needs key 91c0aa11bb22cc33; prod.key is key 3f2a9c01e4b7d210`.
 
 ---
 
@@ -2019,6 +2043,8 @@ The `--agent` flag marks it as an agent token. Add the printed JSON object to `t
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
 Held: `deploy`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
+
+`key rotate` is not held: an agent token is refused with `an agent token cannot rotate the state key`, whatever its scope, on every environment.
 
 Not held: reads; `--dry-run` (it changes nothing, so an agent gets the plan at once); and every request on an unprotected environment. A request the token has no right to make is refused at once, not held.
 
@@ -2111,7 +2137,7 @@ Its result is one of:
 - **Plan.** With `dry_run`: `{"dry_run": true, "plan": ...}`. Never held.
 - **Refused.** The wrong scope, a held deploy lock, an unknown app: a tool error with the agent's message.
 
-Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
+Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `key rotate`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
 
 ---
 
@@ -2282,7 +2308,7 @@ The order:
    | `--out <dir>` | Where to write the state. Created (mode `0700`) when missing, otherwise it must be empty. |
    | `--key-file <path>` | Your saved key. |
 
-   The credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. **Flags never carry them**, so they stay out of your shell history and the process list. The command downloads the snapshot and its description file, checks the size and SHA-256, and opens the result with the key. It prints the environment, the schema version, and the **names** of the stored secrets, never their values. A wrong key exits non-zero with `the key does not open this state` and leaves nothing behind.
+   The credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. **Flags never carry them**, so they stay out of your shell history and the process list. The command downloads the snapshot and its description file, checks the size and SHA-256, and opens the result with the key. It prints the environment, the schema version, and the **names** of the stored secrets, never their values. A key that is not the one the snapshot needs exits non-zero before the download, with `the snapshot needs key <ID>; <file> is key <ID>`, and leaves nothing behind.
 
 3. **Set up the server with the saved key.**
 
@@ -2373,6 +2399,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
 | `restore <key>` | admin | `--dry-run`, `--request-id`, `--into` (required) | Restore a backup into a new volume. |
 | `state-backup` | admin | none | Snapshot the agent's state now and wait. |
+| `key rotate` | admin, not an agent token | `--dry-run` | Replace the encryption key of the agent's state, [as step 10 says](#rotate-the-encryption-key). |
 | `recovery resolve <operation id>` | admin | `--dry-run`, `-m`/`--message` (required) | End an operation stuck in recovery as failed and release its lock. |
 | `approve <id>` | admin, not an agent token | none | Run a held change as the agent that asked, and follow it. |
 | `reject <id>` | admin, not an agent token | `-m`/`--message` | Refuse a held change. |
@@ -2672,7 +2699,7 @@ The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use se
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `agent-info`, `checks`, `jobs`, `lock status`, `backup list`, `ingress status`, `approvals` (without plans), following an operation's events. |
 | `deploy` | Everything in `read`, plus `diagnostics`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
-| `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
+| `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `key rotate` (not for an agent token), `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
 
 A token marked `agent` has the scope it says. The mark only decides whether its changes are held on a protected environment, and that it can never approve or reject.
 
@@ -2693,6 +2720,7 @@ See [step 12](#step-12-the-terminal-ui).
 | `/etc/systemd/system/berthy.service` | The service. It runs `berthy agent --config /etc/berthy/agent.json` as the `berthy` user in the `docker` group, with `StateDirectoryMode=0700`. |
 | `/var/lib/berthy/state/` | The state: `state.db` (SQLite), and `compose/<project>/` with each Compose app's stored files and `.env`. |
 | `/var/lib/berthy/key` | The encryption key. `berthy:berthy`, mode `0600`. Never uploaded. |
+| `/var/lib/berthy/key.prev` | The key from before the last rotation, kept until the next state snapshot succeeds. `key.next` exists only while a rotation runs. |
 
 Besides these, Berthy creates Docker objects: Swarm services named `<project>-<app>-<role>`, Compose projects named `<project>-<app>`, the shared overlay network, a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.*` labels.
 

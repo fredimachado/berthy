@@ -386,6 +386,9 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 			}
 			if deployment != nil && deployment.Store != nil {
 				checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
+				if check, ok := stateKeyCheck(deployment.Store); ok {
+					checks = append(checks, check)
+				}
 				checks = append(checks, monitoringChecks(r.Context(), deployment.Store, e, c.Environment)...)
 				if m, _, mErr := deployedManifest(r.Context(), deployment.Store); mErr == nil {
 					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)

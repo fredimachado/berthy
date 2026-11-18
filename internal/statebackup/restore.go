@@ -39,6 +39,19 @@ type RestoreReport struct {
 	Secrets       []string // names only, sorted
 }
 
+// KeyMismatchError says the key file is not the key that opens the snapshot. It names both keys by ID, and never shows a key. It
+// is an ErrWrongKey, which is what a restore reports for a key that does not open the state.
+type KeyMismatchError struct {
+	// Need is the ID of the key the snapshot's sidecar names, and Have the ID of the key file's key.
+	Need, Have, File string
+}
+
+func (e *KeyMismatchError) Error() string {
+	return "the snapshot needs key " + e.Need + "; " + e.File + " is key " + e.Have
+}
+
+func (e *KeyMismatchError) Is(target error) bool { return target == state.ErrWrongKey }
+
 // ErrNoSnapshotFile is what a restore reports when the object is missing from the bucket.
 var ErrNoSnapshotFile = Refusal("snapshot not found")
 
@@ -60,6 +73,14 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	sc, err := readRestoreSidecar(ctx, store, strings.TrimSuffix(o.Object, snapshotSuffix)+sidecarSuffix)
 	if err != nil {
 		return rep, err
+	}
+	// The key is checked against the sidecar first, so a wrong key costs no download.
+	have, err := state.KeyIDOfFile(o.KeyFile)
+	if err != nil {
+		return rep, err
+	}
+	if have != sc.KeyID {
+		return rep, &KeyMismatchError{Need: sc.KeyID, Have: have, File: o.KeyFile}
 	}
 	created, err := prepareOutput(o.Out)
 	if err != nil {
@@ -120,7 +141,7 @@ func readRestoreSidecar(ctx context.Context, store objectstore.Store, key string
 	}
 	var sc Sidecar
 	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || !environmentName.MatchString(sc.Environment) ||
-		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) {
+		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) || !keyIDHex.MatchString(sc.KeyID) {
 		return Sidecar{}, ErrInvalidSidecar
 	}
 	return sc, nil

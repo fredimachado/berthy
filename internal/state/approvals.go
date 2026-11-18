@@ -55,8 +55,6 @@ func scanApproval(row interface{ Scan(...any) error }) (Approval, error) {
 	return a, nil
 }
 
-func approvalRecord(id string) string { return "approval:" + id + ":request" }
-
 // CreateApproval holds a request as a pending approval. a carries the actor, the route, the summary, the plan and the times;
 // request is the request body, which can hold a secret value and is stored sealed. It audits the request as the agent. It
 // returns ErrTooManyApprovals when the environment already holds MaxPendingApprovals pending approvals.
@@ -68,15 +66,17 @@ func (s *Store) CreateApproval(ctx context.Context, a Approval, request []byte) 
 	if err != nil {
 		return Approval{}, err
 	}
-	sealed, err := s.seal(approvalRecord(id), request)
-	if err != nil {
-		return Approval{}, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Approval{}, err
 	}
 	defer tx.Rollback()
+	// The request is sealed inside the transaction: a key rotation commits and swaps keys while it holds the connection, so
+	// what is sealed here always uses the key the committed state names.
+	sealed, err := s.seal(approvalRecord(id), request)
+	if err != nil {
+		return Approval{}, err
+	}
 	var pending int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM approvals WHERE environment=? AND status='pending' AND expires>?`, s.env, toMilli(a.Created)).Scan(&pending); err != nil {
 		return Approval{}, err

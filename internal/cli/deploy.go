@@ -83,6 +83,7 @@ var changeFlags = map[string][]string{
 	"backup list":      withRemoteFlags("--backup"),
 	"backup run":       withRemoteFlags(),
 	"state-backup":     withRemoteFlags(),
+	"key rotate":       withRemoteFlags("--dry-run"),
 	"approvals":        withRemoteFlags("--all"),
 	"approve":          withRemoteFlags(),
 	"reject":           withRemoteFlags("--message"),
@@ -222,6 +223,10 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		if len(pos) == 1 && sub == "test" {
 			return "alerts test", true
 		}
+	case "key":
+		if len(pos) == 1 && sub == "rotate" {
+			return "key rotate", true
+		}
 	case "job":
 		if len(pos) == 2 && sub == "run" {
 			return "job run", true
@@ -293,6 +298,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	}
 	if cmd == "destroy" && (len(f.pos) != 0 || f.confirm != f.env) {
 		fmt.Fprintln(errout, "destroy takes no app, and --confirm must repeat the environment name")
+		return 2
+	}
+	if cmd == "key" && (len(f.pos) != 1 || f.pos[0] != "rotate") {
+		fmt.Fprintln(errout, "usage: key rotate -e ENV [--dry-run] [--json]")
 		return 2
 	}
 	if (f.backup != "" && cmd != "backup") || (f.into != "" && cmd != "restore") {
@@ -575,6 +584,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		endpoint = "alerts/test"
 		method = "POST"
+	case "key":
+		endpoint = "key/rotate"
+		method = "POST"
+		body = map[string]any{"dry_run": f.dry}
 	case "secret":
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"
@@ -691,6 +704,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if cmd == "history" && !f.json {
 		return printHistory(out, errout, data)
+	}
+	if cmd == "key" && !f.json {
+		return printKeyRotation(out, errout, data, f.env)
 	}
 	if cmd == "secret" && f.pos[0] == "set" && !f.dry && !f.json {
 		if printSecretSet(out, data) {

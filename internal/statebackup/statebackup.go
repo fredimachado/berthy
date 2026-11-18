@@ -26,7 +26,7 @@ import (
 )
 
 // SidecarFormat names the sidecar document and the snapshot it describes.
-const SidecarFormat = "berthy-state-sqlite-1"
+const SidecarFormat = "berthy-state-sqlite-2"
 
 const (
 	snapshotSuffix = ".db"
@@ -66,11 +66,14 @@ var (
 	ErrInvalidSidecar = Refusal("snapshot sidecar invalid")
 )
 
-// Sidecar is the document stored beside each snapshot. It is written only after the snapshot was uploaded.
+// Sidecar is the document stored beside each snapshot. It is written only after the snapshot was uploaded. KeyID names the key
+// that opens the snapshot: 16 hex characters that identify the key and never reveal it. A restore with another key fails before
+// it downloads the snapshot.
 type Sidecar struct {
 	Format        string    `json:"format"`
 	Environment   string    `json:"environment"`
 	SchemaVersion int       `json:"schema_version"`
+	KeyID         string    `json:"key_id"`
 	Size          int64     `json:"size"`
 	SHA256        string    `json:"sha256"`
 	Created       time.Time `json:"created"`
@@ -290,7 +293,8 @@ func (p *Pending) Execute(ctx context.Context) Result {
 		return fail("snapshot failed", err)
 	}
 	path := filepath.Join(dir, "state.db")
-	if err = p.r.Store.Snapshot(ctx, path); err != nil {
+	keyID, err := p.r.Store.Snapshot(ctx, path)
+	if err != nil {
 		return fail("snapshot failed", err)
 	}
 	size, sum, stage, err := p.upload(ctx, path)
@@ -298,13 +302,17 @@ func (p *Pending) Execute(ctx context.Context) Result {
 		return fail(stage, err)
 	}
 	finished := p.r.now()
-	side := Sidecar{Format: SidecarFormat, Environment: p.r.Env, SchemaVersion: schema, Size: size, SHA256: sum, Created: finished}
+	side := Sidecar{Format: SidecarFormat, Environment: p.r.Env, SchemaVersion: schema, KeyID: keyID, Size: size, SHA256: sum, Created: finished}
 	if err = p.writeSidecar(ctx, side); err != nil {
 		p.discardSnapshot()
 		return fail("sidecar failed", err)
 	}
 	run.Status, run.Size, run.SHA256, run.Finished = "succeeded", size, sum, finished
 	p.r.finish(run.ID, "succeeded", size, sum, "")
+	// The snapshot opens with the current key alone, so a key kept from before a rotation is no longer needed to restore.
+	if err = p.r.Store.ForgetPreviousKey(context.WithoutCancel(ctx), keyID); err != nil {
+		p.r.logf("state backup: the previous key was not removed: %v", err)
+	}
 	p.retain(ctx)
 	return Result{Run: run}
 }
@@ -422,13 +430,16 @@ func (r *Runner) readSidecar(ctx context.Context, store objectstore.Store, key s
 	}
 	var sc Sidecar
 	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || sc.Environment != r.Env ||
-		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) {
+		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) || !keyIDHex.MatchString(sc.KeyID) {
 		return Sidecar{}, ErrInvalidSidecar
 	}
 	return sc, nil
 }
 
-var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	keyIDHex  = regexp.MustCompile(`^[0-9a-f]{16}$`)
+)
 
 // retain deletes the snapshots beyond the number kept, the oldest first, snapshot before sidecar. A failure is logged and never
 // fails the run.

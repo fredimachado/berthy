@@ -66,6 +66,7 @@ var changeCommands = []changeCommand{
 	{name: "backup list", pos: []string{"backup", "list"}},
 	{name: "backup run", pos: []string{"backup", "run", "main-db"}},
 	{name: "state-backup", pos: []string{"state-backup"}},
+	{name: "key rotate", pos: []string{"key", "rotate"}},
 	{name: "approvals", pos: []string{"approvals"}},
 	{name: "approve", pos: []string{"approve", "ap1"}},
 	{name: "reject", pos: []string{"reject", "ap1"}},

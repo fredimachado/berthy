@@ -212,7 +212,7 @@ func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeTo
 	if cfg != "" {
 		config = " --config " + shellWord(cfg)
 	}
-	steps := []string{fmt.Sprintf("keep a copy of the encryption key off the server, in a password manager or your provisioning vault: %s > %s.key", read, env)}
+	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: " + keyCopyCommand(read, env)}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
 	}
@@ -222,6 +222,10 @@ func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeTo
 	}
 	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))
 }
+
+// keyCopyCommand is the shell command that copies the key off the server: read prints the key, and its output goes to a file
+// named for the environment. Setup and `key rotate` both print it, and neither prints the key.
+func keyCopyCommand(read, env string) string { return read + " > " + env + ".key" }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in
 // single quotes otherwise, with each single quote written as '\”.

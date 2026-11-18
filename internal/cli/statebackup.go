@@ -47,7 +47,12 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	defer stop()
 	rep, err := statebackup.Restore(ctx, statebackup.RestoreOptions{Endpoint: *endpoint, Region: *region, Bucket: *bucket, Object: *object,
 		Out: *dir, KeyFile: *keyFile, AccessKey: access, SecretKey: secret})
+	var mismatch *statebackup.KeyMismatchError
 	switch {
+	case errors.As(err, &mismatch):
+		// It names the key the snapshot needs, so the person knows which saved key to look for.
+		fmt.Fprintln(errout, terminalSafe(mismatch.Error()))
+		return 1
 	case errors.Is(err, state.ErrWrongKey):
 		fmt.Fprintln(errout, state.ErrWrongKey)
 		return 1
