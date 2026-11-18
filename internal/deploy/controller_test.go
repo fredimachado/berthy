@@ -254,6 +254,234 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 	}
 }
 
+func TestDeployRestoresManifestReplicasAfterScaleToZero(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := &positiveEngine{}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	// The role sets no replicas, so the manifest count is the default of one.
+	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	deployVersion := func(id, digit string) {
+		t.Helper()
+		req.RequestID = id
+		req.Version = "sha256:" + strings.Repeat(digit, 64)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			got, err := s.Operation(context.Background(), op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != "running" {
+				if got.State != "succeeded" {
+					t.Fatalf("%s: %s %s", id, got.State, got.Err)
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// engineService decodes the service spec the engine holds.
+	engineService := func() (int, string) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		var live struct {
+			Mode struct {
+				Replicated struct{ Replicas int }
+			}
+			TaskTemplate struct {
+				ContainerSpec struct{ Image string }
+			}
+		}
+		if err := json.Unmarshal(e.spec, &live); err != nil {
+			t.Fatal(err)
+		}
+		return live.Mode.Replicated.Replicas, live.TaskTemplate.ContainerSpec.Image
+	}
+	// scaleToZero does what berthy scale --replicas 0 does to the service: it sets the replicas the engine holds to zero.
+	scaleToZero := func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		var body map[string]any
+		if err := json.Unmarshal(e.spec, &body); err != nil {
+			t.Fatal(err)
+		}
+		body["Mode"].(map[string]any)["Replicated"].(map[string]any)["Replicas"] = float64(0)
+		spec, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.spec = spec
+	}
+	deployVersion("first", "a")
+	scaleToZero()
+	if replicas, _ := engineService(); replicas != 0 {
+		t.Fatalf("scaled service has %d replicas, want 0", replicas)
+	}
+	deployVersion("second", "b")
+	replicas, image := engineService()
+	if replicas != 1 {
+		t.Fatalf("redeploy left %d replicas, want the manifest count 1", replicas)
+	}
+	if !strings.Contains(image, strings.Repeat("b", 64)) {
+		t.Fatalf("redeploy image %q is not the second version", image)
+	}
+}
+
+// stoppedServiceEngine models Swarm for a service stopped at zero replicas: an update of such a service never reports an
+// update status, because there was no running task for Swarm to replace.
+type stoppedServiceEngine struct {
+	*positiveEngine
+	mu       sync.Mutex
+	noStatus bool
+}
+
+func (e *stoppedServiceEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	e.positiveEngine.mu.Lock()
+	var current struct {
+		Mode struct{ Replicated *struct{ Replicas int } }
+	}
+	stopped := json.Unmarshal(e.positiveEngine.spec, &current) == nil && current.Mode.Replicated != nil && current.Mode.Replicated.Replicas == 0
+	e.positiveEngine.mu.Unlock()
+	e.mu.Lock()
+	e.noStatus = stopped
+	e.mu.Unlock()
+	return e.positiveEngine.UpdateService(ctx, id, version, spec, auth)
+}
+
+func (e *stoppedServiceEngine) InspectService(ctx context.Context, name string) (engine.ServiceSnapshot, error) {
+	live, err := e.positiveEngine.InspectService(ctx, name)
+	if err != nil {
+		return live, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.noStatus {
+		live.UpdateStatus = engine.UpdateStatus{}
+	}
+	return live, nil
+}
+
+func TestDeployOverStoppedRoleSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := &stoppedServiceEngine{positiveEngine: &positiveEngine{}}
+	c := Controller{Engine: e, Store: s, Environment: "test"}
+	// The role sets no replicas, so the manifest count is the default of one.
+	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "1s", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	deployVersion := func(id, digit string) {
+		t.Helper()
+		req.RequestID = id
+		req.Version = "sha256:" + strings.Repeat(digit, 64)
+		op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			got, err := s.Operation(context.Background(), op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != "running" {
+				if got.State != "succeeded" {
+					t.Fatalf("%s: %s %s", id, got.State, got.Err)
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// scaleToZero does what berthy scale --replicas 0 does to the service: it sets the replicas the engine holds to zero.
+	scaleToZero := func() {
+		e.positiveEngine.mu.Lock()
+		defer e.positiveEngine.mu.Unlock()
+		var body map[string]any
+		if err := json.Unmarshal(e.positiveEngine.spec, &body); err != nil {
+			t.Fatal(err)
+		}
+		body["Mode"].(map[string]any)["Replicated"].(map[string]any)["Replicas"] = float64(0)
+		spec, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.positiveEngine.spec = spec
+	}
+	deployVersion("first", "a")
+	scaleToZero()
+	deployVersion("second", "b")
+	e.positiveEngine.mu.Lock()
+	defer e.positiveEngine.mu.Unlock()
+	var live struct {
+		Mode struct {
+			Replicated struct{ Replicas int }
+		}
+		TaskTemplate struct {
+			ContainerSpec struct{ Image string }
+		}
+	}
+	if err := json.Unmarshal(e.positiveEngine.spec, &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Mode.Replicated.Replicas != 1 {
+		t.Fatalf("redeploy left %d replicas, want the manifest count 1", live.Mode.Replicated.Replicas)
+	}
+	if !strings.Contains(live.TaskTemplate.ContainerSpec.Image, strings.Repeat("b", 64)) {
+		t.Fatalf("redeploy image %q is not the second version", live.TaskTemplate.ContainerSpec.Image)
+	}
+}
+
+func TestRecoverBarrierAcceptsStoppedServiceUpdate(t *testing.T) {
+	stopped := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"op"},"Mode":{"Replicated":{"Replicas":0}},"TaskTemplate":{"ContainerSpec":{"Image":"example/web"}}}`)
+	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"op"},"Mode":{"Replicated":{"Replicas":1}},"TaskTemplate":{"ContainerSpec":{"Image":"example/web"}}}`)
+	receipt, err := json.Marshal(struct {
+		ID   string          `json:"id"`
+		Spec json.RawMessage `json:"spec"`
+	}{"id", desired})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Swarm reports no update status for a service stopped at zero replicas, so the barrier must not wait for one.
+	e := &stoppedServiceEngine{positiveEngine: &positiveEngine{spec: desired}, noStatus: true}
+	c := Controller{Engine: e}
+	intent := state.Intent{Ordinal: 1, Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: stopped, Desired: desired, Phase: "verified", Receipt: receipt}
+	barrier := state.Intent{Desired: json.RawMessage(`{"Release":{"App":"web"}}`)}
+	if _, err = c.recoverBarrier(context.Background(), []state.Intent{intent}, barrier); err != nil {
+		t.Fatalf("barrier over a stopped service's update: %v", err)
+	}
+}
+
 func TestRecoveryKeepsLockOnForeignUpdate(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {

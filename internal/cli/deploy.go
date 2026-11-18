@@ -417,8 +417,8 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 				fmt.Fprintln(errout, "invalid --replicas")
 				return 2
 			}
-			if v < 1 {
-				fmt.Fprintln(errout, "invalid --replicas: must be at least 1")
+			if v < 0 {
+				fmt.Fprintln(errout, "invalid --replicas: must be 0 or more")
 				return 2
 			}
 			req.Replicas = &v

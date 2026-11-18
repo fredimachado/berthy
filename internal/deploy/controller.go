@@ -701,7 +701,7 @@ func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent,
 		if err = waitDrain(ctx, c.Engine, live.ID, i.Generation); err != nil {
 			return state.Outcome{}, err
 		}
-		if i.Kind == "update" && live.UpdateStatus.State != "completed" {
+		if i.Kind == "update" && updateHasTasks(i.Before) && live.UpdateStatus.State != "completed" {
 			return state.Outcome{}, errors.New("native update incomplete")
 		}
 	}

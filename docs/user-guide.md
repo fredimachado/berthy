@@ -1190,7 +1190,7 @@ berthy history api -e prod
 berthy wait api --healthy -e prod --timeout 5m
 ```
 
-It blocks until the app (or one `--role`) is healthy, or the timeout passes. The default is 2 minutes, the most is 10. Exit `0` means healthy. CI uses it after a restart or a scale.
+It blocks until the app (or one `--role`) is healthy, or the timeout passes. The default is 2 minutes, the most is 10. Exit `0` means healthy. A role scaled to 0 has nothing to wait for, so it counts as ready at once. CI uses it after a restart or a scale.
 
 #### Who did what
 
@@ -1393,10 +1393,12 @@ Rollback works for Compose apps too: it redeploys the Compose file stored with t
 berthy restart api -e prod
 berthy restart api -e prod --role web
 berthy scale api  -e prod --replicas 3 --role web
+berthy scale api -e prod --replicas 0 --role web
 ```
 
 - `restart` restarts the tasks of an image app, one role at a time (pass `--role` when the app has several). It restarts a Compose app's containers without recreating them (`--role` does not apply to a Compose app).
-- `scale` sets the replica count. It needs `--replicas` (at least 1) and works only on image apps. The manifest stays the source of truth, and a deploy applies its `replicas`, so change the manifest too.
+- A `restart` of a role at zero is refused. Scale it up first, or deploy.
+- `scale` sets the replica count. It needs `--replicas`, which can be 0 or more, and works only on image apps. `--replicas 0` stops the role: the command returns once its containers have stopped. `scale --replicas N`, or a `deploy`, brings it back. A `deploy` applies the manifest's `replicas`, so the manifest stays the source of truth: change it too if the count should change for good. While a role is at zero, its health checks keep running and fail like any outage, and its alerts are not muted. `ps` shows it at 0 running and 0 desired, and `wait` succeeds at once.
 
 Both need a `deploy` token and accept `--dry-run`.
 
@@ -1933,12 +1935,16 @@ berthy exec postgres -e prod --service postgres -i -- psql -U todo -d todo_check
 berthy exec postgres -e prod --service postgres -i -- dropdb -U todo todo_check
 ```
 
-If it looks right, load it into the real database. Stop the writers first. Berthy cannot scale an app to zero, so that one step is Docker's: `docker service scale todo-api-web=0` on the server. Bring the API back afterwards with `berthy scale api --replicas 2 --role web`. Then:
+If it looks right, load it into the real database. Stop the writers first, with Berthy:
 
 ```bash
+berthy scale api -e prod --replicas 0 --role web
 berthy exec postgres -e prod --service postgres -i -- \
   pg_restore -U todo -d todo --clean --if-exists --no-owner < latest.dump
+berthy scale api -e prod --replicas 2 --role web
 ```
+
+The last command brings the API back once the restore has finished and you have checked it, and a `deploy` of the app brings it back to the manifest's count.
 
 The dump streams from your laptop to `pg_restore`, and the command's exit code is `pg_restore`'s. If you lose the connection halfway, the session ends but `pg_restore` may keep running in the container: look at the database before you run it again.
 

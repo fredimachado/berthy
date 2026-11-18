@@ -390,8 +390,10 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
 		return withRole(err, i.Role)
 	}
-	if err = waitUpdate(ctx, e, i.Name, i.ServiceID); err != nil {
-		return err
+	if updateHasTasks(i.Before) {
+		if err = waitUpdate(ctx, e, i.Name, i.ServiceID); err != nil {
+			return err
+		}
 	}
 	if err = waitDrain(ctx, e, live.ID, i.Generation); err != nil {
 		return err
@@ -510,6 +512,19 @@ func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// updateHasTasks reports whether the spec an update replaces ran any replicas. Swarm reports an update's status only
+// for running tasks it replaces, so an update of a service stopped at zero replicas never reports "completed": it has
+// no update to wait for. A spec that cannot be read keeps the wait, the safe default.
+func updateHasTasks(before json.RawMessage) bool {
+	var v struct {
+		Mode struct{ Replicated *struct{ Replicas int } }
+	}
+	if json.Unmarshal(before, &v) != nil || v.Mode.Replicated == nil {
+		return true
+	}
+	return v.Mode.Replicated.Replicas != 0
 }
 
 func healthyImageOnce(ctx context.Context, e healthReader, id, image string, replicas int) error {

@@ -34,13 +34,47 @@ func TestRuntimeChangePreservesSpecAndSetsGeneration(t *testing.T) {
 	if err != nil || n != 3 || !json.Valid(desired) {
 		t.Fatalf("scale %d %v", n, err)
 	}
+	zero := 0
+	desired, n, err = runtimeSpec(original, binding, "stage", "op", "scale", &zero)
+	if err != nil || n != 0 {
+		t.Fatalf("scale to zero: %d %v", n, err)
+	}
+	var stopped map[string]any
+	if json.Unmarshal(desired, &stopped) != nil || stopped["Mode"].(map[string]any)["Replicated"].(map[string]any)["Replicas"] != float64(0) {
+		t.Fatalf("scale to zero kept the count: %s", desired)
+	}
+	idle := json.RawMessage(strings.Replace(string(original), `"Replicas":2`, `"Replicas":0`, 1))
+	desired, n, err = runtimeSpec(idle, binding, "stage", "op", "restart", nil)
+	if err == nil || err.Error() != "role is stopped" {
+		t.Fatalf("restart at zero: %d %v", n, err)
+	}
+	two := 2
+	desired, n, err = runtimeSpec(idle, binding, "stage", "op", "scale", &two)
+	if err != nil || n != 2 {
+		t.Fatalf("scale from zero: %d %v", n, err)
+	}
 }
 func TestRuntimeRejectsForeignIdentityAndBadCount(t *testing.T) {
 	b := state.Binding{App: "app", Role: "web", Name: "name"}
-	spec := json.RawMessage(`{"Name":"other","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":1}}}`)
-	n := 0
-	if _, _, err := runtimeSpec(spec, b, "stage", "op", "scale", &n); err == nil {
-		t.Fatal("accepted invalid service/count")
+	own := json.RawMessage(`{"Name":"name","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	foreign := json.RawMessage(`{"Name":"other","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	one, negative, tooMany := 1, -1, 1001
+	for _, tc := range []struct {
+		name  string
+		spec  json.RawMessage
+		count *int
+		want  string
+	}{
+		{"foreign identity", foreign, &one, "service identity mismatch"},
+		{"negative count", own, &negative, "invalid replica count"},
+		{"count above limit", own, &tooMany, "invalid replica count"},
+		{"missing count", own, nil, "invalid replica count"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := runtimeSpec(tc.spec, b, "stage", "op", "scale", tc.count); err == nil || err.Error() != tc.want {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -125,6 +159,40 @@ func TestRestartJournalAndRecoveryLock(t *testing.T) {
 				t.Fatal("completed lock remains")
 			}
 		})
+	}
+}
+func TestScaleToZeroStopsTheRole(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	key := filepath.Join(dir, "key")
+	os.WriteFile(key, make([]byte, 32), 0600)
+	s, err := state.Open(dir, key, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+	first, _, err := s.Admit(ctx, state.Admission{RequestID: "first", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "scale", ActorID: "a", Kind: "scale", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &runtimeEngine{store: s, op: op.ID, spec: json.RawMessage(`{"Name":"app-web","TaskTemplate":{"ContainerSpec":{"Image":"example/app:tag"}},"Mode":{"Replicated":{"Replicas":1}}}`)}
+	c := Controller{Store: s, Engine: f, Environment: "stage"}
+	zero := 0
+	out := c.runOperation(ctx, op, Actor{}, Request{Kind: "scale", App: "app", Replicas: &zero})
+	if out.State != "succeeded" || f.updates != 1 {
+		t.Fatalf("%s %s updates=%d", out.State, out.Err, f.updates)
+	}
+	var stopped map[string]any
+	if json.Unmarshal(f.spec, &stopped) != nil || stopped["Mode"].(map[string]any)["Replicated"].(map[string]any)["Replicas"] != float64(0) {
+		t.Fatalf("role not stopped: %s", f.spec)
 	}
 }
 func TestRedactExecOutputBeforeTruncation(t *testing.T) {
@@ -403,6 +471,52 @@ func TestWaitWithoutRoleChecksAllBindings(t *testing.T) {
 	defer cancel()
 	if err = c.Wait(deadline, "app", ""); err == nil || strings.Contains(err.Error(), "role required") {
 		t.Fatalf("did not inspect each role: %v", err)
+	}
+}
+
+// waitFixture is a finished release whose one web role is bound to service "one" with ServiceID "id".
+func waitFixture(t *testing.T) *state.Store {
+	t.Helper()
+	s := openStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := []state.Binding{{App: "app", Role: "web", Name: "one", ServiceID: "id"}}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: bindings}}); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A role stopped by scale --replicas 0 has no replicas and no berthy.operation label, and is ready at once.
+func TestWaitReturnsAtOnceForStoppedRole(t *testing.T) {
+	c := Controller{Store: waitFixture(t), Engine: &runtimeEngine{spec: []byte(`{"Name":"one","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":0}}}`)}}
+	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	if err := c.Wait(deadline, "app", ""); err != nil {
+		t.Fatalf("stopped role not ready: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stopped role waited %v", elapsed)
+	}
+}
+
+func TestWaitRefusesMissingOrNegativeReplicas(t *testing.T) {
+	for name, spec := range map[string]string{
+		"no mode":           `{"Name":"one","TaskTemplate":{"ContainerSpec":{}}}`,
+		"negative replicas": `{"Name":"one","TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":-1}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Controller{Store: waitFixture(t), Engine: &runtimeEngine{spec: []byte(spec)}}
+			deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := c.Wait(deadline, "app", ""); err == nil || err.Error() != "invalid bound service" {
+				t.Fatalf("got %v, want invalid bound service", err)
+			}
+		})
 	}
 }
 

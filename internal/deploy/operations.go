@@ -50,7 +50,7 @@ func runtimeSpec(raw json.RawMessage, b state.Binding, environment, operation, k
 		return nil, 0, errors.New("invalid replica count")
 	}
 	n, err := strconv.Atoi(string(num))
-	if err != nil || n < 1 || n > 1000 {
+	if err != nil || n < 0 || n > 1000 {
 		return nil, 0, errors.New("invalid replica count")
 	}
 	for _, target := range []map[string]any{spec, container} {
@@ -72,6 +72,9 @@ func runtimeSpec(raw json.RawMessage, b state.Binding, environment, operation, k
 	}
 	switch kind {
 	case "restart":
+		if n == 0 {
+			return nil, 0, errors.New("role is stopped")
+		}
 		var current uint64
 		if v, ok := task["ForceUpdate"]; ok {
 			num, ok := v.(json.Number)
@@ -85,7 +88,7 @@ func runtimeSpec(raw json.RawMessage, b state.Binding, environment, operation, k
 		}
 		task["ForceUpdate"] = current + 1
 	case "scale":
-		if count == nil || *count < 1 || *count > 1000 {
+		if count == nil || *count < 0 || *count > 1000 {
 			return nil, 0, errors.New("invalid replica count")
 		}
 		n = *count
@@ -322,8 +325,12 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 			}
 			Mode struct{ Replicated *struct{ Replicas int } }
 		}
-		if json.Unmarshal(live.Spec, &v) != nil || v.Name != b.Name || v.Mode.Replicated == nil || v.Mode.Replicated.Replicas < 1 {
+		if json.Unmarshal(live.Spec, &v) != nil || v.Name != b.Name || v.Mode.Replicated == nil || v.Mode.Replicated.Replicas < 0 {
 			return errors.New("invalid bound service")
+		}
+		if v.Mode.Replicated.Replicas == 0 {
+			// A role stopped by scale --replicas 0 has no replicas to wait for; it is ready at once.
+			continue
 		}
 		generation := v.TaskTemplate.ContainerSpec.Labels["berthy.operation"]
 		if generation == "" {

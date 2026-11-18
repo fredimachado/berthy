@@ -242,6 +242,27 @@ func TestUpdateWaitsForNativeCompletion(t *testing.T) {
 	}
 }
 
+func TestUpdateHasTasks(t *testing.T) {
+	tests := []struct {
+		name, before string
+		want         bool
+	}{
+		{"stopped at zero replicas", `{"Mode":{"Replicated":{"Replicas":0}}}`, false},
+		{"running replicas", `{"Mode":{"Replicated":{"Replicas":1}}}`, true},
+		{"negative replicas", `{"Mode":{"Replicated":{"Replicas":-1}}}`, true},
+		{"no mode", `{"Name":"x"}`, true},
+		{"global mode", `{"Mode":{"Global":{}}}`, true},
+		{"unreadable spec", `not json`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := updateHasTasks(json.RawMessage(tt.before)); got != tt.want {
+				t.Fatalf("updateHasTasks(%s) = %v, want %v", tt.before, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAdoptedHealthRequiresPinnedTaskImage(t *testing.T) {
 	e := healthFake{tasks: []engine.ServiceTask{{ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Image: "repo@sha256:old"}}, status: "healthy"}
 	if healthyImageOnce(context.Background(), e, "s", "repo@sha256:new", 1) == nil {

@@ -122,7 +122,39 @@ func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	}
 }
 
-func TestScaleRefusesReplicasBelowOneBeforeAnyRequest(t *testing.T) {
+func TestScaleSendsZeroReplicas(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/v1/environments/dev/scale" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body %q is not JSON: %v", raw, err)
+		}
+		if got, ok := body["replicas"]; !ok || got != float64(0) {
+			t.Errorf("body %q, want replicas 0", raw)
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	var out, errs bytes.Buffer
+	got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", "0", "--dry-run"}, &out, &errs)
+	if got != 0 {
+		t.Fatalf("exit %d: %s", got, errs.String())
+	}
+	if calls.Load() == 0 {
+		t.Fatal("no request reached the server")
+	}
+}
+
+func TestScaleRefusesNegativeReplicasBeforeAnyRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("request sent for an invalid replica count: %s %s", r.Method, r.URL.Path)
 	}))
@@ -132,8 +164,7 @@ func TestScaleRefusesReplicasBelowOneBeforeAnyRequest(t *testing.T) {
 	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	cases := map[string]string{
-		"0":  "invalid --replicas: must be at least 1",
-		"-1": "invalid --replicas: must be at least 1",
+		"-1": "invalid --replicas: must be 0 or more",
 		"x":  "invalid --replicas",
 	}
 	for replicas, want := range cases {
