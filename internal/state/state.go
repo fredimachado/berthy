@@ -158,7 +158,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 15) {
+	if !fresh && (version < 1 || version > 16) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -285,7 +285,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=15`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=16`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
