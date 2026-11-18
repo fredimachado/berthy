@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -66,8 +64,9 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 // NewDeploymentHandlerWithBackups is NewDeploymentHandlerWithJobs for an agent that backs up volumes. backups may be nil, in
 // which case the backup routes answer that backups are unavailable.
 func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups) http.Handler {
-	legacy := handlerWithState(c, e, col, d, tel)
-	gate := &approvalGate{c: c, d: d}
+	tokens := newTokenSource(c, storeOf(d))
+	legacy := handlerWithTokens(c, e, col, d, tel, tokens)
+	gate := &approvalGate{c: c, d: d, tokens: tokens}
 	// serve carries out a request that is authenticated, in scope and not held for approval.
 	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
 		ctx := r.Context()
@@ -489,6 +488,8 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
 			}
 			json.NewEncoder(w).Encode(answer)
+		case rest[0] == "tokens":
+			serveTokens(w, r, rest, c, d.Store, tokens, sa)
 		case rest[0] == "jobs":
 			serveJobs(w, r, rest, d, sched, sa)
 		case rest[0] == "backups":
@@ -541,9 +542,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		actor, scope, ok := authenticate(c, r)
-		if !ok {
-			writeError(w, 401, "unauthorized", "unauthorized")
+		actor, scope, status := authenticate(tokens, r)
+		if status != http.StatusOK {
+			refuseToken(w, status)
 			return
 		}
 		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
@@ -570,6 +571,12 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		// The state key is a person's to replace, on any environment: an agent token is refused, never held for approval.
 		if actor.Agent && isKeyRotation(rest) {
 			writeError(w, 403, "forbidden", "an agent token cannot rotate the state key")
+			return
+		}
+		// An agent token never makes or revokes a token, so an AI agent cannot mint access. The refusal comes before the hold:
+		// the request is not held for a person to approve, and it is refused on an unprotected environment too.
+		if rest[0] == "tokens" && method != "GET" && actor.Agent {
+			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
 			return
 		}
 		// An agent token on a protected environment does not change it: the request is held until a person approves it.
@@ -674,6 +681,16 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
 		required = "deploy"
 		method = "POST"
+	case len(rest) == 1 && rest[0] == "tokens":
+		required = "admin"
+		if httpMethod == "GET" {
+			method = "GET"
+		} else {
+			method = "POST"
+		}
+	case len(rest) == 2 && rest[0] == "tokens":
+		required = "admin"
+		method = "DELETE"
 	case len(rest) == 1 && rest[0] == "approvals":
 		required = "read"
 		method = "GET"
@@ -685,28 +702,22 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	}
 	return required, method, true
 }
-func authenticate(c Config, r *http.Request) (deploy.Actor, string, bool) {
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	sum := sha256.Sum256([]byte(raw))
-	var found *Token
-	for i := range c.Tokens {
-		b, err := hex.DecodeString(c.Tokens[i].Digest)
-		if err == nil && subtle.ConstantTimeCompare(sum[:], b) == 1 {
-			found = &c.Tokens[i]
-		}
+
+// authenticate finds the token a request carries and the actor it stands for. status is as tokenSource.identify gives it: 200
+// when the request is authenticated.
+func authenticate(tokens *tokenSource, r *http.Request) (actor deploy.Actor, scope string, status int) {
+	token, status := tokens.identify(r)
+	if status != http.StatusOK {
+		return deploy.Actor{}, "", status
 	}
-	if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !tokenPattern(c.Environment).MatchString(raw) || found == nil {
-		return deploy.Actor{}, "", false
-	}
-	return tokenActor(*found, sum, r.RemoteAddr), found.Scope, true
+	sum, _ := token.sum()
+	return tokenActor(token.Token, sum, r.RemoteAddr), token.Scope, http.StatusOK
 }
 
 // tokenActor is the actor a token stands for. sum is the SHA-256 of the token's value, which is also its digest. The actor's
 // ID is a fingerprint of the digest, so the ID never reveals what verifies the token.
 func tokenActor(t Token, sum [32]byte, remote string) deploy.Actor {
-	fingerprint := sha256.Sum256(sum[:])
-	id := hex.EncodeToString(fingerprint[:])
+	id := tokenID(sum)
 	name := t.Name
 	if name == "" {
 		name = "token:" + id[:12]

@@ -119,6 +119,11 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	w.maintainHelper(ctx, mp)
 	out := w.builtins(ctx, ingressErr == nil, mp)
 	out = append(out, w.credentialChecks(mp, ingress)...)
+	tokenChecks, tokenErr := w.tokenChecks(ctx)
+	if tokenErr != nil {
+		return nil
+	}
+	out = append(out, tokenChecks...)
 	if mp != nil {
 		out = append(out, w.manifestChecks(ctx, *mp)...)
 	}

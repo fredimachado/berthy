@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,9 +21,11 @@ import (
 // person approves them. serve is the handler that carries out an ordinary request; the gate calls it for the dry run that
 // produces a plan and for the approved request itself, so the plan a person reviews is the plan the route's own dry run gives.
 type approvalGate struct {
-	c     Config
-	d     *deploy.Controller
-	serve func(http.ResponseWriter, *http.Request, deploy.Actor, []string)
+	c Config
+	d *deploy.Controller
+	// tokens is every token that may authenticate now, which is who a held request can still be carried out for.
+	tokens *tokenSource
+	serve  func(http.ResponseWriter, *http.Request, deploy.Actor, []string)
 }
 
 var approvalLevels = map[string]int{"read": 1, "deploy": 2, "admin": 3}
@@ -438,23 +439,27 @@ func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider st
 	}
 }
 
-// requester is the actor an approval was requested by, from the configured tokens. ok is false when no token has the
-// approval's fingerprint any more. The name and the address are the ones recorded at the request.
-func (g *approvalGate) requester(a state.Approval) (deploy.Actor, string, bool) {
-	for _, t := range g.c.Tokens {
-		b, err := hex.DecodeString(t.Digest)
-		if err != nil || len(b) != 32 {
+// requester is the actor an approval was requested by, from the tokens that work now, whichever source defines them. ok is
+// false when no such token has the approval's fingerprint any more: it was removed from the configuration, revoked or has
+// expired. err is set when the tokens could not be read. The name and the address are the ones recorded at the request.
+func (g *approvalGate) requester(ctx context.Context, a state.Approval) (actor deploy.Actor, scope string, ok bool, err error) {
+	entries, err := g.tokens.entries(ctx)
+	if err != nil {
+		return deploy.Actor{}, "", false, err
+	}
+	now := g.c.now()
+	for _, e := range entries {
+		sum, valid := e.sum()
+		if !valid || e.expired(now) {
 			continue
 		}
-		var sum [32]byte
-		copy(sum[:], b)
-		actor := tokenActor(t, sum, a.Remote)
+		actor := tokenActor(e.Token, sum, a.Remote)
 		if actor.ID == a.ActorID {
 			actor.Name = a.ActorName
-			return actor, t.Scope, true
+			return actor, e.Scope, true, nil
 		}
 	}
-	return deploy.Actor{}, "", false
+	return deploy.Actor{}, "", false, nil
 }
 
 // approve carries out the request an approval holds, as the agent that made it. It first plans the request again and refuses
@@ -468,7 +473,11 @@ func (g *approvalGate) approve(w http.ResponseWriter, r *http.Request, decider s
 	}
 	rest := restOf(a.Path)
 	required, method, known := routeScope(rest, a.Method)
-	actor, scope, found := g.requester(a)
+	actor, scope, found, err := g.requester(ctx, a)
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
 	if !found || !known || method != a.Method || approvalLevels[scope] < approvalLevels[required] {
 		fail("the requesting token no longer exists or no longer has the scope; ask for a new request", "the requesting token is gone or lost its scope")
 		return

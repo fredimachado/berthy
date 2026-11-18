@@ -5,6 +5,7 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
+	"berthy/internal/state"
 	"berthy/internal/metrics"
 	"berthy/internal/telemetry"
 	"berthy/internal/version"
@@ -12,7 +13,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -183,7 +183,17 @@ func (c Config) Validate() error {
 		}
 	}
 	seen := map[string]bool{}
+	names := map[string]bool{}
 	for _, t := range c.Tokens {
+		if t.Name != "" {
+			if !ValidTokenName(t.Name) {
+				return fmt.Errorf("invalid token name")
+			}
+			if names[t.Name] {
+				return fmt.Errorf("duplicate token name")
+			}
+			names[t.Name] = true
+		}
 		digestKey := strings.ToLower(t.Digest)
 		if seen[digestKey] {
 			return fmt.Errorf("duplicate token digest")
@@ -224,6 +234,19 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 	return handlerWithState(c, e, collector, nil, nil)
 }
 func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter) http.Handler {
+	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)))
+}
+
+// storeOf is the state of a controller, or nil for an agent without state.
+func storeOf(d *deploy.Controller) *state.Store {
+	if d == nil {
+		return nil
+	}
+	return d.Store
+}
+
+// handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
+func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if r.Method != "GET" {
@@ -417,7 +440,7 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 		_ = json.NewEncoder(w).Encode(result)
 	})
 	// Every route the router accepts requires read scope, so one authorizer is built once.
-	readAuthorized := authorize(c, tokenPattern(c.Environment), "read", handler)
+	readAuthorized := authorize(tokens, "read", handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if serveHealth(w, r) {
@@ -545,32 +568,30 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
 	}
 }
 
-func authorize(c Config, pattern *regexp.Regexp, required string, next http.Handler) http.Handler {
+func authorize(tokens *tokenSource, required string, next http.Handler) http.Handler {
 	levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sum := sha256.Sum256([]byte(raw))
-		scope := 0
-		for _, t := range c.Tokens {
-			digest, err := hex.DecodeString(t.Digest)
-			if err == nil && subtle.ConstantTimeCompare(sum[:], digest) == 1 {
-				if levels[t.Scope] > scope {
-					scope = levels[t.Scope]
-				}
-			}
-		}
-		if len(parts) < 3 || parts[2] != c.Environment || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !pattern.MatchString(raw) || scope == 0 {
-			writeError(w, 401, "unauthorized", "unauthorized")
+		token, status := tokens.identify(r)
+		if status != http.StatusOK {
+			refuseToken(w, status)
 			return
 		}
-		if levels[required] == 0 || scope < levels[required] {
+		if levels[required] == 0 || levels[token.Scope] < levels[required] {
 			writeError(w, 403, "forbidden", "forbidden")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// refuseToken answers a request whose token tokenSource.identify did not accept.
+func refuseToken(w http.ResponseWriter, status int) {
+	if status == http.StatusServiceUnavailable {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	writeError(w, 401, "unauthorized", "unauthorized")
 }
 
 func diskStatus(mounts []metrics.Mount, err error) string {

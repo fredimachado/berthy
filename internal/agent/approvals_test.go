@@ -166,9 +166,9 @@ func TestAuthenticateCarriesTheAgentMark(t *testing.T) {
 	for token, want := range map[string]bool{apAdminToken: false, apDeployToken: false, apAgentDeploy: true, apAgentAdmin: true} {
 		r := httptest.NewRequest("GET", "/v1/environments/lab/audit", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
-		actor, _, ok := authenticate(f.cfg, r)
-		if !ok || actor.Agent != want {
-			t.Errorf("%s: agent=%v ok=%v", token[:12], actor.Agent, ok)
+		actor, _, status := authenticate(newTokenSource(f.cfg, f.s), r)
+		if status != http.StatusOK || actor.Agent != want {
+			t.Errorf("%s: agent=%v status=%d", token[:12], actor.Agent, status)
 		}
 	}
 }

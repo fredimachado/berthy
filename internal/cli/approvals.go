@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -27,8 +26,6 @@ const exitHeld = 3
 
 // approvalsNow is the clock of the approvals table. Tests replace it.
 var approvalsNow = time.Now
-
-var tokenNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
 // runAgentToken runs "agent token -e ENV [--agent] [--name NAME] [--scope read|deploy|admin]": it makes a token, and prints it
 // once, with its digest and the object that goes into the agent's configuration.
@@ -69,7 +66,7 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "invalid scope: use read, deploy or admin")
 		return 2
 	}
-	if name != "" && !tokenNamePattern.MatchString(name) {
+	if name != "" && !agent.ValidTokenName(name) {
 		fmt.Fprintln(errout, "invalid name: use letters, digits, dots, dashes and underscores")
 		return 2
 	}

@@ -88,14 +88,17 @@ var changeFlags = map[string][]string{
 	"approvals":        withRemoteFlags("--all"),
 	"approve":          withRemoteFlags(),
 	"reject":           withRemoteFlags("--message"),
+	"token create":     withRemoteFlags("--dry-run", "--scope", "--agent", "--expires"),
+	"token list":       withRemoteFlags(),
+	"token revoke":     withRemoteFlags("--dry-run"),
 	"config show":      {"-e", "--manifest-dir", "--json"},
 	"config validate":  {"-e", "--manifest-dir"},
 }
 
 type commandFlags struct {
-	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into string
-	bytes, format                                                                                                string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive                 bool
+	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires string
+	bytes, format                                                                                                                string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent                          bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
 	pos, command, given, versions []string
@@ -135,9 +138,11 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.tunnel = true
 		case "--all":
 			f.all = true
+		case "--agent":
+			f.agent = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -180,6 +185,10 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.to = v
 			case "--replicas":
 				f.replicas = v
+			case "--scope":
+				f.scope = v
+			case "--expires":
+				f.expires = v
 			}
 		default:
 			if strings.HasPrefix(a, "-") {
@@ -247,6 +256,10 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		}
 		if len(pos) == 2 && sub == "run" {
 			return "backup run", true
+		}
+	case "token":
+		if len(pos) == 2 && (sub == "create" || sub == "revoke") || len(pos) == 1 && sub == "list" {
+			return "token " + sub, true
 		}
 	case "secret":
 		if len(pos) == 1 && sub == "list" {
@@ -364,6 +377,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 	u, token, prefix := target.Base, target.Token, target.Prefix
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
+	}
+	if cmd == "token" {
+		return runTokenCommand(f, u, prefix, token, out, errout)
 	}
 	if cmd == "job" {
 		return runJobCommand(f, u, prefix, token, out, errout)

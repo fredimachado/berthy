@@ -14,7 +14,7 @@ import (
 )
 
 // deploymentCommands are the commands runDeployment serves: they call the agent and read their own flags.
-var deploymentCommands = []string{"config", "deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup", "key", "approvals", "approve", "reject"}
+var deploymentCommands = []string{"config", "deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "wait", "history", "diagnostics", "audit", "lock", "recovery", "secret", "ingress", "alerts", "job", "backup", "restore", "state-backup", "key", "approvals", "approve", "reject", "token"}
 
 // readCommandNames are the commands Run serves with a GET.
 var readCommandNames = []string{"ps", "describe", "stats", "logs", "df", "doctor", "checks", "jobs", "agent-info"}

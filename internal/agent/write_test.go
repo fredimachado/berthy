@@ -100,8 +100,8 @@ func TestTokenIdentityDoesNotRevealVerifier(t *testing.T) {
 	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/environments/lab/audit", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
-	actor, _, ok := authenticate(c, r)
-	if !ok || actor.ID == Digest(token) {
+	actor, _, status := authenticate(newTokenSource(c, nil), r)
+	if status != http.StatusOK || actor.ID == Digest(token) {
 		t.Fatal("token verifier exposed as actor identity")
 	}
 }

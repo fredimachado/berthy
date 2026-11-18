@@ -155,7 +155,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 14) {
+	if !fresh && (version < 1 || version > 15) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -187,7 +187,9 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS state_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, trigger TEXT NOT NULL, scheduled INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, finished INTEGER NOT NULL, status TEXT NOT NULL, object_key TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, detail TEXT NOT NULL);
  CREATE UNIQUE INDEX IF NOT EXISTS state_backups_occurrence ON state_backups(environment, scheduled) WHERE scheduled <> 0;
  CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, environment TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, request_sealed BLOB NOT NULL, summary TEXT NOT NULL, plan BLOB NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL, status TEXT NOT NULL, decided_by TEXT NOT NULL, decided_at INTEGER NOT NULL, result TEXT NOT NULL);
- CREATE INDEX IF NOT EXISTS approvals_environment ON approvals(environment, status, created);`); err != nil {
+ CREATE INDEX IF NOT EXISTS approvals_environment ON approvals(environment, status, created);
+ CREATE TABLE IF NOT EXISTS tokens (environment TEXT NOT NULL, name TEXT NOT NULL, digest TEXT NOT NULL UNIQUE, scope TEXT NOT NULL, agent INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER, PRIMARY KEY(environment,name));
+ CREATE TABLE IF NOT EXISTS token_use (environment TEXT NOT NULL, digest TEXT NOT NULL, last_used INTEGER NOT NULL, PRIMARY KEY(environment,digest));`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
@@ -279,7 +281,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=14`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=15`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
