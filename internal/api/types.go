@@ -29,6 +29,9 @@ type Replica struct {
 	Health       string `json:"health"`
 	RestartCount *int   `json:"restart_count,omitempty"`
 	OOMKilled    *bool  `json:"oom_killed,omitempty"`
+	// ExitCode is the exit code of an exited Compose container, read from its status. Nil for a running replica, or when the
+	// status does not say.
+	ExitCode *int `json:"exit_code,omitempty"`
 	// Local is true when the container was inspected on this node. It is not part of the API.
 	Local bool `json:"-"`
 }

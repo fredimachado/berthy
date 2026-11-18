@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,9 +89,29 @@ func (e *Engine) PublishedPorts(ctx context.Context) ([]PublishedPort, error) {
 }
 
 type container struct {
-	ID, Image, State string
-	Labels           map[string]string
+	ID, Image, State, Status string
+	Labels                   map[string]string
 }
+
+// ExitCodeFromStatus reads the exit code from the status Docker's container list gives an exited container, such as
+// "Exited (137) 2 minutes ago". Any other status reports false.
+func ExitCodeFromStatus(status string) (int, bool) {
+	const prefix = "Exited ("
+	if !strings.HasPrefix(status, prefix) {
+		return 0, false
+	}
+	rest := status[len(prefix):]
+	end := strings.IndexByte(rest, ')')
+	if end < 0 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(rest[:end])
+	if err != nil || code < 0 {
+		return 0, false
+	}
+	return code, true
+}
+
 type service struct {
 	ID   string
 	Spec struct {
@@ -188,6 +209,9 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 			i = len(a.Roles) - 1
 		}
 		r := api.Replica{ContainerID: c.ID, Image: c.Image, State: c.State, Health: "unknown"}
+		if code, ok := ExitCodeFromStatus(c.Status); ok && c.State == "exited" {
+			r.ExitCode = &code
+		}
 		if c.State == "running" {
 			a.Roles[i].Running++
 		}
