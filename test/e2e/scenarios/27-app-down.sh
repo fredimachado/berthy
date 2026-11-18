@@ -1,8 +1,9 @@
 #!/bin/bash
 # 27-app-down proves the down check of a Compose service. The service's container is stopped by hand: its check
-# down:<project>/<service> is ok for the first two minutes and critical after them, one alert reaches the fake Telegram, and
-# the alert says the container exited. Starting the container again sends the recovery. A deploy and a restart of an image
-# app, which change its containers, send no down alert, and the image app's own check stays ok.
+# down:<project>/<service> is unknown for the first two minutes and critical after them, one alert reaches the fake Telegram,
+# and the alert gives the exit code (137, killed after the stop timeout). Starting the container again sends the recovery.
+# A deploy and a restart of an image app, which change its containers, send no down alert, and the image app's own check
+# stays ok. A Compose one-shot that finished with code 0 is not wanted, so its check reads ok and never alerts.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -67,6 +68,9 @@ services:
   side:
     image: $REG/e2e/web@$WEB_V1_DIGEST
     entrypoint: ["sleep", "3600"]
+  job:
+    image: $REG/e2e/web@$WEB_V1_DIGEST
+    entrypoint: ["true"]
 YML
 
 out=$(adm deploy db --manifest-dir "$MAN" 2>&1); code=$?
@@ -78,6 +82,10 @@ expect_code "deploy the image app web at v1" 0 "$code" "$out"
 if wait_state "$check" ok 300; then pass "the service's down check reads ok while its container runs"; else fail "the service's down check reads ok while its container runs" "$(adm checks 2>&1)"; fi
 cid=$(d ps -q --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=side | head -n 1)
 expect_eq "the service has one running container" "1" "$(printf '%s\n' "$cid" | grep -c .)"
+
+# The one-shot service runs true and finishes with code 0: nothing is wanted of it, so its check never alerts.
+jid=$(d ps -aq --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=job | head -n 1)
+expect_eq "the one-shot finished with code 0" "0" "$(d inspect --format '{{.State.ExitCode}}' "$jid" 2>/dev/null)"
 
 # Stop the container by hand. Its service has no restart policy, so nothing starts it again.
 tg_reset
@@ -92,7 +100,7 @@ expect_eq "one critical alert reaches the chat" "1" "$(wait_messages "🔴" 1 30
 text=$(tg_messages | jq -r --arg c "$check" '[.[] | select(.text | contains($c))][0].text // ""')
 echo "  message: $(printf '%s' "$text" | tr '\n' '|')"
 expect_contains "the alert names the environment and the check" "$text" "$ENVN $check"
-expect_contains "the alert says the container exited" "$text" "container exited for "
+expect_contains "the alert gives the exit code of the stopped container" "$text" "exited with code 137 for "
 expect_contains "the alert is critical" "$text" "🔴"
 
 # Still stopped: no second alert, since reminders are every four hours by default.
@@ -115,5 +123,9 @@ expect_code "deploy v2 over the running app" 0 "$code" "$out"
 if wait_state "down:web/main" ok 300; then pass "the image app's down check reads ok after the restart and the deploy"; else fail "the image app's down check reads ok after the restart and the deploy" "$(adm checks 2>&1)"; fi
 sleep 10
 expect_eq "a restart and a deploy send no down alert" "$before" "$(down_messages "")"
+
+# The finished one-shot is never judged down: its check reads ok and no message names it.
+if wait_state "down:$proj/job" ok 300; then pass "the one-shot's down check reads ok, as nothing is wanted of it"; else fail "the one-shot's down check reads ok" "$(adm checks 2>&1)"; fi
+expect_eq "the finished one-shot sends no down alert" "0" "$(down_messages "/job")"
 
 finish

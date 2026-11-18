@@ -22,6 +22,11 @@ func replica(id, state, health string) api.Replica {
 	return api.Replica{ContainerID: id, State: state, Health: health}
 }
 
+// exitedWith returns a stopped Compose container that exited with code.
+func exitedWith(id string, code int) api.Replica {
+	return api.Replica{ContainerID: id, State: "exited", Health: "none", ExitCode: &code}
+}
+
 // expectDown runs check and compares its state and detail.
 func expectDown(t *testing.T, check Check, state, detail string) {
 	t.Helper()
@@ -40,11 +45,11 @@ func TestDownCheckIsCriticalOnlyAfterTwoMinutes(t *testing.T) {
 
 	now = downT0
 	w.Observe(now, short, nil)
-	expectDown(t, check, OK, "0 of 2 replicas running, not yet confirmed")
+	expectDown(t, check, Unknown, "0 of 2 replicas running, not yet confirmed")
 
 	now = downT0.Add(119 * time.Second)
 	w.Observe(now, short, nil)
-	expectDown(t, check, OK, "0 of 2 replicas running, not yet confirmed")
+	expectDown(t, check, Unknown, "0 of 2 replicas running, not yet confirmed")
 
 	now = downT0.Add(2 * time.Minute)
 	w.Observe(now, short, nil)
@@ -94,7 +99,7 @@ func TestDownCheckIsUnknownDuringAnOperationAndStartsAgain(t *testing.T) {
 	// The operation has ended. The two minutes of confirmation count from now, not from before the operation.
 	now = downT0.Add(3 * time.Minute)
 	w.Observe(now, short, nil)
-	expectDown(t, check, OK, "0 of 2 replicas running, not yet confirmed")
+	expectDown(t, check, Unknown, "0 of 2 replicas running, not yet confirmed")
 	now = downT0.Add(5 * time.Minute)
 	w.Observe(now, short, nil)
 	expectDown(t, check, Critical, "0 of 2 replicas running for 2m")
@@ -216,4 +221,61 @@ func TestDownAlertsOnceAndRecovers(t *testing.T) {
 	w.Observe(r.now, running, nil)
 	r.step(30 * time.Second)
 	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: container exited for 2m", "✅ lab down:e2e-db/side recovered")
+}
+
+func TestDownSaysTheExitCodeAndSkipsFinishedOneShots(t *testing.T) {
+	ref := api.AppRef{Kind: "compose", Name: "shop-db"}
+	var now time.Time
+	w := NewDownWatch(func() time.Time { return now })
+	apps := []api.App{
+		downRole(ref, "db", nil, exitedWith("c1", 137)),
+		// A one-shot that finished with code 0 is neither wanted nor down.
+		downRole(ref, "job", nil, exitedWith("c2", 0)),
+		// A service with a running container and a finished one-shot wants the running one only.
+		downRole(ref, "web", nil, replica("c3", "running", "none"), exitedWith("c4", 0)),
+	}
+	now = downT0
+	w.Observe(now, apps, nil)
+	now = downT0.Add(2 * time.Minute)
+	w.Observe(now, apps, nil)
+	expectDown(t, w.Check(ref, "db"), Critical, "exited with code 137 for 2m")
+	expectDown(t, w.Check(ref, "job"), OK, "no replicas wanted")
+	expectDown(t, w.Check(ref, "web"), OK, "1 of 1 replicas running")
+}
+
+func TestDownNotifiedFailureStaysCriticalAcrossAnAgentRestart(t *testing.T) {
+	r := newRig(t, openStore(t))
+	ref := api.AppRef{Kind: "compose", Name: "e2e-db"}
+	w := NewDownWatch(func() time.Time { return r.now })
+	r.checks = []Check{w.Check(ref, "side")}
+	stopped := []api.App{downRole(ref, "side", nil, exitedWith("c1", 137))}
+	w.Observe(r.now, stopped, nil)
+	for i := 0; i < 4; i++ {
+		r.step(30 * time.Second)
+		w.Observe(r.now, stopped, nil)
+	}
+	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
+
+	// The agent restarts: a new monitor reads the stored states, and a new watch has seen nothing yet. The service is still
+	// down, so for two minutes the check is unknown. That sends no recovered message, and the critical state that was
+	// alerted is not sent again once it is confirmed.
+	r.attach()
+	w = NewDownWatch(func() time.Time { return r.now })
+	r.checks = []Check{w.Check(ref, "side")}
+	for i := 0; i < 2; i++ {
+		w.Observe(r.now, stopped, nil)
+		r.step(30 * time.Second)
+	}
+	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
+	if got := r.stored("down:e2e-db/side"); got.State != Unknown {
+		t.Fatalf("state after the restart: %+v, want unknown while confirming", got)
+	}
+	for i := 0; i < 4; i++ {
+		w.Observe(r.now, stopped, nil)
+		r.step(30 * time.Second)
+	}
+	if got := r.stored("down:e2e-db/side"); got.State != Critical {
+		t.Fatalf("state after the restart and two minutes: %+v", got)
+	}
+	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
 }

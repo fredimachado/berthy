@@ -27,6 +27,7 @@ type downRecord struct {
 	healthy   int       // replicas that run and are not unhealthy
 	unhealthy int       // replicas that run and are unhealthy
 	exited    bool      // the only replica is an exited container
+	exitCode  *int      // the exit code of that container, when the inventory gave one
 	since     time.Time // when the role was first seen short in a row; zero while it is not short, or while its app is quiet
 	quiet     bool      // an operation on the app runs or has just ended, so the role is not judged
 }
@@ -77,20 +78,32 @@ func (w *DownWatch) Observe(now time.Time, apps []api.App, quiet func(api.AppRef
 	w.seen = now
 }
 
+// finishedOneShot reports whether a replica is a Compose container that exited with code 0. Such a container is a job that
+// finished, so the service neither wants it running nor counts it as down.
+func finishedOneShot(r api.Replica) bool {
+	return r.State == "exited" && r.ExitCode != nil && *r.ExitCode == 0
+}
+
 // observeRole returns the record of one role at now. prev is the record of the last observation, or nil.
 func observeRole(now time.Time, app api.AppRef, role api.Role, prev *downRecord, quiet bool) *downRecord {
 	rec := &downRecord{app: app, role: role.Name, quiet: quiet}
+	var replicas []api.Replica
+	for _, r := range role.Replicas {
+		if !finishedOneShot(r) {
+			replicas = append(replicas, r)
+		}
+	}
 	switch {
 	case role.Desired != nil:
 		rec.want = int(*role.Desired)
 	case len(role.Replicas) > 0:
 		// A Compose service has no desired count: the containers it has are the count it should run.
-		rec.want = len(role.Replicas)
+		rec.want = len(replicas)
 	case prev != nil:
 		// A Swarm service that is gone keeps the count it had.
 		rec.want = prev.want
 	}
-	for _, r := range role.Replicas {
+	for _, r := range replicas {
 		switch {
 		case r.State != "running":
 		case r.Health == "unhealthy":
@@ -99,7 +112,10 @@ func observeRole(now time.Time, app api.AppRef, role api.Role, prev *downRecord,
 			rec.healthy++
 		}
 	}
-	rec.exited = len(role.Replicas) == 1 && role.Replicas[0].State == "exited"
+	rec.exited = len(replicas) == 1 && replicas[0].State == "exited"
+	if rec.exited {
+		rec.exitCode = replicas[0].ExitCode
+	}
 	if rec.healthy < rec.want && !quiet {
 		rec.since = now
 		if prev != nil && !prev.since.IsZero() {
@@ -110,7 +126,8 @@ func observeRole(now time.Time, app api.AppRef, role api.Role, prev *downRecord,
 }
 
 // result judges one role at now. Without a recent inventory the answer is unknown, not ok. A role that runs fewer replicas
-// than it should is critical once it has been short for DownConfirm, and ok until then.
+// than it should is unknown for DownConfirm, and critical after that. Unknown never alerts, so a short role that has not
+// been confirmed never sends a recovered message, and a critical one is not alerted again once it is confirmed.
 func (w *DownWatch) result(now time.Time, key string) Result {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -133,7 +150,7 @@ func (w *DownWatch) result(now time.Time, key string) Result {
 	short := shortfall(rec)
 	age := now.Sub(rec.since)
 	if age < DownConfirm {
-		return Result{State: OK, Detail: short + ", not yet confirmed"}
+		return Result{State: Unknown, Detail: short + ", not yet confirmed"}
 	}
 	return Result{State: Critical, Detail: fmt.Sprintf("%s for %dm", short, int(age/time.Minute))}
 }
@@ -143,6 +160,8 @@ func shortfall(rec *downRecord) string {
 	switch {
 	case rec.unhealthy > 0:
 		return fmt.Sprintf("%d of %d replicas healthy (%d unhealthy)", rec.healthy, rec.want, rec.unhealthy)
+	case rec.want == 1 && rec.exited && rec.exitCode != nil:
+		return fmt.Sprintf("exited with code %d", *rec.exitCode)
 	case rec.want == 1 && rec.exited:
 		return "container exited"
 	default:
