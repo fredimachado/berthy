@@ -386,9 +386,11 @@ berthy agent-info -e prod
 | `peer:<name>`, `telegram`, `webhook`, `heartbeat`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the secrets of the Telegram and webhook channels, the heartbeat (when its last ping was accepted), every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
 | `compose_log_limit` | A warning, not a failure: services of deployed Compose apps whose logs grow without a size limit. See **Log rotation** in step 2. |
+| `public_ports` | A warning, not a failure: TCP ports that listen on an address that is not loopback, private or VPN, and the ports that containers publish on one. Each port says what it is where Berthy knows it, such as `2375 Docker API without TLS` or `5432 PostgreSQL`. Ports 22, 80 and 443 are listed without a warning. A listening port is not proof that it is reachable, because a firewall may sit in front. |
+| `reboot_required` | A warning, not a failure: the host has a reboot pending, and the packages that asked for it when the host lists them. A host without the update notifier has no such check. |
 | telemetry | The OTLP exporter, when configured. |
 
-A backup, a credential or an alert in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent.
+A backup, a credential, an alert or a host warning in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent. The two host checks change nothing on the server. The firewall and the packages stay with your provisioning.
 
 `berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version.
 
