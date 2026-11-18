@@ -180,7 +180,7 @@ wait "$sleeper" 2>/dev/null
 # A dry run ignores -i.
 out=$(adm exec web -i --dry-run -- true 2>&1); code=$?
 expect_code "exec -i --dry-run plans" 0 "$code" "$out"
-expect_contains "the plan names the role's service" "$out" "target: e2e-web-main"
+expect_contains "the plan names the role's service" "$out" "target: $PROJECT-web-main"
 
 # Refusals from the agent are shown.
 out=$(adm run db -i -- true </dev/null 2>&1); code=$?

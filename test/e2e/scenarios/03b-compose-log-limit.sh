@@ -36,22 +36,22 @@ YML
 
 out=$(adm deploy shop --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy the Compose app" 0 "$code" "$out"
-running=$(d ps --filter status=running --filter label=com.docker.compose.project=e2e-shop --format '{{.Label "com.docker.compose.service"}}')
+running=$(d ps --filter status=running --filter label=com.docker.compose.project=$PROJECT-shop --format '{{.Label "com.docker.compose.service"}}')
 expect_contains "the bare service runs" "$running" "bare"
 expect_contains "the capped service runs" "$running" "capped"
 
 out=$(adm doctor 2>&1); code=$?
 expect_code "doctor exits 0 with the warning" 0 "$code" "$out"
 expect_contains "doctor warns about services without a log limit" "$out" "compose_log_limit"
-expect_contains "the warning names the service without a limit" "$out" "e2e-shop/bare"
-expect_not_contains "the warning leaves out the capped service" "$out" "e2e-shop/capped"
+expect_contains "the warning names the service without a limit" "$out" "$PROJECT-shop/bare"
+expect_not_contains "the warning leaves out the capped service" "$out" "$PROJECT-shop/capped"
 
 # The JSON answer: the check is not ok and not critical, so it cannot fail the doctor. Spaces are dropped for the match.
 json=$(adm doctor --json 2>&1); code=$?
 compact=${json//[[:space:]]/}
 expect_code "doctor --json exits 0 with the warning" 0 "$code" "$json"
 expect_contains "the JSON check is a warning, not critical" "$compact" '"name":"compose_log_limit","ok":false,"critical":false'
-expect_contains "the JSON warning names the service without a limit" "$compact" 'e2e-shop/bare'
-expect_not_contains "the JSON warning leaves out the capped service" "$compact" 'e2e-shop/capped'
+expect_contains "the JSON warning names the service without a limit" "$compact" "$PROJECT-shop/bare"
+expect_not_contains "the JSON warning leaves out the capped service" "$compact" "$PROJECT-shop/capped"
 
 finish
