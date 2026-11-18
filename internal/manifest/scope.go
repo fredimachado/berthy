@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -114,6 +115,7 @@ func SettingsChanges(prev, next Manifest) []string {
 	out = append(out, pointerChange("ingress", prev.Ingress, next.Ingress)...)
 	out = append(out, mapChanges("aliases", prev.Aliases, next.Aliases)...)
 	scalar("min_version", prev.MinVersion, next.MinVersion)
+	scalar("timezone", cmp.Or(prev.Timezone, "UTC"), cmp.Or(next.Timezone, "UTC"))
 	return out
 }
 

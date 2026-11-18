@@ -98,6 +98,7 @@ type rig struct {
 	clock *clock
 	exec  *fakeExec
 	jobs  map[string]manifest.Job
+	zone  string // the manifest's timezone
 	mu    sync.Mutex
 }
 
@@ -119,7 +120,9 @@ func (r *rig) newScheduler(store *state.Store, exec Executor) *Scheduler {
 			if r.jobs == nil {
 				return manifest.Manifest{}, sql.ErrNoRows
 			}
-			return testManifest(r.jobs), nil
+			m := testManifest(r.jobs)
+			m.Timezone = r.zone
+			return m, nil
 		},
 		Target: fakeTarget{id: "container-1"},
 		Exec:   exec,

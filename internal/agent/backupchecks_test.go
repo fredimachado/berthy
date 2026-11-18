@@ -26,18 +26,18 @@ func TestBackupResultReportsAFailedRunWithItsDetail(t *testing.T) {
 	b := manifest.Backup{Schedule: "0 * * * *"}
 	for _, detail := range []string{"preparation failed: exit status 3", "upload failed: access denied"} {
 		s := success(at(9, 0, 5), 100)
-		got := backupResult(b, state.BackupHistory{Last: failure(detail), Successes: []state.BackupRun{s}}, at(1, 0, 0), at(9, 30, 0))
+		got := backupResult(b, time.UTC, state.BackupHistory{Last: failure(detail), Successes: []state.BackupRun{s}}, at(1, 0, 0), at(9, 30, 0))
 		if got.State != monitor.Critical || got.Detail != detail {
 			t.Errorf("%s: %+v", detail, got)
 		}
 	}
 	// A failure wins over an overdue backup, and a success after it clears it.
-	got := backupResult(b, state.BackupHistory{Last: failure("archive failed"), Successes: []state.BackupRun{success(at(1, 0, 5), 100)}}, at(1, 0, 0), at(9, 30, 0))
+	got := backupResult(b, time.UTC, state.BackupHistory{Last: failure("archive failed"), Successes: []state.BackupRun{success(at(1, 0, 5), 100)}}, at(1, 0, 0), at(9, 30, 0))
 	if got.Detail != "archive failed" {
 		t.Fatalf("failure and overdue: %+v", got)
 	}
 	ok := success(at(9, 0, 5), 100)
-	if got = backupResult(b, state.BackupHistory{Last: &ok, Successes: []state.BackupRun{ok}}, at(1, 0, 0), at(9, 30, 0)); got.State != monitor.OK {
+	if got = backupResult(b, time.UTC, state.BackupHistory{Last: &ok, Successes: []state.BackupRun{ok}}, at(1, 0, 0), at(9, 30, 0)); got.State != monitor.OK {
 		t.Fatalf("after a success: %+v", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestBackupResultOverdueMathHourlyDailyAndEveryMinute(t *testing.T) {
 		{"every minute, overdue", "* * * * *", at(10, 0, 5), at(10, 2, 1), true, "2026-11-16T10:02:00Z"},
 	}
 	for _, c := range cases {
-		got := backupResult(manifest.Backup{Schedule: c.cron}, last(c.success), at(0, 0, 0), c.now)
+		got := backupResult(manifest.Backup{Schedule: c.cron}, time.UTC, last(c.success), at(0, 0, 0), c.now)
 		if c.overdue {
 			want := "overdue: last success " + c.success.UTC().Format(time.RFC3339) + " (expected by " + c.by + ")"
 			if got.State != monitor.Critical || got.Detail != want {
@@ -77,7 +77,7 @@ func TestBackupResultOverdueMathHourlyDailyAndEveryMinute(t *testing.T) {
 		}
 	}
 	// Without a schedule a backup is never overdue.
-	if got := backupResult(manifest.Backup{}, last(at(1, 0, 0)), at(0, 0, 0), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)); got.State != monitor.OK {
+	if got := backupResult(manifest.Backup{}, time.UTC, last(at(1, 0, 0)), at(0, 0, 0), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)); got.State != monitor.OK {
 		t.Fatalf("no schedule: %+v", got)
 	}
 }
@@ -85,14 +85,14 @@ func TestBackupResultOverdueMathHourlyDailyAndEveryMinute(t *testing.T) {
 func TestBackupResultNeverRunHasAGraceFromTheFirstSighting(t *testing.T) {
 	b := manifest.Backup{Schedule: "0 * * * *"}
 	seen := at(10, 0, 10)
-	if got := backupResult(b, state.BackupHistory{}, seen, at(11, 59, 0)); got.State != monitor.Unknown || got.Detail != "not run yet" {
+	if got := backupResult(b, time.UTC, state.BackupHistory{}, seen, at(11, 59, 0)); got.State != monitor.Unknown || got.Detail != "not run yet" {
 		t.Fatalf("within the grace: %+v", got)
 	}
-	got := backupResult(b, state.BackupHistory{}, seen, at(12, 0, 1))
+	got := backupResult(b, time.UTC, state.BackupHistory{}, seen, at(12, 0, 1))
 	if got.State != monitor.Critical || !strings.HasPrefix(got.Detail, "overdue: no success yet") || !strings.Contains(got.Detail, "expected by 2026-11-16T12:00:00Z") {
 		t.Fatalf("overdue: %+v", got)
 	}
-	if got = backupResult(manifest.Backup{}, state.BackupHistory{}, seen, at(23, 0, 0)); got.State != monitor.Unknown {
+	if got = backupResult(manifest.Backup{}, time.UTC, state.BackupHistory{}, seen, at(23, 0, 0)); got.State != monitor.Unknown {
 		t.Fatalf("no schedule, never run: %+v", got)
 	}
 }
@@ -103,24 +103,24 @@ func TestBackupResultWarnsWhenTheBackupShrankBelowHalf(t *testing.T) {
 		n, p := success(at(10, 0, 0), newest), success(at(9, 0, 0), previous)
 		return state.BackupHistory{Last: &n, Successes: []state.BackupRun{n, p}}
 	}
-	got := backupResult(b, hist(40, 100), at(0, 0, 0), at(10, 5, 0))
+	got := backupResult(b, time.UTC, hist(40, 100), at(0, 0, 0), at(10, 5, 0))
 	if got.State != monitor.Warning || got.Detail != "size dropped to 40% of the previous backup" {
 		t.Fatalf("40%%: %+v", got)
 	}
-	if got = backupResult(b, hist(271, 3074018), at(0, 0, 0), at(10, 5, 0)); got.State != monitor.Warning || got.Detail != "size dropped to under 1% of the previous backup" {
+	if got = backupResult(b, time.UTC, hist(271, 3074018), at(0, 0, 0), at(10, 5, 0)); got.State != monitor.Warning || got.Detail != "size dropped to under 1% of the previous backup" {
 		t.Fatalf("a volume that was emptied: %+v", got)
 	}
 	for name, h := range map[string]state.BackupHistory{"exactly half": hist(50, 100), "grew": hist(300, 100), "previous empty": hist(0, 0)} {
-		if got = backupResult(b, h, at(0, 0, 0), at(10, 5, 0)); got.State != monitor.OK {
+		if got = backupResult(b, time.UTC, h, at(0, 0, 0), at(10, 5, 0)); got.State != monitor.OK {
 			t.Errorf("%s: %+v", name, got)
 		}
 	}
 	one := success(at(10, 0, 0), 5)
-	if got = backupResult(b, state.BackupHistory{Last: &one, Successes: []state.BackupRun{one}}, at(0, 0, 0), at(10, 5, 0)); got.State != monitor.OK {
+	if got = backupResult(b, time.UTC, state.BackupHistory{Last: &one, Successes: []state.BackupRun{one}}, at(0, 0, 0), at(10, 5, 0)); got.State != monitor.OK {
 		t.Fatalf("one success: %+v", got)
 	}
 	// Overdue is critical and outranks the warning.
-	got = backupResult(manifest.Backup{Schedule: "0 * * * *"}, hist(40, 100), at(0, 0, 0), at(14, 0, 0))
+	got = backupResult(manifest.Backup{Schedule: "0 * * * *"}, time.UTC, hist(40, 100), at(0, 0, 0), at(14, 0, 0))
 	if got.State != monitor.Critical {
 		t.Fatalf("overdue and shrunk: %+v", got)
 	}
@@ -128,7 +128,7 @@ func TestBackupResultWarnsWhenTheBackupShrankBelowHalf(t *testing.T) {
 
 func TestBackupResultOkSaysHowOldAndHowBig(t *testing.T) {
 	s := success(at(10, 0, 0), 1536)
-	got := backupResult(manifest.Backup{Schedule: "0 * * * *"}, state.BackupHistory{Last: &s, Successes: []state.BackupRun{s}}, at(0, 0, 0), at(10, 5, 30))
+	got := backupResult(manifest.Backup{Schedule: "0 * * * *"}, time.UTC, state.BackupHistory{Last: &s, Successes: []state.BackupRun{s}}, at(0, 0, 0), at(10, 5, 30))
 	if got.State != monitor.OK || got.Detail != "last success 5m ago, 1.5 KiB" {
 		t.Fatalf("%+v", got)
 	}

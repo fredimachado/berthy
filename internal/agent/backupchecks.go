@@ -22,14 +22,14 @@ const (
 	maxBackupGrace = time.Hour
 )
 
-// backupResult decides the state of a backup's check from its history. firstSeen is when the agent first saw the backup in the
+// backupResult decides the state of a backup's check from its history. loc is the zone its schedule is read in. firstSeen is when the agent first saw the backup in the
 // manifest, from which a backup that never ran is given time to run. In this order:
 //
 //   - the newest finished run failed: critical, with its detail;
 //   - a scheduled backup is overdue: critical;
 //   - the newest success is under half the size of the one before: warning;
 //   - a backup that never ran is unknown, so it never alerts; and any other is ok.
-func backupResult(b manifest.Backup, h state.BackupHistory, firstSeen, now time.Time) monitor.Result {
+func backupResult(b manifest.Backup, loc *time.Location, h state.BackupHistory, firstSeen, now time.Time) monitor.Result {
 	if h.Last != nil && h.Last.Status == "failed" {
 		return monitor.Result{State: monitor.Critical, Detail: h.Last.Detail}
 	}
@@ -38,7 +38,7 @@ func backupResult(b manifest.Backup, h state.BackupHistory, firstSeen, now time.
 		lastSuccess = &h.Successes[0]
 	}
 	if b.Schedule != "" {
-		if sched, err := schedule.Parse(b.Schedule); err == nil {
+		if sched, err := schedule.ParseIn(b.Schedule, loc); err == nil {
 			since := firstSeen
 			if lastSuccess != nil {
 				since = lastSuccess.Finished
@@ -101,14 +101,14 @@ func (s *backupSeen) first(name string, now time.Time) time.Time {
 }
 
 // backupCheck returns the monitor check of a backup of the manifest.
-func backupCheck(store *state.Store, name string, b manifest.Backup, seen *backupSeen, now func() time.Time) monitor.Check {
+func backupCheck(store *state.Store, name string, b manifest.Backup, loc *time.Location, seen *backupSeen, now func() time.Time) monitor.Check {
 	first := seen.first(name, now())
 	return monitor.NewFunc("backup:"+name, backupCheckEvery, 1, func(ctx context.Context) monitor.Result {
 		h, err := store.BackupHistory(ctx, name)
 		if err != nil {
 			return monitor.Result{State: monitor.Unknown, Detail: "backup runs unavailable"}
 		}
-		return backupResult(b, h, first, now())
+		return backupResult(b, loc, h, first, now())
 	})
 }
 

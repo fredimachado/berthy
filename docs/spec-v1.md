@@ -121,7 +121,7 @@ The agent keeps what it runs from, so schedules and checks keep running between 
 The manifest has two scopes, and the agent stores each one on its own.
 
 - **App scope.** `apps.<name>`, the `jobs` and `backups` that name the app, and the `probes` whose `service.app` is the app. A deploy of the app applies it. It is stored with the app's release, so a rollback of the app takes it back with the app and changes nothing of any other app.
-- **Environment scope.** Everything else: `project`, `network`, `protected`, `registries`, `destinations`, `state_backup`, `telemetry`, `peers`, `alerts`, the probes that name no app, `min_version`, `aliases` and `ingress`. The agent stores it as one record per environment, with the commit it came from and whether that checkout had local changes. Every deploy that records a release writes it, in the same transaction as the release: an image app, a Compose app and an adoption. `berthy apply` writes it too, and deploys nothing. A rollback, the ingress connector's own deploy and a schema revert never write it. The `ingress` block is stored here like the rest; `ingress apply` still does the Cloudflare work.
+- **Environment scope.** Everything else: `project`, `network`, `protected`, `registries`, `destinations`, `state_backup`, `telemetry`, `peers`, `alerts`, the probes that name no app, `min_version`, `timezone`, `aliases` and `ingress`. The agent stores it as one record per environment, with the commit it came from and whether that checkout had local changes. Every deploy that records a release writes it, in the same transaction as the release: an image app, a Compose app and an adoption. `berthy apply` writes it too, and deploys nothing. A rollback, the ingress connector's own deploy and a schema revert never write it. The `ingress` block is stored here like the rest; `ingress apply` still does the Cloudflare work.
 
 The agent runs from the environment record plus, for each app that has an applied release, the app scope of that release. No release of any app decides for the others. So a rollback of one app changes that app's jobs, backups and probes and nothing else, and the alerts, peers, probes of the environment and the other settings stay as the last deploy or `apply` left them. A deploy of an app applies the environment scope of its manifest and the app scope of that app only: a changed job of another app takes effect with that app's next deploy. A deploy from an older commit applies that commit's environment scope, as any deploy does; `berthy apply` from a newer checkout puts the settings right without a deploy.
 
@@ -162,6 +162,7 @@ All desired configuration lives in the application's repository as one base mani
 - A top-level `aliases` map in the manifest names command lines for people at a terminal, for example `console: exec api --role web -- bin/console`. The CLI expands them; see "CLI" below.
 - The reference of every manifest key, with its type, default and meaning, is not written here. It is generated from one definition, `internal/manifest/keys.go`, and kept in step with the code by a test: `berthy docs [section]` prints it, the user guide's "Manifest keys" holds it, and `berthy config schema` prints a JSON Schema (draft-07) of the manifest for editors. This spec describes the design.
 - A top-level `min_version` (a release such as `0.9.0`) is the oldest Berthy release the manifest works with. The CLI and the agent refuse a manifest that needs a newer release than theirs. `config validate` checks its format and the CLI's own release, without contacting a server.
+- A top-level `timezone` (an IANA name such as `Europe/Lisbon`, default `UTC`) is the zone every `schedule` of the manifest is read in: jobs, backups and the state backup. `config validate` refuses a name the binary does not know, with the file and line. It is part of the environment scope. See "Scheduled container commands".
 
 The examples in this spec use two environments named `dev` and `prod`. Names and values are placeholders.
 
@@ -1054,7 +1055,7 @@ It does not cover all servers failing together or an outage of the private netwo
 
 ## Scheduled container commands
 
-Declare a named command under `jobs` in the manifest. Each job can have its own five-field cron schedule in UTC.
+Declare a named command under `jobs` in the manifest. Each job can have its own five-field cron schedule, read in the manifest's `timezone` (UTC by default).
 
 ```yaml
 jobs:
@@ -1075,11 +1076,12 @@ jobs:
 - When the agent is stopped in an orderly way (a restart or an upgrade) while a job runs, the run is recorded as `interrupted` with `agent stopped during the run`. Like a skip, an interrupted run never raises an alert and does not change the job's check. A run still marked running when the agent starts again, because the agent crashed or was killed, is recorded as failed with `agent restarted during the run`. In both cases the command may still be running in its container.
 - Every run is written to the audit log with the job as the caller (`job:<name>`, action `job_run:<name>`, outcome `succeeded`, `failed`, `skipped` or `interrupted`). Jobs do not take the deploy lock, so they can run during a deploy.
 - A job with no `schedule` runs only on demand, as preparation for a volume backup or with `berthy job run <name> -e ENV`. The command starts the run, waits until it finishes or its `timeout` plus 30 seconds passes, prints the status, exit code and reason, and exits 0 only when the run succeeded. It fails at once when a run of the job is already in progress. It takes a `deploy` token, and the audit log records which token asked (`job_start:<name>`).
-- `berthy jobs -e ENV` lists every job with its target, schedule, next occurrence and last run, and takes a `read` token.
+- `berthy jobs -e ENV` lists every job with its target, schedule, next occurrence and last run, and takes a `read` token. The next occurrence is shown on the clock of the manifest's `timezone` and in UTC, as in `2026-11-20 02:00 JST (2026-11-19 17:00Z)`. `describe` and `--json` give `next` (an instant in UTC), `next_local` (the same instant with the zone's offset) and `timezone`.
+- **Time zone.** A manifest's `timezone` applies to every `schedule`: jobs, backups and the state backup. A wall-clock time that does not exist on a day, because the clocks go forward, is skipped that day. A wall-clock time that happens twice, because the clocks go back, runs once, at the first of its two instants. An occurrence is still identified by its instant, so each occurrence runs at most once as before, and run records, logs and the audit log stay in UTC. The binary embeds the zone database (`time/tzdata`), so the result does not depend on what the server has installed. The overdue checks of backups and of the state backup read their schedule in the same zone. `berthy apply --dry-run` lists a change of zone as `timezone: UTC -> Europe/Lisbon`.
 
 ## Volume backups and restore
 
-Any named Docker volume mounted by a managed app can have a backup. Declare a job for each volume to back up, with the source volume, an S3-compatible destination and, for automatic backups, a five-field UTC cron schedule.
+Any named Docker volume mounted by a managed app can have a backup. Declare a job for each volume to back up, with the source volume, an S3-compatible destination and, for automatic backups, a five-field cron schedule.
 
 ### Configuration
 
@@ -1108,7 +1110,7 @@ backups:
 - For a Compose app, `volume` is the key in the Compose file's top-level `volumes` block. Berthy resolves it using the app's Compose project name and any explicit volume name.
 - For an image app, `volume` is the Docker volume name mounted by one of its roles. A role declares mounts under `volumes`, with entries such as `uploads:/app/uploads`.
 - Omit `schedule` to run a backup only through `backup run` or a deploy hook.
-- **Schedules.** A backup with a `schedule` runs once per UTC cron occurrence, with the trigger `schedule`. The agent reads the manifest of the deployed apps every minute, so a changed schedule takes effect at the next minute after its deploy. Each occurrence is recorded in the agent's state before it runs and at most once, so restarting the agent in the same minute, or a second process on the same state, cannot run it twice. Occurrences that pass while the agent is down are not made up. If a backup of the same Docker volume is still running at an occurrence, the occurrence is skipped: nothing is recorded, the agent logs `skipped: previous backup still running`, and nothing alerts. A scheduled run that cannot start, such as one whose credentials are gone, is recorded as a failed run so that the backup's check shows why. Every scheduled run is written to the audit log with the backup as the caller (`backup:<name>`, action `backup_run:<name>`, outcomes `started`, then `succeeded` or `failed`).
+- **Schedules.** A backup with a `schedule` runs once per cron occurrence (read in the manifest's `timezone`), with the trigger `schedule`. The agent reads the manifest of the deployed apps every minute, so a changed schedule takes effect at the next minute after its deploy. Each occurrence is recorded in the agent's state before it runs and at most once, so restarting the agent in the same minute, or a second process on the same state, cannot run it twice. Occurrences that pass while the agent is down are not made up. If a backup of the same Docker volume is still running at an occurrence, the occurrence is skipped: nothing is recorded, the agent logs `skipped: previous backup still running`, and nothing alerts. A scheduled run that cannot start, such as one whose credentials are gone, is recorded as a failed run so that the backup's check shows why. Every scheduled run is written to the audit log with the backup as the caller (`backup:<name>`, action `backup_run:<name>`, outcomes `started`, then `succeeded` or `failed`).
 - `retention.keep` defaults to `all`. Set it to a number to retain that many successful backups for the job.
 
 ### How a backup runs
@@ -1215,7 +1217,7 @@ The previous key is deleted after a state snapshot made with the current key suc
 state_backup:
   destination: offsite        # a key of destinations, as for volume backups
   prefix: berthy-state/prod   # optional; the default is berthy-state/<environment>
-  schedule: "17 3 * * *"      # optional; UTC cron; the default is daily at 03:17
+  schedule: "17 3 * * *"      # optional; cron in the manifest's timezone; the default is daily at 03:17
   keep: 14                    # optional; from 1 to 1000; the default is 14
 ```
 
@@ -1223,7 +1225,7 @@ The destination must exist, the schedule must parse, `keep` must be from 1 to 10
 
 **What storage holds.** A snapshot is a consistent copy taken with SQLite's `VACUUM INTO` while the agent keeps running. The agent writes it to a private temporary directory, uploads it and removes the directory. Each snapshot is an object `<prefix>/<UTC time>.db`, as in `berthy-state/prod/20261116T031700Z.db`, with a sidecar `<same name>.json`: `{"format":"berthy-state-sqlite-2","environment","schema_version","key_id","size","sha256","created"}`, where `key_id` names the key that opens the snapshot. The sidecar is written only after the snapshot was uploaded, so a snapshot that has one is complete. A failed snapshot, upload or sidecar is recorded as `failed` with a detail that starts with its step, and a failed upload leaves no sidecar.
 
-**When it runs.** The schedule runs a snapshot once per UTC occurrence. Each occurrence is recorded in the agent's state, so a restart never takes it twice. Occurrences that pass while the agent is down are not made up. An occurrence that finds a snapshot still running is skipped and logged, and raises no alert. A scheduled run is audited as the actor `state-backup`.
+**When it runs.** The schedule runs a snapshot once per occurrence, read in the manifest's `timezone`. Each occurrence is recorded in the agent's state, so a restart never takes it twice. Occurrences that pass while the agent is down are not made up. An occurrence that finds a snapshot still running is skipped and logged, and raises no alert. A scheduled run is audited as the actor `state-backup`.
 
 **Retention.** After a successful run the agent deletes all but the `keep` newest snapshots that have a valid sidecar for this environment, the snapshot first and then its sidecar. Other objects under the prefix are never touched.
 

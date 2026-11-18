@@ -50,7 +50,7 @@ func TestStateBackupCheckStatesFromItsHistory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := stateBackupResult(sb, tc.h, tc.firstSeen, tc.now)
+			res := stateBackupResult(sb, time.UTC, tc.h, tc.firstSeen, tc.now)
 			if res.State != tc.want || !strings.Contains(res.Detail, tc.detail) {
 				t.Fatalf("got %v %q, want %v containing %q", res.State, res.Detail, tc.want, tc.detail)
 			}

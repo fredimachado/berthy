@@ -256,8 +256,12 @@ func jobLines(st styles, now time.Time, j api.JobStatus, w int) []string {
 	if j.Schedule != "" {
 		head += st.faint.Render("  ") + st.muted.Render(sanitize(j.Schedule))
 	}
-	if j.Next != nil {
-		head += st.faint.Render("  ") + st.muted.Render("next in "+until(now, *j.Next))
+	if local, ok := j.NextClock(); ok {
+		next := "next in " + until(now, local)
+		if local.Location() != time.UTC {
+			next += " (" + local.Format("2006-01-02 15:04 MST") + ")"
+		}
+		head += st.faint.Render("  ") + st.muted.Render(next)
 	}
 	lines := []string{head}
 	if j.Last == nil {

@@ -51,12 +51,9 @@ func printJobs(out, errout io.Writer, body []byte, asJSON bool) int {
 		if r.Target != "" {
 			target += "/" + r.Target
 		}
-		schedule, next := r.Schedule, "-"
+		schedule, next := r.Schedule, nextCell(r)
 		if schedule == "" {
 			schedule = "on demand"
-		}
-		if r.Next != nil {
-			next = r.Next.UTC().Format(time.RFC3339)
 		}
 		last, when := "-", "-"
 		if r.Last != nil {
@@ -77,6 +74,26 @@ func printJobs(out, errout io.Writer, body []byte, asJSON bool) int {
 		return 1
 	}
 	return 0
+}
+
+// nextCell is the next occurrence of a job as the NEXT column shows it: on the clock of the manifest's zone with the zone's
+// abbreviation, then the same instant in UTC, as in "2026-11-20 02:00 JST (2026-11-19 17:00Z)". The UTC part leaves the date
+// out when it is the same day, and the whole of it when the zone is UTC. A job without an occurrence shows "-".
+func nextCell(j api.JobStatus) string {
+	local, ok := j.NextClock()
+	if !ok {
+		return "-"
+	}
+	text := local.Format("2006-01-02 15:04 MST")
+	if local.Location() == time.UTC {
+		return text
+	}
+	utc := local.UTC()
+	layout := "15:04Z"
+	if y, m, d := local.Date(); y != utc.Year() || m != utc.Month() || d != utc.Day() {
+		layout = "2006-01-02 15:04Z"
+	}
+	return text + " (" + utc.Format(layout) + ")"
 }
 
 // runJobCommand runs "job run NAME": it asks the agent to start the job, waits for the run to finish, and prints the

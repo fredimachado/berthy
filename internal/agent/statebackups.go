@@ -21,11 +21,11 @@ import (
 // stateBackupGrace is how late the state backup may be after its next occurrence before its check is critical.
 const stateBackupGrace = 2 * time.Hour
 
-// stateBackupResult decides the state of the state backup's check from its history. firstSeen is when the agent first saw the
+// stateBackupResult decides the state of the state backup's check from its history. loc is the zone its schedule is read in. firstSeen is when the agent first saw the
 // block, from which a state backup that never succeeded is given time. In this order: the newest finished run failed:
 // critical; the occurrence after the last success, plus the grace, has passed: critical; no success yet: unknown; any
 // other: ok.
-func stateBackupResult(sb manifest.StateBackup, h state.StateBackupHistory, firstSeen, now time.Time) monitor.Result {
+func stateBackupResult(sb manifest.StateBackup, loc *time.Location, h state.StateBackupHistory, firstSeen, now time.Time) monitor.Result {
 	if h.Last != nil && h.Last.Status == "failed" {
 		return monitor.Result{State: monitor.Critical, Detail: h.Last.Detail}
 	}
@@ -33,7 +33,7 @@ func stateBackupResult(sb manifest.StateBackup, h state.StateBackupHistory, firs
 	if h.Success != nil {
 		since = h.Success.Finished
 	}
-	if sched, err := schedule.Parse(statebackup.Schedule(sb)); err == nil {
+	if sched, err := schedule.ParseIn(statebackup.Schedule(sb), loc); err == nil {
 		if next := sched.Next(since); !next.IsZero() && now.After(next.Add(stateBackupGrace)) {
 			if h.Success == nil {
 				return monitor.Result{State: monitor.Critical, Detail: fmt.Sprintf("overdue: no snapshot yet, first seen %s (expected by %s)",
@@ -50,14 +50,14 @@ func stateBackupResult(sb manifest.StateBackup, h state.StateBackupHistory, firs
 }
 
 // stateBackupCheck returns the monitor check of the state backup. It exists only while the running manifest has the block.
-func stateBackupCheck(store *state.Store, sb manifest.StateBackup, seen *backupSeen, now func() time.Time) monitor.Check {
+func stateBackupCheck(store *state.Store, sb manifest.StateBackup, loc *time.Location, seen *backupSeen, now func() time.Time) monitor.Check {
 	first := seen.first("state_backup", now())
 	return monitor.NewFunc("state_backup", backupCheckEvery, 1, func(ctx context.Context) monitor.Result {
 		h, err := store.StateBackupHistory(ctx)
 		if err != nil {
 			return monitor.Result{State: monitor.Unknown, Detail: "state backup runs unavailable"}
 		}
-		return stateBackupResult(sb, h, first, now())
+		return stateBackupResult(sb, loc, h, first, now())
 	})
 }
 

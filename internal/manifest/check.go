@@ -52,6 +52,7 @@ func (m *Manifest) Check() Problems {
 	if m.MinVersion != "" && !minVersionPattern.MatchString(m.MinVersion) {
 		p.add("min_version", "invalid min_version %q: use a version such as 0.9.0", m.MinVersion)
 	}
+	m.checkTimezone(&p)
 	checkAliases(&p, m.Aliases)
 	m.checkMonitoring(&p)
 	return p

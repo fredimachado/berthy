@@ -90,7 +90,7 @@ func (s *Scheduler) Step(ctx context.Context) {
 	if m.StateBackup == nil {
 		return
 	}
-	sched, err := schedule.Parse(Schedule(*m.StateBackup))
+	sched, err := m.ParseSchedule(Schedule(*m.StateBackup))
 	if err != nil || !sched.Matches(cur) {
 		return
 	}

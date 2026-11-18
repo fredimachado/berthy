@@ -201,11 +201,11 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
-		out = append(out, backupCheck(w.store, name, m.Backups[name], &w.seen, w.clock))
+		out = append(out, backupCheck(w.store, name, m.Backups[name], m.Location(), &w.seen, w.clock))
 	}
 	// The state backup is environment-wide, so the block is read whatever apps are deployed.
 	if m.StateBackup != nil {
-		out = append(out, stateBackupCheck(w.store, *m.StateBackup, &w.stateSeen, w.clock))
+		out = append(out, stateBackupCheck(w.store, *m.StateBackup, m.Location(), &w.stateSeen, w.clock))
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
 		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))

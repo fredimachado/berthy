@@ -81,6 +81,8 @@ var Keys = slices.Concat(
 		{Path: "aliases.<alias>", Section: "top", Type: "string", Description: "The command line the alias stands for: a command that talks to an agent, then its arguments, separated by spaces. Quotes are not interpreted, and `-e` and `--config` are not allowed."},
 		{Path: "min_version", Section: "top", Type: "version", Description: "The oldest Berthy release the manifest works with, such as `0.9.0`. The CLI and the agent refuse a manifest that needs a newer release. See [the top of `berthy.yml`](#the-top-of-berthyyml)."},
 
+		{Path: "timezone", Section: "top", Type: "string", Default: "UTC", Description: "The time zone every `schedule` is read in, as an IANA name such as `Europe/Lisbon`. A time that does not exist on a day, because the clocks go forward, is skipped. A time that happens twice, because they go back, runs once, the first time. See [Scheduled commands](#step-9-scheduled-commands)."},
+
 		{Path: "registries.<host>.username", Section: "registries", Type: "string", Required: true, Description: "The user name for the registry."},
 		{Path: "registries.<host>.password_secret", Section: "registries", Type: "secret name", Required: true, Description: "The secret that holds the password. Store it with `berthy secret set NAME --registry <host>`."},
 
@@ -143,13 +145,13 @@ var Keys = slices.Concat(
 		{Path: "jobs.<name>.app", Section: "jobs", Type: "name", Required: true, Description: "The app the job runs in."},
 		{Path: "jobs.<name>.role", Section: "jobs", Type: "name", Description: "For an image app: the role whose container runs the command. Needed when the app has several roles. Not with `service`."},
 		{Path: "jobs.<name>.service", Section: "jobs", Type: "name", Description: "For a Compose app: the service that runs the command. Not with `role`."},
-		{Path: "jobs.<name>.schedule", Section: "jobs", Type: "string", Default: "on demand", Description: "A five-field cron expression, in UTC. Without it the job runs only on demand."},
+		{Path: "jobs.<name>.schedule", Section: "jobs", Type: "string", Default: "on demand", Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the job runs only on demand."},
 		{Path: "jobs.<name>.command", Section: "jobs", Type: "list", Required: true, Description: "The command to run, as a list."},
 		{Path: "jobs.<name>.timeout", Section: "jobs", Type: "duration", Default: defaultJobTimeout, Description: "The time limit of a run, from `1s` to `24h`."},
 
 		{Path: "backups.<name>.app", Section: "backups", Type: "name", Required: true, Description: "The app that mounts the volume."},
 		{Path: "backups.<name>.volume", Section: "backups", Type: "string", Required: true, Description: "For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts."},
-		{Path: "backups.<name>.schedule", Section: "backups", Type: "string", Default: "on demand", Description: "A five-field cron expression, in UTC. Without it the backup runs only on demand or from a deploy hook."},
+		{Path: "backups.<name>.schedule", Section: "backups", Type: "string", Default: "on demand", Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the backup runs only on demand or from a deploy hook."},
 		{Path: "backups.<name>.destination", Section: "backups", Type: "name", Required: true, Description: "A key of `destinations`."},
 		{Path: "backups.<name>.prefix", Section: "backups", Type: "string", Default: "<app>/<volume>", Description: "Where the backup's objects sit in the bucket."},
 		{Path: "backups.<name>.before", Section: "backups", Type: "name", Description: "A job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded."},
@@ -165,7 +167,7 @@ var Keys = slices.Concat(
 
 		{Path: "state_backup.destination", Section: "state_backup", Type: "name", Required: true, Description: "A key of `destinations`."},
 		{Path: "state_backup.prefix", Section: "state_backup", Type: "string", Default: "berthy-state/<environment>", Description: "The object prefix of the snapshots."},
-		{Path: "state_backup.schedule", Section: "state_backup", Type: "string", Default: DefaultStateBackupSchedule, Description: "A five-field cron expression, in UTC. The default is daily at 03:17."},
+		{Path: "state_backup.schedule", Section: "state_backup", Type: "string", Default: DefaultStateBackupSchedule, Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. The default is daily at 03:17."},
 		{Path: "state_backup.keep", Section: "state_backup", Type: "integer", Default: "14", Description: "The number of snapshots kept, from 1 to 1000."},
 
 		{Path: "probes.<name>.http", Section: "probes", Type: "string", Description: "A URL, `http` or `https`, with a host."},

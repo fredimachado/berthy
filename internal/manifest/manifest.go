@@ -61,6 +61,10 @@ type Manifest struct {
 	// that needs a newer release before they send or change anything.
 	MinVersion string `json:"min_version,omitempty" yaml:"min_version,omitempty"`
 
+	// Timezone is the IANA name of the zone every schedule of the manifest is read in, such as "Europe/Lisbon". It is UTC
+	// when empty. Location gives the zone and ParseSchedule a schedule in it.
+	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
+
 	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
 	Connector bool `json:"-" yaml:"-"`
 }

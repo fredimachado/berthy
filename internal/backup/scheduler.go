@@ -91,7 +91,7 @@ func (s *Scheduler) Step(ctx context.Context) {
 		if b.Schedule == "" {
 			continue
 		}
-		if sched, err := schedule.Parse(b.Schedule); err == nil && sched.Matches(cur) {
+		if sched, err := m.ParseSchedule(b.Schedule); err == nil && sched.Matches(cur) {
 			s.occur(ctx, m, name, cur)
 		}
 	}

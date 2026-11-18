@@ -8,7 +8,6 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/manifest"
-	"berthy/internal/schedule"
 	"berthy/internal/state"
 )
 
@@ -52,9 +51,13 @@ func Statuses(ctx context.Context, store *state.Store, m manifest.Manifest, app 
 		}
 		st := api.JobStatus{Name: name, App: job.App, Target: TargetName(m, job), Schedule: job.Schedule, Timeout: job.TimeoutDuration().String()}
 		if job.Schedule != "" {
-			if sched, err := schedule.Parse(job.Schedule); err == nil {
+			loc := m.Location()
+			st.Timezone = loc.String()
+			if sched, err := m.ParseSchedule(job.Schedule); err == nil {
 				if next := sched.Next(now); !next.IsZero() {
 					st.Next = &next
+					local := next.In(loc)
+					st.NextLocal = &local
 				}
 			}
 		}

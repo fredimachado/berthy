@@ -433,6 +433,7 @@ registries:
 | `registries.<host>` | A credential for a private registry. `username` is the user, `password_secret` names the secret that holds the token. A registry with no entry is pulled from anonymously. |
 | `aliases` | Short names for command lines, for people at a terminal. See [Aliases](#aliases). |
 | `min_version` | The oldest Berthy release this manifest works with, such as `0.9.0`. Set it when the manifest uses a key that an older release does not know. See the paragraph below. Default: none. |
+| `timezone` | The IANA time zone every `schedule` is read in, such as `Europe/Lisbon`. Default: `UTC`. See [the time zone of schedules](#the-time-zone-of-schedules). |
 
 **`min_version`** makes an old release say so, instead of refusing the manifest with `invalid request`. Three checks use it:
 
@@ -1889,9 +1890,27 @@ jobs:
 | `app` | The app to run in. | required |
 | `role` | For an image app: which role. Optional when the app has one role. | |
 | `service` | For a Compose app: which service. Optional when it has one. | |
-| `schedule` | Five-field cron, in **UTC**. Leave it out for an on-demand job. | on demand |
+| `schedule` | Five-field cron, read in the manifest's `timezone` (UTC by default). Leave it out for an on-demand job. | on demand |
 | `command` | The command, as a list. It is not run through a shell, so write `sh -c` yourself if you need shell syntax. | required |
 | `timeout` | Time limit of one run, from `1s` to `24h`. | `1h` |
+
+#### The time zone of schedules
+
+Every `schedule` is read in UTC unless the manifest sets a zone. One top-level key sets it for all of them: the jobs, the backups and the state backup.
+
+```yaml
+timezone: Europe/Lisbon   # an IANA name; the default is UTC
+```
+
+With that line, `schedule: "0 2 * * *"` runs at 02:00 in Lisbon, in winter and in summer. Its UTC time moves by an hour when the clocks change.
+
+- A time that **does not exist** on a day, because the clocks go forward, is skipped that day. `30 1 * * *` does not run on the day Lisbon goes from 01:00 to 02:00.
+- A time that **happens twice**, because the clocks go back, runs **once**, the first time.
+- An occurrence is still recorded by its instant in UTC, so "at most once" does not change. Run records, logs and the audit log stay in UTC.
+- `berthy config validate` refuses a name that is not a zone, and names the file and line. The binary carries its own zone data, so the result does not depend on the server.
+- A change of `timezone` takes effect within a minute of its `berthy apply` or deploy, and `berthy apply --dry-run` shows it as `timezone: UTC -> Europe/Lisbon`.
+
+`berthy jobs` shows the next occurrence in the zone and in UTC, and `berthy describe` and `--json` give both `next` (UTC) and `next_local`, with the `timezone`.
 
 How a job runs:
 
@@ -1913,10 +1932,12 @@ berthy job run dump-db -e prod
 Example output:
 
 ```text
-NAME     TARGET            SCHEDULE   NEXT                  LAST       WHEN
-cleanup  api/web           30 2 * * * 2026-11-17T02:30:00Z  succeeded  2026-11-16T02:30:01Z
-dump-db  postgres/postgres on demand  -                     -          -
+NAME     TARGET            SCHEDULE   NEXT                           LAST       WHEN
+cleanup  api/web           30 2 * * * 2026-11-17 02:30 WET (02:30Z)  succeeded  2026-11-16T02:30:01Z
+dump-db  postgres/postgres on demand  -                              -          -
 ```
+
+With the default zone, NEXT shows only the UTC time, as in `2026-11-17 02:30 UTC`. The example above has `timezone: Europe/Lisbon`.
 
 `jobs` needs a `read` token. `job run <name>` starts the job now, waits until it finishes or its `timeout` plus 30 seconds pass, prints the status, exit code and reason, and **exits 0 only when the run succeeded**. It fails at once if a run of that job is already going. It needs a `deploy` token. `dump-db` has no schedule: it runs on demand, and as the `before` step of the volume backup (step 10).
 
@@ -1968,7 +1989,7 @@ backups:
 | `backups.<name>.app` | The app that mounts the volume. | required |
 | `volume` | For a Compose app, the key in the Compose file's top-level `volumes` (here `db-dumps`; Berthy works out the real Docker name). For an image app, the name of a volume one of its roles mounts (`volumes: ["uploads:/app/uploads"]`). | required |
 | `destination` | A key of `destinations`. | required |
-| `schedule` | Five-field cron, in UTC. Leave it out to run only on demand or from a deploy hook. | on demand |
+| `schedule` | Five-field cron, read in the manifest's `timezone` (UTC by default). Leave it out to run only on demand or from a deploy hook. | on demand |
 | `prefix` | Where the backup's objects sit in the bucket. | `<app>/<volume>` |
 | `before` | A job (step 9) to run first. If it fails, the backup fails and nothing is uploaded. | none |
 | `retention.keep` | `all`, or a number: keep that many newest successful backups. | `all` |
@@ -2001,7 +2022,7 @@ The **key** is what `restore` takes. A backup is listed only when its descriptio
 
 How a run goes: the `before` job runs and must succeed; the agent reads the volume through a read-only mount and streams a gzip tar to storage while hashing it; only then it writes the description file, records the run and applies retention (`keep: N` deletes all but the `N` newest backups of this job; objects without a description file are never touched). A failed run is recorded with a detail that starts with its step: `preparation failed`, `archive failed`, `upload failed` or `sidecar failed`.
 
-A scheduled run happens once per UTC occurrence, even across an agent restart, and occurrences missed while the agent was down are not made up. If a backup of the volume is still running at an occurrence, that occurrence is skipped without an alert.
+A scheduled run happens once per occurrence (read in the manifest's `timezone`, see step 9), even across an agent restart, and occurrences missed while the agent was down are not made up. If a backup of the volume is still running at an occurrence, that occurrence is skipped without an alert.
 
 #### The pre-deploy backup
 
@@ -2093,7 +2114,7 @@ state_backup:
 | --- | --- | --- |
 | `destination` | A key of `destinations`. | required |
 | `prefix` | Object prefix. Each segment may hold letters, digits and `._@+=-`. | `berthy-state/<environment>` |
-| `schedule` | UTC cron. | `17 3 * * *` |
+| `schedule` | Cron, read in the `timezone`. | `17 3 * * *` |
 | `keep` | Snapshots to keep, 1 to 1000. | `14` |
 
 A snapshot is a consistent copy taken while the agent keeps running, stored as `<prefix>/<UTC time>.db` with a description file. The block belongs to the environment, so it stays in force whatever apps are deployed. A `state_backup` check alerts on a failed or overdue snapshot, and shows in `berthy checks`.
@@ -2596,6 +2617,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `aliases` | map | none | Short names for command lines, for people at a terminal. At most 64. The MCP server does not offer them. See [Aliases](#aliases). |
 | `aliases.<alias>` | string | none | The command line the alias stands for: a command that talks to an agent, then its arguments, separated by spaces. Quotes are not interpreted, and `-e` and `--config` are not allowed. |
 | `min_version` | version | none | The oldest Berthy release the manifest works with, such as `0.9.0`. The CLI and the agent refuse a manifest that needs a newer release. See [the top of `berthy.yml`](#the-top-of-berthyyml). |
+| `timezone` | string | `UTC` | The time zone every `schedule` is read in, as an IANA name such as `Europe/Lisbon`. A time that does not exist on a day, because the clocks go forward, is skipped. A time that happens twice, because they go back, runs once, the first time. See [Scheduled commands](#step-9-scheduled-commands). |
 
 #### `registries.<host>`
 
@@ -2688,7 +2710,7 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | `app` | name | required | The app the job runs in. |
 | `role` | name | none | For an image app: the role whose container runs the command. Needed when the app has several roles. Not with `service`. |
 | `service` | name | none | For a Compose app: the service that runs the command. Not with `role`. |
-| `schedule` | string | on demand | A five-field cron expression, in UTC. Without it the job runs only on demand. |
+| `schedule` | string | on demand | A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the job runs only on demand. |
 | `command` | list | required | The command to run, as a list. |
 | `timeout` | duration | `1h` | The time limit of a run, from `1s` to `24h`. |
 
@@ -2698,7 +2720,7 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | --- | --- | --- | --- |
 | `app` | name | required | The app that mounts the volume. |
 | `volume` | string | required | For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts. |
-| `schedule` | string | on demand | A five-field cron expression, in UTC. Without it the backup runs only on demand or from a deploy hook. |
+| `schedule` | string | on demand | A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the backup runs only on demand or from a deploy hook. |
 | `destination` | name | required | A key of `destinations`. |
 | `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket. |
 | `before` | name | none | A job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. |
@@ -2722,7 +2744,7 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | --- | --- | --- | --- |
 | `destination` | name | required | A key of `destinations`. |
 | `prefix` | string | `berthy-state/<environment>` | The object prefix of the snapshots. |
-| `schedule` | string | 17 3 * * * | A five-field cron expression, in UTC. The default is daily at 03:17. |
+| `schedule` | string | 17 3 * * * | A five-field cron expression, read in the manifest's `timezone`, UTC by default. The default is daily at 03:17. |
 | `keep` | integer | `14` | The number of snapshots kept, from 1 to 1000. |
 
 #### `probes.<name>`

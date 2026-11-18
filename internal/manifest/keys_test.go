@@ -145,6 +145,7 @@ project: demo
 network: demo
 protected: true
 min_version: 0.9.0
+timezone: Europe/Lisbon
 registries:
   ghcr.io:
     username: acme

@@ -34,7 +34,7 @@ func TestJobsPrintsATableOrJSON(t *testing.T) {
 	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME") || !strings.Contains(lines[0], "NEXT") || !strings.Contains(lines[0], "LAST") {
 		t.Fatalf("table:\n%s", out.String())
 	}
-	for _, want := range []string{"cleanup", "api/web", "30 2 * * *", "2026-11-17T02:30:00Z", "failed", "2026-11-16T02:30:02Z", "exit status 3"} {
+	for _, want := range []string{"cleanup", "api/web", "30 2 * * *", "2026-11-17 02:30 UTC", "failed", "2026-11-16T02:30:02Z", "exit status 3"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("row lacks %q: %q", want, lines[1])
 		}
@@ -53,6 +53,39 @@ func TestJobsPrintsATableOrJSON(t *testing.T) {
 	out.Reset()
 	if code := Run([]string{"jobs", "-e", "dev", "--config", ingressCLIConfig(t, empty.URL)}, &out, &errout); code != 0 || strings.TrimSpace(out.String()) != "no jobs" {
 		t.Fatalf("empty: %d %q", code, out.String())
+	}
+}
+
+// The NEXT column shows the next occurrence on the clock of the manifest's zone, then in UTC.
+func TestJobsShowsTheNextOccurrenceInTheManifestsZoneAndInUTC(t *testing.T) {
+	body := `[
+ {"name":"lisbon","app":"api","schedule":"0 2 * * *","timezone":"Europe/Lisbon","timeout":"1h0m0s","next":"2026-11-20T02:00:00Z","next_local":"2026-11-20T02:00:00+00:00"},
+ {"name":"summer","app":"api","schedule":"0 2 * * *","timezone":"Europe/Lisbon","timeout":"1h0m0s","next":"2026-07-20T01:00:00Z","next_local":"2026-07-20T02:00:00+01:00"},
+ {"name":"tokyo","app":"api","schedule":"0 2 * * *","timezone":"Asia/Tokyo","timeout":"1h0m0s","next":"2026-11-19T17:00:00Z","next_local":"2026-11-20T02:00:00+09:00"},
+ {"name":"utc","app":"api","schedule":"0 2 * * *","timezone":"UTC","timeout":"1h0m0s","next":"2026-11-20T02:00:00Z"},
+ {"name":"manual","app":"api","timeout":"1h0m0s"}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+	defer server.Close()
+	var out, errout bytes.Buffer
+	if code := Run([]string{"jobs", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	rows := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
+		rows[strings.Fields(line)[0]] = line
+	}
+	for name, want := range map[string]string{
+		"lisbon": "2026-11-20 02:00 WET (02:00Z)",
+		"summer": "2026-07-20 02:00 WEST (01:00Z)",
+		"tokyo":  "2026-11-20 02:00 JST (2026-11-19 17:00Z)",
+		"utc":    "2026-11-20 02:00 UTC",
+	} {
+		if !strings.Contains(rows[name], want) {
+			t.Errorf("%s row lacks %q: %q", name, want, rows[name])
+		}
+	}
+	if strings.Contains(rows["utc"], "(") {
+		t.Errorf("a UTC job shows the UTC time twice: %q", rows["utc"])
 	}
 }
 

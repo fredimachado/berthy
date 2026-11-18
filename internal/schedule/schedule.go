@@ -1,4 +1,4 @@
-// Package schedule parses five-field cron expressions and finds their occurrences in UTC.
+// Package schedule parses five-field cron expressions and finds their occurrences, in UTC or in the zone a schedule is given.
 package schedule
 
 import (
@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
-// Schedule is a parsed five-field cron expression evaluated in UTC: minute hour day-of-month month day-of-week.
+// Schedule is a parsed five-field cron expression: minute hour day-of-month month day-of-week. It reads the wall clock of
+// its zone, UTC unless In sets another one.
 type Schedule struct {
 	minute, hour, dom, month, dow uint64 // bit i set => value i allowed (dow: 0-6, Sunday = 0)
 	domAny, dowAny                bool   // the field starts with "*", which Vixie cron treats as unrestricted
 	expr                          string
+	loc                           *time.Location // nil means UTC
 }
 
 // fieldSpec describes one of the five fields: its name for errors, its range, and its names if it has any.
@@ -183,7 +185,26 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 // has reports whether value v is in the set.
 func has(set uint64, v int) bool { return set&(uint64(1)<<uint(v)) != 0 }
 
-// dayMatches applies the Vixie cron rule to a UTC day: when both day fields are restricted a day matches if either
+// ParseIn is Parse for a schedule that reads the wall clock of loc.
+func ParseIn(expr string, loc *time.Location) (Schedule, error) {
+	s, err := Parse(expr)
+	return s.In(loc), err
+}
+
+// In returns the schedule reading the wall clock of loc. A nil loc is UTC.
+func (s Schedule) In(loc *time.Location) Schedule {
+	s.loc = loc
+	return s
+}
+
+func (s Schedule) zone() *time.Location {
+	if s.loc == nil {
+		return time.UTC
+	}
+	return s.loc
+}
+
+// dayMatches applies the Vixie cron rule to a wall-clock day: when both day fields are restricted a day matches if either
 // does; otherwise both must match.
 func (s Schedule) dayMatches(day time.Time) bool {
 	dom := has(s.dom, day.Day())
@@ -194,19 +215,67 @@ func (s Schedule) dayMatches(day time.Time) bool {
 	return dom && dow
 }
 
-// Matches reports whether the minute containing t (UTC) is an occurrence.
+// wallMatches reports whether a wall-clock minute, written as a UTC time, is one the fields allow.
+func (s Schedule) wallMatches(w time.Time) bool {
+	return has(s.minute, w.Minute()) && has(s.hour, w.Hour()) && has(s.month, int(w.Month())) && s.dayMatches(w)
+}
+
+// wall returns the wall-clock minute of t in the schedule's zone, written as a UTC time so it can be stepped by days.
+func (s Schedule) wall(t time.Time) time.Time {
+	l := t.In(s.zone())
+	return time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), l.Minute(), 0, 0, time.UTC)
+}
+
+// firstInstant returns the first instant at which the clock of the zone reads w, and the zero time when it never does
+// because the clocks jump over it. A reading that happens twice because the clocks go back is returned at its first
+// instant. The offsets on either side of w are the only ones that can apply, a day on each side being past any change.
+func (s Schedule) firstInstant(w time.Time) time.Time {
+	loc := s.zone()
+	var first time.Time
+	for _, probe := range []time.Time{w.Add(-24 * time.Hour), w.Add(24 * time.Hour)} {
+		_, offset := probe.In(loc).Zone()
+		u := w.Add(-time.Duration(offset) * time.Second)
+		if s.wall(u).Equal(w) && (first.IsZero() || u.Before(first)) {
+			first = u
+		}
+	}
+	return first
+}
+
+// Matches reports whether the minute containing t is an occurrence: its wall clock in the schedule's zone fits the fields,
+// and it is the first time the clock read that. A reading the clocks skip never occurs; one they repeat occurs at its first
+// instant only.
 func (s Schedule) Matches(t time.Time) bool {
-	u := t.UTC()
-	return has(s.minute, u.Minute()) && has(s.hour, u.Hour()) && has(s.month, int(u.Month())) && s.dayMatches(u)
+	w := s.wall(t)
+	if !s.wallMatches(w) {
+		return false
+	}
+	u := s.firstInstant(w)
+	return !u.IsZero() && !t.Before(u) && t.Before(u.Add(time.Minute))
 }
 
 // Next returns the first occurrence strictly after t, truncated to the minute, in UTC. It returns the zero time when
 // there is none within 9 years, which covers a Feb 29 after a non-leap century year. It skips whole months, days and
-// hours that cannot match, so it does not step by minute.
+// hours that cannot match on the wall clock, so it does not step by minute.
 func (s Schedule) Next(t time.Time) time.Time {
-	u := t.UTC()
-	cur := time.Date(u.Year(), u.Month(), u.Day(), u.Hour(), u.Minute(), 0, 0, time.UTC).Add(time.Minute)
-	limit := cur.AddDate(9, 0, 0)
+	// Every occurrence after t reads a later wall clock than t does: the clocks only go back over readings that already
+	// happened, which are not occurrences the second time.
+	w := s.wall(t).Add(time.Minute)
+	limit := w.AddDate(9, 0, 0)
+	for {
+		if w = s.nextWall(w, limit); w.IsZero() {
+			return time.Time{}
+		}
+		if u := s.firstInstant(w); u.After(t) {
+			return u
+		}
+		w = w.Add(time.Minute)
+	}
+}
+
+// nextWall returns the first wall-clock minute at or after w that fits the fields, before limit; the zero time if none.
+func (s Schedule) nextWall(w, limit time.Time) time.Time {
+	cur := w
 	for cur.Before(limit) {
 		switch {
 		case !has(s.month, int(cur.Month())):
