@@ -166,6 +166,7 @@ func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Man
 	}
 	out = append(out, monitor.MemoryCheck(w.samples))
 	out = append(out, w.restartChecks(ctx, m)...)
+	out = append(out, hostChecks(w.engine, w.cfg.Listen)...)
 	if managed {
 		out = append(out, monitor.TunnelCheck(w.tunnelStatus))
 	}

@@ -28,6 +28,12 @@ const (
 // lists the network names asked for so far.
 func doctorDocker(t *testing.T, networks map[string]string) (*engine.Engine, func() []string) {
 	t.Helper()
+	return doctorDockerContainers(t, networks, "[]")
+}
+
+// doctorDockerContainers is doctorDocker whose containers route answers containers, the JSON of the running containers.
+func doctorDockerContainers(t *testing.T, networks map[string]string, containers string) (*engine.Engine, func() []string) {
+	t.Helper()
 	// The directory is short on purpose: a Unix socket path holds about 108 bytes, and a test's temporary directory can be longer.
 	dir, err := os.MkdirTemp("", "bd")
 	if err != nil {
@@ -47,6 +53,8 @@ func doctorDocker(t *testing.T, networks map[string]string) (*engine.Engine, fun
 			w.Write([]byte(`{"ApiVersion":"1.50","MinAPIVersion":"1.24"}`))
 		case r.URL.Path == "/v1.44/info":
 			w.Write([]byte(`{"LoggingDriver":"json-file","Swarm":{"ControlAvailable":true,"LocalNodeState":"active"}}`))
+		case r.URL.Path == "/v1.44/containers/json":
+			w.Write([]byte(containers))
 		case strings.HasPrefix(r.URL.Path, "/v1.44/networks/"):
 			name := strings.TrimPrefix(r.URL.Path, "/v1.44/networks/")
 			mu.Lock()

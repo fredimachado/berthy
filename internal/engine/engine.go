@@ -59,6 +59,34 @@ type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("Docker API status %d", e.Code) }
 
+// PublishedPort is a port that a running container publishes on the host: the host address it is bound to, the host port and
+// the protocol.
+type PublishedPort struct {
+	IP         string
+	PublicPort uint16
+	Type       string
+}
+
+// PublishedPorts returns the ports that the running containers publish on the host. A port that a container exposes without
+// publishing has no PublicPort, and is left out.
+func (e *Engine) PublishedPorts(ctx context.Context) ([]PublishedPort, error) {
+	var containers []struct {
+		Ports []PublishedPort
+	}
+	if err := e.Get(ctx, "/containers/json", &containers); err != nil {
+		return nil, err
+	}
+	var out []PublishedPort
+	for _, c := range containers {
+		for _, p := range c.Ports {
+			if p.PublicPort != 0 {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, nil
+}
+
 type container struct {
 	ID, Image, State string
 	Labels           map[string]string

@@ -150,7 +150,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid listen port")
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || !(ip.IsLoopback() || ip.IsPrivate() || (&net.IPNet{IP: net.ParseIP("100.64.0.0"), Mask: net.CIDRMask(10, 32)}).Contains(ip)) {
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || !privateAddress(ip) {
 		return fmt.Errorf("listen address must be a loopback, private, or VPN IP")
 	}
 	if len(c.Tokens) == 0 {
@@ -225,6 +225,15 @@ func ValidateAPIURL(name, raw string) error {
 		}
 	}
 	return fmt.Errorf("%s must use https, or http on a loopback host", name)
+}
+
+// vpnRange is the range of the VPN that the agent may listen on, and that the host checks do not call public.
+var vpnRange = &net.IPNet{IP: net.ParseIP("100.64.0.0"), Mask: net.CIDRMask(10, 32)}
+
+// privateAddress reports whether ip is loopback, private (RFC 1918 or ULA) or on the VPN range. It is the rule for the
+// agent's listen address, and the host checks count anything else that listens as public.
+func privateAddress(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || vpnRange.Contains(ip)
 }
 
 func Handler(c Config, e *engine.Engine) http.Handler {
@@ -426,6 +435,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					checks = append(checks, check)
 				}
 			}
+			checks = append(checks, hostDoctorChecks(r.Context(), e, c.Listen)...)
 			result = map[string]any{"checks": checks}
 		default:
 			writeError(w, 404, "not_found", "not found")
