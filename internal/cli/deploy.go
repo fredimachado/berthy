@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
@@ -43,6 +44,41 @@ func printWarnings(w io.Writer, warnings manifest.Problems) {
 	for _, p := range warnings {
 		fmt.Fprintln(w, "warning: "+p.String())
 	}
+}
+
+// originColumn is the widest the path and value are padded to. A longer one, such as a list of hooks, is printed in full, and
+// its file and line follow it.
+const originColumn = 60
+
+// printOrigins prints one line per value: its path and value, padded to the longest of them up to originColumn, then the file
+// and line that write it, or default.
+func printOrigins(w io.Writer, origins []manifest.Origin) {
+	left := make([]string, len(origins))
+	width := 0
+	for i, o := range origins {
+		left[i] = o.Path + ": " + originValue(o.Value)
+		width = max(width, utf8.RuneCountInString(left[i]))
+	}
+	width = min(width, originColumn)
+	for i, o := range origins {
+		where := "default"
+		if o.File != "" {
+			where = fmt.Sprintf("%s:%d", o.File, o.Line)
+		}
+		fmt.Fprintf(w, "%-*s  %s\n", width, left[i], where)
+	}
+}
+
+// originValue is a value as config show --origin prints it: a string as it is, and anything else as compact JSON.
+func originValue(v any) string {
+	if s, ok := v.(string); ok {
+		return terminalSafe(s)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
 }
 
 func isDeploymentCommand(s string) bool {
@@ -99,14 +135,14 @@ var changeFlags = map[string][]string{
 	"token create":     withRemoteFlags("--dry-run", "--scope", "--agent", "--expires"),
 	"token list":       withRemoteFlags(),
 	"token revoke":     withRemoteFlags("--dry-run"),
-	"config show":      {"-e", "--manifest-dir", "--json"},
+	"config show":      {"-e", "--manifest-dir", "--json", "--origin"},
 	"config validate":  {"-e", "--manifest-dir", "--json"},
 }
 
 type commandFlags struct {
 	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires string
 	bytes, format                                                                                                                string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent                          bool
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                  bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
 	pos, command, given, versions []string
@@ -148,6 +184,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.all = true
 		case "--agent":
 			f.agent = true
+		case "--origin":
+			f.origin = true
 		case "--revert-schema":
 			f.revert = true
 		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires":
@@ -351,7 +389,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "config requires show or validate")
 			return 2
 		}
-		m, warnings, err := manifest.LoadWithWarnings(f.dir, f.env)
+		loaded, err := manifest.LoadDetailed(f.dir, f.env)
 		if err != nil {
 			var problems manifest.Problems
 			if f.pos[0] == "validate" && errors.As(err, &problems) {
@@ -362,10 +400,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			return 1
 		}
 		if f.pos[0] == "validate" {
-			if err := checkAliases(m.Aliases); err != nil {
+			if err := checkAliases(loaded.Manifest.Aliases); err != nil {
 				fmt.Fprintln(errout, err)
 				return 1
 			}
+			warnings := loaded.Warnings
 			if f.json {
 				if warnings == nil {
 					warnings = manifest.Problems{}
@@ -379,7 +418,20 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(out, "manifest valid")
 			return 0
 		}
-		b, _ := json.Marshal(m)
+		if f.origin {
+			origins, err := loaded.Origins()
+			if err != nil {
+				fmt.Fprintln(errout, err)
+				return 1
+			}
+			if f.json {
+				b, _ := json.Marshal(origins)
+				return printResponse(out, errout, b, true)
+			}
+			printOrigins(out, origins)
+			return 0
+		}
+		b, _ := json.Marshal(loaded.Manifest)
 		return printResponse(out, errout, b, f.json)
 	}
 	cfgPath, err := agentclient.ConfigPath(f.config)

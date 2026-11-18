@@ -60,6 +60,9 @@ func (b schemaBuilder) node(t reflect.Type, path string) (map[string]any, error)
 			return nil, err
 		}
 		decorate(elem, path+"."+ph)
+		if b.overlay {
+			elem = nullable(elem)
+		}
 		node := map[string]any{"type": "object", "additionalProperties": elem}
 		if k, ok := keyAt(path); ok && k.NamePattern != "" {
 			node["propertyNames"] = map[string]any{"pattern": k.NamePattern}
@@ -105,6 +108,11 @@ func secretEntry() map[string]any {
 	}}
 }
 
+// nullable is the schema of a value in an overlay: its own schema, or null, which removes the key the value is for.
+func nullable(node map[string]any) map[string]any {
+	return map[string]any{"anyOf": []any{node, map[string]any{"type": "null"}}}
+}
+
 // object is the schema of a struct: the fields that have a json name, each described by its Key.
 func (b schemaBuilder) object(t reflect.Type, path string) (map[string]any, error) {
 	props := map[string]any{}
@@ -124,6 +132,9 @@ func (b schemaBuilder) object(t reflect.Type, path string) (map[string]any, erro
 			return nil, err
 		}
 		decorate(child, p)
+		if b.overlay {
+			child = nullable(child)
+		}
 		props[name] = child
 		if k, ok := keyAt(p); ok && k.Required {
 			if k.Applies == "" {

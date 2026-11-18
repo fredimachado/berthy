@@ -406,8 +406,9 @@ The agent never reads your repository. Instead, the CLI **reads the files from t
 #### How the merge works
 
 - A **map** is merged key by key. A key in the overlay replaces the same key in the base, and keys that only one file has are all kept.
-- A **list** or a plain value in the overlay **replaces** the base's. If the overlay has `hooks.pre_deploy`, it replaces the whole base list.
-- The file must be one YAML document. **Anchors, aliases and `null` are refused.** So are duplicate keys, and keys Berthy does not know (a typo is an error, not a silent no-op). A file is at most 1 MiB.
+- A **list** or a plain value in the overlay **replaces** the base's. If the overlay has `hooks.pre_deploy`, it replaces the whole base list. When the overlay's list leaves out an entry of the base list, `config validate` warns, for example `apps.api.env.secret replaces the base list and drops JWT_SIGNING_KEY`. The list is still replaced.
+- In an overlay, **`null` removes the key**, so this environment does not have it. `LEGACY_MODE: null` under `env.plain` takes that variable out of the manifest of the environment, and the other environments keep it. A `null` for a key that the base does not set does nothing, and `config validate` warns about it. Write `null` or `~`: an empty value is refused, so a key is never removed by mistake.
+- The file must be one YAML document. **Anchors and aliases are refused**, and so is `null` in `berthy.yml` or in a list. So are duplicate keys, and keys Berthy does not know (a typo is an error, not a silent no-op). A file is at most 1 MiB.
 - **Quote numbers and booleans that you mean as text.** `DB_PORT: "5432"` is right. `DB_PORT: 5432` is refused, because environment values are strings.
 - Names of apps, roles, jobs, backups and so on use lowercase letters, digits, `-` and `_` (up to 63 characters, starting with a letter or digit). Environment variable and secret names use letters, digits and `_`.
 - Durations are Go-style: `15s`, `2m`, `1h30m`. There is no `d` for days.
@@ -775,7 +776,23 @@ berthy config show -e prod --json
 
 Defaults are filled in, so the output shows `deploy_timeout: 120s`, `retain: 5` and so on.
 
-Run `config validate` in CI too. It is the cheapest check there is. It also prints warnings for a manifest that is valid but risky: a role that mounts a read-write volume with `deploy.order: start-first`, or with more than one replica. Each warning is a `warning:` line with its file and line, and the check still passes.
+To see where each value comes from, add `--origin`. It prints one line per value, with the file and line that set it, or `default` for a value that no file sets:
+
+```bash
+berthy config show -e prod --origin
+```
+
+```text
+apps.api.deploy.drain_timeout: 30s                            berthy.yml:44
+apps.api.deploy.retain: 5                                     berthy.yml:46
+apps.api.hooks.pre_deploy: [{"backup":"main-db"}]             berthy.prod.yml:17
+apps.api.roles.web.replicas: 2                                berthy.prod.yml:9
+apps.postgres.deploy.drain_timeout: 30s                       default
+```
+
+A list is one value, printed in one line. `--origin --json` prints the same as a list of `{path, value, file, line}` objects, where a default has no `file` and no `line`.
+
+Run `config validate` in CI too. It is the cheapest check there is. It also prints warnings for a manifest that is valid but risky: a role that mounts a read-write volume with `deploy.order: start-first`, or with more than one replica, and an overlay list that drops entries of the base list. Each warning is a `warning:` line with its file and line, and the check still passes.
 
 A role that mounts a read-write volume is updated stop-first by default, so the old version stops before the new one starts. The role is down for the time the new version takes to become healthy, and the deploy plan says so: `role web: stop-first, because it mounts volume uploads`. Set `deploy.order` to override it for the app.
 
@@ -783,7 +800,7 @@ A role that mounts a read-write volume is updated stop-first by default, so the 
 
 `berthy docs` prints every manifest key with its type, default and meaning, and `berthy docs backups` prints one section. It needs no agent and no manifest. Section names are listed when you give one that does not exist.
 
-`berthy config schema` prints a JSON Schema (draft-07) of the manifest, and `berthy config schema --overlay` one for an overlay such as `berthy.prod.yml`, where no key is required. An editor with a YAML language server can use it to complete keys and flag a typo:
+`berthy config schema` prints a JSON Schema (draft-07) of the manifest, and `berthy config schema --overlay` one for an overlay such as `berthy.prod.yml`, where no key is required and every key may be `null` to remove it. An editor with a YAML language server can use it to complete keys and flag a typo:
 
 ```bash
 berthy config schema > berthy.schema.json
@@ -2532,7 +2549,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | `setup` | `-e`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. |
 | `version` | `--json` | The CLI's version and platform. |
 | `config validate` | `-e`, `--manifest-dir` | Check the merged manifest. Prints `manifest valid`. |
-| `config show` | `-e`, `--manifest-dir`, `--json` | Print the merged manifest. |
+| `config show` | `-e`, `--manifest-dir`, `--json`, `--origin` | Print the merged manifest. With `--origin`, one line per value with the file and line that set it, or `default`. |
 | `config schema` | `--overlay` | Print a JSON Schema (draft-07) of the manifest, or with `--overlay` of an overlay, for an editor. Needs no `-e`. |
 | `docs` | an optional section name | Print the manifest reference, or one section of it, such as `docs backups`. |
 | `agent token` | `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin` | Make a token offline and print it once, with its digest and the object for the `tokens` list of `agent.json`. No agent, no network. To make a token on a running agent, use `token create`. |

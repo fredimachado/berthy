@@ -443,11 +443,11 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// readYAML reads one manifest file, which is nil when it is optional and not there. What is wrong with its content is returned
-// as Problems of that file, each with its line.
-func readYAML(path string, optional bool) (*yaml.Node, error) {
+// readYAML reads one manifest file. An overlay is optional: it is nil when it is not there. What is wrong with its content is
+// returned as Problems of that file, each with its line.
+func readYAML(path string, overlay bool) (*yaml.Node, error) {
 	f, err := os.Open(path)
-	if optional && os.IsNotExist(err) {
+	if overlay && os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -461,7 +461,7 @@ func readYAML(path string, optional bool) (*yaml.Node, error) {
 	if len(b) > maxInput {
 		return nil, fmt.Errorf("%s exceeds size limit", path)
 	}
-	n, err := parseYAML(b)
+	n, err := parseYAML(b, overlay)
 	if err != nil {
 		var ps Problems
 		if !errors.As(err, &ps) {
@@ -475,9 +475,10 @@ func readYAML(path string, optional bool) (*yaml.Node, error) {
 	return n, nil
 }
 
-// parseYAML parses a manifest, a mapping of one document without aliases, anchors, null or duplicate keys. What it refuses
-// of the content is returned as Problems, each with the line and column in b.
-func parseYAML(b []byte) (*yaml.Node, error) {
+// parseYAML parses a manifest, a mapping of one document without aliases, anchors or duplicate keys. Null is refused, except
+// in an overlay, where it is the value of a key of a mapping and removes that key. What it refuses of the content is returned
+// as Problems, each with the line and column in b.
+func parseYAML(b []byte, overlay bool) (*yaml.Node, error) {
 	if len(b) > maxInput {
 		return nil, fmt.Errorf("manifest exceeds size limit")
 	}
@@ -497,7 +498,7 @@ func parseYAML(b []byte) (*yaml.Node, error) {
 		return nil, fmt.Errorf("manifest must be a mapping")
 	}
 	var ps Problems
-	checkNode(doc.Content[0], 0, "", &ps)
+	checkNode(doc.Content[0], 0, "", overlay, &ps)
 	if len(ps) > 0 {
 		return nil, ps
 	}
@@ -505,13 +506,19 @@ func parseYAML(b []byte) (*yaml.Node, error) {
 }
 
 // checkNode records every alias, anchor, null, key that is not a string or is repeated, and level of nesting beyond the limit.
-func checkNode(n *yaml.Node, depth int, path string, p *Problems) {
+// removal is true for a value that a null may remove a key with: a value of an overlay's mappings. Such a null is written null
+// or ~, because an empty value could be a key left empty by mistake, and removing it would not show.
+func checkNode(n *yaml.Node, depth int, path string, removal bool, p *Problems) {
 	if depth > 64 {
 		p.addAt(n, path, "manifest nesting too deep")
 		return
 	}
-	if n.Kind == yaml.AliasNode || n.Anchor != "" || n.Tag == "!!null" {
+	if n.Kind == yaml.AliasNode || n.Anchor != "" || (n.Tag == "!!null" && !removal) {
 		p.addAt(n, path, "aliases, anchors and null are not allowed")
+		return
+	}
+	if n.Tag == "!!null" && n.Value == "" {
+		p.addAt(n, path, "an empty value is not allowed: write null to remove a key")
 		return
 	}
 	if n.Kind == yaml.MappingNode {
@@ -522,32 +529,13 @@ func checkNode(n *yaml.Node, depth int, path string, p *Problems) {
 				p.addAt(k, join(path, k.Value), "invalid or duplicate key %q", k.Value)
 			}
 			seen[k.Value] = true
-			checkNode(n.Content[i+1], depth+1, join(path, k.Value), p)
+			checkNode(n.Content[i+1], depth+1, join(path, k.Value), removal, p)
 		}
 		return
 	}
+	// A list's items are never removals: an overlay's list replaces the base list as a whole.
 	for i, c := range n.Content {
-		checkNode(c, depth+1, join(path, strconv.Itoa(i)), p)
-	}
-}
-func merge(base, overlay *yaml.Node) {
-	for i := 0; i < len(overlay.Content); i += 2 {
-		k, v := overlay.Content[i], overlay.Content[i+1]
-		found := false
-		for j := 0; j < len(base.Content); j += 2 {
-			if base.Content[j].Value == k.Value {
-				if base.Content[j+1].Kind == yaml.MappingNode && v.Kind == yaml.MappingNode {
-					merge(base.Content[j+1], v)
-				} else {
-					base.Content[j+1] = v
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			base.Content = append(base.Content, k, v)
-		}
+		checkNode(c, depth+1, join(path, strconv.Itoa(i)), false, p)
 	}
 }
 
@@ -589,20 +577,30 @@ func Files(env string) []string {
 // Load reads the manifest of env: the base file, and the overlay of env when there is one. A manifest that is not valid is
 // returned as Problems, every one of them with its file and its line, which say whether the base or the overlay is at fault.
 func Load(dir, env string) (*Manifest, error) {
-	m, _, err := LoadWithWarnings(dir, env)
-	return m, err
+	l, err := LoadDetailed(dir, env)
+	if err != nil {
+		return nil, err
+	}
+	return l.Manifest, nil
 }
 
-// LoadWithWarnings is Load, and also returns the warnings of a valid manifest, placed in its files like the problems. A
-// manifest with problems returns them and no warnings.
-func LoadWithWarnings(dir, env string) (*Manifest, Problems, error) {
+// Loaded is a valid manifest of one environment, with what Load found about it: its warnings, and where each value is written.
+type Loaded struct {
+	Manifest *Manifest
+	Warnings Problems
+	where    locator
+}
+
+// LoadDetailed is Load, and also returns the warnings of a valid manifest, placed in its files like the problems, and the file
+// and line of every value (Origins). A manifest with problems returns them and no warnings.
+func LoadDetailed(dir, env string) (*Loaded, error) {
 	if !identifier.MatchString(env) {
-		return nil, nil, fmt.Errorf("invalid environment %q", env)
+		return nil, fmt.Errorf("invalid environment %q", env)
 	}
 	names := Files(env)
 	var parse Problems
-	read := func(name string, optional bool) (*yaml.Node, error) {
-		n, err := readYAML(filepath.Join(dir, name), optional)
+	read := func(name string, overlay bool) (*yaml.Node, error) {
+		n, err := readYAML(filepath.Join(dir, name), overlay)
 		var ps Problems
 		if errors.As(err, &ps) {
 			parse = append(parse, ps...)
@@ -612,29 +610,32 @@ func LoadWithWarnings(dir, env string) (*Manifest, Problems, error) {
 	}
 	base, err := read(names[0], false)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	overlay, err := read(names[1], true)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(parse) > 0 {
-		return nil, nil, parse
+		return nil, parse
 	}
 	// Merge into a copy, so the files' own trees keep their positions to place the problems by.
 	where := locator{base: source{names[0], base}}
 	merged := cloneNode(base)
+	var warnings Problems
 	if overlay != nil {
 		where.overlay = &source{names[1], overlay}
-		merge(merged, overlay)
+		o := overlayMerge{baseName: names[0]}
+		o.merge(merged, overlay, "")
+		warnings = o.warnings
 	}
 	var value any
 	if err = merged.Decode(&value); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	m, err := DecodeJSON(data)
 	if err != nil {
@@ -642,18 +643,18 @@ func LoadWithWarnings(dir, env string) (*Manifest, Problems, error) {
 		if errors.As(err, &ps) {
 			where.place(ps)
 		}
-		return nil, nil, err
+		return nil, err
 	}
 	if err := m.CheckVersion(version.Version); err != nil {
 		var old *TooOld
 		if errors.As(err, &old) {
-			return nil, nil, fmt.Errorf("this manifest needs Berthy %s or newer; this CLI is %s", old.Need, old.Have)
+			return nil, fmt.Errorf("this manifest needs Berthy %s or newer; this CLI is %s", old.Need, old.Have)
 		}
-		return nil, nil, err
+		return nil, err
 	}
-	warnings := m.Warnings()
+	warnings = append(warnings, m.Warnings()...)
 	where.place(warnings)
-	return m, warnings, nil
+	return &Loaded{Manifest: m, Warnings: warnings, where: where}, nil
 }
 
 // DecodeJSON decodes and validates a manifest sent to the agent. It never sets the connector flag.
@@ -673,7 +674,7 @@ func decodeManifest(data []byte, connector bool) (*Manifest, error) {
 	}
 	// Parse once for duplicate keys and explicit null, then walk the tree against the types for unknown fields and values of
 	// the wrong type, before the strict JSON decoding.
-	node, err := parseYAML(data)
+	node, err := parseYAML(data, false)
 	if err != nil {
 		return nil, err
 	}

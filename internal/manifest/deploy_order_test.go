@@ -50,14 +50,14 @@ apps:
 func warningsOf(t *testing.T, base string) Problems {
 	t.Helper()
 	dir := writeFiles(t, map[string]string{"berthy.yml": base})
-	m, warnings, err := LoadWithWarnings(dir, "prod")
+	l, err := LoadDetailed(dir, "prod")
 	if err != nil {
 		t.Fatalf("a manifest with warnings is valid: %v", err)
 	}
-	if m == nil {
+	if l.Manifest == nil {
 		t.Fatal("no manifest")
 	}
-	return warnings
+	return l.Warnings
 }
 
 func TestWarnsAboutStartFirstOverAWritableVolume(t *testing.T) {

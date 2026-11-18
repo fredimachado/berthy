@@ -21,10 +21,33 @@ func schemaOf(t *testing.T, overlay bool) map[string]any {
 	return doc
 }
 
+// withoutNull is the schema of a value of an overlay without its null branch, which is the value's own schema.
+func withoutNull(node map[string]any) map[string]any {
+	branches, _ := node["anyOf"].([]any)
+	for _, b := range branches {
+		if m, ok := b.(map[string]any); ok && m["type"] != "null" {
+			return m
+		}
+	}
+	return node
+}
+
+// acceptsNull says whether the schema of a value has a null branch.
+func acceptsNull(node map[string]any) bool {
+	branches, _ := node["anyOf"].([]any)
+	for _, b := range branches {
+		if m, ok := b.(map[string]any); ok && m["type"] == "null" {
+			return true
+		}
+	}
+	return false
+}
+
 // at follows names through the schema: a property, "*" for the values of a map, "[]" for the items of a list.
 func at(t *testing.T, node map[string]any, path ...string) map[string]any {
 	t.Helper()
 	for _, p := range path {
+		node = withoutNull(node)
 		var next any
 		switch p {
 		case "*":
@@ -215,8 +238,21 @@ func TestJSONSchemaOverlayRequiresNothing(t *testing.T) {
 	}
 	overlay := schemaOf(t, true)
 	walk("", overlay)
-	if at(t, overlay, "project")["type"] != "string" {
+	if withoutNull(at(t, overlay, "project"))["type"] != "string" {
 		t.Error("the overlay schema lost project")
+	}
+}
+
+// A null in an overlay removes its key, so every value there is its own schema or null. The manifest's values are not.
+func TestJSONSchemaOverlayAcceptsNullForEveryKey(t *testing.T) {
+	overlay := schemaOf(t, true)
+	for _, path := range [][]string{{"project"}, {"apps"}, {"apps", "*", "env", "plain", "*"}, {"apps", "*", "roles", "*", "replicas"}} {
+		if !acceptsNull(at(t, overlay, path...)) {
+			t.Errorf("%v: the overlay schema refuses null", path)
+		}
+	}
+	if acceptsNull(at(t, schemaOf(t, false), "project")) {
+		t.Error("the manifest schema accepts null")
 	}
 }
 

@@ -1,6 +1,9 @@
 package manifest
 
 import (
+	"bytes"
+	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -120,4 +123,61 @@ func cloneNode(n *yaml.Node) *yaml.Node {
 		c.Content[i] = cloneNode(x)
 	}
 	return &c
+}
+
+// written is the file and line of the key that sets path, the overlay's when it sets the key too. ok is false when neither file
+// does, as for a default. A hit that consumed the whole path names the key; a shorter one is only the nearest key.
+func (l locator) written(path string) (file string, line int, ok bool) {
+	var overlay *yaml.Node
+	if l.overlay != nil {
+		overlay = l.overlay.root
+	}
+	h := l.descend(l.base.root, overlay, path)
+	if h.at == nil || h.consumed != len(path)+1 {
+		return "", 0, false
+	}
+	return h.file, h.at.Line, true
+}
+
+// Origin is one value of the merged manifest, and the place that writes it: the file and the line of its key. File is "" for a
+// value that no file sets, which the defaults give. Value is what config show prints for the path: a list is one value.
+type Origin struct {
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+	File  string `json:"file,omitempty"`
+	Line  int    `json:"line,omitempty"`
+}
+
+// Origins returns every value of the merged manifest, sorted by path, with the place that writes it. The values are the ones
+// config show prints: a map is walked key by key, and anything else, a list included, is a single value.
+func (l *Loaded) Origins() ([]Origin, error) {
+	b, err := json.Marshal(l.Manifest)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var tree any
+	if err := dec.Decode(&tree); err != nil {
+		return nil, err
+	}
+	var out []Origin
+	l.where.collect("", tree, &out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// collect appends the values under v, which is at path: a map's keys are walked, and anything else is one value.
+func (l locator) collect(path string, v any, out *[]Origin) {
+	if m, ok := v.(map[string]any); ok && len(m) > 0 {
+		for k, c := range m {
+			l.collect(join(path, k), c, out)
+		}
+		return
+	}
+	o := Origin{Path: path, Value: v}
+	if file, line, ok := l.written(path); ok {
+		o.File, o.Line = file, line
+	}
+	*out = append(*out, o)
 }

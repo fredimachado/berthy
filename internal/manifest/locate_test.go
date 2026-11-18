@@ -178,7 +178,8 @@ func TestLoadPlacesParseProblems(t *testing.T) {
 		msg   string
 	}{
 		{"a duplicate key", map[string]string{"berthy.yml": positionBase + "project: other\n"}, [3]any{"berthy.yml", 22, 1}, `invalid or duplicate key "project"`},
-		{"null in the overlay", map[string]string{"berthy.yml": positionBase, "berthy.prod.yml": "protected: true\ntelemetry: null\n"}, [3]any{"berthy.prod.yml", 2, 12}, "aliases, anchors and null are not allowed"},
+		{"null in the base", map[string]string{"berthy.yml": positionBase + "telemetry: null\n"}, [3]any{"berthy.yml", 22, 12}, "aliases, anchors and null are not allowed"},
+		{"null in an overlay list", map[string]string{"berthy.yml": positionBase, "berthy.prod.yml": "apps:\n  api:\n    env:\n      secret:\n        - JWT_SIGNING_KEY\n        - null\n"}, [3]any{"berthy.prod.yml", 6, 11}, "aliases, anchors and null are not allowed"},
 		{"an alias", map[string]string{"berthy.yml": positionBase + "jobs: &j {}\n"}, [3]any{"berthy.yml", 22, 7}, "aliases, anchors and null are not allowed"},
 		{"a syntax error", map[string]string{"berthy.yml": "project: [\n"}, [3]any{"berthy.yml", 0, 0}, ""},
 	}
