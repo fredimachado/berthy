@@ -24,6 +24,36 @@ type screen interface {
 	CellAt(x, y int) *uv.Cell
 }
 
+// grid is a copy of a screen, taken at one moment.
+type grid struct {
+	w, h  int
+	cells []*uv.Cell
+}
+
+func (g *grid) Width() int  { return g.w }
+func (g *grid) Height() int { return g.h }
+func (g *grid) CellAt(x, y int) *uv.Cell {
+	if x < 0 || y < 0 || x >= g.w || y >= g.h {
+		return nil
+	}
+	return g.cells[y*g.w+x]
+}
+
+// copyScreen copies every cell of s. The caller must keep s from changing meanwhile.
+func copyScreen(s screen) *grid {
+	g := &grid{w: s.Width(), h: s.Height()}
+	g.cells = make([]*uv.Cell, g.w*g.h)
+	for y := 0; y < g.h; y++ {
+		for x := 0; x < g.w; x++ {
+			if c := s.CellAt(x, y); c != nil {
+				cp := *c
+				g.cells[y*g.w+x] = &cp
+			}
+		}
+	}
+	return g
+}
+
 // hex is the CSS colour of a terminal colour, or def when it names none.
 func hex(c color.Color, def string) string {
 	if c == nil {

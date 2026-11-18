@@ -271,3 +271,18 @@ func TestInvalidScriptIsRefused(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 }
+
+// The screen can be read while the program is still drawing on it: the driver's pump writes the emulator in one goroutine and a
+// step reads it in another, and the race detector must see no overlap.
+func TestScreenReadWhileTheProgramDraws(t *testing.T) {
+	s, err := startSession([]string{"sh", "-c", `i=0; while :; do printf '\033[Hline %d\033[K\n' $i; i=$((i+1)); done`}, nil, 40, 10, &redactor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.stop()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_ = s.screenText()
+		_ = s.html("x")
+	}
+}

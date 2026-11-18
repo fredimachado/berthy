@@ -126,6 +126,10 @@ type session struct {
 	rd     *redactor
 	exited chan struct{}
 
+	// screenMu orders the writers of the emulator (the pump, resize) and the copy of its cells that a reader takes. The
+	// emulator locks each call on its own, but hands out pointers to its cells, which a reader would use after the lock.
+	screenMu sync.Mutex
+
 	mu       sync.Mutex
 	exitCode int
 	leaked   bool
@@ -241,7 +245,9 @@ func (s *session) pump() {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
 			s.scan(buf[:n])
+			s.screenMu.Lock()
 			_, _ = s.em.Write(buf[:n])
+			s.screenMu.Unlock()
 		}
 		if err != nil {
 			return
@@ -272,7 +278,17 @@ func (s *session) hasLeaked() bool {
 }
 
 // text is the screen as plain lines.
-func (s *session) text() []string { return plainText(s.em) }
+func (s *session) text() []string { return plainText(s.grab()) }
+
+// html is the screen as a page.
+func (s *session) html(title string) string { return renderHTML(s.grab(), title) }
+
+// grab copies the screen, so that it can be read while the program goes on drawing.
+func (s *session) grab() *grid {
+	s.screenMu.Lock()
+	defer s.screenMu.Unlock()
+	return copyScreen(s.em)
+}
 
 // screenText is the screen as one string.
 func (s *session) screenText() string { return strings.Join(s.text(), "\n") }
@@ -286,7 +302,9 @@ func (s *session) resize(cols, rows int) error {
 	if err := pty.Setsize(s.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
 		return err
 	}
+	s.screenMu.Lock()
 	s.em.Resize(cols, rows)
+	s.screenMu.Unlock()
 	return nil
 }
 
@@ -338,7 +356,7 @@ func (r *runner) snapshot(name string) error {
 	if err := r.write(name+".txt", txt); err != nil {
 		return err
 	}
-	return r.write(name+".html", renderHTML(r.s.em, name))
+	return r.write(name+".html", r.s.html(name))
 }
 
 // wait polls the screen until cond holds.
@@ -516,7 +534,7 @@ func run(c config, stderr io.Writer) int {
 			res.Error = rd.apply(err.Error())
 			name := fmt.Sprintf("FAILED-%d", i)
 			_ = r.write(name+".txt", res.Step+": "+res.Error+"\n\n"+strings.Join(s.text(), "\n")+"\n")
-			_ = r.write(name+".html", renderHTML(s.em, name))
+			_ = r.write(name+".html", s.html(name))
 			fmt.Fprintf(stderr, "tuidriver: step %d (%s) failed: %s\n", i, res.Step, res.Error)
 			code = 1
 		}
