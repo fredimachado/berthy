@@ -719,14 +719,14 @@ func TestRecoveryRestoresTheSpecOfAnUpdateThatBerthyWasWatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback","Order":"start-first"}}`)
+	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback","Order":"start-first"}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `","Labels":{"berthy.operation":"new"}},"RestartPolicy":{"Condition":"any","Delay":5000000000}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"continue","Order":"start-first"}}`)
 	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
 	// The agent stopped while the update ran and Berthy was still waiting for the new version: Swarm keeps replacing its
 	// failing tasks, and the service carries the journaled target.
-	e := dockerSpecs{&positiveEngine{spec: storedAsDocker(desired)}}
+	e := dockerSpecs{&positiveEngine{spec: withDockerDefaults(storedAsDocker(desired))}}
 	c := Controller{Engine: e, Store: s}
 	if err = c.Recover(ctx); err != nil {
 		t.Fatal(err)

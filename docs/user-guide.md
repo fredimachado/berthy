@@ -1119,7 +1119,19 @@ Thirty seconds lets a web framework finish its requests. Docker alone would stop
 
 #### Adopting an app that already runs
 
-If a server already runs an app another tool deployed, Berthy can take it over without recreating it. Name the Swarm service in the role (`service: <existing name>`), or for Compose set `project_name` to the name it already runs under. Then run `berthy deploy <app> --adopt --dry-run`. Berthy compares what runs with the manifest and prints the differences before it changes anything. Adopt the least critical environment first. The spec's [adoption checklist](spec-v1.md#adopting-an-existing-deployment) lists the steps.
+If a server already runs an app another tool deployed, Berthy can take it over without recreating it. Name the Swarm service in the role (`service: <existing name>`), or for Compose set `project_name` to the name it already runs under. Then run `berthy deploy <app> --adopt --dry-run`. Berthy compares what runs with the manifest and prints the differences before it changes anything. Adopt the least critical environment first.
+
+For a Swarm service, the first deploy replaces the service's settings with the ones the manifest describes. A setting the service has and the manifest does not produce, such as a user, an entrypoint, a hostname, a working directory or a placement constraint, is dropped, and the plan says so on one line each:
+
+```
+role web: user "1000" is not in the manifest; the first deploy drops it (set roles.web.user to keep it)
+role web: hostname "handmade" is not in the manifest; the first deploy drops it
+role web: env LEGACY_FLAG is not in the manifest; the first deploy drops it
+```
+
+Read these lines before you deploy. To keep a setting, put it in the manifest (`user` and `entrypoint` are role keys). Environment variables are listed by name, never by value. The same is true of every later deploy: a change made by hand to a running service, such as `docker service update --user`, does not survive the next deploy. A service with added capabilities, privileges, a host mount, a published port or another network is refused.
+
+The spec's [adoption checklist](spec-v1.md#adopting-an-existing-deployment) lists the steps.
 
 #### If the deploy fails
 
@@ -2507,6 +2519,8 @@ Roles belong to image apps.
 | --- | --- | --- | --- |
 | `service` | name | `<project>-<app>-<role>` | The name of the role's Swarm service. Set it to adopt an existing service. |
 | `command` | list | the image's | The container's command, as a list. |
+| `entrypoint` | list | the image's | The container's entrypoint, as a list. `command` is passed to it as arguments. |
+| `user` | string | the image's | The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`. |
 | `replicas` | integer | `1` | The number of replicas, at least 1. |
 | `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
 | `health` | map | none | The container health check, with the fields Docker uses. A new version must pass it before it takes traffic. |

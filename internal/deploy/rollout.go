@@ -86,7 +86,7 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 		_, err := e.CreateService(ctx, i.Desired, auth)
 		if err != nil {
 			live, inspectErr := e.InspectService(ctx, i.Name)
-			if inspectErr != nil || !sameSpec(live.Spec, i.Desired) {
+			if inspectErr != nil || !matchesStoredSpec(i.Desired, live.Spec) {
 				return errors.New("service create outcome is uncertain")
 			}
 		}
@@ -97,7 +97,7 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 		}
 		if err = e.UpdateService(ctx, live.ID, live.Version, i.Desired, auth); err != nil {
 			live, inspectErr := e.InspectService(ctx, i.Name)
-			if inspectErr != nil || live.ID != i.ServiceID || !sameSpec(live.Spec, i.Desired) {
+			if inspectErr != nil || live.ID != i.ServiceID || !matchesStoredSpec(i.Desired, live.Spec) {
 				return errors.New("service update outcome is uncertain")
 			}
 		}
@@ -120,7 +120,7 @@ func compensate(ctx context.Context, e serviceMutator, i state.Intent, auth *eng
 	if i.Kind == "update" && live.ID == i.ServiceID && sameSpec(live.Spec, i.Before) {
 		return nil
 	}
-	if (i.Kind == "update" && live.ID != i.ServiceID) || !sameSpec(live.Spec, i.Desired) {
+	if (i.Kind == "update" && live.ID != i.ServiceID) || !matchesStoredSpec(i.Desired, live.Spec) {
 		return errors.New("service changed outside operation")
 	}
 	if i.Kind == "create" {
@@ -207,8 +207,23 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 	}
 }
 
-// Docker adds these non-zero defaults when it stores a newly created service. Zero values it omits are handled by sameSpec.
-func matchesCreatedSpec(desired, live json.RawMessage) bool {
+// dropEngineDefaults removes from a decoded service spec the non-zero defaults Docker adds when it stores a service, on
+// create and on update alike: the "container" runtime and the "default" isolation. Zero values it omits are handled by
+// canonicalSpec.
+func dropEngineDefaults(spec map[string]any) {
+	if task, ok := spec["TaskTemplate"].(map[string]any); ok {
+		if task["Runtime"] == "container" {
+			delete(task, "Runtime")
+		}
+		if c, ok := task["ContainerSpec"].(map[string]any); ok && c["Isolation"] == "default" {
+			delete(c, "Isolation")
+		}
+	}
+}
+
+// matchesStoredSpec reports whether the service Docker stored from desired is live: the two specs are the same once the
+// defaults Docker adds are set aside on both sides.
+func matchesStoredSpec(desired, live json.RawMessage) bool {
 	var d, l map[string]any
 	dd := json.NewDecoder(bytes.NewReader(desired))
 	dd.UseNumber()
@@ -217,15 +232,8 @@ func matchesCreatedSpec(desired, live json.RawMessage) bool {
 	if dd.Decode(&d) != nil || dl.Decode(&l) != nil {
 		return false
 	}
-	task, ok := l["TaskTemplate"].(map[string]any)
-	if ok {
-		if task["Runtime"] == "container" {
-			delete(task, "Runtime")
-		}
-		if c, ok := task["ContainerSpec"].(map[string]any); ok && c["Isolation"] == "default" {
-			delete(c, "Isolation")
-		}
-	}
+	dropEngineDefaults(d)
+	dropEngineDefaults(l)
 	db, _ := json.Marshal(d)
 	lb, _ := json.Marshal(l)
 	return sameSpec(db, lb)
@@ -254,7 +262,7 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 		return "", errors.New("service create outcome uncertain")
 	}
 	live, err := e.InspectService(ctx, i.Name)
-	if err != nil || live.ID != createdID || !matchesCreatedSpec(i.Desired, live.Spec) {
+	if err != nil || live.ID != createdID || !matchesStoredSpec(i.Desired, live.Spec) {
 		return "", errors.New("created service cannot be verified")
 	}
 	receipt, err := json.Marshal(struct {
@@ -276,105 +284,12 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	return live.ID, nil
 }
 
-// mergeServiceSpec preserves fields not controlled by the manifest after checking inherited host access.
-func mergeServiceSpec(before, desired json.RawMessage, network string) (json.RawMessage, error) {
-	if err := validateInheritedRuntime(before); err != nil {
-		return nil, err
-	}
-	var old, want map[string]any
-	d := json.NewDecoder(bytes.NewReader(before))
-	d.UseNumber()
-	if d.Decode(&old) != nil {
-		return nil, errors.New("invalid live service spec")
-	}
-	d = json.NewDecoder(bytes.NewReader(desired))
-	d.UseNumber()
-	if d.Decode(&want) != nil {
-		return nil, errors.New("invalid desired service spec")
-	}
-	if old["Name"] != want["Name"] {
-		return nil, errors.New("service identity mismatch")
-	}
-	ot, ok := old["TaskTemplate"].(map[string]any)
-	if !ok {
-		return nil, errors.New("invalid task template")
-	}
-	wt, ok := want["TaskTemplate"].(map[string]any)
-	if !ok {
-		return nil, errors.New("invalid task template")
-	}
-	oc, ok := ot["ContainerSpec"].(map[string]any)
-	if !ok {
-		return nil, errors.New("invalid container")
-	}
-	wc, ok := wt["ContainerSpec"].(map[string]any)
-	if !ok {
-		return nil, errors.New("invalid container")
-	}
-	for _, k := range []string{"Privileges", "Secrets", "Configs", "DNSConfig", "Hosts", "Init", "Sysctls", "Isolation"} {
-		if v, exists := oc[k]; exists && !emptyInherited(v) && !(k == "Isolation" && v == "default") {
-			return nil, errors.New("unsafe inherited container settings")
-		}
-	}
-	if mounts, exists := oc["Mounts"]; exists && mounts != nil {
-		a, ok := mounts.([]any)
-		if !ok {
-			return nil, errors.New("invalid mounts")
-		}
-		for _, v := range a {
-			m, ok := v.(map[string]any)
-			if !ok || m["Type"] != "volume" {
-				return nil, errors.New("unsafe inherited mount")
-			}
-		}
-	}
-	if ep, ok := old["EndpointSpec"].(map[string]any); ok {
-		if p, exists := ep["Ports"]; exists && p != nil {
-			a, ok := p.([]any)
-			if !ok || len(a) > 0 {
-				return nil, errors.New("published ports are unsupported")
-			}
-		}
-	}
-	networks, ok := ot["Networks"].([]any)
-	if !ok || len(networks) != 1 {
-		return nil, errors.New("incompatible service network")
-	}
-	n, ok := networks[0].(map[string]any)
-	if !ok || n["Target"] != network {
-		return nil, errors.New("incompatible service network")
-	}
-	if mode, ok := old["Mode"].(map[string]any); !ok || mode["Replicated"] == nil {
-		return nil, errors.New("service is not replicated")
-	}
-	for _, k := range []string{"Image", "Env", "Healthcheck", "StopGracePeriod", "Labels", "Mounts", "Args"} {
-		if v, ok := wc[k]; ok {
-			oc[k] = v
-		} else {
-			delete(oc, k)
-		}
-	}
-	for _, k := range []string{"Resources", "RestartPolicy", "LogDriver"} {
-		if v, ok := wt[k]; ok {
-			ot[k] = v
-		} else {
-			delete(ot, k)
-		}
-	}
-	for _, k := range []string{"Labels", "Mode", "UpdateConfig", "RollbackConfig"} {
-		if v, ok := want[k]; ok {
-			old[k] = v
-		}
-	}
-	return json.Marshal(old)
-}
-
 func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) error {
 	if err := applyIntent(ctx, j, e, op, i, auth); err != nil {
 		return err
 	}
 	live, err := e.InspectService(ctx, i.Name)
-	if err != nil || live.ID != i.ServiceID || !sameSpec(live.Spec, i.Desired) {
+	if err != nil || live.ID != i.ServiceID || !matchesStoredSpec(i.Desired, live.Spec) {
 		return errors.New("updated service cannot be verified")
 	}
 	receipt, err := json.Marshal(struct {

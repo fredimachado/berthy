@@ -160,16 +160,28 @@ func TestDeployFailsWithoutTheDaemonLogDriver(t *testing.T) {
 	}
 }
 
-func TestMergeServiceSpecSetsAndRemovesTheLogDriver(t *testing.T) {
-	without := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
-	with := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}],"LogDriver":{"Name":"json-file","Options":{"max-size":"50m","max-file":"5"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
-	merged, err := mergeServiceSpec(without, with, "net")
-	if err != nil || !reflect.DeepEqual(logDriverOf(t, merged), customRotation()) {
-		t.Fatalf("merged %s: %v", merged, err)
+// TestUpdateSetsAndRemovesTheRolesLogDriver: a deploy over a service gives it the log driver of the release, and takes it
+// away when the release has none, because the spec of an update is the release's alone.
+func TestUpdateSetsAndRemovesTheRolesLogDriver(t *testing.T) {
+	s := openStore(t)
+	pe := &positiveEngine{}
+	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "", nil}, Store: s, Environment: "test"}
+	withLogging := dockerManifest(nil)
+	r := withLogging.Apps["web"].Roles["web"]
+	r.Logging = &manifest.Logging{Driver: "json-file", Options: map[string]string{"max-size": "50m", "max-file": "5"}}
+	withLogging.Apps["web"].Roles["web"] = r
+	deploySucceeds(t, &c, s, "first", "a", withLogging)
+	pe.mu.Lock()
+	got := logDriverOf(t, pe.spec)
+	pe.mu.Unlock()
+	if !reflect.DeepEqual(got, customRotation()) {
+		t.Fatalf("log driver %#v after the first deploy", got)
 	}
-	merged, err = mergeServiceSpec(with, without, "net")
-	if err != nil || logDriverOf(t, merged) != nil {
-		t.Fatalf("log driver kept in %s: %v", merged, err)
+	deploySucceeds(t, &c, s, "second", "b", dockerManifest(nil))
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if got := logDriverOf(t, pe.spec); got != nil {
+		t.Fatalf("log driver kept in %s", pe.spec)
 	}
 }
 
@@ -178,7 +190,7 @@ func TestMergeServiceSpecSetsAndRemovesTheLogDriver(t *testing.T) {
 func adoptedService(t *testing.T, role manifest.Role, daemonDriver string) json.RawMessage {
 	t.Helper()
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
-	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil, daemonDriver)
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "30s", nil, daemonDriver)
 	if err != nil {
 		t.Fatal(err)
 	}

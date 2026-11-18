@@ -268,6 +268,8 @@ func (m *Manifest) checkRole(p *Problems, name string, a App, rn string, r Role,
 		{r.Replicas != nil && *r.Replicas < 1, path + ".replicas"},
 		{r.Port < 0 || r.Port > 65535, path + ".port"},
 		{len(r.Command) > 0 && !argv(r.Command), path + ".command"},
+		{len(r.Entrypoint) > 0 && !argv(r.Entrypoint), path + ".entrypoint"},
+		{r.User != "" && !userName.MatchString(r.User), path + ".user"},
 	} {
 		if f.bad {
 			p.add(f.path, "%s: invalid settings", where)

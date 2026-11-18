@@ -158,6 +158,8 @@ apps:
       main:
         service: demo-web-main
         command: ["serve"]
+        entrypoint: ["/app/run"]
+        user: "1000:1000"
         replicas: 2
         port: 8080
         health:

@@ -132,7 +132,7 @@ func TestHealthWaitHonorsDeadline(t *testing.T) {
 func TestCreatedSpecRejectsHostPrivileges(t *testing.T) {
 	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
 	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"},"Privileges":{"CredentialSpec":{"File":"evil"}}}}}`)
-	if matchesCreatedSpec(desired, live) {
+	if matchesStoredSpec(desired, live) {
 		t.Fatal("host privilege accepted")
 	}
 }
@@ -140,7 +140,7 @@ func TestCreatedSpecRejectsHostPrivileges(t *testing.T) {
 func TestCreatedSpecAcceptsEngineDefaults(t *testing.T) {
 	d := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x"}}}`)
 	l := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Isolation":"default"},"Runtime":"container","ForceUpdate":0}}`)
-	if !matchesCreatedSpec(d, l) {
+	if !matchesStoredSpec(d, l) {
 		t.Fatal("engine defaults differ")
 	}
 }
@@ -198,10 +198,9 @@ func TestSpecComparisonDetectsLargeIntegerDrift(t *testing.T) {
 	}
 }
 
-func TestUpdateRejectsInheritedHostMount(t *testing.T) {
+func TestAdoptionRefusesAHostMount(t *testing.T) {
 	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"old","Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
-	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
-	if _, err := mergeServiceSpec(live, desired, "net"); err == nil {
+	if err := adoptableService(live, "net"); err == nil {
 		t.Fatal("host bind accepted")
 	}
 }
@@ -432,22 +431,6 @@ func TestServiceSpecLetsBerthyDecideWhenAnUpdateFails(t *testing.T) {
 	}
 }
 
-func TestMergeServiceSpecSetsTheRestartPolicyOfAnExistingService(t *testing.T) {
-	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"old"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback"}}`)
-	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}],"RestartPolicy":{"Condition":"any","Delay":5000000000}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"continue"}}`)
-	merged, err := mergeServiceSpec(live, desired, "net")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v struct {
-		UpdateConfig map[string]any
-		TaskTemplate struct{ RestartPolicy map[string]any }
-	}
-	if err = json.Unmarshal(merged, &v); err != nil || v.UpdateConfig["FailureAction"] != "continue" || v.TaskTemplate.RestartPolicy["Condition"] != "any" {
-		t.Fatalf("merged %s: %v", merged, err)
-	}
-}
-
 // dockerStoredContainer is the shape docker service create leaves in a ContainerSpec: settings Berthy does not use are
 // present, with empty values.
 const dockerStoredContainer = `{"Image":"old","Init":false,"Hosts":[],"DNSConfig":{},"Isolation":"default","Privileges":null,"Sysctls":{},"Secrets":[],"Configs":[]}`
@@ -457,18 +440,16 @@ func inheritedSpec(container string) json.RawMessage {
 }
 
 func TestInheritedSettingsAreEmptyWhenDockerStoredThemEmpty(t *testing.T) {
-	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
 	live := inheritedSpec(dockerStoredContainer)
 	if err := validateInheritedRuntime(live); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if _, err := mergeServiceSpec(live, desired, "net"); err != nil {
-		t.Fatalf("merge: %v", err)
+	if err := adoptableService(live, "net"); err != nil {
+		t.Fatalf("adopt: %v", err)
 	}
 }
 
 func TestInheritedSettingsWithAValueAreStillRefused(t *testing.T) {
-	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"new"},"Networks":[{"Target":"net"}]},"Mode":{"Replicated":{"Replicas":1}}}`)
 	for name, container := range map[string]string{
 		"nameservers": `{"Image":"old","DNSConfig":{"Nameservers":["1.1.1.1"]}}`,
 		"init":        `{"Image":"old","Init":true}`,
@@ -478,9 +459,8 @@ func TestInheritedSettingsWithAValueAreStillRefused(t *testing.T) {
 		"isolation":   `{"Image":"old","Isolation":"hyperv"}`,
 	} {
 		live := inheritedSpec(container)
-		_, mergeErr := mergeServiceSpec(live, desired, "net")
-		if mergeErr == nil {
-			t.Errorf("%s: merge accepted it", name)
+		if adoptableService(live, "net") == nil {
+			t.Errorf("%s: adoption accepted it", name)
 		}
 		if name != "isolation" && validateInheritedRuntime(live) == nil {
 			t.Errorf("%s: validate accepted it", name)

@@ -147,6 +147,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		intent := state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
 		if b, ok := byRole[role]; ok {
 			name = b.Name
+			// The release's spec goes to the bound service under its bound name. An adopted role keeps the name of the
+			// service it adopted, which is not the generated one.
+			if spec, e = renamed(spec, name); e != nil {
+				return
+			}
 			live, e := c.Engine.InspectService(ctx, name)
 			if e != nil {
 				gone, ge := c.boundServiceGone(ctx, b, e)
@@ -155,12 +160,6 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 					return
 				}
 				// Recreate the role under its bound name; the release re-binds it to the new service.
-				var desired map[string]any
-				if json.Unmarshal(spec, &desired) != nil {
-					return
-				}
-				desired["Name"] = name
-				spec, _ = json.Marshal(desired)
 				intent = state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
 			} else {
 				if live.ID != b.ServiceID {
@@ -220,18 +219,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 					outcome.Err = "prior image credential unavailable"
 					return
 				}
-				// A bound adopted role may keep a non-deterministic name.
-				var desired map[string]any
-				if json.Unmarshal(spec, &desired) != nil {
-					return
-				}
-				desired["Name"] = name
-				spec, _ = json.Marshal(desired)
-				spec, e = mergeServiceSpec(live.Spec, spec, prepared.NetworkID)
-				if e != nil {
-					outcome.Err = "unsafe or incompatible service"
-					return
-				}
+				// The update sends the release's spec, as a create does. Nothing in it comes from the live spec: whatever the
+				// live one has beyond the release is replaced.
 				intent = state.Intent{Ordinal: ordinal, Kind: "update", Role: role, Name: name, ServiceID: live.ID, SeenVersion: live.Version, Generation: op.ID, Before: live.Spec, Desired: spec}
 			}
 		} else {
@@ -497,7 +486,7 @@ func (c *Controller) removeCreated(ctx context.Context, i state.Intent) error {
 				}
 			}
 		}
-		if live.ID == "" || i.Generation == "" || json.Unmarshal(live.Spec, &owner) != nil || owner.Labels["berthy.operation"] != i.Generation || owner.TaskTemplate.ContainerSpec.Labels["berthy.operation"] != i.Generation || !matchesCreatedSpec(i.Desired, live.Spec) {
+		if live.ID == "" || i.Generation == "" || json.Unmarshal(live.Spec, &owner) != nil || owner.Labels["berthy.operation"] != i.Generation || owner.TaskTemplate.ContainerSpec.Labels["berthy.operation"] != i.Generation || !matchesStoredSpec(i.Desired, live.Spec) {
 			return errors.New("service ownership uncertain")
 		}
 	}
@@ -517,7 +506,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return errors.New("bound service recovery inspection failed")
 	}
 	if !sameSpec(live.Spec, i.Before) {
-		if !sameSpec(live.Spec, i.Desired) {
+		if !matchesStoredSpec(i.Desired, live.Spec) {
 			return errors.New("service changed outside operation")
 		}
 		auth, err := c.operationAuth(ctx, app, i.Before)
@@ -557,4 +546,14 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
 	return waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
+}
+
+// renamed is spec with its Name set to name.
+func renamed(spec json.RawMessage, name string) (json.RawMessage, error) {
+	var v map[string]any
+	if err := json.Unmarshal(spec, &v); err != nil {
+		return nil, err
+	}
+	v["Name"] = name
+	return json.Marshal(v)
 }

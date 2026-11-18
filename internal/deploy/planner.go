@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 
 	"berthy/internal/engine"
@@ -254,8 +253,8 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 				ContainerSpec struct {
 					Image       string
 					Healthcheck json.RawMessage
+					Env         []string
 				}
-				LogDriver map[string]any
 			}
 			Mode struct{ Replicated *struct{ Replicas int } }
 		}
@@ -273,7 +272,9 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 			return Plan{}, nil, errors.New("roles run different image digests")
 		}
 		p.Image = img.String()
-		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, "adoption", net.ID, p.Image, nil, r, func() string {
+		// The release's spec of the role, which the first deploy sends. It runs the image the service runs now, so that the
+		// image is not a difference, and takes the service's own values for the secret variables, which are read at deploy.
+		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, "adoption", net.ID, spec.TaskTemplate.ContainerSpec.Image, adoptionEnv(app.Env, spec.TaskTemplate.ContainerSpec.Env), r, func() string {
 			if app.Deploy.DrainTimeout == "" {
 				return "30s"
 			}
@@ -282,18 +283,13 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		if e != nil {
 			return Plan{}, nil, errors.New("adoption health configuration unavailable")
 		}
-		var d map[string]any
-		if json.Unmarshal(desired, &d) != nil {
+		if desired, e = renamed(desired, r.Service); e != nil {
 			return Plan{}, nil, errors.New("invalid desired role")
 		}
-		d["Name"] = r.Service
-		desired, _ = json.Marshal(d)
-		if _, e = mergeServiceSpec(live.Spec, desired, net.ID); e != nil {
+		if e = adoptableService(live.Spec, net.ID); e != nil {
 			return Plan{}, nil, errors.New("unsafe or incompatible adoption service")
 		}
-		if want := roleLogDriver(r, daemonDriver); !sameLogDriver(want, spec.TaskTemplate.LogDriver) {
-			p.Changes = append(p.Changes, fmt.Sprintf("role %s: logging %s (now %s), applied by the next deploy", role, describeLogDriver(want), describeLogDriver(spec.TaskTemplate.LogDriver)))
-		}
+		p.Changes = append(p.Changes, specChanges(role, live.Spec, desired)...)
 		tasks, e := c.Engine.ServiceTasks(ctx, live.ID)
 		if e != nil {
 			return Plan{}, nil, errors.New("adoption health unavailable")

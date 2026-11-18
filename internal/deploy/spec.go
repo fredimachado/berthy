@@ -126,6 +126,12 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	if len(r.Command) > 0 {
 		container["Args"] = r.Command
 	}
+	if len(r.Entrypoint) > 0 {
+		container["Command"] = r.Entrypoint
+	}
+	if r.User != "" {
+		container["User"] = r.User
+	}
 	// A rollout gives the new version a bounded number of failed starts, and Berthy, not Swarm, decides when that is used
 	// up: "continue" keeps Swarm replacing a failing new task under the restart policy while Berthy counts the failures
 	// and restores the previous spec itself. Swarm's own "rollback" would give up after the first failure.

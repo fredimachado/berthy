@@ -65,15 +65,32 @@ func zeroValue(v any) bool {
 	return false
 }
 
+// withDockerDefaults adds the non-zero defaults Docker gives a container service when it stores it, on create and on update
+// alike: the "container" runtime and the "default" isolation.
+func withDockerDefaults(s json.RawMessage) json.RawMessage {
+	var v map[string]any
+	if json.Unmarshal(s, &v) != nil {
+		return s
+	}
+	if task, ok := v["TaskTemplate"].(map[string]any); ok {
+		task["Runtime"] = "container"
+		if c, ok := task["ContainerSpec"].(map[string]any); ok {
+			c["Isolation"] = "default"
+		}
+	}
+	out, _ := json.Marshal(v)
+	return out
+}
+
 // dockerSpecs is positiveEngine with service specs stored the way Docker stores them.
 type dockerSpecs struct{ *positiveEngine }
 
 func (e dockerSpecs) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
-	return e.positiveEngine.CreateService(ctx, storedAsDocker(spec), auth)
+	return e.positiveEngine.CreateService(ctx, withDockerDefaults(storedAsDocker(spec)), auth)
 }
 
 func (e dockerSpecs) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
-	return e.positiveEngine.UpdateService(ctx, id, version, storedAsDocker(spec), auth)
+	return e.positiveEngine.UpdateService(ctx, id, version, withDockerDefaults(storedAsDocker(spec)), auth)
 }
 
 // dockerManifest declares one web role with the given plain environment, which may be empty.
@@ -155,13 +172,13 @@ func TestRecoveryAcceptsJournaledNullEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `","Env":null,"Labels":{"berthy.operation":"new"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
 	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
 	// Swarm applied the journaled update, and Docker stored it without the null field.
-	e := dockerSpecs{&positiveEngine{spec: storedAsDocker(desired)}}
+	e := dockerSpecs{&positiveEngine{spec: withDockerDefaults(storedAsDocker(desired))}}
 	c := Controller{Engine: e, Store: s}
 	if err = c.Recover(ctx); err != nil {
 		t.Fatal(err)
@@ -184,7 +201,7 @@ func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 	if sameSpec(json.RawMessage(`[null]`), json.RawMessage(`[]`)) {
 		t.Fatal("null array element is ignored")
 	}
-	if !matchesCreatedSpec(json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Env":null}}}`), json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{}}}`)) {
+	if !matchesStoredSpec(json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Env":null}}}`), json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{}}}`)) {
 		t.Fatal("created spec with a null env is rejected")
 	}
 }
@@ -339,12 +356,12 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	mount := `"Mounts":[{"Type":"volume","Source":"data","Target":"/data","ReadOnly":false}]`
-	before := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `",` + mount + `,"Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `",` + mount + `,"Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `",` + mount + `,"Labels":{"berthy.operation":"new"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
 	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
-	e := dockerSpecs{&positiveEngine{spec: storedAsDocker(desired)}}
+	e := dockerSpecs{&positiveEngine{spec: withDockerDefaults(storedAsDocker(desired))}}
 	c := Controller{Engine: e, Store: s}
 	if err = c.Recover(ctx); err != nil {
 		t.Fatal(err)

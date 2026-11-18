@@ -95,15 +95,17 @@ type App struct {
 	DependsOn []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 }
 type Role struct {
-	Service   string     `json:"service,omitempty" yaml:"service,omitempty"`
-	Command   []string   `json:"command,omitempty" yaml:"command,omitempty"`
-	Replicas  *int       `json:"replicas,omitempty" yaml:"replicas,omitempty"`
-	Port      int        `json:"port,omitempty" yaml:"port,omitempty"`
-	Health    *Health    `json:"health,omitempty" yaml:"health,omitempty"`
-	Volumes   []string   `json:"volumes,omitempty" yaml:"volumes,omitempty"`
-	Resources *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
-	Hostnames []string   `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
-	Logging   *Logging   `json:"logging,omitempty" yaml:"logging,omitempty"`
+	Service    string     `json:"service,omitempty" yaml:"service,omitempty"`
+	Command    []string   `json:"command,omitempty" yaml:"command,omitempty"`
+	Entrypoint []string   `json:"entrypoint,omitempty" yaml:"entrypoint,omitempty"`
+	User       string     `json:"user,omitempty" yaml:"user,omitempty"`
+	Replicas   *int       `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	Port       int        `json:"port,omitempty" yaml:"port,omitempty"`
+	Health     *Health    `json:"health,omitempty" yaml:"health,omitempty"`
+	Volumes    []string   `json:"volumes,omitempty" yaml:"volumes,omitempty"`
+	Resources  *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
+	Hostnames  []string   `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
+	Logging    *Logging   `json:"logging,omitempty" yaml:"logging,omitempty"`
 }
 type Resources struct {
 	CPU    string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
@@ -357,6 +359,8 @@ var regionName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // logDriverName is a Docker log driver: a built-in name such as json-file, or a plugin image such as
 // grafana/loki-docker-driver:latest.
+// userName is a container user: a name or number, with a group after a colon.
+var userName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})?$`)
 var logDriverName = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]{0,127}$`)
 var logOptionKey = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 

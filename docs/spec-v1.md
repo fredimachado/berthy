@@ -631,6 +631,8 @@ An image app that sets nothing else runs with these Swarm settings.
 | Log rotation | `max-size` 10m and `max-file` 3 when the daemon's default log driver is `json-file` or `local` and the role sets no `logging`; see [Logs](#logs) |
 | Stop grace period | `drain_timeout`, 30 seconds |
 
+**The spec is a function of the release.** The Swarm spec of a role comes from the manifest, the image digest and the secret values, and from nothing else. A first deploy creates the service with it, and every later deploy updates the service with the same spec, so a service that was updated in place, one that was recreated and one that a rebuilt server creates are the same service. A deploy reads the live service only for its ID and version, to check that it is the service the role is bound to, and to restore it if the rollout fails. A setting that someone changed on the live service by hand, such as `docker service update --user`, is gone after the next deploy. `restart` and `scale` are not deploys: they change the live service in place and keep everything else in it.
+
 - Thirty seconds gives a web framework's graceful shutdown its full time to finish requests. Docker alone would stop the container after 10.
 - With no memory limit, a leak in one app can starve a database on the same server. Set a limit per role once real usage is known.
 
@@ -1368,6 +1370,8 @@ Berthy can take over servers that another deployment tool already runs, one app 
 - An existing Swarm service or Compose project is adopted by name.
 - For a Compose project, set `project_name` to the name it already runs under. Under any other name Compose creates new, empty volumes beside the existing ones, and the app starts without its data.
 - Berthy compares what is running with the manifest and prints the differences before changing anything. A volume that would be created shows in that plan.
+- **An adopted service is settled once, at adoption.** The first deploy sends the release's spec, so it drops every setting of the live service that the manifest does not produce. The plan lists each one as a line of `changes`, such as `role web: user "1000" is not in the manifest; the first deploy drops it (set roles.web.user to keep it)`, and each setting the manifest produces differently, such as `role web: replicas 1 (now 3), applied by the next deploy`. A setting that must be kept needs a manifest key: `user` and `entrypoint` (the container's entrypoint; `command` stays its arguments) exist for this, and `placement` gets its key with multi-node support. An environment variable is listed by name only, never by value. The first deploy sets the Berthy labels and the `BERTHY_*` variables; they are not listed.
+- **Unsafe services are refused at adoption.** A service with added capabilities, privileges, secrets or configs, custom DNS, hosts or sysctls, an isolation other than the default, a host mount, a published port, a network other than the shared one, or a mode other than replicated is not adopted. The plan stops with `unsafe or incompatible adoption service`.
 - The existing shared network keeps its name; set it as `network` in the manifest.
 - `berthy setup` is safe on a server that already runs apps. It leaves the existing Docker installation, Swarm and network as they are and only adds the agent.
 - Adopt the least critical environment first.
