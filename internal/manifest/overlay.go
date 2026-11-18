@@ -32,7 +32,7 @@ func (o *overlayMerge) merge(base, overlay *yaml.Node, path string) {
 		case base.Content[j+1].Kind == yaml.MappingNode && v.Kind == yaml.MappingNode:
 			o.merge(base.Content[j+1], v, at)
 		default:
-			if base.Content[j+1].Kind == yaml.SequenceNode && v.Kind == yaml.SequenceNode {
+			if base.Content[j+1].Kind == yaml.SequenceNode && v.Kind == yaml.SequenceNode && !argvKeys[k.Value] {
 				o.shrink(base.Content[j+1], v, at)
 			}
 			base.Content[j+1] = o.inserted(v, at)
@@ -64,6 +64,14 @@ func (o *overlayMerge) dropNulls(n *yaml.Node, path string) {
 		o.dropNulls(v, at)
 		i += 2
 	}
+}
+
+// argvKeys are the keys of the lists that are command lines: a role's command and entrypoint, a job's command, a health check's
+// test, and a migration's version, apply and revert. Position is what they mean, so an overlay that rewrites one replaces all of
+// it on purpose, and the note about dropped entries does not apply. A hook's run is not here: it sits in a list item, which the
+// merge never compares, so the hook list that holds it is the list the note covers.
+var argvKeys = map[string]bool{
+	"command": true, "entrypoint": true, "test": true, "version": true, "apply": true, "revert": true,
 }
 
 // shrink warns about each item of the base list that the overlay list, which replaces it, leaves out.

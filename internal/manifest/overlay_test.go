@@ -166,6 +166,44 @@ func TestOverlayListNamesEveryDroppedEntryInItsOrder(t *testing.T) {
 	}
 }
 
+// A command line is positional, so an overlay that rewrites one replaces all of it on purpose: a role's command, a health check's
+// test and a migration command give no note. An entry of any other list still gets one.
+func TestOverlayRewritingACommandLineDoesNotWarn(t *testing.T) {
+	base := strings.NewReplacer(
+		"    roles:\n", "    migrations:\n      version: [app, version]\n      apply: [up]\n    roles:\n",
+		"        port: 8080\n", "        port: 8080\n        command: [serve, --port, \"8080\"]\n        health:\n          test: [CMD, curl]\n",
+	).Replace(overlayBase)
+	dir := writeFiles(t, map[string]string{
+		"berthy.yml": base,
+		"berthy.prod.yml": "apps:\n  api:\n    migrations:\n      apply: [up, --all]\n    roles:\n      web:\n" +
+			"        command: [run, --fast]\n        health:\n          test: [CMD, \"true\"]\n",
+	})
+	m, warnings, err := loadWithWarnings(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("a command line is replaced without a note, got %+v", warnings)
+	}
+	if got := strings.Join(m.Apps["api"].Roles["web"].Command, " "); got != "run --fast" {
+		t.Fatalf("command %q", got)
+	}
+	if got := strings.Join(m.Apps["api"].Migrations.Apply, " "); got != "up --all" {
+		t.Fatalf("apply %q", got)
+	}
+}
+
+func TestOverlayListOfNamesStillWarnsWhenItDropsAnEntry(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"berthy.yml":      overlayBase,
+		"berthy.prod.yml": "apps:\n  api:\n    env:\n      secret:\n        - JWT_SIGNING_KEY\n",
+	})
+	_, warnings, err := loadWithWarnings(dir, "prod")
+	if err != nil || len(warnings) != 1 || warnings[0].Message != "replaces the base list and drops DATABASE_URL" {
+		t.Fatalf("err %v, warnings %+v", err, warnings)
+	}
+}
+
 func TestOverlayListThatKeepsEveryBaseEntryDoesNotWarn(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"berthy.yml":      overlayBase,
