@@ -147,7 +147,8 @@ func TestDoctorShowsEachBackupsCheckAndNeverFailsTheExitCode(t *testing.T) {
 func TestTheAgentsSchedulerRunsADueBackupAsTheBackup(t *testing.T) {
 	g := newBackupRig(t)
 	ctx := context.Background()
-	scheduled := strings.Replace(backupManifest(g.url), `"uploads":{"app":"api","volume":"uploads","destination":"offsite"}`, `"uploads":{"app":"api","volume":"uploads","destination":"offsite","schedule":"* * * * *"}`, 1)
+	// The schedule matches the fake clock below (10:00 UTC on 16 November) and practically never the real clock, which the rig's own scheduler follows.
+	scheduled := strings.Replace(backupManifest(g.url), `"uploads":{"app":"api","volume":"uploads","destination":"offsite"}`, `"uploads":{"app":"api","volume":"uploads","destination":"offsite","schedule":"0 10 16 11 *"}`, 1)
 	recordAppRelease(t, g.store, "r-sched-api", "api", scheduled)
 	// The rig's own scheduler runs on the real clock, so the test drives a second set of backups on a clock of its own.
 	arch := &backup.Archiver{Engine: g.docker, Image: func(context.Context) (string, error) { return "berthy-helper:aabbccddeeff", nil }, Env: "lab"}
