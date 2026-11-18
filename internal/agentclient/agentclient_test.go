@@ -206,6 +206,20 @@ func TestReadComposeFileStaysInsideAndWithinLimit(t *testing.T) {
 	}
 }
 
+// A backslash in a manifest's file is a separator on every OS, as the manifest check reads it.
+func TestReadComposeFileTakesABackslashAsASeparator(t *testing.T) {
+	dir := writeComposeProject(t, composeManifest, "services: {}\n")
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "compose.yaml"), []byte("services: {a: {}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadComposeFile(dir, `sub\compose.yaml`); err != nil || got != "services: {a: {}}\n" {
+		t.Fatalf("read: %q %v", got, err)
+	}
+}
+
 func TestAgentErrorShowsOnlySafeMessages(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	for _, tc := range []struct{ name, body, want string }{

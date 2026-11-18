@@ -44,7 +44,7 @@ func PrepareDeploy(dir, env string, req *deploy.Request) (gitcheck.Checkout, err
 			return gitcheck.Checkout{}, err
 		}
 		req.ComposeFile = file
-		extra = append(extra, m.Apps[req.App].File)
+		extra = append(extra, manifest.FilePath(m.Apps[req.App].File))
 	} else if err := checkImageVersion(m, req); err != nil {
 		return gitcheck.Checkout{}, err
 	}
@@ -95,10 +95,11 @@ func ReadComposeFile(dir, file string) (string, error) {
 		rel, e := filepath.Rel(root, p)
 		return e == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 	}
-	if !inside(filepath.Join(root, file)) {
+	path := filepath.Join(root, manifest.FilePath(file))
+	if !inside(path) {
 		return "", outside
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Join(root, file))
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil || !inside(resolved) {
 		return "", outside
 	}

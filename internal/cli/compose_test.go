@@ -110,7 +110,7 @@ func TestDeployComposeRefusesFileOutsideManifestDirectory(t *testing.T) {
 	cfg := composeAgent(t, &bodies)
 	dir := writeComposeProject(t, strings.Replace(composeManifest, "file: compose.yaml", "file: '..'", 1), "")
 	var out, errs bytes.Buffer
-	if code := Run([]string{"deploy", "db", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--dry-run"}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "inside the manifest directory") {
+	if code := Run([]string{"deploy", "db", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--dry-run"}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "invalid compose file") {
 		t.Fatalf("exit %d: %q", code, errs.String())
 	}
 	if len(bodies) != 0 {

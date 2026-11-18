@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -141,7 +140,7 @@ func (m *Manifest) checkApp(p *Problems, name string, a App, hostnames map[strin
 		} else if len(a.Roles) == 0 {
 			p.add(path+".roles", "app %s: image must be a repository and roles required", name)
 		}
-	} else if a.Kind == "compose" && (a.File == "" || filepath.IsAbs(a.File) || strings.Contains(strings.ReplaceAll(a.File, `\`, `/`), "../")) {
+	} else if a.Kind == "compose" && !composeFileOK(a.File) {
 		p.add(path+".file", "app %s: invalid compose file", name)
 	}
 	dependsOK := m.checkDependsOn(p, name, a)
@@ -166,6 +165,23 @@ func (m *Manifest) checkApp(p *Problems, name string, a App, hostnames map[strin
 		checkMigrations(p, name, *x)
 	}
 	return dependsOK
+}
+
+// composeFileOK reports whether file, the file of a Compose app, is a relative path inside the manifest directory. The
+// answer is the same on every OS, because the CLI that reads a manifest on Windows and the agent that reads it on Linux must
+// agree: a backslash is a separator, and a leading separator (which covers the UNC and \\?\ forms too), a drive letter and
+// any .. segment are refused.
+func composeFileOK(file string) bool {
+	f := strings.ReplaceAll(file, `\`, "/")
+	if f == "" || strings.HasPrefix(f, "/") || len(f) >= 2 && f[1] == ':' && (f[0]|0x20 >= 'a' && f[0]|0x20 <= 'z') {
+		return false
+	}
+	for _, segment := range strings.Split(f, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Manifest) checkEnv(p *Problems, name string, a App) {

@@ -557,6 +557,10 @@ func (m *Manifest) CheckVersion(running string) error {
 	return &TooOld{Need: m.MinVersion, Have: running}
 }
 
+// FilePath is the path, on the OS that runs this, of a file the manifest names relative to its directory, such as a Compose
+// app's file: a backslash is a separator on every OS, as the manifest check reads it.
+func FilePath(file string) string { return filepath.FromSlash(strings.ReplaceAll(file, `\`, "/")) }
+
 // Files are the names, relative to the manifest directory, of the files Load reads for env: the base manifest, and the overlay
 // of env, which is optional.
 func Files(env string) []string {
