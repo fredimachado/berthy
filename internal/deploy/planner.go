@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 )
@@ -92,6 +93,11 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		p.Roles = append(p.Roles, role)
 	}
 	sort.Strings(p.Roles)
+	for _, role := range p.Roles {
+		if order, reason := app.UpdateOrder(role); order == manifest.StopFirst {
+			p.Notes = append(p.Notes, "role "+role+": "+order+", "+reason)
+		}
+	}
 
 	if c.Engine == nil {
 		return Plan{}, errors.New("Docker unavailable")
@@ -267,7 +273,8 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		p.Image = img.String()
 		// The release's spec of the role, which the first deploy sends. It runs the image the service runs now, so that the
 		// image is not a difference, and takes the service's own values for the secret variables, which are read at deploy.
-		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, "adoption", net.ID, spec.TaskTemplate.ContainerSpec.Image, adoptionEnv(app.Env, spec.TaskTemplate.ContainerSpec.Env), r, func() string {
+		order, _ := app.UpdateOrder(role)
+		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, "adoption", net.ID, spec.TaskTemplate.ContainerSpec.Image, adoptionEnv(app.Env, spec.TaskTemplate.ContainerSpec.Env), r, order, func() string {
 			if app.Deploy.DrainTimeout == "" {
 				return "30s"
 			}

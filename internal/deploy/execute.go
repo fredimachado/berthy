@@ -143,7 +143,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	work := make([]roleWork, 0, len(p.Roles))
 	for ordinal, role := range p.Roles {
 		r := app.Roles[role]
-		spec, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, op.ID, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), r, drain, img.Healthcheck, prepared.LogDriver)
+		order, _ := app.UpdateOrder(role)
+		spec, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, op.ID, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), r, order, drain, img.Healthcheck, prepared.LogDriver)
 		if e != nil {
 			outcome.Err = "role preflight failed"
 			return
@@ -287,7 +288,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	rollCtx, stop := context.WithDeadline(ctx, deadline)
 	defer stop()
 	var releaseBindings []state.Binding
-	for _, w := range work {
+	for n, w := range work {
 		w.intent.Deadline = deadline
 		id := w.intent.ServiceID
 		var e error
@@ -300,7 +301,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
 			var gaveUp *errStartAttempts
 			errors.As(e, &gaveUp)
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp)
+			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
+			outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, work[:n+1])
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 			recoveryCancel()

@@ -597,7 +597,7 @@ func TestAdoptionPlansExistingHealthyPinnedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,7 +738,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1198,7 +1198,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "prior", "net", digest, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

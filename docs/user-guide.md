@@ -775,7 +775,9 @@ berthy config show -e prod --json
 
 Defaults are filled in, so the output shows `deploy_timeout: 120s`, `retain: 5` and so on.
 
-Run `config validate` in CI too. It is the cheapest check there is.
+Run `config validate` in CI too. It is the cheapest check there is. It also prints warnings for a manifest that is valid but risky: a role that mounts a read-write volume with `deploy.order: start-first`, or with more than one replica. Each warning is a `warning:` line with its file and line, and the check still passes.
+
+A role that mounts a read-write volume is updated stop-first by default, so the old version stops before the new one starts. The role is down for the time the new version takes to become healthy, and the deploy plan says so: `role web: stop-first, because it mounts volume uploads`. Set `deploy.order` to override it for the app.
 
 #### Look up a key, and check it in your editor
 
@@ -1130,7 +1132,7 @@ A deploy either finishes healthy or leaves the previous version running. It neve
 2. **Check.** Validates the manifest. Confirms every secret has a value. Resolves the tag to a digest (if you gave a tag) and pulls the image. On a protected environment, you gave a digest already.
 3. **Pre-deploy hooks.** Runs them in order. A failure stops the deploy with nothing changed.
 4. **Migrations.** Runs `version`, then `apply`, then `version` again (see step 6).
-5. **Start new.** Starts the new version *beside* the old one. It must pass its health check within `deploy_timeout`. Failures during the check's `start_period` do not count. If the new version's tasks fail to start `start_attempts` times (3 by default), Berthy gives up at once instead of waiting out the timeout.
+5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. It must pass its health check within `deploy_timeout`. Failures during the check's `start_period` do not count. If the new version's tasks fail to start `start_attempts` times (3 by default), Berthy gives up at once instead of waiting out the timeout.
 6. **Switch and drain.** Sends traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
 7. **Publish.** With managed ingress, updates the app's routes and DNS records. A failure here is reported and the command exits non-zero, but the new version stays running.
 8. **Post-deploy hooks.** Runs them in order. A failure is reported, but does not undo the deploy.
@@ -2578,6 +2580,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `deploy.deploy_timeout` | image | duration | `120s` | The longest a new version may take to become healthy. |
 | `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. |
 | `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
+| `deploy.order` | image | string | none | How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one. One of `start-first`, `stop-first`. |
 | `deploy.retain` | image | integer | `5` | The number of deploys whose images are kept, at least 1. |
 | `hooks` | image | map | none | Steps that run around a deploy. An overlay's list replaces the base manifest's. |
 | `hooks.pre_deploy` | image | list | none | Steps that run in order before the new version starts. A failed step stops the deploy. |

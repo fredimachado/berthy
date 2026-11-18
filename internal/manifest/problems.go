@@ -9,11 +9,11 @@ import (
 
 // Problem is one thing wrong with a manifest.
 type Problem struct {
-	Path    string // where it is, as a dotted path into the manifest: "apps.api.roles.web.port"; "" when it is about the whole
-	Message string // what is wrong, worded as Validate words it today
-	File    string // "berthy.yml" or "berthy.prod.yml" once Load has placed it; "" before
-	Line    int    // 1-based; 0 when unknown
-	Column  int    // 1-based; 0 when unknown
+	Path    string `json:"path,omitempty"`   // where it is, as a dotted path into the manifest: "apps.api.roles.web.port"; "" when it is about the whole
+	Message string `json:"message"`          // what is wrong, worded as Validate words it today
+	File    string `json:"file,omitempty"`   // "berthy.yml" or "berthy.prod.yml" once Load has placed it; "" before
+	Line    int    `json:"line,omitempty"`   // 1-based; 0 when unknown
+	Column  int    `json:"column,omitempty"` // 1-based; 0 when unknown
 }
 
 // String is the problem as one line for a person: where it is in the files, where it is in the manifest, and what is wrong.

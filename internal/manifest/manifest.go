@@ -208,6 +208,8 @@ type Deploy struct {
 	Retain        *int   `json:"retain,omitempty" yaml:"retain,omitempty"`
 	// StartAttempts is how many failed task starts a rollout tolerates before it gives up; default 3, from 1 to 10.
 	StartAttempts *int `json:"start_attempts,omitempty" yaml:"start_attempts,omitempty"`
+	// Order is how an update replaces each role's old version: StartFirst or StopFirst. Empty means UpdateOrder decides per role.
+	Order string `json:"order,omitempty" yaml:"order,omitempty"`
 }
 type Hooks struct {
 	PreDeploy  []Hook `json:"pre_deploy,omitempty" yaml:"pre_deploy,omitempty"`
@@ -587,8 +589,15 @@ func Files(env string) []string {
 // Load reads the manifest of env: the base file, and the overlay of env when there is one. A manifest that is not valid is
 // returned as Problems, every one of them with its file and its line, which say whether the base or the overlay is at fault.
 func Load(dir, env string) (*Manifest, error) {
+	m, _, err := LoadWithWarnings(dir, env)
+	return m, err
+}
+
+// LoadWithWarnings is Load, and also returns the warnings of a valid manifest, placed in its files like the problems. A
+// manifest with problems returns them and no warnings.
+func LoadWithWarnings(dir, env string) (*Manifest, Problems, error) {
 	if !identifier.MatchString(env) {
-		return nil, fmt.Errorf("invalid environment %q", env)
+		return nil, nil, fmt.Errorf("invalid environment %q", env)
 	}
 	names := Files(env)
 	var parse Problems
@@ -603,14 +612,14 @@ func Load(dir, env string) (*Manifest, error) {
 	}
 	base, err := read(names[0], false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	overlay, err := read(names[1], true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(parse) > 0 {
-		return nil, parse
+		return nil, nil, parse
 	}
 	// Merge into a copy, so the files' own trees keep their positions to place the problems by.
 	where := locator{base: source{names[0], base}}
@@ -621,11 +630,11 @@ func Load(dir, env string) (*Manifest, error) {
 	}
 	var value any
 	if err = merged.Decode(&value); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	m, err := DecodeJSON(data)
 	if err != nil {
@@ -633,16 +642,18 @@ func Load(dir, env string) (*Manifest, error) {
 		if errors.As(err, &ps) {
 			where.place(ps)
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if err := m.CheckVersion(version.Version); err != nil {
 		var old *TooOld
 		if errors.As(err, &old) {
-			return nil, fmt.Errorf("this manifest needs Berthy %s or newer; this CLI is %s", old.Need, old.Have)
+			return nil, nil, fmt.Errorf("this manifest needs Berthy %s or newer; this CLI is %s", old.Need, old.Have)
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	return m, nil
+	warnings := m.Warnings()
+	where.place(warnings)
+	return m, warnings, nil
 }
 
 // DecodeJSON decodes and validates a manifest sent to the agent. It never sets the connector flag.

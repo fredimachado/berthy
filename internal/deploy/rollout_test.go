@@ -82,7 +82,7 @@ func TestCompensationRefusesForeignCreate(t *testing.T) {
 func TestNewServiceUsesStartFirstAndPinnedImage(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	b, err := serviceSpec("env", "proj", "app", "web", "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, r, "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, r, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCreatedSpecAcceptsEngineDefaults(t *testing.T) {
 func TestServiceSpecUsesNamedVolumesAndResourceLimits(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data:ro"}, Resources: &manifest.Resources{CPU: "0.5", Memory: "64MiB"}, Port: 8080}
-	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, r, "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, r, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestServiceSpecUsesNamedVolumesAndResourceLimits(t *testing.T) {
 }
 
 func TestServiceSpecInheritsImageHealth(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{}, "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`), "")
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{}, "start-first", "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`), "")
 	if err != nil || !strings.Contains(string(b), `"Healthcheck"`) {
 		t.Fatalf("image health: %s %v", b, err)
 	}
@@ -407,7 +407,7 @@ func TestUpdateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
 
 func TestServiceSpecLetsBerthyDecideWhenAnUpdateFails(t *testing.T) {
 	one := 1
-	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -69,7 +69,9 @@ func describeLogDriver(ld map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-func serviceSpec(env, project, app, role, operation, network, image string, values []string, r manifest.Role, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
+// serviceSpec is the Swarm service of a role at one release. order is how an update replaces the old version, from
+// App.UpdateOrder; the update and its rollback config both carry it.
+func serviceSpec(env, project, app, role, operation, network, image string, values []string, r manifest.Role, order, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
 
 	grace, err := time.ParseDuration(drain)
 	if err != nil {
@@ -135,8 +137,8 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	// A rollout gives the new version a bounded number of failed starts, and Berthy, not Swarm, decides when that is used
 	// up: "continue" keeps Swarm replacing a failing new task under the restart policy while Berthy counts the failures
 	// and restores the previous spec itself. Swarm's own "rollback" would give up after the first failure.
-	update := map[string]any{"Parallelism": 1, "FailureAction": "continue", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
-	rollback := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": "start-first", "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
+	update := map[string]any{"Parallelism": 1, "FailureAction": "continue", "Order": order, "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
+	rollback := map[string]any{"Parallelism": 1, "FailureAction": "rollback", "Order": order, "MaxFailureRatio": 0, "Monitor": int64(5 * time.Second)}
 	// Written out so the cadence is documented: a task that exits is replaced after 5 seconds, without limit. In steady
 	// state a crashed app always comes back; only a rollout stops early.
 	restart := map[string]any{"Condition": "any", "Delay": int64(5 * time.Second), "MaxAttempts": 0}

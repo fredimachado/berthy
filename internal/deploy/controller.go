@@ -93,6 +93,9 @@ type Plan struct {
 	Exec *ExecPlan `json:"exec,omitempty"`
 	// Changes lists what the next deploy will change on an adopted service, one line per difference.
 	Changes []string `json:"changes,omitempty"`
+	// Notes says what the deploy will do that the person may not expect: one line per role that is stopped before its new
+	// version starts, with the reason.
+	Notes []string `json:"notes,omitempty"`
 }
 type ExecPlan struct {
 	// Target is the Swarm service of the role for an image app, and the Compose project and service, such as shop-db/postgres,

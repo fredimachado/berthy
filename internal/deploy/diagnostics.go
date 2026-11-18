@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
@@ -344,6 +345,33 @@ func rolloutFallback(cause error) string {
 		}
 	}
 	return "rollout failed"
+}
+
+// addStoppedFirst adds to the reason of a failed rollout that each role updated stop-first was down until its previous version
+// came back. work is the roles the rollout reached, so a role it never got to is not named. The reason stays within
+// maxReasonBytes; the cause is cut to make room for the clause, not the clause.
+func addStoppedFirst(reason string, app manifest.App, work []roleWork) string {
+	var clauses []string
+	for _, w := range work {
+		if w.intent.Kind != "update" {
+			continue
+		}
+		if order, _ := app.UpdateOrder(w.intent.Role); order == manifest.StopFirst {
+			clauses = append(clauses, "role "+printable(w.intent.Role, 64)+" was stopped first, so it was down until the previous version came back")
+		}
+	}
+	if len(clauses) == 0 {
+		return reason
+	}
+	note := strings.Join(clauses, "; ")
+	cause := reason
+	if room := maxReasonBytes - len(note) - len("; "); len(cause) > room {
+		cause = printable(cause, max(room, 0))
+	}
+	if cause == "" {
+		return printable(note, maxReasonBytes)
+	}
+	return printable(cause+"; "+note, maxReasonBytes)
 }
 
 // failureReason summarizes diagnostics into one public line, "role <r>: <what happened>" per role joined by "; ", and

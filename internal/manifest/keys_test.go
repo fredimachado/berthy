@@ -191,6 +191,7 @@ apps:
       drain_timeout: 30s
       start_attempts: 3
       retain: 5
+      order: stop-first
     hooks:
       pre_deploy:
         - backup: main
@@ -458,6 +459,9 @@ apps:
 	},
 	"alerts.telegram.deploys": func(v string) string {
 		return strings.Replace(bareManifest, "chat_id: \"1\"", "chat_id: \"1\"\n    deploys: "+v, 1)
+	},
+	"apps.<name>.deploy.order": func(v string) string {
+		return strings.Replace(bareManifest, "    hooks:\n", "    deploy:\n      order: "+v+"\n    hooks:\n", 1)
 	},
 }
 

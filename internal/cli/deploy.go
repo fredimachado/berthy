@@ -38,6 +38,13 @@ func printProblems(w io.Writer, problems manifest.Problems) {
 	fmt.Fprintf(w, "%d problems\n", len(problems))
 }
 
+// printWarnings writes each warning of a valid manifest as a line of its own, with its place in the files.
+func printWarnings(w io.Writer, warnings manifest.Problems) {
+	for _, p := range warnings {
+		fmt.Fprintln(w, "warning: "+p.String())
+	}
+}
+
 func isDeploymentCommand(s string) bool {
 	return slices.Contains(deploymentCommands, s)
 }
@@ -92,7 +99,7 @@ var changeFlags = map[string][]string{
 	"token list":       withRemoteFlags(),
 	"token revoke":     withRemoteFlags("--dry-run"),
 	"config show":      {"-e", "--manifest-dir", "--json"},
-	"config validate":  {"-e", "--manifest-dir"},
+	"config validate":  {"-e", "--manifest-dir", "--json"},
 }
 
 type commandFlags struct {
@@ -343,7 +350,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "config requires show or validate")
 			return 2
 		}
-		m, err := manifest.Load(f.dir, f.env)
+		m, warnings, err := manifest.LoadWithWarnings(f.dir, f.env)
 		if err != nil {
 			var problems manifest.Problems
 			if f.pos[0] == "validate" && errors.As(err, &problems) {
@@ -358,6 +365,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 				fmt.Fprintln(errout, err)
 				return 1
 			}
+			if f.json {
+				if warnings == nil {
+					warnings = manifest.Problems{}
+				}
+				b, _ := json.Marshal(struct {
+					Warnings manifest.Problems `json:"warnings"`
+				}{warnings})
+				return printResponse(out, errout, b, true)
+			}
+			printWarnings(errout, warnings)
 			fmt.Fprintln(out, "manifest valid")
 			return 0
 		}

@@ -125,7 +125,7 @@ Berthy manages two kinds of application: image apps for stateless services and C
 | Source | An image reference in a container registry | A Compose file from the repository at a given commit |
 | Runs as | A Swarm service | A `docker compose` project on one named server |
 | Used for | Web services and background workers | Databases, caches, telemetry backends, the ingress app |
-| Update | Rolling: new starts first, gated on its health check, automatic rollback | Only changed services are recreated |
+| Update | Rolling: new starts first, or the old stops first for a role that mounts a read-write volume; gated on its health check, automatic rollback | Only changed services are recreated |
 | Replicas | One or more | One per service |
 | Ports | None published; reached by service name on the shared network | May bind a port to a private address |
 
@@ -266,7 +266,7 @@ registries:
 
 ### Checking a manifest
 
-- `berthy config validate -e prod` checks the merged manifest without contacting a server. It reports every problem it finds, one per line as `<file>:<line>:<column>: <path>: <message>`, where the file is the base manifest (`berthy.yml`) or the overlay (`berthy.<env>.yml`) that sets the key, followed by a count such as `2 problems`, and exits 1. A part that is not known is left out of the line, and the path is left out when the message already says it. A value of the wrong type stops the check of the rest of the manifest. Other commands that load the manifest, and the agent, stop at the first problem and give its message.
+- `berthy config validate -e prod` checks the merged manifest without contacting a server. It reports every problem it finds, one per line as `<file>:<line>:<column>: <path>: <message>`, where the file is the base manifest (`berthy.yml`) or the overlay (`berthy.<env>.yml`) that sets the key, followed by a count such as `2 problems`, and exits 1. A part that is not known is left out of the line, and the path is left out when the message already says it. A value of the wrong type stops the check of the rest of the manifest. Other commands that load the manifest, and the agent, stop at the first problem and give its message. A valid manifest can still have warnings. Each one is a line `warning: <file>:<line>:<column>: <path>: <message>` on standard error, and the check still passes with `manifest valid`. `--json` prints the warnings as a `warnings` list instead, empty when there are none. Warnings name a `deploy.order: start-first` on a role that mounts a read-write volume, and a role with more than one replica that mounts one.
 - `berthy config show -e prod` prints the merged result with secret values hidden.
 
 ## Server setup
@@ -485,7 +485,7 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 1. **Lock.** Take the environment's deploy lock. If someone holds it, stop and report who and why.
 2. **Check.** Validate the manifest, confirm every named secret has a value, resolve the tag to a digest, pull the image.
 3. **Pre-deploy hooks.** Run them in order. A failure stops the deploy with nothing changed.
-4. **Start new.** Start the new version beside the old one. It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count. A new version whose tasks fail to start `start_attempts` times (3 by default) is given up on at once, without waiting for `deploy_timeout`.
+4. **Start new.** Start the new version beside the old one, or after the old one has stopped for a role that mounts a read-write volume (see "Stop first for a volume" below). It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count. A new version whose tasks fail to start `start_attempts` times (3 by default) is given up on at once, without waiting for `deploy_timeout`.
 5. **Switch and drain.** Route traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
 6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
@@ -611,6 +611,8 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 The wait before health checks count is the health check's own `start_period`, set per role.
 
 **Start attempts.** Swarm restarts a task that exits or is killed as unhealthy. During a deploy Berthy counts those failures for each role of the new version and gives up as soon as one role's reach `start_attempts`: the old version keeps running, a service the deploy created is removed, and the deploy fails with a reason such as `role web: task exited with code 1 (gave up after 3 failed starts)`. A deploy that gives up this way does not wait out `deploy_timeout`. A new version that fails twice and starts on the third try passes with the default of 3. Failures of the old version, or from an earlier deploy, are not counted.
+
+**Stop first for a volume.** A role that mounts a named volume read-write is updated stop-first by default: the old version stops before the new one starts, so two versions never write the same files at once. From the moment the old version stops until the new one is healthy, the role has no running task, so a failed rollout ends with a reason that says so, such as `role web: container never became healthy (last check: exit 1); role web was stopped first, so it was down until the previous version came back`. A read-only mount (`:ro`) does not change the default. `deploy.order` sets `start-first` or `stop-first` for every role of the app. The plan, and the dry run, list each stop-first role with its reason: `role web: stop-first, because it mounts volume uploads`, or `role web: stop-first, set by deploy.order`. A role that starts first gets no line.
 
 The limit applies to a rollout only. Once a version is serving, Swarm keeps restarting a task that crashes, without limit, so a service that dies at 3 in the morning comes back by itself.
 

@@ -158,6 +158,9 @@ func (m *Manifest) checkApp(p *Problems, name string, a App, hostnames map[strin
 	if n := a.Deploy.StartAttempts; n != nil && (*n < 1 || *n > maxStartAttempts) {
 		p.add(path+".deploy.start_attempts", "app %s: invalid start_attempts", name)
 	}
+	if o := a.Deploy.Order; o != "" && o != StartFirst && o != StopFirst {
+		p.add(path+".deploy.order", "app %s: invalid deploy order", name)
+	}
 	for _, rn := range sortedKeys(a.Roles) {
 		m.checkRole(p, name, a, rn, a.Roles[rn], known, hostnames)
 	}
