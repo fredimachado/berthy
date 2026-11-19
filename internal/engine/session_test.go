@@ -88,7 +88,7 @@ func switchTo(t *testing.T, serve func(conn net.Conn, br io.Reader)) http.Handle
 			t.Errorf("hijack: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer closeAfterPause(conn)
 		io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 		serve(conn, brw)
 	}
@@ -430,7 +430,7 @@ func TestNewStreamWrapsAConnection(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer closeAfterPause(c)
 		b, _ := io.ReadAll(c)
 		c.Write(bytes.ToUpper(b))
 	}()

@@ -58,13 +58,9 @@ func newAttachServer(t *testing.T, serve func(conn net.Conn, br io.Reader)) *att
 			t.Errorf("hijack: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer closeAfterPause(conn)
 		io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 		serve(conn, brw)
-		// A Windows Unix socket that is closed right after a write can lose its end of stream, so that the peer's read waits for
-		// ever (about 1 in 40 tries in a plain Go client and server; a pause of a few milliseconds before the close made it
-		// never happen in thousands). Linux does not need the pause.
-		time.Sleep(20 * time.Millisecond)
 	}))
 	srv.Listener = l
 	srv.Start()
@@ -77,6 +73,15 @@ func attachCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// closeAfterPause closes the connection of a test server a moment after the server's last write. A Windows Unix socket that
+// is closed right after a write can lose its end of stream, so the peer's read waits for ever (about 1 in 40 tries in a plain
+// Go client and server; a pause of a few milliseconds before the close made it never happen in thousands). Linux does not
+// need the pause. Every test server that writes and then closes uses it, as a defer right after the hijack or the accept.
+func closeAfterPause(conn net.Conn) {
+	time.Sleep(20 * time.Millisecond)
+	conn.Close()
 }
 
 func TestAttachDemultiplexesStdoutAndKeepsStderr(t *testing.T) {
