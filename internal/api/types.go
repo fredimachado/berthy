@@ -35,6 +35,13 @@ type Replica struct {
 	// Local is true when the container was inspected on this node. It is not part of the API.
 	Local bool `json:"-"`
 }
+
+// FinishedOneShot reports whether r is a Compose container that exited with code 0: a one-shot that finished. Neither a
+// deploy nor the down check wants it running.
+func (r Replica) FinishedOneShot() bool {
+	return r.State == "exited" && r.ExitCode != nil && *r.ExitCode == 0
+}
+
 type Check struct {
 	Name     string `json:"name"`
 	OK       bool   `json:"ok"`

@@ -78,18 +78,13 @@ func (w *DownWatch) Observe(now time.Time, apps []api.App, quiet func(api.AppRef
 	w.seen = now
 }
 
-// finishedOneShot reports whether a replica is a Compose container that exited with code 0. Such a container is a job that
-// finished, so the service neither wants it running nor counts it as down.
-func finishedOneShot(r api.Replica) bool {
-	return r.State == "exited" && r.ExitCode != nil && *r.ExitCode == 0
-}
-
 // observeRole returns the record of one role at now. prev is the record of the last observation, or nil.
 func observeRole(now time.Time, app api.AppRef, role api.Role, prev *downRecord, quiet bool) *downRecord {
 	rec := &downRecord{app: app, role: role.Name, quiet: quiet}
 	var replicas []api.Replica
 	for _, r := range role.Replicas {
-		if !finishedOneShot(r) {
+		// A finished one-shot is a job that is done: the service neither wants it running nor counts it as down.
+		if !r.FinishedOneShot() {
 			replicas = append(replicas, r)
 		}
 	}
