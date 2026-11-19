@@ -145,6 +145,9 @@ type Controller struct {
 	sessions sessionSet
 	// running counts the goroutines of the operations Admit started.
 	running sync.WaitGroup
+	// runs is the cancel state of each running operation, by its ID. runsMu guards the map; the controller is its only writer.
+	runsMu sync.Mutex
+	runs   map[string]*opRun
 	// Observer hears every operation start and end. Nil: nobody is told.
 	Observer Observer
 	// Reacher opens a connection to a role's port on the shared network, for the check at the end of a deploy. Nil: the
@@ -473,28 +476,31 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	c.started(ctx, op, req)
 	switch kind {
 	case "deploy", "rollback":
-		c.start(func() { c.execute(context.Background(), op, actor, req) })
+		c.start(op.ID, func(run context.Context) { c.execute(run, op, actor, req) })
 	case "ingress":
-		c.start(func() {
-			outcome := c.runIngress(context.Background(), op, actor, req)
-			_ = c.finish(context.Background(), op, outcome, target{})
+		c.start(op.ID, func(run context.Context) {
+			outcome := c.runIngress(run, op, actor, req)
+			_ = c.finish(run, op, outcome, target{})
 		})
 	default:
-		c.start(func() {
-			outcome := c.runOperation(context.Background(), op, actor, req)
-			_ = c.finish(context.Background(), op, outcome, target{})
+		c.start(op.ID, func(run context.Context) {
+			outcome := c.runOperation(run, op, actor, req)
+			_ = c.finish(run, op, outcome, target{})
 		})
 	}
 	return op, true, nil
 }
 
 // start runs an admitted operation in its own goroutine, which Drain waits for: the goroutine writes to the state until it has
-// recorded the outcome and told the observer, so whoever closes the store has to wait for it first.
-func (c *Controller) start(run func()) {
+// recorded the outcome and told the observer, so whoever closes the store has to wait for it first. run gets the context that
+// carries the operation's cancel state, which is registered before the goroutine starts so that a cancel finds it.
+func (c *Controller) start(opID string, run func(context.Context)) {
+	ctx := c.register(opID)
 	c.running.Add(1)
 	go func() {
 		defer c.running.Done()
-		run()
+		defer c.unregister(opID)
+		run(ctx)
 	}()
 }
 

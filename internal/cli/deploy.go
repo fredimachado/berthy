@@ -115,6 +115,8 @@ var changeFlags = map[string][]string{
 	"lock acquire":     withRemoteFlags("--dry-run", "--message"),
 	"lock release":     withRemoteFlags("--dry-run"),
 	"recovery resolve": withRemoteFlags("--dry-run", "--message"),
+	"cancel":           withRemoteFlags("--dry-run"),
+	"job cancel":       withRemoteFlags(),
 	"ingress apply":    withRemoteFlags("--dry-run", "--manifest-dir", "--request-id", "--replace-existing", "--commit"),
 	"ingress status":   withRemoteFlags(),
 	"alerts test":      withRemoteFlags(),
@@ -300,7 +302,7 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 			return "key rotate", true
 		}
 	case "job":
-		if len(pos) == 2 && (sub == "run" || sub == "logs") {
+		if len(pos) == 2 && (sub == "run" || sub == "logs" || sub == "cancel") {
 			return "job " + sub, true
 		}
 	case "backup":
@@ -684,6 +686,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "invalid lock command")
 			return 2
 		}
+	case "cancel":
+		if len(f.pos) != 1 || f.pos[0] == "" {
+			fmt.Fprintln(errout, "usage: cancel OPERATION_ID -e ENV [--dry-run] [--json]")
+			return 2
+		}
+		endpoint = "operations/" + url.PathEscape(f.pos[0]) + "/cancel"
+		method = "POST"
+		body = map[string]any{"dry_run": f.dry}
 	case "recovery":
 		if len(f.pos) != 2 || f.pos[0] != "resolve" || f.pos[1] == "" {
 			fmt.Fprintln(errout, "usage: recovery resolve OPERATION_ID -m REASON")
@@ -861,6 +871,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			}
 		}
 		return 1
+	}
+	if cmd == "cancel" && !f.json {
+		return reportCancel(ctx, client, base, prefix, token, data, f, out, errout)
 	}
 	if cmd == "diagnostics" && !f.json {
 		return printDiagnostics(out, errout, data)

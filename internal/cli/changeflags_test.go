@@ -55,6 +55,8 @@ var changeCommands = []changeCommand{
 	{name: "lock acquire", pos: []string{"lock", "acquire"}},
 	{name: "lock release", pos: []string{"lock", "release"}},
 	{name: "recovery resolve", pos: []string{"recovery", "resolve", "op1"}},
+	{name: "cancel", pos: []string{"cancel", "op1"}},
+	{name: "job cancel", pos: []string{"job", "cancel", "dump-db"}},
 	{name: "ingress apply", pos: []string{"ingress", "apply"}},
 	{name: "ingress status", pos: []string{"ingress", "status"}},
 	{name: "alerts test", pos: []string{"alerts", "test"}},

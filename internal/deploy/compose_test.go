@@ -45,9 +45,18 @@ type fakeCompose struct {
 	upAuthSeen bool
 	downErr    error
 	onDown     func(engine.ComposeRun)
+	// upStarted is closed when up begins, and up returns once upRelease is closed. Both are nil for a test that does not hold up.
+	upStarted chan struct{}
+	upRelease chan struct{}
+	upOnce    sync.Once
 }
 
 func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
+	if r.Args[0] == "up" && f.upStarted != nil {
+		// A test that holds the deploy at up: it says up began and waits to be let go.
+		f.upOnce.Do(func() { close(f.upStarted) })
+		<-f.upRelease
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runs = append(f.runs, r)

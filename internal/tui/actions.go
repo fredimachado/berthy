@@ -109,6 +109,12 @@ type (
 		id            int
 		state, reason string
 	}
+	// cancelMsg is the agent's answer to a cancel of the operation that is followed: accepted, held for approval, or refused.
+	cancelMsg struct {
+		id   int
+		kind cancelAnswer
+		text string
+	}
 	formDoneMsg struct {
 		id    int
 		stage actionStage
@@ -117,6 +123,16 @@ type (
 	// went away, with a note for the status line and an app whose detail to open.
 	actionFinishedMsg struct{}
 	actionCloseMsg    struct{ note, openApp string }
+)
+
+// cancelAnswer is how the agent answered a cancel.
+type cancelAnswer int
+
+const (
+	cancelAccepted cancelAnswer = iota
+	cancelHeld
+	cancelRefused
+	cancelUnreachable
 )
 
 var actionSeq atomic.Int64
@@ -162,6 +178,14 @@ type actionOverlay struct {
 	planNote   string
 	plan       viewport.Model
 	planKey    string
+
+	// cancelNote is what the agent said to the last cancel, shown under the events: warn is set for a refusal. cancelSent is set
+	// once a cancel was accepted or held, after which the key is no longer offered.
+	cancelNote string
+	cancelWarn bool
+	cancelSent bool
+	// asking is set while the confirmation of a cancel is on screen.
+	asking bool
 
 	timer   timer.Model
 	spin    spinner.Model
@@ -456,6 +480,11 @@ func (o *actionOverlay) Update(msg tea.Msg) (overlay, tea.Cmd) {
 			return o, o.operationDone(msg)
 		}
 		return o, nil
+	case cancelMsg:
+		if msg.id == o.id && o.stage == stageFollow {
+			o.cancelAnswered(msg)
+		}
+		return o, nil
 	}
 	if o.form != nil && o.stage != stageDone {
 		_, c := o.form.Update(msg)
@@ -500,8 +529,20 @@ func (o *actionOverlay) key(msg tea.KeyPressMsg) (overlay, tea.Cmd) {
 	case stageRun:
 		return o, nil
 	case stageFollow:
-		if s == "esc" {
+		if o.asking && o.form != nil {
+			// The confirmation of a cancel: esc goes back to following the operation, which goes on.
+			if s == "esc" {
+				o.form, o.asking = nil, false
+				return o, nil
+			}
+			_, c := o.form.Update(msg)
+			return o, c
+		}
+		switch {
+		case s == "esc":
 			return o.close(fmt.Sprintf("operation %s continues on the agent", shortID(o.opID)), "")
+		case s == "c" && o.canCancel():
+			return o, o.cancelForm()
 		}
 		return o, nil
 	}
@@ -704,8 +745,55 @@ func (o *actionOverlay) formDone() (overlay, tea.Cmd) {
 		}
 		o.reqID, _ = agentclient.NewRequestID()
 		return o, o.run()
+	case stageFollow:
+		// The answer to the confirmation of a cancel.
+		o.form, o.asking = nil, false
+		if !o.sure {
+			return o, nil
+		}
+		o.cancelNote, o.cancelWarn = "Cancelling…", false
+		return o, o.c.cancelOperation(o.id, o.opID)
 	}
 	return o, nil
+}
+
+// canCancel is true for an operation the agent may still cancel: the operation of a roll back, and an approved deploy, roll back
+// or run. A restart cannot be cancelled. Whether it can be now is for the agent to say, and it does when the person confirms.
+func (o *actionOverlay) canCancel() bool {
+	if o.cancelSent || o.opID == "" {
+		return false
+	}
+	switch o.kind {
+	case actRollback:
+		return true
+	case actApprove:
+		return o.appr.Kind == "deploy" || o.appr.Kind == "rollback" || o.appr.Kind == "run"
+	}
+	return false
+}
+
+// cancelForm asks the person to confirm the cancel of the operation that is followed.
+func (o *actionOverlay) cancelForm() tea.Cmd {
+	o.sure, o.asking = false, true
+	return o.newForm(stageFollow, huh.NewConfirm().Key("sure").Title("Cancel operation "+shortID(o.opID)+"?").
+		Description("It stops now if it can still be undone cleanly, and the version that ran stays or comes back. Past that point the agent refuses.").
+		Affirmative("Cancel it").Negative("Keep going").Value(&o.sure))
+}
+
+// cancelAnswered shows what the agent said to the cancel. An accepted or a held cancel is not offered again; a refusal leaves
+// the operation going and the key where it was.
+func (o *actionOverlay) cancelAnswered(m cancelMsg) {
+	text := sanitize(m.text)
+	switch m.kind {
+	case cancelAccepted:
+		o.cancelNote, o.cancelWarn, o.cancelSent = "Cancel accepted: the operation is stopping", false, true
+	case cancelHeld:
+		o.cancelNote, o.cancelWarn, o.cancelSent = "Held for approval "+text+": a person must approve the cancel", false, true
+	case cancelRefused:
+		o.cancelNote, o.cancelWarn = "The agent refused the cancel: "+text, true
+	default:
+		o.cancelNote, o.cancelWarn = text, true
+	}
 }
 
 // run sends the change the person confirmed.
@@ -789,6 +877,11 @@ func (o *actionOverlay) operationDone(m opDoneMsg) tea.Cmd {
 		}
 		r = actionResult{kind: outFailed, title: o.failVerb() + " " + glyphDot + " " + state, text: m.reason, diag: o.app != "",
 			hint: "berthy diagnostics " + sanitize(o.opID) + " -e " + sanitize(o.env)}
+		if strings.HasPrefix(m.reason, "cancelled by") {
+			// A cancelled operation left no evidence to read: the reason says all there is.
+			r.title = strings.TrimSuffix(o.failVerb(), "did not succeed") + "was cancelled " + glyphDot + " " + state
+			r.hint = ""
+		}
 	}
 	return tea.Batch(o.finish(r), stop)
 }
@@ -988,6 +1081,24 @@ func (o *actionOverlay) followLines(st styles, iw, ih int) []string {
 	}
 	if o.stage == stageDone {
 		return append(lines, o.resultLines(st, iw)...)
+	}
+	if o.cancelNote != "" {
+		style := st.info
+		if o.cancelWarn {
+			style = st.warn
+		}
+		for _, l := range wrapIndent(sanitize(o.cancelNote), max(iw-6, 20), 0) {
+			add(style.Render(l))
+		}
+		lines = append(lines, "")
+	}
+	if o.asking && o.form != nil {
+		o.form.WithWidth(iw - 2)
+		lines = append(lines, strings.Split(trimForm(o.form.View()), "\n")...)
+		return append(lines, "", o.helpLine(st, "←→ choose", "enter confirm", "esc back, the operation goes on"))
+	}
+	if o.canCancel() {
+		return append(lines, o.helpLine(st, "c cancel the operation", "esc close, the operation goes on"))
 	}
 	return append(lines, o.helpLine(st, "esc close, the operation goes on"))
 }

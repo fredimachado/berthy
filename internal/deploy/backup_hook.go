@@ -99,8 +99,16 @@ func (c *Controller) runBackupHook(ctx context.Context, opID string, p preparedP
 		step("backup " + name + " skipped: app " + b.App + " is not deployed")
 		return nil
 	}
+	if err = cancelledBy(ctx); err != nil {
+		return err
+	}
 	step("backup " + name + " started")
-	res, err := c.Backups.RunBackup(ctx, p.Request.Manifest, name)
+	runCtx, stop := interruptible(ctx)
+	res, err := c.Backups.RunBackup(runCtx, p.Request.Manifest, name)
+	stop()
+	if cancel := cancelledBy(ctx); cancel != nil {
+		return cancel
+	}
 	var refusal backup.Refusal
 	switch {
 	case errors.As(err, &refusal):

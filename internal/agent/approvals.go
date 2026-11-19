@@ -120,7 +120,7 @@ func supportsDryRun(rest []string) bool {
 	case len(rest) == 2:
 		return rest[0] == "ingress" && rest[1] == "apply" || rest[0] == "lock" || rest[0] == "secrets"
 	case len(rest) == 3:
-		return rest[0] == "operations" && rest[2] == "resolve"
+		return rest[0] == "operations" && (rest[2] == "resolve" || rest[2] == "cancel")
 	}
 	return false
 }
@@ -651,7 +651,7 @@ func summarize(rest []string, method string, body []byte) string {
 		return "secret delete " + cleanText(rest[1], 80)
 	case "lock acquire", "lock release", "state backup run", "alerts test":
 		return routeKind(rest, method)
-	case "backup run", "job run":
+	case "backup run", "job run", "job cancel", "cancel":
 		return routeKind(rest, method) + " " + cleanText(rest[1], 80)
 	case "recovery resolve":
 		return "recovery resolve " + cleanText(rest[1], 80)
@@ -694,8 +694,12 @@ func routeKind(rest []string, method string) string {
 		return "backup run"
 	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
 		return "job run"
+	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "cancel":
+		return "job cancel"
 	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
 		return "recovery resolve"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "cancel":
+		return "cancel"
 	}
 	return ""
 }
@@ -704,7 +708,7 @@ func routeKind(rest []string, method string) string {
 func describe(rest []string, method string) map[string]string {
 	out := map[string]string{"action": routeKind(rest, method)}
 	switch out["action"] {
-	case "backup run", "job run":
+	case "backup run", "job run", "job cancel":
 		out["target"] = rest[1]
 	}
 	return out

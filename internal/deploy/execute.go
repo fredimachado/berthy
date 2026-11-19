@@ -22,6 +22,11 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	var t target
 	switch {
 	case req.Kind == "rollback" && req.RevertSchema:
+		// A schema revert is a migration from start to end, so a cancel is refused for all of it.
+		if _, err := c.enter(ctx, reasonRevert); err != nil {
+			outcome = state.Outcome{State: "failed", Err: "deployment preflight failed"}
+			break
+		}
 		outcome = c.runSchemaRevert(ctx, op, actor, req)
 	case req.Kind == "rollback":
 		resolved, err := c.rollbackRequest(ctx, req)
@@ -51,7 +56,7 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		outcome, t = c.runDeploy(ctx, op, actor, resolved, false)
 		t.Manifest = &resolved.Manifest
 	}
-	_ = c.finish(context.Background(), op, outcome, t)
+	_ = c.finish(ctx, op, outcome, t)
 }
 
 // releaseRoleSpec is the Swarm service of a role at the release that prepared describes, as a deploy sends it. operation is
@@ -86,7 +91,9 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome = c.runCompose(ctx, op, actor, req, rollback)
 		return
 	}
-	p, err := c.plan(ctx, actor, req)
+	checkCtx, stopCheck := interruptible(ctx)
+	p, err := c.plan(checkCtx, actor, req)
+	stopCheck()
 	if err != nil {
 		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
 		var refusal Refusal
@@ -122,7 +129,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		// Adoption starts no service, so its routes follow its bindings at once. The barrier keeps the release if the
 		// process stops during the publish, as it does for a deploy.
 		barrier, e := json.Marshal(outcome)
-		if e != nil || c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: time.Now()}) != nil {
+		if e != nil || c.cross(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: time.Now()}, reasonSwitched) != nil {
 			outcome = state.Outcome{State: "failed", Err: "verification barrier unavailable"}
 			return
 		}
@@ -277,6 +284,10 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = ingressFailure(err, errIngressPublish)
 		return
 	}
+	// A cancel that came during the checks stops the deploy here, before it changes anything.
+	if err = cancelledBy(ctx); err != nil {
+		return
+	}
 	if !rollback && app.Migrations != nil {
 		source, e := json.Marshal(struct {
 			Manifest manifest.Manifest `json:"manifest"`
@@ -308,8 +319,35 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	attempts := app.Deploy.StartAttemptLimit()
 	deadline := time.Now().Add(budget)
-	rollCtx, stop := context.WithDeadline(ctx, deadline)
+	// verifyCtx ends at the deploy timeout. rollCtx also ends when a cancel is accepted, so the wait for health can be cancelled,
+	// and the verification that follows it is not: it is short, and the cancel is settled at the barrier.
+	verifyCtx, stop := context.WithDeadline(ctx, deadline)
 	defer stop()
+	rollCtx, stopRoll := interruptible(verifyCtx)
+	defer stopRoll()
+	// unwind takes the rollout back after a failure or a cancel, with the roles in touched changed.
+	unwind := func(e error, touched []roleWork) {
+		// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
+		var gaveUp *errStartAttempts
+		errors.As(e, &gaveUp)
+		outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, touched)
+		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
+		recoveryCancel()
+		if recoveryErr != nil {
+			outcome.State = "recovery_required"
+			outcome.Err = "rollout recovery required"
+			return
+		}
+		outcome.State = "failed"
+		for _, done := range work {
+			if done.intent.Kind == "update" {
+				outcome.State = "rolled_back"
+				break
+			}
+		}
+		outcome.Err = "rollout failed and was cleaned up"
+	}
 	var releaseBindings []state.Binding
 	for n, w := range work {
 		w.intent.Deadline = deadline
@@ -321,27 +359,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
 		}
 		if e != nil {
-			// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
-			var gaveUp *errStartAttempts
-			errors.As(e, &gaveUp)
 			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
-			outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, work[:n+1])
-			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
-			recoveryCancel()
-			if recoveryErr != nil {
-				outcome.State = "recovery_required"
-				outcome.Err = "rollout recovery required"
-			} else {
-				outcome.State = "failed"
-				for _, done := range work {
-					if done.intent.Kind == "update" {
-						outcome.State = "rolled_back"
-						break
-					}
-				}
-				outcome.Err = "rollout failed and was cleaned up"
-			}
+			unwind(e, work[:n+1])
 			return
 		}
 		releaseBindings = append(releaseBindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
@@ -359,20 +378,20 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		return
 	}
 	for _, w := range work {
-		live, e := c.Engine.InspectService(rollCtx, w.intent.Name)
+		live, e := c.Engine.InspectService(verifyCtx, w.intent.Name)
 		if e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final verification unavailable"
 			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable", nil)
 			return
 		}
-		if e = healthyOnce(rollCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
+		if e = healthyOnce(verifyCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final health verification failed"
 			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed", nil)
 			return
 		}
-		if e = waitDrain(rollCtx, c.Engine, live.ID, op.ID); e != nil {
+		if e = waitDrain(verifyCtx, c.Engine, live.ID, op.ID); e != nil {
 			outcome.State = "recovery_required"
 			outcome.Err = "final drain verification failed"
 			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed", nil)
@@ -386,20 +405,27 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Release = nil
 		return
 	}
-	steps, e := c.Store.Intents(rollCtx, op.ID)
+	steps, e := c.Store.Intents(verifyCtx, op.ID)
 	if e != nil {
 		outcome.State = "recovery_required"
 		outcome.Release = nil
 		outcome.Err = "verification unavailable"
 		return
 	}
-	if _, e = c.recoverBarrier(rollCtx, steps, state.Intent{Desired: barrier}); e != nil {
+	if _, e = c.recoverBarrier(verifyCtx, steps, state.Intent{Desired: barrier}); e != nil {
 		outcome.State = "recovery_required"
 		outcome.Release = nil
 		outcome.Err = "verification unavailable"
 		return
 	}
-	if e = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}); e != nil {
+	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy
+	// commands follow. A cancel that was accepted before it takes the rollout back instead.
+	if e = c.cross(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
+		if isCancelled(e) {
+			outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
+			unwind(e, work)
+			return
+		}
 		outcome.State = "recovery_required"
 		outcome.Release = nil
 		outcome.Err = "verification barrier unavailable"
@@ -461,9 +487,11 @@ func (c *Controller) ensureImage(ctx context.Context, p preparedPlan) (engine.Im
 	if !errors.As(err, &status) || status.Code != 404 {
 		return img, "image inspection failed", err
 	}
-	pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	waitCtx, stop := interruptible(ctx)
+	pullCtx, cancel := context.WithTimeout(waitCtx, 2*time.Minute)
 	err = c.Engine.PullImage(pullCtx, p.Image, p.Auth)
 	cancel()
+	stop()
 	if err != nil {
 		return img, "image pull failed", err
 	}

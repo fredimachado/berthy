@@ -1496,6 +1496,35 @@ berthy recovery resolve <operation id> -m "checked: nothing half-done" -e prod
 
 `recovery resolve` needs an `admin` token. It ends the operation as failed and releases the lock; `--dry-run` shows the journaled steps first.
 
+#### Cancel a running operation
+
+A deploy with a slow pre-deploy command, or a new version that will never become healthy, holds the lock until its own time limit. `cancel` stops it sooner, while it can still be undone cleanly:
+
+```bash
+berthy cancel <operation id> -e prod --dry-run
+berthy cancel <operation id> -e prod
+```
+
+The operation id of the one that holds the lock is in `berthy lock status`. `cancel` needs a `deploy` token. It waits until the operation has ended, and prints how: `operation <id> ended: rolled_back (cancelled by ci)`. `--dry-run` says whether the cancel would be accepted, and if not why, and changes nothing.
+
+| Where a deploy is | What a cancel does |
+| --- | --- |
+| Checking, pulling the image | Stops. Nothing was changed. The deploy ends `failed`. |
+| Running a pre-deploy command | Stops the command's container, then stops. The deploy ends `failed`. |
+| Running a migration | Refused: `a migration is running`. The schema may be half changed. Try again when the migration is over. |
+| Waiting for the new version to become healthy | Puts the previous version back, as a failed rollout does. The deploy ends `rolled_back`. A migration that already ran stays applied. |
+| After traffic switched (publishing routes, post-deploy commands) | Refused: `the deploy already switched traffic`. The deploy is done in every way that matters. |
+
+Every operation has one **point of no return**. Before it, a cancel wins; after it, the cancel is refused with the reason, and nothing changes. Berthy records the point with the operation, so the answer never depends on timing: if a cancel and the point meet, one of them comes first and the other sees it.
+
+- The operation ends as `failed` or `rolled_back`, with the reason `cancelled by <token name>`, and the lock is released. A cancelled deploy is alerted like a failed one.
+- A Compose deploy can be cancelled until it starts changing the project (before `compose up`). Compose cannot take a change back, so after that the cancel is refused with `the Compose project is being changed`.
+- `run` can be cancelled at any time before it ends: its container is stopped and removed, and the output so far is kept.
+- `restore`, `remove`, `destroy`, `exec`, `restart`, `scale`, `prune` and `ingress apply` cannot be cancelled, and `rollback --revert-schema` is refused as a migration. The answer says so: `a restore cannot be cancelled`.
+- On a protected environment, an AI agent's cancel is held until a person approves it, like any change, and the plan says whether it would be accepted. The cancel is audited as `cancel:<operation id>`, with the outcome `accepted` or `refused`.
+
+A run of a job is not an operation, and a job has one run at a time, so `berthy job cancel <name> -e prod` names it. It stops the job's container and records the run as failed with `cancelled by <token name>`; `berthy job logs <name>` shows the last lines it wrote. The command of a Compose app's job runs as an exec, which Docker cannot stop, so the cancel only ends the wait there, as a time limit does.
+
 #### When a deploy fails
 
 A new version can fail for reasons only its own output explains: a missing setting, a migration that did not apply, a health check that never passed. The old version keeps serving. The evidence is kept before anything is cleaned up.
@@ -2061,6 +2090,7 @@ How a job runs:
 berthy jobs -e prod
 berthy job run dump-db -e prod
 berthy job logs dump-db -e prod
+berthy job cancel dump-db -e prod
 ```
 
 Example output:
@@ -2376,7 +2406,7 @@ The `--agent` flag marks it as an agent token. It works at once, as for any toke
 
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
-Held: `deploy`, `apply`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `state-backup`, `recovery resolve` and `alerts test`.
+Held: `deploy`, `apply`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `job cancel`, `cancel`, `state-backup`, `recovery resolve` and `alerts test`.
 
 `key rotate` is not held: an agent token is refused with `an agent token cannot rotate the state key`, whatever its scope, on every environment.
 
@@ -2476,7 +2506,7 @@ Its result is one of:
 - **Plan.** With `dry_run`: `{"dry_run": true, "plan": ...}`. Never held.
 - **Refused.** The wrong scope, a held deploy lock, an unknown app: a tool error with the agent's message.
 
-Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `key rotate`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
+Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `cancel`, `job cancel`, `alerts test`, `state-backup`, `key rotate`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
 
 The server also offers three prompts. A client lists them and a person or an agent picks one. Each is a fixed walk through the tools above, filled in with its argument. A prompt only reads.
 
@@ -2532,7 +2562,7 @@ The views only read. A change goes through one overlay, and **nothing is sent un
 1. **Plan.** A restart or rollback asks the agent for the same plan `--dry-run` prints. A rollback first asks which release, from the earlier successful ones.
 2. **Confirm.** The plan is drawn in a scrolling pane: the facts (app, image and its whole digest, roles, what will happen) and the full plan. A confirmation follows, with **Cancel** as the default. On a **protected** environment, a rollback and an approval also ask you to **type the environment's name** (`prod`, exactly, case-sensitive) before the confirmation can be reached. A rejection asks for an optional reason.
 3. **Run.** The real request is sent. The answer is an operation (followed live), a held request ("Held for approval <id>", with the command a person runs), a result, or a refusal with the agent's message and the scope it needs (`deploy` to restart and roll back, `admin` to approve and reject).
-4. **Follow.** The operation's events stream in with a spinner and the time elapsed. It ends with the result ("Restarted api in 12s"), or for a failure, the reason and the command `berthy diagnostics <operation> -e prod`. `esc` while it runs closes the overlay and leaves a note on the status line, `operation <id> continues on the agent`. The operation is not cancelled.
+4. **Follow.** The operation's events stream in with a spinner and the time elapsed. It ends with the result ("Restarted api in 12s"), or for a failure, the reason and the command `berthy diagnostics <operation> -e prod`. `esc` while it runs closes the overlay and leaves a note on the status line, `operation <id> continues on the agent`: closing the view does not cancel the operation. For a roll back, and for an approved deploy, rollback or run, `c` offers to cancel it: a confirmation asks "Cancel operation <id>?" and nothing is sent until you answer "Cancel it". The agent says whether it accepted (the operation then ends as `cancelled by <you>`), held it for approval, or refused it with the reason, such as `the deploy already switched traffic`; a refusal leaves the operation going.
 
 `esc` cancels at any time before the confirmation and sends nothing.
 
@@ -2737,6 +2767,8 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `ingress apply` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--commit`, `--replace-existing` | Create or repair the tunnel and connector, and sync routes and DNS. |
 | `job run <name>` | deploy | none | Run a job now and wait. Exit 0 only on success. |
 | `job logs <name>` | deploy | `--run` | Print the output kept of a failed or timed-out run of a job. `--run` names a run; without it, the newest run that kept output. |
+| `job cancel <name>` | deploy | none | Stop the run of a job that is in progress. It records the run as failed with `cancelled by <token name>`. |
+| `cancel <operation id>` | deploy | `--dry-run` | Stop a running operation while it can still be undone cleanly, wait for it to end and print how. Refused with the reason after its point of no return. |
 | `backup run <name>` | deploy | none | Run a volume backup now and wait. Exit 0 only on success. |
 | `alerts test` | deploy | none | Send a test message to every alert channel (Telegram, webhook) and report each. Exits 1 when a channel failed. |
 | `exec <app> -- <command>` | admin | `--dry-run`, `--request-id`, `--role`, `--service` | Run a command in a running container: of an image app's role (`--role`), or of a Compose app's service (`--service`). |
@@ -2765,7 +2797,7 @@ Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` a
 
 Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
-`--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
+`--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `job cancel`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
 #### Local (no agent)
 
@@ -3070,7 +3102,7 @@ The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use se
 | Scope | Allows |
 | --- | --- |
 | `read` | `ps`, `describe`, `logs`, `stats`, `df`, `history`, `wait`, `doctor`, `audit`, `agent-info`, `checks`, `jobs`, `lock status`, `backup list`, `ingress status`, `approvals` (without plans), following an operation's events. |
-| `deploy` | Everything in `read`, plus `diagnostics`, `job logs`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `alerts test`, and the plans in `approvals`. |
+| `deploy` | Everything in `read`, plus `diagnostics`, `job logs`, `deploy`, `rollback`, `restart`, `scale`, `backup run`, `ingress apply`, `lock acquire`, `lock release`, `job run`, `job cancel`, `cancel`, `alerts test`, and the plans in `approvals`. |
 | `admin` | Everything in `deploy`, plus `secret`, `exec`, `run`, `prune`, `restore`, `state-backup`, `key rotate` (not for an agent token), `remove`, `destroy`, `recovery resolve`, `approve`, `reject`, `token list`, `token create`, `token revoke` (the last two never for an agent token), and the flags `--allow-recreate`, `--adopt`, `--replace-existing`, `--revert-schema`. Compose settings that reach into the host. |
 
 A token marked `agent` has the scope it says. The mark only decides whether its changes are held on a protected environment, and that it can never approve or reject.

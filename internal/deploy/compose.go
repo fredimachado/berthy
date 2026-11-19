@@ -807,8 +807,12 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return failedWith(errComposeJournal)
 	}
-	// The source is journaled before the project directory changes, so a rollback can redeploy this file.
-	if err = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: composeSourceOrdinal, Kind: "compose_source", Name: project, Desired: source}); err != nil {
+	// The source is journaled before the project directory changes, so a rollback can redeploy this file. It is the Compose
+	// deploy's point of no return: Compose has no compensation, so from the first change a cancel is refused.
+	if err = c.cross(ctx, op.ID, state.Intent{Ordinal: composeSourceOrdinal, Kind: "compose_source", Name: project, Desired: source}, reasonCompose); err != nil {
+		if isCancelled(err) {
+			return failedWith(err)
+		}
 		return failedWith(errComposeJournal)
 	}
 	dir, err := c.replaceProjectDir(stage, project)

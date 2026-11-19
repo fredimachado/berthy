@@ -183,6 +183,27 @@ func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.
 			logs.Finished = &run.Finished
 		}
 		json.NewEncoder(w).Encode(logs)
+	case rest[2] == "cancel":
+		if sched == nil {
+			writeError(w, 503, "jobs_unavailable", "jobs unavailable")
+			return
+		}
+		// A job has at most one run at a time, so its name says which run to stop.
+		err := sched.Cancel(ctx, rest[1], actor.Name)
+		switch {
+		case errors.Is(err, jobs.ErrUnknownJob):
+			writeError(w, 404, "not_found", "not found")
+			return
+		case errors.Is(err, jobs.ErrJobNotRunning):
+			_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "refused")
+			writeError(w, 409, "cancel_refused", "job is not running")
+			return
+		case err != nil:
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "accepted")
+		json.NewEncoder(w).Encode(map[string]any{"job": rest[1], "accepted": true})
 	default:
 		if sched == nil {
 			writeError(w, 503, "jobs_unavailable", "jobs unavailable")

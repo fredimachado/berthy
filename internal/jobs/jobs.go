@@ -86,9 +86,9 @@ type Scheduler struct {
 
 	minutes schedule.Minutes // the minutes handled
 	mu      sync.Mutex
-	running map[string]bool // job name -> a run is in progress (one writer: guarded by mu)
-	base    context.Context // Run's context, which on-demand runs outlive their request with
-	wg      sync.WaitGroup  // the runs in progress
+	running map[string]*activeRun // job name -> the run in progress (one writer: guarded by mu)
+	base    context.Context       // Run's context, which on-demand runs outlive their request with
+	wg      sync.WaitGroup        // the runs in progress
 }
 
 const skippedDetail = "previous run still running"
@@ -169,20 +169,81 @@ func (s *Scheduler) step(ctx context.Context) {
 func (s *Scheduler) claim(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running[name] {
+	if s.running[name] != nil {
 		return false
 	}
 	if s.running == nil {
-		s.running = map[string]bool{}
+		s.running = map[string]*activeRun{}
 	}
-	s.running[name] = true
+	ctx, stop := context.WithCancelCause(context.Background())
+	s.running[name] = &activeRun{ctx: ctx, stop: stop}
 	return true
 }
 
 func (s *Scheduler) release(name string) {
 	s.mu.Lock()
+	if a := s.running[name]; a != nil {
+		a.stop(nil)
+	}
 	delete(s.running, name)
 	s.mu.Unlock()
+}
+
+// activeRun is the run of a job that is marked running. A cancel ends ctx, with a *Cancelled as its cause, while the command runs.
+type activeRun struct {
+	ctx       context.Context
+	stop      context.CancelCauseFunc
+	executing bool // the command is running (guarded by Scheduler.mu)
+}
+
+// Cancelled is why a run of a job was stopped by a person or an agent: the cause of the context the command runs with.
+type Cancelled struct{ By string }
+
+func (e *Cancelled) Error() string { return "cancelled by " + e.By }
+
+// ErrJobNotRunning means no run of the job is in progress, so there is nothing to cancel.
+var ErrJobNotRunning = errors.New("job is not running")
+
+// Cancel stops the run of the job that is in progress: its command is stopped as at a timeout, and the run is recorded as failed
+// with the detail "cancelled by <by>". A command that ended on its own first keeps the result it had. It returns
+// ErrJobNotRunning when no run is in progress, and ErrUnknownJob for a name that is not in the manifest.
+func (s *Scheduler) Cancel(ctx context.Context, name, by string) error {
+	s.mu.Lock()
+	a := s.running[name]
+	if a != nil && a.executing {
+		a.stop(&Cancelled{By: by})
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	if m, err := s.Manifest(ctx); err == nil {
+		if _, ok := m.Jobs[name]; ok {
+			return ErrJobNotRunning
+		}
+	}
+	return ErrUnknownJob
+}
+
+// linked returns a context that ends when ctx does, and when a cancel of the job's run is accepted, with the *Cancelled as its
+// cause. It marks the run as executing until the returned function is called.
+func (s *Scheduler) linked(ctx context.Context, name string) (context.Context, context.CancelFunc) {
+	s.mu.Lock()
+	a := s.running[name]
+	if a == nil {
+		s.mu.Unlock()
+		return ctx, func() {}
+	}
+	a.executing = true
+	s.mu.Unlock()
+	child, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(a.ctx, func() { cancel(context.Cause(a.ctx)) })
+	return child, func() {
+		stop()
+		cancel(context.Canceled)
+		s.mu.Lock()
+		a.executing = false
+		s.mu.Unlock()
+	}
 }
 
 // occur handles one scheduled occurrence: it skips it when the job is still running, and otherwise starts a run.
@@ -309,15 +370,22 @@ func (s *Scheduler) RunHeld(ctx context.Context, name string) (state.JobRun, fun
 // wants an incomplete run to be a failure.
 func (s *Scheduler) execute(ctx context.Context, m manifest.Manifest, name string, job manifest.Job, run state.JobRun, canceledStatus, canceled string) state.JobRun {
 	timeout := job.TimeoutDuration()
-	ectx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, endRun := s.linked(ctx, name)
+	ectx, cancel := context.WithTimeout(runCtx, timeout)
 	out, err := s.Runner.Run(ectx, m, name, job, run.ID)
 	deadline := errors.Is(ectx.Err(), context.DeadlineExceeded)
+	var by *Cancelled
+	errors.As(context.Cause(runCtx), &by)
 	cancel()
+	endRun()
 	status, detail := "succeeded", ""
 	var output string
 	switch {
 	case ctx.Err() != nil && (err != nil || out.TimedOut):
 		status, detail = canceledStatus, canceled
+	case by != nil && (err != nil || out.TimedOut):
+		// A person or an agent stopped the run. Its last lines are kept, as for a run that failed.
+		status, detail, output = "failed", by.Error(), out.Output
 	case out.TimedOut || err != nil && deadline:
 		status, detail, output = "failed", "timed out after "+timeout.String(), out.Output
 	case err != nil:

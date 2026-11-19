@@ -57,7 +57,7 @@ func PublicMessage(s string) bool {
 		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errRestoreCommandFailed, errRestoreExecInterrupted, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
-	return backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
+	return s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

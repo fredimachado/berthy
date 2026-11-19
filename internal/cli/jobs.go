@@ -164,8 +164,13 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 	if len(f.pos) == 2 && f.pos[0] == "logs" && f.pos[1] != "" {
 		return runJobLogs(f, base, prefix, token, out, errout)
 	}
+	if len(f.pos) == 2 && f.pos[0] == "cancel" && f.pos[1] != "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return runJobCancel(ctx, f, base, prefix, token, out, errout)
+	}
 	if len(f.pos) != 2 || f.pos[0] != "run" || f.pos[1] == "" {
-		fmt.Fprintln(errout, "usage: job run NAME | job logs NAME [--run ID]")
+		fmt.Fprintln(errout, "usage: job run NAME | job logs NAME [--run ID] | job cancel NAME")
 		return 2
 	}
 	name := url.PathEscape(f.pos[1])

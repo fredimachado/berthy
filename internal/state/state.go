@@ -47,6 +47,10 @@ type Operation struct {
 	Err, SchemaBefore, SchemaAfter string
 	// Reason is the public one-line cause of a failed operation. Err stays the fixed category.
 	Reason string
+	// NoReturn is the point of no return of the operation: empty while a cancel can still undo it cleanly, and from the step that
+	// crossed it on the reason a cancel is refused, such as "the deploy already switched traffic". It is set once, in the
+	// transaction of that step.
+	NoReturn string
 }
 type Intent struct {
 	Ordinal                                 int
@@ -56,6 +60,9 @@ type Intent struct {
 	Before, Desired                         json.RawMessage
 	Phase                                   string
 	Receipt                                 json.RawMessage
+	// NoReturn, when set, makes recording this step the operation's crossing of its point of no return, with this reason. The
+	// first reason an operation records stays.
+	NoReturn string
 }
 type Event struct {
 	ID                uint64
@@ -170,7 +177,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS acquired_images (environment TEXT NOT NULL, ref TEXT NOT NULL, image_id TEXT NOT NULL, PRIMARY KEY(environment,ref));
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', modified INTEGER NOT NULL DEFAULT 0, UNIQUE(environment,request_id));
+ CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', modified INTEGER NOT NULL DEFAULT 0, no_return TEXT NOT NULL DEFAULT '', UNIQUE(environment,request_id));
  CREATE TABLE IF NOT EXISTS locks (environment TEXT PRIMARY KEY, operation_id TEXT REFERENCES operations(id), holder TEXT NOT NULL, reason TEXT NOT NULL, acquired INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL REFERENCES operations(id), kind TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS intents (operation_id TEXT NOT NULL REFERENCES operations(id), ordinal INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, service_id TEXT NOT NULL, generation TEXT NOT NULL, seen_version INTEGER NOT NULL, deadline INTEGER NOT NULL, before_sealed BLOB, desired_sealed BLOB NOT NULL, phase TEXT NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(operation_id,ordinal));
@@ -371,7 +378,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 		return Operation{}, false, err
 	}
 	defer tx.Rollback()
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
 	if err == nil {
 		if op.ActorID != a.ActorID || op.RequestHash != a.RequestHash {
 			return Operation{}, false, ErrConflict
@@ -409,16 +416,16 @@ func operationQuery(row *sql.Row) (Operation, error) {
 	var o Operation
 	var hash []byte
 	var started int64
-	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified)
+	err := row.Scan(&o.ID, &o.RequestID, &o.ActorID, &o.ActorName, &o.Remote, &o.Kind, &o.App, &o.Commit, &hash, &o.PublicRequest, &o.State, &started, &o.Err, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified, &o.NoReturn)
 	o.Started = time.UnixMilli(started).UTC()
 	copy(o.RequestHash[:], hash)
 	return o, err
 }
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND id=?`, s.env, id))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
 }
 func (s *Store) Active(ctx context.Context) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
 }
 func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMessage) error {
 	if !publicJSON(data) {
@@ -466,6 +473,11 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", receipt)
 	if err != nil {
 		return err
+	}
+	if i.NoReturn != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE operations SET no_return=? WHERE environment=? AND id=? AND no_return=''`, i.NoReturn, s.env, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -614,7 +626,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND id=?`, s.env, id))
+	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
 	if err != nil {
 		return err
 	}
@@ -742,7 +754,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 
 // LatestMigration returns the newest finished deploy of app that recorded a schema state.
 func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
+	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {

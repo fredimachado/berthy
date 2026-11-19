@@ -48,6 +48,7 @@ type target struct {
 // finish records an operation's outcome and then tells the observer. Every terminal write of an operation goes through it,
 // so what the observer hears is what the state holds. It tells nobody when the write fails.
 func (c *Controller) finish(ctx context.Context, op state.Operation, o state.Outcome, t target) error {
+	o = conclude(ctx, o)
 	if err := c.Store.Finish(ctx, op.ID, o); err != nil {
 		return err
 	}

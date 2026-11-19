@@ -155,6 +155,29 @@ func (c *client) send(id int, path string, body any) tea.Cmd {
 	}
 }
 
+// cancelOperation asks the agent to cancel the operation that the overlay follows, and says how it answered.
+func (c *client) cancelOperation(id int, opID string) tea.Cmd {
+	return func() tea.Msg {
+		data, status, header, err := c.post("operations/"+url.PathEscape(opID)+"/cancel", map[string]any{"dry_run": false})
+		if err != nil {
+			return cancelMsg{id: id, kind: cancelUnreachable, text: "the agent cannot be reached: nothing was cancelled that the agent has not confirmed"}
+		}
+		switch {
+		case status == http.StatusAccepted && (header.Get("Berthy-Approval") == "pending" || bytes.Contains(data, []byte(`"approval_id"`))):
+			var held struct {
+				ID string `json:"approval_id"`
+			}
+			if json.Unmarshal(data, &held) != nil || held.ID == "" {
+				return cancelMsg{id: id, kind: cancelUnreachable, text: "invalid agent response"}
+			}
+			return cancelMsg{id: id, kind: cancelHeld, text: held.ID}
+		case status == http.StatusOK:
+			return cancelMsg{id: id, kind: cancelAccepted}
+		}
+		return cancelMsg{id: id, kind: cancelRefused, text: c.refusal(status, data)}
+	}
+}
+
 // followOperation follows an operation until it ends and sends what happens: opEventMsg for each event and opDoneMsg at the
 // end. It reads the event stream and reconnects when it drops, skipping the events it has already shown; when a stream ends
 // without the operation's last event it asks for the operation's state, as the CLI does.

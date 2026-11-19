@@ -108,6 +108,10 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 			capCtx, cancel := captureContext(ctx)
 			defer cancel()
 			_ = e.StopContainer(capCtx, cid, runStopGrace)
+			if cancelledJob(ctx) {
+				out.Output = c.lastLines(capCtx, tail)
+				return out, err
+			}
 			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return out, err
 			}
@@ -123,6 +127,11 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	defer cancel()
 	if err != nil {
 		_ = e.StopContainer(capCtx, cid, runStopGrace)
+		if cancelledJob(ctx) {
+			// A cancel stopped it: the last lines it wrote are kept, as for a run that failed.
+			out.Output = c.jobOutput(capCtx, cid, streamed, tail)
+			return out, err
+		}
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return out, err
 		}
@@ -137,6 +146,12 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 		return out, inErr
 	}
 	return out, nil
+}
+
+// cancelledJob reports whether a person or an agent cancelled the run whose context this is.
+func cancelledJob(ctx context.Context) bool {
+	var by *jobs.Cancelled
+	return errors.As(context.Cause(ctx), &by)
 }
 
 // jobOutput is the last lines of a container's output, with every managed secret value replaced. It is empty when they cannot be

@@ -277,6 +277,26 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				return
 			}
 			json.NewEncoder(w).Encode(report)
+		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "cancel":
+			var req struct {
+				DryRun bool `json:"dry_run"`
+			}
+			// A cancel needs nothing but the operation, so a request with no body is a cancel.
+			if err := decodeBody(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+			plan, err := d.Cancel(ctx, actor, rest[1], req.DryRun)
+			var refused deploy.CancelRefused
+			if errors.As(err, &refused) {
+				writeError(w, 409, "cancel_refused", string(refused))
+				return
+			}
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(plan)
 		case rest[0] == "operations":
 			streamOperation(w, r, d.Store, rest[1])
 		case rest[0] == "wait":
@@ -704,6 +724,9 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
 		required = "admin"
 		method = "POST"
+	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "cancel":
+		required = "deploy"
+		method = "POST"
 	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
 		required = "deploy"
 		method = "POST"
@@ -716,7 +739,7 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 	case len(rest) == 1 && rest[0] == "jobs", len(rest) == 3 && rest[0] == "jobs" && rest[2] == "runs":
 		required = "read"
 		method = "GET"
-	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
+	case len(rest) == 3 && rest[0] == "jobs" && (rest[2] == "run" || rest[2] == "cancel"):
 		required = "deploy"
 		method = "POST"
 	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "logs":

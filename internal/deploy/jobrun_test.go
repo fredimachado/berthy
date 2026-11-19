@@ -201,6 +201,26 @@ func TestRunJobOfACanceledRunStopsAndRemovesTheContainer(t *testing.T) {
 	}
 }
 
+// A run that a person cancels leaves the way a failed one does: its container is stopped, the last lines it wrote are kept, and
+// the container is removed.
+func TestRunJobStoppedByACancelKeepsItsOutput(t *testing.T) {
+	c, f := jobFixture(t)
+	f.block = true
+	f.tail = "halfway there\n"
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel(&jobs.Cancelled{By: "tok"})
+	}()
+	out, err := c.RunJob(ctx, imageJobManifest(), "report", webJob, 11)
+	if !errors.Is(err, context.Canceled) || out.TimedOut || out.Output != "halfway there\n" || out.Container == "" {
+		t.Fatalf("outcome %+v %v", out, err)
+	}
+	if got := f.callList(); got != "create,start,wait,stop,tail,remove" {
+		t.Fatalf("calls %s", got)
+	}
+}
+
 func TestRunJobSaysWhyItCouldNotRun(t *testing.T) {
 	c, f := jobFixture(t)
 	m := imageJobManifest()

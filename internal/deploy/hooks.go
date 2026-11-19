@@ -68,6 +68,12 @@ func (c *Controller) runPre(ctx context.Context, opID string, p preparedPlan) (s
 	if m == nil {
 		return "", "", nil
 	}
+	// The migration cannot be stopped without leaving the schema half changed, so a cancel is refused until it is over.
+	leave, err := c.enter(ctx, reasonMigration)
+	if err != nil {
+		return "", "", err
+	}
+	defer leave()
 	timeout := m.TimeoutDuration()
 	before, err := c.runOneOff(ctx, opID, p, oneOff{Ordinal: schemaBeforeOrdinal, Kind: "schema_before", Argv: m.Version, Version: true, Timeout: timeout})
 	if err != nil {
@@ -128,10 +134,15 @@ func (c *Controller) runRetrying(parent context.Context, opID string, p prepared
 		}
 		data, _ := json.Marshal(map[string]string{"step": fmt.Sprintf("%s failed; retrying (attempt %d of %d)", oneOffLabel(kind, commandIndex(kind, first)), attempt+2, retries+1)})
 		_ = c.Store.AppendEvent(parent, opID, state.Event{Kind: "step", Data: data})
+		// A cancel ends the wait too: the next attempt then stops at once with the *Cancelled.
+		waitCtx, stop := interruptible(parent)
 		select {
-		case <-parent.Done():
-			return v, err
+		case <-waitCtx.Done():
 		case <-time.After(oneOffRetryDelay):
+		}
+		stop()
+		if parent.Err() != nil {
+			return v, err
 		}
 	}
 }
@@ -153,7 +164,74 @@ type oneOff struct {
 	Volumes []string
 }
 
+// runOneOff runs a command in a new container and waits for it. A cancel of the operation stops the container and ends the
+// command with the *Cancelled, whether the cancel came before the command began or while it ran.
 func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPlan, o oneOff) (string, error) {
+	if err := cancelledBy(parent); err != nil {
+		return "", err
+	}
+	waitCtx, stop := interruptible(parent)
+	defer stop()
+	v, err := c.runOneOffUntilDone(waitCtx, opID, p, o)
+	if err != nil {
+		if cancel := cancelledBy(parent); cancel != nil {
+			return "", c.settleCancelled(parent, opID, o.Ordinal, cancel)
+		}
+	}
+	return v, err
+}
+
+// settleCancelled stops the container of a command a cancel interrupted and journals that it is over, so nothing is left running
+// under the lock the operation is about to release. It returns the *Cancelled, or ErrOneOffUncertain when the container could
+// not be stopped, which leaves the operation to recovery as a command that timed out does.
+func (c *Controller) settleCancelled(ctx context.Context, opID string, ordinal int, cancel error) error {
+	steps, err := c.Store.Intents(ctx, opID)
+	if err != nil {
+		return ErrOneOffUncertain
+	}
+	var step *state.Intent
+	for i := range steps {
+		if steps[i].Kind == "oneoff" && steps[i].Ordinal == ordinal {
+			step = &steps[i]
+		}
+	}
+	if step == nil {
+		return cancel
+	}
+	var receipt struct {
+		ID string `json:"id"`
+	}
+	if len(step.Receipt) > 0 && json.Unmarshal(step.Receipt, &receipt) != nil {
+		return ErrOneOffUncertain
+	}
+	container := receipt.ID
+	if container == "" {
+		// A container that was never confirmed is stopped by its name.
+		container = step.Name
+	}
+	e, ok := c.Engine.(oneOffEngine)
+	if !ok {
+		return ErrOneOffUncertain
+	}
+	stopCtx, done := captureContext(ctx)
+	defer done()
+	var status *engine.StatusError
+	if err = e.StopContainer(stopCtx, container, runStopGrace); err != nil && !(errors.As(err, &status) && status.Code == 404) {
+		return ErrOneOffUncertain
+	}
+	if step.Phase != "finished" {
+		finished, _ := json.Marshal(struct {
+			ID   string `json:"id"`
+			Exit int    `json:"exit"`
+		}{receipt.ID, -1})
+		if err = c.Store.MarkStep(stopCtx, opID, ordinal, "finished", finished); err != nil {
+			return ErrOneOffUncertain
+		}
+	}
+	return cancel
+}
+
+func (c *Controller) runOneOffUntilDone(parent context.Context, opID string, p preparedPlan, o oneOff) (string, error) {
 	ordinal, kind, argv, version, timeout := o.Ordinal, o.Kind, o.Argv, o.Version, o.Timeout
 	if c.Store == nil || len(argv) == 0 || argv[0] == "" {
 		return "", errors.New("invalid one-off command")

@@ -157,6 +157,9 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	switch {
 	case runErr == nil:
 		outcome = state.Outcome{State: "succeeded"}
+	case isCancelled(runErr):
+		// The container was stopped when the cancel was accepted. Its output so far is kept, as for a run that timed out.
+		outcome.Err = errCancelled
 	case finished:
 		// The command ran to an end with a non-zero exit code.
 	case errors.Is(runErr, ErrOneOffUncertain):

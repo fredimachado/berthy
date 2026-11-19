@@ -44,6 +44,8 @@ type fakeAgent struct {
 	refuseMsg string
 	failOp    bool
 	plan      string
+	// cancelRefuse is the reason the agent gives for refusing a cancel; empty accepts it.
+	cancelRefuse string
 }
 
 func (f *fakeAgent) requests() []request {
@@ -112,6 +114,18 @@ func (f *fakeAgent) handler(prefix string) http.Handler {
 				fmt.Fprintf(w, `{"message":%q}`, f.refuseMsg)
 			default:
 				accepted()
+			}
+		case r.Method == "POST" && path == "operations/op1/cancel":
+			switch {
+			case f.cancelRefuse != "":
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintf(w, `{"code":"cancel_refused","message":%q}`, f.cancelRefuse)
+			case f.hold:
+				w.Header().Set("Berthy-Approval", "pending")
+				w.WriteHeader(http.StatusAccepted)
+				fmt.Fprint(w, `{"approval_id":"held0002","expires":"2026-11-16T12:15:00Z","plan":{}}`)
+			default:
+				fmt.Fprint(w, `{"operation_id":"op1","kind":"deploy","app":"api","accepted":true}`)
 			}
 		case r.Method == "POST" && strings.HasSuffix(path, "/approve"):
 			if f.refuse != 0 {
