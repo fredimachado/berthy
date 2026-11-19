@@ -74,7 +74,7 @@ func NewServer(c Config) *sdk.Server {
 		c.Version = "dev"
 	}
 	t := &tools{c: c, http: c.HTTP, long: agentclient.WithTimeout(agentclient.NewHTTPClient(), maxWait+time.Minute)}
-	s := sdk.NewServer(&sdk.Implementation{Name: "berthy", Version: c.Version}, &sdk.ServerOptions{Instructions: instructions})
+	s := sdk.NewServer(&sdk.Implementation{Name: "berthy", Version: c.Version}, &sdk.ServerOptions{Instructions: serverInstructions()})
 	readOnly := &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
 	add := func(name, description string) *sdk.Tool {
 		return &sdk.Tool{Name: name, Description: description, Annotations: readOnly}
@@ -103,6 +103,7 @@ func NewServer(c Config) *sdk.Server {
 		execute.InputSchema = schema
 	}
 	sdk.AddTool(s, execute, t.execute)
+	registerPrompts(s)
 	return s
 }
 

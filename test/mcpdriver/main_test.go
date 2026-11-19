@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -42,6 +43,14 @@ func serveFake() {
 		token := os.Getenv("BERTHY_FAKE_TOKEN")
 		fmt.Fprintln(os.Stderr, "server log mentions", token)
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "token is " + token}}, StructuredContent: map[string]any{"t": token}}, nil, nil
+	})
+	greet := &sdk.Prompt{Name: "greet", Description: "greets a name", Arguments: []*sdk.PromptArgument{{Name: "name", Required: true}}}
+	s.AddPrompt(greet, func(_ context.Context, req *sdk.GetPromptRequest) (*sdk.GetPromptResult, error) {
+		name, ok := req.Params.Arguments["name"]
+		if !ok {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "name is required"}
+		}
+		return &sdk.GetPromptResult{Messages: []*sdk.PromptMessage{{Role: "user", Content: &sdk.TextContent{Text: "hello " + name}}}}, nil
 	})
 	if err := s.Run(context.Background(), &sdk.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,7 +96,43 @@ func TestDriverRunsAScriptAndWritesTheResults(t *testing.T) {
 	if got.Calls[2].Index != 2 || got.Calls[2].IsError {
 		t.Errorf("a call without args: %+v", got.Calls[2])
 	}
-	if !strings.Contains(stdout.String(), "3 tools, 3 calls, 1 tool errors") {
+	if !strings.Contains(stdout.String(), "3 tools, 1 prompts, 3 calls, 1 errors") {
+		t.Errorf("summary %q", stdout.String())
+	}
+}
+
+func TestDriverRunsPromptsAndRecordsWhatTheServerAnswers(t *testing.T) {
+	t.Setenv(fakeServerEnv, "1")
+	script := writeScript(t, `[{"prompt":"greet","arguments":{"name":"web"}},{"prompt":"greet"},{"prompt":"no_such"}]`)
+	out := filepath.Join(t.TempDir(), "results.json")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--command", fakeCommand(), "--script", script, "--out", out}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var got results
+	raw, err := os.ReadFile(out)
+	if err != nil || json.Unmarshal(raw, &got) != nil {
+		t.Fatalf("results: %v %s", err, raw)
+	}
+	if len(got.Prompts) != 1 || got.Prompts[0].Name != "greet" || got.Prompts[0].Description != "greets a name" {
+		t.Fatalf("prompts %+v", got.Prompts)
+	}
+	if a := got.Prompts[0].Arguments; len(a) != 1 || a[0].Name != "name" || !a[0].Required {
+		t.Fatalf("prompt arguments %+v", a)
+	}
+	if len(got.Calls) != 3 {
+		t.Fatalf("calls %+v", got.Calls)
+	}
+	if c := got.Calls[0]; c.Prompt != "greet" || c.Arguments["name"] != "web" || c.IsError || c.Text != "hello web" {
+		t.Errorf("prompt answer: %+v", c)
+	}
+	if c := got.Calls[1]; !c.IsError || c.ErrorCode != -32602 || !strings.Contains(c.Text, "name is required") {
+		t.Errorf("a refused prompt must be recorded as an answer with its code: %+v", c)
+	}
+	if c := got.Calls[2]; !c.IsError || c.ErrorCode != -32602 || !strings.Contains(c.Text, "no_such") {
+		t.Errorf("an unknown prompt must be recorded as an answer: %+v", c)
+	}
+	if !strings.Contains(stdout.String(), "3 tools, 1 prompts, 3 calls, 2 errors") {
 		t.Errorf("summary %q", stdout.String())
 	}
 }
@@ -141,6 +186,7 @@ func TestDriverRefusesBadUsage(t *testing.T) {
 		"unterminated":      {"--command", `x "y`, "--script", good, "--out", out},
 		"script not json":   {"--command", "x", "--script", writeScript(t, `nope`), "--out", out},
 		"call without tool": {"--command", "x", "--script", writeScript(t, `[{"args":{}}]`), "--out", out},
+		"call with both":    {"--command", "x", "--script", writeScript(t, `[{"tool":"echo","prompt":"greet"}]`), "--out", out},
 		"missing script":    {"--command", "x", "--script", filepath.Join(t.TempDir(), "none.json"), "--out", out},
 	} {
 		var stdout, stderr bytes.Buffer

@@ -1,13 +1,15 @@
 // Command mcpdriver drives an MCP server as a client would, for verification. It starts the server command, initializes, lists the
-// tools, makes the calls of a script in order and writes what came back.
+// tools and prompts, makes the calls of a script in order and writes what came back.
 //
 //	mcpdriver --command "berthy mcp -e ENV --config CFG" --script calls.json --out results.json
 //
-// calls.json is [{"tool":"list_resources","args":{}}, ...]. results.json holds the server's name and version, the tool names and
-// one entry per call: its structured content, its text and whether the server marked it as an error. A tool error is an answer,
-// not a failure; the exit code is non-zero only when the protocol failed (the server did not start or initialize, a request
-// got no answer). The value of every environment variable whose name starts with BERTHY_ and contains TOKEN, and of those named
-// by --redact-env, is replaced by [redacted] in the results and in the server's stderr.
+// calls.json is [{"tool":"list_resources","args":{}}, {"prompt":"explain_failed_deploy","arguments":{"resource_name":"web"}}, ...].
+// results.json holds the server's name and version, the tool and prompt names, and one entry per call: a tool's structured
+// content, a prompt's text, and whether the server marked it as an error. A tool error is an answer, not a failure, and so is a
+// prompt the server refuses (an unknown prompt, a missing argument): it is recorded with the JSON-RPC error_code. The exit code is
+// non-zero only when the protocol failed (the server did not start or initialize, a request got no answer). The value of every
+// environment variable whose name starts with BERTHY_ and contains TOKEN, and of those named by --redact-env, is replaced by
+// [redacted] in the results and in the server's stderr.
 package main
 
 import (
@@ -24,21 +26,40 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// step is one call of a script: a tool with its arguments, or a prompt with its arguments. It is one or the other.
 type step struct {
-	Tool string         `json:"tool"`
-	Args map[string]any `json:"args"`
+	Tool      string            `json:"tool,omitempty"`
+	Args      map[string]any    `json:"args,omitempty"`
+	Prompt    string            `json:"prompt,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 type callResult struct {
-	Index      int            `json:"index"`
-	Tool       string         `json:"tool"`
-	Args       map[string]any `json:"args"`
-	IsError    bool           `json:"is_error"`
-	Text       string         `json:"text"`
-	Structured any            `json:"structured,omitempty"`
+	Index      int               `json:"index"`
+	Tool       string            `json:"tool,omitempty"`
+	Args       map[string]any    `json:"args,omitempty"`
+	Prompt     string            `json:"prompt,omitempty"`
+	Arguments  map[string]string `json:"arguments,omitempty"`
+	IsError    bool              `json:"is_error"`
+	ErrorCode  int64             `json:"error_code,omitempty"`
+	Text       string            `json:"text"`
+	Structured any               `json:"structured,omitempty"`
+}
+
+// listedPrompt is a prompt the server offers, with its arguments.
+type listedPrompt struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Arguments   []listedArgument `json:"arguments,omitempty"`
+}
+
+type listedArgument struct {
+	Name     string `json:"name"`
+	Required bool   `json:"required,omitempty"`
 }
 
 type results struct {
@@ -46,8 +67,9 @@ type results struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"server"`
-	Tools []string     `json:"tools"`
-	Calls []callResult `json:"calls"`
+	Tools   []string       `json:"tools"`
+	Prompts []listedPrompt `json:"prompts"`
+	Calls   []callResult   `json:"calls"`
 	// Error is the protocol failure that ended the run, when there was one.
 	Error string `json:"error,omitempty"`
 }
@@ -146,8 +168,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	for i, s := range steps {
-		if s.Tool == "" {
-			fmt.Fprintf(stderr, "invalid script: call %d has no tool\n", i)
+		switch {
+		case s.Tool == "" && s.Prompt == "":
+			fmt.Fprintf(stderr, "invalid script: call %d has neither a tool nor a prompt\n", i)
+			return 2
+		case s.Tool != "" && s.Prompt != "":
+			fmt.Fprintf(stderr, "invalid script: call %d has both a tool and a prompt\n", i)
 			return 2
 		}
 	}
@@ -158,7 +184,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	var res results
-	res.Tools, res.Calls = []string{}, []callResult{}
+	res.Tools, res.Prompts, res.Calls = []string{}, []listedPrompt{}, []callResult{}
 	var serverErr bytes.Buffer
 	failure := drive(ctx, words, steps, &res, &serverErr)
 	if failure != nil {
@@ -180,13 +206,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "protocol error:", string(scrub([]byte(failure.Error()), hidden)))
 		return 1
 	}
-	toolErrors := 0
+	errorAnswers := 0
 	for _, c := range res.Calls {
 		if c.IsError {
-			toolErrors++
+			errorAnswers++
 		}
 	}
-	fmt.Fprintf(stdout, "%d tools, %d calls, %d tool errors\n", len(res.Tools), len(res.Calls), toolErrors)
+	fmt.Fprintf(stdout, "%d tools, %d prompts, %d calls, %d errors\n", len(res.Tools), len(res.Prompts), len(res.Calls), errorAnswers)
 	return 0
 }
 
@@ -209,7 +235,21 @@ func drive(ctx context.Context, words []string, steps []step, res *results, serv
 		}
 		res.Tools = append(res.Tools, tool.Name)
 	}
+	for prompt, err := range session.Prompts(ctx, nil) {
+		if err != nil {
+			return fmt.Errorf("prompts/list: %w", err)
+		}
+		res.Prompts = append(res.Prompts, listPrompt(prompt))
+	}
 	for i, s := range steps {
+		if s.Prompt != "" {
+			call, err := getPrompt(ctx, session, i, s)
+			if err != nil {
+				return err
+			}
+			res.Calls = append(res.Calls, call)
+			continue
+		}
 		args := s.Args
 		if args == nil {
 			args = map[string]any{}
@@ -227,4 +267,35 @@ func drive(ctx context.Context, words []string, steps []step, res *results, serv
 		res.Calls = append(res.Calls, callResult{Index: i, Tool: s.Tool, Args: args, IsError: out.IsError, Text: text.String(), Structured: out.StructuredContent})
 	}
 	return nil
+}
+
+func listPrompt(p *sdk.Prompt) listedPrompt {
+	l := listedPrompt{Name: p.Name, Description: p.Description}
+	for _, a := range p.Arguments {
+		l.Arguments = append(l.Arguments, listedArgument{Name: a.Name, Required: a.Required})
+	}
+	return l
+}
+
+// getPrompt asks for one prompt. A refusal by the server is its answer, recorded with the JSON-RPC code; a request that got no
+// answer is a protocol failure.
+func getPrompt(ctx context.Context, session *sdk.ClientSession, index int, s step) (callResult, error) {
+	call := callResult{Index: index, Prompt: s.Prompt, Arguments: s.Arguments}
+	out, err := session.GetPrompt(ctx, &sdk.GetPromptParams{Name: s.Prompt, Arguments: s.Arguments})
+	var refusal *jsonrpc.Error
+	switch {
+	case errors.As(err, &refusal):
+		call.IsError, call.ErrorCode, call.Text = true, refusal.Code, refusal.Message
+	case err != nil:
+		return call, fmt.Errorf("call %d (prompt %s): %w", index, s.Prompt, err)
+	default:
+		var text []string
+		for _, m := range out.Messages {
+			if t, ok := m.Content.(*sdk.TextContent); ok {
+				text = append(text, t.Text)
+			}
+		}
+		call.Text = strings.Join(text, "\n")
+	}
+	return call, nil
 }
