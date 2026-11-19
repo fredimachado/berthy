@@ -751,7 +751,7 @@ func TestProbeMarksAHelperItCannotReachOrTrustLost(t *testing.T) {
 	}
 
 	gone := newHelperManager("lab", nil, nil)
-	gone.token, gone.port = "tok", closedPort(t)
+	gone.token, gone.port = "tok", unansweringPort(t)
 	if _, _, err := gone.Probe(ctx, req); err == nil || err.Error() != "probe helper unavailable: not answering" || gone.token != "" {
 		t.Fatalf("no answer: %v, token kept %v", err, gone.token != "")
 	}
@@ -892,7 +892,7 @@ func TestAwaitHelperWaitsForTheHelperToListen(t *testing.T) {
 	// Nothing listens on the port: the wait gives up when its context ends.
 	short, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	if err := m.awaitHelper(short, closedPort(t), "tok"); err == nil || err.Error() != "probe helper unavailable: not answering" {
+	if err := m.awaitHelper(short, unansweringPort(t), "tok"); err == nil || err.Error() != "probe helper unavailable: not answering" {
 		t.Fatalf("silent helper: %v", err)
 	}
 }
@@ -942,15 +942,26 @@ func serverPort(t *testing.T, srv *httptest.Server) string {
 	return u.Port()
 }
 
-// closedPort returns a loopback port with nothing listening on it.
-func closedPort(t *testing.T) string {
+// unansweringPort returns a loopback port whose server never answers a request: it accepts each connection and closes it at
+// once. The listener stays open until the test ends, so no other test's server can take the port, which a port that was
+// freed again could be under load.
+func unansweringPort(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
 	_, port, _ := net.SplitHostPort(l.Addr().String())
-	l.Close()
 	return port
 }
 

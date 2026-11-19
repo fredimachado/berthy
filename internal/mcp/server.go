@@ -463,6 +463,8 @@ type commandResult struct {
 	State       string `json:"state"`
 	Reason      string `json:"reason,omitempty"`
 	Key         string `json:"key,omitempty"`
+	// Checks are the lines the checks at the end of a deploy reported: what answers, and what only warns.
+	Checks []string `json:"checks,omitempty"`
 }
 
 // changeRequest is a change to send: the route and its body.
@@ -676,9 +678,16 @@ func (t *tools) followOperation(ctx context.Context, what, command, id string) (
 		}
 	}
 	result := commandResult{OperationID: id, State: state, Reason: reason}
+	if state != "running" && (command == "deploy" || command == "rollback") {
+		result.Checks = t.checks(ctx, id)
+	}
 	switch state {
 	case "succeeded":
-		return t.output(what+" succeeded (operation "+id+")", result)
+		summary := what + " succeeded (operation " + id + ")"
+		for _, line := range result.Checks {
+			summary += "\n" + line
+		}
+		return t.output(summary, result)
 	case "running":
 		return t.output(fmt.Sprintf("%s is still running (operation %s); check list_deploys or list_resources later", what, id), result)
 	}
@@ -690,6 +699,26 @@ func (t *tools) followOperation(ctx context.Context, what, command, id string) (
 		summary += ". Call get_deploy_diagnostics with operation_id " + id + " for the evidence."
 	}
 	return t.outputWith(true, summary, result)
+}
+
+// checks returns the lines that the checks at the end of an ended deploy recorded as verify events of the operation. It
+// returns none when the events cannot be read: the checks only warn.
+func (t *tools) checks(ctx context.Context, id string) []string {
+	data, status, err := t.send(ctx, t.http, "GET", "operations/"+url.PathEscape(id)+"/events", "", nil)
+	if err != nil || status != http.StatusOK {
+		return nil
+	}
+	var lines []string
+	_ = agentclient.ReadEvents(ctx, strings.NewReader(string(data)), func(event, payload string) error {
+		var v struct {
+			Step string `json:"step"`
+		}
+		if event == "verify" && json.Unmarshal([]byte(payload), &v) == nil && v.Step != "" {
+			lines = append(lines, v.Step)
+		}
+		return nil
+	})
+	return lines
 }
 
 // followBackup asks for the backup run until it ends or the wait bound passes.

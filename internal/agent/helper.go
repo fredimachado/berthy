@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/monitor"
 )
@@ -43,6 +45,11 @@ const (
 	// helperAttempts and helperPoll bound the wait for a new helper to listen: about five seconds in all.
 	helperAttempts = 50
 	helperPoll     = 100 * time.Millisecond
+	// helperLease is how long the helper that a deploy's check started is kept when no service probe needs it. Every check
+	// renews it.
+	helperLease = 5 * time.Minute
+	// reachTimeout is how long a check waits for a TCP connection to a role's port.
+	reachTimeout = 3 * time.Second
 )
 
 var (
@@ -73,6 +80,7 @@ type helperEngine interface {
 var (
 	_ helperEngine        = (*engine.Engine)(nil)
 	_ monitor.ProbeHelper = (*helperManager)(nil)
+	_ deploy.Reacher      = (*helperManager)(nil)
 )
 
 // helperBinary is the agent's executable: the digest that names the helper image, and whether the file is static.
@@ -116,6 +124,8 @@ type helperManager struct {
 	port    string // host port the helper is published on, on 127.0.0.1
 	// imagesClean is set once no helper image is left that no container uses.
 	imagesClean bool
+	// leaseUntil is when the lease that a deploy's check took on the helper ends.
+	leaseUntil time.Time
 }
 
 // newHelperManager returns the helper of environment env. e is nil without Docker. log receives the message of a run
@@ -142,9 +152,61 @@ func (m *helperManager) ensure(ctx context.Context, network string) error {
 	return m.run(ctx, func(ctx context.Context) error { return m.ensureNow(ctx, network) })
 }
 
-// remove deletes the helper container and the helper images that no container uses. It runs at most once a minute.
+// remove deletes the helper container and the helper images that no container uses. It runs at most once a minute. It
+// changes nothing while a deploy's check holds the lease on the helper.
 func (m *helperManager) remove(ctx context.Context) error {
-	return m.run(ctx, m.removeNow)
+	if m.leased() {
+		return nil
+	}
+	return m.run(ctx, func(ctx context.Context) error {
+		// A check may have taken the lease while this run waited for runMu.
+		if m.leased() {
+			return nil
+		}
+		return m.removeNow(ctx)
+	})
+}
+
+// leased reports whether a deploy's check has the helper until a time that has not come yet.
+func (m *helperManager) leased() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.now().Before(m.leaseUntil)
+}
+
+// Reach opens a TCP connection to host:port from the shared network, on the helper, and implements deploy.Reacher. It starts
+// the helper when none runs, now and not at the monitor's next run, and takes a lease on it for helperLease: the monitor
+// removes a helper that no service probe needs only after the lease, so the checks of the next roles and the next deploy
+// find it. An error that wraps deploy.ErrReachUnavailable means the helper could not run the check; any other error means
+// the port did not answer.
+func (m *helperManager) Reach(ctx context.Context, network, host string, port int) error {
+	if err := m.lease(ctx, network); err != nil {
+		return fmt.Errorf("%w: %s", deploy.ErrReachUnavailable, err)
+	}
+	ok, detail, err := m.Probe(ctx, monitor.HelperProbe{Kind: monitor.KindTCP, Target: host + ":" + strconv.Itoa(port), TimeoutMS: int(reachTimeout / time.Millisecond)})
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: %s", deploy.ErrReachUnavailable, err)
+	case !ok:
+		return errors.New(detail)
+	}
+	return nil
+}
+
+// lease makes sure the helper runs on network and holds the lease on it. It does not wait for the monitor's minute between
+// two runs, and it leaves that minute alone.
+func (m *helperManager) lease(ctx context.Context, network string) error {
+	m.runMu.Lock()
+	defer m.runMu.Unlock()
+	rctx, cancel := context.WithTimeout(ctx, helperTimeout)
+	defer cancel()
+	if err := m.ensureNow(rctx, network); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.leaseUntil = m.now().Add(helperLease)
+	m.mu.Unlock()
+	return nil
 }
 
 // run calls do unless the last run was less than helperEvery ago, and records the outcome.

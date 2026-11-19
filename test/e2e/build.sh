@@ -25,7 +25,8 @@ rsync -rt --delete --exclude .git --exclude .claude --exclude '*.exe' "$REPO/" "
 find "$SRC" -type f \( -name '*.go' -o -name go.mod -o -name go.sum \) -exec sed -i 's/\r$//' {} + || exit 1
 
 cd "$SRC" || exit 1
-build_to "$BIN" ./cmd/berthy || exit 1
+# The documented build is static (CGO_ENABLED=0). The overlay helper is made from the agent's own binary and needs it static.
+CGO_ENABLED=0 build_to "$BIN" ./cmd/berthy || exit 1
 build_to "$TG_BIN" ./test/faketelegram || exit 1
 build_to "$OTLP_BIN" ./test/fakeotlp || exit 1
 build_to "$HOOK_BIN" ./test/fakewebhook || exit 1

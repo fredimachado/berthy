@@ -428,6 +428,10 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.State = "failed"
 		outcome.Err = ingressFailure(publishErr, errIngressPublish)
 	}
+	if outcome.State == "succeeded" {
+		// The new version serves and its release is recorded. What the checks find is a warning, never a failure.
+		c.verifyDeploy(ctx, op.ID, req.Manifest.Network, app, work, ing != nil)
+	}
 	return
 }
 

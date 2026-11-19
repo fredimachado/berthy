@@ -214,7 +214,14 @@ type Deploy struct {
 	StartAttempts *int `json:"start_attempts,omitempty" yaml:"start_attempts,omitempty"`
 	// Order is how an update replaces each role's old version: StartFirst or StopFirst. Empty means UpdateOrder decides per role.
 	Order string `json:"order,omitempty" yaml:"order,omitempty"`
+	// Verify turns off the checks, at the end of a deploy, that the roles can be reached. Nil is on: use Verifies.
+	Verify *bool `json:"verify,omitempty" yaml:"verify,omitempty"`
 }
+
+// Verifies reports whether a deploy checks, once it is done, that its roles can be reached. It is true unless the manifest
+// says verify: false, and for a stored manifest that predates the setting.
+func (d Deploy) Verifies() bool { return d.Verify == nil || *d.Verify }
+
 type Hooks struct {
 	PreDeploy  []Hook `json:"pre_deploy,omitempty" yaml:"pre_deploy,omitempty"`
 	PostDeploy []Hook `json:"post_deploy,omitempty" yaml:"post_deploy,omitempty"`

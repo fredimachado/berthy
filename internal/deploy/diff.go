@@ -289,6 +289,7 @@ func (d *differ) deploy(p, n manifest.Deploy) {
 	d.field("deploy", "retain", intOf(p.Retain), intOf(n.Retain))
 	d.field("deploy", "start_attempts", intOf(p.StartAttempts), intOf(n.StartAttempts))
 	d.field("deploy", "order", orNone(p.Order, "auto"), orNone(n.Order, "auto"))
+	d.field("deploy", "verify", strconv.FormatBool(p.Verifies()), strconv.FormatBool(n.Verifies()))
 }
 
 // envValue is where one variable of an app takes its value from: the value itself when it is plain, the name of the secret, or

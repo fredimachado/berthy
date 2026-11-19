@@ -208,6 +208,8 @@ func TestReleaseDiffRoleSettings(t *testing.T) {
 		a.Roles["worker"] = manifest.Role{Replicas: &one}
 		a.Deploy.Order = "stop-first"
 		a.Deploy.DeployTimeout = "300s"
+		off := false
+		a.Deploy.Verify = &off
 	})
 	d := ReleaseDiff("api", side(apiManifest(nil), oldDigest, "v1"), side(next, oldDigest, "v1"))
 	want := []string{
@@ -222,6 +224,7 @@ func TestReleaseDiffRoleSettings(t *testing.T) {
 		`web: logging.options.max-size none -> 10m`,
 		`deploy: deploy_timeout 120s -> 300s`,
 		`deploy: order auto -> stop-first`,
+		`deploy: verify true -> false`,
 		`ingress: + api.example.com`,
 	}
 	if got := changesOf(d); !reflect.DeepEqual(got, want) {

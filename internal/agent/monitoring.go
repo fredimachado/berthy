@@ -80,6 +80,12 @@ func (w *Monitoring) HelperImage(ctx context.Context) (string, error) {
 	return w.helper.Image(ctx)
 }
 
+// Reach is the deploy's check that a role's port answers on the shared network, which the overlay helper makes. It starts the
+// helper when no service probe has.
+func (w *Monitoring) Reach(ctx context.Context, network, host string, port int) error {
+	return w.helper.Reach(ctx, network, host, port)
+}
+
 // Run runs the monitor until ctx ends. It does nothing on a nil Monitoring.
 func (w *Monitoring) Run(ctx context.Context) {
 	if w != nil {

@@ -785,6 +785,13 @@ func TestSendRefusesAnEventsURLTheAgentDoesNotOwn(t *testing.T) {
 	}
 }
 
+func TestEventTextOfACheckIsItsLine(t *testing.T) {
+	const line = "role web: port 8080 answers on the network"
+	if got := eventText("verify", `{"role":"web","check":"network","status":"ok","step":"`+line+`"}`); got != line {
+		t.Fatalf("text %q, want %q", got, line)
+	}
+}
+
 func TestFollowReconnectsWithoutShowingEventsTwice(t *testing.T) {
 	var mu sync.Mutex
 	streams := 0

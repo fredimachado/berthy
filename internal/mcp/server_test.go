@@ -382,6 +382,7 @@ func TestAgentUnreachableIsAToolError(t *testing.T) {
 func TestExecuteDeployReadsTheManifestAndFollowsTheOperation(t *testing.T) {
 	agent, u := newFakeAgent(t)
 	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+	agent.on("GET", "operations/op1/events", 200, "event: terminal\ndata: {}\n\n")
 	var polls int
 	agent.onFunc("GET", "operations/op1", func(request) reply {
 		polls++
@@ -408,9 +409,24 @@ func TestExecuteDeployReadsTheManifestAndFollowsTheOperation(t *testing.T) {
 	}
 }
 
+func TestExecuteDeployReportsWhatTheChecksFound(t *testing.T) {
+	const warning = "role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?"
+	agent, u := newFakeAgent(t)
+	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+	agent.on("GET", "operations/op1", 200, `{"id":"op1","state":"succeeded"}`)
+	agent.on("GET", "operations/op1/events", 200, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: verify\ndata: {\"role\":\"web\",\"check\":\"network\",\"status\":\"warn\",\"step\":\""+warning+"\"}\n\nevent: terminal\ndata: {}\n\n")
+	res := okResult(t, call(t, connect(t, testConfig(u, manifestDir(t))), "execute_resource_command", map[string]any{"resource_name": "api", "command": "deploy", "version": "1.2.3"}))
+	got := structured(t, res)
+	checks, _ := got["checks"].([]any)
+	if got["state"] != "succeeded" || len(checks) != 1 || checks[0] != warning || !strings.Contains(text(t, res), warning) {
+		t.Fatalf("result %v, text %q", got, text(t, res))
+	}
+}
+
 func TestExecuteReportsAFailedOperationWithItsReason(t *testing.T) {
 	agent, u := newFakeAgent(t)
 	agent.on("POST", "deploys", 202, `{"operation_id":"op9","events_url":"x"}`)
+	agent.on("GET", "operations/op9/events", 200, "event: terminal\ndata: {}\n\n")
 	agent.on("GET", "operations/op9", 200, `{"id":"op9","state":"rolled_back","reason":"task web.1 exited with code 1"}`)
 	res := call(t, connect(t, testConfig(u, manifestDir(t))), "execute_resource_command", map[string]any{"resource_name": "api", "command": "deploy", "version": "1.2.3"})
 	got := structured(t, res)
@@ -476,6 +492,7 @@ func TestExecuteRollbackRestoreAndBackupRun(t *testing.T) {
 	agent, u := newFakeAgent(t)
 	agent.on("POST", "rollback", 202, `{"operation_id":"op3","events_url":"x"}`)
 	agent.on("POST", "restore", 202, `{"operation_id":"op4","events_url":"x"}`)
+	agent.on("GET", "operations/op3/events", 200, "event: terminal\ndata: {}\n\n")
 	agent.on("GET", "operations/op3", 200, `{"id":"op3","state":"succeeded"}`)
 	agent.on("GET", "operations/op4", 200, `{"id":"op4","state":"succeeded"}`)
 	agent.on("POST", "backups/main-db/run", 202, `{"backup_run_id":7}`)

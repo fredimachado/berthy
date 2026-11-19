@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -146,6 +147,14 @@ type Controller struct {
 	running sync.WaitGroup
 	// Observer hears every operation start and end. Nil: nobody is told.
 	Observer Observer
+	// Reacher opens a connection to a role's port on the shared network, for the check at the end of a deploy. Nil: the
+	// deploy does not check the network.
+	Reacher Reacher
+	// Outside makes the requests of the outside check, which asks each hostname a role publishes. Nil: a client with the
+	// default timeout. Tests set it.
+	Outside *http.Client
+	// outsidePause is the wait between two tries of the outside check. Zero is the default; tests shorten it.
+	outsidePause time.Duration
 }
 
 // ErrRecoveryPending means an operation is still recovery_required; retries record nothing new.

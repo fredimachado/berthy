@@ -201,6 +201,7 @@ apps:
       deploy_timeout: 120s
       drain_timeout: 30s
       start_attempts: 3
+      verify: true
       retain: 5
     hooks:
       pre_deploy:
@@ -502,7 +503,8 @@ A deploy either finishes healthy or leaves the previous version running; it neve
 5. **Switch and drain.** Route traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
 6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
-8. **Record and tidy.** Write the deploy record, prune old images, release the lock.
+8. **Reachability.** For each role with a `port`, open a TCP connection to `<service>:<port>` from the overlay helper, and for each hostname that the publish step served, make HTTPS requests to it from the agent (see "Reachability checks" below). A check that fails only warns.
+9. **Record and tidy.** Write the deploy record, prune old images, release the lock.
 
 If step 4 fails, the agent rolls back to the previous digest and records the deploy as failed. Whether anyone is told depends on `alerts.deploys` (see Alerts): by default a failed deploy sends one message on every alert channel.
 
@@ -620,10 +622,18 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 | `deploy_timeout` | Longest the new version may take to become healthy | No overall limit; bounded by the health check | 120s |
 | `drain_timeout` | Time the old version gets to finish requests | 10s | 30s |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up, from 1 to 10 | Unlimited restarts | 3 |
+| `verify` | Whether the deploy checks at its end that each role's port and hostnames answer (see "Reachability checks") | None | true |
 
 The wait before health checks count is the health check's own `start_period`, set per role.
 
 **Start attempts.** Swarm restarts a task that exits or is killed as unhealthy. During a deploy Berthy counts those failures for each role of the new version and gives up as soon as one role's reach `start_attempts`: the old version keeps running, a service the deploy created is removed, and the deploy fails with a reason such as `role web: task exited with code 1 (gave up after 3 failed starts)`. A deploy that gives up this way does not wait out `deploy_timeout`. A new version that fails twice and starts on the third try passes with the default of 3. Failures of the old version, or from an earlier deploy, are not counted.
+
+**Reachability checks.** A role's health check runs inside its container, so it can pass while the role cannot be reached from anywhere else: the app listens on `127.0.0.1`, `port` is not the port it listens on, or the hostname does not lead to it. After the post-deploy hooks of a successful deploy or rollback, and for each role with a `port` that has at least one replica, the agent makes two checks. Neither changes the operation's outcome, and `deploy.verify: false` turns both off.
+
+- *Network.* The overlay helper opens a TCP connection to `<service>:<port>` within 3 seconds. The result is the event line `role web: port 8080 answers on the network`, or `role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?`. When the helper cannot run, the line is `role web: port 8080 could not be checked on the network (<reason>)`. An agent with no Reacher (no state, no monitoring) makes no network check and prints no line. The helper is started for the check when no service probe needs it, kept for five minutes after the last check, and removed by the monitor after that.
+- *Outside.* Only when the deploy published routes. For each hostname of the role the agent makes up to four HTTPS GET requests to `/`, five seconds apart, each limited to 5 seconds, redirects not followed, and stops at the first status below 500. The line is `role web: https://<hostname> answers with status <n> from outside`, with `; the route or the app is not ready` appended when the last status was 5xx, or `role web: nothing answers at https://<hostname> from outside; DNS or the route may still be settling` when nothing answered.
+
+Each line is one operation event of kind `verify` with the data `role`, `check` (`network` or `outside`), `status` (`ok`, `warn` or `unknown`) and `step`, the line. The CLI prints `step`, `--json` adds the events to its document as `checks`, and the MCP command result lists them as `checks`.
 
 **Stop first for a volume.** A role that mounts a named volume read-write is updated stop-first by default: the old version stops before the new one starts, so two versions never write the same files at once. From the moment the old version stops until the new one is healthy, the role has no running task, so a failed rollout ends with a reason that says so, such as `role web: container never became healthy (last check: exit 1); role web was stopped first, so it was down until the previous version came back`. A read-only mount (`:ro`) does not change the default. `deploy.order` sets `start-first` or `stop-first` for every role of the app. The plan, and the dry run, list each stop-first role with its reason: `role web: stop-first, because it mounts volume uploads`, or `role web: stop-first, set by deploy.order`. A role that starts first gets no line.
 

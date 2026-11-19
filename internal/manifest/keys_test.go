@@ -191,6 +191,7 @@ apps:
       deploy_timeout: 120s
       drain_timeout: 30s
       start_attempts: 3
+      verify: true
       retain: 5
       order: stop-first
     hooks:

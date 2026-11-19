@@ -241,6 +241,8 @@ func Run(args []string, out, errout io.Writer) int {
 		go collector.Run(ctx)
 		monitoring := agent.NewMonitoring(c, eng, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
 		if monitoring != nil {
+			// The checks at the end of a deploy reach each role's port from the overlay helper the monitor keeps.
+			deployment.Reacher = monitoring
 			monitorDone := make(chan struct{})
 			go func() {
 				defer close(monitorDone)

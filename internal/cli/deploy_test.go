@@ -103,6 +103,46 @@ func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
 	}
 }
 
+// A deploy shows what its checks found as lines of text, and --json carries them as "checks" in its one document.
+func TestDeployShowsWhatItsChecksFound(t *testing.T) {
+	const warning = "role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/environments/dev/deploys":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: verify\ndata: {\"role\":\"web\",\"check\":\"network\",\"status\":\"warn\",\"step\":\""+warning+"\"}\n\nid: 3\nevent: succeeded\ndata: {}\n\n")
+		case "/v1/environments/dev/operations/op1":
+			fmt.Fprint(w, `{"state":"succeeded"}`)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
+	cfg := filepath.Join(dir, "config.json")
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	args := []string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1"}
+	var out, errs bytes.Buffer
+	if got := Run(args, &out, &errs); got != 0 || !strings.Contains(out.String(), "\n  "+warning+"\n") || strings.Contains(out.String(), "verify") {
+		t.Fatalf("exit %d, output %q, error %s", got, out.String(), errs.String())
+	}
+	out.Reset()
+	if got := Run(append(args, "--json"), &out, &errs); got != 0 {
+		t.Fatalf("exit %d, error %s", got, errs.String())
+	}
+	var doc struct {
+		State  string `json:"state"`
+		Checks []struct {
+			Role, Check, Status, Step string
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.State != "succeeded" || len(doc.Checks) != 1 || doc.Checks[0].Step != warning || doc.Checks[0].Status != "warn" {
+		t.Fatalf("json output %q: %v %+v", out.String(), err, doc)
+	}
+}
+
 func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/environments/dev/scale" {

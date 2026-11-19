@@ -497,6 +497,7 @@ apps:
       deploy_timeout: 120s
       drain_timeout: 30s
       start_attempts: 3
+      verify: true
       retain: 5
 ```
 
@@ -607,6 +608,7 @@ services:
 | `drain_timeout` | How long the old version has to finish requests in flight. It is also the Swarm stop grace period. | `30s` |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up (1 to 10). | `3` |
 | `retain` | How many deploys' images are kept, so a rollback needs no pull. At least 1. | `5` |
+| `verify` | Whether the deploy checks, at its end, that each role's port and hostnames answer. A failed check warns and never fails the deploy. | `true` |
 
 With the example values, a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`.
 
@@ -1187,7 +1189,8 @@ A deploy either finishes healthy or leaves the previous version running. It neve
 6. **Switch and drain.** Sends traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
 7. **Publish.** With managed ingress, updates the app's routes and DNS records. A failure here is reported and the command exits non-zero, but the new version stays running.
 8. **Post-deploy hooks.** Runs them in order. A failure is reported, but does not undo the deploy.
-9. **Record and tidy.** Writes the release, removes old images beyond `retain`, releases the lock.
+9. **Reachability.** For each role with a `port`, checks that the port answers on the shared network, and for each of its `hostnames` that the hostname answers from outside. A check that fails only warns. See "Reachability checks" below.
+10. **Record and tidy.** Writes the release, removes old images beyond `retain`, releases the lock.
 
 If step 5 fails, the agent **rolls back to the previous digest**, records the deploy as failed, and sends an alert. A failed *first* deploy has nothing to roll back to, so the service it created is removed.
 
@@ -1202,6 +1205,17 @@ Swarm's service defaults for an image app:
 | Stop grace period | `drain_timeout` (30 seconds) |
 
 Thirty seconds lets a web framework finish its requests. Docker alone would stop the container after ten. The start-attempts limit applies only to a rollout: once a version serves, Swarm keeps restarting a crashing task without limit, so a service that dies at 3 a.m. comes back by itself.
+
+#### Reachability checks
+
+A role's health check runs inside its container, usually against `localhost`. It can pass while nothing else can reach the role: the app listens on `127.0.0.1` only, the `port` in the manifest is not the port the app listens on, or the public hostname does not lead to the app. So once the new version serves, the deploy makes two more checks. Both only warn. The new version is already running, so neither can fail the deploy or change its result.
+
+- **On the shared network.** For each role with a `port`, the overlay helper opens a TCP connection to `<service>:<port>`. If it answers, the deploy prints `role web: port 8080 answers on the network`. If not, it prints `role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?`. If the helper cannot run (the agent is not a static Linux binary, or Docker does not answer), the line says the port could not be checked. A role scaled to zero is not checked.
+- **From outside.** For each hostname of a role that managed ingress published, the agent makes one HTTPS request to `https://<hostname>/`, with up to four tries about five seconds apart while DNS and the route settle. A status below 500 counts as an answer, and the deploy prints it: `role web: https://app.example.com answers with status 200 from outside`. If the last try got a 5xx status or nothing at all, it prints a warning that says so.
+
+The lines are events of the operation. `berthy deploy` and `berthy rollback` print them as they arrive, `--json` carries them as `checks` in its one document, the terminal UI shows them, and the MCP `execute_resource_command` result lists them as `checks`. The overlay helper that the network check starts stays for five minutes after the last check, and longer while a service probe needs it.
+
+To turn both checks off for an app, set `deploy.verify: false`.
 
 #### Flags of `deploy`
 
@@ -2828,6 +2842,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. |
 | `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
 | `deploy.order` | image | string | none | How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one. One of `start-first`, `stop-first`. |
+| `deploy.verify` | image | boolean | `true` | Whether a deploy checks, once the new version serves, that each role with a `port` answers on the shared network and that each of its `hostnames` answers from outside. A check that fails only warns: the deploy still succeeds. `false` turns both off. |
 | `deploy.retain` | image | integer | `5` | The number of deploys whose images are kept, at least 1. |
 | `hooks` | image | map | none | Steps that run around a deploy. An overlay's list replaces the base manifest's. |
 | `hooks.pre_deploy` | image | list | none | Steps that run in order before the new version starts. A failed step stops the deploy. |

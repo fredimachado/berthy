@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"berthy/internal/cloudflare"
 	"berthy/internal/cloudflare/cftest"
@@ -166,6 +168,11 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 	bound := &boundFake{}
 	docker := &loggedEngine{updatableFake: updatableFake{bound}, calls: calls}
 	ctrl := &Controller{Engine: docker, Store: s, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4"}
+	// The hostnames of the fixture's apps lead nowhere, and a test must not ask the real network for them.
+	ctrl.Outside = &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("no network in tests")
+	}}}
+	ctrl.outsidePause = time.Millisecond
 	return &ingressFixture{
 		t:      t,
 		store:  s,

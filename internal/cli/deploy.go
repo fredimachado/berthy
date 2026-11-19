@@ -959,9 +959,38 @@ func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
 // reportsSteps says whether the command's operation reports what it did as steps.
 func reportsSteps(cmd string) bool { return cmd == "remove" || cmd == "destroy" || cmd == "restore" }
 
+// showsText says whether an event of kind carries a line of text that the command prints instead of the event's name: the
+// steps of a removal, a destroy or a restore, and the results of the checks at the end of any operation.
+func showsText(cmd, kind string) bool {
+	return kind == "verify" || reportsSteps(cmd) && kind == "step"
+}
+
+// withChecks adds the verify events of an operation to its JSON document as "checks". Without any it returns data as it is.
+func withChecks(data []byte, checks []json.RawMessage) []byte {
+	if len(checks) == 0 {
+		return data
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(data, &doc) != nil {
+		return data
+	}
+	list, err := json.Marshal(checks)
+	if err != nil {
+		return data
+	}
+	doc["checks"] = list
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env string) int {
 	cursor := ""
 	failures := 0
+	// checks are the verify events of the operation: what the checks at the end of a deploy found.
+	var checks []json.RawMessage
 	for {
 		streamURL := *base
 		streamURL.Path = events
@@ -984,17 +1013,24 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				}
 				if strings.HasPrefix(line, "event:") {
 					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-					// A removal or a restore reports what it did as steps, so their text is shown instead of their name.
-					if !asJSON && !(reportsSteps(cmd) && kind == "step") {
+					// A removal or a restore reports what it did as steps, and a deploy what its checks found, so their text is
+					// shown instead of their name.
+					if !asJSON && !showsText(cmd, kind) {
 						fmt.Fprintln(out, kind)
 					}
 				}
-				if reportsSteps(cmd) && kind == "step" && !asJSON && strings.HasPrefix(line, "data:") {
+				if showsText(cmd, kind) && strings.HasPrefix(line, "data:") {
+					raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 					var step struct {
 						Step string `json:"step"`
 					}
-					if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &step) == nil && step.Step != "" {
-						fmt.Fprintln(out, "  "+terminalSafe(step.Step))
+					if json.Unmarshal([]byte(raw), &step) == nil && step.Step != "" {
+						if !asJSON {
+							fmt.Fprintln(out, "  "+terminalSafe(step.Step))
+						}
+						if kind == "verify" {
+							checks = append(checks, json.RawMessage(raw))
+						}
 					}
 				}
 			}
@@ -1054,6 +1090,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 						} else {
 							fmt.Fprint(out, result.Output)
 						}
+					}
+					if asJSON {
+						data = withChecks(data, checks)
 					}
 					printResponse(out, errout, data, asJSON)
 					if v.State == "succeeded" && exitCode == 0 {
