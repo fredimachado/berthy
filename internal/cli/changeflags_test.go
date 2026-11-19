@@ -81,7 +81,7 @@ var changeCommands = []changeCommand{
 var changeFlagArgs = [][]string{
 	{"--config", "cfg.json"}, {"--json"}, {"--dry-run"}, {"--adopt"}, {"--healthy"}, {"--replace-existing"},
 	{"--allow-recreate"}, {"--volumes"}, {"--tunnel"}, {"--all"}, {"--revert-schema"},
-	{"--confirm", "dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--manifest-dir", "dir"},
+	{"--confirm", "dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--exec", "db"}, {"--manifest-dir", "dir"},
 	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
 	{"--registry", "ghcr.io"}, {"-m", "reason"}, {"--message", "reason"}, {"--to", "2"}, {"--replicas", "2"},
 	{"--replace"}, {"--bytes", "32"}, {"--format", "hex"}, {"--origin"}, {"--diff", "2"}, {"--run", "3"},
@@ -97,8 +97,8 @@ func refusalMessage(name, flag string) string {
 		return "--all applies to approvals only"
 	case (flag == "--tunnel" || flag == "--confirm") && cmd != "destroy":
 		return "--tunnel and --confirm apply to destroy only"
-	case flag == "--backup" && cmd != "backup", flag == "--into" && cmd != "restore":
-		return "--backup applies to backup list, and --into to restore"
+	case flag == "--backup" && cmd != "backup", (flag == "--into" || flag == "--exec") && cmd != "restore":
+		return "--backup applies to backup list, and --into and --exec to restore"
 	}
 	return flag + " is not a flag of " + name
 }

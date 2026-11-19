@@ -239,7 +239,9 @@ func (c *Controller) runOneOff(parent context.Context, opID string, p preparedPl
 
 // terminal says how a one-off container serves a person: its standard input stays open and is attached, and a terminal is
 // allocated when TTY is set. A batch one-off has none.
-type terminal struct{ TTY bool }
+// terminal is how an attached one-off container is made: with a terminal or without, and with or without a log. NoLog is for a
+// command whose output is the product, such as a database dump, which Docker would otherwise copy to a log on the server's disk.
+type terminal struct{ TTY, NoLog bool }
 
 // oneOffSpec is the Docker spec of a one-off container of the prepared image: the command as entrypoint and arguments, the
 // environment of role, the labels, the limits, the named volumes of the role, and the shared network. Every kind of one-off is
@@ -255,8 +257,11 @@ func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Re
 		return nil, err
 	}
 	var host *hostConfig
-	if nano != 0 || memory != 0 || len(mounts) > 0 {
+	if nano != 0 || memory != 0 || len(mounts) > 0 || term != nil && term.NoLog {
 		host = &hostConfig{NanoCPUs: nano, Memory: memory, Mounts: mounts}
+		if term != nil && term.NoLog {
+			host.LogConfig = &logConfig{Type: "none"}
+		}
 	}
 	spec := struct {
 		Image            string            `json:"Image"`

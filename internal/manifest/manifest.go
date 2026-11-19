@@ -320,15 +320,37 @@ func (j Job) TimeoutDuration() time.Duration {
 	return d
 }
 
+// Backup is a copy of one thing an app holds, kept in object storage. It has exactly one source: a volume, which is archived,
+// or a command, whose standard output is stored compressed. A command backup names where the command runs as a job does:
+// service for a Compose app, role for an image app.
 type Backup struct {
 	App         string     `json:"app" yaml:"app"`
-	Volume      string     `json:"volume" yaml:"volume"`
+	Volume      string     `json:"volume,omitempty" yaml:"volume,omitempty"`
+	Command     []string   `json:"command,omitempty" yaml:"command,omitempty"`
+	Role        string     `json:"role,omitempty" yaml:"role,omitempty"`
+	Service     string     `json:"service,omitempty" yaml:"service,omitempty"`
+	Timeout     string     `json:"timeout,omitempty" yaml:"timeout,omitempty"` // a command backup only; default "1h"; from 1s to 24h
 	Schedule    string     `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	Destination string     `json:"destination" yaml:"destination"`
 	Prefix      string     `json:"prefix,omitempty" yaml:"prefix,omitempty"`
 	Before      string     `json:"before,omitempty" yaml:"before,omitempty"`
 	Retention   *Retention `json:"retention,omitempty" yaml:"retention,omitempty"`
 }
+
+// TimeoutDuration is the time limit of a command backup.
+func (b Backup) TimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(b.Timeout)
+	if err != nil {
+		d, _ = time.ParseDuration(defaultJobTimeout)
+	}
+	return d
+}
+
+// Job is the job a command backup runs as: the same app, target, command and time limit.
+func (b Backup) Job() Job {
+	return Job{App: b.App, Role: b.Role, Service: b.Service, Command: b.Command, Timeout: b.Timeout}
+}
+
 type Retention struct {
 	Keep any `json:"keep,omitempty" yaml:"keep,omitempty"`
 }
@@ -786,6 +808,12 @@ func (m *Manifest) defaults() {
 			j.Timeout = defaultJobTimeout
 		}
 		m.Jobs[name] = j
+	}
+	for name, b := range m.Backups {
+		if len(b.Command) > 0 && b.Timeout == "" {
+			b.Timeout = defaultJobTimeout
+			m.Backups[name] = b
+		}
 	}
 	for k, a := range m.Apps {
 		if a.Deploy.DeployTimeout == "" {

@@ -236,6 +236,17 @@ backups:
     before: dump
     retention:
       keep: 14
+  main-dump:
+    app: web
+    role: main
+    command: ["pg_dump"]
+    timeout: 30m
+    destination: offsite
+  db-dump:
+    app: db
+    service: postgres
+    command: ["pg_dump"]
+    destination: offsite
 destinations:
   offsite:
     type: s3
@@ -413,6 +424,8 @@ var exclusive = map[string]string{
 	"probes.<name>.service":                  "a probe has one of http, tcp and service",
 	"destinations":                           "backups and state_backup name a destination",
 	"backups":                                "hooks name a backup",
+	"backups.<name>.volume":                  "a backup has one of volume and command",
+	"backups.<name>.command":                 "a backup has one of volume and command",
 }
 
 // companions are keys that must go with another to leave a valid manifest: what refers to the key being removed.

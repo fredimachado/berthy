@@ -197,4 +197,11 @@ type hostConfig struct {
 	NanoCPUs int64 `json:"NanoCpus,omitempty"`
 	Memory   int64 `json:"Memory,omitempty"`
 	Mounts   []any `json:"Mounts,omitempty"`
+	// LogConfig is set to the driver "none" for a container whose output is the product of its command.
+	LogConfig *logConfig `json:"LogConfig,omitempty"`
+}
+
+// logConfig is the log driver of a container.
+type logConfig struct {
+	Type string `json:"Type"`
 }

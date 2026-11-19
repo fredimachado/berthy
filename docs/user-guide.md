@@ -2846,12 +2846,16 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `app` | name | required | The app that mounts the volume. |
-| `volume` | string | required | For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts. |
+| `app` | name | required | The app that mounts the volume, or that the command runs in. |
+| `volume` | string | none | What to back up: a volume, archived whole. For a Compose app, the key in the Compose file's top-level `volumes`; Berthy works out the real Docker name. For an image app, the name of a volume one of its roles mounts. A backup has exactly one of `volume` and `command`. |
+| `command` | list | none | What to back up instead of a volume: a command whose standard output is the backup, such as a database dump. The output is compressed and sent to the destination as it is produced, with nothing written to the server's disk. A command that exits non-zero, or writes nothing, fails the backup and nothing is kept. Restore it with `berthy restore KEY --exec`. |
+| `service` | name | none | For a command backup of a Compose app: the service whose running container runs the command. Not with `role`. |
+| `role` | name | none | For a command backup of an image app: the role whose environment, limits and named volumes the command's new container takes. Needed when the app has several roles. Not with `service`. |
+| `timeout` | duration | `1h` | For a command backup: the time limit of the command, from `1s` to `24h`. A command past it is stopped and the backup fails. |
 | `schedule` | string | on demand | A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the backup runs only on demand or from a deploy hook. |
 | `destination` | name | required | A key of `destinations`. |
-| `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket. |
-| `before` | name | none | A job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. |
+| `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket. A command backup has `<app>/command` in place of `<app>/<volume>`. |
+| `before` | name | none | For a volume backup: a job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. A command backup needs no such job. |
 | `retention` | map | none | How many backups to keep. |
 | `retention.keep` | integer or all | `all` | `all`, or a whole number of at least 1: keep that many of the newest successful backups. |
 

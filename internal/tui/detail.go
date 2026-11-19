@@ -288,7 +288,11 @@ func jobLines(st styles, now time.Time, j api.JobStatus, w int) []string {
 }
 
 func backupLines(st styles, now time.Time, b api.BackupStatus, w int) []string {
-	head := st.bold.Render(sanitize(b.Name)) + st.faint.Render("  ") + st.muted.Render("volume "+sanitize(b.Volume))
+	source := "volume " + sanitize(b.Volume)
+	if b.Volume == "" {
+		source = "command"
+	}
+	head := st.bold.Render(sanitize(b.Name)) + st.faint.Render("  ") + st.muted.Render(source)
 	if b.Schedule != "" {
 		head += st.faint.Render("  ") + st.muted.Render(sanitize(b.Schedule))
 	}

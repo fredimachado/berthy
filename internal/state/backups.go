@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// BackupRun is one run of a volume backup: archive the volume, upload the archive and record the outcome.
+// BackupRun is one run of a backup: archive the volume, or take the output of the command, upload it and record the outcome.
+// A run of a command backup has no Volume.
 type BackupRun struct {
 	ID                               int64
 	Backup, App, Volume, Destination string
@@ -43,7 +44,7 @@ func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if b.Status != "" && b.Status != "running" {
 		return 0, errors.New("invalid backup run")
 	}
-	if b.Backup == "" || b.App == "" || b.Volume == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() || (b.Trigger == "schedule") == b.Scheduled.IsZero() {
+	if b.Backup == "" || b.App == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() || (b.Trigger == "schedule") == b.Scheduled.IsZero() {
 		return 0, errors.New("invalid backup run")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)

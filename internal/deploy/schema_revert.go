@@ -54,7 +54,7 @@ func PublicMessage(s string) bool {
 		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecServiceImage, errExecServices, errComposeRole,
 		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal,
 		errDestroyAdmin, errDestroyConfirm, errDestroyInterrupted, errDestroyPreflight, errDestroyContainers, errDestroyImages, errDestroyState,
-		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
+		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errRestoreCommandFailed, errRestoreExecInterrupted, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
 	return backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)

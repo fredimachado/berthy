@@ -21,7 +21,7 @@ import (
 	"berthy/internal/statebackup"
 )
 
-// Backups is the agent's volume backups: the runner, the credentials and volume resolution it needs, and the runs started
+// Backups is the agent's backups of volumes and of the output of commands: the runner, the credentials and volume resolution it needs, and the runs started
 // through the API, which continue after their request ends. Configuration comes from the running manifest restricted to
 // the apps that are deployed.
 type Backups struct {
@@ -66,6 +66,7 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		Archiver: arch,
 		Objects:  b.objects,
 		Jobs:     holder,
+		Commands: d,
 		Resolve: func(ctx context.Context, m manifest.Manifest, bk manifest.Backup) (string, error) {
 			return resolveVolume(ctx, d, m, bk)
 		},
@@ -280,6 +281,26 @@ func (r restorer) CheckRestore(ctx context.Context, key, into string) (deploy.Re
 		return deploy.RestorePlan{}, err
 	}
 	return deploy.RestorePlan{Key: key, Backup: sc.Backup, App: sc.App, Volume: sc.Volume, Into: into, Size: sc.Size, SHA256: sc.SHA256, Finished: sc.Finished}, nil
+}
+
+func (r restorer) CheckRestoreCommand(ctx context.Context, key string) (deploy.RestorePlan, error) {
+	m, err := r.manifest(ctx)
+	if err != nil {
+		return deploy.RestorePlan{}, err
+	}
+	sc, err := r.b.Runner.CheckCommand(ctx, m, key)
+	if err != nil {
+		return deploy.RestorePlan{}, err
+	}
+	return deploy.RestorePlan{Key: key, Backup: sc.Backup, App: sc.App, Size: sc.Size, SHA256: sc.SHA256, Finished: sc.Finished}, nil
+}
+
+func (r restorer) RestoreCommand(ctx context.Context, operationID, key string, job manifest.Job) (jobs.Outcome, error) {
+	m, err := r.manifest(ctx)
+	if err != nil {
+		return jobs.Outcome{}, err
+	}
+	return r.b.Runner.RestoreCommand(ctx, m, key, job, operationID)
 }
 
 func (r restorer) Restore(ctx context.Context, operationID, key, into string) error {

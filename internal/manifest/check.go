@@ -437,22 +437,46 @@ func (m *Manifest) checkJob(p *Problems, name string, j Job) {
 	if !validJobTimeout(j.Timeout) {
 		p.add(path+".timeout", "job %s: invalid timeout", name)
 	}
+	checkCommandTarget(p, path, "job "+name, app, j.Role, j.Service)
+}
+
+// checkCommandTarget checks where a job or a command backup runs its command. An image app's command names a role, which may
+// be left out when the app has one role. A Compose command names a service, which the manifest cannot check.
+func checkCommandTarget(p *Problems, path, what string, app App, role, service string) {
 	if app.Kind != "image" {
-		if j.Role != "" {
-			p.add(path+".role", "job %s: use service for a Compose app", name)
+		if role != "" {
+			p.add(path+".role", "%s: use service for a Compose app", what)
 		}
 		return
 	}
 	switch {
-	case j.Service != "":
-		p.add(path+".service", "job %s: use role for an image app", name)
-	case j.Role != "":
-		if _, known := app.Roles[j.Role]; !known {
-			p.add(path+".role", "job %s: role is not a role of the app", name)
+	case service != "":
+		p.add(path+".service", "%s: use role for an image app", what)
+	case role != "":
+		if _, known := app.Roles[role]; !known {
+			p.add(path+".role", "%s: role is not a role of the app", what)
 		}
 	case len(app.Roles) != 1:
-		p.add(path, "job %s: role required for an app with several roles", name)
+		p.add(path, "%s: role required for an app with several roles", what)
 	}
+}
+
+// CheckCommandTarget reports why the app of the manifest cannot run a command in the role or service given, as a job's
+// target is checked, or "" when it can.
+func (m *Manifest) CheckCommandTarget(app, role, service string) string {
+	a, ok := m.Apps[app]
+	if !ok {
+		return "app is not in the manifest"
+	}
+	if role != "" && service != "" {
+		return "name a role or a service, not both"
+	}
+	var p Problems
+	checkCommandTarget(&p, "", "command", a, role, service)
+	if len(p) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(p[0].Message, "command: ")
 }
 
 func (m *Manifest) checkDestinations(p *Problems) {
@@ -501,9 +525,12 @@ func (m *Manifest) checkBackups(p *Problems) {
 		}{
 			{!identifier.MatchString(name), path},
 			{!identifier.MatchString(b.App), path + ".app"},
-			{b.Volume == "", path + ".volume"},
 			{!identifier.MatchString(b.Destination), path + ".destination"},
 			{b.Before != "" && !identifier.MatchString(b.Before), path + ".before"},
+			{len(b.Command) > 0 && !argv(b.Command), path + ".command"},
+			{b.Role != "" && !identifier.MatchString(b.Role), path + ".role"},
+			{b.Service != "" && !identifier.MatchString(b.Service), path + ".service"},
+			{b.Role != "" && b.Service != "", path + ".service"},
 		} {
 			if f.bad {
 				p.add(f.path, "invalid backup %q", name)
@@ -512,9 +539,11 @@ func (m *Manifest) checkBackups(p *Problems) {
 		if len(*p) > before {
 			continue
 		}
-		if _, ok := m.Apps[b.App]; !ok {
+		app, known := m.Apps[b.App]
+		if !known {
 			p.add(path+".app", "backup %s: unknown app", name)
 		}
+		m.checkBackupSource(p, path, name, b, app, known)
 		if _, ok := m.Destinations[b.Destination]; !ok {
 			p.add(path+".destination", "backup %s: unknown destination", name)
 		}
@@ -523,13 +552,43 @@ func (m *Manifest) checkBackups(p *Problems) {
 				p.add(path+".schedule", "backup %s: invalid schedule: %v", name, err)
 			}
 		}
-		if b.Before != "" {
+		if b.Before != "" && b.Volume != "" {
 			if _, ok := m.Jobs[b.Before]; !ok {
 				p.add(path+".before", "backup %s: unknown job", name)
 			}
 		}
 		if b.Retention != nil && b.Retention.Keep != nil && !validRetentionKeep(b.Retention.Keep) {
 			p.add(path+".retention.keep", "backup %s: invalid retention", name)
+		}
+	}
+}
+
+// checkBackupSource checks that a backup has exactly one source, a volume or a command, and the settings that belong to it. app
+// is the backup's app, and known says whether the manifest has it.
+func (m *Manifest) checkBackupSource(p *Problems, path, name string, b Backup, app App, known bool) {
+	switch {
+	case b.Volume != "" && len(b.Command) > 0:
+		p.add(path+".command", "backup %s: name exactly one of volume and command", name)
+	case b.Volume == "" && len(b.Command) == 0:
+		p.add(path+".volume", "backup %s: name exactly one of volume and command", name)
+	case b.Volume != "":
+		if b.Timeout != "" {
+			p.add(path+".timeout", "backup %s: timeout applies to a command backup", name)
+		}
+		if b.Role != "" {
+			p.add(path+".role", "backup %s: role and service apply to a command backup", name)
+		} else if b.Service != "" {
+			p.add(path+".service", "backup %s: role and service apply to a command backup", name)
+		}
+	default:
+		if b.Before != "" {
+			p.add(path+".before", "backup %s: before applies to a volume backup", name)
+		}
+		if !validJobTimeout(b.Timeout) {
+			p.add(path+".timeout", "backup %s: invalid timeout", name)
+		}
+		if known {
+			checkCommandTarget(p, path, "backup "+name, app, b.Role, b.Service)
 		}
 	}
 }

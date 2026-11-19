@@ -47,7 +47,6 @@ func TestStartBackupRefusesInvalidRuns(t *testing.T) {
 	cases := map[string]func(*BackupRun){
 		"no backup":      func(b *BackupRun) { b.Backup = "" },
 		"no app":         func(b *BackupRun) { b.App = "" },
-		"no volume":      func(b *BackupRun) { b.Volume = "" },
 		"no destination": func(b *BackupRun) { b.Destination = "" },
 		"no object key":  func(b *BackupRun) { b.ObjectKey = "" },
 		"unknown trig":   func(b *BackupRun) { b.Trigger = "cron" },
@@ -63,6 +62,21 @@ func TestStartBackupRefusesInvalidRuns(t *testing.T) {
 	}
 	if runs, _ := s.BackupRuns(ctx, "", 10); len(runs) != 0 {
 		t.Fatalf("invalid runs stored: %+v", runs)
+	}
+}
+
+// A run of a command backup has no volume: it is recorded as it is, and read back with none.
+func TestStartBackupRecordsARunOfACommandBackup(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	b := backupRun("main-db", 1)
+	b.Volume = ""
+	if _, err := s.StartBackup(ctx, b); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	runs, err := s.BackupRuns(ctx, "main-db", 10)
+	if err != nil || len(runs) != 1 || runs[0].Volume != "" || runs[0].Backup != "main-db" {
+		t.Fatalf("runs: %+v %v", runs, err)
 	}
 }
 

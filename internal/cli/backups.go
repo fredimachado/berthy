@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -50,13 +51,30 @@ func printBackups(out, errout io.Writer, body []byte, asJSON bool) int {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "BACKUP\tAPP\tVOLUME\tSIZE\tFINISHED\tSHA256\tKEY")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Backup), terminalSafe(r.App), terminalSafe(r.Volume), api.HumanSize(r.Size), r.Finished.UTC().Format(time.RFC3339), terminalSafe(r.SHA256), terminalSafe(r.Key))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Backup), terminalSafe(r.App), volumeOrCommand(r.Volume), api.HumanSize(r.Size), r.Finished.UTC().Format(time.RFC3339), terminalSafe(r.SHA256), terminalSafe(r.Key))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
 	return 0
+}
+
+// volumeOrCommand is what a backup names as its source: its volume, or "command" for a backup of the output of a command, which
+// has no volume.
+func volumeOrCommand(volume string) string {
+	if volume == "" {
+		return "command"
+	}
+	return terminalSafe(volume)
+}
+
+// sourceOf words the source of a backup: "volume uploads", or "command".
+func sourceOf(volume string) string {
+	if volume == "" {
+		return "command"
+	}
+	return "volume " + terminalSafe(volume)
 }
 
 // printBackupRun prints a finished run and returns 0 when it succeeded.
@@ -83,7 +101,8 @@ func printBackupRun(out, errout io.Writer, run api.BackupRun, asJSON bool) int {
 	return 1
 }
 
-// printRestorePlan shows what a restore would read and which volume it would create. Every text comes from the agent.
+// printRestorePlan shows what a restore would read and which volume it would create, or which command it would feed and where
+// that runs. Every text comes from the agent.
 func printRestorePlan(out, errout io.Writer, data []byte) int {
 	var plan struct {
 		Restore *deploy.RestorePlan `json:"restore"`
@@ -94,8 +113,13 @@ func printRestorePlan(out, errout io.Writer, data []byte) int {
 	}
 	r := plan.Restore
 	fmt.Fprintf(out, "restore %s\n", terminalSafe(r.Key))
-	fmt.Fprintf(out, "into volume %s (new)\n", terminalSafe(r.Into))
-	fmt.Fprintf(out, "backup: %s (app %s, volume %s)\n", terminalSafe(r.Backup), terminalSafe(r.App), terminalSafe(r.Volume))
+	if r.Into != "" {
+		fmt.Fprintf(out, "into volume %s (new)\n", terminalSafe(r.Into))
+	} else {
+		fmt.Fprintf(out, "into the input of a command on %s\n", terminalSafe(r.Target))
+		fmt.Fprintf(out, "command: %s\n", terminalSafe(strings.Join(r.Command, " ")))
+	}
+	fmt.Fprintf(out, "backup: %s (app %s, %s)\n", terminalSafe(r.Backup), terminalSafe(r.App), sourceOf(r.Volume))
 	fmt.Fprintf(out, "taken: %s\n", r.Finished.UTC().Format(time.RFC3339))
 	fmt.Fprintf(out, "size: %s\nsha256: %s\n", api.HumanSize(r.Size), terminalSafe(r.SHA256))
 	return 0

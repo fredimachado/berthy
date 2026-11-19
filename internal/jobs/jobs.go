@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"sync"
@@ -41,6 +42,15 @@ type Outcome struct {
 	// Output is the last lines of a failed or timed-out run, with every managed secret value replaced. It is empty for a run
 	// that succeeded and for one with no output to read.
 	Output string
+}
+
+// Streams is where a command that is run for its output or its input is connected. A command with neither is run as a job is:
+// its output is thrown away, and the last lines of a failed run are kept. With Stdout the command's standard output goes there
+// as it is written, and the kept lines are its standard error only. With Stdin the command reads it, and its input ends when
+// Stdin does. Docker gives a command no more than these, so neither is a file on the server.
+type Streams struct {
+	Stdin  io.Reader
+	Stdout io.Writer
 }
 
 // Runner runs the command of a job.

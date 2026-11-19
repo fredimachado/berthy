@@ -456,6 +456,10 @@ func (d *differ) backups(p, n map[string]manifest.Backup) {
 			d.add("backups", "- %s", name)
 		default:
 			d.fieldOf("backups", name, "volume", quote(a.Volume), quote(b.Volume))
+			d.fieldOf("backups", name, "command", list(a.Command), list(b.Command))
+			d.fieldOf("backups", name, "role", quote(a.Role), quote(b.Role))
+			d.fieldOf("backups", name, "service", quote(a.Service), quote(b.Service))
+			d.fieldOf("backups", name, "timeout", quote(a.Timeout), quote(b.Timeout))
 			d.fieldOf("backups", name, "schedule", quote(a.Schedule), quote(b.Schedule))
 			d.fieldOf("backups", name, "destination", quote(a.Destination), quote(b.Destination))
 			d.fieldOf("backups", name, "prefix", quote(a.Prefix), quote(b.Prefix))

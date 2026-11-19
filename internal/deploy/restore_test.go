@@ -13,6 +13,8 @@ import (
 
 	"berthy/internal/backup"
 	"berthy/internal/engine"
+	"berthy/internal/jobs"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
@@ -25,6 +27,34 @@ type fakeRestorer struct {
 	checkErr error
 	err      error
 	block    chan struct{}
+	// The restore into a command: the checks, the commands that ran, and how the restore ends.
+	execChecks []string
+	execJobs   []manifest.Job
+	execOutput jobs.Outcome
+	execErr    error
+}
+
+func (f *fakeRestorer) CheckRestoreCommand(_ context.Context, key string) (RestorePlan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execChecks = append(f.execChecks, key)
+	if f.checkErr != nil {
+		return RestorePlan{}, f.checkErr
+	}
+	return RestorePlan{Key: key, Backup: "main-db", App: "db", Size: 12, SHA256: strings.Repeat("ab", 32), Finished: time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)}, nil
+}
+
+func (f *fakeRestorer) RestoreCommand(_ context.Context, opID, key string, job manifest.Job) (jobs.Outcome, error) {
+	f.mu.Lock()
+	f.execJobs = append(f.execJobs, job)
+	f.restores = append(f.restores, key+" (command)")
+	f.opIDs = append(f.opIDs, opID)
+	block, out, err := f.block, f.execOutput, f.execErr
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	return out, err
 }
 
 func (f *fakeRestorer) CheckRestore(_ context.Context, key, into string) (RestorePlan, error) {

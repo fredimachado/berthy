@@ -584,22 +584,138 @@ func (e *Engine) ExecDiscard(ctx context.Context, id string, command []string) (
 	return e.exec(ctx, id, command, func(r io.Reader) error { return dockerStream(r, io.Discard, -1) })
 }
 
-// ExecTail runs a command in a container like ExecDiscard, but keeps the last maxBytes of its stdout and stderr, interleaved
-// as they came, and returns them with the exit code. Memory use is bounded by maxBytes whatever the command prints. When the
-// run fails, or ctx ends it, the tail of what was read is returned with the error. ctx must have a deadline.
-func (e *Engine) ExecTail(ctx context.Context, id string, command []string, maxBytes int) (int, string, error) {
-	tail := &tailBuffer{max: maxBytes}
-	code, err := e.exec(ctx, id, command, func(r io.Reader) error { return dockerStream(r, tail, -1) })
-	return code, strings.ToValidUTF8(string(tail.bytes()), ""), err
+// ExecStream runs a command in a container with its input and output streamed. What stdin gives is sent to the command, and
+// its input is closed at the end of it; with a nil stdin the command's input is left alone. The command's stdout goes to
+// stdout, and the last tailMax bytes of its stderr are returned with the exit code, also when the run fails. With a nil stdout
+// the tail holds the stdout and stderr, interleaved as they came. Memory use is bounded by tailMax, whatever the command
+// prints. A stdout that fails ends the run with its error, and so does a stdin that cannot be read. A stdin that
+// the command stopped taking is an error only when the command exited 0, since a non-zero exit code says more. ctx must have a
+// deadline.
+func (e *Engine) ExecStream(ctx context.Context, id string, command []string, stdin io.Reader, stdout io.Writer, tailMax int) (int, string, error) {
+	tail := NewTailBuffer(tailMax)
+	if stdout == nil {
+		stdout = tail
+	}
+	if stdin == nil {
+		code, err := e.exec(ctx, id, command, func(r io.Reader) error { return demux(r, stdout, tail, -1) })
+		return code, tail.String(), err
+	}
+	s, execID, err := e.StartExecSession(ctx, id, command, false)
+	if err != nil {
+		return 0, "", err
+	}
+	defer s.Close()
+	inErr, err := copyStream(s, stdin, stdout, tail)
+	if err != nil {
+		return 0, tail.String(), err
+	}
+	code, err := e.execExitCodeWhenSet(ctx, execID)
+	switch {
+	case err != nil:
+		return 0, tail.String(), err
+	case inErr != nil && code == 0:
+		return code, tail.String(), inErr
+	}
+	return code, tail.String(), nil
 }
 
-// tailBuffer keeps the last max bytes written to it. It compacts when it holds twice that, so a write costs O(1) on average.
-type tailBuffer struct {
+// AttachStream attaches to a created container, calls start to start it, and streams like ExecStream: stdin is sent and
+// closed, stdout is written to stdout, and the last tailMax bytes of stderr are returned; a nil stdout is kept in the tail with
+// stderr, as ExecStream does. A nil stdin is closed at once. The
+// container needs OpenStdin and StdinOnce. err is the failure of start, of stdout, or of a stdin that cannot be read; inErr is
+// a stdin that the container stopped taking, which only the exit code (Wait on the container) can judge. ctx must have a
+// deadline.
+func (e *Engine) AttachStream(ctx context.Context, id string, stdin io.Reader, stdout io.Writer, tailMax int, start func() error) (tail string, inErr, err error) {
+	s, err := e.AttachSession(ctx, id)
+	if err != nil {
+		return "", nil, err
+	}
+	defer s.Close()
+	if err = start(); err != nil {
+		return "", nil, err
+	}
+	t := NewTailBuffer(tailMax)
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	if stdout == nil {
+		stdout = t
+	}
+	inErr, err = copyStream(s, stdin, stdout, t)
+	return t.String(), inErr, err
+}
+
+// copyStream sends stdin to the stream and then ends the input, and splits the stream's output into stdout and tail until it
+// ends. err is a failed stdout, a stdin that cannot be read, or a broken output stream; a stdin that cannot be read ends the
+// stream, since the command would wait for the rest of it for ever. inErr is a failure to send, such as a command that stopped
+// reading its input. The stream is closed when it returns.
+func copyStream(s *Stream, stdin io.Reader, stdout io.Writer, tail *TailBuffer) (inErr, err error) {
+	src := &sourceReader{r: stdin}
+	sent := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(s, src)
+		if src.err != nil {
+			s.Close()
+		} else if err == nil {
+			err = s.CloseWrite()
+		}
+		sent <- err
+	}()
+	outErr := demux(s, stdout, tail, -1)
+	// The output has ended or failed. Dropping the connection unblocks a copy of the input that is still writing.
+	s.Close()
+	inErr = <-sent
+	switch {
+	case src.err != nil:
+		return nil, src.err
+	case outErr != nil:
+		return nil, outErr
+	}
+	return inErr, nil
+}
+
+// sourceReader remembers the error of the reader it wraps, to tell it from an error of the writer a copy ends with.
+type sourceReader struct {
+	r   io.Reader
+	err error
+}
+
+func (s *sourceReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil && err != io.EOF {
+		s.err = err
+	}
+	return n, err
+}
+
+// execExitCodeWhenSet is ExecExitCode for an exec whose output has just ended: Docker records the exit code a moment later.
+func (e *Engine) execExitCodeWhenSet(ctx context.Context, execID string) (int, error) {
+	var err error
+	for range 50 {
+		var code int
+		if code, err = e.ExecExitCode(ctx, execID); err == nil {
+			return code, nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return 0, err
+}
+
+// TailBuffer keeps the last max bytes written to it. It compacts when it holds twice that, so a write costs O(1) on average.
+// It is not safe for concurrent use.
+type TailBuffer struct {
 	max int
 	buf []byte
 }
 
-func (t *tailBuffer) Write(p []byte) (int, error) {
+// NewTailBuffer returns a TailBuffer that keeps the last max bytes.
+func NewTailBuffer(max int) *TailBuffer { return &TailBuffer{max: max} }
+
+func (t *TailBuffer) Write(p []byte) (int, error) {
 	t.buf = append(t.buf, p...)
 	if len(t.buf) > 2*t.max {
 		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.max:]...)
@@ -607,11 +723,13 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (t *tailBuffer) bytes() []byte {
-	if len(t.buf) > t.max {
-		return t.buf[len(t.buf)-t.max:]
+// String is what was kept, with bytes that are not valid UTF-8 dropped, which a cut in the middle of a character leaves.
+func (t *TailBuffer) String() string {
+	b := t.buf
+	if len(b) > t.max {
+		b = b[len(b)-t.max:]
 	}
-	return t.buf
+	return strings.ToValidUTF8(string(b), "")
 }
 
 // exec creates an exec in a container, starts it, hands the output stream to consume, and returns the exit code.

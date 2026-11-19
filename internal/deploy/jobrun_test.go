@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ type jobFake struct {
 	execErr    error
 	execCmd    []string
 	execTarget string
+	streamOut  string // what the command writes to its stdout when it is streamed
+	streamIn   []byte // what the command read of its stdin
 }
 
 func (f *jobFake) DiagnoseContainer(context.Context, string) (engine.ContainerDiagnosis, error) {
@@ -40,10 +43,35 @@ func (f *jobFake) LogTail(_ context.Context, id string, lines, maxBytes int) (st
 func (f *jobFake) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {
 	return f.composeOf, nil
 }
-func (f *jobFake) ExecTail(_ context.Context, id string, command []string, maxBytes int) (int, string, error) {
-	f.log("exectail")
+func (f *jobFake) ExecStream(_ context.Context, id string, command []string, stdin io.Reader, stdout io.Writer, maxBytes int) (int, string, error) {
+	f.log("exec")
 	f.execTarget, f.execCmd = id, command
+	f.stream(stdin, stdout)
 	return f.execExit, f.execTail, f.execErr
+}
+
+// AttachStream is the attach of a streamed one-off container: it starts the container, gives it its input and takes its output.
+func (f *jobFake) AttachStream(ctx context.Context, id string, stdin io.Reader, stdout io.Writer, maxBytes int, start func() error) (string, error, error) {
+	f.log("attach")
+	if err := start(); err != nil {
+		return "", nil, err
+	}
+	if f.block {
+		<-ctx.Done()
+		return f.execTail, nil, ctx.Err()
+	}
+	f.stream(stdin, stdout)
+	return f.execTail, nil, f.execErr
+}
+
+// stream plays the command: it reads all of its input and writes its output.
+func (f *jobFake) stream(stdin io.Reader, stdout io.Writer) {
+	if stdin != nil {
+		f.streamIn, _ = io.ReadAll(stdin)
+	}
+	if stdout != nil {
+		io.WriteString(stdout, f.streamOut)
+	}
 }
 
 func jobFixture(t *testing.T) (*Controller, *jobFake) {
@@ -213,7 +241,7 @@ func TestRunJobOfAComposeAppExecsInTheServiceAndKeepsTheRedactedTail(t *testing.
 	if err != nil || out.Exit == nil || *out.Exit != 2 || out.Container != "pg-1" || out.Output != "line one\nthe password is [redacted]\n" {
 		t.Fatalf("outcome %+v %v", out, err)
 	}
-	if f.execTarget != "pg-1" || strings.Join(f.execCmd, " ") != "pg_dump" || f.callList() != "exectail" {
+	if f.execTarget != "pg-1" || strings.Join(f.execCmd, " ") != "pg_dump" || f.callList() != "exec" {
 		t.Fatalf("exec in %s: %v, calls %s", f.execTarget, f.execCmd, f.callList())
 	}
 	// A run that succeeds keeps no output.

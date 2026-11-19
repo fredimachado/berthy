@@ -8,20 +8,21 @@ import (
 // BackupEntry is one backup in object storage, as `backup list` shows it. Key names the archive and is what restore takes.
 type BackupEntry struct {
 	Key      string    `json:"key"`
+	Format   string    `json:"format"` // what the archive is: a volume's archive or a command's output
 	Backup   string    `json:"backup"`
 	App      string    `json:"app"`
-	Volume   string    `json:"volume"`
+	Volume   string    `json:"volume,omitempty"` // empty for a command backup
 	Size     int64     `json:"size"`
 	SHA256   string    `json:"sha256"`
 	Finished time.Time `json:"finished"`
 }
 
-// BackupRun is one run of a volume backup as the API shows it, whatever its outcome.
+// BackupRun is one run of a backup as the API shows it, whatever its outcome.
 type BackupRun struct {
 	ID          int64      `json:"id"`
 	Backup      string     `json:"backup"`
 	App         string     `json:"app"`
-	Volume      string     `json:"volume"`
+	Volume      string     `json:"volume,omitempty"` // empty for a command backup
 	Destination string     `json:"destination"`
 	Key         string     `json:"key"`
 	Trigger     string     `json:"trigger"`
@@ -52,7 +53,7 @@ type StateBackupRun struct {
 // the outcome of its newest run.
 type BackupStatus struct {
 	Name        string     `json:"name"`
-	Volume      string     `json:"volume"`
+	Volume      string     `json:"volume,omitempty"` // empty for a command backup
 	Schedule    string     `json:"schedule,omitempty"`
 	LastSuccess *time.Time `json:"last_success,omitempty"`
 	Age         string     `json:"age,omitempty"` // how long ago the last success finished, such as "3h"

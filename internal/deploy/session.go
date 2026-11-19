@@ -406,7 +406,7 @@ func (c *Controller) RemoveOrphanSessions(ctx context.Context) error {
 	var failed error
 	for _, ct := range containers {
 		_, session := ct.Labels["berthy.session"]
-		if !session && ct.Labels["berthy.oneoff"] != "job" || ct.Labels["berthy.environment"] != c.Environment {
+		if !session && !commandKinds[ct.Labels["berthy.oneoff"]] || ct.Labels["berthy.environment"] != c.Environment {
 			continue
 		}
 		if err = e.RemoveContainer(ctx, ct.ID); err != nil {

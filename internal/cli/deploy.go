@@ -106,7 +106,7 @@ var changeFlags = map[string][]string{
 	"prune":            withRemoteFlags("--dry-run", "--request-id"),
 	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
 	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
-	"restore":          withRemoteFlags("--dry-run", "--request-id", "--into"),
+	"restore":          withRemoteFlags("--dry-run", "--request-id", "--into", "--exec", "--role", "--service", "--timeout"),
 	"wait":             withRemoteFlags("--role", "--timeout", "--healthy"),
 	"history":          withRemoteFlags("--diff"),
 	"diagnostics":      withRemoteFlags(),
@@ -141,7 +141,7 @@ var changeFlags = map[string][]string{
 }
 
 type commandFlags struct {
-	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, scope, expires, run string
+	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, exec, scope, expires, run string
 	bytes, format, diff                                                                                                               string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                       bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
@@ -189,7 +189,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.origin = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+		case "-e", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -210,6 +210,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.backup = v
 			case "--into":
 				f.into = v
+			case "--exec":
+				f.exec = v
 			case "--manifest-dir":
 				f.dir = v
 			case "--version":
@@ -381,8 +383,8 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "usage: key rotate -e ENV [--dry-run] [--json]")
 		return 2
 	}
-	if (f.backup != "" && cmd != "backup") || (f.into != "" && cmd != "restore") {
-		fmt.Fprintln(errout, "--backup applies to backup list, and --into to restore")
+	if (f.backup != "" && cmd != "backup") || ((f.into != "" || f.exec != "") && cmd != "restore") {
+		fmt.Fprintln(errout, "--backup applies to backup list, and --into and --exec to restore")
 		return 2
 	}
 	if flag, key := refusedFlag(cmd, f); flag != "" {
@@ -616,8 +618,17 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		endpoint = "apply"
 		body = deploy.ApplyRequest{Manifest: *m, Commit: stamp.Commit, Modified: stamp.Modified, DryRun: f.dry}
 	case "restore":
-		if len(f.pos) != 1 || f.pos[0] == "" || f.into == "" {
-			fmt.Fprintln(errout, "usage: restore KEY --into VOLUME [--dry-run]")
+		// A restore fills a new volume, or feeds a command in a running container: exactly one of the two.
+		if len(f.pos) != 1 || f.pos[0] == "" || (f.into == "") == (f.exec == "") || f.exec != "" && len(f.command) == 0 {
+			fmt.Fprintln(errout, "usage: restore KEY --into VOLUME [--dry-run] | restore KEY --exec APP [--service NAME | --role NAME] [--timeout 1h] [--dry-run] -- COMMAND...")
+			return 2
+		}
+		if f.into != "" && (f.role != "" || f.service != "" || f.timeout != "" || len(f.command) > 0) {
+			fmt.Fprintln(errout, "--role, --service, --timeout and a command belong to restore --exec")
+			return 2
+		}
+		if f.role != "" && f.service != "" {
+			fmt.Fprintln(errout, "--role and --service cannot be combined")
 			return 2
 		}
 		id := f.id
@@ -628,7 +639,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		}
 		method = "POST"
 		endpoint = "restore"
-		body = map[string]any{"key": f.pos[0], "into": f.into, "dry_run": f.dry, "request_id": id}
+		if f.exec != "" {
+			body = map[string]any{"key": f.pos[0], "app": f.exec, "service": f.service, "role": f.role, "command": f.command, "timeout": f.timeout, "dry_run": f.dry, "request_id": id}
+		} else {
+			body = map[string]any{"key": f.pos[0], "into": f.into, "dry_run": f.dry, "request_id": id}
+		}
 	case "history", "wait":
 		if cmd == "history" && f.diff != "" {
 			if len(f.pos) < 1 || len(f.pos) > 2 || !releaseNumber(f.diff) || len(f.pos) == 2 && !releaseNumber(f.pos[1]) {

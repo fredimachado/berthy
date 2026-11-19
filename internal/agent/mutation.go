@@ -120,16 +120,24 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			json.NewEncoder(w).Encode(result)
 		case len(rest) == 1 && rest[0] == "restore":
 			var body struct {
-				Key       string `json:"key"`
-				Into      string `json:"into"`
-				DryRun    bool   `json:"dry_run"`
-				RequestID string `json:"request_id"`
+				Key string `json:"key"`
+				// Into is the new volume a volume backup fills. App, Service or Role, Command and Timeout name the command a
+				// command backup is fed to, and where it runs.
+				Into      string   `json:"into"`
+				App       string   `json:"app"`
+				Service   string   `json:"service"`
+				Role      string   `json:"role"`
+				Command   []string `json:"command"`
+				Timeout   string   `json:"timeout"`
+				DryRun    bool     `json:"dry_run"`
+				RequestID string   `json:"request_id"`
 			}
 			if err := decodeBody(w, r, &body); err != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
 			}
-			req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, DryRun: body.DryRun, RequestID: body.RequestID}
+			req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, App: body.App, Service: body.Service, Role: body.Role,
+				Command: body.Command, Timeout: body.Timeout, DryRun: body.DryRun, RequestID: body.RequestID}
 			if req.DryRun {
 				plan, err := d.Plan(ctx, actor, req)
 				if err != nil {
