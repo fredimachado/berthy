@@ -10,6 +10,10 @@ type App struct {
 	Jobs  []JobStatus `json:"jobs,omitempty"`
 	// Backups are the backups of the manifest that belong to the app, with their ages.
 	Backups []BackupStatus `json:"backups,omitempty"`
+	// Drift lists, one line each, what runs differently from the applied release, such as "api/web: replicas 3, release says 2".
+	// Scaled lists the roles that berthy scale set to another count, which is not drift.
+	Drift  []string `json:"drift,omitempty"`
+	Scaled []string `json:"scaled,omitempty"`
 }
 type Role struct {
 	Name     string    `json:"name"`

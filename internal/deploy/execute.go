@@ -54,6 +54,20 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	_ = c.finish(context.Background(), op, outcome, t)
 }
 
+// releaseRoleSpec is the Swarm service of a role at the release that prepared describes, as a deploy sends it. operation is
+// the generation label of the spec. A deploy and the drift check both build a role's spec here, so what a deploy would send
+// and what the check expects are the same.
+func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, role, operation string) (json.RawMessage, error) {
+	req := prepared.Request
+	app := req.Manifest.Apps[req.App]
+	drain := app.Deploy.DrainTimeout
+	if drain == "" {
+		drain = "30s"
+	}
+	order, _ := app.UpdateOrder(role)
+	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, operation, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
+}
+
 // releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
 // applies none, since its manifest is an old one, and neither does the ingress connector's deploy, whose manifest Berthy
 // builds and holds nothing of the environment.
@@ -142,10 +156,6 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 	}
 	app := req.Manifest.Apps[req.App]
-	drain := app.Deploy.DrainTimeout
-	if drain == "" {
-		drain = "30s"
-	}
 	timeout := app.Deploy.DeployTimeout
 	if timeout == "" {
 		timeout = "120s"
@@ -157,8 +167,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	work := make([]roleWork, 0, len(p.Roles))
 	for ordinal, role := range p.Roles {
 		r := app.Roles[role]
-		order, _ := app.UpdateOrder(role)
-		spec, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, op.ID, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), r, order, drain, img.Healthcheck, prepared.LogDriver)
+		spec, e := c.releaseRoleSpec(prepared, img, role, op.ID)
 		if e != nil {
 			outcome.Err = "role preflight failed"
 			return

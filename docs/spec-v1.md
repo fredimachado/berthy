@@ -813,14 +813,14 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | Command | Purpose | Changes things |
 | --- | --- | --- |
 | `ps` | Apps, roles, replicas, health, running version | No |
-| `describe <app>` | Full detail for one app, including its last deploys and job results | No |
+| `describe <app>` | Full detail for one app, including its last deploys and job results, and how it differs from its applied release | No |
 | `logs <app>` | Tail or follow logs; `--tail N`, `--follow` (or `-f`), `--since`, `--grep`, `--role`, `--replica` | No |
 | `stats` | Server and container metrics; `--watch` for live, `--since DURATION` for the samples of that time (at most an hour) | No |
 | `df` | Disk space and Docker disk usage | No |
 | `history <app>` | Deploy records, with the reason of each failed deploy; a deploy from local changes is marked `(modified)` next to its commit. `--diff <release id> [<release id>]` prints what a release changes compared with another (see "Release diff") | No |
 | `diagnostics <operation id>` | Evidence of a failed deploy: task and command state, exit codes, health checks and the last lines of output (needs the `deploy` scope) | No |
 | `wait <app>` | Block until each service of the app, or of `--role`, has all its replicas running and healthy, or until `--timeout` passes (default 2m, at most 10m; then it exits non-zero). `--healthy` is accepted and changes nothing. A Compose app has no bound services, so it is refused | No |
-| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the secrets of each alert channel (Telegram, webhook) when alerts need them, the heartbeat when it is configured, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, the Compose services whose logs have no size limit, telemetry when configured, the TCP ports that listen on a public address and that containers publish (`public_ports`), and a pending reboot (`reboot_required`). The last two only warn, and never make the doctor exit 1. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
+| `doctor` | Checks the agent and its version, the host, root disk, Docker and its API version, Swarm manager, the shared network, the managed tunnel when configured, Compose, each registry password that a deployed image app pulls with and the Cloudflare API token when managed ingress is set up (see Health checks), the deploy lock, each peer, the secrets of each alert channel (Telegram, webhook) when alerts need them, the heartbeat when it is configured, each backup, the overlay helper when a service probe needs it, apps that are deployed but no longer in the manifest, each deployed app's drift from its release (a warning), the Compose services whose logs have no size limit, telemetry when configured, the TCP ports that listen on a public address and that containers publish (`public_ports`), and a pending reboot (`reboot_required`). The last two only warn, and never make the doctor exit 1. It prints the CLI's version and the agent's, and a note when the agent runs a different release than the CLI | No |
 | `version` | Prints the CLI's version and platform; `--json` for JSON. It needs no agent | No |
 | `audit` | Who changed what and when | No |
 | `config show`, `config validate` | Print or check the merged manifest | No |
@@ -998,7 +998,7 @@ telemetry:
 | --- | --- | --- |
 | Container health check | The check declared for a role in the manifest | Gates deploys; an unhealthy container is replaced |
 | Probe | An HTTP or TCP check the agent runs on a schedule, against a service name or a public URL | Alert |
-| Built-in condition | Disk space, Docker disk usage, memory, restart loops, overdue backup, silent peer, unhealthy tunnel with managed ingress, a credential refused, missing or about to expire | Alert |
+| Built-in condition | Disk space, Docker disk usage, memory, restart loops, drift from the applied release, overdue backup, silent peer, unhealthy tunnel with managed ingress, a credential refused, missing or about to expire | Alert |
 
 Proposed thresholds: disk space and Docker disk usage warn at 80% and go critical at 90%.
 
@@ -1006,6 +1006,17 @@ Proposed thresholds: disk space and Docker disk usage warn at 80% and go critica
 
 - A probe against a public URL, or an address the host can reach, is run by the agent itself.
 - A probe against a service name runs in the overlay helper: one container per environment on each server, built by the agent from its own static binary as `berthy-helper:<hash>` (no registry and no internet), attached to the shared network and published on 127.0.0.1 only. The agent gives it probes over a bearer token that it keeps in memory, so a restart recreates the helper with a new token, and a Compose service must join the shared network to be probed.
+
+#### Drift
+
+The check `drift:<app>` exists for every deployed app except the ingress connector. It runs every 5 minutes, changes state on its first non-ok result, and is a warning at most, never critical. It reports and never corrects: a deploy brings the app back.
+
+- **The spec of a release.** A role's Swarm service is a function of the applied release: the same function builds the spec that a deploy sends and the spec the check compares with. Its inputs are the manifest stored with the release, the pinned image and tag of the release, the current values of the secrets the manifest reads, the image's own health check when the role sets none, and the daemon's default log driver. The check reads the image and pulls nothing.
+- **Image apps.** Each role of the release is compared with the service bound to it. Both specs are compared as an adoption compares them: the service name, the `berthy.*` labels, the force-update counter and what Docker adds on its own are set aside. A field the live service has and the release does not produce, a field the release produces and the service lacks, and a field with another value each give one line, `<app>/<role>: <field> <live value>, release says <release value>`, where an absent value reads `none`. The environment is compared by name: `<app>/<role>: env A, B differ`, and no value is ever shown. A bound service that is missing gives `<app>/<role>: service <name> is gone`.
+- **Compose apps.** The check stages the Compose file journaled with the applied release and the manifest's environment, and builds the plan a deploy builds (Compose's configuration hash against the label of each container, and the volumes that exist). Each service the plan would recreate, create or remove gives `<app>: service <name> would be recreated`, `created` or `removed`, and each volume it would create gives `<app>: volume <name> would be created`. The plan's blockers are not drift.
+- **Scaled roles.** A role whose replica count differs and whose `berthy.operation` label names a `scale` or a `restart` operation (a restart keeps the scaled count) is reported as `<app>/<role>: scaled to N with berthy scale`, apart from the drift lines. The check is ok when only such lines remain, and says so in its detail. Any other difference of that role is still drift.
+- **States.** Warning with the lines joined by `; ` and cut at 400 characters; ok with `matches release <tag or short digest>`; unknown, which never alerts, while an operation holds the environment lock for the app (read before and after the comparison), and when Docker, the image, a secret or the release cannot be read.
+- **Where it shows.** `berthy checks` shows the stored state. `doctor` runs the comparison when it is asked, so it never shows an age. `describe <app>` and `GET apps/<name>` carry `drift` and `scaled` (lists of lines, left out when empty), computed on request and left out while an operation runs on the app.
 
 #### Configuration
 

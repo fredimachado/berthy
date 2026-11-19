@@ -385,6 +385,7 @@ berthy agent-info -e prod
 | `lock` | The deploy lock (`free` or who holds it). |
 | `peer:<name>`, `telegram`, `webhook`, `heartbeat`, `backup:<name>`, `probe_helper`, ... | One check each for the peers, the secrets of the Telegram and webhook channels, the heartbeat (when its last ping was accepted), every backup, and the probe helper, once the manifest uses them. |
 | `orphan_apps` | Apps that are deployed but no longer in the manifest. |
+| `drift:<app>` | A warning, not a failure: what an app runs differs from its applied release. See **Drift** in step 8. |
 | `compose_log_limit` | A warning, not a failure: services of deployed Compose apps whose logs grow without a size limit. See **Log rotation** in step 2. |
 | `public_ports` | A warning, not a failure: TCP ports that listen on an address that is not loopback, private or VPN, and the ports that containers publish on one. Each port says what it is where Berthy knows it, such as `2375 Docker API without TLS` or `5432 PostgreSQL`. Ports 22, 80 and 443 are listed without a warning. A listening port is not proof that it is reachable, because a firewall may sit in front. |
 | `reboot_required` | A warning, not a failure: the host has a reboot pending, and the packages that asked for it when the host lists them. A host without the update notifier has no such check. |
@@ -1247,7 +1248,7 @@ berthy ps       -e prod
 berthy describe api -e prod
 ```
 
-`ps` lists every app: its kind, roles, desired and running replicas, health and the running image, plus how old each backup is. `describe <app>` shows one app in full: roles, tasks, the last deploys and the last job results. When a name is ambiguous (a Swarm service and a Compose project with the same name), write `image:api`, `swarm:api` or `compose:api`.
+`ps` lists every app: its kind, roles, desired and running replicas, health and the running image, plus how old each backup is. `describe <app>` shows one app in full: roles, tasks, the last deploys, the last job results, and what differs from the applied release, as the `drift` and `scaled` lines (see **Drift** in step 8). When a name is ambiguous (a Swarm service and a Compose project with the same name), write `image:api`, `swarm:api` or `compose:api`.
 
 The text output is `key: value` lines. Add `--json` for JSON that scripts and AI agents can parse. It is the same for every command.
 
@@ -1912,6 +1913,24 @@ A token with an expiry has a check too, named `token:<name>` (`berthy checks` li
 ```
 
 Make the new token, give it to CI, then `berthy token revoke` the old one.
+
+#### Drift
+
+Berthy knows what each app should run: its applied release. Every five minutes the check `drift:<app>` compares that with what Docker runs, and raises a warning when they differ. It only reports. `berthy deploy` brings the app back, and nothing else changes it.
+
+- **Image apps.** For each role, the live Swarm service is compared with the service a deploy of the applied release would send: the image, replicas, user, entrypoint and command, volumes, health check, limits, logging, labels and environment. One line says what differs, such as `api/web: replicas 3, release says 2` or `api/web: user "1000", release says none`. A variable is only named, as in `api/web: env DATABASE_URL differs`; a value is never shown.
+- **Compose apps.** Berthy runs the plan that a deploy of the stored Compose file runs, and reports the services it would recreate, create or remove, and the volumes it would create, such as `postgres: service postgres would be recreated` or `postgres: volume pgdata would be created`.
+- **Scaled roles are not drift.** A role that `berthy scale` set to another count shows as `api/web: scaled to 3 with berthy scale`, and the check stays ok. A deploy puts the count of the manifest back.
+- **When it does not judge.** The check is unknown, and never alerts, while an operation runs on the app, and while Docker or the release cannot be read.
+
+A change made by hand, such as `docker service update --replicas 3` on a service, shows in `berthy checks`, in `berthy doctor` (which compares when you ask) and in `berthy describe <app>`:
+
+```text
+NAME         STATE    SINCE                 DETAIL
+drift:api    warning  2026-11-19T10:21:50Z  api/web: replicas 3, release says 2; api/web: env FEATURE_X differs
+```
+
+The next deploy clears it. A warning sends the same alert as the other warnings, and a recovery alert follows once the app matches again.
 
 #### Peers
 
@@ -2607,7 +2626,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 | Command | Scope | Flags and arguments | What it does |
 | --- | --- | --- | --- |
 | `ps` | read | | Apps, roles, replicas, health, running version, backup ages. |
-| `describe <app>` | read | | One app in full: roles, tasks, last deploys, job results. |
+| `describe <app>` | read | | One app in full: roles, tasks, last deploys, job results, and the drift from its applied release. |
 | `logs <app>` | read | `--follow`/`-f`, `--tail <n>`, `--since <duration or time>`, `--grep <regex>`, `--role <name>`, `--replica <id>` | Container logs, read from Docker. |
 | `stats` | read | `--watch`, `--since <duration up to 1h>` | Server and container metrics. |
 | `df` | read | | Disk space and Docker disk usage. |

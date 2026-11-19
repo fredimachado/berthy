@@ -322,6 +322,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					if code == 200 {
 						app.Jobs = appJobs(ctx, deployment, app, time.Now())
 						app.Backups = appBackups(ctx, deployment, app, time.Now())
+						app.Drift, app.Scaled = appDrift(ctx, deployment, app)
 						result = app
 					}
 					if code != 200 {
@@ -422,6 +423,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					checks = append(checks, check)
 				}
 				checks = append(checks, monitoringChecks(r.Context(), c, deployment.Store, e, c.Environment)...)
+				checks = append(checks, driftDoctorChecks(r.Context(), deployment)...)
 				if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
 					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
 					if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
