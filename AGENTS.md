@@ -18,6 +18,13 @@
   line endings. Check formatting in WSL or trust CI's check.
 - After pushing, watch the CI run until it is green. A red `main` comes before
   any other work.
+- Push only after reading the test and e2e results yourself. A command that
+  prints the log and then pushes, such as `run.sh | tee log && git push`,
+  pushes a failure. An e2e scenario that fails only sometimes is a finding,
+  not noise.
+- A push to `main` cancels the CI run still in progress, so the earlier
+  commit is tested only by the later run. A push can also start no run at all;
+  start one with `gh workflow run ci.yml --ref main`.
 
 ## Tests
 
@@ -27,6 +34,15 @@
   goroutine that outlives a request belongs to the controller, which drains it
   on shutdown.
 - Write the failing test first, and check that it fails without the change.
+- A test never races the real clock or a tight deadline: no schedule that
+  fires every minute, no deadline of a few seconds for work a loaded CI runner
+  does, no sleep. Wait for the event itself.
+- A flaky test is a bug until shown otherwise. Find the cause instead of
+  rerunning it or adding a sleep; several flakes here were real bugs. Run the
+  tests with `-race` in WSL, because some races only show there.
+- Windows and macOS file systems ignore case; Linux does not. A lookup that
+  opens a file by a name the user typed, such as a time zone, can pass there
+  and fail on Linux. Check the spelling against the canonical name instead.
 
 ## End-to-end harness (`test/e2e/`)
 
@@ -60,6 +76,17 @@
   `deploy.PublicMessage` accepts it; anything else becomes "operation failed".
   A refusal with variable text, such as an app name or digest, needs a strict
   pattern there.
+- A new state column needs a numbered schema step that alters an existing
+  database, not only the schema for a new one; otherwise an agent upgraded in
+  place cannot open its state. Two branches that both bump the schema version
+  renumber when one rebases onto the other.
+- Swarm replica slots are not always 1..N: after a service is scaled by hand, a
+  single replica can keep slot 2. Count healthy replicas, not slot numbers.
+- A reader never returns `(0, nil)` at the end of its input, which makes its
+  caller loop forever. A stream cut inside a frame ends with
+  `io.ErrUnexpectedEOF`.
+- A helper container whose output holds backup data or secrets sets its log
+  driver to `none`, so Docker does not keep a copy of that output on disk.
 - Released CLIs and agents refuse unknown manifest keys. A new key can't
   appear in berthy-examples or in instructions for released versions until a
   release ships it.
