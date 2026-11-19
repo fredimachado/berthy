@@ -49,6 +49,27 @@ type fakeCompose struct {
 	upStarted chan struct{}
 	upRelease chan struct{}
 	upOnce    sync.Once
+	// ps is the output of each `compose ps` poll, in order; the last one repeats. Unset, every poll shows one running container.
+	ps    []string
+	psRun int
+	// psFails is how many of the first ps polls fail.
+	psFails int
+}
+
+// psRunning is `compose ps --all --format json` for one running container without a health check.
+const psRunning = `{"ExitCode":0,"Health":"","Service":"database","State":"running","Status":"Up 3 seconds"}`
+
+// psRuns counts the ps polls of the deploy.
+func (f *fakeCompose) psRuns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.runs {
+		if r.Args[0] == "ps" {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
@@ -78,6 +99,16 @@ func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byt
 			f.upAuthSeen = err == nil
 		}
 		return nil, nil, f.upErr
+	case "ps":
+		out := psRunning
+		if len(f.ps) > 0 {
+			out = f.ps[min(f.psRun, len(f.ps)-1)]
+		}
+		f.psRun++
+		if f.psRun <= f.psFails {
+			return nil, nil, errors.New("compose could not run")
+		}
+		return []byte(out), nil, nil
 	case "restart":
 		return nil, nil, f.restartErr
 	case "down":
@@ -113,6 +144,9 @@ func TestComposeRegistryAuthExistsOnlyForUp(t *testing.T) {
 	}
 	if _, err = os.Stat(runner.upAuth); !os.IsNotExist(err) {
 		t.Fatalf("registry auth outlived the deploy: %v", err)
+	}
+	if runner.psRuns() == 0 {
+		t.Fatal("no ps poll ran, so none was checked for registry auth")
 	}
 	for _, r := range runner.runs {
 		if r.Args[0] != "up" && r.DockerConfig != "" {
@@ -243,7 +277,7 @@ func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 	if runner.upFile != composeFileOne || !runner.upEnvFound {
 		t.Fatalf("up saw %q (env %v)", runner.upFile, runner.upEnvFound)
 	}
-	want := []string{"up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "30"}
+	want := []string{"up", "-d", "--remove-orphans"}
 	if strings.Join(runner.upArgs, " ") != strings.Join(want, " ") {
 		t.Fatalf("up args %v", runner.upArgs)
 	}

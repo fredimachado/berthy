@@ -34,15 +34,28 @@ type pacer struct {
 	lastEvent time.Time
 }
 
-// newPacer returns the pacer of a wait on the service with this ID. e is the engine the wait reads; the pacer listens to its
-// events when it offers them. The caller closes the pacer.
-func newPacer(e any, serviceID string) *pacer {
+// serviceEvents matches the events a wait on the Swarm service with this ID cares about: the resync, an event of one of its
+// containers, and an event of the service itself.
+func serviceEvents(id string) func(engine.Event) bool {
+	return func(ev engine.Event) bool {
+		return ev.Resync() || ev.Attributes["com.docker.swarm.service.id"] == id || ev.Type == "service" && ev.ID == id
+	}
+}
+
+// projectEvents matches the events a wait on a Compose project cares about: the resync and an event of one of its containers.
+func projectEvents(project string) func(engine.Event) bool {
+	return func(ev engine.Event) bool {
+		return ev.Resync() || ev.Attributes["com.docker.compose.project"] == project
+	}
+}
+
+// newPacer returns the pacer of a wait. e is the engine the wait reads; the pacer listens to the events of it that match
+// when it offers them. The caller closes the pacer.
+func newPacer(e any, match func(engine.Event) bool) *pacer {
 	p := &pacer{stop: func() {}}
 	if src, ok := e.(eventSource); ok {
 		p.src = src
-		p.events, p.stop = src.Watch(func(ev engine.Event) bool {
-			return ev.Resync() || ev.Attributes["com.docker.swarm.service.id"] == serviceID || ev.Type == "service" && ev.ID == serviceID
-		})
+		p.events, p.stop = src.Watch(match)
 	}
 	return p
 }

@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/api"
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
@@ -88,7 +90,7 @@ const (
 
 // composeMessage matches the refusals a Compose plan, an adoption or an exec can name a service, port or app in. Only these
 // dynamic texts are public besides the fixed Refusal values.
-var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
+var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (exited with code -?[0-9]{1,3}|is unhealthy|not ready after [0-9]{1,6}s|publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
 
 // composeHash matches one config hash printed by `compose config --hash`.
 var composeHash = regexp.MustCompile(`^[A-Za-z0-9:._-]{8,256}$`)
@@ -838,22 +840,155 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if err = c.Store.MarkStep(ctx, op.ID, composeRunOrdinal, "issued", json.RawMessage(`{}`)); err != nil {
 		return failedWith(errComposeJournal)
 	}
-	upCtx, cancel := context.WithTimeout(ctx, budget+composeUpWindow)
+	// Berthy judges readiness itself: Compose's --wait fails a project whose service has exited, even with code 0, so a
+	// one-shot service could never be deployed. The budget counts from before up, as Compose's wait timeout did.
+	deadline := time.Now().Add(budget)
+	upCtx, cancel := context.WithDeadline(ctx, deadline.Add(composeUpWindow))
 	defer cancel()
 	_, _, err = c.Compose.Run(upCtx, engine.ComposeRun{
 		Project:      project,
 		Dir:          dir,
-		Args:         []string{"up", "-d", "--remove-orphans", "--wait", "--wait-timeout", strconv.FormatInt(int64(budget/time.Second), 10)},
+		Args:         []string{"up", "-d", "--remove-orphans"},
 		DockerConfig: auth,
 	})
+	if err == nil {
+		err = c.waitCompose(upCtx, project, dir, deadline, budget)
+	}
 	if err != nil {
 		_ = c.Store.MarkStep(ctx, op.ID, composeRunOrdinal, "finished", json.RawMessage(`{"ok":false}`))
+		var r Refusal
+		if errors.As(err, &r) {
+			return failedWith(r)
+		}
 		return failedWith(errComposeUp)
 	}
 	if err = c.Store.MarkStep(ctx, op.ID, composeRunOrdinal, "finished", json.RawMessage(`{"ok":true}`)); err != nil {
 		return failedWith(errComposeJournal)
 	}
 	return state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: release, Settings: settings}
+}
+
+// composeContainer is one line of `compose ps --all --format json`, parsed where it enters.
+type composeContainer struct {
+	Service  string `json:"Service"`
+	State    string `json:"State"`  // running, exited, created, restarting, paused, dead, removing
+	Health   string `json:"Health"` // "", starting, healthy, unhealthy
+	ExitCode int    `json:"ExitCode"`
+}
+
+// parseComposePS parses the output of `compose ps --all --format json`. Compose prints one JSON object per line; older
+// releases print one JSON array. Blank output is no containers. Each container becomes a replica of its service: the exit
+// code is kept for an exited one only, and no health check is the inventory's "none".
+func parseComposePS(out []byte) (map[string][]api.Replica, error) {
+	var list []composeContainer
+	if trimmed := bytes.TrimSpace(out); len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return nil, errors.New("compose ps output is not JSON")
+		}
+	} else {
+		for _, line := range bytes.Split(out, []byte("\n")) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var c composeContainer
+			if err := json.Unmarshal(line, &c); err != nil {
+				return nil, errors.New("compose ps output is not JSON")
+			}
+			list = append(list, c)
+		}
+	}
+	services := map[string][]api.Replica{}
+	for _, c := range list {
+		if c.Service == "" {
+			return nil, errors.New("compose ps container has no service")
+		}
+		r := api.Replica{State: c.State, Health: c.Health}
+		if r.Health == "" {
+			r.Health = "none"
+		}
+		if c.State == "exited" {
+			code := c.ExitCode
+			r.ExitCode = &code
+		}
+		services[c.Service] = append(services[c.Service], r)
+	}
+	return services, nil
+}
+
+// composeVerdict judges the containers of a project after up. ready is true when every container is a finished one-shot, or
+// runs with no health check or a healthy one. failure is non-empty when a container exited with a code other than 0 or is
+// dead ("service S exited with code N"), or runs unhealthy ("service S is unhealthy"); a failure wins over not ready.
+// Services are judged in name order so the message is stable. pending names the first service that is neither ready nor
+// failed, for the timeout message. A project with no containers is ready.
+func composeVerdict(services map[string][]api.Replica) (ready bool, pending string, failure string) {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, r := range services[name] {
+			switch {
+			case r.FinishedOneShot():
+			case r.State == "exited" || r.State == "dead":
+				code := -1
+				if r.ExitCode != nil {
+					code = *r.ExitCode
+				}
+				return false, "", fmt.Sprintf("service %s exited with code %d", name, code)
+			case r.State == "running" && r.Health == "unhealthy":
+				return false, "", "service " + name + " is unhealthy"
+			case r.State == "running" && (r.Health == "none" || r.Health == "healthy"):
+			case pending == "":
+				pending = name
+			}
+		}
+	}
+	return pending == "", pending, ""
+}
+
+// waitCompose polls `compose ps --all` in dir until composeVerdict says ready (nil) or failed (a Refusal naming the service),
+// or until deadline (a Refusal naming the service that is not ready, with the budget). A poll whose ps fails is tried again
+// at the next one; if the last poll before the deadline failed, or the output cannot be read, the wait ends with errComposeUp.
+// A health or die event of a container of the project wakes the wait before its interval. ps runs without registry auth.
+func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadline time.Time, budget time.Duration) error {
+	pace := newPacer(c.Engine, projectEvents(project))
+	defer pace.close()
+	wctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var pending string
+	var psFailed bool
+	for {
+		if ctx.Err() != nil {
+			return errComposeUp
+		}
+		out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
+		psFailed = err != nil
+		if err == nil {
+			services, perr := parseComposePS(out)
+			if perr != nil {
+				return errComposeUp
+			}
+			var ready bool
+			var failure string
+			ready, pending, failure = composeVerdict(services)
+			if failure != "" {
+				return Refusal(failure)
+			}
+			if ready {
+				return nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		// A false wait is the deadline or a cancel: the next round reads once more and decides.
+		pace.wait(wctx)
+	}
+	if psFailed {
+		return errComposeUp
+	}
+	return Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
 }
 
 // replaceProjectDir moves the staged files into the project's directory. The new contents are written beside it first.

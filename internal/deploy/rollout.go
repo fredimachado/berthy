@@ -182,7 +182,7 @@ func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.St
 // waitHealthy waits until every replica of the generation runs healthy, the context ends, or, with a positive limit, the
 // generation has had limit failed tasks. Swarm keeps few old tasks, so failures are counted by task ID across polls.
 func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int) error {
-	pace := newPacer(e, id)
+	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	failed := map[string]bool{}
 	for {
@@ -316,7 +316,7 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 }
 
 func waitDrain(ctx context.Context, e healthReader, id, generation string) error {
-	pace := newPacer(e, id)
+	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	for {
 		tasks, err := e.ServiceTasks(ctx, id)
@@ -405,7 +405,7 @@ func validateInheritedRuntime(raw json.RawMessage) error {
 }
 
 func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
-	pace := newPacer(e, id)
+	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	for {
 		live, err := e.InspectService(ctx, name)
@@ -457,7 +457,7 @@ func healthyImageOnce(ctx context.Context, e healthReader, id, image string, rep
 	return nil
 }
 func waitImageHealthy(ctx context.Context, e healthReader, id, image string, replicas int) error {
-	pace := newPacer(e, id)
+	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	for {
 		if healthyImageOnce(ctx, e, id, image, replicas) == nil {
