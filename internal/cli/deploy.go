@@ -142,8 +142,8 @@ var changeFlags = map[string][]string{
 
 type commandFlags struct {
 	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, exec, scope, expires, run string
-	bytes, format, diff                                                                                                               string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                       bool
+	bytes, format, diff                                                                                                                     string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                             bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
 	pos, command, given, versions []string

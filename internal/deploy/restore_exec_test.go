@@ -104,15 +104,15 @@ func TestRestoreIntoACommandRefusesWhatCannotWorkBeforeAnythingIsLocked(t *testi
 		actor  Actor
 		want   string
 	}{
-		"not an administrator": {func(*Request) {}, Actor{ID: "ci", Name: "ci"}, string(errRestoreAdmin)},
-		"into and a command":   {func(q *Request) { q.RestoreInto = "restored" }, restoreAdmin, string(errRestoreArgs)},
-		"no key":               {func(q *Request) { q.RestoreKey = "" }, restoreAdmin, string(errRestoreArgs)},
-		"no app":               {func(q *Request) { q.App = "" }, restoreAdmin, string(errRestoreArgs)},
-		"unknown app":          {func(q *Request) { q.App = "ghost" }, restoreAdmin, string(errRunNotDeployed)},
-		"role of a Compose app": {func(q *Request) { q.Service, q.Role = "", "web" }, restoreAdmin, "use service for a Compose app"},
+		"not an administrator":    {func(*Request) {}, Actor{ID: "ci", Name: "ci"}, string(errRestoreAdmin)},
+		"into and a command":      {func(q *Request) { q.RestoreInto = "restored" }, restoreAdmin, string(errRestoreArgs)},
+		"no key":                  {func(q *Request) { q.RestoreKey = "" }, restoreAdmin, string(errRestoreArgs)},
+		"no app":                  {func(q *Request) { q.App = "" }, restoreAdmin, string(errRestoreArgs)},
+		"unknown app":             {func(q *Request) { q.App = "ghost" }, restoreAdmin, string(errRunNotDeployed)},
+		"role of a Compose app":   {func(q *Request) { q.Service, q.Role = "", "web" }, restoreAdmin, "use service for a Compose app"},
 		"service of an image app": {func(q *Request) { q.App, q.Role, q.Service = "web", "", "web" }, restoreAdmin, "use role for an image app"},
-		"role and service":     {func(q *Request) { q.Role = "web" }, restoreAdmin, "name a role or a service, not both"},
-		"bad timeout":          {func(q *Request) { q.Timeout = "soon" }, restoreAdmin, string(errRunTimeout)},
+		"role and service":        {func(q *Request) { q.Role = "web" }, restoreAdmin, "name a role or a service, not both"},
+		"bad timeout":             {func(q *Request) { q.Timeout = "soon" }, restoreAdmin, string(errRunTimeout)},
 	} {
 		req := execRestoreRequest("x-" + name)
 		tc.mutate(&req)

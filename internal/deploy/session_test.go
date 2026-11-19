@@ -497,6 +497,8 @@ func TestRemoveOrphanSessionsRemovesOnlyThisEnvironmentsSessionAndJobContainers(
 	f.running["mine-running"] = true
 	f.labels["mine-job"] = map[string]string{"berthy.environment": "test", "berthy.job": "report", "berthy.oneoff": "job"}
 	f.running["mine-job"] = true
+	f.labels["mine-backup"] = map[string]string{"berthy.environment": "test", "berthy.backup": "main-db", "berthy.oneoff": "backup"}
+	f.labels["mine-restore"] = map[string]string{"berthy.environment": "test", "berthy.restore": "main-db", "berthy.oneoff": "restore"}
 	f.labels["other-env-job"] = map[string]string{"berthy.environment": "prod", "berthy.job": "report", "berthy.oneoff": "job"}
 	f.labels["other-env"] = map[string]string{"berthy.environment": "prod", "berthy.session": "c"}
 	f.labels["a-hook"] = map[string]string{"berthy.environment": "test", "berthy.operation": "op1", "berthy.oneoff": "pre_hook"}
@@ -504,7 +506,7 @@ func TestRemoveOrphanSessionsRemovesOnlyThisEnvironmentsSessionAndJobContainers(
 	if err := c.RemoveOrphanSessions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"mine-exited", "mine-running", "mine-job"} {
+	for _, gone := range []string{"mine-exited", "mine-running", "mine-job", "mine-backup", "mine-restore"} {
 		if _, ok := f.labels[gone]; ok {
 			t.Errorf("%s was kept", gone)
 		}

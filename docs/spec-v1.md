@@ -844,8 +844,9 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `secret set`, `secret generate`, `secret import`, `secret list`, `secret rm` | Manage secret values; values are never printed. `secret generate` makes a random value on the agent and stores it, refusing a stored name unless `--replace`. `secret import` stores every `NAME=value` line of standard input, all or nothing; `secret list --manifest-dir` also names the manifest's secrets that have no value | Yes |
 | `lock acquire`, `lock release`, `lock status` | Manage the deploy lock | Yes |
 | `recovery resolve OPERATION_ID -m REASON` | Finish an operation stuck in recovery as failed and release its lock (admin; `--dry-run` shows the journaled steps) | Yes |
-| `backup run <name>` | Run a volume backup now, wait for it to finish and exit 0 only when it succeeded (`deploy` scope) | Yes |
+| `backup run <name>` | Run a backup of a volume or of a command's output now, wait for it to finish and exit 0 only when it succeeded (`deploy` scope) | Yes |
 | `restore <key> --into <volume>` | Restore a backup, named by its key from `backup list`, into a new Docker volume (`admin` scope; `--dry-run` checks the key and the name) | Yes |
+| `restore <key> --exec <app> [--service <name> \| --role <name>] [--timeout <d>] -- <command>` | Restore a command backup by streaming it, decompressed, into the input of a command in a running container or a new one (`admin` scope; the checksum is checked before the command starts; `--dry-run` shows where it would run) | Yes |
 | `state-backup` | Take a snapshot of the agent's state now, wait for it to finish and exit 0 only when it succeeded (`admin` scope) | Yes |
 | `key rotate [--dry-run]` | Replace the key the agent's state is sealed with (`admin` scope, never an agent token; see "Encryption key") | Yes |
 | `state-restore --endpoint URL --bucket NAME --object KEY --out DIR --key-file PATH` | Rebuild the agent's state from a state snapshot with the saved key, without an agent; the storage credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY` | No |
@@ -1116,7 +1117,7 @@ jobs:
 
 ## Volume backups and restore
 
-Any named Docker volume mounted by a managed app can have a backup. Declare a job for each volume to back up, with the source volume, an S3-compatible destination and, for automatic backups, a five-field cron schedule.
+Any named Docker volume mounted by a managed app can have a backup, and so can the standard output of a command (see "Command backups"). Declare a backup for each volume to back up, with the source volume, an S3-compatible destination and, for automatic backups, a five-field cron schedule.
 
 ### Configuration
 
@@ -1154,22 +1155,46 @@ backups:
 2. The agent reads the volume through a read-only mount and streams a compressed archive to object storage, hashing it on the way. A failed archive or upload is aborted and never listed as a successful backup.
 3. Only after the archive is stored does the agent write its sidecar, then it records the source volume, object key, size, duration and checksum, and applies retention.
 
+A backup of a command's output runs the command in place of steps 1 and 2; see "Command backups".
+
 Backups of the same volume run one at a time: a second one is refused with `409` while one runs, and records nothing. If the preparation job has its own schedule, the backup waits for any active run to finish, then reserves the job until archiving finishes; a scheduled occurrence that arrives in between is skipped.
 
-A failed run is recorded as `failed` with a detail that starts with the step that failed: `preparation failed`, `archive failed`, `upload failed` or `sidecar failed`. A run that the agent's stop cut short reads `agent stopped during the backup`, and one that a crash left running reads `agent restarted during the backup`.
+A failed run is recorded as `failed` with a detail that starts with the step that failed: `preparation failed`, `archive failed`, `command failed`, `upload failed` or `sidecar failed`. A run that the agent's stop cut short reads `agent stopped during the backup`, and one that a crash left running reads `agent restarted during the backup`.
 
 **Which volume.** For an image app, `volume` must be the source of a named-volume mount of one of its roles, and the Docker volume has that name. For a Compose app, `volume` is a key of the Compose file's top-level `volumes`, and the agent asks Compose, with the project's stored files, for the Docker name (an external volume has the name it declares). A volume the app does not mount is refused: `backup <name>: volume <volume> is not mounted by app <app>`. A backup of an app that is not deployed is not part of the configuration.
 
 **What storage holds.** Objects of a backup sit under `<prefix>/<backup>/`, where `<prefix>` is the backup's `prefix` or `<app>/<volume>`:
 
 - the archive `<UTC time>-<run id>.tar.gz`, as in `20261116T100000Z-7.tar.gz`;
-- its sidecar `<same name>.json`: `{"format":"berthy-volume-tar-gzip-1","environment","backup","app","volume","docker_volume","size","sha256","started","finished","run_id"}`.
+- its sidecar `<same name>.json`: `{"format":"berthy-volume-tar-gzip-1","environment","backup","app","volume","docker_volume","size","sha256","started","finished","run_id"}`. The format says what the archive is, so a restore knows what an object holds; a command backup has `berthy-command-gzip-1` and no `volume` or `docker_volume` (see "Command backups").
 
 The sidecar is written only after the archive was uploaded, so a backup that has one is complete. `backup list` reads sidecars: an archive without one is never listed and never restorable, and neither is a sidecar of another backup, environment or format. The destination's credentials are the secrets named by `access_key_secret` and `secret_key_secret`; without them a run is refused with `backup credentials unavailable`.
 
 **Retention.** `keep: all` (the default) deletes nothing. `keep: N` deletes, after a successful run, all but the `N` newest backups that have a sidecar for this backup, the archive first and then its sidecar. Objects without a sidecar of this backup are never touched. A failed deletion is logged and does not fail the run.
 
 A volume archive reads files as they are encountered. For apps that need a consistent set of files while writes continue, use a preparation job to write a consistent export to a dedicated volume.
+
+### Command backups
+
+A backup has exactly one of `volume` and `command`; `config validate` refuses both, and neither, with the file and line. With `command` it runs a command and keeps its standard output, which is how a database is backed up without a dump volume, a `before` job or disk space on the server.
+
+```yaml
+backups:
+  main-db:
+    app: postgres
+    service: postgres          # a Compose app; an image app names role instead
+    command: ["sh", "-c", "pg_dump -Fc --no-acl --no-owner -U \"$POSTGRES_USER\" \"$POSTGRES_DB\""]
+    timeout: 1h                # default 1h; from 1s to 24h
+    schedule: "0 0 * * *"
+    destination: offsite
+    retention:
+      keep: 14
+```
+
+- **Where the command runs.** It runs as a job does. A Compose app's `service` names the service whose running container the command is executed in (it may be left out when the app has one service). An image app's `role` (which may be left out when the app has one role) names the role whose environment, limits and named volumes a new container of the app's applied release takes; the container is attached before it starts, is created without a log driver so Docker keeps no copy of the output, is stopped when the run ends before the command does, and is always removed. `role` and `service` cannot be combined, and they, `timeout` and `command` do not belong to a volume backup. `before` does not belong to a command backup.
+- **The stream.** The command's standard output is compressed with gzip, hashed with SHA-256 and uploaded as it is written, through a pipe, so nothing is written to the server's disk. The object is `<prefix>/<backup>/<UTC time>-<run id>.gz`, where `<prefix>` is the backup's `prefix` or `<app>/command`, and its sidecar `<same name>.json` has `format` `berthy-command-gzip-1`, with the size and SHA-256 of the stored object. The command runs under its `timeout`, with 1 hour as the default; the upload has none beyond the agent's.
+- **Failure.** A command that exits non-zero, writes no standard output, runs out of time or cannot run (a Compose app with no running container of the service), and an upload that fails, abort the upload: the multipart upload is aborted, no object is left, and no sidecar is written, so the backup is never listed. The run is `failed` with the detail `command failed: <how it ended>: <the end of its standard error>`, such as `command failed: exited with code 3: pg_dump: error: connection lost`. The standard error is the last 200 lines the command wrote, with every managed secret value replaced, cut to what fits the 512 bytes of a run's detail, and empty when the secrets cannot be read. The backup's check shows it as for a volume.
+- **The rest.** Schedules, retention, the `backup:<name>` check with its overdue and size rules, `backup run` and the `backup:` deploy hook work as for a volume. A command backup runs one at a time, and a second is refused with `409`.
 
 ### Safety checks
 
@@ -1192,37 +1217,46 @@ Each backup of the deployed manifest has a check named `backup:<name>`, run ever
 - When the agent starts it also removes the archive and restore containers that a killed agent left running in its environment. A multipart upload that a killed agent left in storage is not removed; a lifecycle rule on the bucket that aborts incomplete uploads does that.
 - Inspect the restored volume before mounting it in an app. If it contains an export, use the app's own restore command to import it.
 
+### Restore into a command
+
+`berthy restore <key> --exec <app> [--service <name> | --role <name>] [--timeout <d>] [--dry-run] -- <command>...` streams a command backup, decompressed, into the standard input of a command. It takes an `admin` token and is an operation of kind `restore` under the deploy lock, audited like `restore --into`.
+
+- `--into` and `--exec` are exclusive. `restore --into` refuses a command backup with `this is a command backup; restore it with --exec`, and `--exec` refuses a volume backup with `this is a volume backup; restore it with --into`.
+- The target is checked before the lock is taken, as a job's is: the app is deployed, `--service` is for a Compose app and `--role` for an image app, and a Compose app has a running container of the service. The command runs as a job does, in that container or in a new container of the applied release, with its input attached, and under the `--timeout`, `1h` by default.
+- **The checksum comes first.** The agent reads the object from storage to its end, hashing it, and compares its size and SHA-256 with the sidecar's. A mismatch fails the operation with `backup checksum mismatch` before the command starts, so the command never sees bytes that are not what was stored. Only then does it read the object a second time and stream it, decompressed, into the command, and the second read is compared too. This costs a second read of the object and is chosen over loading data that may be damaged. Nothing is staged on the disk of the server.
+- A command that exits non-zero, runs out of time or cannot run fails the operation with `restore command failed`, with a reason that says how the command ended and its last line of output, and one `step` event for each of its last 20 lines, with secret values replaced. If the agent stops during the restore, the operation ends `interrupted` with `restore interrupted; the command may have loaded part of the backup`, since what the command did with the part it received cannot be told.
+- `--dry-run` shows the backup, where the command would run and the command, and starts nothing.
+
+`restore --exec` is not an MCP command: `execute_resource_command` restores into a volume only.
+
 ### Example: PostgreSQL dump
 
-Mount a named volume with Compose key `db-dumps` at `/backups` in the `postgres` service. Give the dump command write access to that mount and pass `POSTGRES_DB` and `POSTGRES_PASSWORD` into the container through the Compose file. The backup schedule runs the dump job first and uploads the volume only after the dump succeeds. The example uses the `postgres` app from the base manifest and the `offsite` destination above.
+The dump command is the backup. The example uses the `postgres` app of the base manifest, a Compose app whose `postgres` service has `POSTGRES_USER` and `POSTGRES_DB` in its environment, and the `offsite` destination above. Nothing else is needed: no dump volume, no job, no file on the server.
 
 ```yaml
-jobs:
-  dump-db:
+backups:
+  main-db:
     app: postgres
     service: postgres
     command:
       - sh
-      - -ec
-      - |
-        umask 077
-        tmp=$(mktemp /backups/.latest.XXXXXX)
-        trap 'rm -f "$tmp"' EXIT
-        PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -Fc --no-acl --no-owner \
-          -U "${POSTGRES_USER:-postgres}" -d "$POSTGRES_DB" -f "$tmp"
-        mv -f "$tmp" /backups/latest.dump
-
-backups:
-  main-db:
-    app: postgres
-    volume: db-dumps
+      - -c
+      - pg_dump -Fc --no-acl --no-owner -U "$POSTGRES_USER" "$POSTGRES_DB"
     schedule: "0 0 * * *"
     destination: offsite
     prefix: postgres/myapp
-    before: dump-db
+    retention:
+      keep: 14
 ```
 
-The command replaces `latest.dump` only after `pg_dump` succeeds. The base manifest's `backup: main-db` deploy hook uses the same sequence to take a fresh dump before migrations. To recover, restore the archive into a new volume, mount it in a recovery container and load `latest.dump` into a scratch database with `pg_restore`.
+The agent runs `pg_dump` in the running `postgres` container and sends its output to storage as it is written. If `pg_dump` fails halfway, nothing is kept and the backup's check goes critical with its error. The `backup: main-db` deploy hook takes a fresh dump before migrations in the same way. To recover, load the backup into a scratch database of the running container, and look at it:
+
+```console
+$ berthy restore postgres/myapp/main-db/20261116T000000Z-7.gz -e prod --exec postgres --service postgres \
+    -- pg_restore -U todo -d todo_check --no-owner
+```
+
+A volume that holds a consistent export still works for what a dump command cannot reach: a `before` job writes the export to a dedicated volume, and a volume backup uploads it.
 
 ### Credentials
 

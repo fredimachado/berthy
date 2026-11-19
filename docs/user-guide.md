@@ -2066,7 +2066,7 @@ With the default zone, NEXT shows only the UTC time, as in `2026-11-17 02:30 UTC
 ---
 ### Step 10. Backups and restore
 
-Berthy backs up **named Docker volumes** to S3-compatible object storage. A backup is a compressed archive of one volume, plus a small description file. Backups are opt-in: you declare each one.
+Berthy backs up **named Docker volumes**, and the **output of a command**, to S3-compatible object storage. A backup of a volume is a compressed archive of it, and a backup of a command is the command's compressed standard output. Either comes with a small description file. Backups are opt-in: you declare each one.
 
 The todo app backs up the database by dumping it and uploading the dump:
 
@@ -2074,6 +2074,8 @@ The todo app backs up the database by dumping it and uploading the dump:
 2. The volume backup `main-db` uploads that volume.
 
 Archiving the live `pgdata` volume would copy files while the database writes to them. A dump is safe. That is why `dump-db` writes to a dedicated volume.
+
+A database does not need a dump volume. A backup can take the dump command's output instead of a volume, and send it to storage as it is written: see [Back up the output of a command](#back-up-the-output-of-a-command) below, which is the shorter way for PostgreSQL.
 
 #### Configure
 
@@ -2108,8 +2110,9 @@ backups:
 | `region` | The bucket's region. | |
 | `bucket` | The bucket name. | required |
 | `access_key_secret`, `secret_key_secret` | Names of the secrets that hold the credentials. | required |
-| `backups.<name>.app` | The app that mounts the volume. | required |
-| `volume` | For a Compose app, the key in the Compose file's top-level `volumes` (here `db-dumps`; Berthy works out the real Docker name). For an image app, the name of a volume one of its roles mounts (`volumes: ["uploads:/app/uploads"]`). | required |
+| `backups.<name>.app` | The app that mounts the volume, or that the command runs in. | required |
+| `volume` | For a Compose app, the key in the Compose file's top-level `volumes` (here `db-dumps`; Berthy works out the real Docker name). For an image app, the name of a volume one of its roles mounts (`volumes: ["uploads:/app/uploads"]`). A backup has exactly one of `volume` and `command`. | one of the two |
+| `command`, `service`, `role`, `timeout` | A backup of a command's output instead of a volume: see [below](#back-up-the-output-of-a-command). | |
 | `destination` | A key of `destinations`. | required |
 | `schedule` | Five-field cron, read in the manifest's `timezone` (UTC by default). Leave it out to run only on demand or from a deploy hook. | on demand |
 | `prefix` | Where the backup's objects sit in the bucket. | `<app>/<volume>` |
@@ -2124,6 +2127,30 @@ berthy secret set S3_SECRET_KEY -e prod
 ```
 
 A backup of a volume the app does not mount is refused, and a backup of an app that is not deployed is not part of the configuration.
+
+#### Back up the output of a command
+
+A database is best backed up with its own dump tool, and the dump is the backup. Name the command instead of a volume:
+
+```yaml
+backups:
+  main-db:
+    app: postgres
+    service: postgres
+    command: ["sh", "-c", "pg_dump -Fc --no-acl --no-owner -U \"$POSTGRES_USER\" \"$POSTGRES_DB\""]
+    schedule: "0 1 * * *"
+    destination: offsite
+    retention:
+      keep: 14
+```
+
+There is no dump volume and no `before` job. The agent runs the command, compresses its standard output and sends it to storage as it is written, hashing it on the way. Nothing is written to the server's disk, however large the dump is.
+
+- **Where it runs.** `service` names the Compose service whose running container runs the command, as for a job (it may be left out when the app has one service). For an image app, `role` names the role whose environment, limits and volumes the command takes, and the command runs in a new container of the app's applied release, which needs no running replica and is removed when the command ends. Docker keeps no log of that container's output. `service` and `role` cannot be combined, and neither belongs to a volume backup.
+- **Time limit.** `timeout` limits the command, from `1s` to `24h`, `1h` unless you set it. A command past it is stopped, and for an image app its container goes with it.
+- **Failure.** A command that exits non-zero, writes nothing, runs out of time, or whose upload fails ends the backup: the upload is aborted, no description file is written, and nothing of it is listed. The run keeps the last lines of the command's standard error, with every secret value in them replaced, so `backup run` and the `backup:<name>` check say why, for example `command failed: exited with code 3: pg_dump: error: ...`.
+- **The rest is the same.** Schedules, `retention`, the `backup:<name>` check with its overdue and size rules, `backup run` and the pre-deploy `backup:` hook work as for a volume. Backups of one command backup run one at a time. A command backup has no `before` job.
+- **Where the objects sit.** The key is `<prefix>/<backup>/<time>-<run id>.gz`, with `<prefix>` the backup's `prefix` or `<app>/command`. `backup list` shows `command` where a volume backup shows its volume.
 
 #### Run, list, watch
 
@@ -2142,7 +2169,7 @@ main-db  postgres  db-dumps  38 MiB   2026-11-16T01:00:12Z  <hash>    postgres/t
 
 The **key** is what `restore` takes. A backup is listed only when its description file (`<same name>.json`, with the checksum and size) exists. The agent writes it after the upload finishes, so a backup that is listed is complete. An interrupted upload leaves nothing that looks like a good backup.
 
-How a run goes: the `before` job runs and must succeed; the agent reads the volume through a read-only mount and streams a gzip tar to storage while hashing it; only then it writes the description file, records the run and applies retention (`keep: N` deletes all but the `N` newest backups of this job; objects without a description file are never touched). A failed run is recorded with a detail that starts with its step: `preparation failed`, `archive failed`, `upload failed` or `sidecar failed`.
+How a run goes: the `before` job runs and must succeed; the agent reads the volume through a read-only mount and streams a gzip tar to storage while hashing it; only then it writes the description file, records the run and applies retention (`keep: N` deletes all but the `N` newest backups of this job; objects without a description file are never touched). A failed run is recorded with a detail that starts with its step: `preparation failed`, `archive failed`, `command failed`, `upload failed` or `sidecar failed`. A backup of a command runs the command in place of the first two steps.
 
 A scheduled run happens once per occurrence (read in the manifest's `timezone`, see step 9), even across an agent restart, and occurrences missed while the agent was down are not made up. If a backup of the volume is still running at an occurrence, that occurrence is skipped without an alert.
 
@@ -2184,6 +2211,31 @@ berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-resto
 Restore never overwrites a live volume. It always makes a new one, and you decide what to do with it. `backup list` and `restore` read the backups of every app that was ever deployed, even after `berthy remove`, so backups stay restorable.
 
 If the agent stops during a restore, the operation ends `interrupted`, and at its next start the agent removes the half-built volume (it carries the label `berthy.restore-operation=<operation id>`).
+
+`restore --into` refuses a backup of a command, and `restore --exec` below refuses a backup of a volume, each with a message that names the other.
+
+#### Restore into a command
+
+A backup of a command is restored by giving its output to a command, in a running container, with no download and no recovery volume:
+
+```bash
+berthy restore postgres/command/main-db/20261116T010000Z-7.gz -e prod --dry-run \
+  --exec postgres --service postgres -- pg_restore -U todo -d todo_check --no-owner
+berthy restore postgres/command/main-db/20261116T010000Z-7.gz -e prod \
+  --exec postgres --service postgres -- pg_restore -U todo -d todo_check --no-owner
+```
+
+`--exec APP` names the app, and `--service` or `--role` says where the command runs, as for `exec` and `run`: the running container of a Compose app's service, or a new container of an image app's applied release, which gets the role's environment and volumes. `--timeout` limits the command (`1h` unless you set it). The command follows `--`. The agent streams the backup, decompressed, into the command's standard input.
+
+`restore --exec` needs an **`admin`** token, is an operation under the deploy lock and is audited, like `restore --into`. `--dry-run` shows the backup, where the command would run and the command, and runs nothing.
+
+- **The checksum is checked first.** Before the command starts, the agent reads the whole backup once to check its size and SHA-256 against the description file. A backup that is not what was stored is refused with `backup checksum mismatch`, and the command never runs. Then it reads the backup a second time and streams it. The backup is read twice on purpose: a restore can change data, so it must not start from a backup that turns out to be damaged. The price is the bandwidth of one more read.
+- **A failure shows its cause.** A command that exits non-zero fails the restore with `restore command failed`, the exit code, and the last lines of its output, with secret values replaced.
+- **An interrupted restore.** If the agent stops during a restore, the operation ends `interrupted` and says the command may have loaded part of the backup. Look at the target before you run it again.
+
+The command should load into a scratch database first. To load the real one, stop its writers as in the recipe below.
+
+Because the command's output is the backup, `restore --exec` also takes the place of the download and extraction steps of the recipe below when the backup is a command backup.
 
 #### The PostgreSQL recovery recipe
 
@@ -2673,7 +2725,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `secret import` | admin | `--dry-run`; standard input is `NAME=value` lines | Store every line of standard input as a secret, all or nothing. A registry password name is refused. |
 | `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that have no value. |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
-| `restore <key>` | admin | `--dry-run`, `--request-id`, `--into` (required) | Restore a backup into a new volume. |
+| `restore <key>` | admin | `--dry-run`, `--request-id`, and `--into` or `--exec` (one is required); with `--exec`: `--service` or `--role`, `--timeout`, and the command after `--` | Restore a backup into a new volume, or stream a command backup into a command. |
 | `state-backup` | admin | none | Snapshot the agent's state now and wait. |
 | `key rotate` | admin, not an agent token | `--dry-run` | Replace the encryption key of the agent's state, [as step 10 says](#rotate-the-encryption-key). |
 | `recovery resolve <operation id>` | admin | `--dry-run`, `-m`/`--message` (required) | End an operation stuck in recovery as failed and release its lock. |
@@ -2687,7 +2739,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 

@@ -392,7 +392,7 @@ func (c *Controller) CloseSessions(ctx context.Context) {
 	}
 }
 
-// RemoveOrphanSessions removes the containers of run sessions and of job runs an earlier agent process left behind: a running
+// RemoveOrphanSessions removes the containers of run sessions and of job, backup and restore runs an earlier agent process left behind: a running
 // agent owns neither of an earlier process, whatever state its container is in. Containers of other environments are left alone.
 func (c *Controller) RemoveOrphanSessions(ctx context.Context) error {
 	e, ok := c.Engine.(orphanEngine)
