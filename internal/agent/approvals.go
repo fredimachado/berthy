@@ -587,6 +587,10 @@ func summarize(rest []string, method string, body []byte) string {
 	if b.Role != "" {
 		app += "/" + cleanText(b.Role, 40)
 	}
+	service := ""
+	if b.Service != "" {
+		service = "/" + cleanText(b.Service, 40)
+	}
 	switch routeKind(rest, method) {
 	case "deploy":
 		if b.KeepVersion && b.Version == "" {
@@ -627,6 +631,10 @@ func summarize(rest []string, method string, body []byte) string {
 	case "destroy":
 		return "destroy the environment"
 	case "restore":
+		if len(b.Command) > 0 {
+			// A restore into a command names where it runs, never the command: its arguments may hold a secret.
+			return "restore " + cleanText(b.Key, 100) + " into a command on " + app + service
+		}
 		return "restore " + cleanText(b.Key, 100) + " into " + cleanText(b.Into, 60)
 	case "ingress apply":
 		return "ingress apply"

@@ -584,6 +584,8 @@ func TestEverySummaryIsOneShortPrintableLine(t *testing.T) {
 		{[]string{"remove"}, `{"app":"api","volumes":true}`, "remove api and its volumes"},
 		{[]string{"destroy"}, `{}`, "destroy the environment"},
 		{[]string{"restore"}, `{"key":"files/a.tar.gz","into":"data2"}`, "restore files/a.tar.gz into data2"},
+		{[]string{"restore"}, `{"key":"db/command/d/a.gz","app":"db","service":"postgres","command":["pg_restore","-d","prod"]}`, "restore db/command/d/a.gz into a command on db/postgres"},
+		{[]string{"restore"}, `{"key":"db/command/d/a.gz","app":"web","role":"main","command":["load"]}`, "restore db/command/d/a.gz into a command on web/main"},
 		{[]string{"ingress", "apply"}, `{}`, "ingress apply"},
 		{[]string{"secrets"}, `{"name":"DATABASE_URL","value":"v"}`, "secret set DATABASE_URL"},
 		{[]string{"secrets", "OLD"}, `{}`, "secret delete OLD"},
