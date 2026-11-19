@@ -68,6 +68,11 @@ services:
   side:
     image: $REG/e2e/web@$WEB_V1_DIGEST
     entrypoint: ["sleep", "3600"]
+YML
+# The one-shot is a service of its own file, started in the project by hand after the deploy: Berthy's deploy runs
+# compose up --wait, which refuses any service whose container has already exited, so a deploy cannot carry one.
+cat > "$MAN/job.yml" <<YML
+services:
   job:
     image: $REG/e2e/web@$WEB_V1_DIGEST
     entrypoint: ["true"]
@@ -83,8 +88,14 @@ if wait_state "$check" ok 300; then pass "the service's down check reads ok whil
 cid=$(d ps -q --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=side | head -n 1)
 expect_eq "the service has one running container" "1" "$(printf '%s\n' "$cid" | grep -c .)"
 
-# The one-shot service runs true and finishes with code 0: nothing is wanted of it, so its check never alerts.
+# The one-shot runs true and finishes with code 0: nothing is wanted of it, so its check never alerts.
+out=$(DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config" "$COMPOSE_BIN" -p "$proj" -f "$MAN/compose.yml" -f "$MAN/job.yml" up -d job 2>&1); code=$?
+expect_code "start the one-shot in the project" 0 "$code" "$out"
 jid=$(d ps -aq --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=job | head -n 1)
+for _ in $(seq 1 30); do
+  [ "$(d inspect --format '{{.State.Status}}' "$jid" 2>/dev/null)" = exited ] && break
+  sleep 1
+done
 expect_eq "the one-shot finished with code 0" "0" "$(d inspect --format '{{.State.ExitCode}}' "$jid" 2>/dev/null)"
 
 # Stop the container by hand. Its service has no restart policy, so nothing starts it again.
