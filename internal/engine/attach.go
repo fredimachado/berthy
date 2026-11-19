@@ -103,10 +103,8 @@ func (a *attachedOutput) Read(p []byte) (int, error) {
 	}
 	n, err := a.br.Read(p[:min(int64(len(p)), a.remain)])
 	a.remain -= int64(n)
-	if err != nil && !(err == io.EOF && a.remain > 0) {
-		if n > 0 {
-			return n, nil
-		}
+	// The payload is not complete here, so a read that ends with nothing is a cut stream, never a short read.
+	if n == 0 && err != nil {
 		return 0, a.fail(err, false)
 	}
 	return n, nil

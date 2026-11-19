@@ -167,23 +167,56 @@ func TestAttachKeepsAtMostFourKiBOfStderr(t *testing.T) {
 }
 
 func TestAttachRefusesAMalformedStream(t *testing.T) {
-	for name, stream := range map[string]string{
-		"bad stream id":     "\x07\x00\x00\x00\x00\x00\x00\x01x",
-		"reserved bytes":    "\x01\x01\x00\x00\x00\x00\x00\x01x",
-		"cut header":        "\x01\x00\x00",
-		"cut payload":       frame(1, "hello")[:10],
-		"stdin as a stream": frame(0, "x"),
+	for name, tc := range map[string]struct {
+		stream string
+		want   error // the error a truncated stream must end with; nil when any refusal will do
+	}{
+		"bad stream id":     {"\x07\x00\x00\x00\x00\x00\x00\x01x", nil},
+		"reserved bytes":    {"\x01\x01\x00\x00\x00\x00\x00\x01x", nil},
+		"cut header":        {"\x01\x00\x00", io.ErrUnexpectedEOF},
+		"cut payload":       {frame(1, "hello")[:10], io.ErrUnexpectedEOF},
+		"cut stderr":        {frame(2, "oops")[:10], io.ErrUnexpectedEOF},
+		"stdin as a stream": {frame(0, "x"), nil},
 	} {
-		as := newAttachServer(t, func(conn net.Conn, _ io.Reader) { io.WriteString(conn, stream) })
+		as := newAttachServer(t, func(conn net.Conn, _ io.Reader) { io.WriteString(conn, tc.stream) })
 		out, _, _, err := as.engine.Attach(attachCtx(t), "c1", false)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if _, err = io.ReadAll(out); err == nil {
+		_, err = io.ReadAll(out)
+		switch {
+		case err == nil:
 			t.Errorf("%s: accepted", name)
+		case errors.Is(err, context.DeadlineExceeded):
+			t.Errorf("%s: the read ended with the deadline, not with the stream", name)
+		case tc.want != nil && !errors.Is(err, tc.want):
+			t.Errorf("%s: error %v, want %v", name, err, tc.want)
 		}
 		out.Close()
 	}
+}
+
+func TestAttachReportsAStreamCutInsideAPayload(t *testing.T) {
+	as := newAttachServer(t, func(conn net.Conn, _ io.Reader) { io.WriteString(conn, frame(1, "hello")[:10]) })
+	out, _, _, err := as.engine.Attach(attachCtx(t), "c1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	// The reads are counted, not timed: a reader that returns nothing and no error only ends with its context.
+	var got []byte
+	buf := make([]byte, 64)
+	for i := 0; i < 100; i++ {
+		n, err := out.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			if !errors.Is(err, io.ErrUnexpectedEOF) || string(got) != "he" {
+				t.Fatalf("read %d: got %q, error %v", i, got, err)
+			}
+			return
+		}
+	}
+	t.Fatalf("no error after 100 reads, got %q", got)
 }
 
 func TestAttachEndsCleanlyBetweenFrames(t *testing.T) {
