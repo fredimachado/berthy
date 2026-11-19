@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,6 +39,14 @@ const procNetTCP6 = `  sl  local_address                         remote_address 
    4: B80D0120000000000000000001000000:01BB 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 205 1 0000000000000000 100 0 0 10 0
    5: 000000FD000000000000000001000000:1538 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 206 1 0000000000000000 100 0 0 10 0
 `
+
+// TestMain gives the whole package an empty host, so no test depends on the sockets of the machine that runs it: a test that
+// counts alerts would otherwise see the public listeners of a developer's workstation. Tests that need host files set them
+// with setHostFiles.
+func TestMain(m *testing.M) {
+	hostFiles = fstest.MapFS{}
+	os.Exit(m.Run())
+}
 
 // setHostFiles makes the host's files these for the rest of the test. The names are those the host checks read, relative to
 // the host's root, such as proc/net/tcp.
