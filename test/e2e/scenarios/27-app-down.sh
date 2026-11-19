@@ -3,7 +3,8 @@
 # down:<project>/<service> is unknown for the first two minutes and critical after them, one alert reaches the fake Telegram,
 # and the alert gives the exit code (137, killed after the stop timeout). Starting the container again sends the recovery.
 # A deploy and a restart of an image app, which change its containers, send no down alert, and the image app's own check
-# stays ok. A Compose one-shot that finished with code 0 is not wanted, so its check reads ok and never alerts.
+# stays ok. A one-shot service of the deployed Compose file that finished with code 0 is not wanted, so its check reads ok and
+# never alerts.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -68,11 +69,6 @@ services:
   side:
     image: $REG/e2e/web@$WEB_V1_DIGEST
     entrypoint: ["sleep", "3600"]
-YML
-# The one-shot is a service of its own file, started in the project by hand after the deploy: Berthy's deploy runs
-# compose up --wait, which refuses any service whose container has already exited, so a deploy cannot carry one.
-cat > "$MAN/job.yml" <<YML
-services:
   job:
     image: $REG/e2e/web@$WEB_V1_DIGEST
     entrypoint: ["true"]
@@ -88,9 +84,8 @@ if wait_state "$check" ok 300; then pass "the service's down check reads ok whil
 cid=$(d ps -q --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=side | head -n 1)
 expect_eq "the service has one running container" "1" "$(printf '%s\n' "$cid" | grep -c .)"
 
-# The one-shot runs true and finishes with code 0: nothing is wanted of it, so its check never alerts.
-out=$(DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config" "$COMPOSE_BIN" -p "$proj" -f "$MAN/compose.yml" -f "$MAN/job.yml" up -d job 2>&1); code=$?
-expect_code "start the one-shot in the project" 0 "$code" "$out"
+# The one-shot is a service of the deployed file. It runs true and finishes with code 0: nothing is wanted of it, so its check
+# never alerts.
 jid=$(d ps -aq --filter label=com.docker.compose.project="$proj" --filter label=com.docker.compose.service=job | head -n 1)
 for _ in $(seq 1 30); do
   [ "$(d inspect --format '{{.State.Status}}' "$jid" 2>/dev/null)" = exited ] && break
