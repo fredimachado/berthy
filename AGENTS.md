@@ -14,6 +14,8 @@
 - CI runs the tests on Linux, macOS and Windows. Run `go test ./...` on Windows
   as well as Linux before pushing.
 - `gofmt` covers `third_party/` too, because CI checks it.
+- `gofmt -l` on a Windows checkout lists nearly every file, because of CRLF
+  line endings. Check formatting in WSL or trust CI's check.
 - After pushing, watch the CI run until it is green. A red `main` comes before
   any other work.
 
@@ -50,3 +52,24 @@
 - `third_party/` holds vendored packages with patches (for example, `xid`
   reads the machine id lazily so startup never searches PATH). Don't replace
   them with upstream copies.
+- A new field on `deploy.Request` goes in three places: the struct, the
+  request hash in `Admit` (the same request id with another value is a
+  conflict), and the allowlist in `state.publicJSON`. Without the last one,
+  every request with the field is refused as an invalid admission.
+- The API shows an operation's error only when it is a fixed text or
+  `deploy.PublicMessage` accepts it; anything else becomes "operation failed".
+  A refusal with variable text, such as an app name or digest, needs a strict
+  pattern there.
+- Released CLIs and agents refuse unknown manifest keys. A new key can't
+  appear in berthy-examples or in instructions for released versions until a
+  release ships it.
+
+## Docs
+
+- `docs/user-guide.md` repeats exact CLI output, such as the next steps that
+  `berthy setup` prints. When a message changes, search `docs/` for its old
+  text.
+- berthy-web builds its Docs pages from `docs/user-guide.md` and
+  `docs/spec-v1.md` on `main` every day, one page per heading. Renaming or
+  renumbering a `##` or `###` heading, or an anchor a link points to, breaks
+  the site build until berthy-web's split map is updated.
