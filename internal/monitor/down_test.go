@@ -186,7 +186,7 @@ func TestDownCheckIsUnknownWithoutARecentInventory(t *testing.T) {
 	now = downT0
 	expectDown(t, check, Unknown, "no recent Docker inventory")
 	w.Observe(now, []api.App{downRole(ref, "web", want(1), replica("t1", "running", "unknown"))}, nil)
-	now = downT0.Add(4 * time.Minute)
+	now = downT0.Add(inventoryStale + time.Minute)
 	expectDown(t, check, Unknown, "no recent Docker inventory")
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,46 @@ import (
 // the engine and a function that counts the reads of the container list.
 func downDocker(t *testing.T) (*engine.Engine, func() int) {
 	t.Helper()
+	d := newDownFake(t)
+	return d.eng, d.containerReads
+}
+
+// downFake is that Docker, with a Docker event feed whose events the test pushes, and a switch that makes the Compose
+// container report it was killed for memory.
+type downFake struct {
+	eng *engine.Engine
+	mu  sync.Mutex
+	// reads counts the requests for the container list; oom is what the container's inspect reports.
+	reads  int
+	oom    bool
+	down   bool // the container list answers an error
+	events chan string
+}
+
+func (d *downFake) setDown(v bool) {
+	d.mu.Lock()
+	d.down = v
+	d.mu.Unlock()
+}
+
+func (d *downFake) containerReads() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.reads
+}
+
+func (d *downFake) setOOM(v bool) {
+	d.mu.Lock()
+	d.oom = v
+	d.mu.Unlock()
+}
+
+// push sends one line to the open event feed.
+func (d *downFake) push(line string) { d.events <- line }
+
+func newDownFake(t *testing.T) *downFake {
+	t.Helper()
+	d := &downFake{events: make(chan string, 64)}
 	// The directory is short on purpose: a Unix socket path holds about 108 bytes.
 	dir, err := os.MkdirTemp("", "bd")
 	if err != nil {
@@ -34,20 +75,38 @@ func downDocker(t *testing.T) (*engine.Engine, func() int) {
 	if err != nil {
 		t.Skipf("no Unix sockets here: %v", err)
 	}
-	var mu sync.Mutex
-	containerReads := 0
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const service = `{"ID":"svc-1","Version":{"Index":1},"Spec":{"Name":"shop-api-web","Mode":{"Replicated":{"Replicas":2}}}}`
 		switch r.URL.Path {
 		case "/version":
 			w.Write([]byte(`{"ApiVersion":"1.50","MinAPIVersion":"1.24"}`))
+		case "/v1.44/events":
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			for {
+				select {
+				case line := <-d.events:
+					w.Write([]byte(line + "\n"))
+					w.(http.Flusher).Flush()
+				case <-r.Context().Done():
+					return
+				}
+			}
 		case "/v1.44/containers/json":
-			mu.Lock()
-			containerReads++
-			mu.Unlock()
+			d.mu.Lock()
+			d.reads++
+			down := d.down
+			d.mu.Unlock()
+			if down {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.Write([]byte(`[{"Id":"c1","Image":"img","State":"running","Labels":{"com.docker.compose.project":"shop-db","com.docker.compose.service":"db"}}]`))
 		case "/v1.44/containers/c1/json":
-			w.Write([]byte(`{"RestartCount":0,"State":{"Health":{"Status":"healthy"}}}`))
+			d.mu.Lock()
+			oom := d.oom
+			d.mu.Unlock()
+			fmt.Fprintf(w, `{"RestartCount":0,"State":{"OOMKilled":%t,"Health":{"Status":"healthy"}}}`, oom)
 		case "/v1.44/services":
 			w.Write([]byte(`[{"ID":"svc-1","Spec":{"Name":"shop-api-web","Mode":{"Replicated":{"Replicas":2}}}}]`))
 		case "/v1.44/services/shop-api-web":
@@ -61,11 +120,8 @@ func downDocker(t *testing.T) (*engine.Engine, func() int) {
 	})}
 	go srv.Serve(l)
 	t.Cleanup(func() { srv.Close() })
-	return engine.New(sock), func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return containerReads
-	}
+	d.eng = engine.New(sock)
+	return d
 }
 
 func TestDownAndRestartChecksShareOneInventoryRead(t *testing.T) {

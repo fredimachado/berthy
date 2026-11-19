@@ -1958,6 +1958,10 @@ A token with an expiry has a check too, named `token:<name>` (`berthy checks` li
 
 Make the new token, give it to CI, then `berthy token revoke` the old one.
 
+#### How fast an alert arrives
+
+The agent follows Docker's event feed. A container of your apps that dies, runs out of memory or changes health, and a service that is updated or removed, wake the restart, down and drift checks at once, so their alerts arrive within seconds instead of at the next read. The checks decide as before: for example a down check still waits two minutes before it turns critical. While the feed is open, the agent reads Docker's inventory for these checks every three minutes, and every minute while it is not. If the feed drops, the agent reconnects by itself, from the time of the last event, and reads the inventory once when it is back. A deploy reacts to the same events and ends sooner, and a deploy never depends on them.
+
 #### Drift
 
 Berthy knows what each app should run: its applied release. Every five minutes the check `drift:<app>` compares that with what Docker runs, and raises a warning when they differ. It only reports. `berthy deploy` brings the app back, and nothing else changes it.

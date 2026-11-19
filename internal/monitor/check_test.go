@@ -422,7 +422,7 @@ func TestOOMKillIsAWarningAndStaleInventoryIsUnknown(t *testing.T) {
 	if got := w.result(t0, key); got.State != Warning || got.Detail != "a replica was OOM killed" {
 		t.Fatalf("OOM: %+v", got)
 	}
-	if got := w.result(t0.Add(4*time.Minute), key); got.State != Unknown || got.Detail != "no recent Docker inventory" {
+	if got := w.result(t0.Add(inventoryStale+time.Minute), key); got.State != Unknown || got.Detail != "no recent Docker inventory" {
 		t.Fatalf("stale inventory: %+v", got)
 	}
 	w.Observe(t0.Add(5*time.Minute), nil, nil)

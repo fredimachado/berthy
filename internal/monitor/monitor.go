@@ -39,6 +39,10 @@ const (
 	maxDetail = 512
 	// defaultInterval is used when a check reports no interval.
 	defaultInterval = 30 * time.Second
+	// kickGap is the least time between two early rebuilds. A kick that comes sooner waits for it, and is merged with the
+	// others that wait. An early rebuild is run once more when the gap ends, because Swarm records a failed task a moment
+	// after its container dies, so the first read can be a step ahead of it.
+	kickGap = 5 * time.Second
 )
 
 // Result is one run of a check.
@@ -75,6 +79,107 @@ type Monitor struct {
 	trackers    map[string]*tracker
 	nextRebuild time.Time
 	lastLog     string
+	// pending is what Kick has asked for and the monitor has not started; lastEarly is when the last early rebuild ran, and
+	// follow is run again at followAt, once, to cover what the first read could not see yet.
+	pending, follow kickSet
+	lastEarly       time.Time
+	followAt        time.Time
+	wake            chan struct{}
+}
+
+// kickSet is the checks a kick wants run early: all of them, or those whose name starts with one of the prefixes.
+type kickSet struct {
+	any, all bool
+	prefixes map[string]bool
+}
+
+func (k *kickSet) add(prefixes []string) {
+	k.any = true
+	if len(prefixes) == 0 {
+		k.all = true
+	}
+	for _, p := range prefixes {
+		if k.prefixes == nil {
+			k.prefixes = map[string]bool{}
+		}
+		k.prefixes[p] = true
+	}
+}
+
+func (k *kickSet) merge(o kickSet) {
+	if !o.any {
+		return
+	}
+	k.any = true
+	k.all = k.all || o.all
+	for p := range o.prefixes {
+		if k.prefixes == nil {
+			k.prefixes = map[string]bool{}
+		}
+		k.prefixes[p] = true
+	}
+}
+
+func (k kickSet) has(name string) bool {
+	if k.all {
+		return true
+	}
+	for p := range k.prefixes {
+		if len(name) >= len(p) && name[:len(p)] == p {
+			return true
+		}
+	}
+	return false
+}
+
+// Kick asks for the checks whose name starts with one of prefixes, or with none given every check, to be read again and run
+// now instead of at their interval. It only wakes them: what a check decides is unchanged, and the periodic runs stay the
+// safety net, so a kick that is lost costs time. Kicks that come within kickGap of the last early rebuild are merged and run
+// when the gap ends. Kick never blocks.
+func (m *Monitor) Kick(prefixes ...string) {
+	m.mu.Lock()
+	m.pending.add(prefixes)
+	ch := m.wakeLocked()
+	m.mu.Unlock()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Monitor) wakeLocked() chan struct{} {
+	if m.wake == nil {
+		m.wake = make(chan struct{}, 1)
+	}
+	return m.wake
+}
+
+// takeKick returns the checks to run early at now, if an early rebuild is due. A kick starts one at once and schedules a
+// second one kickGap later; kicks inside the gap wait for its end.
+func (m *Monitor) takeKick(now time.Time) (kickSet, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.lastEarly.IsZero() && now.Sub(m.lastEarly) < kickGap {
+		return kickSet{}, false
+	}
+	var set kickSet
+	followDue := !m.followAt.IsZero() && !now.Before(m.followAt)
+	switch {
+	case m.pending.any:
+		set.merge(m.pending)
+		m.pending = kickSet{}
+		if followDue {
+			set.merge(m.follow)
+		}
+		m.follow, m.followAt = set, now.Add(kickGap)
+	case followDue:
+		set = m.follow
+		m.follow, m.followAt = kickSet{}, time.Time{}
+	default:
+		return kickSet{}, false
+	}
+	m.lastEarly = now
+	return set, true
 }
 
 // tracker is the in-memory side of one check: the stored state it last recorded, and the bookkeeping for its runs.
@@ -104,10 +209,14 @@ func (m *Monitor) Run(ctx context.Context) {
 				run()
 			}()
 		})
+		m.mu.Lock()
+		wake := m.wakeLocked()
+		m.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-wake:
 		}
 	}
 }
@@ -115,15 +224,30 @@ func (m *Monitor) Run(ctx context.Context) {
 // tick rebuilds the checks if a rebuild is due, then hands each due check to start, which must run the function it is
 // given. A check that is still running is never handed out again.
 func (m *Monitor) tick(ctx context.Context, now time.Time, start func(func())) {
+	early, wanted := m.takeKick(now)
 	m.mu.Lock()
-	rebuild := !now.Before(m.nextRebuild)
+	rebuild := wanted || !now.Before(m.nextRebuild)
 	m.mu.Unlock()
 	if rebuild {
 		m.rebuild(ctx, now)
 	}
+	if wanted {
+		m.markDue(early)
+	}
 	for _, t := range m.due(now) {
 		t := t
 		start(func() { m.runCheck(ctx, t) })
+	}
+}
+
+// markDue makes the checks of set due at the next due call, as if they had never run.
+func (m *Monitor) markDue(set kickSet) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.trackers {
+		if set.has(t.name) {
+			t.last = time.Time{}
+		}
 	}
 }
 

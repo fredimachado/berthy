@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"berthy/internal/api"
@@ -39,6 +40,11 @@ type Monitoring struct {
 	composeServices func(ctx context.Context, project string) ([]string, error)
 	// lastApp holds the restart and down checks of the last successful inventory, kept while Docker cannot be asked.
 	lastApp []monitor.Check
+	// read is the last inventory read, which the restart and down watches are shown again at each rebuild until the next read
+	// is due. Only the monitor's goroutine uses it. readNow asks for the next rebuild to read the inventory: an event set it,
+	// or the last read failed.
+	read    *inventoryRead
+	readNow atomic.Bool
 	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
 	root string
 	// seen is when each backup was first in the manifest, and now is the clock of the backup checks. stateSeen is the same for
@@ -86,11 +92,54 @@ func (w *Monitoring) Reach(ctx context.Context, network, host string, port int) 
 	return w.helper.Reach(ctx, network, host, port)
 }
 
-// Run runs the monitor until ctx ends. It does nothing on a nil Monitoring.
+// Run runs the monitor until ctx ends, and follows Docker's events to wake it early. It does nothing on a nil Monitoring.
 func (w *Monitoring) Run(ctx context.Context) {
-	if w != nil {
-		w.mon.Run(ctx)
+	if w == nil {
+		return
 	}
+	// Subscribed before the monitor starts, so no event of its first rebuild is missed.
+	events, stop := w.engine.Watch(func(engine.Event) bool { return true })
+	defer stop()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.followEvents(ctx, events)
+	}()
+	defer wg.Wait()
+	w.mon.Run(ctx)
+}
+
+// followEvents wakes the checks that an event of Docker concerns. An event only asks for an early read: the checks decide
+// as before, and the periodic read stays the safety net for an event that never comes.
+func (w *Monitoring) followEvents(ctx context.Context, events <-chan engine.Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-events:
+			if prefixes := eventPrefixes(ev); prefixes != nil {
+				w.readNow.Store(true)
+				w.mon.Kick(prefixes...)
+			}
+		}
+	}
+}
+
+// eventPrefixes names the checks an event wakes, by the start of their names, or nil when the event wakes none. A container
+// that dies, is killed for memory or changes health concerns its restart and down checks. A service that is updated or removed
+// may also be a change made outside Berthy, which the drift check reports. The resync, sent when the feed returns after a
+// gap, wakes all of them.
+func eventPrefixes(ev engine.Event) []string {
+	switch {
+	case ev.Resync():
+		return []string{"restarts:", "down:", "drift:"}
+	case ev.Type == "container" && (ev.Action == "die" || ev.Action == "oom" || ev.Action == "health_status"):
+		return []string{"restarts:", "down:"}
+	case ev.Type == "service" && (ev.Action == "update" || ev.Action == "remove"):
+		return []string{"restarts:", "down:", "drift:"}
+	}
+	return nil
 }
 
 // checks returns the checks that should run now. A nil result keeps the checks that are running, which the monitor does
@@ -331,22 +380,25 @@ func (w *Monitoring) projectServices(ctx context.Context, project string) ([]str
 // one inventory read here. While the inventory, the task list or the operation state cannot be read, the checks of the last
 // good read keep running, and their results turn unknown as they age.
 func (w *Monitoring) appChecks(ctx context.Context, m *manifest.Manifest) []monitor.Check {
-	apps, err := w.inventory(ctx)
-	if err != nil {
-		return w.previousAppChecks(ctx)
-	}
-	now := time.Now()
-	failures, err := w.taskFailures(ctx, now)
-	if err != nil {
-		return w.previousAppChecks(ctx)
+	now := w.clock()
+	if w.readDue(now) {
+		read, err := w.readInventory(ctx, now)
+		if err != nil {
+			// Tried again at the next rebuild, not after the whole interval.
+			w.readNow.Store(true)
+			return w.previousAppChecks(ctx)
+		}
+		w.read = read
 	}
 	quiet, err := w.quietApps(ctx, m, now)
 	if err != nil {
 		return w.previousAppChecks(ctx)
 	}
-	managed := managedRestartApps(apps, m)
-	w.watch.Observe(now, managed, failures)
-	w.down.Observe(now, downApps(managed, m), quiet)
+	// The watches are shown the read again at each rebuild, with the read's own time: what changes between reads is the
+	// manifest and which apps are quiet, and the age of the read is what makes the checks unknown once it is too old.
+	managed := managedRestartApps(w.read.apps, m)
+	w.watch.Observe(w.read.at, managed, w.read.failures)
+	w.down.Observe(w.read.at, downApps(managed, m), quiet)
 	var out []monitor.Check
 	for _, app := range managed {
 		for _, role := range app.Roles {
@@ -356,6 +408,41 @@ func (w *Monitoring) appChecks(ctx context.Context, m *manifest.Manifest) []moni
 	out = append(out, w.down.Checks()...)
 	w.lastApp = out
 	return out
+}
+
+// inventoryRead is one read of Docker for the restart and down checks: the apps, and the failed tasks of each role, at a time.
+type inventoryRead struct {
+	at       time.Time
+	apps     []api.App
+	failures map[string]int
+}
+
+// readDue reports whether the inventory is to be read at this rebuild: it has never been, an event or a failed read asked for
+// it, or the last read is older than the cadence. The cadence is slow while Docker's events are flowing, because an event
+// reads it sooner, and a minute while they are not.
+func (w *Monitoring) readDue(now time.Time) bool {
+	wanted := w.readNow.Swap(false)
+	if w.read == nil || wanted {
+		return true
+	}
+	every := monitor.InventoryFallbackEvery
+	if w.engine.EventsLive() {
+		every = monitor.InventoryEvery
+	}
+	return now.Sub(w.read.at) >= every
+}
+
+// readInventory reads the inventory and the task failures at now.
+func (w *Monitoring) readInventory(ctx context.Context, now time.Time) (*inventoryRead, error) {
+	apps, err := w.inventory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	failures, err := w.taskFailures(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	return &inventoryRead{at: now, apps: apps, failures: failures}, nil
 }
 
 // previousAppChecks are the checks to keep while the inventory cannot be read: those of the last good read, or, after a

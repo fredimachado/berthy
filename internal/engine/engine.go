@@ -19,6 +19,9 @@ import (
 type Engine struct {
 	client *http.Client
 	socket string
+	// hub reads Docker's event feed for the callers of Watch. It is set by NewEventHub before anything watches; nil means no
+	// events, and callers poll.
+	hub *EventHub
 }
 
 // inspectWorkers is the number of concurrent container inspects in fillDetails.

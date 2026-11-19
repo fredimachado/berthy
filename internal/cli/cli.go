@@ -177,6 +177,14 @@ func Run(args []string, out, errout io.Writer) int {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 		eng := engine.New(c.DockerSocket)
+		// The one reader of Docker's event feed. It wakes the monitor and the rollouts early; their own reads still decide.
+		events := engine.NewEventHub(eng, c.Environment)
+		eventsDone := make(chan struct{})
+		go func() {
+			defer close(eventsDone)
+			events.Run(ctx)
+		}()
+		defer func() { cancel(); <-eventsDone }()
 		deployment, err := agent.OpenDeployment(c, eng)
 		if err != nil {
 			fmt.Fprintln(errout, err)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/state"
@@ -183,8 +182,8 @@ func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.St
 // waitHealthy waits until every replica of the generation runs healthy, the context ends, or, with a positive limit, the
 // generation has had limit failed tasks. Swarm keeps few old tasks, so failures are counted by task ID across polls.
 func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	pace := newPacer(e, id)
+	defer pace.close()
 	failed := map[string]bool{}
 	for {
 		tasks, err := e.ServiceTasks(ctx, id)
@@ -201,10 +200,8 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 				return &errStartAttempts{Failed: len(failed), Limit: limit}
 			}
 		}
-		select {
-		case <-ctx.Done():
+		if !pace.wait(ctx) {
 			return errors.New("service health deadline exceeded")
-		case <-ticker.C:
 		}
 	}
 }
@@ -319,8 +316,8 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 }
 
 func waitDrain(ctx context.Context, e healthReader, id, generation string) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	pace := newPacer(e, id)
+	defer pace.close()
 	for {
 		tasks, err := e.ServiceTasks(ctx, id)
 		if err != nil {
@@ -340,10 +337,8 @@ func waitDrain(ctx context.Context, e healthReader, id, generation string) error
 		if !pending {
 			return nil
 		}
-		select {
-		case <-ctx.Done():
+		if !pace.wait(ctx) {
 			return errors.New("service drain deadline exceeded")
-		case <-ticker.C:
 		}
 	}
 }
@@ -410,8 +405,8 @@ func validateInheritedRuntime(raw json.RawMessage) error {
 }
 
 func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	pace := newPacer(e, id)
+	defer pace.close()
 	for {
 		live, err := e.InspectService(ctx, name)
 		if err != nil || live.ID != id {
@@ -423,10 +418,8 @@ func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
 		case "rollback_started", "rollback_paused", "rollback_completed", "paused":
 			return errors.New("native update did not complete")
 		}
-		select {
-		case <-ctx.Done():
+		if !pace.wait(ctx) {
 			return errors.New("update completion deadline exceeded")
-		case <-ticker.C:
 		}
 	}
 }
@@ -464,16 +457,14 @@ func healthyImageOnce(ctx context.Context, e healthReader, id, image string, rep
 	return nil
 }
 func waitImageHealthy(ctx context.Context, e healthReader, id, image string, replicas int) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	pace := newPacer(e, id)
+	defer pace.close()
 	for {
 		if healthyImageOnce(ctx, e, id, image, replicas) == nil {
 			return nil
 		}
-		select {
-		case <-ctx.Done():
+		if !pace.wait(ctx) {
 			return errors.New("predecessor health deadline exceeded")
-		case <-ticker.C:
 		}
 	}
 }

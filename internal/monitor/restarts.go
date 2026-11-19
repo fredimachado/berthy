@@ -17,8 +17,13 @@ const (
 	RestartLimit = 3
 	// restartInterval is how often each restart check runs. The watch is fed by the inventory the monitor rebuilds.
 	restartInterval = time.Minute
-	// inventoryStale is how old the last inventory may be before restart checks report unknown.
-	inventoryStale = 3 * time.Minute
+	// InventoryEvery is how often the agent reads the inventory the restart and down checks are fed with while Docker's event
+	// feed is open. An event reads it sooner; the periodic read is the safety net for an event that never came.
+	InventoryEvery = 3 * time.Minute
+	// InventoryFallbackEvery is how often it reads the inventory while the feed is not open.
+	InventoryFallbackEvery = time.Minute
+	// inventoryStale is how old the last inventory may be before the checks report unknown: two reads of the slower cadence.
+	inventoryStale = 2 * InventoryEvery
 )
 
 // observation is one restart count of a replica, seen at one time.
@@ -93,7 +98,7 @@ func (w *RestartWatch) Observe(now time.Time, apps []api.App, failures map[strin
 					continue
 				}
 				rec.current++
-				rec.replicas[id] = append(rec.replicas[id], observation{at: now, count: *rep.RestartCount})
+				rec.record(id, observation{at: now, count: *rep.RestartCount})
 			}
 			prune(rec, now)
 			fresh[key] = rec
@@ -101,6 +106,17 @@ func (w *RestartWatch) Observe(now time.Time, apps []api.App, failures map[strin
 	}
 	w.roles = fresh
 	w.seen = now
+}
+
+// record adds an observation of a replica. The same read can be shown to the watch again at a later rebuild: it is one
+// observation, not several.
+func (r *roleRecord) record(id string, o observation) {
+	obs := r.replicas[id]
+	if n := len(obs); n > 0 && obs[n-1].at.Equal(o.at) {
+		obs[n-1] = o
+		return
+	}
+	r.replicas[id] = append(obs, o)
 }
 
 // prune keeps the observations inside the window, and the last one at or before its start as the baseline that growth
