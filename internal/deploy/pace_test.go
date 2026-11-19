@@ -19,6 +19,9 @@ type eventedHealth struct {
 	events  chan engine.Event
 	mu      sync.Mutex
 	match   func(engine.Event) bool
+	// onPoll, when set before the wait starts, runs inside poll n, before the poll returns: what it sends is queued before
+	// the wait that follows the poll can read it.
+	onPoll func(n int32)
 }
 
 func newEventedHealth() *eventedHealth {
@@ -28,7 +31,10 @@ func newEventedHealth() *eventedHealth {
 }
 
 func (e *eventedHealth) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
-	e.polls.Add(1)
+	n := e.polls.Add(1)
+	if e.onPoll != nil {
+		e.onPoll(n)
+	}
 	state := "starting"
 	if e.healthy.Load() {
 		state = "running"
@@ -75,10 +81,27 @@ func paceWith(t *testing.T, fast, slow, settle time.Duration) {
 	t.Cleanup(func() { pollFast, pollSlow, pollSettle = f, s, st })
 }
 
-func runWait(ctx context.Context, e *eventedHealth) chan error {
+// goWait runs wait on its own goroutine and returns its result channel. The goroutine is cancelled and has ended before
+// the test's earlier cleanups run, so paceWith restores the intervals only once nothing reads them.
+func goWait(t *testing.T, ctx context.Context, wait func(context.Context) error) chan error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- waitHealthy(ctx, e, "s", "op", 1, 0) }()
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		done <- wait(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-exited
+	})
 	return done
+}
+
+func runWait(t *testing.T, ctx context.Context, e *eventedHealth) chan error {
+	t.Helper()
+	return goWait(t, ctx, func(ctx context.Context) error { return waitHealthy(ctx, e, "s", "op", 1, 0) })
 }
 
 func within(t *testing.T, done chan error, d time.Duration, what string) error {
@@ -109,7 +132,7 @@ func TestHealthWaitEndsAtTheHealthStatusEventNotAtTheNextPoll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	start := time.Now()
 	e.healthy.Store(true)
@@ -127,7 +150,7 @@ func TestHealthWaitFallsBackOnASlowPollWhenNoEventComes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.healthy.Store(true)
 	if err := within(t, done, 2*time.Second, "no event"); err != nil {
@@ -143,7 +166,7 @@ func TestHealthWaitPollsOnlyEveryHalfSecondWithoutAnEventFeed(t *testing.T) {
 	defer cancel()
 	e := newEventedHealth()
 	e.live.Store(false)
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.healthy.Store(true)
 	if err := within(t, done, 2*time.Second, "feed down"); err != nil {
@@ -157,7 +180,7 @@ func TestHealthWaitSurvivesTheFeedDroppingMidWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.live.Store(false) // the stream is killed; no event will come
 	time.Sleep(30 * time.Millisecond)
@@ -173,7 +196,7 @@ func TestHealthWaitPollsFastForAWhileAfterAnEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.send(healthStatus("s")) // the poll finds nothing healthy yet
 	waitForPolls(t, e, 2)
@@ -188,7 +211,7 @@ func TestHealthWaitIgnoresEventsOfOtherServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.send(healthStatus("another"))
 	time.Sleep(50 * time.Millisecond)
@@ -206,7 +229,7 @@ func TestHealthWaitIsWokenByTheResyncAfterAGap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 1)
 	e.healthy.Store(true)
 	e.send(engine.Event{Type: engine.ResyncType, Action: engine.ResyncAction})
@@ -220,11 +243,15 @@ func TestBurstOfEventsIsOnePoll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	e := newEventedHealth()
-	done := runWait(ctx, e)
-	waitForPolls(t, e, 1)
-	for i := 0; i < 10; i++ {
-		e.send(healthStatus("s"))
+	// The burst comes while the first poll reads Docker, so all ten events are queued before the wait can read one.
+	e.onPoll = func(n int32) {
+		if n == 1 {
+			for i := 0; i < 10; i++ {
+				e.send(healthStatus("s"))
+			}
+		}
 	}
+	done := runWait(t, ctx, e)
 	waitForPolls(t, e, 2)
 	time.Sleep(50 * time.Millisecond)
 	if n := e.polls.Load(); n != 2 {
@@ -243,8 +270,7 @@ func TestDrainAndUpdateWaitsAreWokenByEventsToo(t *testing.T) {
 	defer cancel()
 	e := newEventedHealth()
 	// The old task keeps "running" until the test flips healthy, which here stands for the old task having ended.
-	drain := make(chan error, 1)
-	go func() { drain <- waitDrain(ctx, drainView{e}, "s", "new") }()
+	drain := goWait(t, ctx, func(ctx context.Context) error { return waitDrain(ctx, drainView{e}, "s", "new") })
 	waitForPolls(t, e, 1)
 	e.healthy.Store(true)
 	e.send(engine.Event{Type: "container", Action: "die", Attributes: map[string]string{"com.docker.swarm.service.id": "s"}})
