@@ -280,7 +280,7 @@ func TestUpgradeVersionSixAddsBackupsTable(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 17 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 18 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	ctx := context.Background()
@@ -460,7 +460,7 @@ func TestUpgradeVersionNineAddsTheOccurrenceOfBackups(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 17 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 18 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	runs, _ := upgraded.BackupRuns(ctx, "uploads", 10)

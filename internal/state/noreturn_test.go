@@ -43,6 +43,35 @@ func TestRecordedIntentCrossesThePointOfNoReturnWithTheStep(t *testing.T) {
 	}
 }
 
+// A state from before schema 18 has no no_return column: opening it adds the column, and the operations it holds have not crossed.
+func TestUpgradeVersionSeventeenAddsThePointOfNoReturn(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	old, _, err := s.Admit(ctx, Admission{RequestID: "old", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec(`ALTER TABLE operations DROP COLUMN no_return; PRAGMA user_version=17`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	got, err := upgraded.Operation(ctx, old.ID)
+	if err != nil || got.NoReturn != "" {
+		t.Fatalf("operation %+v: %v", got, err)
+	}
+	if err = upgraded.RecordIntent(ctx, old.ID, Intent{Ordinal: 9999, Kind: "barrier", Desired: json.RawMessage(`{}`), NoReturn: "crossed"}); err != nil {
+		t.Fatalf("operations lacks the column after the upgrade: %v", err)
+	}
+	if got, _ = upgraded.Operation(ctx, old.ID); got.NoReturn != "crossed" {
+		t.Fatalf("reason %q", got.NoReturn)
+	}
+}
+
 // A step that fails to record does not cross.
 func TestFailedIntentDoesNotCross(t *testing.T) {
 	s, _, _ := testStore(t)

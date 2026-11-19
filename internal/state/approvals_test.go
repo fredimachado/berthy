@@ -237,7 +237,7 @@ func TestUpgradeVersionElevenAddsApprovalsTable(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 17 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 18 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.CreateApproval(context.Background(), newApproval("x"), []byte(`{}`)); err != nil {

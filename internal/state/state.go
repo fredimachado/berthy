@@ -165,7 +165,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 17) {
+	if !fresh && (version < 1 || version > 18) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -299,12 +299,24 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if version < 18 {
+		// A database from before schema 18 lacks the point of no return of an operation. The column check keeps a repeated upgrade
+		// harmless, and every operation it holds counts as not crossed.
+		var has int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='no_return'`).Scan(&has); err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN no_return TEXT NOT NULL DEFAULT ''`)
+		}
+		if err != nil {
+			tx.Rollback()
+			return fail(err)
+		}
+	}
 	// Each scheduled occurrence of a backup is recorded once.
 	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS backups_occurrence ON backups(environment, backup, scheduled) WHERE scheduled <> 0`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=17`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=18`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}

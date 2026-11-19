@@ -78,7 +78,7 @@ func TestUpgradeVersionThirteenAddsTheModifiedFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 17 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 18 {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	history, err := upgraded.History(ctx, "app")
@@ -95,7 +95,7 @@ func TestUpgradeVersionThirteenAddsTheModifiedFlags(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	defer again.Close()
-	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 17 {
+	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 18 {
 		t.Fatalf("second open migration: %d %v", version, err)
 	}
 }
