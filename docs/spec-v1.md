@@ -948,6 +948,14 @@ The result of `execute_resource_command` is one of:
 - **Plan.** With `dry_run`, `{"dry_run": true, "plan": ...}`: the plan that `--dry-run` prints. It is never held.
 - **Refused.** A 400, 403, 409 or other refusal of the agent (the wrong scope, a held deploy lock, an unknown app or a manifest that does not allow the image) is a tool error carrying the agent's message, never a protocol error.
 
+The server offers three prompts over `prompts/list` and `prompts/get`, and advertises the `prompts` capability. The initialize result lists them in its instructions. Each prompt is a fixed recipe over the tools above, filled in with its argument. It only reads: it never calls `execute_resource_command`, and it never calls the agent itself.
+
+- `explain_failed_deploy` (`resource_name`): `list_deploys`, then the newest record with a state of `failed`, `rolled_back` or `interrupted`, then `get_deploy_diagnostics` for its `operation_id`. The answer is the reason, the evidence and a suggested fix. It never redeploys.
+- `troubleshoot_resource` (`resource_name`): `describe_resource` (with its drift lines), recent `list_console_logs`, `doctor` and `get_stats`.
+- `health_report` (no argument): `list_resources`, `doctor`, `list_backups` and `list_approvals`, one summary of the environment.
+
+Each recipe says what to do when a tool answers 403: the token's scope is too low for it, and the person decides whether to give the token that scope. A fix a recipe suggests is a separate `execute_resource_command` call, with its usual holds. A prompt name that is not offered, or a missing required argument, is a JSON-RPC `invalid params` error. The recipes are one table in `internal/mcp`, and a test checks that every tool a recipe names is registered.
+
 A client such as Claude Code starts the server itself. With the token in the environment the client runs it in, the entry of a `.mcp.json` is:
 
 ```json

@@ -2478,6 +2478,16 @@ Its result is one of:
 
 Some commands have no MCP tool on purpose: `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `lock`, `ingress apply`, `job run`, `alerts test`, `state-backup`, `key rotate`, `secret`, `recovery resolve`, `approve` and `reject`. An AI agent can deploy, roll back, restart, back up and restore; the rest stays with people and the CLI.
 
+The server also offers three prompts. A client lists them and a person or an agent picks one. Each is a fixed walk through the tools above, filled in with its argument. A prompt only reads.
+
+| Prompt | Argument | What it walks through |
+| --- | --- | --- |
+| `explain_failed_deploy` | `resource_name` | `list_deploys`, the newest failed deploy, `get_deploy_diagnostics`; then the reason, the evidence and a suggested fix. It never redeploys. |
+| `troubleshoot_resource` | `resource_name` | `describe_resource`, recent `list_console_logs`, `doctor`, `get_stats` |
+| `health_report` | none | `list_resources`, `doctor`, `list_backups` and the pending approvals: one summary of the environment |
+
+A fix a prompt suggests is a separate `execute_resource_command` call, with its usual holds. Each prompt says what to do when a tool answers 403: the token's scope is too low, and the person decides whether the token gets the scope. For example, `get_deploy_diagnostics` needs a `deploy` token, so a `read` token gets a 403 there. A prompt with an unknown name or a missing argument is refused with an `invalid params` error.
+
 ---
 
 ### Step 12. The terminal UI
@@ -3067,7 +3077,7 @@ A token marked `agent` has the scope it says. The mark only decides whether its 
 
 ### MCP tools
 
-See [step 11](#connect-an-ai-agent-through-mcp). Eleven tools: `list_resources`, `describe_resource`, `list_console_logs`, `get_stats`, `list_deploys`, `get_deploy_diagnostics`, `list_backups`, `wait_for_resources`, `doctor`, `list_approvals` (all read-only) and `execute_resource_command` (`deploy`, `rollback`, `restart`, `backup_run`, `restore`).
+See [step 11](#connect-an-ai-agent-through-mcp). Eleven tools: `list_resources`, `describe_resource`, `list_console_logs`, `get_stats`, `list_deploys`, `get_deploy_diagnostics`, `list_backups`, `wait_for_resources`, `doctor`, `list_approvals` (all read-only) and `execute_resource_command` (`deploy`, `rollback`, `restart`, `backup_run`, `restore`). Three prompts: `explain_failed_deploy`, `troubleshoot_resource` and `health_report`, described in step 11.
 
 ### Terminal UI keys
 
