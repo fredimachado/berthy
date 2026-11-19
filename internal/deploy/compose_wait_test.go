@@ -159,6 +159,18 @@ func TestComposeDeployFailsWhenUnhealthy(t *testing.T) {
 	}
 }
 
+func TestComposeDeployReadsAgainBeforeCallingAProjectReady(t *testing.T) {
+	// Right after up, ps can still show a one-shot as running that is about to exit with an error. One ready poll is not
+	// enough: the project must read ready twice in a row.
+	const jobRunning = `{"ExitCode":0,"Health":"","Service":"job","State":"running"}`
+	const jobFailed = `{"ExitCode":3,"Health":"","Service":"job","State":"exited"}`
+	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{jobRunning + "\n" + psWeb, jobFailed + "\n" + psWeb}}
+	_, state, err := composeOutcome(t, runner, "")
+	if state != "failed" || err != "service job exited with code 3" {
+		t.Fatalf("deploy %s: %q", state, err)
+	}
+}
+
 func TestComposeDeployWaitsForStartingService(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb0, psWeb}}
 	_, state, err := composeOutcome(t, runner, "")
@@ -185,7 +197,7 @@ func TestComposeDeployTimesOut(t *testing.T) {
 func TestComposeDeployRetriesAPSThatFails(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb}, psFails: 2}
 	_, state, err := composeOutcome(t, runner, "")
-	if state != "succeeded" || runner.psRuns() != 3 {
+	if state != "succeeded" || runner.psRuns() != 4 {
 		t.Fatalf("deploy %s: %q after %d polls", state, err, runner.psRuns())
 	}
 }
@@ -262,9 +274,10 @@ func (e *evComposeDocker) matcher() func(engine.Event) bool {
 }
 
 func TestComposeWaitEndsAtAHealthEventOfTheProject(t *testing.T) {
-	paceWith(t, time.Hour, time.Hour, 0)
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb0, psWeb}}
 	c, _ := composeController(t, runner, newComposeDocker())
+	// The slow poll is an hour away, so only the event can end the wait; pollFast is the pause that confirms readiness.
+	paceWith(t, 50*time.Millisecond, time.Hour, 0)
 	docker := &evComposeDocker{composeDocker: newComposeDocker(), events: make(chan engine.Event, 4)}
 	c.Engine = docker
 	done := make(chan error, 1)

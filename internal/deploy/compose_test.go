@@ -207,6 +207,8 @@ func (d *composeDocker) VolumeExists(_ context.Context, name string) (bool, erro
 
 func composeController(t *testing.T, runner *fakeCompose, docker *composeDocker) (*Controller, *state.Store) {
 	t.Helper()
+	// A deploy polls compose ps at pollFast, twice before it calls the project ready.
+	paceWith(t, 5*time.Millisecond, 5*time.Millisecond, 0)
 	s := openStore(t)
 	return &Controller{Engine: docker, Store: s, Environment: "test", Compose: runner, StateDir: t.TempDir()}, s
 }

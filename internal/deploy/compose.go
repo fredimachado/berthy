@@ -950,20 +950,25 @@ func composeVerdict(services map[string][]api.Replica) (ready bool, pending stri
 // waitCompose polls `compose ps --all` in dir until composeVerdict says ready (nil) or failed (a Refusal naming the service),
 // or until deadline (a Refusal naming the service that is not ready, with the budget). A poll whose ps fails is tried again
 // at the next one; if the last poll before the deadline failed, or the output cannot be read, the wait ends with errComposeUp.
-// A health or die event of a container of the project wakes the wait before its interval. ps runs without registry auth.
+// A health or die event of a container of the project wakes the wait before its interval. A project reads ready only after two
+// ready polls in a row, one pollFast apart, so a one-shot that exits with an error a moment after up is not missed. ps runs
+// without registry auth.
 func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadline time.Time, budget time.Duration) error {
 	pace := newPacer(c.Engine, projectEvents(project))
 	defer pace.close()
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	var pending string
-	var psFailed bool
+	var psFailed, confirmed bool
 	for {
 		if ctx.Err() != nil {
 			return errComposeUp
 		}
 		out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
 		psFailed = err != nil
+		if psFailed {
+			confirmed = false
+		}
 		if err == nil {
 			services, perr := parseComposePS(out)
 			if perr != nil {
@@ -976,8 +981,19 @@ func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadl
 				return Refusal(failure)
 			}
 			if ready {
-				return nil
+				// Right after up, ps can show a one-shot as running that is about to exit with an error. A project is
+				// ready when two polls, one interval apart, both say so.
+				if confirmed || !time.Now().Before(deadline) {
+					return nil
+				}
+				confirmed = true
+				select {
+				case <-wctx.Done():
+				case <-time.After(pollFast):
+				}
+				continue
 			}
+			confirmed = false
 		}
 		if !time.Now().Before(deadline) {
 			break
