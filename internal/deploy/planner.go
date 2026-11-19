@@ -303,10 +303,8 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 				}
 			}
 		}
-		for slot := 1; slot <= spec.Mode.Replicated.Replicas; slot++ {
-			if !slots[uint64(slot)] {
-				return Plan{}, nil, errors.New("adoption service is not healthy")
-			}
+		if !slotsCover(slots, spec.Mode.Replicated.Replicas) {
+			return Plan{}, nil, errors.New("adoption service is not healthy")
 		}
 		bindings = append(bindings, state.Binding{App: req.App, Role: role, Name: r.Service, ServiceID: live.ID})
 	}

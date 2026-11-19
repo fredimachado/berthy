@@ -157,13 +157,15 @@ func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, 
 			slots[t.Slot] = true
 		}
 	}
-	for slot := 1; slot <= replicas; slot++ {
-		if !slots[uint64(slot)] {
-			return errors.New("service generation is not healthy")
-		}
+	if !slotsCover(slots, replicas) {
+		return errors.New("service generation is not healthy")
 	}
 	return nil
 }
+
+// slotsCover reports whether the healthy slots are as many as the replicas. Slot numbers are Swarm's names for replicas,
+// not positions: a service scaled up and down by hand keeps the replica that started last, which can be slot 2 of 1.
+func slotsCover(slots map[uint64]bool, replicas int) bool { return len(slots) >= replicas }
 
 // errStartAttempts reports that the new version used up its start attempts: a rollout stops waiting as soon as the
 // generation has had limit failed task starts, instead of waiting out the deploy timeout.
@@ -456,10 +458,8 @@ func healthyImageOnce(ctx context.Context, e healthReader, id, image string, rep
 			}
 		}
 	}
-	for slot := 1; slot <= replicas; slot++ {
-		if !slots[uint64(slot)] {
-			return errors.New("predecessor image is not healthy")
-		}
+	if !slotsCover(slots, replicas) {
+		return errors.New("predecessor image is not healthy")
 	}
 	return nil
 }
