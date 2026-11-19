@@ -1523,7 +1523,7 @@ Every operation has one **point of no return**. Before it, a cancel wins; after 
 - `restore`, `remove`, `destroy`, `exec`, `restart`, `scale`, `prune` and `ingress apply` cannot be cancelled, and `rollback --revert-schema` is refused as a migration. The answer says so: `a restore cannot be cancelled`.
 - On a protected environment, an AI agent's cancel is held until a person approves it, like any change, and the plan says whether it would be accepted. The cancel is audited as `cancel:<operation id>`, with the outcome `accepted` or `refused`.
 
-A run of a job is not an operation, and a job has one run at a time, so `berthy job cancel <name> -e prod` names it. It stops the job's container and records the run as failed with `cancelled by <token name>`; `berthy job logs <name>` shows the last lines it wrote. The command of a Compose app's job runs as an exec, which Docker cannot stop, so the cancel only ends the wait there, as a time limit does.
+A run of a job is not an operation, and a job has one run at a time, so `berthy job cancel <name> -e prod` names it. It stops the job's container and records the run as failed with `cancelled by <token name>`; `berthy job logs <name>` shows the last lines it wrote. The command of a Compose app's job runs as an exec, which Docker cannot stop, so the cancel only ends the wait there, as a time limit does. `job cancel` is for jobs only: a backup that takes the output of a command, and `restore --exec`, cannot be cancelled.
 
 #### When a deploy fails
 
