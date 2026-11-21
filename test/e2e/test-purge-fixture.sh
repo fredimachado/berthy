@@ -50,10 +50,30 @@ d() {
 mkdir -p "$E2E_ROOT/bin"
 cat > "$NAMES_BIN" <<'NAMES'
 #!/bin/bash
-printf 'volume\t%s\n' shop-prod_team-lab_data shop-prod_new
-printf 'compose\t%s\n' shop-prod-foreign-db shop-prod-newdb
+printf 'volume\t%s\n' shop-prod_uncreated shop-prod_team-lab_data
 NAMES
 chmod +x "$NAMES_BIN"
+if record_deploy shop prod --manifest-dir "$RUN"; then
+  echo 'deployment accepted an existing unowned volume' >&2
+  exit 1
+fi
+if grep -Fxq $'volume\tshop-prod_uncreated' "$E2E_ROOT/fixture-objects"; then
+  echo 'a refused deploy claimed an uncreated volume' >&2
+  exit 1
+fi
+cat > "$NAMES_BIN" <<'NAMES'
+#!/bin/bash
+printf 'compose\t%s\n' shop-prod-foreign-db
+NAMES
+if record_deploy shop prod --manifest-dir "$RUN"; then
+  echo 'deployment accepted an existing unowned Compose project' >&2
+  exit 1
+fi
+cat > "$NAMES_BIN" <<'NAMES'
+#!/bin/bash
+printf 'volume\t%s\n' shop-prod_new
+printf 'compose\t%s\n' shop-prod-newdb
+NAMES
 record_deploy shop prod --manifest-dir "$RUN"
 for entry in $'volume\tshop-prod_new' $'compose\tshop-prod-newdb'; do
   grep -Fxq "$entry" "$E2E_ROOT/fixture-objects" || { echo "missing intended name: $entry" >&2; exit 1; }

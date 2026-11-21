@@ -49,7 +49,7 @@ d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" 
 
 # record_deploy PROJECT ENV [ARGS]: journal names before a deploy can create them, including on interruption.
 record_deploy() (
-  local project=$1 env=$2 dir=. app= arg kind name tmp lock existing
+  local project=$1 env=$2 dir=. app= arg kind name tmp pending combined lock existing
   shift 2
   for arg in "$@"; do [ "$arg" = --dry-run ] && return 0; done
   while [ $# -gt 0 ]; do
@@ -64,7 +64,9 @@ record_deploy() (
   done
   [ -x "$NAMES_BIN" ] || { echo 'fixture-names is unavailable' >&2; return 1; }
   tmp=$(mktemp "$E2E_ROOT/fixture-names.XXXXXX") || return 1
-  trap 'rm -f "$tmp"' EXIT
+  pending=$(mktemp "$E2E_ROOT/fixture-pending.XXXXXX") || { rm -f "$tmp"; return 1; }
+  combined=$(mktemp "$E2E_ROOT/fixture-combined.XXXXXX") || { rm -f "$tmp" "$pending"; return 1; }
+  trap 'rm -f "$tmp" "$pending" "$combined"' EXIT
   if ! "$NAMES_BIN" "$dir" "$project" "$env" "$app" > "$tmp"; then rm -f "$tmp"; return 0; fi
   exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
   flock -x "$lock" || return 1
@@ -72,6 +74,7 @@ record_deploy() (
   while IFS=$'\t' read -r kind name; do
     [ -n "$name" ] || continue
     grep -Fxq -- "$kind"$'\t'"$name" "$E2E_ROOT/fixture-objects" && continue
+    grep -Fxq -- "$kind"$'\t'"$name" "$pending" && continue
     case $kind in
       volume)
         existing=$(d volume ls --format '{{.Name}}') || { rm -f "$tmp"; return 1; }
@@ -84,9 +87,14 @@ record_deploy() (
         ;;
       *) rm -f "$tmp"; return 1 ;;
     esac
-    [ -n "$existing" ] || printf '%s\t%s\n' "$kind" "$name" >> "$E2E_ROOT/fixture-objects" || { rm -f "$tmp"; return 1; }
+    if [ -n "$existing" ]; then
+      echo "fixture refuses existing unrecorded $kind $name" >&2
+      return 1
+    fi
+    printf '%s\t%s\n' "$kind" "$name" >> "$pending" || return 1
   done < "$tmp"
-  rm -f "$tmp"
+  cat "$E2E_ROOT/fixture-objects" "$pending" > "$combined" || return 1
+  mv -f "$combined" "$E2E_ROOT/fixture-objects" || return 1
   flock -u "$lock"
   exec {lock}>&-
 )
