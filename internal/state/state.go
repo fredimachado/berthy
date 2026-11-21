@@ -165,7 +165,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 18) {
+	if !fresh && (version < 1 || version > 19) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	tx, err := db.Begin()
@@ -174,6 +174,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec(`
+ CREATE TABLE IF NOT EXISTS claims (environment TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(environment, kind, name));
  CREATE TABLE IF NOT EXISTS acquired_images (environment TEXT NOT NULL, ref TEXT NOT NULL, image_id TEXT NOT NULL, PRIMARY KEY(environment,ref));
  CREATE TABLE IF NOT EXISTS protection (environment TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL);
@@ -316,7 +317,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 		tx.Rollback()
 		return fail(err)
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=18`); err != nil {
+	if _, err = tx.Exec(`PRAGMA user_version=19`); err != nil {
 		tx.Rollback()
 		return fail(err)
 	}
