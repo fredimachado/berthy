@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1266,5 +1267,32 @@ func TestIngressStatusReportsAConnectorWithoutARelease(t *testing.T) {
 	status, err = f.ctrl.IngressStatus(ctx)
 	if err != nil || len(status.Problems) != 0 || len(status.Connector) != 1 {
 		t.Fatalf("status after a successful apply %+v: %v", status, err)
+	}
+}
+
+func TestRemoveConnectorReleasesClaimAfterConfirmedAbsence(t *testing.T) {
+	for _, alreadyGone := range []bool{false, true} {
+		t.Run(strconv.FormatBool(alreadyGone), func(t *testing.T) {
+			f := newIngressFixture(t)
+			seedDeployed(t, f.store, "api", apiBinding())
+			f.applyIngress("apply", ingressManifest(t, ""))
+			ctx := context.Background()
+			claim := state.Claim{Kind: state.ClaimService, Name: "demo-test-ingress-connector"}
+			if err := f.store.AddClaims(ctx, []state.Claim{claim}); err != nil {
+				t.Fatal(err)
+			}
+			if alreadyGone {
+				if err := f.docker.DeleteService(ctx, f.connectorService().ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.ctrl.removeConnector(ctx); err != nil {
+				t.Fatal(err)
+			}
+			claims, err := f.store.Claims(ctx)
+			if err != nil || slices.Contains(claims, claim) {
+				t.Fatalf("claim retained: %v, %v", claims, err)
+			}
+		})
 	}
 }

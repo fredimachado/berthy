@@ -609,6 +609,9 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 	for _, b := range bindings {
 		live, err := c.Engine.InspectService(ctx, b.Name)
 		if serviceMissing(err) {
+			if err := c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}}); err != nil {
+				return err
+			}
 			continue
 		}
 		if err != nil {
@@ -621,7 +624,16 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 		if existing, ok := owner.Labels["berthy.project"]; ok && existing != project {
 			return errors.New("connector service ownership changed")
 		}
-		if err = c.Engine.DeleteService(ctx, live.ID); err != nil && !serviceMissing(err) {
+		if err = c.deleteBoundService(ctx, state.Intent{Name: b.Name, ServiceID: live.ID}); err != nil {
+			return err
+		}
+		if _, err = c.Engine.InspectService(ctx, b.Name); !serviceMissing(err) {
+			if err != nil {
+				return err
+			}
+			return errors.New("connector service still present")
+		}
+		if err := c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}}); err != nil {
 			return err
 		}
 	}
