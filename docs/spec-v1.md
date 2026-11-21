@@ -851,7 +851,7 @@ Flags are checked before anything is sent. A read command refuses an unknown fla
 
 **Versions.** A manifest's `min_version` is checked three times: by the CLI when it loads the manifest (`config validate` too, with no server), by the CLI against the agent's version before it sends a request that carries the manifest, and by the agent. Each refuses a manifest that needs a newer release than the one doing the check. A development build on either side skips the check. A deploy or an ingress apply that an older agent refuses as invalid gets one more line when that agent runs an older release than the CLI: `the agent runs an older release than this CLI; upgrade it with berthy setup`.
 
-Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool.
+Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool, and `context`, which edits the CLI configuration on this machine.
 
 | Command | Purpose | Changes things |
 | --- | --- | --- |
@@ -877,6 +877,9 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `job logs <name> [--run <id>]` | The output kept of a failed or timed-out run of a job, redacted (`deploy` scope) | No |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
+| `context add --project <project> -e <env> --url URL --token-env VAR` | Write one project's environment into the CLI configuration; needs no agent | Yes |
+| `context list` | List the CLI configuration's contexts: project, environment, URL, token variable, and whether the variable is set; never a token | No |
+| `context remove --project <project> -e <env>` | Remove one context from the CLI configuration | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
 | `deploy [--version <app>=<tag>]…` | Deploy every app in `depends_on` order and stop at the first failure; an image app given no version keeps the one it runs, and a plain `--version` is for a manifest with one image app (see Deploying every app) | Yes |
 | `apply` | Apply the environment settings of the manifest, such as probes, peers, alerts, destinations and telemetry, without deploying an app; `--dry-run` lists the changes | Yes |
