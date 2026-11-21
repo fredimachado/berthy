@@ -19,7 +19,7 @@ for dir in "$RUN" "$LOG" "$MAN"; do
 done
 
 purge_fixture
-rm -rf "$RUN" "$LOG" "$MAN"
+rm -rf "$RUN" "$LOG" "$MAN" "$MAN"-*
 mkdir -p "$RUN/state" "$LOG" "$MAN" || die "cannot create the fixture directories"
 
 # Tokens. Only the admin token is in the agent's configuration, as berthy setup writes it. "agent token" prints "token: ...",
@@ -39,11 +39,13 @@ head -c 32 /dev/urandom > "$RUN/state.key" && chmod 600 "$RUN/state.key" || die 
 openssl rand -hex 16 > "$RUN/tg-token" || die "cannot write the Telegram token"
 printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP authorization"
 
-# Agent configuration. Keys match agent.Config; the agent rejects unknown keys.
-# The Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
-printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s]}\n' \
-  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$admin_entry" > "$RUN/agent.json" \
-  || die "cannot write agent.json"
+# Agent configuration: agent.json lists the hosted environments, and each is a fragment in $RUN/environments.d (see
+# write_agent_config in lib.sh). This is the first one, with the state and the key of the fixture. The admin entry is kept for
+# scenario 07, which writes the configuration of an older agent. Keys match agent.File; the agent rejects unknown keys. The
+# Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
+printf '%s\n' "$admin_entry" > "$RUN/admin-entry.json" || die "cannot write the admin entry"
+write_fragment "$PROJECT" "$ENVN" "$RUN/state" "$RUN/state.key" "$admin_entry" || die "cannot write the environment's fragment"
+write_agent_config || die "cannot write agent.json"
 
 # CLI configurations. Each names its token by environment variable, so the token never sits in a file the CLI reads.
 printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_ADMIN_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/admin.json" || die "cannot write admin.json"

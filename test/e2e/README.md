@@ -25,7 +25,7 @@ put the logic in a script file and run that file by path.
 
 - `src/`: a copy of the repo made by `build.sh`, with CR stripped from `*.go`, `go.mod` and `go.sum`.
 - `bin/`: `berthy`, `faketelegram`, `fakeotlp`, `fakewebhook`, `fakes3` and `tuidriver` (a program that runs a command in a pseudo-terminal and drives it with keys; see `test/tuidriver`).
-- `run/`: the agent and CLI configs, `env.sh` (the two tokens, mode 0600), the state key, the fake-server files, and pid files.
+- `run/`: the agent and CLI configs, `env.sh` (the tokens, mode 0600), the state key, the fake-server files, and pid files. `agent.json` is written from `run/environments.d/*.json`, one fragment per hosted environment.
 - `manifest/`: `berthy.yml`, the manifest that scenarios deploy from.
 - `logs/`: the agent and fake logs of the current scenario. `setup.sh` clears them for each scenario.
 - `runs/<scenario>/`: a copy of those logs, kept by `run.sh` after each scenario.
@@ -56,7 +56,8 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
   `$E2E_ROOT` in place.
 - `run.sh`: builds (unless `--no-build`), then runs `setup.sh` and one scenario per name, each on a fresh fixture. It stops
   the fixture at the end unless `--keep`, prints a summary, and exits 1 when a scenario failed.
-- `lib.sh`: settings, the `adm` and `ci` wrappers for the CLI, process helpers, and the assertions.
+- `lib.sh`: settings, the `adm` and `ci` wrappers for the CLI, process helpers, and the assertions. `write_agent_config` joins the fragments of `run/environments.d` into `agent.json`; `add_environment PROJECT ENV` adds a hosted environment (state, key, admin token, fragment, manifest directory `$MAN-PROJECT-ENV`, CLI entry) and restarts the agent; `env_cmd PROJECT ENV CMD [ARGS]` runs berthy as that environment's admin from its manifest directory. `start_agent` waits on `/healthz`, which answers once every hosted environment has started.
+- `rewriteproxy.py`: a reverse proxy that scenario 07 puts in front of an agent of a release before projects, which serves only `/v1/environments/`.
 - `scenarios/`: one script per scenario. `00-smoke.sh` deploys v1, runs `exec`, lists the history, deploys v2 and rolls back.
 
 ## Add a scenario
@@ -64,7 +65,7 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
 Copy `scenarios/00-smoke.sh` to `scenarios/NN-name.sh` and keep its shape: source `../lib.sh`, drive `berthy` through
 `adm` (admin token) or `ci` (agent token), assert with `expect_eq`, `expect_contains`, `expect_not_contains` or
 `expect_code`, and end with `finish`. A Swarm service is named `<project>-<app>-<role>`, so the web role is
-`e2e-web-main`. To change the manifest, pipe a new one into `write_manifest`; `setup.sh` gives each scenario a fresh one.
+`e2e-web-main`. `adm` and `ci` name only the environment, so they are right while one project has `$ENVN`; a scenario that adds a second project with the same environment name uses `env_cmd` from then on. To change the manifest, pipe a new one into `write_manifest`; `setup.sh` gives each scenario a fresh one.
 
 ## What it never touches
 

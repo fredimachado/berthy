@@ -2,11 +2,12 @@
 set -euo pipefail
 umask 077
 
-if [[ $# != 9 ]]; then
-  echo 'usage: smoke.sh BINARY CLI_CONFIG ENV AGENT_URL SWARM_APP COMPOSE_APP ROLE REPLICA LOG_REGEX' >&2
+if [[ $# != 10 ]]; then
+  echo 'usage: smoke.sh BINARY CLI_CONFIG PROJECT ENV AGENT_URL SWARM_APP COMPOSE_APP ROLE REPLICA LOG_REGEX' >&2
   exit 2
 fi
-bin=$1 config=$2 env=$3 url=${4%/} swarm=$5 compose=$6 role=$7 replica=$8 marker=$9
+bin=$1 config=$2 project=$3 env=$4 url=${5%/} swarm=$6 compose=$7 role=$8 replica=$9 marker=${10}
+api=$url/v1/projects/$project/environments
 dir=$(mktemp -d)
 trap 'rm -r -- "$dir"' EXIT
 run() { "$bin" "$@" -e "$env" --config "$config"; }
@@ -48,20 +49,20 @@ python3 -c 'import json,sys; records=[json.loads(x) for x in sys.stdin if x.stri
 stream "$dir/follow-text" 4 logs "$swarm" --tail 100 --follow
 for auth in missing wrong; do
   if [[ $auth == missing ]]; then
-    code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "$url/v1/environments/$env/apps")
+    code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "$api/$env/apps")
   else
-    code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer invalid' "$url/v1/environments/$env/apps")
+    code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer invalid' "$api/$env/apps")
   fi
   [[ $code == 401 ]]
 done
-python3 - "$config" "$env" "$url" <<'PY'
+python3 - "$config" "$project" "$env" "$api" <<'PY'
 import json, os, sys, urllib.error, urllib.request
-config, environment, url = sys.argv[1:]
+config, project, environment, api = sys.argv[1:]
 with open(config) as f:
-    token_env = json.load(f)['environments'][environment]['token_env']
+    token_env = json.load(f)['projects'][project]['environments'][environment]['token_env']
 token = os.environ[token_env]
 wrong = 'other' if environment != 'other' else 'lab'
-request = urllib.request.Request(url + '/v1/environments/' + wrong + '/apps', headers={'Authorization': 'Bearer ' + token})
+request = urllib.request.Request(api + '/' + wrong + '/apps', headers={'Authorization': 'Bearer ' + token})
 try:
     urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5)
 except urllib.error.HTTPError as e:
@@ -69,7 +70,7 @@ except urllib.error.HTTPError as e:
 else:
     raise AssertionError('wrong environment accepted')
 PY
-printf '{"environment":"lab","listen":"0.0.0.0:19087","docker_socket":"/nonexistent","tokens":[{"digest":"%064d","scope":"read"}]}\n' 0 > "$dir/invalid.json"
+printf '{"listen":"0.0.0.0:19087","docker_socket":"/nonexistent","environments":[{"project":"demo","environment":"lab","state_dir":"/nonexistent/state","key_file":"/nonexistent/key","tokens":[{"digest":"%064d","scope":"read"}]}]}\n' 0 > "$dir/invalid.json"
 if "$bin" agent --config "$dir/invalid.json" > "$dir/invalid.out" 2>&1; then
   echo 'wildcard bind unexpectedly accepted' >&2; exit 1
 fi

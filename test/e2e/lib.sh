@@ -46,7 +46,8 @@ if [ -f "$RUN/env.sh" ]; then . "$RUN/env.sh"; fi
 # asks the credential helper that the user's Windows-side config names, which does not exist in WSL.
 d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" "$@"; }
 
-# adm CMD [ARGS]: berthy as the admin token. Flags go right after the command name, so a "-- cmd" tail stays last.
+# adm CMD [ARGS]: berthy as the admin token. Flags go right after the command name, so a "-- cmd" tail stays last. It names only
+# the environment, so it is right while one project has $ENVN; with a second project that has it, use env_cmd.
 adm() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/admin.json" "$@"; }
 
 # ci CMD [ARGS]: berthy as the agent token "ci" (scope deploy, agent: true), for approval scenarios. setup.sh makes it
@@ -132,12 +133,82 @@ wait_for() {
   return 1
 }
 
-# start_agent: starts the agent and waits until it answers agent-info. It gives up early when the process has died.
+# write_agent_config: writes $RUN/agent.json from the fragments in $RUN/environments.d/*.json, one hosted environment each, in
+# name order. The agent's own settings are the fixture's. The file is private, as the agent requires.
+write_agent_config() {
+  local f sep=
+  {
+    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"environments":[' \
+      "$AGENT_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN"
+    for f in "$RUN"/environments.d/*.json; do
+      [ -f "$f" ] || continue
+      printf '%s' "$sep"
+      tr -d '\n' < "$f"
+      sep=,
+    done
+    printf ']}\n'
+  } > "$RUN/agent.json.new" && chmod 600 "$RUN/agent.json.new" && mv -f "$RUN/agent.json.new" "$RUN/agent.json"
+}
+
+# write_fragment PROJECT ENV STATE_DIR KEY_FILE TOKEN_ENTRY: writes the fragment of one hosted environment of agent.json.
+write_fragment() {
+  mkdir -p "$RUN/environments.d" || return 1
+  printf '{"project":"%s","environment":"%s","state_dir":"%s","key_file":"%s","tokens":[%s]}\n' "$1" "$2" "$3" "$4" "$5" \
+    > "$RUN/environments.d/$1-$2.json"
+}
+
+# env_dir PROJECT ENV: the manifest directory of a hosted environment of the fixture: $MAN for the first, $MAN-PROJECT-ENV for
+# one that add_environment made.
+env_dir() {
+  if [ "$1" = "$PROJECT" ] && [ "$2" = "$ENVN" ]; then
+    printf '%s\n' "$MAN"
+  else
+    printf '%s-%s-%s\n' "$MAN" "$1" "$2"
+  fi
+}
+
+# env_var PROJECT ENV: the name of the variable that holds the admin token of a hosted environment that add_environment made.
+env_var() { printf 'BERTHY_ADMIN_TOKEN_%s' "$(printf '%s_%s' "$1" "$2" | tr 'a-z-' 'A-Z_')"; }
+
+# add_environment PROJECT ENV: adds a hosted environment to the agent and restarts it. It makes a key, a state directory
+# $RUN/state-PROJECT-ENV, an admin token (as setup.sh does for the first), the fragment of agent.json, a manifest directory
+# $MAN-PROJECT-ENV with the base manifest of that project, and an entry of the CLI configuration $RUN/admin.json. The token is in
+# the variable env_var names, and in env.sh.
+add_environment() {
+  local project=$1 env=$2 var out token entry state
+  var=$(env_var "$project" "$env")
+  state=$RUN/state-$project-$env
+  out=$("$BIN" agent token -e "$env" --name admin --scope admin) || return 1
+  token=$(printf '%s\n' "$out" | sed -n 's/^token: //p')
+  entry=$(printf '%s\n' "$out" | sed -n '3p')
+  case $token in bty.$env.*) ;; *) return 1 ;; esac
+  case $entry in \{*) ;; *) return 1 ;; esac
+  printf "export %s='%s'\n" "$var" "$token" >> "$RUN/env.sh" || return 1
+  export "$var=$token"
+  (umask 077 && mkdir -p "$state" && head -c 32 /dev/urandom > "$RUN/key-$project-$env") || return 1
+  write_fragment "$project" "$env" "$state" "$RUN/key-$project-$env" "$entry" || return 1
+  mkdir -p "$(env_dir "$project" "$env")" && PROJECT=$project base_manifest > "$(env_dir "$project" "$env")/berthy.yml" || return 1
+  "$BIN" context add --project "$project" -e "$env" --url "http://$AGENT_LISTEN" --token-env "$var" --config "$RUN/admin.json" >/dev/null || return 1
+  stop_agent
+  write_agent_config || return 1
+  start_agent
+}
+
+# env_cmd PROJECT ENV CMD [ARGS]: berthy as the admin of that hosted environment, run from its manifest directory so the project
+# is the manifest's and the command is never ambiguous. Flags go right after the command name, as adm does.
+env_cmd() {
+  local project=$1 env=$2 c=$3
+  shift 3
+  (cd "$(env_dir "$project" "$env")" && "$BIN" "$c" -e "$env" --config "$RUN/admin.json" "$@")
+}
+
+# start_agent: starts the agent and waits until /healthz answers, which it does only once every hosted environment has started.
+# /healthz needs no token and names no environment. It gives up early when the process has died.
 start_agent() {
   local i
   spawn "$RUN/agent.pid" "$LOG/agent.log" "$BIN" agent --config "$RUN/agent.json"
   for i in $(seq 1 120); do
-    if adm agent-info >/dev/null 2>&1; then
+    if curl_local -f -o /dev/null "http://$AGENT_LISTEN/healthz" 2>/dev/null; then
       return 0
     fi
     if [ -s "$RUN/agent.pid" ] && ! owned "$RUN/agent.pid" "$BIN"; then
