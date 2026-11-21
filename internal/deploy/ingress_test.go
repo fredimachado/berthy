@@ -678,6 +678,28 @@ func (f *ingressFixture) connectorService() engine.ServiceSnapshot {
 	return svc
 }
 
+func TestRemoveConnectorRefusesAnotherProject(t *testing.T) {
+	f := newIngressFixture(t)
+	seedDeployed(t, f.store, "api", apiBinding())
+	f.applyIngress("apply", ingressManifest(t, ""))
+	svc := f.connectorService()
+	var spec map[string]any
+	if err := json.Unmarshal(svc.Spec, &spec); err != nil {
+		t.Fatal(err)
+	}
+	spec["Labels"].(map[string]any)["berthy.project"] = "other"
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.docker.UpdateService(context.Background(), svc.ID, 0, raw, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctrl.removeConnector(context.Background()); err == nil || f.connectorMissing() {
+		t.Fatalf("foreign connector was removed: %v", err)
+	}
+}
+
 // connectorEnv returns the environment the connector service runs with, as Docker reports it.
 func (f *ingressFixture) connectorEnv() []string {
 	f.t.Helper()

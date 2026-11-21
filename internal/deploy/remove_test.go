@@ -797,3 +797,12 @@ func TestRemoveRefusesAServiceWhoseLabelsNameAnotherOwner(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveRefusesAServiceLabelledForAnotherProject(t *testing.T) {
+	f := newRemoveFixture(t)
+	setServiceLabels(t, f, "demo-api-web", map[string]string{"berthy.project": "other", "berthy.environment": ingressEnv, "berthy.app": "api", "berthy.role": "web"})
+	op := f.remove("foreign-project", nil)
+	if op.State != "failed" || op.Err != "bound service ownership changed" || len(f.services()) != 2 {
+		t.Fatalf("remove %s: %s; services %v", op.State, op.Err, f.services())
+	}
+}

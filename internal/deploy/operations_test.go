@@ -18,7 +18,7 @@ import (
 func TestRuntimeChangePreservesSpecAndSetsGeneration(t *testing.T) {
 	original := json.RawMessage(`{"Name":"app-web","Labels":{"berthy.app":"app","custom":"keep"},"TaskTemplate":{"ForceUpdate":7,"ContainerSpec":{"Image":"image@sha256:aa","Env":["TOKEN=hidden"],"Labels":{"berthy.app":"app"}}},"Mode":{"Replicated":{"Replicas":2}}}`)
 	binding := state.Binding{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}
-	desired, n, err := runtimeSpec(original, binding, "stage", "op", "restart", nil)
+	desired, n, err := runtimeSpec(original, binding, "shop", "stage", "op", "restart", nil)
 	if err != nil || n != 2 {
 		t.Fatalf("restart: %d %v", n, err)
 	}
@@ -31,12 +31,12 @@ func TestRuntimeChangePreservesSpecAndSetsGeneration(t *testing.T) {
 		t.Fatalf("lost values: %s", desired)
 	}
 	count := 3
-	desired, n, err = runtimeSpec(original, binding, "stage", "op", "scale", &count)
+	desired, n, err = runtimeSpec(original, binding, "shop", "stage", "op", "scale", &count)
 	if err != nil || n != 3 || !json.Valid(desired) {
 		t.Fatalf("scale %d %v", n, err)
 	}
 	zero := 0
-	desired, n, err = runtimeSpec(original, binding, "stage", "op", "scale", &zero)
+	desired, n, err = runtimeSpec(original, binding, "shop", "stage", "op", "scale", &zero)
 	if err != nil || n != 0 {
 		t.Fatalf("scale to zero: %d %v", n, err)
 	}
@@ -45,12 +45,12 @@ func TestRuntimeChangePreservesSpecAndSetsGeneration(t *testing.T) {
 		t.Fatalf("scale to zero kept the count: %s", desired)
 	}
 	idle := json.RawMessage(strings.Replace(string(original), `"Replicas":2`, `"Replicas":0`, 1))
-	desired, n, err = runtimeSpec(idle, binding, "stage", "op", "restart", nil)
+	desired, n, err = runtimeSpec(idle, binding, "shop", "stage", "op", "restart", nil)
 	if err == nil || err.Error() != "role is stopped" {
 		t.Fatalf("restart at zero: %d %v", n, err)
 	}
 	two := 2
-	desired, n, err = runtimeSpec(idle, binding, "stage", "op", "scale", &two)
+	desired, n, err = runtimeSpec(idle, binding, "shop", "stage", "op", "scale", &two)
 	if err != nil || n != 2 {
 		t.Fatalf("scale from zero: %d %v", n, err)
 	}
@@ -72,10 +72,19 @@ func TestRuntimeRejectsForeignIdentityAndBadCount(t *testing.T) {
 		{"missing count", own, nil, "invalid replica count"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := runtimeSpec(tc.spec, b, "stage", "op", "scale", tc.count); err == nil || err.Error() != tc.want {
+			if _, _, err := runtimeSpec(tc.spec, b, "shop", "stage", "op", "scale", tc.count); err == nil || err.Error() != tc.want {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestRuntimeRejectsAServiceOfAnotherProject(t *testing.T) {
+	b := state.Binding{App: "app", Role: "web", Name: "name"}
+	spec := json.RawMessage(`{"Name":"name","Labels":{"berthy.project":"other"},"TaskTemplate":{"ContainerSpec":{}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	one := 1
+	if _, _, err := runtimeSpec(spec, b, "shop", "stage", "op", "scale", &one); err == nil {
+		t.Fatal("accepted service of another project")
 	}
 }
 

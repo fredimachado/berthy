@@ -591,6 +591,18 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 	if len(bindings) > 0 && c.Engine == nil {
 		return errors.New("Docker unavailable")
 	}
+	var project string
+	if len(bindings) > 0 {
+		rel, err := c.Store.Applied(ctx, manifest.ConnectorAppName)
+		if err != nil {
+			return err
+		}
+		m, err := manifest.DecodeRelease(rel.Manifest, true)
+		if err != nil {
+			return err
+		}
+		project = m.Project
+	}
 	for _, b := range bindings {
 		live, err := c.Engine.InspectService(ctx, b.Name)
 		if serviceMissing(err) {
@@ -601,6 +613,9 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 		}
 		var owner struct{ Labels map[string]string }
 		if json.Unmarshal(live.Spec, &owner) != nil || owner.Labels["berthy.environment"] != c.Environment || owner.Labels["berthy.app"] != manifest.ConnectorAppName {
+			return errors.New("connector service ownership changed")
+		}
+		if existing, ok := owner.Labels["berthy.project"]; ok && existing != project {
 			return errors.New("connector service ownership changed")
 		}
 		if err = c.Engine.DeleteService(ctx, live.ID); err != nil && !serviceMissing(err) {

@@ -20,7 +20,7 @@ import (
 	"github.com/distribution/reference"
 )
 
-func runtimeSpec(raw json.RawMessage, b state.Binding, environment, operation, kind string, count *int) (json.RawMessage, int, error) {
+func runtimeSpec(raw json.RawMessage, b state.Binding, project, environment, operation, kind string, count *int) (json.RawMessage, int, error) {
 	var spec map[string]any
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -63,7 +63,7 @@ func runtimeSpec(raw json.RawMessage, b state.Binding, environment, operation, k
 			labels = map[string]any{}
 			target["Labels"] = labels
 		}
-		for key, value := range map[string]string{"berthy.environment": environment, "berthy.app": b.App, "berthy.role": b.Role} {
+		for key, value := range map[string]string{"berthy.project": project, "berthy.environment": environment, "berthy.app": b.App, "berthy.role": b.Role} {
 			if existing, ok := labels[key]; ok && existing != value {
 				return nil, 0, errors.New("service ownership mismatch")
 			}
@@ -133,7 +133,15 @@ func (c *Controller) inspectOperation(ctx context.Context, req Request, operatio
 	if err = validateInheritedRuntime(live.Spec); err != nil {
 		return b, live, nil, 0, err
 	}
-	desired, n, err := runtimeSpec(live.Spec, b, c.Environment, operation, req.Kind, req.Replicas)
+	rel, err := c.Store.Applied(ctx, req.App)
+	if err != nil {
+		return b, live, nil, 0, errors.New("applied release unavailable")
+	}
+	var m manifest.Manifest
+	if json.Unmarshal(rel.Manifest, &m) != nil {
+		return b, live, nil, 0, errors.New("applied manifest unavailable")
+	}
+	desired, n, err := runtimeSpec(live.Spec, b, m.Project, c.Environment, operation, req.Kind, req.Replicas)
 	return b, live, desired, n, err
 }
 func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request) (Plan, error) {

@@ -177,7 +177,7 @@ func (c *Controller) removalImage(ctx context.Context, req Request, r *removal) 
 		if err != nil {
 			return errors.New("bound service unavailable")
 		}
-		if live.ID != b.ServiceID || !ownedBinding(live.Spec, c.Environment, b) {
+		if live.ID != b.ServiceID || !ownedBinding(live.Spec, r.m.Project, c.Environment, b) {
 			r.plan.Blockers = append(r.plan.Blockers, string(errRemoveOwnership))
 			continue
 		}
@@ -220,7 +220,7 @@ func (c *Controller) removalImage(ctx context.Context, req Request, r *removal) 
 // berthy.environment, berthy.app or berthy.role label the service carries, at the service or at its tasks, must name this
 // environment, app and role. A label that is absent is fine, since a service adopted with --adopt has none until it is
 // deployed to.
-func ownedBinding(spec json.RawMessage, environment string, b state.Binding) bool {
+func ownedBinding(spec json.RawMessage, project, environment string, b state.Binding) bool {
 	var v struct {
 		Labels       map[string]string
 		TaskTemplate struct {
@@ -230,7 +230,7 @@ func ownedBinding(spec json.RawMessage, environment string, b state.Binding) boo
 	if json.Unmarshal(spec, &v) != nil {
 		return false
 	}
-	want := map[string]string{"berthy.environment": environment, "berthy.app": b.App, "berthy.role": b.Role}
+	want := map[string]string{"berthy.project": project, "berthy.environment": environment, "berthy.app": b.App, "berthy.role": b.Role}
 	for _, labels := range []map[string]string{v.Labels, v.TaskTemplate.ContainerSpec.Labels} {
 		for key, value := range want {
 			if existing, ok := labels[key]; ok && existing != value {

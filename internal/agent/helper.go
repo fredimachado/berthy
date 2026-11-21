@@ -344,9 +344,9 @@ func (m *helperManager) Image(ctx context.Context) (string, error) {
 	return helperRepo + ":" + bin.tag(), nil
 }
 
-// image returns the helper image for bin, importing it from the agent's binary when Docker does not have it.
 var imageMu sync.Mutex
 
+// image returns the helper image for bin, importing it from the agent's binary when Docker does not have it.
 func (m *helperManager) image(ctx context.Context, bin helperBinary) (engine.Image, error) {
 	imageMu.Lock()
 	defer imageMu.Unlock()
