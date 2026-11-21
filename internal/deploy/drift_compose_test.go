@@ -37,7 +37,7 @@ func TestDriftNamesTheComposeServicesAndVolumesADeployWouldChange(t *testing.T) 
 	docker.containers = []engine.ComposeContainer{{ID: "c1", Service: "database", ConfigHash: "hash-edited-by-hand"}, {ID: "c2", Service: "extra", ConfigHash: "x"}}
 	docker.volumes = map[string]bool{}
 	got, err := c.Drift(context.Background(), "db")
-	want := []string{"db: service database would be recreated", "db: service extra would be removed", "db: volume shop-db_data would be created"}
+	want := []string{"db: service database would be recreated", "db: service extra would be removed", "db: volume shop-test-db_data would be created"}
 	if err != nil || !reflect.DeepEqual(got.Lines, want) {
 		t.Fatalf("report %+v: %v", got, err)
 	}
