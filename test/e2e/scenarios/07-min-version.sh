@@ -6,8 +6,10 @@
 #   b. the CLI refuses to send a deploy to an agent older than min_version, and records nothing;
 #   c. the agent refuses the same request sent straight to it, so a request from another client is refused too;
 #   e. a development CLI sends the request and the agent refuses it, and a deploy with no min_version still works there;
-#   d. an agent without the logging key answers invalid request and the CLI names the older agent; min_version stops the
-#      request before it is sent. That agent serves only /v1/environments/, so rewriteproxy.py stands in front of it.
+#   d. the agent of 6acd0ce, which serves only /v1/environments/, answers 404 to every request of this CLI. The CLI asks the
+#      older path, finds the agent answers it, and says the agent runs an older release, with and without min_version. With
+#      min_version the lookup of the agent's release fails the same way, so the CLI no longer refuses before sending: the
+#      request goes out and the 404 carries the hint.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -16,12 +18,8 @@ CLI090=$E2E_ROOT/bin/berthy-v090
 AGENT080=$E2E_ROOT/bin/berthy-agent-v080
 OLD080=$E2E_ROOT/bin/berthy-old-v080
 OLD_SRC=$E2E_ROOT/src-6acd0ce
-# The old agent's configuration, in its release's layout, with a state directory and a key of its own (see old_agent_state), and
-# the address it listens on: the fixture's port plus 100. The proxy that translates the CLI's URLs listens on the fixture's.
+# The old agent's configuration, in its release's layout, with a state directory and a key of its own (see old_agent_state).
 OLD_CFG=$RUN/old/agent.json
-OLD_LISTEN=${AGENT_LISTEN%:*}:$((${AGENT_LISTEN##*:} + 100))
-PROXY_PY=$(dirname "$0")/../rewriteproxy.py
-trap 'stop_proc "$RUN/proxy.pid" "$PROXY_PY"' EXIT
 
 # stamped OUT VERSION TREE: builds TREE's cmd/berthy stamped with VERSION, or fails and keeps no partial file.
 stamped() {
@@ -35,13 +33,13 @@ stamped() {
   fi
 }
 
-# start_with BINARY [CONFIG [LISTEN]]: starts BINARY as the agent with CONFIG (the fixture's when none is given) and waits until
-# /healthz answers on LISTEN (the fixture's address when none is given), as start_agent does for the fixture's own binary.
+# start_with BINARY [CONFIG]: starts BINARY as the agent with CONFIG (the fixture's when none is given) and waits until /healthz
+# answers, as start_agent does for the fixture's own binary.
 start_with() {
-  local bin=$1 cfg=${2:-$RUN/agent.json} listen=${3:-$AGENT_LISTEN} i
+  local bin=$1 cfg=${2:-$RUN/agent.json} i
   spawn "$RUN/agent.pid" "$LOG/agent.log" "$bin" agent --config "$cfg"
   for i in $(seq 1 120); do
-    if curl_local -f -o /dev/null "http://$listen/healthz" 2>/dev/null; then
+    if curl_local -f -o /dev/null "http://$AGENT_LISTEN/healthz" 2>/dev/null; then
       return 0
     fi
     if [ -s "$RUN/agent.pid" ] && ! owned "$RUN/agent.pid" "$bin"; then
@@ -53,28 +51,21 @@ start_with() {
   return 1
 }
 
-# restart_with BINARY [CONFIG [LISTEN]]: stops the running agent and starts BINARY in its place.
+# restart_with BINARY [CONFIG]: stops the running agent and starts BINARY in its place.
 restart_with() {
   stop_agent
-  start_with "$1" "${2:-}" "${3:-}"
+  start_with "$1" "${2:-}"
 }
 
 # old_agent_state: gives the old agent a state directory and a key of its own, a configuration in the layout of its release (one
-# environment, no projects) and a listen address of its own, OLD_LISTEN. The agent of this tree has migrated the fixture's state
+# environment, no projects). The agent of this tree has migrated the fixture's state
 # to schema 14, which the agent of 6acd0ce (schema 13) refuses to open, so the old agent must never see that state.
 old_agent_state() {
   mkdir -p "$RUN/old/state" && chmod 700 "$RUN/old/state" || return 1
   head -c 32 /dev/urandom > "$RUN/old/state.key" && chmod 600 "$RUN/old/state.key" || return 1
   printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s]}\n' \
-    "$ENVN" "$OLD_LISTEN" "$SOCK" "$RUN/old/state" "$RUN/old/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$(cat "$RUN/admin-entry.json")" > "$OLD_CFG" \
+    "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/old/state" "$RUN/old/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$(cat "$RUN/admin-entry.json")" > "$OLD_CFG" \
     && chmod 600 "$OLD_CFG"
-}
-
-# start_proxy: puts rewriteproxy.py on the fixture's address, in front of the old agent. The agent of 6acd0ce serves only
-# /v1/environments/<environment>/, and the CLI of this tree asks for /v1/projects/<project>/environments/<environment>/.
-start_proxy() {
-  spawn "$RUN/proxy.pid" "$LOG/proxy.log" python3 "$PROXY_PY" "$AGENT_LISTEN" "$OLD_LISTEN" || return 1
-  wait_for "the rewriting proxy" curl_local -f -o /dev/null "http://$AGENT_LISTEN/healthz"
 }
 
 # manifest_with_min VERSION: the base manifest with min_version VERSION, or with none when VERSION is empty.
@@ -161,20 +152,22 @@ expect_code "a manifest without min_version deploys to the v0.8.0 agent" 0 "$cod
 spec=$(service_spec "$PROJECT-web-main")
 expect_contains "the service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 
-# d. The agent of 6acd0ce has no logging key: it answers invalid request, and the CLI names the older agent. With min_version
-#    the CLI refuses first and names the agent's release. It runs on a state directory of its own, never the fixture's.
+# d. The agent of 6acd0ce serves only /v1/environments/<environment>/, so it answers 404 to the CLI's project URL. The CLI says
+#    the agent runs an older release. It runs on a state directory of its own, never the fixture's. With min_version the CLI
+#    cannot read the agent's release, so it sends the request, and the same hint comes back.
 old_agent_state || { echo "cannot give the old agent its own state" >&2; exit 1; }
-restart_with "$OLD080" "$OLD_CFG" "$OLD_LISTEN" || exit 1
-start_proxy || exit 1
+restart_with "$OLD080" "$OLD_CFG" || exit 1
 logging_manifest "" | write_manifest || exit 1
 out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent: the deploy is refused: exit" 1 "$code"
-expect_contains "old agent: it answers invalid request" "$out" "agent returned HTTP 400: invalid request"
+expect_contains "old agent: it answers 404" "$out" "agent returned HTTP 404"
 expect_contains "old agent: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
 logging_manifest 0.9.0 | write_manifest || exit 1
 out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
-expect_eq "old agent with min_version: the CLI refuses: exit" 1 "$code"
-expect_contains "old agent with min_version: names the agent's release" "$out" "this manifest needs Berthy 0.9.0 or newer; the agent of $ENVN runs v0.8.0: upgrade it with berthy setup"
-expect_not_contains "old agent with min_version: nothing was sent" "$out" "agent returned HTTP"
+expect_eq "old agent with min_version: the deploy is refused: exit" 1 "$code"
+expect_contains "old agent with min_version: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
+out=$("$CLI090" ps -e "$ENVN" --config "$RUN/admin.json" 2>&1); code=$?
+expect_eq "old agent: ps is refused: exit" 1 "$code"
+expect_contains "old agent: ps names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
 
 finish

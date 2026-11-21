@@ -2,6 +2,7 @@ package agentclient
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -368,5 +369,62 @@ func TestPrepareDeployAcceptsAnImageAppThatKeepsItsVersion(t *testing.T) {
 	req := deploy.Request{App: "api", KeepVersion: true}
 	if _, err := PrepareDeploy(image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.Version != "" {
 		t.Fatalf("keep version: %v %+v", err, req)
+	}
+}
+
+// preProjectsAgent is an agent of a release before projects: it serves /v1/environments/dev/ for the token "tok" and answers 404
+// to everything else, as the agent of that release does.
+func preProjectsAgent(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/base/v1/environments/dev/agent" && r.Header.Get("Authorization") == "Bearer tok" {
+			w.Write([]byte(`{"environment":"dev","version":"v0.8.0"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"code":"not_found","message":"not found"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestARequestToAnAgentWithoutProjectsSaysToUpgradeIt(t *testing.T) {
+	srv := preProjectsAgent(t)
+	base := mustParse(t, srv.URL)
+	const hint = "agent returned HTTP 404: the agent runs an older release than this CLI; upgrade it with berthy setup"
+	data, status, err := Do(t.Context(), NewHTTPClient(), base, "/base/v1/projects/demo/environments/dev/", "tok", "GET", "apps", "", nil)
+	if err != nil || status != http.StatusNotFound || Message(status, data) != hint {
+		t.Fatalf("Do: %d %s %v", status, data, err)
+	}
+	resp, err := Send(t.Context(), NewHTTPClient(), "POST", srv.URL+"/base/v1/projects/demo/environments/dev/deploys", "tok", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNotFound || Message(resp.StatusCode, body) != hint {
+		t.Fatalf("Send: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestA404FromAnAgentWithProjectsIsLeftAlone(t *testing.T) {
+	var probes int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/v1/environments/") {
+			probes++
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"code":"not_found","message":"app not found"}`))
+	}))
+	defer srv.Close()
+	data, status, err := Do(t.Context(), NewHTTPClient(), mustParse(t, srv.URL), "/v1/projects/demo/environments/dev/", "tok", "GET", "apps/web", "", nil)
+	if err != nil || status != http.StatusNotFound || Message(status, data) != "agent returned HTTP 404: app not found" {
+		t.Fatalf("Do: %d %s %v", status, data, err)
+	}
+	// An agent that does not answer the probe, or refuses its token, is not told to upgrade either.
+	older := preProjectsAgent(t)
+	data, status, _ = Do(t.Context(), NewHTTPClient(), mustParse(t, older.URL), "/base/v1/projects/demo/environments/dev/", "wrong", "GET", "apps", "", nil)
+	if Message(status, data) != "agent returned HTTP 404: not found" {
+		t.Fatalf("a refused probe: %d %s", status, data)
 	}
 }

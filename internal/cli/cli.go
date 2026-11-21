@@ -305,17 +305,11 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	if err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
 	client := http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if watch || follow {
 		client.Timeout = 0
 	}
-	resp, err := client.Do(req)
+	resp, err := agentclient.Send(ctx, &client, "GET", u.String(), token, nil)
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1

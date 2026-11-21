@@ -87,6 +87,11 @@ func (a *backupAgent) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		if r.URL.Path == "/v1/environments/dev/agent" {
+			// The CLI asks an agent that answered 404 whether it is one of a release before projects. This one is not.
+			w.WriteHeader(404)
+			return
+		}
 		a.requests = append(a.requests, r.Method+" "+r.URL.RequestURI())
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/v1/projects/demo/environments/dev/backups/uploads/run":

@@ -61,7 +61,7 @@ func OlderAgentHint(ctx context.Context, c *http.Client, t *Target) string {
 	if cmp, ok := version.Compare(agent, version.Version); !ok || cmp >= 0 {
 		return ""
 	}
-	return "the agent runs an older release than this CLI; upgrade it with berthy setup"
+	return OlderAgentMessage
 }
 
 // AgentProtected reports whether the agent of target is configured for a protected environment. A failed lookup reports false:

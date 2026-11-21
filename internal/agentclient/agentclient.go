@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -183,7 +184,8 @@ func NewHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-// Send sends a request to the agent with the token. A nil body sends none.
+// Send sends a request to the agent with the token. A nil body sends none. Every request goes through it, so it is the one place
+// that tells an agent of a release before projects from a missing path: see olderAgent.
 func Send(ctx context.Context, c *http.Client, method, address, token string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))
 	if err != nil {
@@ -193,7 +195,43 @@ func Send(ctx context.Context, c *http.Client, method, address, token string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.Do(req)
+	resp, err := c.Do(req)
+	if err != nil || resp.StatusCode != http.StatusNotFound {
+		return resp, err
+	}
+	return olderAgent(ctx, c, req.URL, token, resp), nil
+}
+
+// OlderAgentMessage is what a person is told when the agent runs a release that is older than this CLI.
+const OlderAgentMessage = "the agent runs an older release than this CLI; upgrade it with berthy setup"
+
+// projectPath splits the path of a request to a hosted environment's API: what comes before /v1/projects/, and the environment.
+var projectPath = regexp.MustCompile(`^(.*)/v1/projects/[^/]+/environments/([^/]+)/`)
+
+// olderAgent is the answer to a 404 on the project path. An agent of a release before projects serves only
+// /v1/environments/<environment>/, so it answers 404 to every request this CLI sends. When it answers the older path with the same
+// token, the 404 is replaced by one that says to upgrade the agent. Any other 404 is returned as it came, and the probe is made
+// only after a 404, so a request that succeeds costs nothing.
+func olderAgent(ctx context.Context, c *http.Client, u *url.URL, token string, notFound *http.Response) *http.Response {
+	m := projectPath.FindStringSubmatch(u.Path)
+	if m == nil {
+		return notFound
+	}
+	probe := *u
+	probe.Path, probe.RawQuery = m[1]+"/v1/environments/"+m[2]+"/agent", ""
+	resp, err := Send(ctx, c, "GET", probe.String(), token, nil)
+	if err != nil {
+		return notFound
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return notFound
+	}
+	notFound.Body.Close()
+	body := `{"code":"not_found","message":"` + OlderAgentMessage + `"}`
+	notFound.Body = io.NopCloser(strings.NewReader(body))
+	notFound.ContentLength = int64(len(body))
+	return notFound
 }
 
 // Caller returns a function that sends a request without a body to the agent under prefix and reads the answer, at most 1 MiB

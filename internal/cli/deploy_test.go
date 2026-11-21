@@ -333,6 +333,9 @@ func TestExecShowsWhyItFailedBeforeItRan(t *testing.T) {
 		case "/v1/projects/demo/environments/dev/operations/op1/output":
 			w.WriteHeader(404)
 			fmt.Fprint(w, `{"code":"not_found","message":"output unavailable"}`)
+		case "/v1/environments/dev/agent":
+			// The CLI asks an agent that answered 404 whether it is one of a release before projects. This one is not.
+			w.WriteHeader(404)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
