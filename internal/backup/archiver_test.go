@@ -59,6 +59,25 @@ func newFakeDocker() *fakeDocker {
 	return &fakeDocker{containers: map[string]*fakeContainer{}, volumes: map[string]map[string]string{}, stdout: strings.NewReader("")}
 }
 
+func TestArchiverCleanupLeavesTheHelpersOfOtherEnvironments(t *testing.T) {
+	f := newFakeDocker()
+	f.containers["mine"] = &fakeContainer{}
+	f.containers["other-project"] = &fakeContainer{}
+	f.containers["other-environment"] = &fakeContainer{}
+	f.inventory = []engine.InventoryContainer{
+		{ID: "mine", Labels: map[string]string{"berthy.environment": "prod", "berthy.helper": "archive"}},
+		{ID: "other-project", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.helper": "restore"}},
+		{ID: "other-environment", Labels: map[string]string{"berthy.environment": "dev", "berthy.helper": "archive"}},
+	}
+	a := &Archiver{Engine: f, Env: "prod"}
+	if n, err := a.RemoveLeftovers(context.Background()); err != nil || n != 1 {
+		t.Fatalf("removed %d: %v", n, err)
+	}
+	if !f.containers["mine"].removed || f.containers["other-project"].removed || f.containers["other-environment"].removed {
+		t.Fatal("wrong helpers removed")
+	}
+}
+
 func (f *fakeDocker) call(format string, args ...any) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fmt.Sprintf(format, args...))
@@ -288,7 +307,7 @@ func TestArchiveStreamsTheVolumeThroughAHardenedContainer(t *testing.T) {
 		t.Errorf("attach %q", f.calls[2])
 	}
 	c := f.onlyContainer(t)
-	if !regexp.MustCompile(`^berthy-archive-prod-[0-9a-f]{8}$`).MatchString(c.name) || !c.started || !c.removed {
+	if !regexp.MustCompile(`^berthy-archive-\.prod-[0-9a-f]{8}$`).MatchString(c.name) || !c.started || !c.removed {
 		t.Errorf("container %+v", c)
 	}
 	want2 := jsonOf(t, map[string]any{
@@ -297,7 +316,7 @@ func TestArchiveStreamsTheVolumeThroughAHardenedContainer(t *testing.T) {
 		"User":         "0:0",
 		"AttachStdout": true,
 		"AttachStderr": true,
-		"Labels":       map[string]string{"berthy.environment": "prod", "berthy.helper": "archive"},
+		"Labels":       map[string]string{"berthy.project": "", "berthy.environment": "prod", "berthy.helper": "archive"},
 		"HostConfig": map[string]any{
 			"NetworkMode":    "none",
 			"ReadonlyRootfs": true,
@@ -452,7 +471,7 @@ func TestRestoreExtractsIntoANewVolume(t *testing.T) {
 		t.Fatalf("volumes %v", f.volumes)
 	}
 	c := f.onlyContainer(t)
-	if !regexp.MustCompile(`^berthy-restore-prod-[0-9a-f]{8}$`).MatchString(c.name) || !c.removed {
+	if !regexp.MustCompile(`^berthy-restore-\.prod-[0-9a-f]{8}$`).MatchString(c.name) || !c.removed {
 		t.Errorf("container %+v", c)
 	}
 	want2 := jsonOf(t, map[string]any{
@@ -464,7 +483,7 @@ func TestRestoreExtractsIntoANewVolume(t *testing.T) {
 		"AttachStderr": true,
 		"OpenStdin":    true,
 		"StdinOnce":    true,
-		"Labels":       map[string]string{"berthy.environment": "prod", "berthy.helper": "restore"},
+		"Labels":       map[string]string{"berthy.project": "", "berthy.environment": "prod", "berthy.helper": "restore"},
 		"HostConfig": map[string]any{
 			"NetworkMode":    "none",
 			"ReadonlyRootfs": true,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/scope"
 	"berthy/internal/volarchive"
 )
 
@@ -50,8 +51,8 @@ var _ ArchiverEngine = (*engine.Engine)(nil)
 type Archiver struct {
 	Engine ArchiverEngine
 	// Image returns the helper image: the agent's static binary as a one-file image.
-	Image func(ctx context.Context) (string, error)
-	Env   string
+	Image        func(ctx context.Context) (string, error)
+	Project, Env string
 	// Log receives what a helper said on stderr when a run fails, and a container that could not be removed. It may be nil.
 	// The text can name files, so it goes to the agent's log and never into an error that API callers see.
 	Log func(string)
@@ -186,7 +187,8 @@ func (a *Archiver) create(ctx context.Context, kind, volume string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("helper image unavailable: %w", err)
 	}
-	spec, err := helperSpec(kind, a.Env, image, volume)
+	id := scope.ID{Project: a.Project, Environment: a.Env}
+	spec, err := helperSpec(kind, id, image, volume)
 	if err != nil {
 		return "", err
 	}
@@ -194,15 +196,15 @@ func (a *Archiver) create(ctx context.Context, kind, volume string) (string, err
 	if _, err = rand.Read(suffix); err != nil {
 		return "", err
 	}
-	name := "berthy-" + kind + "-" + a.Env + "-" + hex.EncodeToString(suffix)
-	id, err := a.Engine.CreateContainer(ctx, name, spec)
+	name := "berthy-" + kind + "-" + id.Slug() + "-" + hex.EncodeToString(suffix)
+	containerID, err := a.Engine.CreateContainer(ctx, name, spec)
 	if err != nil {
 		return "", fmt.Errorf("helper create failed: %w", err)
 	}
-	if id == "" {
+	if containerID == "" {
 		return "", errors.New("helper create failed: no container ID")
 	}
-	return id, nil
+	return containerID, nil
 }
 
 // RemoveLeftovers removes the archive and restore helper containers of this environment that exist, and returns how many it
@@ -217,7 +219,7 @@ func (a *Archiver) RemoveLeftovers(ctx context.Context) (int, error) {
 	}
 	removed := 0
 	for _, c := range containers {
-		if c.Labels["berthy.environment"] != a.Env || (c.Labels["berthy.helper"] != "archive" && c.Labels["berthy.helper"] != "restore") {
+		if !(scope.ID{Project: a.Project, Environment: a.Env}).Owns(c.Labels) || (c.Labels["berthy.helper"] != "archive" && c.Labels["berthy.helper"] != "restore") {
 			continue
 		}
 		name := c.ID
@@ -260,7 +262,9 @@ func (a *Archiver) removeVolume(ctx context.Context, volume string) {
 // helperSpec is the helper container of a run. Both kinds run as root without network and with a read-only root, drop every
 // capability and add back only what the work needs: reading any file of the volume, or creating, owning and moding files
 // in it. The volume is mounted without copying the image's content into it.
-func helperSpec(kind, env, image, volume string) (json.RawMessage, error) {
+func helperSpec(kind string, id scope.ID, image, volume string) (json.RawMessage, error) {
+	labels := id.Labels()
+	labels["berthy.helper"] = kind
 	mount := map[string]any{
 		"Type":          "volume",
 		"Source":        volume,
@@ -274,7 +278,7 @@ func helperSpec(kind, env, image, volume string) (json.RawMessage, error) {
 		"User":         "0:0",
 		"AttachStdout": true,
 		"AttachStderr": true,
-		"Labels":       map[string]string{"berthy.environment": env, "berthy.helper": kind},
+		"Labels":       labels,
 	}
 	host := map[string]any{
 		"NetworkMode":    "none",

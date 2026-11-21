@@ -55,7 +55,7 @@ func NewBackups(c Config, e *engine.Engine, d *deploy.Controller, sched *jobs.Sc
 	if sched != nil {
 		holder = sched
 	}
-	arch := &backup.Archiver{Engine: e, Image: image, Env: c.Environment, Log: log}
+	arch := &backup.Archiver{Engine: e, Image: image, Project: c.Project, Env: c.Environment, Log: log}
 	return newBackups(c.Environment, d, arch, holder, log)
 }
 
@@ -70,8 +70,9 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		Resolve: func(ctx context.Context, m manifest.Manifest, bk manifest.Backup) (string, error) {
 			return resolveVolume(ctx, d, m, bk)
 		},
-		Env: env,
-		Log: log,
+		Project: d.Project,
+		Env:     env,
+		Log:     log,
 	}
 	d.Restorer = restorer{b: b, store: d.Store}
 	d.Backups = b

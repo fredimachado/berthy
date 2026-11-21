@@ -24,6 +24,7 @@ import (
 	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/objectstore"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -160,10 +161,10 @@ type Runner struct {
 	// Commands runs the command of a command backup and of a restore into a command. It is nil when the agent cannot.
 	Commands CommandRunner
 	// Resolve returns the Docker name of the volume a backup names, or an error that wraps ErrNotMounted.
-	Resolve func(ctx context.Context, m manifest.Manifest, b manifest.Backup) (dockerVolume string, err error)
-	Env     string
-	Now     func() time.Time
-	Log     func(string)
+	Resolve      func(ctx context.Context, m manifest.Manifest, b manifest.Backup) (dockerVolume string, err error)
+	Project, Env string
+	Now          func() time.Time
+	Log          func(string)
 
 	mu     sync.Mutex
 	active map[string]bool // Docker volume, or command backup's name -> a backup of it is running; one at a time
@@ -935,7 +936,8 @@ func (r *Runner) Restore(ctx context.Context, m manifest.Manifest, key, intoVolu
 		}
 		return nil
 	}
-	labels := map[string]string{"berthy.environment": r.Env, "berthy.restored-from": key, RestoreOperationLabel: operationID}
+	labels := (scope.ID{Project: r.Project, Environment: r.Env}).Labels()
+	labels["berthy.restored-from"], labels[RestoreOperationLabel] = key, operationID
 	return r.Archiver.Restore(ctx, intoVolume, io.TeeReader(body, counted), labels, verify)
 }
 
