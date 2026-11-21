@@ -106,6 +106,15 @@ func (a *Archiver) Archive(ctx context.Context, volume string, w io.Writer) (int
 	return n, nil
 }
 
+// ErrRestoreVolumeRemoved marks a failed restore whose newly created volume was confirmed gone.
+var ErrRestoreVolumeRemoved = errors.New("restore-created volume removed")
+
+type removedRestoreVolume struct{ err error }
+
+func (e removedRestoreVolume) Error() string        { return e.err.Error() }
+func (e removedRestoreVolume) Unwrap() error        { return e.err }
+func (e removedRestoreVolume) Is(target error) bool { return target == ErrRestoreVolumeRemoved }
+
 // Restore creates the new volume and extracts the archive in r into it, then calls verify, the caller's check of the
 // checksum of what it fed into r. A volume that exists is refused, so a restore never writes into someone's data. A
 // failure at any step removes the container and the volume that this call created.
@@ -125,8 +134,8 @@ func (a *Archiver) Restore(ctx context.Context, volume string, r io.Reader, labe
 	// From here the volume is this call's, and goes if the restore does not complete. The container goes first: Docker does
 	// not remove a volume that a container still mounts.
 	defer func() {
-		if err != nil {
-			a.removeVolume(ctx, volume)
+		if err != nil && a.removeVolume(ctx, volume) {
+			err = removedRestoreVolume{err}
 		}
 	}()
 	return a.extract(ctx, volume, r, verify)
@@ -251,12 +260,18 @@ func (a *Archiver) removeContainer(ctx context.Context, id string) {
 	}
 }
 
-func (a *Archiver) removeVolume(ctx context.Context, volume string) {
+func (a *Archiver) removeVolume(ctx context.Context, volume string) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if err := a.Engine.RemoveVolume(ctx, volume); err != nil {
-		a.log("volume %s was not removed: %v", volume, err)
+		var status *engine.StatusError
+		if !errors.As(err, &status) || status.Code != 404 {
+			a.log("volume %s was not removed: %v", volume, err)
+			return false
+		}
 	}
+	exists, err := a.Engine.VolumeExists(ctx, volume)
+	return err == nil && !exists
 }
 
 // helperSpec is the helper container of a run. Both kinds run as root without network and with a read-only root, drop every

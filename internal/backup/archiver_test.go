@@ -677,3 +677,20 @@ func TestArchiverGivesEveryStreamADeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRestoreReportsOnlyAConfirmedRemovedCreatedVolume(t *testing.T) {
+	f := newFakeDocker()
+	f.createErr = errors.New("helper unavailable")
+	a, _ := newArchiver(f)
+	err := a.Restore(context.Background(), "fresh", strings.NewReader("x"), nil, func() error { return nil })
+	if !errors.Is(err, ErrRestoreVolumeRemoved) {
+		t.Fatalf("removed volume not reported: %v", err)
+	}
+	f = newFakeDocker()
+	f.createVolumeErr = errors.New("create failed")
+	a, _ = newArchiver(f)
+	err = a.Restore(context.Background(), "fresh", strings.NewReader("x"), nil, func() error { return nil })
+	if errors.Is(err, ErrRestoreVolumeRemoved) {
+		t.Fatalf("uncreated volume reported removed: %v", err)
+	}
+}
