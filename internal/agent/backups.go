@@ -150,7 +150,7 @@ func resolveVolume(ctx context.Context, d *deploy.Controller, m manifest.Manifes
 		for _, role := range app.Roles {
 			for _, v := range role.Volumes {
 				if mount, err := manifest.ParseMount(v); err == nil && mount.Source == b.Volume {
-					return mount.Source, nil
+					return m.VolumeName(d.Environment, mount.Source), nil
 				}
 			}
 		}

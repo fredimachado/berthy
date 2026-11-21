@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -209,7 +210,7 @@ func newBackupRig(t *testing.T) *backupRig {
 	t.Cleanup(srv.Close)
 	s := openIngressStore(t)
 	g := &backupRig{t: t, url: srv.URL, store: s, docker: newFakeArchiveEngine(), compose: &configCompose{out: `{"volumes":{"docs":{"name":"files_docs"},"shared":{"name":"team-shared","external":true}}}`}}
-	g.docker.volumes["uploads"] = "uploads-payload"
+	g.docker.volumes["demo-lab_uploads"] = "uploads-payload"
 	g.docker.volumes["files_docs"] = "docs-payload"
 	recordAppRelease(t, s, "r-api", "api", backupManifest(srv.URL))
 	recordAppRelease(t, s, "r-files", "files", backupManifest(srv.URL))
@@ -314,7 +315,7 @@ func TestBackupOfAnImageAppVolumeRunsListsAndAudits(t *testing.T) {
 	if !strings.HasPrefix(run.Key, "api/uploads/uploads/") || !strings.HasSuffix(run.Key, fmt.Sprintf("-%d.tar.gz", run.ID)) {
 		t.Fatalf("key %q", run.Key)
 	}
-	if len(g.docker.archived) != 1 || g.docker.archived[0] != "uploads" {
+	if len(g.docker.archived) != 1 || g.docker.archived[0] != "demo-lab_uploads" {
 		t.Fatalf("archived volumes: %v", g.docker.archived)
 	}
 	entries := g.list("")
@@ -371,7 +372,7 @@ func TestBackupOfAComposeVolumeResolvesTheProjectsDockerName(t *testing.T) {
 func TestBackupVolumeResolutionForImageApps(t *testing.T) {
 	g := newBackupRig(t)
 	m, _ := runningManifest(context.Background(), g.store)
-	for volume, want := range map[string]string{"uploads": "uploads", "cache": "cache"} {
+	for volume, want := range map[string]string{"uploads": "demo-lab_uploads", "cache": "demo-lab_cache"} {
 		got, err := resolveVolume(context.Background(), g.ctrl, m, manifestBackup(m, "uploads", volume))
 		if err != nil || got != want {
 			t.Errorf("%s: %q %v", volume, got, err)
@@ -537,7 +538,7 @@ func TestRestoreThroughTheAPIFillsANewVolume(t *testing.T) {
 		t.Fatalf("restored volume: fed %q", got)
 	}
 	// An existing volume is refused when the request arrives.
-	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"uploads"}`, run.Key))
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"demo-lab_uploads"}`, run.Key))
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "target volume already exists") {
 		t.Fatalf("existing volume: %d %s", w.Code, w.Body.String())
 	}
@@ -658,5 +659,21 @@ func TestStartRemovesTheHelperContainersAKilledAgentLeft(t *testing.T) {
 	g.backups.Start(context.Background())
 	if len(g.docker.removedC) != 2 || g.docker.removedC[0] != "left-archive" || g.docker.removedC[1] != "left-restore" {
 		t.Fatalf("removed containers: %v", g.docker.removedC)
+	}
+}
+
+func TestAnImageAppsVolumeBackupArchivesTheEnvironmentsVolume(t *testing.T) {
+	g := newBackupRig(t)
+	g.docker.volumes["demo-lab_uploads"] = "environment payload"
+	m, err := manifest.DecodeJSON([]byte(backupManifest(g.url)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := g.backups.RunBackup(context.Background(), *m, "uploads")
+	if err != nil || result.Status != "succeeded" {
+		t.Fatalf("backup %+v: %v", result, err)
+	}
+	if !reflect.DeepEqual(g.docker.archived, []string{"demo-lab_uploads"}) {
+		t.Fatalf("archived %v", g.docker.archived)
 	}
 }
