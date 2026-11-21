@@ -271,7 +271,7 @@ tg_messages() { curl_local "http://$TG_LISTEN/_fake/messages"; }
 # tg_reset: clears the fake Telegram's record.
 tg_reset() { curl_local -X POST "http://$TG_LISTEN/_fake/reset" >/dev/null; }
 
-# service_spec NAME: the Swarm service spec as JSON, for example service_spec e2e-web-main.
+# service_spec NAME: the Swarm service spec as JSON, for example service_spec "$PROJECT-$ENVN-web-main".
 service_spec() { d service inspect --format '{{json .Spec}}' "$1"; }
 
 # write_manifest: writes $MAN/berthy.yml from stdin and removes stale overlays (berthy.<env>.yml).
