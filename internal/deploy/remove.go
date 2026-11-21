@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"sort"
@@ -69,6 +70,32 @@ type volumeEngine interface {
 // projectVolumeEngine lists the volumes Compose created for a project.
 type projectVolumeEngine interface {
 	ProjectVolumes(context.Context, string) ([]string, error)
+}
+
+// projectNetworks discovers networks owned by Compose even if its files are gone.
+func (c *Controller) projectNetworks(ctx context.Context, project string) ([]state.Claim, bool, error) {
+	e, ok := c.Engine.(interface {
+		Get(context.Context, string, any) error
+	})
+	if !ok {
+		return nil, false, nil
+	}
+	filters, err := json.Marshal(map[string][]string{"label": {"com.docker.compose.project=" + project}})
+	if err != nil {
+		return nil, true, err
+	}
+	var networks []struct{ Name string }
+	if err := e.Get(ctx, "/networks?"+url.Values{"filters": {string(filters)}}.Encode(), &networks); err != nil {
+		return nil, true, err
+	}
+	var claims []state.Claim
+	for _, network := range networks {
+		if !engine.ValidName(network.Name) {
+			return nil, true, errors.New("invalid network name")
+		}
+		claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: network.Name})
+	}
+	return claims, true, nil
 }
 
 // removal is everything a removal needs to know, read once: the plan, and what the run acts on.
@@ -581,7 +608,13 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	if err := c.composeReady(); err != nil {
 		return err
 	}
-	var settleClaims []state.Claim
+	settleClaims, inventoried, err := c.projectNetworks(ctx, project)
+	if err != nil {
+		return err
+	}
+	if !inventoried && c.Foreign != nil && c.Reserve != nil {
+		return errRemoveCompose
+	}
 	var volumeNames []string
 	if volumes {
 		if pe, ok := c.Engine.(projectVolumeEngine); ok {
@@ -601,7 +634,7 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 		}
 		if err == nil {
 			for _, claim := range names {
-				if claim.Kind == state.ClaimNetwork {
+				if claim.Kind == state.ClaimNetwork && !inventoried {
 					settleClaims = append(settleClaims, claim)
 				}
 				if volumes && claim.Kind == state.ClaimVolume {

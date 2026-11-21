@@ -886,3 +886,59 @@ func TestComposeDownReservesBeforeDockerChanges(t *testing.T) {
 		}
 	}
 }
+
+type composeNetworkInventory struct {
+	*composeDocker
+	path string
+}
+
+func (d *composeNetworkInventory) Get(_ context.Context, path string, out any) error {
+	d.path = path
+	return json.Unmarshal([]byte(`[{"Name":"managed-net"}]`), out)
+}
+func TestComposeDownInventoriesManagedNetworksWithoutFiles(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	base := newComposeDocker()
+	c, _ := composeController(t, runner, base)
+	docker := &composeNetworkInventory{composeDocker: base}
+	c.Engine = docker
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		if slices.Contains(claims, state.Claim{Kind: state.ClaimNetwork, Name: "managed-net"}) {
+			return nil, Refusal("name managed-net is taken by another project or environment on this server")
+		}
+		return claims, nil
+	}
+	err := c.composeDown(context.Background(), "shared", false)
+	if err == nil || !strings.Contains(err.Error(), "name managed-net is taken") {
+		t.Fatalf("down: %v", err)
+	}
+	if !strings.HasPrefix(docker.path, "/networks?") || !strings.Contains(docker.path, "com.docker.compose.project") {
+		t.Fatalf("inventory path: %s", docker.path)
+	}
+	if len(downRuns(runner)) != 0 {
+		t.Fatal("down ran")
+	}
+}
+func (d *composeNetworkInventory) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{}, &engine.StatusError{Code: 404}
+}
+func TestComposeDownKeepsExternalNetworkClaims(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	base := newComposeDocker()
+	c, s := composeController(t, runner, base)
+	c.Engine = &composeNetworkInventory{composeDocker: base}
+	c.Reserve = s.AddClaimsNew
+	managed := state.Claim{Kind: state.ClaimNetwork, Name: "managed-net"}
+	external := state.Claim{Kind: state.ClaimNetwork, Name: "external-net"}
+	if err := s.AddClaims(ctx, []state.Claim{managed, external}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.composeDown(ctx, "shared", false); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || slices.Contains(held, managed) || !slices.Contains(held, external) {
+		t.Fatalf("held: %v, %v", held, err)
+	}
+}
