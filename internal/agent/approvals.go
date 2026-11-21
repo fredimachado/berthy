@@ -78,13 +78,14 @@ func (c *capture) replay(w http.ResponseWriter) {
 	_, _ = w.Write(c.body.Bytes())
 }
 
-// restOf is the path after the environment, as the routes see it. It is nil for a path that is too short.
+// restOf splits a path relative to the environment, as mount gives it to a handler, into the segments the routes switch on.
+// It is nil for the environment's own path.
 func restOf(path string) []string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 4 {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
 		return nil
 	}
-	return parts[3:]
+	return strings.Split(path, "/")
 }
 
 // readBody reads a request body of at most 1 MiB and puts it back, so the handler can read it again.

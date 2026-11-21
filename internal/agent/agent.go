@@ -248,7 +248,7 @@ func Handler(c Config, e *engine.Engine) http.Handler {
 	return HandlerWithMetrics(c, e, nil)
 }
 func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector) http.Handler {
-	return handlerWithState(c, e, collector, nil, nil)
+	return serveAPI(c, handlerWithState(c, e, collector, nil, nil))
 }
 func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter) http.Handler {
 	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)))
@@ -263,9 +263,10 @@ func storeOf(d *deploy.Controller) *state.Store {
 }
 
 // handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
+// The handler sees the path after the environment, as mount gives it.
 func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		rest := restOf(r.URL.Path)
 		if r.Method != "GET" {
 			writeError(w, 405, "method_not_allowed", "method not allowed")
 			return
@@ -275,10 +276,10 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 		var result any
 		var err error
 		switch {
-		case len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs":
-			serveLogs(w, r, e, parts[4], deployment)
+		case len(rest) == 3 && rest[0] == "apps" && rest[2] == "logs":
+			serveLogs(w, r, e, rest[1], deployment)
 			return
-		case len(parts) == 4 && parts[3] == "stats":
+		case len(rest) == 1 && rest[0] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
 				streamStats(w, r, collector)
 				return
@@ -301,10 +302,10 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					return
 				}
 			}
-		case len(parts) == 4 && parts[3] == "agent":
+		case len(rest) == 1 && rest[0] == "agent":
 			host, _ := os.Hostname()
 			result = map[string]any{"environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
-		case len(parts) == 4 && parts[3] == "apps":
+		case len(rest) == 1 && rest[0] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
@@ -316,7 +317,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 				}
 				result = apps
 			}
-		case len(parts) == 5 && parts[3] == "apps":
+		case len(rest) == 2 && rest[0] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")
 			} else {
@@ -325,7 +326,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 				if err == nil {
 					var code int
 					var app api.App
-					app, code = engine.Select(apps, parts[4])
+					app, code = engine.Select(apps, rest[1])
 					result = app
 					if code == 200 {
 						app.Jobs = appJobs(ctx, deployment, app, time.Now())
@@ -336,14 +337,14 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					if code != 200 {
 						message := http.StatusText(code)
 						if code == 409 {
-							message = "ambiguous app; use image:" + parts[4] + ", swarm:" + parts[4] + " or compose:" + parts[4]
+							message = "ambiguous app; use image:" + rest[1] + ", swarm:" + rest[1] + " or compose:" + rest[1]
 						}
 						writeError(w, code, strings.ToLower(strings.ReplaceAll(http.StatusText(code), " ", "_")), message)
 						return
 					}
 				}
 			}
-		case len(parts) == 4 && parts[3] == "df":
+		case len(rest) == 1 && rest[0] == "df":
 			disk, diskErr := hostDisk()
 			var d dockerDisk
 			var dockerErr error
@@ -362,7 +363,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 				result.(map[string]any)["host_error"] = diskErr.Error()
 			}
 
-		case len(parts) == 4 && parts[3] == "doctor":
+		case len(rest) == 1 && rest[0] == "doctor":
 			host, _ := os.Hostname()
 			checks := []api.Check{{Name: "agent", OK: true, Critical: true, Detail: version.String()}, {Name: "host", OK: host != "", Critical: true, Detail: host}}
 			mounts, _ := hostDisk()
@@ -463,25 +464,18 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 	readAuthorized := authorize(tokens, "read", handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if serveHealth(w, r) {
-			return
-		}
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
-			writeError(w, 404, "not_found", "not found")
-			return
-		}
+		rest := restOf(r.URL.Path)
 		routed := false
-		if len(parts) == 4 {
-			switch parts[3] {
+		if len(rest) == 1 {
+			switch rest[0] {
 			case "agent", "apps", "df", "doctor", "stats":
 				routed = true
 			}
 		}
-		if len(parts) == 5 && parts[3] == "apps" {
+		if len(rest) == 2 && rest[0] == "apps" {
 			routed = true
 		}
-		if len(parts) == 6 && parts[3] == "apps" && parts[5] == "logs" {
+		if len(rest) == 3 && rest[0] == "apps" && rest[2] == "logs" {
 			routed = true
 		}
 		if !routed {

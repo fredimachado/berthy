@@ -729,3 +729,15 @@ func TestHeldSecretSetIsRefusedWhenTheSecretAppearedSinceTheRequest(t *testing.T
 		t.Fatalf("the secret was overwritten: %q", v)
 	}
 }
+
+func TestAnApprovalStoresThePathRelativeToItsEnvironment(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	f.hold("POST", "/deploys", apAgentDeploy, deployBody(t, false))
+	rows, err := f.s.Approvals(context.Background(), "pending", f.now)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("approvals: %v %v", rows, err)
+	}
+	if rows[0].Path != "deploys" {
+		t.Fatalf("stored path %q, want the path after the environment", rows[0].Path)
+	}
+}

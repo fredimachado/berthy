@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -102,7 +101,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				operationError(w, err)
 				return
 			}
-			path := "/v1/environments/" + c.Environment + "/operations/" + op.ID + "/events"
+			path := apiPrefix(c) + "operations/" + op.ID + "/events"
 			w.Header().Set("Location", path)
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
@@ -160,7 +159,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				operationError(w, err)
 				return
 			}
-			path := "/v1/environments/" + c.Environment + "/operations/" + op.ID + "/events"
+			path := apiPrefix(c) + "operations/" + op.ID + "/events"
 			w.Header().Set("Location", path)
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
@@ -190,7 +189,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 				operationError(w, err)
 				return
 			}
-			path := "/v1/environments/" + c.Environment + "/operations/" + op.ID + "/events"
+			path := apiPrefix(c) + "operations/" + op.ID + "/events"
 			w.Header().Set("Location", path)
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
@@ -588,13 +587,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 		}
 	}
 	gate.serve = serve
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(parts) < 4 || parts[0] != "v1" || parts[1] != "environments" {
-			legacy.ServeHTTP(w, r)
-			return
-		}
-		rest := parts[3:]
+	// The handler sees the path after the environment, as mount gives it.
+	return serveAPI(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest := restOf(r.URL.Path)
 		required, method, known := routeScope(rest, r.Method)
 		if !known {
 			legacy.ServeHTTP(w, r)
@@ -651,7 +646,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			return
 		}
 		serve(w, r, actor, rest)
-	})
+	}))
 }
 
 // historyDiffIDs reads the release numbers of a history diff: release is required, base is optional and means the release

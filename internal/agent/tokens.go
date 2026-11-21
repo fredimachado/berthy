@@ -113,10 +113,9 @@ func (t *tokenSource) entries(ctx context.Context) ([]tokenEntry, error) {
 // valid token for this environment, and 503 when the state could not be read and the token is not one of the file's. A token
 // that works is recorded as used.
 func (t *tokenSource) identify(r *http.Request) (tokenEntry, int) {
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	header := r.Header.Get("Authorization")
 	raw := strings.TrimPrefix(header, "Bearer ")
-	if len(parts) < 3 || parts[2] != t.cfg.Environment || !strings.HasPrefix(header, "Bearer ") || !tokenPattern(t.cfg.Environment).MatchString(raw) {
+	if !strings.HasPrefix(header, "Bearer ") || !tokenPattern(t.cfg.Environment).MatchString(raw) {
 		return tokenEntry{}, http.StatusUnauthorized
 	}
 	sum := sha256.Sum256([]byte(raw))
