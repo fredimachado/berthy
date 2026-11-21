@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 
+	"berthy/internal/deploy"
 	"berthy/internal/scope"
+	"berthy/internal/state"
 )
 
 // Host is the hosted environments of one agent and the router of their API.
@@ -13,6 +16,7 @@ type Host struct {
 	// runtimes is by ID and never changes after Open, so requests read it without a lock. order is the order of the file.
 	runtimes map[scope.ID]*Runtime
 	order    []*Runtime
+	claimsMu sync.Mutex
 }
 
 // Open opens every hosted environment of the file and wires what they share. When one fails it closes those already opened
@@ -37,7 +41,72 @@ func Open(sh Shared, f File) (*Host, error) {
 			return nil, fmt.Errorf("state in %s: %w", r.Config.StateDir, err)
 		}
 	}
+	seen := map[state.Claim]scope.ID{}
+	for _, r := range h.order {
+		claims, err := r.deployment.Store.Claims(context.Background())
+		if err != nil {
+			h.Close()
+			return nil, err
+		}
+		for _, claim := range claims {
+			if other, ok := seen[claim]; ok {
+				h.Close()
+				return nil, fmt.Errorf("environments %s and %s both hold %s %s: the agent does not start until one of them gives it up", other, r.Config.ID(), claim.Kind, claim.Name)
+			}
+			seen[claim] = r.Config.ID()
+		}
+	}
+	for _, r := range h.order {
+		id := r.Config.ID()
+		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) error { return h.reserveContext(ctx, id, claims) }
+		r.deployment.Foreign = func(ctx context.Context) (deploy.Foreign, error) {
+			h.claimsMu.Lock()
+			defer h.claimsMu.Unlock()
+			return h.foreign(ctx, id)
+		}
+		if r.Config.Network != "" {
+			if err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {
+				h.Close()
+				return nil, err
+			}
+		}
+	}
 	return h, nil
+}
+
+func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error) {
+	f := deploy.Foreign{Claims: map[state.Claim]bool{}, Images: map[string]bool{}}
+	for _, r := range h.order {
+		if r.Config.ID() == id {
+			continue
+		}
+		claims, err := r.deployment.Store.Claims(ctx)
+		if err != nil {
+			return deploy.Foreign{}, err
+		}
+		for _, c := range claims {
+			f.Claims[c] = true
+		}
+	}
+	return f, nil
+}
+
+func (h *Host) reserve(id scope.ID, claims []state.Claim) error {
+	return h.reserveContext(context.Background(), id, claims)
+}
+func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.Claim) error {
+	h.claimsMu.Lock()
+	defer h.claimsMu.Unlock()
+	f, err := h.foreign(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, c := range claims {
+		if f.Claims[c] {
+			return deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
+		}
+	}
+	return h.runtimes[id].deployment.Store.AddClaims(ctx, claims)
 }
 
 // Start starts every hosted environment. The caller serves the Host only after it returns. When one fails to start, the

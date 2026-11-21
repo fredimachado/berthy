@@ -130,7 +130,14 @@ type Engine interface {
 	ServiceTasks(context.Context, string) ([]engine.ServiceTask, error)
 	InspectContainerHealth(context.Context, string) (string, error)
 }
+type Foreign struct {
+	Claims map[state.Claim]bool
+	Images map[string]bool
+}
+
 type Controller struct {
+	Reserve     func(context.Context, []state.Claim) error
+	Foreign     func(context.Context) (Foreign, error)
 	Engine      Engine
 	Store       *state.Store
 	Environment string

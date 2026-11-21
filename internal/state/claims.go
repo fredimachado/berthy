@@ -1,6 +1,9 @@
 package state
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Claim is a Docker name this environment holds.
 type Claim struct{ Kind, Name string }
@@ -13,6 +16,9 @@ const (
 )
 
 func (s *Store) Claims(ctx context.Context) ([]Claim, error) {
+	if s.db == nil {
+		return nil, errors.New("state is closed")
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT kind,name FROM claims WHERE environment=? ORDER BY kind,name`, s.env)
 	if err != nil {
 		return nil, err

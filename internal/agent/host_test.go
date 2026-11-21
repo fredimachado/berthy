@@ -427,3 +427,125 @@ func TestAFullFollowerLimitOfOneEnvironmentLeavesTheOthersServing(t *testing.T) 
 		})
 	}
 }
+
+func TestTwoOverlappingReservationsOfOneNameHaveOneWinner(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shared"}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, id := range []scope.ID{a, b} {
+		go func() { <-start; results <- h.reserve(id, []state.Claim{claim}) }()
+	}
+	close(start)
+	successes := 0
+	for range 2 {
+		if <-results == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful reservations: %d", successes)
+	}
+	holders := 0
+	for _, id := range []scope.ID{a, b} {
+		claims, err := h.runtimes[id].deployment.Store.Claims(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range claims {
+			if c == claim {
+				holders++
+			}
+		}
+	}
+	if holders != 1 {
+		t.Fatalf("holders: %d", holders)
+	}
+}
+
+func TestReserveRefusesANameAnotherEnvironmentHolds(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	if err = h.reserve(a, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	err = h.reserve(b, []state.Claim{{Kind: state.ClaimVolume, Name: "other"}, claim})
+	if err == nil || err.Error() != "name shared is taken by another project or environment on this server" {
+		t.Fatalf("refusal: %v", err)
+	}
+	claims, err := h.runtimes[b].deployment.Store.Claims(context.Background())
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("partial write: %v, %v", claims, err)
+	}
+}
+
+func TestAnEnvironmentThatDeployedNothingHoldsItsNetwork(t *testing.T) {
+	id := scope.ID{Project: "one", Environment: "prod"}
+	sh, f := hostedFile(t, id)
+	f.Environments[0].Network = "one-prod"
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	claims, err := h.runtimes[id].deployment.Store.Claims(context.Background())
+	if err != nil || len(claims) != 1 || claims[0] != (state.Claim{Kind: state.ClaimNetwork, Name: "one-prod"}) {
+		t.Fatalf("network: %v, %v", claims, err)
+	}
+}
+
+func TestReserveFailsWhenAnotherStateCannotBeRead(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	h.runtimes[b].deployment.Store.Close()
+	if err = h.reserve(a, []state.Claim{{Kind: state.ClaimVolume, Name: "shared"}}); err == nil {
+		t.Fatal("reservation succeeded with unreadable state")
+	}
+}
+
+func TestOpenRefusesTwoEnvironmentsThatHoldOneName(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, a, b)
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	for _, config := range f.Configs() {
+		s, err := state.Open(config.StateDir, config.KeyFile, config.Environment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddClaims(context.Background(), []state.Claim{claim}); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+	h, err := Open(sh, f)
+	if h != nil {
+		h.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "environments one/prod and two/prod both hold compose shared") {
+		t.Fatalf("open: %v", err)
+	}
+	for _, config := range f.Configs() {
+		s, err := state.Open(config.StateDir, config.KeyFile, config.Environment)
+		if err != nil {
+			t.Fatalf("state left open: %v", err)
+		}
+		s.Close()
+	}
+}
