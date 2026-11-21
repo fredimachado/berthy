@@ -25,8 +25,10 @@ d() {
     'network ls')
       if [[ $* == *'--no-trunc'* ]]; then
         local network
-        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished shop-timeout shop-early shop-notfound; do
-          if [ "${NOTFOUND_NETWORK:-}" = 1 ]; then
+        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished shop-timeout shop-early shop-notfound shop-silent; do
+          if [ "${SILENT_TIMEOUT:-}" = 1 ]; then
+            [ "$network" = shop-silent ] || continue
+          elif [ "${NOTFOUND_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-notfound ] && [ ! -e "$E2E_ROOT/notfound-gone" ] || continue
           elif [ "${EARLY_DESTROY:-}" = 1 ]; then
             [ "$network" = shop-early ] && [ ! -e "$E2E_ROOT/early-gone" ] || continue
@@ -39,7 +41,7 @@ d() {
           elif [ "${DELAYED_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-delayed ] && [ ! -e "$E2E_ROOT/delayed-gone" ] || continue
           else
-            case $network in shop-delayed|shop-retry|shop-vanished|shop-timeout|shop-early|shop-notfound) continue ;; esac
+            case $network in shop-delayed|shop-retry|shop-vanished|shop-timeout|shop-early|shop-notfound|shop-silent) continue ;; esac
             if [ -f "$E2E_ROOT/removed-networks" ] && grep -Fxq "$network" "$E2E_ROOT/removed-networks"; then continue; fi
           fi
           if [[ $* == *'{{.ID}} {{.Name}}'* ]]; then echo "id-$network $network"; else echo "id-$network"; fi
@@ -60,7 +62,7 @@ d() {
         empty-network) echo '' ;;
       esac ;;
     'events --since')
-      if [ "${TIMEOUT_NETWORK:-}" = 1 ]; then echo disconnect; return; fi
+      if [ "${TIMEOUT_NETWORK:-}" = 1 ] || [ "${SILENT_TIMEOUT:-}" = 1 ]; then echo disconnect; return; fi
       exec 3<> "$EVENT_FIFO"
       while read -r event <&3; do
         if [ "$event" = destroy ] && [ "${DELAYED_NETWORK:-}" = 1 ]; then touch "$E2E_ROOT/delayed-gone"; fi
@@ -68,6 +70,10 @@ d() {
       done ;;
     'network rm')
       local network=${3#id-}
+      if [ "$network" = shop-silent ]; then
+        if [ ! -e "$E2E_ROOT/silent-refused" ]; then touch "$E2E_ROOT/silent-refused"; echo 'network not found' >&2; return 1; fi
+        return 124
+      fi
       if [ "$network" = shop-notfound ]; then
         if [ ! -e "$E2E_ROOT/notfound-refused" ]; then
           touch "$E2E_ROOT/notfound-refused"; echo 'network not found' >&2; printf 'destroy\n' > "$EVENT_FIFO"; return 1
@@ -239,6 +245,10 @@ NOTFOUND_NETWORK=1
 purge_fixture || { echo 'cleanup failed when Docker had not yet forgotten the network ID' >&2; exit 1; }
 [ -e "$E2E_ROOT/notfound-gone" ] || { echo 'cleanup did not wait for the network ID to disappear' >&2; exit 1; }
 unset NOTFOUND_NETWORK
+SILENT_TIMEOUT=1
+if out=$(remove_environment_network id-shop-silent 10 2>&1); then echo 'a silent timeout was accepted' >&2; exit 1; fi
+if [[ $out != *'network not found'* ]]; then echo "silent timeout lost the last Docker error: $out" >&2; exit 1; fi
+unset SILENT_TIMEOUT
 # A Docker call may hang even while its event watcher stays open.
 mkfifo "$E2E_ROOT/watch-ready" "$E2E_ROOT/stall"
 cat > "$E2E_ROOT/bin/stalled-docker" <<'DOCKER'
@@ -250,7 +260,10 @@ case "$1 $2" in
     read -r -n 1 ready < "$E2E_ROOT/watch-ready"
     if [ "${STALL_ACTION:-rm}" = ls ]; then exit 0; fi
     echo 'network is in use' >&2; exec cat "$E2E_ROOT/stall" ;;
-  'network ls') echo 'network listing stalled' >&2; exec cat "$E2E_ROOT/stall" ;;
+  'network ls')
+    if [ "${STALL_ACTION:-}" = inspect ]; then echo 'id-stalled shop-inspect'; exit 0; fi
+    echo 'network listing stalled' >&2; exec cat "$E2E_ROOT/stall" ;;
+  'network inspect') echo 'network inspection stalled' >&2; exec cat "$E2E_ROOT/stall" ;;
   *) exit 1 ;;
 esac
 DOCKER
@@ -273,5 +286,23 @@ watcher=$(cat "$E2E_ROOT/watcher-pid")
 if [ "$status" -eq 124 ]; then kill "$watcher" 2>/dev/null || :; echo 'a stalled Docker listing exceeded the cleanup bound' >&2; exit 1; fi
 if [ "$status" -eq 0 ] || ! grep -q 'timed out: network listing stalled' "$E2E_ROOT/stall-output"; then echo "the stalled listing did not report its timeout: $(cat "$E2E_ROOT/stall-output")" >&2; exit 1; fi
 if kill -0 "$watcher" 2>/dev/null; then kill "$watcher" 2>/dev/null || :; echo 'the event watcher outlived listing cleanup' >&2; exit 1; fi
+unset STALL_ACTION
+# The deadline also covers the initial ownership lookup in purge_fixture.
+mkdir -p "$E2E_ROOT/lookup"
+mkfifo "$E2E_ROOT/lookup/stall"
+printf 'network\tshop-inspect\n' > "$E2E_ROOT/lookup/fixture-objects"
+export STALL_ACTION=inspect
+set +e
+timeout 30s bash -c '
+  export E2E_ROOT="$3"; . "$1"; DOCKER_BIN="$2"
+  eval "$(declare -f d | sed "1s/^d /real_d /")"
+  d() { case "$1 $2" in "network ls"|"network inspect") real_d "$@" ;; *) : ;; esac; }
+  stop_agent() { :; }; stop_fakes() { :; }
+  purge_fixture 10
+' _ "$(dirname "$0")/lib.sh" "$E2E_ROOT/bin/stalled-docker" "$E2E_ROOT/lookup" > "$E2E_ROOT/inspect-output" 2>&1
+status=$?
+set -e
+if [ "$status" -eq 124 ]; then echo 'network inspection exceeded the cleanup bound' >&2; exit 1; fi
+if [ "$status" -eq 0 ] || ! grep -q 'network inspection stalled' "$E2E_ROOT/inspect-output"; then echo "the stalled inspection did not report its error: $(cat "$E2E_ROOT/inspect-output")" >&2; exit 1; fi
 unset STALL_ACTION
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'

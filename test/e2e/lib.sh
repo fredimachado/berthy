@@ -232,6 +232,15 @@ create_environment_network() (
   d network create --driver overlay --attachable --label "berthy-e2e.fixture=$FIXTURE_ID" "$name" >/dev/null || return 1
 )
 
+# network_call bounds each Docker request by the same cleanup deadline.
+network_call() {
+  local deadline=$1 remaining
+  shift
+  remaining=$((deadline - SECONDS))
+  [ "$remaining" -gt 0 ] || return 124
+  D_TIMEOUT=$remaining d "$@"
+}
+
 # start_network_events gives cleanup a child it can always stop and reap.
 start_network_events() {
   DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" events --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter type=network --filter "network=$1" --filter event=disconnect --filter event=destroy --format '{{.Action}}' > "$2" 2>> "$3" &
@@ -240,20 +249,15 @@ start_network_events() {
 
 # remove_environment_network waits on Docker events so an attached endpoint can detach before a retry.
 remove_environment_network() (
-  local id=$1 limit=${2:-120} work events_fd events_pid event remaining deadline listing removed last_error= status
+  local id=$1 limit=${2:-120} work events_fd events_pid event remaining deadline listing removed last_error= attempt_error status
   work=$(mktemp -d "$E2E_ROOT/network-wait.XXXXXX") || return 1
   mkfifo "$work/events" || { rmdir "$work"; return 1; }
   trap '[ -z "${events_pid:-}" ] || { kill -KILL "$events_pid" 2>/dev/null || :; wait "$events_pid" 2>/dev/null || :; }; rm -f "$work/events" "$work/error"; rmdir "$work"' EXIT
-  deadline=$((SECONDS + limit))
+  deadline=${3:-$((SECONDS + limit))}
   exec {events_fd}<>"$work/events"
   start_network_events "$id" "$work/events" "$work/error"
-  network_call() {
-    remaining=$((deadline - SECONDS))
-    [ "$remaining" -gt 0 ] || return 124
-    D_TIMEOUT=$remaining d "$@"
-  }
   list_networks() {
-    if listing=$(network_call network ls --no-trunc --format '{{.ID}}' 2>"$work/error"); then return 0; else status=$?; fi
+    if listing=$(network_call "$deadline" network ls --no-trunc --format '{{.ID}}' 2>"$work/error"); then return 0; else status=$?; fi
     local list_error
     list_error=$(cat "$work/error")
     [ -z "$list_error" ] || last_error=$list_error
@@ -267,11 +271,12 @@ remove_environment_network() (
   while :; do
     : > "$work/error"
     removed=0
-    if network_call network rm "$id" > /dev/null 2>"$work/error"; then
+    if network_call "$deadline" network rm "$id" > /dev/null 2>"$work/error"; then
       removed=1
     else
       status=$?
-      last_error=$(cat "$work/error")
+      attempt_error=$(cat "$work/error")
+      [ -z "$attempt_error" ] || last_error=$attempt_error
       if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
         echo "network $id cleanup timed out: $last_error" >&2
         return 1
@@ -446,7 +451,7 @@ YML
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
 # containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
 purge_fixture() {
-  local i v f project env state kind name lock tmp owner listing labels escaped id network_name failed=0
+  local i v f project env state kind name lock tmp owner listing labels escaped id network_name deadline status lookup_error failed=0
   local -a ids owners
   local volumes="" projects="" networks=""
   stop_agent
@@ -548,16 +553,28 @@ purge_fixture() {
   done <<< "$volumes"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    listing=$(d network ls --no-trunc --format '{{.ID}} {{.Name}}') || { failed=1; continue; }
+    deadline=$((SECONDS + ${1:-120}))
+    if listing=$(network_call "$deadline" network ls --no-trunc --format '{{.ID}} {{.Name}}' 2>"$tmp"); then :; else
+      echo "network $name lookup failed: $(cat "$tmp")" >&2; failed=1; continue
+    fi
     while read -r id network_name; do
       [ "$network_name" = "$name" ] || continue
-      if ! labels=$(d network inspect --format '{{index .Labels "berthy-e2e.fixture"}}' "$id" 2>/dev/null); then
-        listing=$(d network ls --no-trunc --format '{{.ID}}') || { failed=1; continue; }
-        if printf '%s\n' "$listing" | grep -Fxq -- "$id"; then failed=1; fi
+      if labels=$(network_call "$deadline" network inspect --format '{{index .Labels "berthy-e2e.fixture"}}' "$id" 2>"$tmp"); then :; else
+        status=$?
+        lookup_error=$(cat "$tmp")
+        if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+          echo "network $id lookup timed out: $lookup_error" >&2; failed=1; continue
+        fi
+        if listing=$(network_call "$deadline" network ls --no-trunc --format '{{.ID}}' 2>"$tmp"); then :; else
+          echo "network $id lookup failed: $(cat "$tmp")" >&2; failed=1; continue
+        fi
+        if printf '%s\n' "$listing" | grep -Fxq -- "$id"; then
+          echo "network $id inspection failed: $lookup_error" >&2; failed=1
+        fi
         continue
       fi
       [ "$labels" = "$FIXTURE_ID" ] || continue
-      remove_environment_network "$id" || failed=1
+      remove_environment_network "$id" "${1:-120}" "$deadline" || failed=1
     done <<< "$listing"
   done <<< "$networks"
   rm -f "$tmp"
