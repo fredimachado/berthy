@@ -1235,7 +1235,9 @@ To turn both checks off for an app, set `deploy.verify: false`.
 
 #### Adopting an app that already runs
 
-If a server already runs an app another tool deployed, Berthy can take it over without recreating it. Name the Swarm service in the role (`service: <existing name>`), or for Compose set `project_name` to the name it already runs under. Then run `berthy deploy <app> --adopt --dry-run`. Berthy compares what runs with the manifest and prints the differences before it changes anything. Adopt the least critical environment first.
+If a server already runs an app another tool deployed, Berthy can take it over without recreating it. Name the Swarm service in the role (`service: <existing name>`), or for Compose set `project_name` to the name it already runs under. Then run `berthy deploy <app> --adopt --dry-run`. Berthy compares what runs with the manifest and prints the differences or a refusal before it changes anything. Adopt the least critical environment first.
+
+An image service whose existing named volume differs from the manifest's scoped Docker name is refused: `adoption would change volume <name>; align the manifest first`. For a mount `data:/data`, the scoped name is `<project>-<environment>_data`. Stop writes, back up the old volume with your existing backup tool, restore it into a new volume with the scoped name, and verify the data before deploying. To adopt the existing service, switch it to the scoped volume and confirm it is healthy first; alternatively, stop the old service and deploy a new one without the `service` override.
 
 For a Swarm service, the first deploy replaces the service's settings with the ones the manifest describes. A setting the service has and the manifest does not produce, such as a user, an entrypoint, a hostname, a working directory or a placement constraint, is dropped, and the plan says so on one line each:
 
