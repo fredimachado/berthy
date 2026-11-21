@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"regexp"
 
 	"berthy/internal/backup"
 	"berthy/internal/state"
@@ -43,6 +44,8 @@ const (
 	errIngressChanged        Refusal = "managed ingress changed; run ingress apply"
 )
 
+var networkNameMessage = regexp.MustCompile(`^network name [a-z0-9][a-z0-9_-]{0,126} is shared by roles [a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62} and [a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$`)
+
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
@@ -57,7 +60,7 @@ func PublicMessage(s string) bool {
 		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errRestoreCommandFailed, errRestoreExecInterrupted, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
-	return s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
+	return networkNameMessage.MatchString(s) || s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

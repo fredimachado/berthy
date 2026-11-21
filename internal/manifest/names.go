@@ -3,6 +3,7 @@ package manifest
 import (
 	"berthy/internal/dockername"
 	"fmt"
+	"maps"
 )
 
 // ServiceName is the Swarm service of a role.
@@ -42,4 +43,53 @@ func (m *Manifest) ComposeProject(environment, app string) string {
 		return a.ProjectName
 	}
 	return m.Project + "-" + environment + "-" + app
+}
+
+// NetworkNameProblems finds roles that would answer to the same DNS name on the environment network.
+// serviceName, when set, supplies the effective name of a bound or adopted role.
+func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app, role string) string) Problems {
+	type owner struct{ app, role string }
+	seen := map[string]owner{}
+	var problems Problems
+	apps := maps.Clone(m.Apps)
+	if m.Ingress != nil && m.Ingress.Cloudflare != nil {
+		connector, _, err := m.ConnectorApp()
+		if err == nil {
+			if apps == nil {
+				apps = map[string]App{}
+			}
+			apps[ConnectorAppName] = connector
+		}
+	}
+	for _, app := range sortedKeys(apps) {
+		a := apps[app]
+		if a.Kind != "image" {
+			continue
+		}
+		for _, role := range sortedKeys(a.Roles) {
+			current := owner{app, role}
+			service := m.ServiceName(environment, app, role)
+			if serviceName != nil {
+				if name := serviceName(app, role); name != "" {
+					service = name
+				}
+			}
+			reported := false
+			for _, name := range []string{app + "-" + role, service} {
+				if previous, ok := seen[name]; ok && previous != current {
+					if !reported {
+						path := "apps." + app + ".roles." + role
+						if app == ConnectorAppName && m.Ingress != nil {
+							path = "ingress.cloudflare"
+						}
+						problems.add(path, "network name %s is shared by roles %s/%s and %s/%s", name, previous.app, previous.role, app, role)
+						reported = true
+					}
+				} else {
+					seen[name] = current
+				}
+			}
+		}
+	}
+	return problems
 }

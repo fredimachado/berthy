@@ -97,7 +97,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
 		var refusal Refusal
-		if errors.As(err, &refusal) && secretMessage.MatchString(string(refusal)) {
+		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal))) {
 			outcome.Err = string(refusal)
 		}
 		return

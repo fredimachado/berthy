@@ -1458,3 +1458,36 @@ func TestFirstApplyShowsTheDefaultNetwork(t *testing.T) {
 		t.Fatalf("changes %v: %v", got.Changes, err)
 	}
 }
+
+func TestPlanRejectsAnAdoptedNameThatClashesWithAnotherRoleAlias(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "web", state.Binding{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"})
+	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api"] = m.Apps["web"]
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api", Version: "v1", Manifest: m, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "api-web") || !strings.Contains(err.Error(), "api/web") || !strings.Contains(err.Error(), "web/web") {
+		t.Fatalf("plan error: %v", err)
+	}
+	if !PublicMessage(err.Error()) {
+		t.Fatalf("refusal is not public: %v", err)
+	}
+}
+
+func TestDeployReportsAnAdoptedNetworkNameClash(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "web", state.Binding{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"})
+	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api"] = m.Apps["web"]
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "dns-clash", App: "api", Version: "v1", Manifest: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitOperation(t, s, op.ID)
+	if got.State != "failed" || got.Err != "network name api-web is shared by roles api/web and web/web" {
+		t.Fatalf("operation: %+v", got)
+	}
+}

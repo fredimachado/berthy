@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -474,5 +475,58 @@ func TestTheDefaultNetworkOfTheLongestPairIsAValidNetworkName(t *testing.T) {
 	m := &Manifest{Project: strings.Repeat("p", 29)}
 	if got := m.NetworkName(strings.Repeat("e", 29)); !ValidNetwork(got) {
 		t.Fatalf("invalid network %q", got)
+	}
+}
+
+func TestLoadRejectsCollidingRoleDNSNames(t *testing.T) {
+	for _, tc := range []struct{ name, apps, second, first, clash string }{
+		{"alias and service", "  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n  shop-prod-api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n", "shop-prod-api/web", "api/web", "shop-prod-api-web"},
+		{"two aliases", "  api:\n    kind: image\n    image: alpine\n    roles:\n      blue-web: {}\n  api-blue:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n", "api-blue/web", "api/blue-web", "api-blue-web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			doc := "project: shop\napps:\n" + tc.apps
+			if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(doc), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadDetailed(dir, "prod")
+			var ps Problems
+			if !errors.As(err, &ps) || len(ps) != 1 {
+				t.Fatalf("problems: %v", err)
+			}
+			wantPath := "apps." + strings.Replace(tc.second, "/", ".roles.", 1)
+			if ps[0].Path != wantPath || ps[0].File != "berthy.yml" || !strings.Contains(ps[0].Message, tc.first) || !strings.Contains(ps[0].Message, tc.second) || !strings.Contains(ps[0].Message, tc.clash) {
+				t.Fatalf("problem: %+v", ps[0])
+			}
+		})
+	}
+}
+
+func TestLoadRejectsANameClashingWithTheIngressConnector(t *testing.T) {
+	dir := t.TempDir()
+	doc := "project: shop\ningress:\n  cloudflare:\n    account_id: acct\n    api_token_secret: CF_TOKEN\n    image: cloudflare/cloudflared:2026.11.0\napps:\n  shop-prod-ingress:\n    kind: image\n    image: alpine\n    roles:\n      connector: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadDetailed(dir, "prod")
+	if err == nil || !strings.Contains(err.Error(), "shop-prod-ingress-connector") {
+		t.Fatalf("error: %v", err)
+	}
+}
+
+func TestNetworkNameProblemsChecksEveryNameAfterAClash(t *testing.T) {
+	m := Manifest{Project: "shop", Apps: map[string]App{
+		"api":      {Kind: "image", Roles: map[string]Role{"blue-web": {}}},
+		"api-blue": {Kind: "image", Roles: map[string]Role{"web": {}}},
+		"last":     {Kind: "image", Roles: map[string]Role{"main": {}}},
+	}}
+	got := m.NetworkNameProblems("prod", func(app, role string) string {
+		if app == "api-blue" {
+			return "last-main"
+		}
+		return ""
+	})
+	if len(got) != 2 || !strings.Contains(got[1].Message, "last-main") {
+		t.Fatalf("problems: %+v", got)
 	}
 }

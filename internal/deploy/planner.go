@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 
 	"berthy/internal/engine"
@@ -350,4 +351,48 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		}
 	}
 	return p, bindings, nil
+}
+
+// checkNetworkNames compares generated aliases with the names that existing and adopted roles actually use.
+func (c *Controller) checkNetworkNames(ctx context.Context, req Request) error {
+	m := req.Manifest
+	m.Apps = maps.Clone(m.Apps)
+	if m.Apps == nil {
+		m.Apps = map[string]manifest.App{}
+	}
+	names := map[string]string{}
+	if c.Store != nil {
+		bindings, err := c.Store.Bindings(ctx, "")
+		if err != nil {
+			return err
+		}
+		for _, b := range bindings {
+			names[b.App+"/"+b.Role] = b.Name
+			app := m.Apps[b.App]
+			if app.Kind != "" && app.Kind != "image" {
+				continue
+			}
+			app.Kind = "image"
+			app.Roles = maps.Clone(app.Roles)
+			if app.Roles == nil {
+				app.Roles = map[string]manifest.Role{}
+			}
+			if _, ok := app.Roles[b.Role]; !ok {
+				app.Roles[b.Role] = manifest.Role{}
+			}
+			m.Apps[b.App] = app
+		}
+	}
+	if req.Adopt {
+		for role, r := range m.Apps[req.App].Roles {
+			if r.Service != "" {
+				names[req.App+"/"+role] = r.Service
+			}
+		}
+	}
+	problems := m.NetworkNameProblems(c.Environment, func(app, role string) string { return names[app+"/"+role] })
+	if len(problems) != 0 {
+		return Refusal(problems[0].Message)
+	}
+	return nil
 }
