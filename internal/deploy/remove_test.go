@@ -60,7 +60,7 @@ func (d *volumeDocker) RemoveVolume(_ context.Context, name string) error {
 }
 
 // removeApps is the apps block of a two-role image app whose web role publishes the given hostnames and whose worker
-// role keeps its data in the named volume data.
+// role keeps its data in the named volume demo-test_data.
 func removeApps(hostnames ...string) string {
 	return `"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":` + webRole(hostnames...) + `,"worker":{"health":{"test":["CMD","true"]},"volumes":["data:/data"]}}}}`
 }
@@ -81,7 +81,7 @@ func newRemoveFixture(t *testing.T) *removeFixture {
 	removeVolumeWait = 50 * time.Millisecond
 	t.Cleanup(func() { removeVolumeWait = previous })
 	f := newIngressFixture(t)
-	docker := &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{"data": ""}}
+	docker := &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{"demo-test_data": ""}}
 	f.ctrl.Engine = docker
 	m := withIngress(t, removeApps("api.example.com", "b.example.com"))
 	f.applyIngress("apply", m)
@@ -168,11 +168,11 @@ func TestRemoveDeletesServicesRoutesAndStateAndKeepsVolumesAndHistory(t *testing
 	if h, err := f.store.History(ctx, "api"); err != nil || len(h) != 1 {
 		t.Fatalf("history is kept: %+v %v", h, err)
 	}
-	if len(f.docker.removed) != 0 || f.docker.volumes["data"] != "" {
+	if len(f.docker.removed) != 0 || f.docker.volumes["demo-test_data"] != "" {
 		t.Fatalf("volumes are deleted only on request: removed %v", f.docker.removed)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"deleted service demo-test-api-web", "deleted service demo-test-api-worker", "kept volume data"} {
+	for _, want := range []string{"deleted service demo-test-api-web", "deleted service demo-test-api-worker", "kept volume demo-test_data"} {
 		if !hasStep(got, want) {
 			t.Fatalf("no step %q in %v", want, got)
 		}
@@ -246,7 +246,7 @@ func TestRemoveDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	if !reflect.DeepEqual(r.Services, []string{"demo-test-api-web", "demo-test-api-worker"}) {
 		t.Fatalf("services %v", r.Services)
 	}
-	if len(r.Volumes) != 0 || !reflect.DeepEqual(r.KeptVolumes, []string{"data"}) {
+	if len(r.Volumes) != 0 || !reflect.DeepEqual(r.KeptVolumes, []string{"demo-test_data"}) {
 		t.Fatalf("volumes %v kept %v", r.Volumes, r.KeptVolumes)
 	}
 	want := map[string][2]string{"api.example.com": {"remove", "remove"}, "b.example.com": {"remove", "release"}}
@@ -262,7 +262,7 @@ func TestRemoveDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := withVolumes.Remove; !reflect.DeepEqual(v.Volumes, []string{"data"}) || len(v.KeptVolumes) != 0 {
+	if v := withVolumes.Remove; !reflect.DeepEqual(v.Volumes, []string{"demo-test_data"}) || len(v.KeptVolumes) != 0 {
 		t.Fatalf("with --volumes %+v", v)
 	}
 	if got := f.services(); len(got) != 2 {
@@ -285,10 +285,10 @@ func TestRemoveDeletesVolumesOnlyWhenAsked(t *testing.T) {
 	if op.State != "succeeded" {
 		t.Fatalf("remove %s: %s", op.State, op.Err)
 	}
-	if !reflect.DeepEqual(f.docker.removed, []string{"data"}) {
+	if !reflect.DeepEqual(f.docker.removed, []string{"demo-test_data"}) {
 		t.Fatalf("removed volumes %v", f.docker.removed)
 	}
-	if !hasStep(steps(t, f.store, op.ID), "removed volume data") {
+	if !hasStep(steps(t, f.store, op.ID), "removed volume demo-test_data") {
 		t.Fatalf("steps %v", steps(t, f.store, op.ID))
 	}
 	// The volume goes only after the services that mounted it.
@@ -299,14 +299,14 @@ func TestRemoveDeletesVolumesOnlyWhenAsked(t *testing.T) {
 			last = i
 		}
 	}
-	if vol := f.docker.calls.index("volume remove data"); last < 0 || vol < last {
+	if vol := f.docker.calls.index("volume remove demo-test_data"); last < 0 || vol < last {
 		t.Fatalf("the volume must go after the services: %v", calls)
 	}
 }
 
 func TestRemoveKeepsAndReportsAVolumeAnotherContainerStillUses(t *testing.T) {
 	f := newRemoveFixture(t)
-	f.docker.volumes["data"] = "busy"
+	f.docker.volumes["demo-test_data"] = "busy"
 	op := f.remove("busy", func(r *Request) { r.Volumes = true })
 	if op.State != "succeeded" {
 		t.Fatalf("a busy volume does not fail the removal: %s: %s", op.State, op.Err)
@@ -314,7 +314,7 @@ func TestRemoveKeepsAndReportsAVolumeAnotherContainerStillUses(t *testing.T) {
 	if len(f.docker.removed) != 0 {
 		t.Fatalf("removed %v", f.docker.removed)
 	}
-	if !hasStep(steps(t, f.store, op.ID), "kept volume data: in use by another container") {
+	if !hasStep(steps(t, f.store, op.ID), "kept volume demo-test_data: in use by another container") {
 		t.Fatalf("steps %v", steps(t, f.store, op.ID))
 	}
 	if got := f.services(); len(got) != 0 {
@@ -328,7 +328,7 @@ func TestRemoveNeverTouchesAVolumeTheAppDoesNotName(t *testing.T) {
 	if op := f.remove("others", func(r *Request) { r.Volumes = true }); op.State != "succeeded" {
 		t.Fatalf("remove %s: %s", op.State, op.Err)
 	}
-	if _, ok := f.docker.volumes["other"]; !ok || !reflect.DeepEqual(f.docker.removed, []string{"data"}) {
+	if _, ok := f.docker.volumes["other"]; !ok || !reflect.DeepEqual(f.docker.removed, []string{"demo-test_data"}) {
 		t.Fatalf("removed %v", f.docker.removed)
 	}
 }
@@ -804,5 +804,25 @@ func TestRemoveRefusesAServiceLabelledForAnotherProject(t *testing.T) {
 	op := f.remove("foreign-project", nil)
 	if op.State != "failed" || op.Err != "bound service ownership changed" || len(f.services()) != 2 {
 		t.Fatalf("remove %s: %s; services %v", op.State, op.Err, f.services())
+	}
+}
+
+func TestRemoveWithVolumesRemovesTheEnvironmentsVolumeOnly(t *testing.T) {
+	f := newRemoveFixture(t)
+	f.docker.volumes["demo-test_data"] = ""
+	f.docker.volumes["demo-prod_data"] = ""
+	f.docker.volumes["data"] = ""
+	op := f.remove("environment-volumes", func(r *Request) { r.Volumes = true })
+	if op.State != "succeeded" {
+		t.Fatalf("remove %s: %s", op.State, op.Err)
+	}
+	if !reflect.DeepEqual(f.docker.removed, []string{"demo-test_data"}) {
+		t.Fatalf("removed %v", f.docker.removed)
+	}
+	if _, ok := f.docker.volumes["demo-prod_data"]; !ok {
+		t.Fatal("removed the other environment's volume")
+	}
+	if _, ok := f.docker.volumes["data"]; !ok {
+		t.Fatal("removed the unscoped volume")
 	}
 }

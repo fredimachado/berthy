@@ -151,7 +151,7 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 	destroyTunnelWait = 200 * time.Millisecond
 	t.Cleanup(func() { removeVolumeWait, destroyTunnelWait = 20*time.Second, time.Minute })
 	f := newIngressFixture(t)
-	vd := &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{"data": ""}}
+	vd := &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{"demo-test_data": ""}}
 	d := &destroyDocker{volumeDocker: vd, bound: f.bound}
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
 	runner.onDown = func(engine.ComposeRun) { d.imu.Lock(); d.project = nil; d.imu.Unlock() }
@@ -316,7 +316,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 	if h, err := f.store.History(ctx, ""); err != nil || len(h) < 3 {
 		t.Fatalf("history must stay: %v %v", h, err)
 	}
-	if len(f.docker.removed) != 0 || f.docker.volumes["data"] != "" {
+	if len(f.docker.removed) != 0 || f.docker.volumes["demo-test_data"] != "" {
 		t.Fatalf("volumes are kept without --volumes: removed %v", f.docker.removed)
 	}
 	if runs := downRuns(f.runner); len(runs) != 1 || !reflect.DeepEqual(runs[0].Args, []string{"down", "--remove-orphans"}) {
@@ -344,7 +344,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 		t.Fatalf("order of removals: %v", calls)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"api: deleted service demo-test-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
+	for _, want := range []string{"api: deleted service demo-test-api-web", "db: brought down Compose project demo-db", "api: kept volume demo-test_data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
 		if !hasStep(got, want) {
 			t.Errorf("no step %q in %v", want, got)
 		}
@@ -448,7 +448,7 @@ func TestDestroyDeletesVolumesOnlyWithTheFlag(t *testing.T) {
 	if op.State != "succeeded" {
 		t.Fatalf("destroy %s: %s", op.State, op.Err)
 	}
-	if !reflect.DeepEqual(f.docker.removed, []string{"data"}) {
+	if !reflect.DeepEqual(f.docker.removed, []string{"demo-test_data"}) {
 		t.Fatalf("removed volumes %v", f.docker.removed)
 	}
 	if runs := downRuns(f.runner); len(runs) != 1 || !reflect.DeepEqual(runs[0].Args, []string{"down", "--remove-orphans", "--volumes"}) {

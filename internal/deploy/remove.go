@@ -184,7 +184,7 @@ func (c *Controller) removalImage(ctx context.Context, req Request, r *removal) 
 		r.live = append(r.live, liveBinding{b: b, live: live})
 		r.plan.Services = append(r.plan.Services, b.Name)
 	}
-	volumes, err := c.existingVolumes(ctx, declaredVolumes(r.app))
+	volumes, err := c.existingVolumes(ctx, declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) }))
 	if err != nil {
 		return err
 	}
@@ -279,12 +279,12 @@ func (c *Controller) removalCompose(ctx context.Context, actor Actor, req Reques
 
 // declaredVolumes lists the named volumes an image app's roles mount, once each, in name order. Only these belong to the
 // app; no other volume is ever listed.
-func declaredVolumes(app manifest.App) []string {
+func declaredVolumes(app manifest.App, name func(string) string) []string {
 	seen := map[string]bool{}
 	for _, role := range app.Roles {
 		for _, v := range role.Volumes {
 			if m, err := manifest.ParseMount(v); err == nil {
-				seen[m.Source] = true
+				seen[name(m.Source)] = true
 			}
 		}
 	}
