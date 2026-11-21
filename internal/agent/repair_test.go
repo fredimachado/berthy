@@ -24,11 +24,11 @@ func TestScopeGuard(t *testing.T) {
 }
 func TestStrictConfig(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "agent.json")
-	for _, s := range []string{`{"environment":"lab","extra":1}`, `{} {}`} {
+	for _, s := range []string{`{"listen":"127.0.0.1:9999","extra":1}`, `{"environment":"lab"}`, `{} {}`} {
 		if err := os.WriteFile(p, []byte(s), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Load(p); err == nil {
+		if _, err := LoadFile(p); err == nil {
 			t.Errorf("accepted %s", s)
 		}
 	}

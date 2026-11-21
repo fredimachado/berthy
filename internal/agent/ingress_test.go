@@ -188,8 +188,8 @@ func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsPlainHTTPCloudflareURL(t *testing.T) {
-	// The URL rule lives in Validate, which Load calls, so the allow and deny cases run on every platform.
+func TestLoadFileRejectsPlainHTTPCloudflareURL(t *testing.T) {
+	// The URL rule lives in Validate, which LoadFile calls, so the allow and deny cases run on every platform.
 	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	for raw, ok := range map[string]bool{"http://example.com": false, "http://127.0.0.1:9999": true} {
 		c := base
@@ -199,25 +199,25 @@ func TestLoadRejectsPlainHTTPCloudflareURL(t *testing.T) {
 		}
 	}
 	t.Run("load round trip", func(t *testing.T) {
-		// Load checks the Unix permission bits of the file, which Windows does not report.
+		// LoadFile checks the Unix permission bits of the file, which Windows does not report.
 		if runtime.GOOS == "windows" {
-			t.Skip("Load checks Unix permission bits, which Windows does not report")
+			t.Skip("LoadFile checks Unix permission bits, which Windows does not report")
 		}
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agent.json")
 		body := func(url string) []byte {
-			return []byte(`{"environment":"lab","listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","tokens":[{"digest":"` + Digest("bty.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}`)
+			return []byte(`{"listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","environments":[{"project":"demo","environment":"lab","state_dir":"/s","key_file":"/k","tokens":[{"digest":"` + Digest("bty.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}]}`)
 		}
 		if err := os.WriteFile(path, body("http://example.com"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Load(path); err == nil {
+		if _, err := LoadFile(path); err == nil {
 			t.Fatal("plain HTTP to a public host accepted")
 		}
 		if err := os.WriteFile(path, body("http://127.0.0.1:9999"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Load(path); err != nil {
+		if _, err := LoadFile(path); err != nil {
 			t.Fatalf("loopback fake refused: %v", err)
 		}
 	})

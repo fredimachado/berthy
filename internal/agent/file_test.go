@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 
 	"berthy/internal/scope"
@@ -154,18 +151,6 @@ func TestConfigProjectIsNotAFileKey(t *testing.T) {
 	if err := dec.Decode(&Config{}); err == nil {
 		t.Fatal("project key accepted")
 	}
-	t.Run("load", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("Load checks Unix permission bits, which Windows does not report")
-		}
-		p := filepath.Join(t.TempDir(), "agent.json")
-		if err := os.WriteFile(p, body, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Load(p); err == nil {
-			t.Fatal("project key accepted")
-		}
-	})
 }
 
 func TestParseFileRefusesUnknownKeys(t *testing.T) {

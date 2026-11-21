@@ -174,14 +174,14 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			fmt.Fprintln(errout, "agent requires --config")
 			return 2
 		}
-		c, err := agent.Load(config)
+		f, err := agent.LoadFile(config)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		eng := engine.New(c.DockerSocket)
+		eng := engine.New(f.DockerSocket)
 		// The one reader of Docker's event feed. It wakes the monitor and the rollouts early; their own reads still decide.
 		events := engine.NewEventHub(eng)
 		eventsDone := make(chan struct{})
@@ -191,18 +191,19 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		}()
 		defer func() { cancel(); <-eventsDone }()
 		collector := metrics.New(metrics.NewHostReader(), eng)
-		rt, err := agent.OpenRuntime(agent.Shared{Engine: eng, Collector: collector, Log: func(msg string) { fmt.Fprintln(errout, msg) }}, c)
+		// Every environment's state is open and claimed before any of them starts, and the server listens only after all started.
+		host, err := agent.Open(agent.Shared{Engine: eng, Collector: collector, Log: func(msg string) { fmt.Fprintln(errout, msg) }}, f)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		defer func() { cancel(); rt.Close() }()
+		defer func() { cancel(); host.Close() }()
 		go collector.Run(ctx)
-		if err = rt.Start(ctx); err != nil {
+		if err = host.Start(ctx); err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		server := http.Server{Addr: c.Listen, Handler: rt.Handler, ReadHeaderTimeout: 5 * time.Second}
+		server := http.Server{Addr: f.Listen, Handler: host, ReadHeaderTimeout: 5 * time.Second}
 		shutdown := make(chan struct{})
 		go func() {
 			defer close(shutdown)
@@ -211,10 +212,10 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			defer done()
 			// http.Server.Shutdown does not track a connection a handler took over, so the open sessions are closed here: the containers
 			// of run sessions are stopped and removed before the agent exits.
-			rt.CloseSessions(shutdownCtx)
+			host.CloseSessions(shutdownCtx)
 			_ = server.Shutdown(shutdownCtx)
 		}()
-		fmt.Fprintf(errout, "berthy agent %s listening on %s\n", version.String(), c.Listen)
+		fmt.Fprintf(errout, "berthy agent %s listening on %s\n", version.String(), f.Listen)
 		if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(errout, err)
 			return 1

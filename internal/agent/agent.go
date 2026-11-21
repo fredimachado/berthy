@@ -10,7 +10,6 @@ import (
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 	"berthy/internal/version"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -119,29 +117,6 @@ func NewToken(env string) (token, digest string, err error) {
 	return token, Digest(token), nil
 }
 
-func Load(path string) (Config, error) {
-	var c Config
-	st, err := os.Stat(path)
-	if err != nil {
-		return c, err
-	}
-	if st.Mode().Perm()&0077 != 0 {
-		return c, fmt.Errorf("agent config must not be accessible by group or others")
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return c, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err = dec.Decode(&c); err != nil {
-		return c, err
-	}
-	if err = dec.Decode(&struct{}{}); err != io.EOF {
-		return c, fmt.Errorf("invalid trailing JSON")
-	}
-	return c, c.Validate()
-}
 func (c Config) Validate() error {
 	if c.Project != "" && !scope.ValidProject(c.Project) {
 		return fmt.Errorf("invalid project")
