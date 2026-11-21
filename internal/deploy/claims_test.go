@@ -924,11 +924,14 @@ func (d *composeNetworkInventory) InspectNetwork(context.Context, string) (engin
 }
 func TestComposeDownKeepsExternalNetworkClaims(t *testing.T) {
 	ctx := context.Background()
-	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"networks":{"ext":{"name":"external-net","external":true}}}`, hashes: hashOne}
 	base := newComposeDocker()
 	c, s := composeController(t, runner, base)
 	c.Engine = &composeNetworkInventory{composeDocker: base}
 	c.Reserve = s.AddClaimsNew
+	if err := os.MkdirAll(c.composeDir("shared"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	managed := state.Claim{Kind: state.ClaimNetwork, Name: "managed-net"}
 	external := state.Claim{Kind: state.ClaimNetwork, Name: "external-net"}
 	if err := s.AddClaims(ctx, []state.Claim{managed, external}); err != nil {
