@@ -6,6 +6,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 	"berthy/internal/version"
@@ -37,6 +38,7 @@ type Token struct {
 	Agent bool `json:"agent,omitempty"`
 }
 type Config struct {
+	Project      string
 	Environment  string `json:"environment"`
 	Listen       string `json:"listen"`
 	DockerSocket string `json:"docker_socket"`
@@ -86,6 +88,11 @@ func (c Config) composeCommand() []string {
 	return c.ComposeCommand
 }
 
+// ID is the hosted environment this configuration is for.
+func (c Config) ID() scope.ID {
+	return scope.ID{Project: c.Project, Environment: c.Environment}
+}
+
 // dockerHost is the DOCKER_HOST that points a child process at the agent's Docker socket.
 func dockerHost(socket string) string {
 	if socket == "" {
@@ -93,8 +100,6 @@ func dockerHost(socket string) string {
 	}
 	return "unix://" + socket
 }
-
-var envPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // tokenPattern matches a bearer token issued for env: bty.<env>.<64 hex>.
 func tokenPattern(env string) *regexp.Regexp {
@@ -138,7 +143,10 @@ func Load(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
-	if !envPattern.MatchString(c.Environment) {
+	if c.Project != "" && !scope.ValidProject(c.Project) {
+		return fmt.Errorf("invalid project")
+	}
+	if !scope.ValidEnvironment(c.Environment) {
 		return fmt.Errorf("invalid environment")
 	}
 	host, port, err := net.SplitHostPort(c.Listen)
