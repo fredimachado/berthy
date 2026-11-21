@@ -172,6 +172,7 @@ func TestRestartJournalAndRecoveryLock(t *testing.T) {
 		})
 	}
 }
+
 // A restart reads the project from the manifest of the applied release, so a service another project's deploy labelled is
 // refused and left as it was.
 func TestRestartRefusesAServiceOfAnotherProjectThanTheAppliedRelease(t *testing.T) {
