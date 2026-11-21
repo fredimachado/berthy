@@ -1,7 +1,7 @@
 #!/bin/bash
 # 07-min-version proves the manifest's min_version with release-stamped binaries of this tree. The CLI is stamped v0.9.0 and
-# the agent v0.8.0. The agent of 6acd0ce, stamped v0.8.0, stands in for an agent that predates a key the manifest uses: it has
-# no logging key, which 38985b1 added. The checks, in order:
+# the agent v0.8.0. The agent of 6acd0ce, stamped v0.8.0, stands in for a release before projects: it serves only
+# /v1/environments/<environment>/. The checks, in order:
 #   a. config validate refuses a min_version above the CLI's release, and needs no server;
 #   b. the CLI refuses to send a deploy to an agent older than min_version, and records nothing;
 #   c. the agent refuses the same request sent straight to it, so a request from another client is refused too;
@@ -76,33 +76,6 @@ manifest_with_min() {
   base_manifest
 }
 
-# logging_manifest VERSION: the base manifest with a logging block on the web role, a key the agent of 6acd0ce does not know.
-logging_manifest() {
-  if [ -n "$1" ]; then
-    echo "min_version: $1"
-  fi
-  cat <<YML
-project: $PROJECT
-network: $NETWORK
-apps:
-  web:
-    kind: image
-    image: $REG/e2e/web
-    roles:
-      main:
-        logging:
-          driver: json-file
-          options:
-            max-size: 5m
-        health:
-          test: ["CMD", "true"]
-          interval: 2s
-          timeout: 2s
-          start_period: 1s
-          retries: 3
-YML
-}
-
 # The binaries: this tree at v0.9.0 and at v0.8.0, and the agent of 6acd0ce at v0.8.0 (the export is the committed tree).
 stamped "$CLI090" v0.9.0 "$SRC" || exit 1
 stamped "$AGENT080" v0.8.0 "$SRC" || exit 1
@@ -154,15 +127,17 @@ expect_contains "the service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 
 # d. The agent of 6acd0ce serves only /v1/environments/<environment>/, so it answers 404 to the CLI's project URL. The CLI says
 #    the agent runs an older release. It runs on a state directory of its own, never the fixture's. With min_version the CLI
-#    cannot read the agent's release, so it sends the request, and the same hint comes back.
+#    cannot read the agent's release, so it sends the request, and the same hint comes back. An agent that serves project URLs
+#    and refuses a request as "invalid request", which also gets the older-agent hint, is covered by the unit tests
+#    (TestOlderAgentHintNamesAnOlderReleaseOnly, TestInvalidRequestIsTheAgentsDecodeRefusal): no agent of 6acd0ce reaches it.
 old_agent_state || { echo "cannot give the old agent its own state" >&2; exit 1; }
 restart_with "$OLD080" "$OLD_CFG" || exit 1
-logging_manifest "" | write_manifest || exit 1
+manifest_with_min "" | write_manifest || exit 1
 out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent: the deploy is refused: exit" 1 "$code"
 expect_contains "old agent: it answers 404" "$out" "agent returned HTTP 404"
 expect_contains "old agent: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
-logging_manifest 0.9.0 | write_manifest || exit 1
+manifest_with_min 0.9.0 | write_manifest || exit 1
 out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent with min_version: the deploy is refused: exit" 1 "$code"
 expect_contains "old agent with min_version: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
