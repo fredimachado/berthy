@@ -97,22 +97,24 @@ expect_eq "the rollback kept the second probe" "no changes" "$out"
 sleep 65
 if has_check probe:site2; then pass "the monitor still runs the second probe after the rollback"; else fail "the monitor still runs the second probe after the rollback" "$(adm checks 2>&1)"; fi
 
-# 5. A manifest of another project is refused before anything changes.
-want="environment $ENVN runs project $PROJECT; this manifest is for project $PROJECT-other"
+# 5. A manifest of another project is refused before anything changes. The CLI takes the project from the manifest directory
+# and its configuration has no such project, so it refuses before it contacts the agent; the agent's own comparison of the
+# project is reached with --project, which comes with the CLI's project selection.
+want="no environment $ENVN for project $PROJECT-other in the CLI configuration"
 PROJECT_OVERRIDE=$PROJECT-other settings_manifest site site2 | write_manifest
 before=$(adm audit 2>&1)
 out=$(adm apply --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "apply of another project is refused" 1 "$code" "$out"
-expect_contains "apply names both projects" "$out" "$want"
+expect_contains "apply names the project and the configuration" "$out" "$want"
 out=$(adm apply --dry-run --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a dry run of another project is refused" 1 "$code" "$out"
-expect_contains "the dry run names both projects" "$out" "$want"
+expect_contains "the dry run names the project and the configuration" "$out" "$want"
 out=$(adm deploy web --version v1 --dry-run --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a deploy dry run of another project is refused" 1 "$code" "$out"
-expect_contains "the deploy dry run names both projects" "$out" "$want"
+expect_contains "the deploy dry run names the project and the configuration" "$out" "$want"
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a deploy of another project is refused" 1 "$code" "$out"
-expect_contains "the deploy names both projects" "$out" "$want"
+expect_contains "the deploy names the project and the configuration" "$out" "$want"
 expect_eq "the refusals changed no audit row" "$before" "$(adm audit 2>&1)"
 expect_eq "the refused deploy recorded no release" "3" "$(release_rows web)"
 
