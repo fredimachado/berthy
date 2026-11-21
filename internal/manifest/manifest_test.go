@@ -356,3 +356,29 @@ func TestImageReposListsTheSortedDistinctRepositoriesOfOneRegistry(t *testing.T)
 		t.Fatalf("quay.io repositories %v, want none", got)
 	}
 }
+
+func TestLoadTakesTheEnvironmentRuleOfScope(t *testing.T) {
+	dir := t.TempDir()
+	base := `project: demo
+network: demo
+apps:
+  api:
+    kind: image
+    image: ghcr.io/acme/api
+    roles:
+      web: {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range []string{"prod", strings.Repeat("a", 63), "a-1"} {
+		if _, err := Load(dir, env); err != nil {
+			t.Errorf("%q: %v", env, err)
+		}
+	}
+	for _, env := range []string{"-prod", "prod_1", strings.Repeat("a", 64), ""} {
+		if _, err := Load(dir, env); err == nil {
+			t.Errorf("%q loaded", env)
+		}
+	}
+}

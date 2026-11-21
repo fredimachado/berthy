@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/scope"
 	"berthy/internal/version"
 
 	"github.com/distribution/reference"
@@ -627,7 +628,7 @@ type Loaded struct {
 // LoadDetailed is Load, and also returns the warnings of a valid manifest, placed in its files like the problems, and the file
 // and line of every value (Origins). A manifest with problems returns them and no warnings.
 func LoadDetailed(dir, env string) (*Loaded, error) {
-	if !identifier.MatchString(env) {
+	if !scope.ValidEnvironment(env) {
 		return nil, fmt.Errorf("invalid environment %q", env)
 	}
 	names := Files(env)

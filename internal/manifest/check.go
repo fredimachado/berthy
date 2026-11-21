@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"berthy/internal/schedule"
+	"berthy/internal/scope"
 
 	"github.com/distribution/reference"
 )
@@ -24,7 +25,7 @@ func (m *Manifest) Validate() error {
 func (m *Manifest) Check() Problems {
 	var p Problems
 	m.checkIngress(&p)
-	if !identifier.MatchString(m.Project) {
+	if !scope.ValidProject(m.Project) {
 		p.add("project", "invalid project or network")
 	}
 	if !identifier.MatchString(m.Network) {
