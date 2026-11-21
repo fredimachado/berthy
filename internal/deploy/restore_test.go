@@ -267,6 +267,11 @@ func (d *restoreDocker) VolumeLabels(_ context.Context, name string) (map[string
 	return l, ok, nil
 }
 
+func (d *restoreDocker) VolumeExists(ctx context.Context, name string) (bool, error) {
+	_, exists, err := d.VolumeLabels(ctx, name)
+	return exists, err
+}
+
 func (d *restoreDocker) RemoveVolume(_ context.Context, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

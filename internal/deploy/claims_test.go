@@ -575,15 +575,21 @@ func TestComposeDownRefusesAProjectVolumeAnotherEnvironmentHolds(t *testing.T) {
 func TestRestoreRecoveryReleasesAConfirmedAbsentVolumeClaim(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "restore", ActorID: "actor", Kind: restoreKind, PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	claim := state.Claim{Kind: state.ClaimVolume, Name: "restored-1"}
-	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+	if _, err = s.AddClaimsForOperation(ctx, op.ID, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: restoreKind, Name: "restored-1", Desired: json.RawMessage(`{"into":"restored-1"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}}
 	c := Controller{Store: s, Engine: docker, Environment: "test"}
-	intents := []state.Intent{{Kind: restoreKind, Desired: json.RawMessage(`{"into":"restored-1"}`)}}
-	if !c.cleanRestore(ctx, state.Operation{ID: "op"}, intents) {
-		t.Fatal("absent volume not confirmed")
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
 	}
 	got, err := s.Claims(ctx)
 	if err != nil || len(got) != 0 {
