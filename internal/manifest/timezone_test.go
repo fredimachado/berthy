@@ -86,15 +86,15 @@ func TestSettingsChangesNamesTheTimezone(t *testing.T) {
 	prev := decodeScoped(t, scopedManifest)
 	next := decodeScoped(t, scopedManifest)
 	next.Timezone = "Europe/Lisbon"
-	if got, want := SettingsChanges(prev, next), []string{"timezone: UTC -> Europe/Lisbon"}; !slices.Equal(got, want) {
+	if got, want := SettingsChanges(prev, next, "test"), []string{"timezone: UTC -> Europe/Lisbon"}; !slices.Equal(got, want) {
 		t.Fatalf("changes %v, want %v", got, want)
 	}
-	if got, want := SettingsChanges(next, prev), []string{"timezone: Europe/Lisbon -> UTC"}; !slices.Equal(got, want) {
+	if got, want := SettingsChanges(next, prev, "test"), []string{"timezone: Europe/Lisbon -> UTC"}; !slices.Equal(got, want) {
 		t.Fatalf("reverse changes %v, want %v", got, want)
 	}
 	prev.Timezone = "UTC"
 	next.Timezone = ""
-	if got := SettingsChanges(prev, next); len(got) != 0 {
+	if got := SettingsChanges(prev, next, "test"); len(got) != 0 {
 		t.Fatalf("UTC written out and left out reported as %v", got)
 	}
 }

@@ -55,7 +55,7 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 			return ApplyResult{}, err
 		}
 	}
-	result := ApplyResult{Changes: manifest.SettingsChanges(prev, req.Manifest)}
+	result := ApplyResult{Changes: manifest.SettingsChanges(prev, req.Manifest, c.Environment)}
 	if result.Changes == nil {
 		result.Changes = []string{}
 	}

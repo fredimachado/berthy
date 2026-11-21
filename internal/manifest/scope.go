@@ -94,7 +94,7 @@ func DecodeSettings(data []byte) (Manifest, error) {
 // "alerts: changed", "probes: + api-up", "destinations: ~ offsite", "registries: - ghcr.io" and "network: a -> b". The app-scoped
 // members of either manifest are not compared. A line names a secret by name at most, never its value: a manifest holds
 // only names.
-func SettingsChanges(prev, next Manifest) []string {
+func SettingsChanges(prev, next Manifest, environment string) []string {
 	prev, next = prev.EnvScope(), next.EnvScope()
 	var out []string
 	scalar := func(name, a, b string) {
@@ -103,7 +103,11 @@ func SettingsChanges(prev, next Manifest) []string {
 		}
 	}
 	scalar("project", prev.Project, next.Project)
-	scalar("network", prev.Network, next.Network)
+	previousNetwork := prev.Network
+	if prev.Project != "" {
+		previousNetwork = prev.NetworkName(environment)
+	}
+	scalar("network", previousNetwork, next.NetworkName(environment))
 	scalar("protected", fmt.Sprint(prev.Protected), fmt.Sprint(next.Protected))
 	out = append(out, mapChanges("registries", prev.Registries, next.Registries)...)
 	out = append(out, mapChanges("destinations", prev.Destinations, next.Destinations)...)

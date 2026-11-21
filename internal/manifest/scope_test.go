@@ -111,7 +111,7 @@ func TestAssembleDoesNotShareMapsWithItsInputs(t *testing.T) {
 
 func TestSettingsChangesNamesEachDifference(t *testing.T) {
 	prev := decodeScoped(t, scopedManifest)
-	if got := SettingsChanges(prev, prev); len(got) != 0 {
+	if got := SettingsChanges(prev, prev, "test"); len(got) != 0 {
 		t.Fatalf("no difference reported as %v", got)
 	}
 	// App-scoped members are not settings: a different job or app changes nothing.
@@ -119,7 +119,7 @@ func TestSettingsChangesNamesEachDifference(t *testing.T) {
 	job := same.Jobs["tick"]
 	job.Schedule = "5 * * * *"
 	same.Jobs["tick"] = job
-	if got := SettingsChanges(prev, same); len(got) != 0 {
+	if got := SettingsChanges(prev, same, "test"); len(got) != 0 {
 		t.Fatalf("an app's job reported as a settings change: %v", got)
 	}
 	next := decodeScoped(t, scopedManifest)
@@ -132,7 +132,7 @@ func TestSettingsChangesNamesEachDifference(t *testing.T) {
 	next.Alerts.Telegram.ChatID = "2"
 	next.Peers["staging"] = "https://staging.example.com:443"
 	next.Telemetry = &Telemetry{OTLPEndpoint: "http://127.0.0.1:4318"}
-	got := SettingsChanges(prev, next)
+	got := SettingsChanges(prev, next, "test")
 	want := []string{"network: demo -> other", "registries: - ghcr.io", "destinations: ~ offsite", "telemetry: added", "probes: + extra", "peers: + staging", "alerts: changed"}
 	slices.Sort(got)
 	slices.Sort(want)
@@ -140,7 +140,7 @@ func TestSettingsChangesNamesEachDifference(t *testing.T) {
 		t.Fatalf("changes\n got %v\nwant %v", got, want)
 	}
 	// Going back removes what was added.
-	back := SettingsChanges(next, prev)
+	back := SettingsChanges(next, prev, "test")
 	if !slices.Contains(back, "telemetry: removed") || !slices.Contains(back, "probes: - extra") {
 		t.Fatalf("reverse changes: %v", back)
 	}
@@ -150,7 +150,7 @@ func TestSettingsChangesNeverShowsSecretValues(t *testing.T) {
 	prev := decodeScoped(t, scopedManifest)
 	next := decodeScoped(t, scopedManifest)
 	next.Alerts.Telegram.BotTokenSecret = "OTHER_SECRET"
-	for _, line := range SettingsChanges(prev, next) {
+	for _, line := range SettingsChanges(prev, next, "test") {
 		if line != "alerts: changed" {
 			t.Fatalf("line %q", line)
 		}

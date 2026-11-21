@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1414,5 +1415,46 @@ func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
 	c.Engine = &positiveEngine{spec: spec}
 	if _, _, err = c.planAdoption(context.Background(), req); err != nil {
 		t.Fatalf("matching scoped volume refused: %v", err)
+	}
+}
+
+func TestApplyDryRunComparesResolvedNetworks(t *testing.T) {
+	for _, tc := range []struct {
+		old  string
+		want string
+	}{{"old", "network: old -> shop-prod"}, {"shop-prod", ""}} {
+		t.Run(tc.old, func(t *testing.T) {
+			c := &Controller{Store: openStore(t), Project: "shop", Environment: "prod"}
+			m := dockerManifest(nil)
+			m.Project = "shop"
+			m.Network = tc.old
+			ctx := context.Background()
+			actor := Actor{ID: "admin"}
+			if _, err := c.ApplySettings(ctx, actor, ApplyRequest{Manifest: m}); err != nil {
+				t.Fatal(err)
+			}
+			m.Network = ""
+			result, err := c.ApplySettings(ctx, actor, ApplyRequest{Manifest: m, DryRun: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" && len(result.Changes) != 0 {
+				t.Fatalf("changes %v", result.Changes)
+			}
+			if tc.want != "" && !slices.Contains(result.Changes, tc.want) {
+				t.Fatalf("changes %v, want %q", result.Changes, tc.want)
+			}
+		})
+	}
+}
+
+func TestFirstApplyShowsTheDefaultNetwork(t *testing.T) {
+	c := &Controller{Store: openStore(t), Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Network = ""
+	got, err := c.ApplySettings(context.Background(), Actor{ID: "admin"}, ApplyRequest{Manifest: m, DryRun: true})
+	if err != nil || !slices.Contains(got.Changes, "network:  -> shop-prod") {
+		t.Fatalf("changes %v: %v", got.Changes, err)
 	}
 }
