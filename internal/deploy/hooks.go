@@ -242,8 +242,9 @@ func (c *Controller) runOneOffUntilDone(parent context.Context, opID string, p p
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	name := fmt.Sprintf("berthy-%s-%d", opID, ordinal)
-	labels := map[string]string{"berthy.environment": c.Environment, "berthy.operation": opID, "berthy.oneoff": kind}
+	name := fmt.Sprintf("berthy-%s-%s-%s-%d", kind, c.id().Slug(), opID, ordinal)
+	labels := c.id().Labels()
+	labels["berthy.operation"], labels["berthy.oneoff"] = opID, kind
 	spec, err := p.oneOffSpec(argv, o.Role, o.Resources, o.Volumes, labels, nil)
 	if err != nil {
 		return "", errors.New("one-off preparation failed")
@@ -433,7 +434,7 @@ func (c *Controller) recoverHooks(ctx context.Context, opID string) error {
 			}
 			return errors.New("one-off recovery inspection failed")
 		}
-		if live.Labels["berthy.environment"] != c.Environment || live.Labels["berthy.operation"] != opID || live.Labels["berthy.oneoff"] != step.Role {
+		if !c.id().Owns(live.Labels) || live.Labels["berthy.operation"] != opID || live.Labels["berthy.oneoff"] != step.Role {
 			return errors.New("one-off recovery ownership mismatch")
 		}
 		if live.Running {

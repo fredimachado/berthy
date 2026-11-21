@@ -88,10 +88,28 @@ func jobFixture(t *testing.T) (*Controller, *jobFake) {
 
 var webJob = manifest.Job{App: "web", Role: "web", Command: []string{"sh", "-c", "echo hi"}, Timeout: "1m"}
 
+func TestJobContainerNamesDifferBetweenEnvironmentsWithTheSameRunID(t *testing.T) {
+	var names []string
+	for _, id := range []struct{ project, environment string }{{"shop", "test"}, {"blog", "test"}, {"shop", "prod"}} {
+		c, _ := jobFixture(t)
+		c.Project, c.Environment = id.project, id.environment
+		out, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range names {
+			if out.Container == name {
+				t.Errorf("duplicate container name %q", name)
+			}
+		}
+		names = append(names, out.Container)
+	}
+}
+
 func TestRunJobRunsInItsOwnContainerOfTheAppliedRelease(t *testing.T) {
 	c, f := jobFixture(t)
 	out, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
-	if err != nil || out.Exit == nil || *out.Exit != 0 || out.TimedOut || out.Output != "" || out.Container != "ctr-berthy-job-test-7" {
+	if err != nil || out.Exit == nil || *out.Exit != 0 || out.TimedOut || out.Output != "" || out.Container != "ctr-berthy-job-.test-7" {
 		t.Fatalf("outcome %+v %v", out, err)
 	}
 	// A run that succeeds reads no output, and the container always goes.

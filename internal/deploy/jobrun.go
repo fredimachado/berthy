@@ -78,7 +78,8 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 		}
 		return jobs.Outcome{}, err
 	}
-	labels := map[string]string{"berthy.environment": c.Environment, "berthy." + kind: name, "berthy.oneoff": kind}
+	labels := c.id().Labels()
+	labels["berthy."+kind], labels["berthy.oneoff"] = name, kind
 	var term *terminal
 	if streamed {
 		term = &terminal{NoLog: true}
@@ -87,7 +88,7 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
-	cid, err := e.CreateContainer(ctx, fmt.Sprintf("berthy-%s-%s-%s", kind, c.Environment, id), spec)
+	cid, err := e.CreateContainer(ctx, fmt.Sprintf("berthy-%s-%s-%s", kind, c.id().Slug(), id), spec)
 	if err != nil || cid == "" {
 		return jobs.Outcome{}, errors.New("job container unavailable")
 	}

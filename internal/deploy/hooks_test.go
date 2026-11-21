@@ -162,6 +162,22 @@ func TestOneOffRunsExactArgv(t *testing.T) {
 		t.Fatalf("entrypoint and args: %+v", spec)
 	}
 }
+
+func TestOneOffContainersCarryTheProjectLabel(t *testing.T) {
+	c, f, id, p := hookFixture(t)
+	c.Project = "shop"
+	f.exits = []int{0}
+	if _, err := c.runOneOff(context.Background(), id, p, oneOff{Ordinal: 1, Kind: "pre_hook", Argv: []string{"true"}, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	var spec struct{ Labels map[string]string }
+	if err := json.Unmarshal(f.specs[0], &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Labels["berthy.project"] != "shop" || spec.Labels["berthy.environment"] != "stage" {
+		t.Fatalf("labels %v", spec.Labels)
+	}
+}
 func TestSchemaVersionIsJournaledWithOneOff(t *testing.T) {
 	c, f, id, p := hookFixture(t)
 	f.exits = []int{0}
@@ -339,7 +355,7 @@ func TestHooksRetryInTheirOwnContainersAndKeepTheirOrder(t *testing.T) {
 	if _, _, err := c.runPre(context.Background(), id, p); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"berthy-" + id + "-10000", "berthy-" + id + "-10001", "berthy-" + id + "-10010"}
+	want := []string{"berthy-pre_hook-.stage-" + id + "-10000", "berthy-pre_hook-.stage-" + id + "-10001", "berthy-pre_hook-.stage-" + id + "-10010"}
 	if strings.Join(f.names, ",") != strings.Join(want, ",") {
 		t.Fatalf("containers %v, want %v", f.names, want)
 	}
@@ -360,7 +376,7 @@ func TestPostHookRetriesAndReasonNamesTheCommand(t *testing.T) {
 	if got := failureReason(d, "x"); got != "post-deploy command 2 exited with code 5 (after 2 attempts)" {
 		t.Fatalf("reason %q", got)
 	}
-	if want := "berthy-" + id + "-20011"; f.names[len(f.names)-1] != want {
+	if want := "berthy-post_hook-.stage-" + id + "-20011"; f.names[len(f.names)-1] != want {
 		t.Fatalf("containers %v", f.names)
 	}
 }

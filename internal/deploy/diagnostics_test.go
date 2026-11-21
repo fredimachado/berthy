@@ -448,7 +448,7 @@ func TestFailedHookDiagnosticCarriesExitCodeAndOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest(testDeployTimeout, nil)}}
-	name := fmt.Sprintf("berthy-%s-10000", op.ID)
+	name := fmt.Sprintf("berthy-pre_hook-.test-%s-10000", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "exited", ExitCode: 3}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stderr migration 0042 failed: column exists\n"}
 	_, err = c.runOneOff(context.Background(), op.ID, p, oneOff{Ordinal: 10000, Kind: "pre_hook", Argv: []string{"migrate"}, Timeout: time.Minute})
@@ -493,7 +493,7 @@ func TestTimedOutOneOffKeepsItsOutputAndIsNotStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := preparedPlan{Image: "registry/app@sha256:pinned", NetworkID: "overlay", Request: Request{App: "web", Manifest: webManifest(testDeployTimeout, nil)}}
-	name := fmt.Sprintf("berthy-%s-10001", op.ID)
+	name := fmt.Sprintf("berthy-migration_apply-.test-%s-10001", op.ID)
 	f.diagnose = map[string]engine.ContainerDiagnosis{name: {State: "running"}}
 	f.tails = map[string]string{name: "2026-11-16T10:00:01Z stdout still migrating\n"}
 	_, err = c.runOneOff(context.Background(), op.ID, p, oneOff{Ordinal: 10001, Kind: "migration_apply", Argv: []string{"apply"}, Timeout: 5 * time.Minute})

@@ -20,7 +20,7 @@ func TestRunCommandStreamsTheOutputOfAnImageAppFromAContainerOfItsOwn(t *testing
 	f.streamOut = "the dump"
 	var out bytes.Buffer
 	res, err := c.RunCommand(context.Background(), imageJobManifest(), "backup", "main-db", "21", dumpJob, jobs.Streams{Stdout: &out})
-	if err != nil || res.Exit == nil || *res.Exit != 0 || res.Output != "" || res.Container != "ctr-berthy-backup-test-21" || out.String() != "the dump" {
+	if err != nil || res.Exit == nil || *res.Exit != 0 || res.Output != "" || res.Container != "ctr-berthy-backup-.test-21" || out.String() != "the dump" {
 		t.Fatalf("outcome %+v %v, stdout %q", res, err, out.String())
 	}
 	// The container is attached before it starts, so its first words are not lost, and it always goes.
