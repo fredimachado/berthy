@@ -38,7 +38,7 @@ type Token struct {
 	Agent bool `json:"agent,omitempty"`
 }
 type Config struct {
-	Project      string
+	Project      string `json:"-"`
 	Environment  string `json:"environment"`
 	Listen       string `json:"listen"`
 	DockerSocket string `json:"docker_socket"`

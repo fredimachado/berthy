@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"berthy/internal/scope"
 )
 
 // File is agent.json: what the agent process needs, and the environments it hosts.
@@ -89,8 +87,8 @@ func (f File) Validate() error {
 	networks := map[string]bool{}
 	digests := map[string]bool{}
 	for _, h := range f.Environments {
-		if !scope.ValidProject(h.Project) {
-			return fmt.Errorf("invalid project")
+		if h.Project == "" {
+			return fmt.Errorf("a hosted environment needs a project")
 		}
 		if h.StateDir == "" || h.KeyFile == "" {
 			return fmt.Errorf("a hosted environment needs state_dir and key_file")

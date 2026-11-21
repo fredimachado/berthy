@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"berthy/internal/scope"
@@ -64,6 +69,8 @@ func TestFileValidateRefuses(t *testing.T) {
 	dupDigest := shopDev
 	dupDigest.Tokens = []Token{{Digest: shopProd.Tokens[0].Digest, Scope: "admin"}}
 	badProject := testHosted("Shop", "prod", "bad-project")
+	emptyProject := testHosted("shop", "prod", "empty-project")
+	emptyProject.Project = ""
 	noState := shopProd
 	noState.StateDir = ""
 	noKey := shopProd
@@ -80,6 +87,7 @@ func TestFileValidateRefuses(t *testing.T) {
 		{"a network twice", testFile(shopProd, dupNet)},
 		{"a token digest in two environments", testFile(shopProd, dupDigest)},
 		{"an invalid project", testFile(badProject)},
+		{"an empty project", testFile(emptyProject)},
 		{"no environment", testFile()},
 		{"an environment without a state directory", testFile(noState)},
 		{"an environment without a key file", testFile(noKey)},
@@ -123,6 +131,41 @@ func TestConfigsCarryTheSharedSettings(t *testing.T) {
 	if b.Project != "blog" || b.Environment != "dev" || b.Protected || b.Network != "" || b.ID() != (scope.ID{Project: "blog", Environment: "dev"}) {
 		t.Errorf("second %+v id %+v", b, b.ID())
 	}
+}
+
+func TestConfigProjectIsNotAFileKey(t *testing.T) {
+	c := Config{Project: "shop", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("x"), Scope: "admin"}}}
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"Project", "project"} {
+		if _, ok := keys[k]; ok {
+			t.Fatalf("marshaled %s: %s", k, b)
+		}
+	}
+	body := []byte(`{"environment":"lab","listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","project":"shop","tokens":[{"digest":"` + Digest("x") + `","scope":"admin"}]}`)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&Config{}); err == nil {
+		t.Fatal("project key accepted")
+	}
+	t.Run("load", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Load checks Unix permission bits, which Windows does not report")
+		}
+		p := filepath.Join(t.TempDir(), "agent.json")
+		if err := os.WriteFile(p, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatal("project key accepted")
+		}
+	})
 }
 
 func TestParseFileRefusesUnknownKeys(t *testing.T) {
