@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -342,3 +343,19 @@ func TestRunJobOfAComposeAppSaysWhyItCouldNotRun(t *testing.T) {
 
 // RunJob is the Runner of the scheduler.
 var _ jobs.RunnerFunc = (*Controller)(nil).RunJob
+
+func TestRestoreCommandReservesRoleVolumesBeforeCreatingContainer(t *testing.T) {
+	c, f := jobFixture(t)
+	called := false
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		called = true
+		if !slices.Contains(claims, state.Claim{Kind: state.ClaimVolume, Name: "proj-test_uploads"}) {
+			t.Errorf("claims: %v", claims)
+		}
+		return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
+	}
+	_, err := c.RunCommand(context.Background(), imageJobManifest(), "restore", "op", "op", webJob, jobs.Streams{Stdin: strings.NewReader("backup")})
+	if !called || err == nil || f.callList() != "" {
+		t.Fatalf("called=%v err=%v Docker=%s", called, err, f.callList())
+	}
+}
