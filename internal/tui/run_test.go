@@ -46,7 +46,7 @@ func TestRunFindsTheDefaultConfigFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "berthy"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}`
+	cfg := `{"projects":{"demo":{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}}}`
 	if err := os.WriteFile(filepath.Join(dir, "berthy", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestRunNeedsATerminal(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "cli.json")
 	t.Setenv("BERTHY_TEST_UI_TOKEN", "bty.prod.secretsecretsecret")
-	if err := os.WriteFile(cfg, []byte(`{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errs bytes.Buffer
@@ -80,5 +80,22 @@ func TestRunNeedsATerminal(t *testing.T) {
 	}
 	if out.Len() != 0 || strings.Contains(errs.String(), "secretsecret") {
 		t.Fatal("output holds something it should not")
+	}
+}
+
+func TestRunLooksForTheProjectInTheCurrentDirectory(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "cli.json")
+	t.Setenv("BERTHY_TEST_UI_TOKEN", "bty.prod.secretsecretsecret")
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: other\nnetwork: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	var out, errs bytes.Buffer
+	if code := Run([]string{"-e", "prod", "--config", cfg}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "no environment prod for project other in the CLI configuration") {
+		t.Fatalf("code %d, stderr %q", code, errs.String())
 	}
 }

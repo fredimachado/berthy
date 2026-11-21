@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/scope"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -48,7 +49,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if !agentclient.EnvPattern.MatchString(env) {
+	if !scope.ValidEnvironment(env) {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
@@ -57,7 +58,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Load(path, env)
+	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

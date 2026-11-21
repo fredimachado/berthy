@@ -24,6 +24,7 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/session"
 )
 
@@ -361,7 +362,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 2
 	}
-	if !envPattern.MatchString(f.env) {
+	if !scope.ValidEnvironment(f.env) {
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
@@ -448,7 +449,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Load(cfgPath, f.env)
+	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Environment: f.env, ManifestDir: f.dir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

@@ -210,6 +210,18 @@ func TestSetupUsageErrors(t *testing.T) {
 	}
 }
 
+// projectDir is a manifest directory of the project shop on the network p5net, the project that setup writes the CLI
+// configuration under.
+func projectDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	text := "project: shop\nnetwork: p5net\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func writeManifest(t *testing.T, dir, network string) {
 	t.Helper()
 	text := "project: demo\nnetwork: " + network + "\nprotected: true\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
@@ -268,7 +280,7 @@ func TestSetupRefusesAnInvalidManifest(t *testing.T) {
 func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 	server := installedServer(t, "ops@s1")
 	made := withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s", code, errout)
 	}
@@ -307,7 +319,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
 	cfgPath := filepath.Join(t.TempDir(), "cli.json")
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--config", cfgPath)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--config", cfgPath)
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
 	}
@@ -353,7 +365,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 func TestSetupWritesTheDefaultConfigWhenNotTold(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
 	}
@@ -367,7 +379,7 @@ func TestSetupWritesTheDefaultConfigWhenNotTold(t *testing.T) {
 		t.Fatalf("the default CLI configuration was not written: %v\n%s", err, out)
 	}
 	c, err := agentclient.ParseConfig(data)
-	if err != nil || c.Environments["p5"] != (agentclient.Environment{URL: "http://172.31.250.10:7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+	if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://172.31.250.10:7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
 		t.Fatalf("configuration %s: %v", data, err)
 	}
 	if strings.Contains(out, "--config") {
@@ -389,7 +401,7 @@ func TestSetupSkipsTheConfigWhenThereIsNoDefaultLocation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "")
 	t.Setenv("AppData", "")
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || errout != "" || !strings.Contains(out, "– cli_config  add {") || !strings.Contains(out, "give --config or set BERTHY_CONFIG") {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
 	}
@@ -398,7 +410,7 @@ func TestSetupSkipsTheConfigWhenThereIsNoDefaultLocation(t *testing.T) {
 func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--json")
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--json")
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
 	}
@@ -427,7 +439,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	// A second run reports no token.
 	second := installedServer(t, "ops@s1")
 	withSetupRunner(t, second)
-	_, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", t.TempDir(), "--json")
+	_, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t), "--json")
 	if strings.Contains(out, `"token": `) || !strings.Contains(out, `"next_steps"`) {
 		t.Fatalf("second report:\n%s", out)
 	}
@@ -487,14 +499,14 @@ func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
 func TestSetupListenIsOptionalWhenTheServerHasAConfiguration(t *testing.T) {
 	server := installedServer(t, "ops@s1")
 	withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || !strings.Contains(out, "172.31.250.10 assigned") {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
 	}
 	// On a first run it is needed, and the step that finds out says so.
 	fresh := freshServer(t, "ops@s1")
 	withSetupRunner(t, fresh)
-	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 1 || !strings.Contains(out, "✖ check") || !strings.Contains(out, "--listen ADDRESS:PORT is needed") || !strings.HasSuffix(out, "failed at check\n") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
@@ -502,7 +514,7 @@ func TestSetupListenIsOptionalWhenTheServerHasAConfiguration(t *testing.T) {
 	other := installedServer(t, "ops@s1")
 	other.probe += "addr=172.31.250.11\n"
 	withSetupRunner(t, other)
-	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.11:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.11:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 1 || !strings.Contains(out, "the agent listens on 172.31.250.10:7710; setup does not move it") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
@@ -516,7 +528,7 @@ func TestSetupPassesItsFlagsToTheSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := elfBinary(t)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(),
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t),
 		"--binary", other, "--key-file", key, "--new-token", "--protected")
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s\n%s", code, errout, out)
@@ -546,7 +558,7 @@ func TestSetupDryRunOutput(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	server.probe = freshProbe
 	withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--dry-run")
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--dry-run")
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s", code, errout)
 	}
@@ -568,7 +580,7 @@ func TestSetupDryRunOutput(t *testing.T) {
 
 func TestSetupDryRunOfASetUpServer(t *testing.T) {
 	withSetupRunner(t, installedServer(t, "ops@s1"))
-	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--dry-run")
+	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--dry-run")
 	// The agent is set up, but this machine has no CLI configuration yet, so the local step would change.
 	if code != 0 || !strings.Contains(out, "· cli_config  would write p5 to config.json\n") || !strings.HasSuffix(out, "setup of p5 on ops@s1: dry run, 1 step would change\n") {
 		t.Fatalf("exit %d:\n%s", code, out)
@@ -579,7 +591,7 @@ func TestSetupFailureNamesTheStep(t *testing.T) {
 	server := installedServer(t, "ops@s1")
 	server.probe += "agent_env=staging\n"
 	withSetupRunner(t, server)
-	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 1 {
 		t.Fatalf("exit %d", code)
 	}
@@ -593,7 +605,7 @@ func TestSetupAFailedFirstInstallStillShowsTheToken(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	server.waits = []int{1}
 	withSetupRunner(t, server)
-	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 1 || !strings.Contains(out, "✖ service") || !strings.Contains(out, "failed at service") || !strings.Contains(out, "admin token for p5 (shown once, store it now): bty.p5.") || strings.Contains(out, "next steps") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
@@ -603,7 +615,7 @@ func TestSetupJSON(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	server.probe = freshProbe
 	withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--dry-run", "--json")
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--dry-run", "--json")
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s", code, errout)
 	}
@@ -635,7 +647,7 @@ func TestSetupJSON(t *testing.T) {
 
 func TestSetupJSONOfAFailure(t *testing.T) {
 	withSetupRunner(t, &setupServer{probe: "os=Darwin\n", target: "ops@s1"})
-	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir(), "--json")
+	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--json")
 	var got setupReport
 	if code != 1 || json.Unmarshal([]byte(out), &got) != nil || got.OK || got.Steps[len(got.Steps)-1].Status != "failed" || got.Steps[len(got.Steps)-1].Step != "check" {
 		t.Fatalf("exit %d:\n%s", code, out)
@@ -649,7 +661,7 @@ func TestSetupWithoutARunnerFailsTheConnectStep(t *testing.T) {
 	saved := newSetupRunner
 	t.Cleanup(func() { newSetupRunner = saved })
 	newSetupRunner = func(string, bool) (setup.Runner, error) { return nil, errors.New("ssh was not found on PATH") }
-	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	want := "✖ connect     ssh was not found on PATH\nsetup of p5 on ops@s1: failed at connect\n"
 	if code != 1 || out != want {
 		t.Fatalf("exit %d:\n%s", code, out)
@@ -658,7 +670,7 @@ func TestSetupWithoutARunnerFailsTheConnectStep(t *testing.T) {
 
 func TestSetupLocalTargetsThisServer(t *testing.T) {
 	made := withSetupRunner(t, installedServer(t, "this server"))
-	code, out, _ := runSetupCmd("-e", "p5", "--local", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir())
+	code, out, _ := runSetupCmd("-e", "p5", "--local", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || made[1] != true || !strings.Contains(out, "✓ connect     this server\n") || !strings.Contains(out, "setup of p5 on this server: done\n") ||
 		!strings.Contains(out, "sudo cat /var/lib/berthy/key > p5.key") || strings.Contains(out, "ssh this server") {
 		t.Fatalf("exit %d, made %v:\n%s", code, made, out)
@@ -682,7 +694,7 @@ func TestSetupUsageNamesTheNewFlags(t *testing.T) {
 
 func TestSetupJSONKeepsShellRedirectionsReadable(t *testing.T) {
 	withSetupRunner(t, installedServer(t, "ops@s1"))
-	_, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", t.TempDir(), "--json")
+	_, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t), "--json")
 	if !strings.Contains(out, "> p5.key") || strings.Contains(out, "\x5cu003e") {
 		t.Fatalf("output:\n%s", out)
 	}

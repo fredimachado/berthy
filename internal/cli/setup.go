@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/setup"
 	"berthy/internal/version"
 )
@@ -84,7 +85,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	switch {
 	case fset.NArg() != 0:
 		return usage("setup takes no arguments")
-	case *env == "" || !envPattern.MatchString(*env):
+	case *env == "" || !scope.ValidEnvironment(*env):
 		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
 	case *host != "" && *local, *host == "" && !*local:
 		return usage("use exactly one of --host and --local")
@@ -105,7 +106,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 		return usage("%v", err)
 	}
 	opts := setup.Options{
-		Env: *env, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
+		Env: *env, Project: from.project, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
 		Binary: *binary, KeyFile: *keyFile, NewToken: *newToken, CLIConfig: *cliConfig, Build: setupBuild(),
 		ReleaseURL: os.Getenv("BERTHY_RELEASE_URL"), Doctor: setupDoctor,
 	}
@@ -173,6 +174,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 
 // setupFrom is what setup takes from the manifest, or from the flags when the directory has none.
 type setupFrom struct {
+	project   string // empty when the directory has no manifest
 	network   string
 	protected bool
 	ingress   bool // the manifest declares managed ingress
@@ -187,7 +189,7 @@ func setupSettings(dir, env, network string, protected bool) (setupFrom, error) 
 		if network != "" && network != m.Network {
 			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, m.Network, env)
 		}
-		return setupFrom{network: m.Network, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
+		return setupFrom{project: m.Project, network: m.Network, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		if network == "" {
 			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --network NAME", dir)

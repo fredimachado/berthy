@@ -56,7 +56,7 @@ func checkoutFixture(t *testing.T, manifestYAML string, agent *fakeDeployAgent) 
 	t.Cleanup(server.Close)
 	dir, head = checkoutRepo(t, map[string]string{"berthy.yml": manifestYAML})
 	cfg = filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
@@ -237,7 +237,7 @@ func historyFixture(t *testing.T) string {
 	}))
 	t.Cleanup(server.Close)
 	cfg := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")

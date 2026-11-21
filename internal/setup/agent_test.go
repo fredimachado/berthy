@@ -212,7 +212,7 @@ func agentSession(t *testing.T, f Runner, exe string, dry bool, mod func(*Option
 	t.Helper()
 	isolateUserConfig(t)
 	o := Options{
-		Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710,
+		Env: "p5", Project: "shop", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710,
 		Build:  Build{OS: "linux", Arch: "amd64", Path: exe, Version: "v0.0.1-test"},
 		Now:    func() time.Time { return fixedNow },
 		Getenv: func(string) string { return "" },
@@ -379,7 +379,7 @@ func TestSetUpServerChangesNothingAndMakesNoToken(t *testing.T) {
 	exe := elfFile(t, emX86)
 	f := setUpAgent(t, exe)
 	cli := filepath.Join(t.TempDir(), "cli.json")
-	writeCLIConfig(t, cli, `{"environments":{"p5":{"url":"http://`+listenIP+`:7710","token_env":"MY_P5_TOKEN"}}}`)
+	writeCLIConfig(t, cli, `{"projects":{"shop":{"environments":{"p5":{"url":"http://`+listenIP+`:7710","token_env":"MY_P5_TOKEN"}}}}}`)
 	before := mustRead(t, cli)
 	asked := ""
 	s := agentSession(t, f, exe, false, func(o *Options) {
@@ -1263,7 +1263,7 @@ func TestCLIConfigStep(t *testing.T) {
 			t.Fatalf("cli_config = %+v", r)
 		}
 		c, err := agentclient.ParseConfig(mustRead(t, path))
-		if err != nil || c.Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+		if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
 			t.Fatalf("config = %+v %v", c, err)
 		}
 		if st, _ := os.Stat(path); !modeIs(st, 0o600) {
@@ -1275,7 +1275,7 @@ func TestCLIConfigStep(t *testing.T) {
 	})
 	t.Run("keeps the other environments and the chosen variable", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "cli.json")
-		writeCLIConfig(t, path, `{"environments":{"prod":{"url":"http://10.0.0.1:7710","token_env":"PROD_T"},"p5":{"url":"http://10.9.9.9:1","token_env":"MINE"}}}`)
+		writeCLIConfig(t, path, `{"projects":{"shop":{"environments":{"prod":{"url":"http://10.0.0.1:7710","token_env":"PROD_T"},"p5":{"url":"http://10.9.9.9:1","token_env":"MINE"}}}}}`)
 		if err := os.Chmod(path, 0o640); err != nil {
 			t.Fatal(err)
 		}
@@ -1287,8 +1287,8 @@ func TestCLIConfigStep(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.Environments["prod"] != (agentclient.Environment{URL: "http://10.0.0.1:7710", TokenEnv: "PROD_T"}) ||
-			c.Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "MINE"}) {
+		if c.Projects["shop"].Environments["prod"] != (agentclient.Environment{URL: "http://10.0.0.1:7710", TokenEnv: "PROD_T"}) ||
+			c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "MINE"}) {
 			t.Fatalf("config = %+v", c)
 		}
 		if st, _ := os.Stat(path); !modeIs(st, 0o640) {
@@ -1297,9 +1297,9 @@ func TestCLIConfigStep(t *testing.T) {
 	})
 	t.Run("a file with unknown fields is refused and left alone", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "cli.json")
-		writeCLIConfig(t, path, `{"environments":{},"extra":1}`)
+		writeCLIConfig(t, path, `{"projects":{},"extra":1}`)
 		r := run(t, path, false)
-		if r.Status != StatusFailed || !strings.Contains(r.Detail, "not valid") || string(mustRead(t, path)) != `{"environments":{},"extra":1}` {
+		if r.Status != StatusFailed || !strings.Contains(r.Detail, "not valid") || string(mustRead(t, path)) != `{"projects":{},"extra":1}` {
 			t.Fatalf("cli_config = %+v", r)
 		}
 	})
@@ -1319,7 +1319,7 @@ func TestCLIConfigStep(t *testing.T) {
 			t.Fatal(err)
 		}
 		c, err := agentclient.ParseConfig(mustRead(t, filepath.Join(dir, "berthy", "config.json")))
-		if r.Status != StatusChanged || err != nil || c.Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+		if r.Status != StatusChanged || err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
 			t.Fatalf("cli_config = %+v, %v", r, err)
 		}
 	})
@@ -1332,10 +1332,90 @@ func TestCLIConfigStep(t *testing.T) {
 		var got []StepResult
 		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
 		r := stepOf(t, got, "cli_config")
-		if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} to the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`; r.Status != StatusSkipped || r.Detail != want {
+		if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} as projects.shop.environments.p5 of the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`; r.Status != StatusSkipped || r.Detail != want {
 			t.Fatalf("cli_config = %+v", r)
 		}
 	})
+}
+
+func TestCLIConfigStepWritesTheEnvironmentUnderItsProject(t *testing.T) {
+	exe := elfFile(t, emX86)
+	path := filepath.Join(t.TempDir(), "cli.json")
+	s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path })
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+	if r := stepOf(t, got, "cli_config"); r.Status != StatusChanged {
+		t.Fatalf("cli_config = %+v", r)
+	}
+	if want := `{"projects":{"shop":{"environments":{"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_P5_TOKEN"}}}}}`; compactJSON(t, mustRead(t, path)) != compactJSON(t, []byte(want)) {
+		t.Fatalf("the file is %s, want %s", mustRead(t, path), want)
+	}
+}
+
+func TestCLIConfigStepKeepsOtherProjects(t *testing.T) {
+	exe := elfFile(t, emX86)
+	path := filepath.Join(t.TempDir(), "cli.json")
+	writeCLIConfig(t, path, `{"projects":{
+  "sliceup":{"environments":{"p5":{"url":"http://10.1.1.1:7710","token_env":"SU_P5"},"prod":{"url":"http://10.1.1.1:7710","token_env":"SU_PROD"}}},
+  "shop":{"environments":{"dev":{"url":"http://10.2.2.2:7710","token_env":"SHOP_DEV"}}}}}`)
+	s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path })
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+	if r := stepOf(t, got, "cli_config"); r.Status != StatusChanged {
+		t.Fatalf("cli_config = %+v", r)
+	}
+	want := `{"projects":{` +
+		`"shop":{"environments":{"dev":{"url":"http://10.2.2.2:7710","token_env":"SHOP_DEV"},"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_P5_TOKEN"}}},` +
+		`"sliceup":{"environments":{"p5":{"url":"http://10.1.1.1:7710","token_env":"SU_P5"},"prod":{"url":"http://10.1.1.1:7710","token_env":"SU_PROD"}}}}}`
+	if got := compactJSON(t, mustRead(t, path)); got != compactJSON(t, []byte(want)) {
+		t.Fatalf("the file is %s, want %s", got, want)
+	}
+}
+
+func TestCLIConfigStepWithoutAProjectSaysWhatToAdd(t *testing.T) {
+	exe := elfFile(t, emX86)
+	path := filepath.Join(t.TempDir(), "cli.json")
+	s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path; o.Project = "" })
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+	r := stepOf(t, got, "cli_config")
+	if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} as projects.<project>.environments.p5 of the CLI configuration: there is no berthy.yml to name the project`; r.Status != StatusSkipped || r.Detail != want {
+		t.Fatalf("cli_config = %+v", r)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Errorf("the file was written")
+	}
+	if s.TokenEnv != "BERTHY_P5_TOKEN" {
+		t.Errorf("TokenEnv = %q: verify cannot find the token", s.TokenEnv)
+	}
+}
+
+func TestCLIConfigStepRefusesTheLayoutOfAnEarlierRelease(t *testing.T) {
+	exe := elfFile(t, emX86)
+	path := filepath.Join(t.TempDir(), "cli.json")
+	const old = `{"environments":{"p5":{"url":"http://10.9.9.9:1","token_env":"MINE"}}}`
+	writeCLIConfig(t, path, old)
+	s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path })
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+	r := stepOf(t, got, "cli_config")
+	if r.Status != StatusFailed || !strings.Contains(r.Detail, "the CLI configuration is in the layout of an earlier release") || string(mustRead(t, path)) != old {
+		t.Fatalf("cli_config = %+v", r)
+	}
+}
+
+// compactJSON is b without its indentation, with the keys in the order encoding/json writes them.
+func compactJSON(t *testing.T, b []byte) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func TestDefaultTokenEnv(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/scope"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/term"
@@ -43,7 +44,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if !agentclient.EnvPattern.MatchString(env) {
+	if !scope.ValidEnvironment(env) {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
@@ -52,7 +53,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Load(path, env)
+	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: "."})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

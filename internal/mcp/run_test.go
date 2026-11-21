@@ -38,7 +38,7 @@ func (l *lockedBuffer) String() string {
 func writeConfig(t *testing.T, url string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
-	body := fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_MCP_TEST_TOKEN"}}}`, url)
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_MCP_TEST_TOKEN"}}}}}`, url)
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -161,5 +161,18 @@ func TestRunServesOnlyProtocolOnStdout(t *testing.T) {
 	}
 	if got := agent.requests(); len(got) != 1 || got[0].Auth != "Bearer "+testToken {
 		t.Fatalf("agent requests %+v", got)
+	}
+}
+
+func TestRunLooksForTheProjectInTheManifestDirectory(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
+	good := writeConfig(t, "http://127.0.0.1:1")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: other\nnetwork: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Run([]string{"-e", "dev", "--config", good, "--manifest-dir", dir}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "no environment dev for project other in the CLI configuration") || out.Len() != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
 }

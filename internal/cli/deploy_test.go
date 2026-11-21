@@ -36,7 +36,7 @@ func TestDeployDryRunSendsManifest(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	var out, errs bytes.Buffer
 	if code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1", "--dry-run"}, &out, &errs); code != 0 {
@@ -67,7 +67,7 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 			dir := t.TempDir()
 			os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
 			cfg := filepath.Join(dir, "config.json")
-			os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+			os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 			t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 			var out, errs bytes.Buffer
 			got := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1"}, &out, &errs)
@@ -94,7 +94,7 @@ func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	var out, errs bytes.Buffer
 	got := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1", "--json"}, &out, &errs)
@@ -121,7 +121,7 @@ func TestDeployShowsWhatItsChecksFound(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600)
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	args := []string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1"}
 	var out, errs bytes.Buffer
@@ -153,7 +153,7 @@ func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	var out, errs bytes.Buffer
 	got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", "2", "--dry-run"}, &out, &errs)
@@ -182,7 +182,7 @@ func TestScaleSendsZeroReplicas(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	var out, errs bytes.Buffer
 	got := Run([]string{"scale", "api", "-e", "dev", "--config", cfg, "--manifest-dir", filepath.Join(dir, "missing"), "--replicas", "0", "--dry-run"}, &out, &errs)
@@ -201,7 +201,7 @@ func TestScaleRefusesNegativeReplicasBeforeAnyRequest(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	cases := map[string]string{
 		"-1": "invalid --replicas: must be 0 or more",
@@ -262,7 +262,7 @@ func refusingAgent(t *testing.T, body string) string {
 	}))
 	t.Cleanup(server.Close)
 	cfg := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
@@ -320,7 +320,7 @@ func TestRecoveryResolvePostsReason(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+			if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("BERTHY_TEST_TOKEN", "test-token")
@@ -388,7 +388,7 @@ func TestExecShowsWhyItFailedBeforeItRan(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.json")
-	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600)
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	var out, errs bytes.Buffer
 	got := Run([]string{"exec", "db", "-e", "dev", "--config", cfg, "--", "true"}, &out, &errs)

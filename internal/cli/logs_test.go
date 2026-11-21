@@ -34,7 +34,7 @@ func TestMalformedResponseDoesNotRevealToken(t *testing.T) {
 		}
 	}()
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(fmt.Sprintf(`{"environments":{"lab":{"url":"http://%s","token_env":"BERTHY_TEST_SECRET"}}}`, ln.Addr())), 0600)
+	os.WriteFile(path, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"lab":{"url":"http://%s","token_env":"BERTHY_TEST_SECRET"}}}}}`, ln.Addr())), 0600)
 	var out, errout bytes.Buffer
 	if Run([]string{"ps", "-e", "lab", "--config", path}, &out, &errout) == 0 {
 		t.Fatal("expected error")
@@ -160,7 +160,7 @@ func TestLogsPrintsLogLinesUnlessJSON(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("BERTHY_TEST_LOGS_TOKEN", "bty.lab."+strings.Repeat("a", 64))
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(fmt.Sprintf(`{"environments":{"lab":{"url":%q,"token_env":"BERTHY_TEST_LOGS_TOKEN"}}}`, srv.URL)), 0600)
+	os.WriteFile(path, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"lab":{"url":%q,"token_env":"BERTHY_TEST_LOGS_TOKEN"}}}}}`, srv.URL)), 0600)
 	var out, errout bytes.Buffer
 	if code := Run([]string{"logs", "api", "-e", "lab", "--config", path}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())

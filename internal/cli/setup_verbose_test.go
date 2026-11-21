@@ -29,7 +29,7 @@ func freshNoDocker(t *testing.T, target string) *setupServer {
 // setupArgs are the arguments of a setup of p5 on ops@s1 that reads no manifest, plus extra.
 func setupArgs(t *testing.T, extra ...string) []string {
 	t.Helper()
-	return append([]string{"-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", t.TempDir()}, extra...)
+	return append([]string{"-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t)}, extra...)
 }
 
 // verboseLog is what a verbose log says: the scripts under each step's header, in order, the scripts in the order they were

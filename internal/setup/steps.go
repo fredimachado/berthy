@@ -36,6 +36,7 @@ type Build struct {
 // Options are the choices of one run.
 type Options struct {
 	Env             string
+	Project         string // the project of the manifest the CLI read; empty when the directory has none
 	Network         string // the shared overlay network
 	ListenIP        net.IP // the address the agent listens on and Swarm advertises; nil to keep the one the server's agent has
 	ListenPort      int

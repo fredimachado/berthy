@@ -32,7 +32,7 @@ func composeAgent(t *testing.T, bodies *[]map[string]any) string {
 	}))
 	t.Cleanup(server.Close)
 	cfg := t.TempDir() + "/config.json"
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")

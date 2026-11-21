@@ -39,7 +39,7 @@ func writeDefaultConfig(t *testing.T, dir, url string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "berthy", "config.json")
-	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, url)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, url)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")

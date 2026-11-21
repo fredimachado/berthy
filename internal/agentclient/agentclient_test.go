@@ -56,39 +56,141 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-func TestLoadReadsTargetAndToken(t *testing.T) {
+// cfgDev is the CLI configuration of one project with one environment, dev, whose token is in BERTHY_TEST_TOKEN.
+const cfgDev = `{"projects":{"demo":{"environments":{"dev":{"url":"http://127.0.0.1:9000/base/","token_env":"BERTHY_TEST_TOKEN"}}}}}`
+
+func TestResolveReadsTargetAndToken(t *testing.T) {
 	t.Setenv("BERTHY_TEST_TOKEN", "secret-token")
-	cfg := writeConfig(t, `{"environments":{"dev":{"url":"http://127.0.0.1:9000/base/","token_env":"BERTHY_TEST_TOKEN"}}}`)
-	got, err := Load(cfg, "dev")
+	got, err := Resolve(writeConfig(t, cfgDev), Selector{Environment: "dev"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Token != "secret-token" || got.Prefix != "/base/v1/environments/dev/" || got.Base.Host != "127.0.0.1:9000" || got.Env != "dev" {
+	if got.Token != "secret-token" || got.Prefix != "/base/v1/environments/dev/" || got.Base.Host != "127.0.0.1:9000" || got.Env != "dev" || got.Project != "demo" {
 		t.Fatalf("target %+v", got)
 	}
 }
 
-func TestLoadRefusesWithoutEchoingValues(t *testing.T) {
+func TestResolveRefusesWithoutEchoingValues(t *testing.T) {
 	t.Setenv("BERTHY_TEST_TOKEN", "secret-token")
 	t.Setenv("BERTHY_EMPTY_TOKEN", "")
-	good := `{"environments":{"dev":{"url":"http://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}}}`
+	one := func(entry string) string {
+		return `{"projects":{"demo":{"environments":{"dev":` + entry + `}}}}`
+	}
+	good := one(`{"url":"http://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}`)
 	for _, tc := range []struct{ name, body, env, want string }{
-		{"unknown env", good, "prod", "unknown environment"},
-		{"no token_env", `{"environments":{"dev":{"url":"http://127.0.0.1:9000"}}}`, "dev", "unknown environment or missing token_env"},
-		{"empty token", `{"environments":{"dev":{"url":"http://127.0.0.1:9000","token_env":"BERTHY_EMPTY_TOKEN"}}}`, "dev", "token environment variable is empty"},
-		{"https", `{"environments":{"dev":{"url":"https://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}}}`, "dev", "invalid agent URL"},
-		{"credentials in URL", `{"environments":{"dev":{"url":"http://user:pw@127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}}}`, "dev", "invalid agent URL"},
-		{"unknown field", `{"environments":{},"extra":1}`, "dev", "invalid config"},
+		{"unknown env", good, "prod", "unknown environment or missing token_env"},
+		{"no token_env", one(`{"url":"http://127.0.0.1:9000"}`), "dev", "unknown environment or missing token_env"},
+		{"empty token", one(`{"url":"http://127.0.0.1:9000","token_env":"BERTHY_EMPTY_TOKEN"}`), "dev", "token environment variable is empty"},
+		{"https", one(`{"url":"https://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}`), "dev", "invalid agent URL"},
+		{"credentials in URL", one(`{"url":"http://user:pw@127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}`), "dev", "invalid agent URL"},
+		{"unknown field", `{"projects":{},"extra":1}`, "dev", "invalid config"},
 		{"trailing JSON", good + `{}`, "dev", "invalid trailing JSON"},
 	} {
-		_, err := Load(writeConfig(t, tc.body), tc.env)
+		_, err := Resolve(writeConfig(t, tc.body), Selector{Environment: tc.env})
 		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "pw") {
 			t.Errorf("%s: %v", tc.name, err)
 		}
 	}
 	missing := filepath.Join(t.TempDir(), "missing.json")
-	if _, err := Load(missing, "dev"); err == nil || err.Error() != "cannot read config "+missing {
+	if _, err := Resolve(missing, Selector{Environment: "dev"}); err == nil || err.Error() != "cannot read config "+missing {
 		t.Errorf("missing file: %v", err)
+	}
+}
+
+// twoProjects is a CLI configuration where CardioTennis and SliceUp both have prod, and only SliceUp has dev.
+const twoProjects = `{"projects":{
+  "cardiotennis":{"environments":{"prod":{"url":"http://10.0.0.1:7710","token_env":"CT_TOKEN"}}},
+  "sliceup":{"environments":{"prod":{"url":"http://10.0.0.2:7710","token_env":"SU_TOKEN"},"dev":{"url":"http://10.0.0.3:7710","token_env":"SU_DEV_TOKEN"}}}}}`
+
+func TestResolvePicksTheProjectOfTheFlag(t *testing.T) {
+	t.Setenv("CT_TOKEN", "ct")
+	t.Setenv("SU_TOKEN", "su")
+	cfg := writeConfig(t, twoProjects)
+	for project, want := range map[string]string{"cardiotennis": "10.0.0.1:7710", "sliceup": "10.0.0.2:7710"} {
+		got, err := Resolve(cfg, Selector{Project: project, Environment: "prod"})
+		if err != nil || got.Base.Host != want || got.Project != project {
+			t.Errorf("%s: %+v, %v", project, got, err)
+		}
+	}
+	// The flag wins over the manifest directory.
+	dir := writeComposeProject(t, imageManifest, "")
+	got, err := Resolve(cfg, Selector{Project: "sliceup", Environment: "prod", ManifestDir: dir})
+	if err != nil || got.Project != "sliceup" {
+		t.Errorf("the flag and a manifest of another project: %+v, %v", got, err)
+	}
+	_, err = Resolve(cfg, Selector{Project: "cardiotennis", Environment: "dev"})
+	if err == nil || err.Error() != "no environment dev for project cardiotennis in the CLI configuration" {
+		t.Errorf("an environment the project does not have: %v", err)
+	}
+	_, err = Resolve(cfg, Selector{Project: "nobody", Environment: "prod"})
+	if err == nil || err.Error() != "no environment prod for project nobody in the CLI configuration" {
+		t.Errorf("a project the file does not have: %v", err)
+	}
+}
+
+func TestResolveReadsTheProjectOfTheManifestDirectory(t *testing.T) {
+	t.Setenv("CT_TOKEN", "ct")
+	t.Setenv("SU_TOKEN", "su")
+	cfg := writeConfig(t, twoProjects)
+	dir := writeComposeProject(t, strings.Replace(imageManifest, "project: demo", "project: sliceup", 1), "")
+	got, err := Resolve(cfg, Selector{Environment: "prod", ManifestDir: dir})
+	if err != nil || got.Project != "sliceup" || got.Base.Host != "10.0.0.2:7710" {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	// A manifest of a project the file has no environment for is not guessed around.
+	other := writeComposeProject(t, imageManifest, "")
+	if _, err := Resolve(cfg, Selector{Environment: "prod", ManifestDir: other}); err == nil || err.Error() != "no environment prod for project demo in the CLI configuration" {
+		t.Errorf("a manifest of another project: %v", err)
+	}
+	// A directory without a manifest falls back to the only match.
+	t.Setenv("SU_DEV_TOKEN", "su-dev")
+	got, err = Resolve(cfg, Selector{Environment: "dev", ManifestDir: t.TempDir()})
+	if err != nil || got.Project != "sliceup" {
+		t.Errorf("a directory without a manifest: %+v, %v", got, err)
+	}
+	// A manifest without a valid project is an error, whatever the file holds.
+	bad := writeComposeProject(t, "network: demo\n", "")
+	_, err = Resolve(cfg, Selector{Environment: "dev", ManifestDir: bad})
+	if want := "cannot read the project of " + filepath.Join(bad, "berthy.yml") + ": give --project"; err == nil || err.Error() != want {
+		t.Errorf("a manifest without a project: %v, want %q", err, want)
+	}
+}
+
+func TestResolveWithoutAProjectTakesTheOnlyOneThatHasTheEnvironment(t *testing.T) {
+	t.Setenv("SU_DEV_TOKEN", "su-dev")
+	got, err := Resolve(writeConfig(t, twoProjects), Selector{Environment: "dev"})
+	if err != nil || got.Project != "sliceup" || got.Token != "su-dev" {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	// An environment that no project has is unknown.
+	if _, err := Resolve(writeConfig(t, twoProjects), Selector{Environment: "staging"}); err == nil || err.Error() != "unknown environment or missing token_env" {
+		t.Errorf("an environment no project has: %v", err)
+	}
+}
+
+func TestResolveRefusesAnEnvironmentThatSeveralProjectsHave(t *testing.T) {
+	t.Setenv("CT_TOKEN", "ct")
+	t.Setenv("SU_TOKEN", "su")
+	_, err := Resolve(writeConfig(t, twoProjects), Selector{Environment: "prod"})
+	want := "environment prod exists in several projects (cardiotennis, sliceup): give --project, or run the command in the project's directory"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	for _, leaked := range []string{"10.0.0", "CT_TOKEN", "SU_TOKEN"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Errorf("the refusal repeats %q", leaked)
+		}
+	}
+}
+
+func TestParseConfigRefusesTheLayoutOfAnEarlierRelease(t *testing.T) {
+	_, err := ParseConfig([]byte(`{"environments":{"dev":{"url":"http://127.0.0.1:9000","token_env":"SECRET_VAR"}}}`))
+	want := "the CLI configuration is in the layout of an earlier release: run berthy setup again, or write it as projects.<project>.environments.<environment>"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	if _, err := Resolve(writeConfig(t, `{"environments":{}}`), Selector{Environment: "dev"}); err == nil || err.Error() != want {
+		t.Errorf("Resolve: %v", err)
 	}
 }
 

@@ -57,7 +57,7 @@ func deployAllFixture(t *testing.T, manifestYAML string, agent *fakeDeployAgent)
 		t.Fatal(err)
 	}
 	cfg = filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
@@ -439,7 +439,7 @@ func TestDeployAllAgainstAnAgentWithoutTheAppliedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}`, server.URL)), 0600); err != nil {
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")

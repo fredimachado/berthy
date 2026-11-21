@@ -1,0 +1,85 @@
+package cli
+
+import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+// twoProjectsServers starts one agent for each of two projects that both have a prod environment, and returns the CLI
+// configuration that names both and a counter for each agent's requests.
+func twoProjectsServers(t *testing.T) (cfg string, cardio, slice *atomic.Int32) {
+	t.Helper()
+	serve := func(n *atomic.Int32) *httptest.Server {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n.Add(1)
+			fmt.Fprint(w, `[]`)
+		}))
+		t.Cleanup(s.Close)
+		return s
+	}
+	cardio, slice = new(atomic.Int32), new(atomic.Int32)
+	a, b := serve(cardio), serve(slice)
+	t.Setenv("BERTHY_TEST_CT", "ct")
+	t.Setenv("BERTHY_TEST_SU", "su")
+	cfg = filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"cardiotennis":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_TEST_CT"}}},"sliceup":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_TEST_SU"}}}}}`, a.URL, b.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, cardio, slice
+}
+
+func projectDirOf(t *testing.T, project string) string {
+	t.Helper()
+	dir := t.TempDir()
+	text := "project: " + project + "\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestACommandReachesTheAgentOfTheProjectOfItsDirectory(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	// A remote command that reads no manifest looks in the current directory.
+	t.Chdir(projectDirOf(t, "sliceup"))
+	var out, errout bytes.Buffer
+	if code := Run([]string{"ps", "-e", "prod", "--config", cfg}, &out, &errout); code != 0 {
+		t.Fatalf("ps: exit %d: %s", code, errout.String())
+	}
+	if cardio.Load() != 0 || slice.Load() != 1 {
+		t.Fatalf("ps reached cardiotennis %d times and sliceup %d times", cardio.Load(), slice.Load())
+	}
+	// A change command looks in its --manifest-dir.
+	out.Reset()
+	errout.Reset()
+	Run([]string{"secret", "list", "-e", "prod", "--config", cfg, "--manifest-dir", projectDirOf(t, "cardiotennis")}, &out, &errout)
+	if cardio.Load() != 1 || slice.Load() != 1 {
+		t.Fatalf("secret list reached cardiotennis %d times and sliceup %d times\n%s", cardio.Load(), slice.Load(), errout.String())
+	}
+}
+
+func TestACommandWithAnEnvironmentOfSeveralProjectsIsRefusedBeforeAnyRequest(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{
+		{"ps", "-e", "prod", "--config", cfg},
+		{"secret", "list", "-e", "prod", "--config", cfg},
+	} {
+		var out, errout bytes.Buffer
+		code := Run(args, &out, &errout)
+		if want := "environment prod exists in several projects (cardiotennis, sliceup): give --project, or run the command in the project's directory"; code != 1 || !strings.Contains(errout.String(), want) {
+			t.Errorf("%v: exit %d: %s", args, code, errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatalf("a refused command sent %d and %d requests", cardio.Load(), slice.Load())
+	}
+}

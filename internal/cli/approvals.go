@@ -18,6 +18,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/scope"
 )
 
 // exitHeld is the exit code of a command whose change an AI agent's token asked for on a protected environment: the agent held
@@ -35,7 +36,7 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		return 2
 	}
 	var env, name string
-	scope := "read"
+	tokenScope := "read"
 	isAgent := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -52,17 +53,17 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 			case "--name":
 				name = args[i]
 			default:
-				scope = args[i]
+				tokenScope = args[i]
 			}
 		default:
 			return usage()
 		}
 	}
-	if !envPattern.MatchString(env) {
+	if !scope.ValidEnvironment(env) {
 		fmt.Fprintln(errout, "invalid environment")
 		return 2
 	}
-	if scope != "read" && scope != "deploy" && scope != "admin" {
+	if tokenScope != "read" && tokenScope != "deploy" && tokenScope != "admin" {
 		fmt.Fprintln(errout, "invalid scope: use read, deploy or admin")
 		return 2
 	}
@@ -75,7 +76,7 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	entry, err := json.Marshal(agent.Token{Name: name, Digest: digest, Scope: scope, Agent: isAgent})
+	entry, err := json.Marshal(agent.Token{Name: name, Digest: digest, Scope: tokenScope, Agent: isAgent})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

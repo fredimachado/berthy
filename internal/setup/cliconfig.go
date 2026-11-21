@@ -37,6 +37,9 @@ func readCLIConfig(path string) (agentclient.Config, []byte, error) {
 		return agentclient.Config{}, nil, errors.New("cannot read the CLI configuration")
 	}
 	c, err := agentclient.ParseConfig(b)
+	if errors.Is(err, agentclient.ErrEarlierLayout) {
+		return c, nil, err
+	}
 	if err != nil {
 		return c, nil, fmt.Errorf("the CLI configuration is not valid: %v", err)
 	}
@@ -79,29 +82,35 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
-// cliConfigStep adds the environment to the CLI configuration: the agent's address and the variable that holds its token. The
-// file is the one --config names, or else the one the CLI finds without it (BERTHY_CONFIG, then the default file). The file
-// never holds a token, and the other environments are kept as they are.
+// cliConfigStep adds the environment to the CLI configuration, under its project: the agent's address and the variable that
+// holds its token. The file is the one --config names, or else the one the CLI finds without it (BERTHY_CONFIG, then the default
+// file). The file never holds a token, and the other environments and projects are kept as they are. Without a project, which
+// only a manifest names, the entry is for the person to add by hand.
 func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
-	env := s.Opts.Env
+	project, env := s.Opts.Project, s.Opts.Env
 	url := agentURL(s.Opts.listen())
 	tokenEnv := DefaultTokenEnv(env)
+	if project == "" {
+		s.TokenEnv = tokenEnv
+		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} as projects.<project>.environments.%s of the CLI configuration: there is no berthy.yml to name the project`, url, tokenEnv, env), nil
+	}
 	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
 	if err != nil {
 		// No location is known, so the entry is for the person to add by hand.
 		s.TokenEnv = tokenEnv
-		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} to the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`, url, tokenEnv), nil
+		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} as projects.%s.environments.%s of the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`, url, tokenEnv, project, env), nil
 	}
 	c, _, err := readCLIConfig(path)
 	if err != nil {
 		return "", "", err
 	}
-	if e, ok := c.Environments[env]; ok && e.TokenEnv != "" {
-		tokenEnv = e.TokenEnv
+	have := c.Projects[project].Environments[env]
+	if have.TokenEnv != "" {
+		tokenEnv = have.TokenEnv
 	}
 	s.TokenEnv = tokenEnv
 	want := agentclient.Environment{URL: url, TokenEnv: tokenEnv}
-	if c.Environments[env] == want {
+	if have == want {
 		return StatusOK, fmt.Sprintf("%s has %s at %s (token in $%s)", filepath.Base(path), env, url, tokenEnv), nil
 	}
 	if s.DryRun {
@@ -113,10 +122,15 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 			return "", "", fmt.Errorf("creating the CLI configuration directory: %w", err)
 		}
 	}
-	if c.Environments == nil {
-		c.Environments = map[string]agentclient.Environment{}
+	if c.Projects == nil {
+		c.Projects = map[string]agentclient.Project{}
 	}
-	c.Environments[env] = want
+	p := c.Projects[project]
+	if p.Environments == nil {
+		p.Environments = map[string]agentclient.Environment{}
+	}
+	p.Environments[env] = want
+	c.Projects[project] = p
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return "", "", err

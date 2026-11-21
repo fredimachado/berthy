@@ -36,8 +36,6 @@ import (
 	"time"
 )
 
-var envPattern = agentclient.EnvPattern
-
 func Run(args []string, out, errout io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errout, "usage: berthy <setup|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
@@ -316,7 +314,7 @@ func Run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Load(path, env)
+	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: "."})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

@@ -16,11 +16,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"berthy/internal/manifest"
 )
 
 // ErrInvalidResponse is an answer of the agent that cannot be used: unreadable or over 1 MiB.
@@ -32,10 +34,19 @@ type Environment struct {
 	TokenEnv string `json:"token_env"`
 }
 
-// Config is the CLI configuration file: where each environment's agent is and which environment variable holds its token.
-type Config struct {
+// Project is one project's entry of the CLI configuration: its environments.
+type Project struct {
 	Environments map[string]Environment `json:"environments"`
 }
+
+// Config is the CLI configuration file: each project's environments, where each one's agent is and which environment variable
+// holds its token.
+type Config struct {
+	Projects map[string]Project `json:"projects"`
+}
+
+// ErrEarlierLayout is the refusal of a CLI configuration written as environments.<environment>, before projects.
+var ErrEarlierLayout = errors.New("the CLI configuration is in the layout of an earlier release: run berthy setup again, or write it as projects.<project>.environments.<environment>")
 
 // ParseConfig reads the configuration file's content: unknown fields and trailing data are refused. The errors never repeat
 // any value of the file.
@@ -44,6 +55,12 @@ func ParseConfig(b []byte) (Config, error) {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&c); err != nil {
+		var earlier struct {
+			Environments json.RawMessage `json:"environments"`
+		}
+		if json.Unmarshal(b, &earlier) == nil && earlier.Environments != nil {
+			return Config{}, ErrEarlierLayout
+		}
 		return Config{}, errors.New("invalid config")
 	}
 	if err := d.Decode(&struct{}{}); err != io.EOF {
@@ -54,7 +71,8 @@ func ParseConfig(b []byte) (Config, error) {
 
 // Target is one environment's agent as the configuration names it.
 type Target struct {
-	Env string
+	Project string
+	Env     string
 	// Base is the agent's URL.
 	Base *url.URL
 	// Prefix is the path of the environment's API, with a trailing slash.
@@ -82,9 +100,17 @@ func ConfigPath(flag string) (string, error) {
 	return filepath.Join(dir, "berthy", "config.json"), nil
 }
 
-// Load reads the configuration file and returns the target of env, with the token from the variable the file names. The
-// errors say what is wrong without repeating any value of the file.
-func Load(path, env string) (*Target, error) {
+// Selector says which environment a command means.
+type Selector struct {
+	Project     string // --project; empty when not given
+	Environment string // -e
+	ManifestDir string // where berthy.yml is looked for when Project is empty; empty means do not look
+}
+
+// Resolve reads the configuration file and returns the target the selector means, with the token from the variable the file
+// names. The project is the selector's, else the one of the berthy.yml in ManifestDir, else the only project that has the
+// environment. The errors name projects and environments and never repeat any other value of the file.
+func Resolve(path string, sel Selector) (*Target, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config %s", path)
@@ -93,19 +119,53 @@ func Load(path, env string) (*Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	target, ok := c.Environments[env]
-	if !ok || target.TokenEnv == "" {
+	project, env := sel.Project, sel.Environment
+	if project == "" && sel.ManifestDir != "" {
+		name, ok, err := manifest.ProjectName(sel.ManifestDir)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read the project of %s: give --project", filepath.Join(sel.ManifestDir, "berthy.yml"))
+		}
+		if ok {
+			project = name
+		}
+	}
+	var entry Environment
+	switch {
+	case project != "":
+		var ok bool
+		if entry, ok = c.Projects[project].Environments[env]; !ok {
+			return nil, fmt.Errorf("no environment %s for project %s in the CLI configuration", env, project)
+		}
+	default:
+		var have []string
+		for name, p := range c.Projects {
+			if _, ok := p.Environments[env]; ok {
+				have = append(have, name)
+			}
+		}
+		slices.Sort(have)
+		switch len(have) {
+		case 0:
+			return nil, errors.New("unknown environment or missing token_env")
+		case 1:
+			project = have[0]
+			entry = c.Projects[project].Environments[env]
+		default:
+			return nil, fmt.Errorf("environment %s exists in several projects (%s): give --project, or run the command in the project's directory", env, strings.Join(have, ", "))
+		}
+	}
+	if entry.TokenEnv == "" {
 		return nil, errors.New("unknown environment or missing token_env")
 	}
-	token := os.Getenv(target.TokenEnv)
+	token := os.Getenv(entry.TokenEnv)
 	if token == "" {
 		return nil, errors.New("token environment variable is empty")
 	}
-	u, err := url.Parse(target.URL)
+	u, err := url.Parse(entry.URL)
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("invalid agent URL")
 	}
-	return &Target{Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/", Token: token}, nil
+	return &Target{Project: project, Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/", Token: token}, nil
 }
 
 // NewHTTPClient is the HTTP client for the agent: no proxy, short connect and header limits, and no redirects.
@@ -173,9 +233,6 @@ func PrintableMessage(s string) bool {
 	}
 	return true
 }
-
-// EnvPattern is what an environment name looks like.
-var EnvPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // WithTimeout returns c with its request limit, and the wait for response headers, set to d: for a request the agent holds open.
 func WithTimeout(c *http.Client, d time.Duration) *http.Client {
