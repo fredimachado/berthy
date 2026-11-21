@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -523,6 +524,8 @@ func TestReserveFailsWhenAnotherStateCannotBeRead(t *testing.T) {
 func TestOpenRefusesTwoEnvironmentsThatHoldOneName(t *testing.T) {
 	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
 	sh, f := hostedFile(t, a, b)
+	var workerLogs atomic.Int32
+	sh.Log = func(string) { workerLogs.Add(1) }
 	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
 	for _, config := range f.Configs() {
 		s, err := state.Open(config.StateDir, config.KeyFile, config.Environment)
@@ -540,6 +543,9 @@ func TestOpenRefusesTwoEnvironmentsThatHoldOneName(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "environments one/prod and two/prod both hold compose shared") {
 		t.Fatalf("open: %v", err)
+	}
+	if workerLogs.Load() != 0 {
+		t.Fatalf("worker ran before the conflicting states were rejected")
 	}
 	for _, config := range f.Configs() {
 		s, err := state.Open(config.StateDir, config.KeyFile, config.Environment)
