@@ -46,7 +46,13 @@ if [ -f "$RUN/env.sh" ]; then . "$RUN/env.sh"; fi
 
 # d ARGS: the docker CLI against the isolated daemon. DOCKER_CONFIG is the harness's own (empty) config, so the CLI never
 # asks the credential helper that the user's Windows-side config names, which does not exist in WSL.
-d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" "$@"; }
+d() {
+  if [ -n "${D_TIMEOUT:-}" ]; then
+    DOCKER_CONFIG=$E2E_ROOT/docker-config timeout --kill-after=1s "${D_TIMEOUT}s" "$DOCKER_BIN" --host "unix://$SOCK" "$@"
+  else
+    DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" "$@"
+  fi
+}
 
 # record_deploy PROJECT ENV [ARGS]: journal names before a deploy can create them, including on interruption.
 record_deploy() (
@@ -226,19 +232,52 @@ create_environment_network() (
   d network create --driver overlay --attachable --label "berthy-e2e.fixture=$FIXTURE_ID" "$name" >/dev/null || return 1
 )
 
+# start_network_events gives cleanup a child it can always stop and reap.
+start_network_events() {
+  DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" events --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter type=network --filter "network=$1" --filter event=disconnect --filter event=destroy --format '{{.Action}}' > "$2" 2>> "$3" &
+  events_pid=$!
+}
+
 # remove_environment_network waits on Docker events so an attached endpoint can detach before a retry.
 remove_environment_network() (
-  local id=$1 error_file events_fd events_pid event remaining deadline listing removed last_error=
-  error_file=$(mktemp "$E2E_ROOT/network-error.XXXXXX") || return 1
-  deadline=$((SECONDS + 120))
-  exec {events_fd}< <(d events --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter type=network --filter "network=$id" --filter event=disconnect --filter event=destroy --format '{{.Action}}' 2>>"$error_file")
-  events_pid=$!
-  trap 'kill "$events_pid" 2>/dev/null || :; wait "$events_pid" 2>/dev/null || :; rm -f "$error_file"' EXIT
+  local id=$1 limit=${2:-120} work events_fd events_pid event remaining deadline listing removed last_error= status
+  work=$(mktemp -d "$E2E_ROOT/network-wait.XXXXXX") || return 1
+  mkfifo "$work/events" || { rmdir "$work"; return 1; }
+  trap '[ -z "${events_pid:-}" ] || { kill -KILL "$events_pid" 2>/dev/null || :; wait "$events_pid" 2>/dev/null || :; }; rm -f "$work/events" "$work/error"; rmdir "$work"' EXIT
+  deadline=$((SECONDS + limit))
+  exec {events_fd}<>"$work/events"
+  start_network_events "$id" "$work/events" "$work/error"
+  network_call() {
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -gt 0 ] || return 124
+    D_TIMEOUT=$remaining d "$@"
+  }
+  list_networks() {
+    if listing=$(network_call network ls --no-trunc --format '{{.ID}}' 2>"$work/error"); then return 0; else status=$?; fi
+    local list_error
+    list_error=$(cat "$work/error")
+    [ -z "$list_error" ] || last_error=$list_error
+    if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+      echo "network $id cleanup timed out: $last_error" >&2
+    else
+      echo "network $id cleanup could not list networks: $last_error" >&2
+    fi
+    return 1
+  }
   while :; do
-    : > "$error_file"
+    : > "$work/error"
     removed=0
-    if d network rm "$id" >/dev/null 2>"$error_file"; then removed=1; else last_error=$(cat "$error_file"); fi
-    listing=$(d network ls --no-trunc --format '{{.ID}}') || return 1
+    if network_call network rm "$id" > /dev/null 2>"$work/error"; then
+      removed=1
+    else
+      status=$?
+      last_error=$(cat "$work/error")
+      if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+        echo "network $id cleanup timed out: $last_error" >&2
+        return 1
+      fi
+    fi
+    list_networks || return 1
     if ! printf '%s\n' "$listing" | grep -Fxq -- "$id"; then return 0; fi
     if [ "$removed" = 0 ] && ! printf '%s\n' "$last_error" | grep -Eqi 'in use|active endpoints'; then
       echo "network $id removal failed: $last_error" >&2
@@ -250,8 +289,11 @@ remove_environment_network() (
         echo "network $id cleanup timed out: $last_error" >&2
         return 1
       fi
-      [ "$event" != destroy ] || return 0
-      if [ "$event" = disconnect ] && [ "$removed" = 0 ]; then break; fi
+      if [ "$event" = destroy ] || [ "$event" = disconnect ]; then
+        list_networks || return 1
+        if ! printf '%s\n' "$listing" | grep -Fxq -- "$id"; then return 0; fi
+        break
+      fi
     done
   done
 )
