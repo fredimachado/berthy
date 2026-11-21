@@ -303,14 +303,31 @@ YML
 }
 
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
-# containers and volumes labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes named $PROJECT-* or in a
-# compose project $PROJECT or $PROJECT-*. Nothing else on the daemon matches these filters.
+# containers labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes and Compose projects owned by the
+# hosted environments in this fixture.
 purge_fixture() {
-  local i v
-  local -a ids
+  local i v f project env state dir
+  local -a ids states
+  local scopes="$PROJECT-$ENVN" projects=""
   stop_agent
   stop_fakes
-
+  states=("$RUN/state")
+  for f in "$RUN"/environments.d/*.json; do
+    [ -f "$f" ] || continue
+    IFS=$'\t' read -r project env state < <(jq -r 'select((.project | type) == "string" and (.environment | type) == "string" and (.state_dir | type) == "string") | [.project, .environment, .state_dir] | @tsv' "$f" 2>/dev/null) || continue
+    if [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ && $env =~ ^[a-z0-9][a-z0-9-]*$ && $state == "$RUN"/* ]]; then
+      scopes+=$'\n'"$project-$env"
+      states+=("$state")
+    fi
+  done
+  for state in "${states[@]}"; do
+    for dir in "$state"/compose/*; do
+      [ -d "$dir" ] || continue
+      project=${dir##*/}
+      case $project in .*|*.next|*.old) continue ;; esac
+      projects+=$'\n'"$project"
+    done
+  done
   mapfile -t ids < <(d service ls -q --filter label=berthy.environment=$ENVN)
   if [ ${#ids[@]} -gt 0 ]; then
     d service rm "${ids[@]}" >/dev/null
@@ -336,26 +353,37 @@ purge_fixture() {
     awk -v p="$REG/e2e/" 'index($1, p) == 1 { if ($2 == "<none>") print $1 "@" $3; else print $1 ":" $2 }' |
     while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
 
-  # Compose projects of the harness are named $PROJECT-* (app <name>). Berthy labels nothing on them, so their containers and
-  # networks are found by the Compose project label, and only the $PROJECT-* prefix is removed.
+  # Compose objects are selected by their project label and the fixture's stored project directories.
   d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' |
-    awk -v p="$PROJECT" 'index($2, p "-") == 1 { print $1 }' |
+    awk -v projects="$projects" 'BEGIN { n = split(projects, p, "\n"); for (i = 1; i <= n; i++) if (p[i] != "") owned[p[i]] = 1 } owned[$2] { print $1 }' |
     while read -r c; do d rm -f "$c" >/dev/null 2>&1; done
   d network ls --filter label=com.docker.compose.project -q |
     while read -r n; do
-      case $(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null) in
-        "$PROJECT"-*) d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2 ;;
-      esac
+      project=$(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null)
+      if [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
+        d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2
+      fi
     done
 
   d volume ls --format '{{.Name}} {{.Labels}}' |
-    awk -v p="$PROJECT" '
-      { hit = index($1, p "-") == 1 || index($1, p "_") == 1
-        n = split($2, labels, ",")
-        for (i = 1; i <= n; i++) {
-          if (labels[i] == "com.docker.compose.project=" p || index(labels[i], "com.docker.compose.project=" p "-") == 1) hit = 1
+    awk -v scopes="$scopes" -v projects="$projects" '
+      BEGIN {
+        n = split(scopes, s, "\n")
+        count = split(projects, p, "\n")
+        for (i = 1; i <= count; i++) if (p[i] != "") owned[p[i]] = 1
+      }
+      {
+        hit = 0; compose = 0
+        count = split($2, labels, ",")
+        for (i = 1; i <= count; i++) {
+          if (index(labels[i], "com.docker.compose.project=") == 1) {
+            compose = 1
+            if (owned[substr(labels[i], length("com.docker.compose.project=") + 1)]) hit = 1
+          }
         }
-        if (hit) print $1 }' |
+        if (!compose) for (i = 1; i <= n; i++) if (index($1, s[i] "_") == 1) hit = 1
+        if (hit) print $1
+      }' |
     while read -r v; do
       d volume rm "$v" >/dev/null 2>&1 || echo "volume $v is still in use and was kept" >&2
     done
