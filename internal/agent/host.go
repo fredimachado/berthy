@@ -19,7 +19,6 @@ type Host struct {
 	order    []*Runtime
 	claimsMu sync.Mutex
 	leases   map[scope.ID]map[state.Claim]int
-	pending  map[scope.ID]map[state.Claim]bool
 }
 
 // Open opens every hosted environment of the file and wires what they share. When one fails it closes those already opened
@@ -28,7 +27,7 @@ type Host struct {
 // The order is the rule later steps rely on: every state is opened and claimed, then what the environments share is set on
 // every runtime as plain fields, and only then may Start run a worker. Nothing is written to a runtime after Open returns.
 func Open(sh Shared, f File) (*Host, error) {
-	h := &Host{runtimes: map[scope.ID]*Runtime{}, leases: map[scope.ID]map[state.Claim]int{}, pending: map[scope.ID]map[state.Claim]bool{}}
+	h := &Host{runtimes: map[scope.ID]*Runtime{}, leases: map[scope.ID]map[state.Claim]int{}}
 	for _, c := range f.Configs() {
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
@@ -61,6 +60,7 @@ func Open(sh Shared, f File) (*Host, error) {
 	}
 	for _, r := range h.order {
 		id := r.Config.ID()
+		r.deployment.Network = r.Config.Network
 		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 			return h.reserveContext(ctx, id, claims)
 		}
@@ -114,7 +114,7 @@ func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.C
 			return nil, deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
 		}
 	}
-	added, err := h.runtimes[id].deployment.Store.AddClaimsForOperation(ctx, deploy.ReservationOperation(ctx), claims)
+	added, err := h.runtimes[id].deployment.Store.AddClaimsNew(ctx, claims)
 	if err != nil {
 		return nil, err
 	}
@@ -131,14 +131,10 @@ func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.C
 	return added, nil
 }
 
-// finish drops one operation's leases. A pending release waits for the last user to confirm it is still eligible.
-func (h *Host) finish(ctx context.Context, id scope.ID, leased, added, eligible []state.Claim) error {
+// finish drops leases and releases confirmed-absent targets only while no operation uses them.
+func (h *Host) finish(ctx context.Context, id scope.ID, leased, candidates, eligible []state.Claim) error {
 	h.claimsMu.Lock()
 	defer h.claimsMu.Unlock()
-	if h.pending[id] == nil {
-		h.pending[id] = map[state.Claim]bool{}
-	}
-	var release []state.Claim
 	seen := map[state.Claim]bool{}
 	for _, claim := range leased {
 		if seen[claim] {
@@ -148,16 +144,15 @@ func (h *Host) finish(ctx context.Context, id scope.ID, leased, added, eligible 
 		if h.leases[id][claim] == 0 {
 			return fmt.Errorf("claim has no lease")
 		}
-		if slices.Contains(added, claim) && slices.Contains(eligible, claim) {
-			h.pending[id][claim] = true
-		}
 		h.leases[id][claim]--
 		if h.leases[id][claim] == 0 {
 			delete(h.leases[id], claim)
-			if h.pending[id][claim] && slices.Contains(eligible, claim) {
-				release = append(release, claim)
-			}
-			delete(h.pending[id], claim)
+		}
+	}
+	var release []state.Claim
+	for _, claim := range eligible {
+		if slices.Contains(candidates, claim) && h.leases[id][claim] == 0 {
+			release = append(release, claim)
 		}
 	}
 	return h.runtimes[id].deployment.Store.ReleaseClaims(ctx, release)

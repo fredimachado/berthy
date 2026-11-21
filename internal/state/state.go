@@ -563,6 +563,25 @@ func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
 	}
 	return out, rows.Err()
 }
+
+// IntentOperations finds operations that journaled a named step in this environment.
+func (s *Store) IntentOperations(ctx context.Context, kind, name string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT i.operation_id FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND i.kind=? AND i.name=?`, s.env, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) AppendEvent(ctx context.Context, id string, e Event) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

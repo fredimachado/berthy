@@ -140,7 +140,7 @@ func (c *Controller) removeCheck(ctx context.Context, actor Actor, req Request) 
 	if len(history) == 0 {
 		return state.Release{}, false, errRemoveNotDeployed
 	}
-	return state.Release{}, true, nil
+	return history[0], true, nil
 }
 
 // removalFor reads what removing req.App would do. Anything that refuses the removal is a blocker of its plan. It changes
@@ -152,6 +152,9 @@ func (c *Controller) removalFor(ctx context.Context, actor Actor, req Request) (
 	}
 	r := &removal{plan: RemovePlan{App: req.App}, gone: gone}
 	if gone {
+		if json.Unmarshal(rel.Manifest, &r.m) == nil {
+			r.app = r.m.Apps[req.App]
+		}
 		return r, nil
 	}
 	if json.Unmarshal(rel.Manifest, &r.m) != nil {
@@ -358,7 +361,9 @@ func removeFailure(err error, fallback Refusal) state.Outcome {
 // runRemove deletes what Berthy created for an app. Its routes and records go first, so nothing is sent to services that
 // are about to disappear; then its services, or its Compose project; then its volumes when asked; and last the state that
 // says the app exists. Every step can be repeated, so an interrupted removal is finished by running it again.
-func (c *Controller) runRemove(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runRemove(ctx context.Context, op state.Operation, actor Actor, req Request) (outcome state.Outcome) {
+	ctx, pending, owner := removalContext(ctx)
+	defer c.finishRemoval(ctx, pending, owner, &outcome)
 	step := func(text string) {
 		if data, err := json.Marshal(map[string]string{"step": text}); err == nil {
 			_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: data})
@@ -375,11 +380,68 @@ func (c *Controller) runRemove(ctx context.Context, op state.Operation, actor Ac
 		return removeFailure(Refusal(r.plan.Blockers[0]), errRemovePreflight)
 	}
 	if r.gone {
+		var claims []state.Claim
+		switch r.app.Kind {
+		case "image":
+			for role, config := range r.app.Roles {
+				name := config.Service
+				if name == "" {
+					name = r.m.ServiceName(c.Environment, req.App, role)
+				}
+				claims = append(claims, state.Claim{Kind: state.ClaimService, Name: name})
+			}
+			if req.Volumes {
+				for _, name := range declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) }) {
+					claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: name})
+				}
+			}
+		case "compose":
+			project := r.m.ComposeProject(c.Environment, req.App)
+			claims = append(claims, state.Claim{Kind: state.ClaimComposeProject, Name: project})
+			prior, err := c.composeRemovalTargets(ctx, project, req.Volumes)
+			if err != nil {
+				return state.Outcome{State: "failed", Err: string(errRemoveState)}
+			}
+			claims = append(claims, prior...)
+		}
+		c.settle(ctx, claims)
 		step("app " + req.App + " is already removed")
 		return state.Outcome{State: "succeeded"}
 	}
 	journal := 0
 	return c.removeApp(ctx, op.ID, req, r, step, &journal)
+}
+
+// composeRemovalTargets reads names a previous down inventoried, including networks no longer present in Docker.
+func (c *Controller) composeRemovalTargets(ctx context.Context, project string, volumes bool) ([]state.Claim, error) {
+	ids, err := c.Store.IntentOperations(ctx, composeDownKind, project)
+	if err != nil {
+		return nil, err
+	}
+	var claims []state.Claim
+	for _, id := range ids {
+		intents, err := c.Store.Intents(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, intent := range intents {
+			if intent.Kind != composeDownKind || intent.Name != project {
+				continue
+			}
+			var receipt struct {
+				Targets []state.Claim `json:"targets"`
+			}
+			if err := json.Unmarshal(intent.Receipt, &receipt); err != nil {
+				return nil, err
+			}
+			for _, claim := range receipt.Targets {
+				if claim.Kind == state.ClaimNetwork || claim.Kind == state.ClaimComposeProject || (volumes && claim.Kind == state.ClaimVolume) {
+					claims = append(claims, claim)
+				}
+			}
+		}
+	}
+	return claims, nil
 }
 
 // removeApp carries out a removal that has been planned and has no blocker. journal numbers the steps it records, so a
@@ -406,6 +468,11 @@ func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r 
 		if err := c.removeProject(ctx, opID, r.plan.Project, req.Volumes, journal); err != nil {
 			return removeFailure(err, errRemoveCompose)
 		}
+		prior, err := c.composeRemovalTargets(ctx, r.plan.Project, req.Volumes)
+		if err != nil {
+			return state.Outcome{State: "failed", Err: string(errRemoveState)}
+		}
+		c.settle(ctx, prior)
 		step("brought down Compose project " + r.plan.Project)
 		for _, name := range r.plan.Volumes {
 			step("removed volume " + name)
@@ -447,7 +514,7 @@ func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r 
 						return removeFailure(err, errRemoveVolume)
 					}
 					reserved.added = reserved.leased
-					c.finishReservation(ctx, reserved, false)
+					c.finishReservation(ctx, reserved)
 				}
 			}
 		}
@@ -564,7 +631,7 @@ func (c *Controller) removeVolume(ctx context.Context, name string, step func(st
 			return err
 		}
 		reserved.added = reserved.leased
-		defer c.finishReservation(ctx, reserved, false)
+		defer c.finishReservation(ctx, reserved)
 	} else if err := c.notForeign(ctx, claim); err != nil {
 		return err
 	}
@@ -621,20 +688,36 @@ func (c *Controller) removeProject(ctx context.Context, opID, project string, vo
 	if err = c.Store.MarkStep(ctx, opID, ordinal, "issued", json.RawMessage(`{}`)); err != nil {
 		return errRemoveJournal
 	}
-	if err = c.composeDown(ctx, project, volumes); err != nil {
-		_ = c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":false}`))
+	var targets []state.Claim
+	receipt := func(ok bool) json.RawMessage {
+		data, _ := json.Marshal(struct {
+			OK      bool          `json:"ok"`
+			Targets []state.Claim `json:"targets,omitempty"`
+		}{ok, targets})
+		return data
+	}
+	err = c.composeDownWithTargets(ctx, project, volumes, func(claims []state.Claim) error {
+		targets = claims
+		return c.Store.MarkStep(ctx, opID, ordinal, "issued", receipt(false))
+	})
+	if err != nil {
+		_ = c.Store.MarkStep(ctx, opID, ordinal, "finished", receipt(false))
 		var refusal Refusal
 		if errors.As(err, &refusal) {
 			return err
 		}
 		return errRemoveCompose
 	}
-	return c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":true}`))
+	return c.Store.MarkStep(ctx, opID, ordinal, "finished", receipt(true))
 }
 
 // composeDown runs `compose down --remove-orphans`, with --volumes when asked, confirms no container of the project is
 // left, and deletes the project's working directory.
 func (c *Controller) composeDown(ctx context.Context, project string, volumes bool) error {
+	return c.composeDownWithTargets(ctx, project, volumes, nil)
+}
+
+func (c *Controller) composeDownWithTargets(ctx context.Context, project string, volumes bool, record func([]state.Claim) error) error {
 	if err := c.composeReady(); err != nil {
 		return err
 	}
@@ -686,12 +769,17 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 			return err
 		}
 		reserved.added = reserved.leased
-		defer c.finishReservation(ctx, reserved, false)
+		defer c.finishReservation(ctx, reserved)
 	} else {
 		for _, claim := range targets {
 			if err := c.notForeign(ctx, claim); err != nil {
 				return err
 			}
+		}
+	}
+	if record != nil {
+		if err := record(targets); err != nil {
+			return errRemoveJournal
 		}
 	}
 	args := []string{"down", "--remove-orphans"}
@@ -729,9 +817,8 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	return os.RemoveAll(c.composeDir(project))
 }
 
-// recoverRemove finishes what an interrupted removal journaled: the service deletions and the Compose down. Whatever it
-// cannot finish stays for the next removal, which repeats every step. The operation ends interrupted either way, and the
-// app stays applied until a removal completes.
+// recoverRemove finishes journaled service deletions. Compose teardown and claims stay for the next removal, which
+// reserves its targets before retrying. The app stays applied until a removal completes.
 func (c *Controller) recoverRemove(ctx context.Context, op state.Operation, intents []state.Intent) error {
 	for _, i := range intents {
 		if i.Phase == "finished" {
@@ -743,13 +830,8 @@ func (c *Controller) recoverRemove(ctx context.Context, op state.Operation, inte
 				_ = c.Store.MarkStep(ctx, op.ID, i.Ordinal, "finished", json.RawMessage(`{}`))
 			}
 		case composeDownKind:
-			var d struct {
-				Project string `json:"project"`
-				Volumes bool   `json:"volumes"`
-			}
-			if json.Unmarshal(i.Desired, &d) == nil && d.Project != "" && c.composeDown(ctx, d.Project, d.Volumes) == nil {
-				_ = c.Store.MarkStep(ctx, op.ID, i.Ordinal, "finished", json.RawMessage(`{"ok":true}`))
-			}
+			// A later removal reserves the project before repeating its destructive down.
+
 		}
 	}
 	interrupted := errRemoveInterrupted

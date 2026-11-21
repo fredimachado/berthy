@@ -26,9 +26,10 @@ type ApplyResult struct {
 }
 
 // ApplySettings applies the environment scope of a manifest: the registries, destinations, state backup, telemetry, peers,
-// alerts and probes that name no app, and the rest the manifest sets for the environment. It deploys no app. It is refused for a manifest the agent would refuse to deploy, for another project than the one an app runs, and
+// alerts and probes that name no app, and the rest the manifest sets for the environment. It deploys no app and starts no
+// operation. It is refused for a manifest the agent would refuse to deploy, for another project than the one an app runs, and
 // with state.ErrConflict while anything holds the environment lock. A dry run changes nothing.
-func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRequest) (out ApplyResult, retErr error) {
+func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRequest) (ApplyResult, error) {
 	if c.Store == nil {
 		return ApplyResult{}, errors.New("state unavailable")
 	}
@@ -66,25 +67,6 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	if req.DryRun {
 		return result, nil
 	}
-	stateActor := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
-	op, err := c.Store.BeginApply(ctx, stateActor)
-	if err != nil {
-		return ApplyResult{}, err
-	}
-	ctx = reservationContext(ctx, op.ID)
-	succeeded := false
-	defer func() {
-		finishCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		outcome := state.Outcome{State: "failed"}
-		if succeeded {
-			outcome.State = "succeeded"
-		}
-		if err := c.finish(finishCtx, op, outcome, target{}); err != nil && retErr == nil {
-			out = ApplyResult{}
-			retErr = err
-		}
-	}()
 	if c.Reserve != nil {
 		claims, err := c.reserveNames(ctx, namesReq)
 		if err != nil {
@@ -93,17 +75,16 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.finishReservation(settleCtx, claims, !succeeded)
+			c.dropReservation(settleCtx, claims)
 		}()
 	}
 	st, err := state.NewSettings(req.Manifest, req.Commit, req.Modified)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	err = c.Store.ApplySettingsOwned(ctx, stateActor, *st, req.Manifest.Protected, op.ID)
+	err = c.Store.ApplySettings(ctx, state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}, *st, req.Manifest.Protected)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	succeeded = true
 	return result, nil
 }

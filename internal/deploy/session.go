@@ -256,12 +256,12 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 		return publicOr(err, errRunPrepare)
 	}
 	// Sessions have no operation journal; a crash can leave a reserved claim behind (issue #46).
-	transferred, touched := false, false
+	transferred := false
 	defer func() {
 		if !transferred {
 			capCtx, done := captureContext(ctx)
 			defer done()
-			c.finishReservation(capCtx, reserved, !touched)
+			c.dropReservation(capCtx, reserved)
 		}
 	}()
 	limit := t.Timeout
@@ -279,7 +279,6 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 	if err != nil {
 		return errRunPrepare
 	}
-	touched = true
 	container, err := e.CreateContainer(ctx, "berthy-session-"+c.id().Slug()+"-"+id, spec)
 	if err != nil || container == "" {
 		return errors.New("interactive session unavailable")
@@ -345,7 +344,7 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 		defer func() {
 			capCtx, done := captureContext(ctx)
 			defer done()
-			c.finishReservation(capCtx, reserved, false)
+			c.dropReservation(capCtx, reserved)
 		}()
 		return remove(ctx)
 	}

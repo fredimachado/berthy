@@ -79,11 +79,10 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 		return jobs.Outcome{}, err
 	}
 	// Jobs have no operation journal; a crash can leave a reserved claim behind (issue #46).
-	touched := false
 	defer func() {
 		capCtx, done := captureContext(ctx)
 		defer done()
-		c.finishReservation(capCtx, reserved, !touched)
+		c.dropReservation(capCtx, reserved)
 	}()
 	labels := c.id().Labels()
 	labels["berthy."+kind], labels["berthy.oneoff"] = name, kind
@@ -95,7 +94,6 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
-	touched = true
 	cid, err := e.CreateContainer(ctx, fmt.Sprintf("berthy-%s-%s-%s", kind, c.id().Slug(), id), spec)
 	if err != nil || cid == "" {
 		return jobs.Outcome{}, errors.New("job container unavailable")

@@ -386,3 +386,27 @@ func TestOneOffReservesMountsBeforePullingImage(t *testing.T) {
 		t.Fatalf("called=%v pulls=%d outcome=%+v err=%v", called, docker.pulls, out, err)
 	}
 }
+
+type panicImageEngine struct{ *jobFake }
+
+func (*panicImageEngine) InspectImage(context.Context, string) (engine.Image, error) {
+	panic("image inspection panic")
+}
+func TestImagePreparationPanicDropsTheLease(t *testing.T) {
+	c, f := jobFixture(t)
+	c.Engine = &panicImageEngine{f}
+	finished := 0
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { return claims, nil }
+	c.FinishReservation = func(_ context.Context, leased, added, eligible []state.Claim) error { finished++; return nil }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("no panic")
+			}
+		}()
+		_, _ = c.RunJob(context.Background(), imageJobManifest(), "job", webJob, 1)
+	}()
+	if finished != 1 {
+		t.Fatalf("lease finish calls: %d", finished)
+	}
+}

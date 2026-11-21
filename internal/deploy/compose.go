@@ -801,7 +801,7 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	defer func() {
 		settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		c.finishOperationReservation(settleCtx, reserved, op.ID, outcome.State)
+		c.dropReservation(settleCtx, reserved)
 	}()
 	var reserve func([]state.Claim) error
 	if c.Reserve != nil {
@@ -1133,6 +1133,9 @@ func (c *Controller) composeNamesAt(ctx context.Context, dir, project string, ma
 func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
 	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
 	for _, k := range sortedKeys(cfg.Volumes) {
+		if managedNetworksOnly && cfg.Volumes[k].external() {
+			continue
+		}
 		if cfg.Volumes[k].Name == "" {
 			return nil, errComposeConfig
 		}

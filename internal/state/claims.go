@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 )
 
@@ -43,21 +42,11 @@ func (s *Store) AddClaims(ctx context.Context, claims []Claim) error {
 
 // AddClaimsNew adds claims and returns only those inserted by this transaction.
 func (s *Store) AddClaimsNew(ctx context.Context, claims []Claim) ([]Claim, error) {
-	return s.AddClaimsForOperation(ctx, "", claims)
-}
-
-// AddClaimsForOperation journals inserted claims in the same transaction as their reservation.
-func (s *Store) AddClaimsForOperation(ctx context.Context, opID string, claims []Claim) ([]Claim, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if opID != "" {
-		if err := owned(ctx, tx, s.env, opID); err != nil {
-			return nil, err
-		}
-	}
 	var added []Claim
 	for _, c := range claims {
 		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO claims(environment,kind,name) VALUES(?,?,?)`, s.env, c.Kind, c.Name)
@@ -70,32 +59,6 @@ func (s *Store) AddClaimsForOperation(ctx context.Context, opID string, claims [
 		}
 		if n != 0 {
 			added = append(added, c)
-		}
-	}
-	if opID != "" && len(added) > 0 {
-		var ordinal int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(ordinal),999999)+1 FROM intents WHERE operation_id=? AND kind='claims'`, opID).Scan(&ordinal); err != nil {
-			return nil, err
-		}
-		raw, err := json.Marshal(added)
-		if err != nil {
-			return nil, err
-		}
-		before, err := s.seal(intentRecord(opID, ordinal, "before"), nil)
-		if err != nil {
-			return nil, err
-		}
-		desired, err := s.seal(intentRecord(opID, ordinal, "desired"), raw)
-		if err != nil {
-			return nil, err
-		}
-		receipt, err := s.seal(intentRecord(opID, ordinal, "receipt"), []byte(`{}`))
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, opID, ordinal, "claims", "", "", "", "", 0, 0, before, desired, "intent", receipt)
-		if err != nil {
-			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

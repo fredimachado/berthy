@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -606,8 +607,8 @@ func TestLeaseKeepsClaimUntilConcurrentUserFinishes(t *testing.T) {
 	if err = h.finish(ctx, id, []state.Claim{claim}, joined, []state.Claim{claim}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.reserve(other, []state.Claim{claim}); err != nil {
-		t.Fatalf("claim remained after last lease: %v", err)
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("lease end released the claim")
 	}
 }
 
@@ -719,7 +720,152 @@ func TestDeployFailureKeepsVolumeWhileConcurrentJobUsesIt(t *testing.T) {
 	if duringErr == nil {
 		t.Fatal("another environment took the volume while the job held it")
 	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("job end released the claim")
+	}
+}
+
+func TestRemovalDoesNotReleaseAnActivelyLeasedClaim(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	other := scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, id, other)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shared"}
+	added, err := h.reserve(id, []state.Claim{claim})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.finish(ctx, id, nil, []state.Claim{claim}, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("removed while leased")
+	}
+	if err = h.finish(ctx, id, []state.Claim{claim}, added, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("lease end released claim")
+	}
+	if err = h.finish(ctx, id, nil, []state.Claim{claim}, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = h.reserve(other, []state.Claim{claim}); err != nil {
-		t.Fatalf("claim remained after the job finished: %v", err)
+		t.Fatalf("sweep: %v", err)
+	}
+}
+
+type absentNetworkLeaseEngine struct{ *deployJobLeaseEngine }
+
+func (*absentNetworkLeaseEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{}, &engine.StatusError{Code: 404}
+}
+func TestDestroySweepKeepsTheNetworkAndActiveLeases(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	other := scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, id, other)
+	f.Environments[0].Network = "one-prod-net"
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	c := h.runtimes[id].deployment
+	c.Engine = &absentNetworkLeaseEngine{&deployJobLeaseEngine{}}
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shared"}
+	added, err := h.reserve(id, []state.Claim{claim})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroy := func(request string) {
+		t.Helper()
+		op, _, err := c.Admit(ctx, deploy.Actor{ID: "admin", Admin: true}, deploy.Request{RequestID: request, Kind: "destroy", Confirm: id.Environment})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		done, err := c.Store.Operation(ctx, op.ID)
+		if err != nil || done.State != "succeeded" {
+			t.Fatalf("destroy: %+v %v", done, err)
+		}
+	}
+	destroy("first")
+	held, err := c.Store.Claims(ctx)
+	network := state.Claim{Kind: state.ClaimNetwork, Name: "one-prod-net"}
+	if err != nil || !slices.Contains(held, claim) || !slices.Contains(held, network) {
+		t.Fatalf("claims with lease: %v %v", held, err)
+	}
+	if err = h.finish(ctx, id, []state.Claim{claim}, added, nil); err != nil {
+		t.Fatal(err)
+	}
+	destroy("second")
+	held, err = c.Store.Claims(ctx)
+	if err != nil || slices.Contains(held, claim) || !slices.Contains(held, network) {
+		t.Fatalf("claims after lease: %v %v", held, err)
+	}
+}
+
+func (e *deployJobLeaseEngine) RemoveVolume(context.Context, string) error {
+	return &engine.StatusError{Code: 404}
+}
+func TestRepeatedRemoveReleasesClaimAfterLeaseEnds(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	sh, f := hostedFile(t, id)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	c := h.runtimes[id].deployment
+	c.Engine = &deployJobLeaseEngine{}
+	m := manifest.Manifest{Project: "one", Apps: map[string]manifest.App{"web": {Kind: "image", Roles: map[string]manifest.Role{"web": {Volumes: []string{"shared:/data"}}}}}}
+	op, _, err := c.Store.Admit(ctx, state.Admission{RequestID: "seed", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(m)
+	if err = c.Store.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "digest", Manifest: raw}}); err != nil {
+		t.Fatal(err)
+	}
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "one-prod_shared"}
+	added, err := h.reserve(id, []state.Claim{claim})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove := func(request string) {
+		t.Helper()
+		op, _, err := c.Admit(ctx, deploy.Actor{ID: "admin", Admin: true}, deploy.Request{RequestID: request, Kind: "remove", App: "web", Volumes: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		done, err := c.Store.Operation(ctx, op.ID)
+		if err != nil || done.State != "succeeded" {
+			t.Fatalf("remove: %+v %v", done, err)
+		}
+	}
+	remove("first")
+	held, err := c.Store.Claims(ctx)
+	if err != nil || !slices.Contains(held, claim) {
+		t.Fatalf("lease not held: %v %v", held, err)
+	}
+	if err = h.finish(ctx, id, []state.Claim{claim}, added, nil); err != nil {
+		t.Fatal(err)
+	}
+	remove("second")
+	held, err = c.Store.Claims(ctx)
+	if err != nil || slices.Contains(held, claim) {
+		t.Fatalf("claim after repeated remove: %v %v", held, err)
 	}
 }

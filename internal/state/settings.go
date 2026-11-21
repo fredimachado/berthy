@@ -73,15 +73,6 @@ func (s *Store) putSettings(ctx context.Context, tx *sql.Tx, st Settings, operat
 // ApplySettings makes st the environment's settings, as berthy apply does, and audits it as apply. It is refused with
 // ErrConflict while anything holds the environment lock. protected makes the environment's protection permanent, as a deploy of a protected manifest does.
 func (s *Store) ApplySettings(ctx context.Context, actor Actor, st Settings, protected bool) error {
-	return s.applySettings(ctx, actor, st, protected, "")
-}
-
-// ApplySettingsOwned writes settings while opID holds the environment operation lock.
-func (s *Store) ApplySettingsOwned(ctx context.Context, actor Actor, st Settings, protected bool, opID string) error {
-	return s.applySettings(ctx, actor, st, protected, opID)
-}
-
-func (s *Store) applySettings(ctx context.Context, actor Actor, st Settings, protected bool, opID string) error {
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
@@ -90,12 +81,7 @@ func (s *Store) applySettings(ctx context.Context, actor Actor, st Settings, pro
 		return err
 	}
 	defer tx.Rollback()
-	if opID == "" {
-		err = s.checkNoLock(ctx, tx)
-	} else {
-		err = owned(ctx, tx, s.env, opID)
-	}
-	if err != nil {
+	if err = s.checkNoLock(ctx, tx); err != nil {
 		return err
 	}
 	if err = s.putSettings(ctx, tx, st, ""); err != nil {
@@ -106,10 +92,8 @@ func (s *Store) applySettings(ctx context.Context, actor Actor, st Settings, pro
 			return err
 		}
 	}
-	if opID == "" {
-		if err = auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "apply"}, "succeeded"); err != nil {
-			return err
-		}
+	if err = auditTx(ctx, tx, s.env, "", Admission{ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "apply"}, "succeeded"); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -133,14 +117,4 @@ func (s *Store) LatestReleases(ctx context.Context) (map[string]Release, error) 
 		out[r.App] = r
 	}
 	return out, rows.Err()
-}
-
-// BeginApply acquires the operation lock before an apply reserves Docker names.
-func (s *Store) BeginApply(ctx context.Context, actor Actor) (Operation, error) {
-	id, err := randomID()
-	if err != nil {
-		return Operation{}, err
-	}
-	op, _, err := s.Admit(ctx, Admission{RequestID: "apply-" + id, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: "apply", PublicRequest: []byte(`{}`)})
-	return op, err
 }

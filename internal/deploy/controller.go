@@ -143,6 +143,7 @@ type Controller struct {
 	Engine            Engine
 	Store             *state.Store
 	Environment       string
+	Network           string
 	// Project is the project this hosted environment belongs to. A deploy or an apply of a manifest of another project is
 	// refused. Empty means no check, which only tests build.
 	Project   string
@@ -531,7 +532,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 // recorded the outcome and told the observer, so whoever closes the store has to wait for it first. run gets the context that
 // carries the operation's cancel state, which is registered before the goroutine starts so that a cancel finds it.
 func (c *Controller) start(opID string, run func(context.Context)) {
-	ctx := reservationContext(c.register(opID), opID)
+	ctx := c.register(opID)
 	c.running.Add(1)
 	go func() {
 		defer c.running.Done()
@@ -555,9 +556,13 @@ func (c *Controller) Drain(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+type recoveringKey struct{}
+
 func (c *Controller) Recover(ctx context.Context) error {
 	c.recoverMu.Lock()
 	defer c.recoverMu.Unlock()
+	ctx = context.WithValue(ctx, recoveringKey{}, true)
 	if c.Store == nil || c.Engine == nil {
 		return errors.New("recovery unavailable")
 	}
@@ -572,33 +577,6 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var added []state.Claim
-	for _, intent := range intents {
-		if intent.Kind != "claims" {
-			continue
-		}
-		var claims []state.Claim
-		if err := json.Unmarshal(intent.Desired, &claims); err != nil {
-			return err
-		}
-		added = append(added, claims...)
-	}
-	recovered := reservation{leased: added, added: added}
-	if len(added) > 0 && c.Reserve != nil {
-		recovered, err = c.reserveClaims(reservationContext(ctx, ""), added)
-		if err != nil {
-			return err
-		}
-		recovered.added = added
-	}
-	defer func() {
-		final, err := c.Store.Operation(ctx, op.ID)
-		if err == nil && final.State != "running" && final.State != "recovery_required" {
-			c.finishReservation(ctx, recovered, false)
-		} else if c.FinishReservation != nil {
-			_ = c.FinishReservation(ctx, recovered.leased, nil, nil)
-		}
-	}()
 	if (op.Kind == "remove" || op.Kind == "destroy") && op.State == "running" {
 		return c.recoverRemove(ctx, op, intents)
 	}
@@ -1125,17 +1103,6 @@ func (c *Controller) checkNames(ctx context.Context, req Request) error {
 	return nil
 }
 
-type reservationOperationKey struct{}
-
-// ReservationOperation returns the journal owner attached to a reservation context.
-func ReservationOperation(ctx context.Context) string {
-	id, _ := ctx.Value(reservationOperationKey{}).(string)
-	return id
-}
-func reservationContext(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, reservationOperationKey{}, id)
-}
-
 type reservation struct{ leased, added []state.Claim }
 
 func (c *Controller) reserveNames(ctx context.Context, req Request) (reservation, error) {
@@ -1156,86 +1123,7 @@ func (c *Controller) reserveClaims(ctx context.Context, claims []state.Claim) (r
 	return reservation{leased: claims, added: added}, nil
 }
 
-// untouchedClaims identifies names no journaled Docker change could have created or adopted.
-func untouchedClaims(claims []state.Claim, intents []state.Intent) []state.Claim {
-	var untouched []state.Claim
-	for _, claim := range claims {
-		touched := false
-		for _, intent := range intents {
-			switch intent.Kind {
-			case "barrier":
-				touched = true
-			case "compose":
-				touched = true
-			case "restore":
-				if claim.Kind == state.ClaimVolume {
-					touched = true
-				}
-			case "create", "update":
-				if claim.Kind == state.ClaimService && intent.Name == claim.Name {
-					touched = true
-				}
-				if claim.Kind == state.ClaimVolume && intentUsesVolume(intent.Desired, claim.Name) {
-					touched = true
-				}
-			case "oneoff":
-				if claim.Kind == state.ClaimVolume && intentUsesVolume(intent.Desired, claim.Name) {
-					touched = true
-				}
-			}
-			if touched {
-				break
-			}
-		}
-		if !touched {
-			untouched = append(untouched, claim)
-		}
-	}
-	return untouched
-}
-
-func intentUsesVolume(raw json.RawMessage, name string) bool {
-	var value any
-	if json.Unmarshal(raw, &value) != nil {
-		return true
-	}
-	var visit func(any) bool
-	visit = func(v any) bool {
-		switch v := v.(type) {
-		case map[string]any:
-			if v["Source"] == name && v["Type"] == "volume" {
-				return true
-			}
-			for _, x := range v {
-				if visit(x) {
-					return true
-				}
-			}
-		case []any:
-			for _, x := range v {
-				if visit(x) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return visit(value)
-}
-
-func (c *Controller) finishOperationReservation(ctx context.Context, r reservation, opID, outcome string) {
-	if outcome == "recovery_required" {
-		c.dropReservation(ctx, r)
-		return
-	}
-	eligible := c.absentClaims(ctx, r.leased)
-	if outcome != "succeeded" && opID != "" && c.Store != nil {
-		if intents, err := c.Store.Intents(ctx, opID); err == nil {
-			eligible = append(eligible, untouchedClaims(r.leased, intents)...)
-		}
-	}
-	c.finishEligible(ctx, r, eligible)
-}
+// dropReservation ends the in-process lease without releasing any names.
 func (c *Controller) dropReservation(ctx context.Context, r reservation) {
 	if c.FinishReservation != nil {
 		_ = c.FinishReservation(ctx, r.leased, nil, nil)
@@ -1277,12 +1165,31 @@ func (c *Controller) absentClaims(ctx context.Context, claims []state.Claim) []s
 	return gone
 }
 
-func (c *Controller) finishReservation(ctx context.Context, r reservation, untouched bool) {
-	eligible := c.absentClaims(ctx, r.leased)
-	if untouched {
-		eligible = r.leased
+type removalReleasesKey struct{}
+
+type removalReleases struct{ claims []state.Claim }
+
+func removalContext(ctx context.Context) (context.Context, *removalReleases, bool) {
+	if pending, _ := ctx.Value(removalReleasesKey{}).(*removalReleases); pending != nil {
+		return ctx, pending, false
 	}
-	c.finishEligible(ctx, r, eligible)
+	pending := &removalReleases{}
+	return context.WithValue(ctx, removalReleasesKey{}, pending), pending, true
+}
+
+func (c *Controller) finishRemoval(ctx context.Context, pending *removalReleases, owner bool, outcome *state.Outcome) {
+	if owner && outcome.State == "succeeded" {
+		c.settle(context.WithValue(ctx, removalReleasesKey{}, (*removalReleases)(nil)), pending.claims)
+	}
+}
+
+func (c *Controller) finishReservation(ctx context.Context, r reservation) {
+	if pending, _ := ctx.Value(removalReleasesKey{}).(*removalReleases); pending != nil {
+		c.dropReservation(ctx, r)
+		pending.claims = append(pending.claims, r.added...)
+		return
+	}
+	c.finishEligible(ctx, r, c.absentClaims(ctx, r.leased))
 }
 func (c *Controller) finishEligible(ctx context.Context, r reservation, eligible []state.Claim) {
 	if c.FinishReservation != nil {
@@ -1302,8 +1209,34 @@ func (c *Controller) finishEligible(ctx context.Context, r reservation, eligible
 
 // settle gives up claims only after Docker confirms their objects are absent.
 func (c *Controller) settle(ctx context.Context, claims []state.Claim) {
-	if c.Store != nil {
-		_ = c.Store.ReleaseClaims(ctx, c.absentClaims(ctx, claims))
+	if recovering, _ := ctx.Value(recoveringKey{}).(bool); recovering {
+		return
+	}
+	if pending, _ := ctx.Value(removalReleasesKey{}).(*removalReleases); pending != nil {
+		pending.claims = append(pending.claims, claims...)
+		return
+	}
+	if c.Store == nil {
+		return
+	}
+	held, err := c.Store.Claims(ctx)
+	if err != nil {
+		return
+	}
+	var candidates []state.Claim
+	for _, claim := range claims {
+		if slices.Contains(held, claim) {
+			candidates = append(candidates, claim)
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	eligible := c.absentClaims(ctx, candidates)
+	if c.FinishReservation != nil {
+		_ = c.FinishReservation(ctx, nil, candidates, eligible)
+	} else {
+		_ = c.Store.ReleaseClaims(ctx, eligible)
 	}
 }
 

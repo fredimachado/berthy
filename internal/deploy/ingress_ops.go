@@ -552,7 +552,9 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 
 // runIngressRemoval removes the routes and records Berthy created, deletes the connector and forgets the stored
 // ingress. It never deletes the tunnel.
-func (c *Controller) runIngressRemoval(ctx context.Context, op state.Operation, req Request) state.Outcome {
+func (c *Controller) runIngressRemoval(ctx context.Context, op state.Operation, req Request) (outcome state.Outcome) {
+	ctx, pending, owner := removalContext(ctx)
+	defer c.finishRemoval(ctx, pending, owner, &outcome)
 	fail := func(err error) state.Outcome {
 		return state.Outcome{State: "failed", Err: ingressFailure(err, errIngressPublish)}
 	}
@@ -609,9 +611,7 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 	for _, b := range bindings {
 		live, err := c.Engine.InspectService(ctx, b.Name)
 		if serviceMissing(err) {
-			if err := c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}}); err != nil {
-				return err
-			}
+			c.settle(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}})
 			continue
 		}
 		if err != nil {
@@ -633,9 +633,7 @@ func (c *Controller) removeConnector(ctx context.Context) error {
 			}
 			return errors.New("connector service still present")
 		}
-		if err := c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}}); err != nil {
-			return err
-		}
+		c.settle(ctx, []state.Claim{{Kind: state.ClaimService, Name: b.Name}})
 	}
 	return nil
 }

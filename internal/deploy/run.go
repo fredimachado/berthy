@@ -115,12 +115,18 @@ func (c *Controller) prepareRun(ctx context.Context, req Request) (runTarget, pr
 	if err != nil {
 		return runTarget{}, preparedPlan{}, reservation{}, err
 	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			capCtx, done := captureContext(ctx)
+			defer done()
+			c.dropReservation(capCtx, reserved)
+		}
+	}()
 	if _, msg, err := c.ensureImage(ctx, p); err != nil {
-		capCtx, done := captureContext(ctx)
-		c.finishReservation(capCtx, reserved, true)
-		done()
 		return runTarget{}, preparedPlan{}, reservation{}, Refusal(msg)
 	}
+	transferred = true
 	return t, p, reserved, nil
 }
 
@@ -153,7 +159,7 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	defer func() {
 		capCtx, done := captureContext(ctx)
 		defer done()
-		c.finishOperationReservation(capCtx, reserved, op.ID, outcome.State)
+		c.dropReservation(capCtx, reserved)
 	}()
 	redact, ok := c.redactor(ctx)
 	if !ok {

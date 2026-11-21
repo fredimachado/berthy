@@ -309,7 +309,7 @@ func interruptedRestore(t *testing.T, docker *restoreDocker, label func(opID str
 	return c, got
 }
 
-func TestAnInterruptedRestoreRemovesItsPartialVolumeAndHelperAtRecovery(t *testing.T) {
+func TestAnInterruptedRestoreKeepsItsPartialVolumeAndRemovesItsHelperAtRecovery(t *testing.T) {
 	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{"other": {"berthy.restore-operation": "someone-else"}, "plain": nil}, containers: []engine.InventoryContainer{
 		{ID: "h1", State: "running", Labels: map[string]string{"berthy.environment": "test", "berthy.helper": "restore"}},
 		{ID: "h2", State: "running", Labels: map[string]string{"berthy.environment": "other-env", "berthy.helper": "restore"}},
@@ -319,10 +319,10 @@ func TestAnInterruptedRestoreRemovesItsPartialVolumeAndHelperAtRecovery(t *testi
 	_, got := interruptedRestore(t, docker, func(id string) map[string]string {
 		return map[string]string{"berthy.restore-operation": id}
 	})
-	if got.State != "interrupted" || got.Err != string(errRestoreCleaned) || !PublicMessage(got.Err) {
+	if got.State != "interrupted" || got.Err != string(errRestoreInterrupted) || !PublicMessage(got.Err) {
 		t.Fatalf("recovered: %+v", got)
 	}
-	if !slices.Equal(docker.removedV, []string{"restored-1"}) || !slices.Equal(docker.removedC, []string{"h1"}) {
+	if len(docker.removedV) != 0 || !slices.Equal(docker.removedC, []string{"h1"}) {
 		t.Fatalf("removed volumes %v containers %v", docker.removedV, docker.removedC)
 	}
 	if _, ok := docker.volumes["other"]; !ok {

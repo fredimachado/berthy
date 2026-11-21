@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -56,31 +55,5 @@ func TestAStateOfVersion18GetsTheClaimsTable(t *testing.T) {
 	}
 	if err := s.AddClaims(context.Background(), []Claim{{Kind: ClaimNetwork, Name: "net"}}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestReservationJournalsOnlyNewClaims(t *testing.T) {
-	ctx := context.Background()
-	s, _, _ := testStore(t)
-	old := Claim{Kind: ClaimVolume, Name: "old"}
-	fresh := Claim{Kind: ClaimVolume, Name: "fresh"}
-	if err := s.AddClaims(ctx, []Claim{old}); err != nil {
-		t.Fatal(err)
-	}
-	op, _, err := s.Admit(ctx, Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	added, err := s.AddClaimsForOperation(ctx, op.ID, []Claim{old, fresh, fresh})
-	if err != nil || !reflect.DeepEqual(added, []Claim{fresh}) {
-		t.Fatalf("added %v: %v", added, err)
-	}
-	intents, err := s.Intents(ctx, op.ID)
-	if err != nil || len(intents) != 1 || intents[0].Kind != "claims" {
-		t.Fatalf("journal: %v, %v", intents, err)
-	}
-	var journaled []Claim
-	if err := json.Unmarshal(intents[0].Desired, &journaled); err != nil || !reflect.DeepEqual(journaled, added) {
-		t.Fatalf("journaled %v: %v", journaled, err)
 	}
 }

@@ -86,7 +86,7 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.finishOperationReservation(settleCtx, claims, op.ID, outcome.State)
+			c.dropReservation(settleCtx, claims)
 		}()
 	}
 	// The revert image may have been pruned since the migration ran; check it before the service changes.

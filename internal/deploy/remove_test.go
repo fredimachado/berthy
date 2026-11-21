@@ -710,7 +710,7 @@ func TestRemoveComposeFailureKeepsTheAppAndItsFiles(t *testing.T) {
 	}
 }
 
-func TestRecoveryRepeatsAnInterruptedComposeDown(t *testing.T) {
+func TestRecoveryLeavesInterruptedComposeDownForAnotherRemoval(t *testing.T) {
 	c, s, runner, docker := composeRemoveFixture(t, false)
 	ctx := context.Background()
 	// The process stopped after journaling the down and before it finished.
@@ -725,8 +725,8 @@ func TestRecoveryRepeatsAnInterruptedComposeDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs := downRuns(runner)
-	if len(runs) != 1 || !reflect.DeepEqual(runs[0].Args, []string{"down", "--remove-orphans", "--volumes"}) || len(docker.containers) != 0 {
-		t.Fatalf("recovery must repeat the down: %+v", runs)
+	if len(runs) != 0 || len(docker.containers) == 0 {
+		t.Fatalf("recovery ran down: %+v", runs)
 	}
 	got, err := s.Operation(ctx, op.ID)
 	if err != nil || got.State != "interrupted" || got.Err != string(errRemoveInterrupted) {

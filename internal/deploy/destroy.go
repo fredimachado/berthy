@@ -342,7 +342,9 @@ func tunnelReasons(ctx context.Context, cf *cloudflare.Client, st state.IngressS
 
 // runDestroy removes everything Berthy made in the environment. Nothing changes when the plan has a blocker. Every step
 // can be repeated, so an interrupted destroy is finished by running it again.
-func (c *Controller) runDestroy(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runDestroy(ctx context.Context, op state.Operation, actor Actor, req Request) (outcome state.Outcome) {
+	ctx, pending, owner := removalContext(ctx)
+	defer c.finishRemoval(ctx, pending, owner, &outcome)
 	step := func(text string) {
 		if data, err := json.Marshal(map[string]string{"step": text}); err == nil {
 			_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: data})
@@ -393,7 +395,41 @@ func (c *Controller) runDestroy(ctx context.Context, op state.Operation, actor A
 			return state.Outcome{State: "failed", Err: string(errDestroyState)}
 		}
 	}
+	if err := c.sweepClaims(ctx); err != nil {
+		return state.Outcome{State: "failed", Err: string(errDestroyState)}
+	}
 	return state.Outcome{State: "succeeded"}
+}
+
+// sweepClaims clears absent names left by earlier operations, while preserving the environment network.
+func (c *Controller) sweepClaims(ctx context.Context) error {
+	claims, err := c.Store.Claims(ctx)
+	if err != nil {
+		return err
+	}
+	network := c.Network
+	if settings, ok, err := c.Store.Settings(ctx); err != nil {
+		return err
+	} else if ok {
+		m, err := manifest.DecodeSettings(settings.Manifest)
+		if err != nil {
+			return err
+		}
+		if network == "" {
+			network = m.NetworkName(c.Environment)
+		}
+	}
+	if network == "" {
+		network = c.Project + "-" + c.Environment
+	}
+	var candidates []state.Claim
+	for _, claim := range claims {
+		if claim.Kind != state.ClaimNetwork || claim.Name != network {
+			candidates = append(candidates, claim)
+		}
+	}
+	c.settle(ctx, candidates)
+	return nil
 }
 
 // removeContainersAndImages removes the helper and one-off containers and the images

@@ -198,6 +198,7 @@ func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor A
 	if _, err := c.restoreCheck(ctx, actor, req); err != nil {
 		return state.Outcome{State: "failed", Err: string(restoreRefusal(err, errRestoreFailed))}
 	}
+	removed := false
 	if req.RestoreInto != "" && c.Reserve != nil {
 		claims, err := c.reserveNames(ctx, req)
 		if err != nil {
@@ -206,7 +207,11 @@ func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor A
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.finishOperationReservation(settleCtx, claims, op.ID, outcome.State)
+			if removed {
+				c.finishReservation(settleCtx, claims)
+			} else {
+				c.dropReservation(settleCtx, claims)
+			}
 		}()
 	}
 	exec := len(req.Command) > 0
@@ -233,6 +238,7 @@ func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor A
 	}
 	step("restoring " + req.RestoreKey + " into volume " + req.RestoreInto)
 	err = c.Restorer.Restore(ctx, op.ID, req.RestoreKey, req.RestoreInto)
+	removed = errors.Is(err, backup.ErrRestoreVolumeRemoved)
 	if err != nil {
 		_ = c.Store.MarkStep(ctx, op.ID, 1, "finished", json.RawMessage(`{"ok":false}`))
 		return state.Outcome{State: "failed", Err: string(restoreRefusal(err, errRestoreFailed))}
@@ -402,14 +408,17 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 	case labels[backup.RestoreOperationLabel] != op.ID:
 		return false
 	}
+	if recovering, _ := ctx.Value(recoveringKey{}).(bool); recovering {
+		return false
+	}
 	claim := state.Claim{Kind: state.ClaimVolume, Name: into}
 	if c.Reserve != nil {
-		reserved, err := c.reserveClaims(reservationContext(ctx, op.ID), []state.Claim{claim})
+		reserved, err := c.reserveClaims(ctx, []state.Claim{claim})
 		if err != nil {
 			return false
 		}
 		reserved.added = reserved.leased
-		defer c.finishReservation(ctx, reserved, false)
+		defer c.finishReservation(ctx, reserved)
 	} else if err := c.notForeign(ctx, claim); err != nil {
 		return false
 	}
