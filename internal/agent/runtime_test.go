@@ -56,6 +56,56 @@ func TestARuntimeServesItsEnvironmentAndCloseReleasesTheState(t *testing.T) {
 	s.Close()
 }
 
+// closedRuntime closes r and fails the test if Close does not return: a Close that waits for a worker that was never
+// started would hang the agent's exit.
+func closedRuntime(t *testing.T, r *Runtime) {
+	t.Helper()
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		r.Close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+func openableState(t *testing.T, c Config) {
+	t.Helper()
+	s, err := state.Open(c.StateDir, c.KeyFile, c.Environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+}
+
+func TestCloseWithoutStartReleasesTheState(t *testing.T) {
+	sh, c := runtimeConfig(t)
+	r, err := OpenRuntime(sh, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedRuntime(t, r)
+	openableState(t, c)
+}
+
+func TestCloseAfterAFailedStartReleasesTheState(t *testing.T) {
+	sh, c := runtimeConfig(t)
+	r, err := OpenRuntime(sh, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.Start(ctx); err == nil || err.Error() != "deployment recovery failed" {
+		t.Fatalf("start with a cancelled context: %v", err)
+	}
+	closedRuntime(t, r)
+	openableState(t, c)
+}
+
 func TestOpenRuntimeRefusesAConfigWithoutState(t *testing.T) {
 	sh, c := runtimeConfig(t)
 	for _, paths := range [][2]string{{"", ""}, {c.StateDir, ""}, {"", c.KeyFile}} {
