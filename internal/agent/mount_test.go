@@ -38,6 +38,7 @@ func TestARequestForAnotherEnvironmentIs401(t *testing.T) {
 		"/v1/projects/demo/environments/labs/apps",
 		"/v1/projects/other/environments/lab/apps",
 		"/v1/projects/demo/environments/other/anything/at/all",
+		"/v1/projects/demo/environments/other",
 	} {
 		var got string
 		w := httptest.NewRecorder()
@@ -49,7 +50,7 @@ func TestARequestForAnotherEnvironmentIs401(t *testing.T) {
 }
 
 func TestAPathThatIsNotAnAPIPathIs404(t *testing.T) {
-	for _, path := range []string{"/", "/v1", "/v1/projects", "/v1/projects/demo", "/v1/projects/demo/environments", "/v1/projects/demo/environments/other", "/v1/environments", "/v2/projects/demo/environments/lab/apps", "/apps"} {
+	for _, path := range []string{"/", "/v1", "/v1/projects", "/v1/projects/demo", "/v1/projects/demo/environments", "/v1/environments", "/v2/projects/demo/environments/lab/apps", "/apps"} {
 		var got string
 		w := httptest.NewRecorder()
 		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))

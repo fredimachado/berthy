@@ -194,6 +194,30 @@ func TestAnUnknownProjectIs401LikeABadToken(t *testing.T) {
 	}
 }
 
+// A client without a valid token learns nothing about which environments the agent hosts, whatever path it asks for: a hosted
+// environment and one that does not exist answer alike.
+func TestAHostedEnvironmentAnswersWithoutATokenAsAnUnhostedOneDoes(t *testing.T) {
+	lab := scope.ID{Project: "demo", Environment: "lab"}
+	sh, f := hostedFile(t, lab)
+	h := openHost(t, sh, f)
+	unhosted := scope.ID{Project: "demo", Environment: "nope"}
+	for _, tc := range []struct{ method, rest string }{
+		{"GET", "agent"}, {"GET", "zzz"}, {"GET", "apps/web/logs/extra"}, {"POST", "zzz"}, {"POST", "agent"}, {"DELETE", "deploys/zzz"}, {"PUT", ""},
+	} {
+		for name, token := range map[string]string{"no token": "", "a bad token": hostToken(lab, "9")} {
+			want := serve(h, tc.method, unhosted.APIPath()+tc.rest, token, "")
+			got := serve(h, tc.method, lab.APIPath()+tc.rest, token, "")
+			if got.Code != http.StatusUnauthorized || got.Code != want.Code || got.Body.String() != want.Body.String() {
+				t.Errorf("%s %s with %s: hosted %d %s, unhosted %d %s", tc.method, tc.rest, name, got.Code, got.Body.String(), want.Code, want.Body.String())
+			}
+		}
+	}
+	// Once the token is valid the environment may say that the path is not one of its routes.
+	if w := serve(h, "GET", lab.APIPath()+"zzz", adminOf(f, 0), ""); w.Code != http.StatusNotFound {
+		t.Errorf("a valid token on an unknown path: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestTheURLOfAnEarlierReleaseSaysToUpgradeTheCLI(t *testing.T) {
 	lab := scope.ID{Project: "demo", Environment: "lab"}
 	sh, f := hostedFile(t, lab)

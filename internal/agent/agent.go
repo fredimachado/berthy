@@ -454,7 +454,11 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 			routed = true
 		}
 		if !routed {
-			writeError(w, 404, "not_found", "not found")
+			// Whether a path is a route is for a client with a token to learn: without one the answer is a hosted environment's
+			// 401 for every path, as refuseOutside gives for an environment that is not hosted.
+			authorize(tokens, "read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, 404, "not_found", "not found")
+			})).ServeHTTP(w, r)
 			return
 		}
 		readAuthorized.ServeHTTP(w, r)

@@ -40,12 +40,12 @@ func environmentPath(path string) (id scope.ID, rest []string, ok bool) {
 }
 
 // refuseOutside answers a request for a path that no hosted environment of the handler serves. It is the one place that
-// decides what such a request gets. The path of an environment's API is answered as a bad token is, so the answer does not
-// say which environments this agent serves. The URL of an earlier release, which had no project, is told to upgrade the CLI.
+// decides what such a request gets. Any path under an environment, even the environment's own, is answered as a bad token is, so
+// the answer does not say which environments this agent serves; a hosted environment answers the same until the token is valid. The URL of an earlier release, which had no project, is told to upgrade the CLI.
 // Anything else is not found.
 func refuseOutside(w http.ResponseWriter, path string) {
 	w.Header().Set("Content-Type", "application/json")
-	if _, rest, ok := environmentPath(path); ok && len(rest) > 0 {
+	if _, _, ok := environmentPath(path); ok {
 		refuseToken(w, http.StatusUnauthorized)
 		return
 	}
