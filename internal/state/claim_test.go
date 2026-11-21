@@ -3,28 +3,8 @@ package state
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 )
-
-func testStoreEnv(t *testing.T, env string) (*Store, string, string) {
-	t.Helper()
-	dir := filepath.Join(t.TempDir(), "private")
-	if err := os.Mkdir(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	key := filepath.Join(dir, "key")
-	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(dir, key, env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s, dir, key
-}
 
 func TestClaimIsKeptAndRefusesAnotherProject(t *testing.T) {
 	s, dir, key := testStoreEnv(t, "dev")

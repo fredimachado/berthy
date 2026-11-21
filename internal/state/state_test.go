@@ -16,6 +16,11 @@ import (
 
 func testStore(t *testing.T) (*Store, string, string) {
 	t.Helper()
+	return testStoreEnv(t, "test")
+}
+
+func testStoreEnv(t *testing.T, env string) (*Store, string, string) {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -24,7 +29,7 @@ func testStore(t *testing.T) (*Store, string, string) {
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(dir, key, "test")
+	s, err := Open(dir, key, env)
 	if err != nil {
 		t.Fatal(err)
 	}
