@@ -10,7 +10,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 
 # manifest HEALTH START_PERIOD PRE POST [protected]: the web app. HEALTH is the command of the health check ("true" passes,
 # "false" fails), START_PERIOD the time failures do not count, PRE and POST the argv (as a YAML list) of a pre-deploy and a

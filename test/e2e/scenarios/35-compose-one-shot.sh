@@ -8,7 +8,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-proj="$PROJECT-db"
+proj="$PROJECT-$ENVN-db"
 
 # The manifest has the Compose app db, with a short deploy_timeout so a service that never becomes ready fails quickly.
 write_manifest <<YML

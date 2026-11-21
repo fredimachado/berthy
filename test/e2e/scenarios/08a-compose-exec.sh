@@ -71,7 +71,7 @@ expect_contains "the refusal says Compose apps have no roles" "$out" "compose ap
 before=$(adm audit 2>&1)
 out=$(adm exec db --service postgres --dry-run -- psql -c x 2>&1); code=$?
 expect_code "exec dry run plans for a service" 0 "$code" "$out"
-expect_contains "the plan names the project and service" "$out" "target: $PROJECT-db/postgres"
+expect_contains "the plan names the project and service" "$out" "target: $PROJECT-$ENVN-db/postgres"
 expect_contains "the plan names the command" "$out" "psql"
 expect_eq "the dry run records nothing" "$before" "$(adm audit 2>&1)"
 
@@ -80,7 +80,7 @@ expect_code "deploy the image app beside it" 0 "$code" "$out"
 
 out=$(adm exec web --dry-run -- true 2>&1); code=$?
 expect_code "exec dry run for an image app plans" 0 "$code" "$out"
-expect_contains "the plan names the role's Swarm service" "$out" "target: $PROJECT-web-main"
+expect_contains "the plan names the role's Swarm service" "$out" "target: $PROJECT-$ENVN-web-main"
 
 out=$(adm exec web --service x -- true 2>&1); code=$?
 expect_code "--service is refused for an image app" 1 "$code" "$out"

@@ -60,7 +60,7 @@ head3=$(git -C "$MAN" rev-parse HEAD)
 out=$(adm deploy web --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a clean checkout deploys to the protected environment" 0 "$code" "$out"
 expect_eq "the newest release records HEAD and is not modified" "$head3" "$(newest_commit)"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "the service runs the pinned digest" "$spec" "$WEB_V2_DIGEST"
 
 # Outside a git work tree: a copy without .git, with an edited overlay, deploys with no commit and no check.

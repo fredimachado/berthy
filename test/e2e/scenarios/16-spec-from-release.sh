@@ -8,7 +8,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 
 # 1. The web app is deployed at v1.
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?

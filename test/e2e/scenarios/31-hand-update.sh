@@ -7,7 +7,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 base_manifest | write_manifest
 
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?

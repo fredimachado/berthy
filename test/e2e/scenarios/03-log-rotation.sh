@@ -35,9 +35,9 @@ adopt_healthy() {
 # The role sets no logging, so the default rotation applies.
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1 with no logging" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "service has the default rotation" "$spec" '"LogDriver":{"Name":"json-file","Options":{"max-file":"3","max-size":"10m"}}'
-log=$(container_log_config "$PROJECT-web-main" 2>&1); code=$?
+log=$(container_log_config "$PROJECT-$ENVN-web-main" 2>&1); code=$?
 expect_code "a running task container exists" 0 "$code" "$log"
 expect_contains "container logs with the default rotation" "$log" '{"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}'
 
@@ -45,10 +45,10 @@ expect_contains "container logs with the default rotation" "$log" '{"Type":"json
 logging_manifest | write_manifest
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1 with the role's logging" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "service has the role's rotation" "$spec" '"LogDriver":{"Name":"json-file","Options":{"max-file":"5","max-size":"50m"}}'
 expect_not_contains "the default rotation is gone" "$spec" '"max-size":"10m"'
-log=$(container_log_config "$PROJECT-web-main" 2>&1); code=$?
+log=$(container_log_config "$PROJECT-$ENVN-web-main" 2>&1); code=$?
 expect_code "a running task container exists after the change" 0 "$code" "$log"
 expect_contains "container logs with the role's rotation" "$log" '{"Type":"json-file","Config":{"max-file":"5","max-size":"50m"}}'
 

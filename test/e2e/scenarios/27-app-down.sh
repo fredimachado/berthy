@@ -9,7 +9,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-proj="$PROJECT-db"
+proj="$PROJECT-$ENVN-db"
 check="down:$proj/side"
 
 # check_state NAME: the stored state of the check NAME, or nothing while the monitor does not list it.

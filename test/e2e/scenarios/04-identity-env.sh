@@ -32,8 +32,8 @@ expect_identity() {
   expect_line "$1: BERTHY_IMAGE_DIGEST" "$out" "BERTHY_IMAGE_DIGEST=$3"
 }
 
-# env_json: the Env list of the Swarm service $PROJECT-web-main, as JSON.
-env_json() { service_spec "$PROJECT-web-main" | grep -o '"Env":\[[^]]*\]'; }
+# env_json: the Env list of the Swarm service $PROJECT-$ENVN-web-main, as JSON.
+env_json() { service_spec "$PROJECT-$ENVN-web-main" | grep -o '"Env":\[[^]]*\]'; }
 
 # hook_manifest: the base manifest with a pre_deploy run hook that prints the Berthy variables of its container.
 hook_manifest() {
@@ -126,7 +126,7 @@ apps:
 YML
 out=$(adm deploy shop --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy the Compose app" 0 "$code" "$out"
-env_file=$(cat "$RUN/state/compose/$PROJECT-shop/.env" 2>&1)
+env_file=$(cat "$RUN/state/compose/$PROJECT-$ENVN-shop/.env" 2>&1)
 expect_line "the Compose .env names the environment" "$env_file" "BERTHY_ENVIRONMENT='$ENVN'"
 expect_line "the Compose .env names the project" "$env_file" "BERTHY_PROJECT='$PROJECT'"
 expect_line "the Compose .env names the app" "$env_file" "BERTHY_APP='shop'"
@@ -135,7 +135,7 @@ if grep -q '^BERTHY_\(ROLE\|VERSION\|IMAGE_DIGEST\)=' <<<"$env_file"; then
 else
   pass "the Compose .env has no role, version or digest"
 fi
-cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project=$PROJECT-shop --filter label=com.docker.compose.service=who | head -n 1)
+cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project=$PROJECT-$ENVN-shop --filter label=com.docker.compose.service=who | head -n 1)
 who=""
 if [ -n "$cid" ]; then
   who=$(d exec "$cid" env 2>&1)

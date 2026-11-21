@@ -13,8 +13,8 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-proj="$PROJECT-db"
-svc="$PROJECT-web-main"
+proj="$PROJECT-$ENVN-db"
+svc="$PROJECT-$ENVN-web-main"
 # What a wake may take, in seconds. Without events the shortest wait is the next minute's rebuild, and the drift check's is five.
 WAKE=20
 

@@ -94,7 +94,7 @@ apps:
     depends_on: [db]
     roles:
       main:
-        service: $PROJECT-web-main
+        service: $PROJECT-$ENVN-web-main
         command: ["serve"]
         replicas: 2
         port: 8080

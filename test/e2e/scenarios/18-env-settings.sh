@@ -89,7 +89,7 @@ if wait_check probe:site2 120; then pass "the monitor runs the second probe"; el
 # 4. A rollback returns the app to v1 and leaves the settings alone.
 out=$(adm rollback web 2>&1); code=$?
 expect_code "rollback" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "rollback returns to v1" "$spec" "$WEB_V1_DIGEST"
 out=$(adm apply --dry-run --manifest-dir "$MAN" 2>&1)
 expect_eq "the rollback kept the second probe" "no changes" "$out"

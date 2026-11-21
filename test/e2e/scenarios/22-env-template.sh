@@ -79,8 +79,8 @@ expect_contains "it names the secret the templates read, and both apps" "$out" "
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 if [ "$code" -ne 0 ]; then pass "a deploy that needs TPL_PASS is refused while it is not stored (exit $code)"; else fail "a deploy that needs TPL_PASS is refused while it is not stored" "exit 0"; fi
 expect_contains "the refusal names the secret" "$out" "secret TPL_PASS is not set"
-if d service inspect "$PROJECT-web-main" >/dev/null 2>&1; then
-  fail "no service was created" "$PROJECT-web-main exists"
+if d service inspect "$PROJECT-$ENVN-web-main" >/dev/null 2>&1; then
+  fail "no service was created" "$PROJECT-$ENVN-web-main exists"
 else
   pass "no service was created"
 fi
@@ -97,7 +97,7 @@ expect_not_contains "the plan shows no filled value" "$out" "tpl-pass-9f3a"
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy web" 0 "$code" "$out"
 expect_not_contains "the deploy output shows no filled value" "$out" "tpl-pass-9f3a"
-expect_contains "the service runs the filled DATABASE_URL" "$(service_spec "$PROJECT-web-main")" "\"DATABASE_URL=$FILLED\""
+expect_contains "the service runs the filled DATABASE_URL" "$(service_spec "$PROJECT-$ENVN-web-main")" "\"DATABASE_URL=$FILLED\""
 env_out=$(adm exec web -- env 2>&1); code=$?
 expect_code "exec reads the environment of web" 0 "$code" "$env_out"
 expect_line "exec shows DATABASE_URL redacted" "$env_out" "DATABASE_URL=[redacted]"
@@ -108,13 +108,13 @@ expect_code "history answers" 0 "$code" "$out"
 expect_not_contains "history shows no filled value" "$out" "tpl-pass-9f3a"
 
 # A second deploy whose template reads a secret that is not stored fails and names it. The running service does not change.
-before=$(service_spec "$PROJECT-web-main")
+before=$(service_spec "$PROJECT-$ENVN-web-main")
 manifest 'postgres://u:${TPL_GONE}@db:5432/x' | write_manifest
 out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
 if [ "$code" -ne 0 ]; then pass "a deploy with a missing template secret is refused (exit $code)"; else fail "a deploy with a missing template secret is refused" "exit 0"; fi
 expect_contains "the refusal names TPL_GONE" "$out" "secret TPL_GONE is not set"
-expect_eq "the running service is unchanged" "$before" "$(service_spec "$PROJECT-web-main")"
-expect_contains "it still runs v1" "$(service_spec "$PROJECT-web-main")" "$WEB_V1_DIGEST"
+expect_eq "the running service is unchanged" "$before" "$(service_spec "$PROJECT-$ENVN-web-main")"
+expect_contains "it still runs v1" "$(service_spec "$PROJECT-$ENVN-web-main")" "$WEB_V1_DIGEST"
 
 # A malformed template fails config validate, and names its file and line.
 manifest 'postgres://u:$TPL_PASS@db:5432/x' | write_manifest
@@ -128,9 +128,9 @@ expect_contains "the problem says where the reference is wrong" "$out" "malforme
 manifest "$TEMPLATE" | write_manifest
 out=$(adm deploy shop --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy the Compose app" 0 "$code" "$out"
-env_file=$(cat "$RUN/state/compose/$PROJECT-shop/.env" 2>&1)
+env_file=$(cat "$RUN/state/compose/$PROJECT-$ENVN-shop/.env" 2>&1)
 expect_line "the Compose .env gives DB_URL the filled value" "$env_file" "DB_URL='$FILLED'"
-cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project="$PROJECT-shop" --filter label=com.docker.compose.service=db | head -n 1)
+cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project="$PROJECT-$ENVN-shop" --filter label=com.docker.compose.service=db | head -n 1)
 db=""
 if [ -n "$cid" ]; then
   db=$(d exec "$cid" env 2>&1)

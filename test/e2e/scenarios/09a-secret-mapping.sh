@@ -85,14 +85,14 @@ web_env=$(adm exec web -- env 2>&1); code=$?
 expect_code "exec reads the environment of web" 0 "$code" "$web_env"
 # exec redacts managed secret values, so the value is checked on the service, where Docker holds it.
 expect_line "web: exec shows DATABASE_URL redacted" "$web_env" "DATABASE_URL=[redacted]"
-expect_contains "web: the service runs DATABASE_URL with the value of WEB_DB" "$(service_spec "$PROJECT-web-main")" '"DATABASE_URL=postgres://web"'
+expect_contains "web: the service runs DATABASE_URL with the value of WEB_DB" "$(service_spec "$PROJECT-$ENVN-web-main")" '"DATABASE_URL=postgres://web"'
 expect_not_contains "web: no variable is named after WEB_DB" "$web_env" "WEB_DB="
 expect_not_contains "web: does not have the value of API_DB" "$web_env" "postgres://api"
 
 api_env=$(adm exec api -- env 2>&1); code=$?
 expect_code "exec reads the environment of api" 0 "$code" "$api_env"
 expect_line "api: exec shows DATABASE_URL redacted" "$api_env" "DATABASE_URL=[redacted]"
-expect_contains "api: the service runs DATABASE_URL with the value of API_DB" "$(service_spec "$PROJECT-api-main")" '"DATABASE_URL=postgres://api"'
+expect_contains "api: the service runs DATABASE_URL with the value of API_DB" "$(service_spec "$PROJECT-$ENVN-api-main")" '"DATABASE_URL=postgres://api"'
 expect_not_contains "api: no variable is named after API_DB" "$api_env" "API_DB="
 expect_not_contains "api: does not have the value of WEB_DB" "$api_env" "postgres://web"
 
@@ -104,8 +104,8 @@ else
   fail "deploy of a mapping whose secret is unset is refused" "exit 0"
 fi
 expect_contains "the refusal names the secret that has no value" "$out" "secret LATE_DB is not set"
-if d service inspect "$PROJECT-late-main" >/dev/null 2>&1; then
-  fail "no service was created for late" "$PROJECT-late-main exists"
+if d service inspect "$PROJECT-$ENVN-late-main" >/dev/null 2>&1; then
+  fail "no service was created for late" "$PROJECT-$ENVN-late-main exists"
 else
   pass "no service was created for late"
 fi
@@ -141,10 +141,10 @@ expect_contains "config validate names the variable listed twice" "$out" "variab
 # the variable.
 out=$(adm deploy shop --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy the Compose app" 0 "$code" "$out"
-env_file=$(cat "$RUN/state/compose/$PROJECT-shop/.env" 2>&1)
+env_file=$(cat "$RUN/state/compose/$PROJECT-$ENVN-shop/.env" 2>&1)
 expect_line "the Compose .env gives DB_PASS the value of WEB_DB" "$env_file" "DB_PASS='postgres://web'"
 expect_not_contains "the Compose .env names no WEB_DB" "$env_file" "WEB_DB="
-cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project="$PROJECT-shop" --filter label=com.docker.compose.service=db | head -n 1)
+cid=$(d ps -q --filter status=running --filter label=com.docker.compose.project="$PROJECT-$ENVN-shop" --filter label=com.docker.compose.service=db | head -n 1)
 db=""
 if [ -n "$cid" ]; then
   db=$(d exec "$cid" env 2>&1)

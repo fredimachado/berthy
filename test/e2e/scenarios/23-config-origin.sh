@@ -60,7 +60,7 @@ expect_contains "--json names the path" "$json" "\"path\": \"apps.web.env.plain.
 # 2. The deploy sends the merged manifest: the service runs with the overlay's LOG_LEVEL and without LEGACY_MODE.
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1 with an overlay that removes a variable" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "the service runs with the overlay's LOG_LEVEL" "$spec" "LOG_LEVEL=debug"
 expect_not_contains "the service runs without LEGACY_MODE" "$spec" "LEGACY_MODE"
 

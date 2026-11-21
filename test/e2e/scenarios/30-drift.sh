@@ -8,8 +8,8 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
-project="$PROJECT-db"
+svc="$PROJECT-$ENVN-web-main"
+project="$PROJECT-$ENVN-db"
 
 cat > "$MAN/compose.yml" <<YML
 services:

@@ -8,7 +8,7 @@ set -uo pipefail
 
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 
 out=$(adm exec web -- cat /etc/os-release 2>&1); code=$?
@@ -21,12 +21,12 @@ expect_contains "history lists the v1 release" "$out" "$WEB_V1_DIGEST"
 
 out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v2" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "service runs the pinned v2 digest" "$spec" "$WEB_V2_DIGEST"
 
 out=$(adm rollback web 2>&1); code=$?
 expect_code "rollback" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "rollback returns to v1" "$spec" "$WEB_V1_DIGEST"
 expect_not_contains "rollback leaves v2 behind" "$spec" "$WEB_V2_DIGEST"
 

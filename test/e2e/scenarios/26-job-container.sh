@@ -8,7 +8,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-DATA_VOLUME="${PROJECT}_data"
+DATA_VOLUME="data"
 
 manifest() {
   cat <<YML
@@ -108,7 +108,7 @@ if [ -n "$checked" ]; then pass "the job's check names the command that shows th
 # 4. A job needs no running replica: it runs while its role is scaled to 0.
 out=$(adm scale web --replicas 0 2>&1); code=$?
 expect_code "scale to 0" 0 "$code" "$out"
-expect_eq "no replica runs" "0" "$(d ps -q --filter label=com.docker.swarm.service.name="$PROJECT-web-main" | wc -l)"
+expect_eq "no replica runs" "0" "$(d ps -q --filter label=com.docker.swarm.service.name="$PROJECT-$ENVN-web-main" | wc -l)"
 out=$(adm job run volume 2>&1); code=$?
 expect_code "a job runs while its role is scaled to 0" 0 "$code" "$out"
 expect_contains "it succeeded" "$out" "status: succeeded"

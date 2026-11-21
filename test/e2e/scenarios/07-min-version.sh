@@ -122,7 +122,7 @@ expect_contains "dev CLI: the agent names its release" "$out" "agent returned HT
 base_manifest | write_manifest || exit 1
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a manifest without min_version deploys to the v0.8.0 agent" 0 "$code" "$out"
-spec=$(service_spec "$PROJECT-web-main")
+spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains "the service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 
 # d. The agent of 6acd0ce serves only /v1/environments/<environment>/, so it answers 404 to the CLI's project URL. The CLI says

@@ -9,7 +9,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 SECRET_1='s3cret-value-aaa111'
 SECRET_2='s3cret-value-bbb222'
 

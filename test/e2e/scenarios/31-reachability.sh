@@ -10,7 +10,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 
 # manifest PORT [VERIFY]: the web app with its main role on port PORT. VERIFY, when it is not empty, is written as the app's
 # deploy.verify.

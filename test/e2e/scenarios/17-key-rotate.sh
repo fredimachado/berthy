@@ -8,7 +8,7 @@ set -uo pipefail
 . "$RUN/digests.env"
 
 key=$RUN/state.key
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 
 # key_sum: the SHA-256 of the key file. key_hex: the key itself, which no output may contain.
 key_sum() { sha256sum "$key" | cut -d' ' -f1; }

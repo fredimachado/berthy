@@ -8,6 +8,7 @@
 #   d. with the mistakes fixed, config validate prints manifest valid and exits 0;
 #   e. config validate -e prod_1 against the scenario's manifest directory is refused by the CLI: its exact message, exit 2;
 #   f. an overlay that sets project: other is refused by config validate, with the overlay's file and the line of the key.
+#   g. offline validation refuses a service name over 63 characters, with the role's file and line.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -84,5 +85,14 @@ expect_code "config validate refuses an overlay with another project" 1 "$code" 
 expect_eq "the refusal names the overlay, the line and the rule" "$OVERLAY:2:1: project is set in berthy.yml only: an environment cannot have another project
 1 problem" "$out"
 rm -f "$MAN/$OVERLAY"
+
+# The project and environment together are 55 characters; adding -web-main makes the service name 64.
+stop_agent
+printf -v long_env '%*s' "$((54 - ${#PROJECT}))" ''
+long_env=${long_env// /a}
+out=$("$BIN" config validate -e "$long_env" --manifest-dir "$MAN" 2>&1); code=$?
+expect_code "offline validation refuses a long service name" 1 "$code" "$out"
+expect_contains "the refusal names the service limit" "$out" "is longer than 63 characters; shorten the project, environment, app or role"
+expect_contains "the refusal names the role's file and line" "$out" "berthy.yml:8:"
 
 finish

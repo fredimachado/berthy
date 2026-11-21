@@ -9,8 +9,8 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
-vol="${PROJECT}_uploads"
+svc="$PROJECT-$ENVN-web-main"
+vol="uploads"
 
 # manifest HEALTH MOUNT ORDER: the web app, whose main role mounts MOUNT and runs the health check HEALTH ("true" passes,
 # "false" fails). ORDER, when it is not empty, is written as the app's deploy.order.

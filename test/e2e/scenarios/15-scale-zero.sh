@@ -8,7 +8,7 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-svc="$PROJECT-web-main"
+svc="$PROJECT-$ENVN-web-main"
 
 # running_count: how many containers of the web role's service run now.
 running_count() { d ps -q --filter label=com.docker.swarm.service.name="$svc" | wc -l; }

@@ -47,7 +47,7 @@ expect_eq "it prints one line that names the secret and holds no value" "generat
 # 2. A deploy gives the container the value: 64 hex characters.
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy web" 0 "$code" "$out"
-first=$(gen_value "$(service_spec "$PROJECT-web-main")")
+first=$(gen_value "$(service_spec "$PROJECT-$ENVN-web-main")")
 if [[ $first =~ ^[0-9a-f]{64}$ ]]; then
   pass "the service runs GEN_PASS with 64 hex characters"
 else
@@ -63,7 +63,7 @@ expect_code "a dry run of a stored name exits 0" 0 "$code" "$out"
 expect_eq "the dry run says a real run is refused without --replace" "GEN_PASS exists: a real run is refused unless --replace is given" "$out"
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "a redeploy after the refusal exits 0" 0 "$code" "$out"
-expect_eq "the refused generate left the value the service runs" "$first" "$(gen_value "$(service_spec "$PROJECT-web-main")")"
+expect_eq "the refused generate left the value the service runs" "$first" "$(gen_value "$(service_spec "$PROJECT-$ENVN-web-main")")"
 
 # 4. --replace with --format alnum and --bytes 20 replaces the value, and the next deploy runs 20 letters and digits.
 out=$(adm secret generate GEN_PASS --format alnum --bytes 20 --replace 2>&1); code=$?
@@ -71,7 +71,7 @@ expect_code "a replacing generate exits 0" 0 "$code" "$out"
 expect_eq "it says it replaced the secret, counted in characters" "replaced GEN_PASS (20 characters, alnum)" "$out"
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy after the replace" 0 "$code" "$out"
-second=$(gen_value "$(service_spec "$PROJECT-web-main")")
+second=$(gen_value "$(service_spec "$PROJECT-$ENVN-web-main")")
 if [[ $second =~ ^[A-Za-z0-9]{20}$ ]]; then
   pass "the service runs GEN_PASS with 20 letters and digits"
 else

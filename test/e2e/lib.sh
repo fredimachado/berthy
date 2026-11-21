@@ -303,7 +303,7 @@ YML
 }
 
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
-# containers and volumes labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes named ${PROJECT}_* or in a
+# containers and volumes labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes named $PROJECT-* or in a
 # compose project $PROJECT or $PROJECT-*. Nothing else on the daemon matches these filters.
 purge_fixture() {
   local i v
@@ -350,7 +350,7 @@ purge_fixture() {
 
   d volume ls --format '{{.Name}} {{.Labels}}' |
     awk -v p="$PROJECT" '
-      { hit = index($1, p "_") == 1
+      { hit = index($1, p "-") == 1 || index($1, p "_") == 1
         n = split($2, labels, ",")
         for (i = 1; i <= n; i++) {
           if (labels[i] == "com.docker.compose.project=" p || index(labels[i], "com.docker.compose.project=" p "-") == 1) hit = 1
