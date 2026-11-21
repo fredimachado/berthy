@@ -737,3 +737,16 @@ func TestRecordedComposeRemovalRefusesForeignProjectAndVolume(t *testing.T) {
 		})
 	}
 }
+
+func TestAnInvalidExplicitNetworkIsRefusedBeforeClaims(t *testing.T) {
+	network := strings.Repeat("a", 64)
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: network}
+	c := Controller{Environment: "test", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	req := Request{App: "api", RequestID: "r", Manifest: manifest.Manifest{Project: "shop", Network: network, Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {}}}}}}
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin"}, req); err == nil || err.Error() != "invalid project or network" {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req); err == nil || err.Error() != "invalid project or network" {
+		t.Fatalf("admit: %v", err)
+	}
+}

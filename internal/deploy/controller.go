@@ -971,6 +971,9 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 
 // effectiveNames returns the Docker names an operation will take after resolving its inputs.
 func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.Claim, error) {
+	if (req.Kind == "" || req.Kind == "deploy" || req.Kind == "ingress") && req.Manifest.Network != "" && !manifest.ValidNetwork(req.Manifest.Network) {
+		return nil, Refusal("invalid project or network")
+	}
 	if req.Kind == "ingress" && req.Manifest.Ingress != nil {
 		connector, err := connectorRequest(req.Manifest, req, c.Environment, false)
 		if err != nil {
