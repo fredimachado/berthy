@@ -16,8 +16,8 @@ import (
 
 const (
 	shopRelease = `{"project":"shop","network":"shop","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}},"db":{"kind":"compose","file":"compose.yml"}}}`
-	oomEvent    = `{"Type":"container","Action":"oom","Actor":{"ID":"c1","Attributes":{"com.docker.compose.project":"shop-db","com.docker.compose.service":"db","name":"shop-db-db-1"}},"scope":"local","time":1795061398,"timeNano":1795061398000000000}`
-	dieEvent    = `{"Type":"container","Action":"die","Actor":{"ID":"c1","Attributes":{"com.docker.compose.project":"shop-db","exitCode":"137"}},"scope":"local","time":1795061399,"timeNano":1795061399000000000}`
+	oomEvent    = `{"Type":"container","Action":"oom","Actor":{"ID":"c1","Attributes":{"com.docker.compose.project":"shop-lab-db","com.docker.compose.service":"db","name":"shop-lab-db-db-1"}},"scope":"local","time":1795061398,"timeNano":1795061398000000000}`
+	dieEvent    = `{"Type":"container","Action":"die","Actor":{"ID":"c1","Attributes":{"com.docker.compose.project":"shop-lab-db","exitCode":"137"}},"scope":"local","time":1795061399,"timeNano":1795061399000000000}`
 )
 
 func shopMonitoring(t *testing.T, d *downFake) (*Monitoring, *state.Store) {
@@ -142,7 +142,7 @@ func TestAnOOMEventRaisesTheConditionWithoutWaitingForAPoll(t *testing.T) {
 	go func() { defer close(done); w.Run(ctx) }()
 	defer func() { cancel(); <-done }()
 
-	const check = "restarts:shop-db/db"
+	const check = "restarts:shop-lab-db/db"
 	stored := func() state.CheckState {
 		checks, _ := s.Checks(context.Background())
 		for _, c := range checks {

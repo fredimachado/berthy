@@ -98,7 +98,7 @@ func TestAppBackupsMatchesImageAndComposeApps(t *testing.T) {
 	if got := names(api.App{Ref: api.AppRef{Kind: "image", Name: "api"}}); got != "data,manual" {
 		t.Errorf("image app: %q", got)
 	}
-	if got := names(api.App{Ref: api.AppRef{Kind: "compose", Name: "demo-db"}}); got != "dumps" {
+	if got := names(api.App{Ref: api.AppRef{Kind: "compose", Name: "demo-lab-db"}}); got != "dumps" {
 		t.Errorf("compose app: %q", got)
 	}
 	if got := names(api.App{Ref: api.AppRef{Kind: "swarm", Name: "api"}}); got != "" {

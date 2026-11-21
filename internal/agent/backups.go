@@ -155,7 +155,7 @@ func resolveVolume(ctx context.Context, d *deploy.Controller, m manifest.Manifes
 			}
 		}
 	case "compose":
-		names, err := d.ComposeVolumeNames(ctx, m.ComposeProject(b.App))
+		names, err := d.ComposeVolumeNames(ctx, m.ComposeProject(d.Environment, b.App))
 		if err != nil {
 			return "", err
 		}

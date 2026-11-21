@@ -352,7 +352,7 @@ func TestBackupOfAComposeVolumeResolvesTheProjectsDockerName(t *testing.T) {
 	if len(g.docker.archived) != 1 || g.docker.archived[0] != "files_docs" {
 		t.Fatalf("archived volumes: %v", g.docker.archived)
 	}
-	if len(g.compose.runs) == 0 || g.compose.runs[0].Project != "demo-files" {
+	if len(g.compose.runs) == 0 || g.compose.runs[0].Project != "demo-lab-files" {
 		t.Fatalf("compose runs: %+v", g.compose.runs)
 	}
 	// An external volume resolves to its own name, and a key the Compose file lacks is not mounted.

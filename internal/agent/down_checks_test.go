@@ -101,7 +101,7 @@ func newDownFake(t *testing.T) *downFake {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			w.Write([]byte(`[{"Id":"c1","Image":"img","State":"running","Labels":{"com.docker.compose.project":"shop-db","com.docker.compose.service":"db"}}]`))
+			w.Write([]byte(`[{"Id":"c1","Image":"img","State":"running","Labels":{"com.docker.compose.project":"shop-lab-db","com.docker.compose.service":"db"}}]`))
 		case "/v1.44/containers/c1/json":
 			d.mu.Lock()
 			oom := d.oom
@@ -136,12 +136,12 @@ func TestDownAndRestartChecksShareOneInventoryRead(t *testing.T) {
 	for _, c := range w.appChecks(context.Background(), m) {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"down:api/web", "down:shop-db/db", "restarts:api/web", "restarts:shop-db/db"} {
+	for _, want := range []string{"down:api/web", "down:shop-lab-db/db", "restarts:api/web", "restarts:shop-lab-db/db"} {
 		if !names[want] {
 			t.Errorf("missing check %s; have %v", want, names)
 		}
 	}
-	if names["down:shop-api-web/web"] || names["down:shop-db/web"] {
+	if names["down:shop-api-web/web"] || names["down:shop-lab-db/web"] {
 		t.Errorf("a check named by a service instead of its app: %v", names)
 	}
 	if got := containerReads(); got != 1 {
@@ -149,7 +149,7 @@ func TestDownAndRestartChecksShareOneInventoryRead(t *testing.T) {
 	}
 	// Without a manifest no Compose project is managed, so its services get no check.
 	for _, c := range w.appChecks(context.Background(), nil) {
-		if strings.HasPrefix(c.Name(), "down:shop-db/") {
+		if strings.HasPrefix(c.Name(), "down:shop-lab-db/") {
 			t.Fatalf("unmanaged Compose service checked: %s", c.Name())
 		}
 	}
@@ -161,7 +161,7 @@ func TestDownQuietFollowsTheOperationsOfAnApp(t *testing.T) {
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	m := &manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image"}, "db": {Kind: "compose"}, "tools": {Kind: "image"}}}
 	api1 := api.AppRef{Kind: "image", Name: "api"}
-	db := api.AppRef{Kind: "compose", Name: "shop-db"}
+	db := api.AppRef{Kind: "compose", Name: "shop-lab-db"}
 	tools := api.AppRef{Kind: "image", Name: "tools"}
 
 	quietAt := func(at time.Time) func(api.AppRef) bool {
@@ -238,10 +238,10 @@ func TestDownAppsAddTheManifestProjectsThatHaveNoContainers(t *testing.T) {
 		"api":    {Kind: "image"},
 	}}
 	managed := []api.App{
-		{Ref: api.AppRef{Kind: "compose", Name: "shop-db"}, Roles: []api.Role{{Name: "db"}}},
+		{Ref: api.AppRef{Kind: "compose", Name: "shop-lab-db"}, Roles: []api.Role{{Name: "db"}}},
 		{Ref: api.AppRef{Kind: "image", Name: "api"}},
 	}
-	got := downApps(managed, m)
+	got := downApps(managed, m, "lab")
 	if len(got) != 3 {
 		t.Fatalf("apps %v, want the two managed ones and the project without containers", got)
 	}
@@ -249,7 +249,7 @@ func TestDownAppsAddTheManifestProjectsThatHaveNoContainers(t *testing.T) {
 	if last.Ref != (api.AppRef{Kind: "compose", Name: "old"}) || len(last.Roles) != 0 {
 		t.Fatalf("project without containers: %+v", last)
 	}
-	if got := downApps(managed, nil); len(got) != 2 {
+	if got := downApps(managed, nil, "lab"); len(got) != 2 {
 		t.Fatalf("without a manifest: %v", got)
 	}
 }

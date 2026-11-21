@@ -21,14 +21,6 @@ func CheckComposeFile(b []byte) error {
 	return nil
 }
 
-// ComposeProject is the Compose project name an app runs under: its project_name, or <project>-<app>.
-func (m *Manifest) ComposeProject(app string) string {
-	if a, ok := m.Apps[app]; ok && a.ProjectName != "" {
-		return a.ProjectName
-	}
-	return m.Project + "-" + app
-}
-
 // CheckComposeDeploy reports whether app exists and is a Compose app.
 func (m *Manifest) CheckComposeDeploy(app string) error {
 	a, ok := m.Apps[app]

@@ -48,7 +48,7 @@ func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Ti
 	if err != nil {
 		return nil
 	}
-	name := manifestAppName(m, app.Ref)
+	name := manifestAppName(m, d.Environment, app.Ref)
 	if name == "" {
 		return nil
 	}
@@ -61,11 +61,11 @@ func appJobs(ctx context.Context, d *deploy.Controller, app api.App, now time.Ti
 
 // manifestAppName returns the name the manifest gives the app of an inventory entry, or "" when it names none. An image app is
 // listed under its manifest name, and a Compose app under its Compose project name.
-func manifestAppName(m manifest.Manifest, ref api.AppRef) string {
+func manifestAppName(m manifest.Manifest, environment string, ref api.AppRef) string {
 	for n, a := range m.Apps {
 		switch {
 		case ref.Kind == "image" && a.Kind == "image" && n == ref.Name,
-			ref.Kind == "compose" && a.Kind == "compose" && m.ComposeProject(n) == ref.Name:
+			ref.Kind == "compose" && a.Kind == "compose" && m.ComposeProject(environment, n) == ref.Name:
 			return n
 		}
 	}
@@ -82,7 +82,7 @@ func appBackups(ctx context.Context, d *deploy.Controller, app api.App, now time
 	if err != nil {
 		return nil
 	}
-	name := manifestAppName(m, app.Ref)
+	name := manifestAppName(m, d.Environment, app.Ref)
 	if name == "" {
 		return nil
 	}

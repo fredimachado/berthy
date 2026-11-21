@@ -20,7 +20,7 @@ var downQuietKinds = []string{"deploy", "rollback", "restart", "scale", "remove"
 
 // downApps returns the apps the down checks observe: the managed apps, and every Compose project of the manifest that has no
 // containers, with no roles, so that its services count as stopped.
-func downApps(managed []api.App, m *manifest.Manifest) []api.App {
+func downApps(managed []api.App, m *manifest.Manifest, environment string) []api.App {
 	out := slices.Clone(managed)
 	if m == nil {
 		return out
@@ -30,7 +30,7 @@ func downApps(managed []api.App, m *manifest.Manifest) []api.App {
 		present[app.Ref] = true
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Apps)) {
-		ref := api.AppRef{Kind: "compose", Name: m.ComposeProject(name)}
+		ref := api.AppRef{Kind: "compose", Name: m.ComposeProject(environment, name)}
 		if m.Apps[name].Kind == "compose" && !present[ref] {
 			out = append(out, api.App{Ref: ref})
 		}
@@ -52,7 +52,7 @@ func (w *Monitoring) quietApps(ctx context.Context, m *manifest.Manifest, now ti
 			return func(api.AppRef) bool { return true }, nil
 		}
 		if slices.Contains(downQuietKinds, active.Kind) {
-			quiet[opAppRef(m, active.App)] = true
+			quiet[opAppRef(m, w.cfg.Environment, active.App)] = true
 		}
 	}
 	ended, err := w.store.LatestEvents(ctx, downQuietKinds, now.Add(-monitor.DownQuietAfter))
@@ -60,16 +60,16 @@ func (w *Monitoring) quietApps(ctx context.Context, m *manifest.Manifest, now ti
 		return nil, err
 	}
 	for app := range ended {
-		quiet[opAppRef(m, app)] = true
+		quiet[opAppRef(m, w.cfg.Environment, app)] = true
 	}
 	return func(ref api.AppRef) bool { return quiet[ref] }, nil
 }
 
 // opAppRef names the app of an operation the way the monitor names it: a Compose app by its project, any other by its name.
-func opAppRef(m *manifest.Manifest, app string) api.AppRef {
+func opAppRef(m *manifest.Manifest, environment, app string) api.AppRef {
 	if m != nil {
 		if a, ok := m.Apps[app]; ok && a.Kind == "compose" {
-			return api.AppRef{Kind: "compose", Name: m.ComposeProject(app)}
+			return api.AppRef{Kind: "compose", Name: m.ComposeProject(environment, app)}
 		}
 	}
 	return api.AppRef{Kind: "image", Name: app}

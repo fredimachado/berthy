@@ -244,7 +244,7 @@ func ownedBinding(spec json.RawMessage, project, environment string, b state.Bin
 // removalCompose plans the removal of a Compose app: the project to bring down, the services that run, and its volumes.
 func (c *Controller) removalCompose(ctx context.Context, actor Actor, req Request, r *removal) error {
 	r.plan.Kind = "compose"
-	r.plan.Project = r.m.ComposeProject(req.App)
+	r.plan.Project = r.m.ComposeProject(c.Environment, req.App)
 	if err := c.composeReady(); err != nil {
 		return err
 	}

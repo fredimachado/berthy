@@ -555,7 +555,7 @@ func composeRemoveFixture(t *testing.T, stateful bool) (*Controller, *state.Stor
 	t.Helper()
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
 	docker := newComposeDocker(engine.ComposeContainer{ID: "c1", Service: "database", ConfigHash: "hash-0000000000000001", State: "running"})
-	docker.projectVolumes = []string{"shop-db_data"}
+	docker.projectVolumes = []string{"shop-test-db_data"}
 	runner.onDown = func(r engine.ComposeRun) { docker.containers = nil }
 	c, s := composeController(t, runner, docker)
 	m := composeApp(stateful)
@@ -596,7 +596,7 @@ func downRuns(r *fakeCompose) []engine.ComposeRun {
 
 func TestRemoveComposeBringsTheProjectDownAndKeepsItsVolumes(t *testing.T) {
 	c, s, runner, _ := composeRemoveFixture(t, false)
-	project := "shop-db"
+	project := "shop-test-db"
 	if _, err := os.Stat(c.composeDir(project)); err != nil {
 		t.Fatalf("the project directory is missing before the removal: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestRemoveComposeBringsTheProjectDownAndKeepsItsVolumes(t *testing.T) {
 	if h, _ := s.History(context.Background(), "db"); len(h) != 1 {
 		t.Fatalf("history %+v", h)
 	}
-	if got := steps(t, s, op.ID); !hasStep(got, "brought down Compose project shop-db") || !hasStep(got, "kept volume shop-db_data") {
+	if got := steps(t, s, op.ID); !hasStep(got, "brought down Compose project shop-test-db") || !hasStep(got, "kept volume shop-test-db_data") {
 		t.Fatalf("steps %v", got)
 	}
 }
@@ -643,7 +643,7 @@ func TestRemoveStatefulComposeNeedsAllowRecreate(t *testing.T) {
 	if len(downRuns(runner)) != 0 {
 		t.Fatal("compose ran for a refused removal")
 	}
-	if _, err := os.Stat(c.composeDir("shop-db")); err != nil {
+	if _, err := os.Stat(c.composeDir("shop-test-db")); err != nil {
 		t.Fatalf("the project directory must stay: %v", err)
 	}
 	if _, err := s.Applied(context.Background(), "db"); err != nil {
@@ -664,7 +664,7 @@ func TestRemoveStatefulComposeNeedsAllowRecreate(t *testing.T) {
 
 func TestRemoveComposeWithoutItsProjectFilesBringsTheProjectDownByName(t *testing.T) {
 	c, s, runner, _ := composeRemoveFixture(t, false)
-	if err := os.RemoveAll(c.composeDir("shop-db")); err != nil {
+	if err := os.RemoveAll(c.composeDir("shop-test-db")); err != nil {
 		t.Fatal(err)
 	}
 	op := removeCompose(t, c, s, "remove", true, func(r *Request) { r.Volumes = true })
@@ -672,7 +672,7 @@ func TestRemoveComposeWithoutItsProjectFilesBringsTheProjectDownByName(t *testin
 		t.Fatalf("remove %s: %s", op.State, op.Err)
 	}
 	runs := downRuns(runner)
-	if len(runs) != 1 || !runs[0].NoFiles || runs[0].Project != "shop-db" || !reflect.DeepEqual(runs[0].Args, []string{"down", "--remove-orphans", "--volumes"}) {
+	if len(runs) != 1 || !runs[0].NoFiles || runs[0].Project != "shop-test-db" || !reflect.DeepEqual(runs[0].Args, []string{"down", "--remove-orphans", "--volumes"}) {
 		t.Fatalf("down runs %+v", runs)
 	}
 	if _, err := os.Stat(runs[0].Dir); !os.IsNotExist(err) {
@@ -687,7 +687,7 @@ func TestRemoveComposePlanListsServicesAndVolumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := plan.Remove
-	if r == nil || r.Kind != "compose" || r.Project != "shop-db" || !reflect.DeepEqual(r.Services, []string{"database"}) || !reflect.DeepEqual(r.Volumes, []string{"shop-db_data"}) || len(r.KeptVolumes) != 0 || len(r.Blockers) != 0 {
+	if r == nil || r.Kind != "compose" || r.Project != "shop-test-db" || !reflect.DeepEqual(r.Services, []string{"database"}) || !reflect.DeepEqual(r.Volumes, []string{"shop-test-db_data"}) || len(r.KeptVolumes) != 0 || len(r.Blockers) != 0 {
 		t.Fatalf("plan %+v", r)
 	}
 	if len(downRuns(runner)) != 0 {
@@ -702,7 +702,7 @@ func TestRemoveComposeFailureKeepsTheAppAndItsFiles(t *testing.T) {
 	if op.State != "failed" || op.Err != string(errRemoveCompose) {
 		t.Fatalf("remove %s: %q", op.State, op.Err)
 	}
-	if _, err := os.Stat(c.composeDir("shop-db")); err != nil {
+	if _, err := os.Stat(c.composeDir("shop-test-db")); err != nil {
 		t.Fatalf("the project directory must stay so the removal can be repeated: %v", err)
 	}
 	if _, err := s.Applied(context.Background(), "db"); err != nil {
@@ -718,7 +718,7 @@ func TestRecoveryRepeatsAnInterruptedComposeDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: composeDownKind, Name: "shop-db", Desired: json.RawMessage(`{"project":"shop-db","volumes":true}`)}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: composeDownKind, Name: "shop-test-db", Desired: json.RawMessage(`{"project":"shop-test-db","volumes":true}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err = c.Recover(ctx); err != nil {

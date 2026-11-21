@@ -342,7 +342,7 @@ func (w *Monitoring) serviceTarget(ctx context.Context, m manifest.Manifest, s m
 		if s.Role != "" {
 			return s.Role, nil
 		}
-		services, err := w.composeServices(ctx, m.ComposeProject(s.App))
+		services, err := w.composeServices(ctx, m.ComposeProject(w.cfg.Environment, s.App))
 		if err != nil {
 			return "", errors.New("probe target unknown: Compose services unavailable")
 		}
@@ -397,9 +397,9 @@ func (w *Monitoring) appChecks(ctx context.Context, m *manifest.Manifest) []moni
 	}
 	// The watches are shown the read again at each rebuild, with the read's own time: what changes between reads is the
 	// manifest and which apps are quiet, and the age of the read is what makes the checks unknown once it is too old.
-	managed := managedRestartApps(w.read.apps, m)
+	managed := managedRestartApps(w.read.apps, m, w.cfg.Environment)
 	w.watch.Observe(w.read.at, managed, w.read.failures)
-	w.down.Observe(w.read.at, downApps(managed, m), quiet)
+	w.down.Observe(w.read.at, downApps(managed, m, w.cfg.Environment), quiet)
 	var out []monitor.Check
 	for _, app := range managed {
 		for _, role := range app.Roles {
@@ -458,12 +458,12 @@ func (w *Monitoring) previousAppChecks(ctx context.Context) []monitor.Check {
 // managedRestartApps keeps the apps Berthy manages: image apps, which appear in the inventory only through their bindings
 // (the ingress connector among them), and Compose apps of the running manifest, matched by project name. Unmanaged
 // Swarm services and Compose projects that no manifest names are left out.
-func managedRestartApps(apps []api.App, m *manifest.Manifest) []api.App {
+func managedRestartApps(apps []api.App, m *manifest.Manifest, environment string) []api.App {
 	projects := map[string]bool{}
 	if m != nil {
 		for name, a := range m.Apps {
 			if a.Kind == "compose" {
-				projects[m.ComposeProject(name)] = true
+				projects[m.ComposeProject(environment, name)] = true
 			}
 		}
 	}

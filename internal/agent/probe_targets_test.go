@@ -94,7 +94,7 @@ func TestServiceProbeTargetsNameTheOverlayService(t *testing.T) {
 	}
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	var asked []string
-	w.composeServices = projectServicesFake("demo-db", []string{"postgres"}, &asked)
+	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
 	cases := map[string]struct {
 		probe   manifest.ServiceProbe
 		want    string
@@ -102,7 +102,7 @@ func TestServiceProbeTargetsNameTheOverlayService(t *testing.T) {
 	}{
 		"bound image role":      {manifest.ServiceProbe{App: "api", Port: 8080}, "lab-api-web", ""},
 		"role named":            {manifest.ServiceProbe{App: "api", Role: "web", Port: 8080}, "lab-api-web", ""},
-		"not deployed yet":      {manifest.ServiceProbe{App: "worker", Role: "job", Port: 9000}, "demo-worker-job", ""},
+		"not deployed yet":      {manifest.ServiceProbe{App: "worker", Role: "job", Port: 9000}, "demo-lab-worker-job", ""},
 		"compose, only service": {manifest.ServiceProbe{App: "db", Port: 5432}, "postgres", ""},
 		"compose, role named":   {manifest.ServiceProbe{App: "db", Role: "postgres", Port: 5432}, "postgres", ""},
 		"unknown app":           {manifest.ServiceProbe{App: "ghost", Port: 1}, "", "probe target unknown: app not in the manifest"},
@@ -119,7 +119,7 @@ func TestServiceProbeTargetsNameTheOverlayService(t *testing.T) {
 			t.Errorf("%s: %q %v, want %q", name, got, err, tc.want)
 		}
 	}
-	if !reflect.DeepEqual(asked, []string{"demo-db"}) {
+	if !reflect.DeepEqual(asked, []string{"demo-lab-db"}) {
 		t.Errorf("Compose project asked for %v", asked)
 	}
 }
@@ -132,7 +132,7 @@ func TestServiceProbeNeedsAComposeServiceNamedWhenThereAreSeveral(t *testing.T) 
 	}
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	var asked []string
-	w.composeServices = projectServicesFake("demo-db", []string{"postgres", "redis"}, &asked)
+	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres", "redis"}, &asked)
 	_, err = w.serviceTarget(context.Background(), *m, manifest.ServiceProbe{App: "db", Port: 5432})
 	if err == nil || err.Error() != "probe target unknown: name the Compose service as role" {
 		t.Fatalf("two services: %v", err)
@@ -165,7 +165,7 @@ func TestServiceProbeChecksSendTheirProbeToTheHelper(t *testing.T) {
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.helper.goos = "linux"
 	var asked []string
-	w.composeServices = projectServicesFake("demo-db", []string{"postgres"}, &asked)
+	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
 	checks := map[string]monitor.Check{}
 	for _, c := range w.checks(ctx) {
 		checks[c.Name()] = c
@@ -199,7 +199,7 @@ func TestServiceProbeWithoutAHelperIsUnknownWithTheReason(t *testing.T) {
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.helper.goos = "linux"
 	var asked []string
-	w.composeServices = projectServicesFake("demo-db", []string{"postgres"}, &asked)
+	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
 	checks := map[string]monitor.Check{}
 	for _, c := range w.checks(ctx) {
 		checks[c.Name()] = c
@@ -208,7 +208,7 @@ func TestServiceProbeWithoutAHelperIsUnknownWithTheReason(t *testing.T) {
 		t.Fatalf("no helper: %+v", res)
 	}
 	// A target nobody can name is unknown too, and never reaches the helper.
-	w.composeServices = projectServicesFake("demo-db", []string{"postgres", "redis"}, &asked)
+	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres", "redis"}, &asked)
 	checks = map[string]monitor.Check{}
 	for _, c := range w.checks(ctx) {
 		checks[c.Name()] = c

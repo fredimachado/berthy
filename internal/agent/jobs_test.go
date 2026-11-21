@@ -376,7 +376,7 @@ func TestAppJobsMatchesImageAndComposeApps(t *testing.T) {
 		t.Errorf("image app: %q", got)
 	}
 	// A Compose app is listed under its project name, which the manifest's project and app name make.
-	if got := names(api.App{Ref: api.AppRef{Kind: "compose", Name: "demo-db"}}); got != "dump" {
+	if got := names(api.App{Ref: api.AppRef{Kind: "compose", Name: "demo-lab-db"}}); got != "dump" {
 		t.Errorf("compose app: %q", got)
 	}
 	if got := names(api.App{Ref: api.AppRef{Kind: "compose", Name: "api"}}); got != "" {

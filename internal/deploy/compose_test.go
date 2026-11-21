@@ -24,7 +24,7 @@ const composeFileOne = "services:\n  database:\n    image: alpine:3.20\n    envi
 const composeFileTwo = "services:\n  database:\n    image: alpine:3.20\n    environment:\n      MODE: two\n    volumes:\n      - data:/data\nvolumes:\n  data: {}\n"
 
 // configOne is `compose config --format json` for one service with a named volume, published on a private address.
-const configOne = `{"services":{"database":{"image":"alpine:3.20","ports":[{"mode":"ingress","host_ip":"127.0.0.1","target":80,"published":"18080","protocol":"tcp"}],"volumes":[{"type":"volume","source":"data","target":"/data"}]}},"volumes":{"data":{"name":"shop-db_data"}}}`
+const configOne = `{"services":{"database":{"image":"alpine:3.20","ports":[{"mode":"ingress","host_ip":"127.0.0.1","target":80,"published":"18080","protocol":"tcp"}],"volumes":[{"type":"volume","source":"data","target":"/data"}]}},"volumes":{"data":{"name":"shop-test-db_data"}}}`
 
 // hashOne is `compose config --hash *` for the configuration of configOne.
 const hashOne = "database hash-0000000000000001\n"
@@ -214,7 +214,7 @@ func composeController(t *testing.T, runner *fakeCompose, docker *composeDocker)
 }
 
 func newComposeDocker(containers ...engine.ComposeContainer) *composeDocker {
-	return &composeDocker{positiveEngine: &positiveEngine{}, containers: containers, volumes: map[string]bool{"shop-db_data": true}}
+	return &composeDocker{positiveEngine: &positiveEngine{}, containers: containers, volumes: map[string]bool{"shop-test-db_data": true}}
 }
 
 func composeApp(stateful bool) manifest.Manifest {
@@ -294,7 +294,7 @@ func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 				ComposeFile string `json:"compose_file"`
 				Project     string `json:"project"`
 			}
-			if json.Unmarshal(i.Desired, &source) != nil || source.ComposeFile != composeFileOne || source.Project != "shop-db" {
+			if json.Unmarshal(i.Desired, &source) != nil || source.ComposeFile != composeFileOne || source.Project != "shop-test-db" {
 				t.Fatalf("source intent %s", i.Desired)
 			}
 			sourced = true
@@ -303,7 +303,7 @@ func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 	if !sourced {
 		t.Fatal("no compose source intent")
 	}
-	dir := filepath.Join(c.StateDir, "compose", "shop-db")
+	dir := filepath.Join(c.StateDir, "compose", "shop-test-db")
 	if b, err := os.ReadFile(filepath.Join(dir, "compose.yaml")); err != nil || string(b) != composeFileOne {
 		t.Fatalf("project file: %v", err)
 	}
@@ -386,13 +386,13 @@ func TestComposeDryRunReturnsPlanWithBlockers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Compose == nil || plan.Compose.Project != "shop-db" {
+	if plan.Compose == nil || plan.Compose.Project != "shop-test-db" {
 		t.Fatalf("plan %+v", plan)
 	}
 	if got := plan.Compose.Services; len(got) != 2 || got[0] != (ComposeService{Name: "database", Action: "recreate"}) || got[1] != (ComposeService{Name: "retired", Action: "remove"}) {
 		t.Fatalf("services %+v", got)
 	}
-	if len(plan.Compose.Volumes) != 1 || plan.Compose.Volumes[0] != (ComposeVolume{Name: "shop-db_data", Action: "keep"}) {
+	if len(plan.Compose.Volumes) != 1 || plan.Compose.Volumes[0] != (ComposeVolume{Name: "shop-test-db_data", Action: "keep"}) {
 		t.Fatalf("volumes %+v", plan.Compose.Volumes)
 	}
 	if len(plan.Compose.Blockers) != 2 || plan.Compose.Blockers[0] != "stateful app db would recreate database; deploy with --allow-recreate and an admin token" || plan.Compose.Blockers[1] != "stateful app db would remove retired; deploy with --allow-recreate and an admin token" {
@@ -524,7 +524,7 @@ func TestComposeRecoveryFinishesInterruptedRunAsInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: composeRunOrdinal, Kind: "compose", Name: "shop-db", Desired: json.RawMessage(`{}`)}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: composeRunOrdinal, Kind: "compose", Name: "shop-test-db", Desired: json.RawMessage(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.MarkStep(ctx, op.ID, composeRunOrdinal, "issued", json.RawMessage(`{}`)); err != nil {
@@ -558,7 +558,7 @@ func TestComposeRestartRunsRestartAndRefusesScale(t *testing.T) {
 	if err = s.Finish(ctx, seed.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Digest: digestOf(composeFileOne), Manifest: b}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.MkdirAll(filepath.Join(c.StateDir, "compose", "shop-db"), 0700); err != nil {
+	if err = os.MkdirAll(filepath.Join(c.StateDir, "compose", "shop-test-db"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.Plan(ctx, Actor{ID: "ci"}, Request{App: "db", Kind: "restart", DryRun: true}); err != nil {
@@ -695,14 +695,14 @@ func TestBuildComposePlanActionsAndVolumes(t *testing.T) {
 			"web":   {},
 		},
 		Volumes: map[string]composeConfigVolume{
-			"data":     {Name: "shop-db_data"},
+			"data":     {Name: "shop-test-db_data"},
 			"shared":   {Name: "shared-volume", External: json.RawMessage("true")},
-			"uploads":  {Name: "shop-db_uploads"},
-			"unlisted": {Name: "shop-db_unlisted"},
+			"uploads":  {Name: "shop-test-db_uploads"},
+			"unlisted": {Name: "shop-test-db_unlisted"},
 		},
 	}
 	plan := buildComposePlan(composeInputs{
-		Project: "shop-db",
+		Project: "shop-test-db",
 		App:     "db",
 		Config:  cfg,
 		Hashes:  map[string]string{"api": "hash-api-000000000", "cache": "hash-cache-00000000", "web": "hash-web-0000000000"},
@@ -712,7 +712,7 @@ func TestBuildComposePlanActionsAndVolumes(t *testing.T) {
 			{ID: "3", Service: "retired", ConfigHash: "hash-old-000000000"},
 			{ID: "4", Service: "api", ConfigHash: "hash-api-000000000", OneOff: true},
 		},
-		VolumeExists: map[string]bool{"shop-db_data": true, "shop-db_uploads": false, "shop-db_unlisted": true},
+		VolumeExists: map[string]bool{"shop-test-db_data": true, "shop-test-db_uploads": false, "shop-test-db_unlisted": true},
 	})
 	wantServices := []ComposeService{{"api", "keep"}, {"cache", "recreate"}, {"web", "create"}, {"retired", "remove"}}
 	if len(plan.Services) != len(wantServices) {
@@ -723,7 +723,7 @@ func TestBuildComposePlanActionsAndVolumes(t *testing.T) {
 			t.Fatalf("service %d: %+v, want %+v", i, plan.Services[i], s)
 		}
 	}
-	wantVolumes := []ComposeVolume{{"shop-db_data", "keep"}, {"shop-db_unlisted", "keep"}, {"shop-db_uploads", "create"}}
+	wantVolumes := []ComposeVolume{{"shop-test-db_data", "keep"}, {"shop-test-db_unlisted", "keep"}, {"shop-test-db_uploads", "create"}}
 	if len(plan.Volumes) != len(wantVolumes) {
 		t.Fatalf("volumes %+v", plan.Volumes)
 	}
@@ -751,11 +751,11 @@ func TestBuildComposePlanBlockers(t *testing.T) {
 		"private": svc(composeConfigPort{HostIP: "127.0.0.1", Published: "6060"}),
 		"unused":  svc(composeConfigPort{}),
 		"builder": {Build: json.RawMessage(`{"context":"."}`)},
-		"binder":  {Volumes: []composeConfigMount{{Type: "bind", Source: filepath.Join(root, "shop-db", "data")}}},
+		"binder":  {Volumes: []composeConfigMount{{Type: "bind", Source: filepath.Join(root, "shop-test-db", "data")}}},
 		"host":    {Volumes: []composeConfigMount{{Type: "bind", Source: hostPath}}},
 	}}
 	// A bind mount inside the Compose root is refused for everyone. A host mount needs an administrator.
-	admin := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Root: root, Admin: true, Config: cfg})
+	admin := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Root: root, Admin: true, Config: cfg})
 	wantAdmin := []string{
 		"service binder binds a path inside the agent's Compose directory; use a named volume or a path outside it",
 		"service builder builds an image; Compose apps deploy images only",
@@ -766,15 +766,15 @@ func TestBuildComposePlanBlockers(t *testing.T) {
 	if strings.Join(admin.Blockers, "\n") != strings.Join(wantAdmin, "\n") {
 		t.Fatalf("administrator blockers:\n%s", strings.Join(admin.Blockers, "\n"))
 	}
-	deploy := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Root: root, Config: cfg})
+	deploy := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Root: root, Config: cfg})
 	wantDeploy := append(append([]string(nil), wantAdmin...),
-		"service binder mounts host path "+filepath.Join(root, "shop-db", "data")+"; deploy it with an admin token",
+		"service binder mounts host path "+filepath.Join(root, "shop-test-db", "data")+"; deploy it with an admin token",
 		"service host mounts host path "+hostPath+"; deploy it with an admin token")
 	if strings.Join(deploy.Blockers, "\n") != strings.Join(wantDeploy, "\n") {
 		t.Fatalf("deploy blockers:\n%s", strings.Join(deploy.Blockers, "\n"))
 	}
 
-	stateful := composeInputs{Project: "shop-db", App: "db", Root: root, Stateful: true, Config: composeConfigFile{Services: map[string]composeConfigService{"database": {}}}, Containers: []engine.ComposeContainer{{ID: "1", Service: "database", ConfigHash: "old"}}, Hashes: map[string]string{"database": "new"}}
+	stateful := composeInputs{Project: "shop-test-db", App: "db", Root: root, Stateful: true, Config: composeConfigFile{Services: map[string]composeConfigService{"database": {}}}, Containers: []engine.ComposeContainer{{ID: "1", Service: "database", ConfigHash: "old"}}, Hashes: map[string]string{"database": "new"}}
 	if got := buildComposePlan(stateful).Blockers; len(got) != 1 || got[0] != "stateful app db would recreate database; deploy with --allow-recreate and an admin token" {
 		t.Fatalf("stateful blockers %v", got)
 	}
@@ -822,11 +822,11 @@ func TestHostAccessNeedsAdministratorForEachSetting(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.config), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			deploy := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Config: cfg}).Blockers
+			deploy := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Config: cfg}).Blockers
 			if want := tc.want + "; deploy it with an admin token"; len(deploy) != 1 || deploy[0] != want {
 				t.Fatalf("deploy token blockers %q, want %q", deploy, want)
 			}
-			if got := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Admin: true, Config: cfg}).Blockers; len(got) != 0 {
+			if got := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Admin: true, Config: cfg}).Blockers; len(got) != 0 {
 				t.Fatalf("administrator blocked: %q", got)
 			}
 		})
@@ -841,7 +841,7 @@ func TestHostAccessAllowsOrdinaryConfiguration(t *testing.T) {
 	if err := json.Unmarshal([]byte(ordinary), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Config: cfg}).Blockers; len(got) != 0 {
+	if got := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Config: cfg}).Blockers; len(got) != 0 {
 		t.Fatalf("ordinary configuration blocked for a deploy token: %q", got)
 	}
 }
@@ -961,7 +961,7 @@ func TestSharedContainerReferences(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.config), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			deploy := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Config: cfg}).Blockers
+			deploy := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Config: cfg}).Blockers
 			if tc.want == "" {
 				if len(deploy) != 0 {
 					t.Fatalf("deploy token blocked: %q", deploy)
@@ -969,7 +969,7 @@ func TestSharedContainerReferences(t *testing.T) {
 			} else if want := "service web shares container " + tc.want + "; deploy it with an admin token"; len(deploy) != 1 || deploy[0] != want {
 				t.Fatalf("deploy token blockers %q, want %q", deploy, want)
 			}
-			if got := buildComposePlan(composeInputs{Project: "shop-db", App: "db", Admin: true, Config: cfg}).Blockers; len(got) != 0 {
+			if got := buildComposePlan(composeInputs{Project: "shop-test-db", App: "db", Admin: true, Config: cfg}).Blockers; len(got) != 0 {
 				t.Fatalf("administrator blocked: %q", got)
 			}
 		})
@@ -985,7 +985,7 @@ func TestComposeTextsAreTheOnlyDynamicPublicMessages(t *testing.T) {
 		statefulBlocker("db", "database", "recreate"),
 		statefulBlocker("db", "retired", "remove"),
 		"adoption would change service database; align the manifest first",
-		"adoption would change volume shop-db_data; align the manifest first",
+		"adoption would change volume shop-test-db_data; align the manifest first",
 		string(errAllowRecreateAdmin),
 		string(errComposeUp),
 		string(errComposeInterrupted),
@@ -1133,7 +1133,7 @@ func TestComposeExecPlanNamesTheServiceAndIsStableAcrossContainers(t *testing.T)
 	ctx := context.Background()
 	req := Request{App: "db", Kind: "exec", Service: "postgres", Command: []string{"psql", "-c", "select 1"}}
 	first, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
-	if err != nil || first.Exec == nil || first.Exec.Target != "shop-db/postgres" {
+	if err != nil || first.Exec == nil || first.Exec.Target != "shop-test-db/postgres" {
 		t.Fatalf("plan %+v: %v", first, err)
 	}
 	if !slices.Equal(first.Command, req.Command) {
@@ -1209,5 +1209,25 @@ func TestExecRefusesAFlagTheAppKindDoesNotTake(t *testing.T) {
 	}
 	if _, err := image.Plan(ctx, admin, Request{App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
 		t.Fatalf("image app with a service, plan: %v", err)
+	}
+}
+
+func TestAComposeAppOfTwoEnvironmentsRunsUnderTwoProjects(t *testing.T) {
+	for _, env := range []string{"dev", "prod"} {
+		runner := &fakeCompose{config: configOne, hashes: hashOne}
+		c, _ := composeController(t, runner, newComposeDocker())
+		c.Environment = env
+		plan, err := c.composePlanIn(context.Background(), t.TempDir(), Actor{Admin: true}, composeReq("compose", composeFileOne, composeApp(false)), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "shop-" + env + "-db"; plan.Project != want {
+			t.Errorf("project %q, want %q", plan.Project, want)
+		}
+		for _, run := range runner.runs {
+			if run.Project != "shop-"+env+"-db" {
+				t.Errorf("compose used %q", run.Project)
+			}
+		}
 	}
 }

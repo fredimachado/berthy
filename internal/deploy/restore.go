@@ -155,7 +155,7 @@ func (c *Controller) restoreJob(ctx context.Context, req Request) (manifest.Job,
 		return manifest.Job{}, "", Refusal(msg)
 	}
 	if e, ok := c.Engine.(composeJobEngine); ok && app.Kind == "compose" {
-		containers, err := e.ComposeContainers(ctx, m.ComposeProject(req.App))
+		containers, err := e.ComposeContainers(ctx, m.ComposeProject(c.Environment, req.App))
 		if err != nil {
 			return manifest.Job{}, "", errors.New("containers unavailable")
 		}

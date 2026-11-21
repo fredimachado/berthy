@@ -10,10 +10,10 @@ func TestComposeProjectNameDefaultsAndOverride(t *testing.T) {
 		"db":    {Kind: "compose", File: "compose.yaml"},
 		"cache": {Kind: "compose", File: "cache.yaml", ProjectName: "legacy-cache"},
 	}}
-	if got := m.ComposeProject("db"); got != "shop-db" {
+	if got := m.ComposeProject("prod", "db"); got != "shop-prod-db" {
 		t.Fatalf("default project %q", got)
 	}
-	if got := m.ComposeProject("cache"); got != "legacy-cache" {
+	if got := m.ComposeProject("prod", "cache"); got != "legacy-cache" {
 		t.Fatalf("override project %q", got)
 	}
 }

@@ -44,7 +44,7 @@ func withDaemonConfig(t *testing.T, content string) {
 // that caps its logs.
 const stackConfig = `{"services":{"bare":{"image":"alpine:3.20"},"capped":{"image":"alpine:3.20","logging":{"driver":"json-file","options":{"max-size":"5m"}}}}}`
 
-// stackManifest declares one Compose app, "stack", which runs as the project shop-stack.
+// stackManifest declares one Compose app, "stack", which runs as the project shop-lab-stack.
 func stackManifest() manifest.Manifest {
 	return manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"stack": {Kind: "compose", File: "compose.yml"}}}
 }
@@ -70,12 +70,12 @@ func TestDaemonLogMaxSizeReadsLogOpts(t *testing.T) {
 func TestComposeLogCheckNamesOnlyServicesWithoutALimit(t *testing.T) {
 	withDaemonConfig(t, "")
 	e, _ := doctorDocker(t, nil)
-	d := &deploy.Controller{Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
+	d := &deploy.Controller{Environment: "lab", Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
 	check, ok := composeLogCheck(context.Background(), d, e, stackManifest())
 	if !ok || check.Name != "compose_log_limit" || check.OK || check.Critical {
 		t.Fatalf("check %+v, reported %v", check, ok)
 	}
-	if !strings.Contains(check.Detail, "shop-stack/bare") || strings.Contains(check.Detail, "capped") {
+	if !strings.Contains(check.Detail, "shop-lab-stack/bare") || strings.Contains(check.Detail, "capped") {
 		t.Fatalf("detail %q", check.Detail)
 	}
 }
@@ -84,14 +84,14 @@ func TestComposeLogCheckIsSilentWhenNothingIsUnlimited(t *testing.T) {
 	e, _ := doctorDocker(t, nil)
 	t.Run("the daemon sets a max-size", func(t *testing.T) {
 		withDaemonConfig(t, `{"log-opts":{"max-size":"20m"}}`)
-		d := &deploy.Controller{Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
+		d := &deploy.Controller{Environment: "lab", Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
 		if check, ok := composeLogCheck(context.Background(), d, e, stackManifest()); ok {
 			t.Fatalf("warned although the daemon limits every service: %+v", check)
 		}
 	})
 	t.Run("no Compose app", func(t *testing.T) {
 		withDaemonConfig(t, "")
-		d := &deploy.Controller{Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
+		d := &deploy.Controller{Environment: "lab", Compose: logLimitRunner{config: stackConfig}, StateDir: t.TempDir()}
 		image := manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web"}}}
 		if check, ok := composeLogCheck(context.Background(), d, e, image); ok {
 			t.Fatalf("warned without a Compose app: %+v", check)

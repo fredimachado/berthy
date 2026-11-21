@@ -101,7 +101,7 @@ func appDrift(ctx context.Context, d *deploy.Controller, app api.App) (lines, sc
 		if err != nil {
 			return nil, nil
 		}
-		if name = manifestAppName(m, app.Ref); name == "" {
+		if name = manifestAppName(m, d.Environment, app.Ref); name == "" {
 			return nil, nil
 		}
 	default:

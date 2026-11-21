@@ -23,3 +23,11 @@ func (m *Manifest) ServiceNameError(environment, app, role string) string {
 	}
 	return ""
 }
+
+// ComposeProject is the Compose project an app runs under: its project_name, or <project>-<environment>-<app>.
+func (m *Manifest) ComposeProject(environment, app string) string {
+	if a, ok := m.Apps[app]; ok && a.ProjectName != "" {
+		return a.ProjectName
+	}
+	return m.Project + "-" + environment + "-" + app
+}

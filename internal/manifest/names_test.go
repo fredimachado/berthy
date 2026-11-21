@@ -32,3 +32,13 @@ func TestServiceNameErrorNamesANameOver63Characters(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestComposeProjectKeepsAnExplicitProjectName(t *testing.T) {
+	m := Manifest{Project: "shop", Apps: map[string]App{"db": {}, "cache": {ProjectName: "legacy"}}}
+	if got := m.ComposeProject("prod", "db"); got != "shop-prod-db" {
+		t.Fatalf("default project %q", got)
+	}
+	if got := m.ComposeProject("prod", "cache"); got != "legacy" {
+		t.Fatalf("explicit project %q", got)
+	}
+}

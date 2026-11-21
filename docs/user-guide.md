@@ -2879,7 +2879,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `image` | image | string | required | The image's repository, with no tag or digest. |
 | `roles` | image | map | required | The app's roles, by name, at least one. A role is a set of containers that run the image with a command, replicas and health check of its own. |
 | `file` | compose | string | required | The Compose file's path, relative to the manifest directory. No `..`. |
-| `project_name` | compose | name | `<project>-<app>` | The Compose project name. Never change it once the app holds data. |
+| `project_name` | compose | name | `<project>-<environment>-<app>` | The Compose project name. Never change it once the app holds data. |
 | `stateful` | compose | boolean | `false` | Recreating or removing the app needs `--allow-recreate` and an `admin` token. |
 | `depends_on` | both | list | none | The apps that `berthy deploy` without an app deploys before this one. Each must be another app of the manifest, listed once, with no cycle. It orders nothing else. |
 | `env` | both | map | none | The environment of the app's containers. |

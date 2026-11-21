@@ -609,7 +609,7 @@ func firstDifference(p ComposePlan) string {
 
 // composePlanIn plans req inside dir, which holds the staged files. It makes no changes.
 func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor, req Request, adopt bool) (ComposePlan, error) {
-	project := req.Manifest.ComposeProject(req.App)
+	project := req.Manifest.ComposeProject(c.Environment, req.App)
 	app := req.Manifest.Apps[req.App]
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
 	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
@@ -712,7 +712,7 @@ func (c *Controller) planComposeOperation(ctx context.Context, req Request, m ma
 	if err := c.composeReady(); err != nil {
 		return Plan{}, err
 	}
-	if _, err := os.Stat(c.composeDir(m.ComposeProject(req.App))); err != nil {
+	if _, err := os.Stat(c.composeDir(m.ComposeProject(c.Environment, req.App))); err != nil {
 		return Plan{}, errComposeNoFiles
 	}
 	return Plan{App: req.App, Roles: []string{}}, nil
@@ -723,7 +723,7 @@ func (c *Controller) runComposeRestart(ctx context.Context, m manifest.Manifest,
 	if _, err := c.planComposeOperation(ctx, req, m); err != nil {
 		return failedWith(err)
 	}
-	project := m.ComposeProject(req.App)
+	project := m.ComposeProject(c.Environment, req.App)
 	rctx, cancel := context.WithTimeout(ctx, composeRestartLimit)
 	defer cancel()
 	if _, _, err := c.Compose.Run(rctx, engine.ComposeRun{Project: project, Dir: c.composeDir(project), Args: []string{"restart"}}); err != nil {
@@ -766,7 +766,7 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 		return failedWith(err)
 	}
 	app := req.Manifest.Apps[req.App]
-	project := req.Manifest.ComposeProject(req.App)
+	project := req.Manifest.ComposeProject(c.Environment, req.App)
 	budget := composeDefaultTimeout
 	if app.Deploy.DeployTimeout != "" {
 		d, err := time.ParseDuration(app.Deploy.DeployTimeout)

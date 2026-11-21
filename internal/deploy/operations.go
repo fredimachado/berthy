@@ -675,7 +675,7 @@ func (c *Controller) composeExecTarget(ctx context.Context, m manifest.Manifest,
 	if !ok {
 		return "", "", errors.New("exec unavailable")
 	}
-	project := m.ComposeProject(req.App)
+	project := m.ComposeProject(c.Environment, req.App)
 	containers, err := d.ComposeContainers(ctx, project)
 	if err != nil {
 		return "", "", errors.New("container inspection failed")

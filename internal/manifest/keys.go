@@ -90,7 +90,7 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.image", Section: "apps", Type: "string", Required: true, Applies: "image", Description: "The image's repository, with no tag or digest."},
 		{Path: "apps.<name>.roles", Section: "apps", Type: "map", Required: true, Applies: "image", NamePattern: identifier.String(), Description: "The app's roles, by name, at least one. A role is a set of containers that run the image with a command, replicas and health check of its own."},
 		{Path: "apps.<name>.file", Section: "apps", Type: "string", Required: true, Applies: "compose", Description: "The Compose file's path, relative to the manifest directory. No `..`."},
-		{Path: "apps.<name>.project_name", Section: "apps", Type: "name", Default: "<project>-<app>", Applies: "compose", Description: "The Compose project name. Never change it once the app holds data."},
+		{Path: "apps.<name>.project_name", Section: "apps", Type: "name", Default: "<project>-<environment>-<app>", Applies: "compose", Description: "The Compose project name. Never change it once the app holds data."},
 		{Path: "apps.<name>.stateful", Section: "apps", Type: "boolean", Default: "false", Applies: "compose", Description: "Recreating or removing the app needs `--allow-recreate` and an `admin` token."},
 		{Path: "apps.<name>.depends_on", Section: "apps", Type: "list", Description: "The apps that `berthy deploy` without an app deploys before this one. Each must be another app of the manifest, listed once, with no cycle. It orders nothing else."},
 		{Path: "apps.<name>.env", Section: "apps", Type: "map", Description: "The environment of the app's containers."},

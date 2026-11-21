@@ -451,7 +451,7 @@ func TestRestartChecksCoverOnlyTheAppsBerthyManages(t *testing.T) {
 	inventory := []api.App{
 		{Ref: api.AppRef{Kind: "swarm", Name: "p2test-api-web"}, Roles: role("p2test-api-web")},
 		{Ref: api.AppRef{Kind: "compose", Name: "old-stack"}, Roles: role("web")},
-		{Ref: api.AppRef{Kind: "compose", Name: "demo-db"}, Roles: role("db")},
+		{Ref: api.AppRef{Kind: "compose", Name: "demo-test-db"}, Roles: role("db")},
 		{Ref: api.AppRef{Kind: "compose", Name: "p3alegacy"}, Roles: role("store")},
 		{Ref: api.AppRef{Kind: "image", Name: "ingress"}, Roles: role("connector")},
 		{Ref: api.AppRef{Kind: "image", Name: "api"}, Roles: role("web")},
@@ -468,11 +468,11 @@ func TestRestartChecksCoverOnlyTheAppsBerthyManages(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
-	if got, want := names(managedRestartApps(inventory, m)), "compose:demo-db,compose:p3alegacy,image:ingress,image:api"; got != want {
+	if got, want := names(managedRestartApps(inventory, m, "test")), "compose:demo-test-db,compose:p3alegacy,image:ingress,image:api"; got != want {
 		t.Fatalf("managed apps %s, want %s", got, want)
 	}
 	// Without a manifest no Compose project is named, so none is managed; image apps still are.
-	if got, want := names(managedRestartApps(inventory, nil)), "image:ingress,image:api"; got != want {
+	if got, want := names(managedRestartApps(inventory, nil, "test")), "image:ingress,image:api"; got != want {
 		t.Fatalf("managed apps without a manifest %s, want %s", got, want)
 	}
 }

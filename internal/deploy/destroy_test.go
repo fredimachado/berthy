@@ -344,7 +344,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 		t.Fatalf("order of removals: %v", calls)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"api: deleted service demo-test-api-web", "db: brought down Compose project demo-db", "api: kept volume demo-test_data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
+	for _, want := range []string{"api: deleted service demo-test-api-web", "db: brought down Compose project demo-test-db", "api: kept volume demo-test_data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
 		if !hasStep(got, want) {
 			t.Errorf("no step %q in %v", want, got)
 		}

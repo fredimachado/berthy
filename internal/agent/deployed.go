@@ -146,7 +146,7 @@ func composeLogCheck(ctx context.Context, d *deploy.Controller, e *engine.Engine
 	maxSize := daemonLogMaxSize()
 	var unlimited []string
 	for _, app := range apps {
-		project := m.ComposeProject(app)
+		project := m.ComposeProject(d.Environment, app)
 		services, err := d.ComposeServicesWithoutLogLimit(ctx, project, driver, maxSize)
 		if err != nil {
 			continue

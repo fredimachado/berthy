@@ -179,7 +179,7 @@ func (c *Controller) runComposeCommand(ctx context.Context, m manifest.Manifest,
 	if !ok {
 		return jobs.Outcome{}, errors.New("exec unavailable")
 	}
-	containers, err := e.ComposeContainers(ctx, m.ComposeProject(job.App))
+	containers, err := e.ComposeContainers(ctx, m.ComposeProject(c.Environment, job.App))
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
