@@ -434,6 +434,18 @@ func operationQuery(row *sql.Row) (Operation, error) {
 	copy(o.RequestHash[:], hash)
 	return o, err
 }
+
+// AdmissionForRequest finds an existing admission and enforces request idempotency.
+func (s *Store) AdmissionForRequest(ctx context.Context, requestID, actorID string, hash [32]byte) (Operation, error) {
+	op, err := operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, requestID))
+	if err != nil {
+		return Operation{}, err
+	}
+	if op.ActorID != actorID || op.RequestHash != hash {
+		return Operation{}, ErrConflict
+	}
+	return op, nil
+}
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
 	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
 }

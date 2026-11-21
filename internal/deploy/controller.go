@@ -136,7 +136,7 @@ type Foreign struct {
 }
 
 type Controller struct {
-	Reserve     func(context.Context, []state.Claim) error
+	Reserve     func(context.Context, []state.Claim) ([]state.Claim, error)
 	Foreign     func(context.Context) (Foreign, error)
 	Engine      Engine
 	Store       *state.Store
@@ -376,6 +376,27 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.AllowRecreate && !actor.Admin {
 		return state.Operation{}, false, errAllowRecreateAdmin
 	}
+	// An ingress admission records the connector app before hashing the request.
+	hashReq := req
+	if hashReq.Kind == "ingress" {
+		hashReq.App = manifest.ConnectorAppName
+	}
+	hashReq.RequestID = ""
+	hashReq.DryRun = false
+	encoded, err := json.Marshal(hashReq)
+	if err != nil {
+		return state.Operation{}, false, err
+	}
+	sum := sha256.Sum256(encoded)
+	if c.Store != nil {
+		op, err := c.Store.AdmissionForRequest(ctx, req.RequestID, actor.ID, sum)
+		if err == nil {
+			return op, false, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return state.Operation{}, false, err
+		}
+	}
 	if req.Kind != "rollback" {
 		if err := checkRequestManifest(req.Manifest); err != nil {
 			return state.Operation{}, false, err
@@ -455,14 +476,6 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
-	copyReq := req
-	copyReq.RequestID = ""
-	copyReq.DryRun = false
-	b, err := json.Marshal(copyReq)
-	if err != nil {
-		return state.Operation{}, false, err
-	}
-	sum := sha256.Sum256(b)
 	public, err := json.Marshal(struct {
 		App             string `json:"app"`
 		Version         string `json:"version"`
@@ -1095,25 +1108,7 @@ func (c *Controller) reserveNames(ctx context.Context, req Request) ([]state.Cla
 }
 
 func (c *Controller) reserveClaims(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
-	held, err := c.Store.Claims(ctx)
-	if err != nil {
-		return nil, err
-	}
-	existing := map[state.Claim]bool{}
-	for _, claim := range held {
-		existing[claim] = true
-	}
-	if err := c.Reserve(ctx, claims); err != nil {
-		return nil, err
-	}
-	var added []state.Claim
-	for _, claim := range claims {
-		if !existing[claim] {
-			added = append(added, claim)
-			existing[claim] = true
-		}
-	}
-	return added, nil
+	return c.Reserve(ctx, claims)
 }
 
 // settle gives up claims only after Docker confirms their objects are absent.

@@ -58,14 +58,16 @@ func Open(sh Shared, f File) (*Host, error) {
 	}
 	for _, r := range h.order {
 		id := r.Config.ID()
-		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) error { return h.reserveContext(ctx, id, claims) }
+		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+			return h.reserveContext(ctx, id, claims)
+		}
 		r.deployment.Foreign = func(ctx context.Context) (deploy.Foreign, error) {
 			h.claimsMu.Lock()
 			defer h.claimsMu.Unlock()
 			return h.foreign(ctx, id)
 		}
 		if r.Config.Network != "" {
-			if err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {
+			if _, err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {
 				h.Close()
 				return nil, err
 			}
@@ -91,22 +93,22 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 	return f, nil
 }
 
-func (h *Host) reserve(id scope.ID, claims []state.Claim) error {
+func (h *Host) reserve(id scope.ID, claims []state.Claim) ([]state.Claim, error) {
 	return h.reserveContext(context.Background(), id, claims)
 }
-func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.Claim) error {
+func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.Claim) ([]state.Claim, error) {
 	h.claimsMu.Lock()
 	defer h.claimsMu.Unlock()
 	f, err := h.foreign(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, c := range claims {
 		if f.Claims[c] {
-			return deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
+			return nil, deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
 		}
 	}
-	return h.runtimes[id].deployment.Store.AddClaims(ctx, claims)
+	return h.runtimes[id].deployment.Store.AddClaimsNew(ctx, claims)
 }
 
 // Start starts every hosted environment. The caller serves the Host only after it returns. When one fails to start, the

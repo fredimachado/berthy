@@ -441,7 +441,7 @@ func TestTwoOverlappingReservationsOfOneNameHaveOneWinner(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	for _, id := range []scope.ID{a, b} {
-		go func() { <-start; results <- h.reserve(id, []state.Claim{claim}) }()
+		go func() { <-start; _, err := h.reserve(id, []state.Claim{claim}); results <- err }()
 	}
 	close(start)
 	successes := 0
@@ -479,10 +479,10 @@ func TestReserveRefusesANameAnotherEnvironmentHolds(t *testing.T) {
 	}
 	defer h.Close()
 	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
-	if err = h.reserve(a, []state.Claim{claim}); err != nil {
+	if _, err = h.reserve(a, []state.Claim{claim}); err != nil {
 		t.Fatal(err)
 	}
-	err = h.reserve(b, []state.Claim{{Kind: state.ClaimVolume, Name: "other"}, claim})
+	_, err = h.reserve(b, []state.Claim{{Kind: state.ClaimVolume, Name: "other"}, claim})
 	if err == nil || err.Error() != "name shared is taken by another project or environment on this server" {
 		t.Fatalf("refusal: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestReserveFailsWhenAnotherStateCannotBeRead(t *testing.T) {
 	}
 	defer h.Close()
 	h.runtimes[b].deployment.Store.Close()
-	if err = h.reserve(a, []state.Claim{{Kind: state.ClaimVolume, Name: "shared"}}); err == nil {
+	if _, err = h.reserve(a, []state.Claim{{Kind: state.ClaimVolume, Name: "shared"}}); err == nil {
 		t.Fatal("reservation succeeded with unreadable state")
 	}
 }
@@ -553,5 +553,24 @@ func TestOpenRefusesTwoEnvironmentsThatHoldOneName(t *testing.T) {
 			t.Fatalf("state left open: %v", err)
 		}
 		s.Close()
+	}
+}
+
+func TestReserveReturnsOnlyClaimsNewlyAdded(t *testing.T) {
+	id := scope.ID{Project: "one", Environment: "prod"}
+	sh, f := hostedFile(t, id)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	old := state.Claim{Kind: state.ClaimVolume, Name: "old"}
+	fresh := state.Claim{Kind: state.ClaimVolume, Name: "fresh"}
+	if _, err := h.reserve(id, []state.Claim{old}); err != nil {
+		t.Fatal(err)
+	}
+	added, err := h.reserve(id, []state.Claim{old, fresh, fresh})
+	if err != nil || len(added) != 1 || added[0] != fresh {
+		t.Fatalf("added: %v, %v", added, err)
 	}
 }

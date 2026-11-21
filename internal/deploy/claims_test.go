@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,7 @@ func TestDeployRefusesAServiceNameAnotherEnvironmentHolds(t *testing.T) {
 	c.Store = openStore(t)
 	e := &positiveEngine{}
 	c.Engine = e
-	c.Reserve = func(context.Context, []state.Claim) error { return Refusal(want) }
+	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) { return nil, Refusal(want) }
 	app := req.Manifest.Apps["api"]
 	one := 1
 	app.Roles["web"] = manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
@@ -100,8 +101,8 @@ func TestComposeDeployRefusesANetworkAnotherEnvironmentHolds(t *testing.T) {
 func TestComposeRunReservesAgainBeforeUp(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
 	c, _ := composeController(t, runner, newComposeDocker())
-	c.Reserve = func(context.Context, []state.Claim) error {
-		return Refusal("name shared is taken by another project or environment on this server")
+	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return nil, Refusal("name shared is taken by another project or environment on this server")
 	}
 	outcome := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, composeReq("run", composeFileOne, composeApp(false)), false)
 	if outcome.Err != "name shared is taken by another project or environment on this server" || runner.upRuns() != 0 {
@@ -111,8 +112,8 @@ func TestComposeRunReservesAgainBeforeUp(t *testing.T) {
 
 func TestImageRunReservesAgainBeforeDockerChanges(t *testing.T) {
 	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
-	c.Reserve = func(context.Context, []state.Claim) error {
-		return Refusal("name shared is taken by another project or environment on this server")
+	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return nil, Refusal("name shared is taken by another project or environment on this server")
 	}
 	one := 1
 	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
@@ -145,16 +146,16 @@ func TestTwoRestoresIntoOneNameHaveOneWinner(t *testing.T) {
 	held := false
 	for _, c := range []*Controller{a, b} {
 		c := c
-		c.Reserve = func(ctx context.Context, claims []state.Claim) error {
+		c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 			barrier.Done()
 			barrier.Wait()
 			mu.Lock()
 			defer mu.Unlock()
 			if held {
-				return Refusal("name restored-1 is taken by another project or environment on this server")
+				return nil, Refusal("name restored-1 is taken by another project or environment on this server")
 			}
 			held = true
-			return c.Store.AddClaims(ctx, claims)
+			return c.Store.AddClaimsNew(ctx, claims)
 		}
 	}
 	ops := make([]state.Operation, 2)
@@ -376,9 +377,9 @@ func TestComposeRunReservesTheNamesOfItsStagedFiles(t *testing.T) {
 	c, _ := composeController(t, runner.fakeCompose, newComposeDocker())
 	c.Compose = runner
 	var reserved []state.Claim
-	c.Reserve = func(_ context.Context, claims []state.Claim) error {
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
 		reserved = claims
-		return Refusal("compose deploy failed")
+		return nil, Refusal("compose deploy failed")
 	}
 	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, composeReq("r", composeFileOne, composeApp(false)), false)
 	want := "v" + strings.TrimPrefix(filepath.Base(runner.firstDir), ".") + "1"
@@ -492,7 +493,9 @@ func TestAFailedFirstDeployReleasesTheNamesItDidNotCreate(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	c := Controller{Store: s, Engine: &failedFirstDeployEngine{positiveEngine: &positiveEngine{}}, Environment: "test"}
-	c.Reserve = func(ctx context.Context, claims []state.Claim) error { return s.AddClaims(ctx, claims) }
+	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+		return s.AddClaimsNew(ctx, claims)
+	}
 	one := 1
 	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data"}}}}}}}
 	out, _ := c.runDeploy(ctx, state.Operation{}, Actor{ID: "actor"}, req, false)
@@ -514,7 +517,9 @@ func TestFailedRestoreReleasesOnlyAConfirmedAbsentVolume(t *testing.T) {
 			docker := newComposeDocker()
 			docker.volumes["restored-1"] = exists
 			c := Controller{Store: s, Engine: docker, Environment: "test", Restorer: &fakeRestorer{err: errors.New("failed")}}
-			c.Reserve = func(ctx context.Context, claims []state.Claim) error { return s.AddClaims(ctx, claims) }
+			c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+				return s.AddClaimsNew(ctx, claims)
+			}
 			op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "admin", Kind: "restore", PublicRequest: []byte(`{}`)})
 			if err != nil {
 				t.Fatal(err)
@@ -658,8 +663,8 @@ func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
 	c := Controller{Store: s, Engine: spy, Environment: "test"}
 	claim := state.Claim{Kind: state.ClaimService, Name: "proj-test-app-web"}
 	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
-	c.Reserve = func(context.Context, []state.Claim) error {
-		return Refusal("name proj-test-app-web is taken by another project or environment on this server")
+	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return nil, Refusal("name proj-test-app-web is taken by another project or environment on this server")
 	}
 	req := Request{Kind: "rollback", App: "app", RevertSchema: true, TargetRelease: rel.ID}
 	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name proj-test-app-web is taken") {
@@ -676,11 +681,11 @@ func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
 	c.Foreign = func(context.Context) (Foreign, error) {
 		return Foreign{Claims: map[state.Claim]bool{networkClaim: true}}, nil
 	}
-	c.Reserve = func(_ context.Context, claims []state.Claim) error {
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
 		if !slices.Contains(claims, networkClaim) {
-			return errors.New("missing migration network")
+			return nil, errors.New("missing migration network")
 		}
-		return Refusal("name overlay is taken by another project or environment on this server")
+		return nil, Refusal("name overlay is taken by another project or environment on this server")
 	}
 	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name overlay is taken") {
 		t.Fatalf("schema-only plan: %v", err)
@@ -768,5 +773,37 @@ func TestAnInvalidExplicitNetworkIsRefusedBeforeClaims(t *testing.T) {
 	}
 	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin"}, req); err == nil || err.Error() != "invalid project or network" {
 		t.Fatalf("admit: %v", err)
+	}
+}
+
+func TestAdmissionRetryFindsRecordedRequestBeforeNameChecks(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	one := 1
+	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), RequestID: "retry", Manifest: manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	copyReq := req
+	copyReq.RequestID = ""
+	raw, err := json.Marshal(copyReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, _, err := s.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: "actor", Kind: "deploy", RequestHash: sha256.Sum256(raw), PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := state.Claim{Kind: state.ClaimService, Name: "shop-test-api-web"}
+	c := Controller{Store: s, Environment: "test", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	got, created, err := c.Admit(ctx, Actor{ID: "actor"}, req)
+	if err != nil || created || got.ID != recorded.ID {
+		t.Fatalf("retry: %v, %v, %v", got.ID, created, err)
+	}
+	_, _, err = c.Admit(ctx, Actor{ID: "different"}, req)
+	if !errors.Is(err, state.ErrConflict) {
+		t.Fatalf("actor conflict: %v", err)
+	}
+	req.Version = "changed"
+	_, _, err = c.Admit(ctx, Actor{ID: "actor"}, req)
+	if !errors.Is(err, state.ErrConflict) {
+		t.Fatalf("hash conflict: %v", err)
 	}
 }
