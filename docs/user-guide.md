@@ -591,7 +591,7 @@ Berthy also sets these variables in every container of an image app, so the app 
 
 They change only with the image, so a deploy that keeps the version gives its containers the same variables and replaces none of them for that reason. A rollback sets the tag and digest of the release it returns to. An app deployed before these variables existed gets them at its next deploy, which replaces its tasks once. The containers of a schema revert record no tag, so `BERTHY_VERSION` is empty in them.
 
-A variable whose name starts with `BERTHY_` cannot be used in `env.plain`, `env.secret` or `env.template`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT` and `BERTHY_APP` into the project's `.env` file, so the Compose file can pass them on:
+A variable whose name starts with `BERTHY_` cannot be used in `env.plain`, `env.secret` or `env.template`. A Compose app does not get the role, version or digest. Berthy writes `BERTHY_ENVIRONMENT`, `BERTHY_PROJECT`, `BERTHY_APP` and `BERTHY_NETWORK` into the project's `.env` file, so the Compose file can pass them on:
 
 ```yaml
 services:
@@ -664,7 +664,7 @@ These run during a deploy. [Step 6](#step-6-ship-a-new-version-of-the-api) expla
 
 Compose rules to remember:
 
-- **Join the shared network yourself.** Berthy does not add it. Declare it as an external network in the Compose file, and give each service the alias the API uses.
+- **Join the shared network yourself.** Berthy does not add it. Each environment defaults to `<project>-<environment>`; set `network` in the manifest to adopt an existing network. Declare it as an external network with `name: ${BERTHY_NETWORK}` in the Compose file, and give each service the alias the API uses. Image roles have the alias `<app>-<role>` on the same network.
 - **Do not publish ports** on all interfaces. A deploy that publishes one is refused with `service … publishes port … on all interfaces; bind it to a private address`. Here nothing is published.
 - A `build:` section is refused. Compose apps deploy images only.
 - Settings that reach into the host (privileged mode, host namespaces, extra capabilities, devices, host bind mounts, `env_file`, secrets or configs read from host files) are accepted only from an `admin` token.
@@ -702,12 +702,12 @@ volumes:
 networks:
   todo:
     external: true
-    name: todo
+    name: ${BERTHY_NETWORK}
 ```
 
 Three details matter:
 
-- `networks.todo.external: true` with `name: todo` joins the network setup created. `aliases: [todo-db]` is the name the API's `DB_HOST` uses.
+- `networks.todo.external: true` with `name: ${BERTHY_NETWORK}` joins the environment network setup created. `aliases: [todo-db]` is the name the API's `DB_HOST` uses.
 - `${POSTGRES_PASSWORD}` comes from the manifest's secrets. Postgres reads its password **only when it first initialises an empty data volume**. Changing the secret later does not change the database's password: you must also run `ALTER USER` (see [step 13](#step-13-update-the-database-or-the-cache)).
 - The `db-dumps` volume is where the dump job writes. [Step 10](#step-10-backups-and-restore) backs it up. `$$` in a Compose file is a literal `$`.
 
