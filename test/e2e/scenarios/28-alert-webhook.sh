@@ -91,10 +91,14 @@ wait_posts() {
   posts "$1" | jq 'length'
 }
 
-adm secret set TELEGRAM_BOT_TOKEN < "$RUN/tg-token" >/dev/null
-printf '%s' "http://$HOOK_LISTEN$hook_path" | adm secret set ALERT_WEBHOOK_URL >/dev/null
-printf 'Authorization=%s' "$hook_header" | adm secret set ALERT_WEBHOOK_HEADERS >/dev/null
-printf '%s' "http://$HOOK_LISTEN$beat_path" | adm secret set HEARTBEAT_URL >/dev/null
+out=$(adm secret set TELEGRAM_BOT_TOKEN < "$RUN/tg-token" 2>&1); code=$?
+expect_code "secret TELEGRAM_BOT_TOKEN is set" 0 "$code" "$out"
+out=$(printf '%s' "http://$HOOK_LISTEN$hook_path" | adm secret set ALERT_WEBHOOK_URL 2>&1); code=$?
+expect_code "secret ALERT_WEBHOOK_URL is set" 0 "$code" "$out"
+out=$(printf 'Authorization=%s' "$hook_header" | adm secret set ALERT_WEBHOOK_HEADERS 2>&1); code=$?
+expect_code "secret ALERT_WEBHOOK_HEADERS is set" 0 "$code" "$out"
+out=$(printf '%s' "http://$HOOK_LISTEN$beat_path" | adm secret set HEARTBEAT_URL 2>&1); code=$?
+expect_code "secret HEARTBEAT_URL is set" 0 "$code" "$out"
 
 alerts_manifest failed true | write_manifest
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
@@ -140,6 +144,14 @@ hook_reset
 alerts_manifest failed false | write_manifest
 out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "the deploy with a failing health check fails" 1 "$code" "$out"
+op_state=$(printf '%s' "$out" | sed -n 's/^state: //p' | tail -n 1)
+op_error=$(printf '%s' "$out" | sed -n 's/^error: //p' | tail -n 1)
+lock=$(adm lock status --json 2>&1)
+if { [ "$op_state" = failed ] || [ "$op_state" = rolled_back ]; } && [ "$(printf '%s' "$lock" | jq -r '.locked')" = false ]; then
+  pass "the failed deploy ended in a state that releases the lock"
+else
+  fail "the failed deploy ended in a state that releases the lock" "state $op_state error $op_error lock $lock"
+fi
 expect_eq "a failed deploy is one POST of kind deploy" 1 "$(wait_posts deploy 1 20)"
 body=$(posts deploy | jq -c '.[0]')
 echo "  deploy alert: $body"
@@ -229,7 +241,8 @@ start_hook || fail "the fake webhook restarts" "it did not answer"
 out=$(adm doctor --json 2>&1)
 expect_eq "doctor shows the webhook check as ok" true "$(printf '%s' "$out" | jq -r '.checks[] | select(.name == "webhook") | .ok')"
 expect_eq "doctor shows the Telegram check as ok" true "$(printf '%s' "$out" | jq -r '.checks[] | select(.name == "telegram") | .ok')"
-adm secret rm ALERT_WEBHOOK_HEADERS >/dev/null 2>&1
+rm_out=$(adm secret rm ALERT_WEBHOOK_HEADERS 2>&1); code=$?
+expect_code "secret ALERT_WEBHOOK_HEADERS is removed" 0 "$code" "$rm_out"
 out2=$(adm doctor --json 2>&1)
 expect_eq "doctor shows the webhook check failing when a secret is gone" false "$(printf '%s' "$out2" | jq -r '.checks[] | select(.name == "webhook") | .ok')"
 expect_contains "doctor says which secret" "$out2" "webhook headers secret missing"
