@@ -467,3 +467,32 @@ func TestComposeVolumeNamesResolvesKeysThroughTheStoredProject(t *testing.T) {
 }
 
 var _ = engine.ComposeRun{}
+
+func TestRestoreRecoveryReservesVolumeBeforeRemovingIt(t *testing.T) {
+	ctx := context.Background()
+	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{"new": {"berthy.restore-operation": "op"}}}
+	c := Controller{Engine: docker, Reserve: func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return nil, Refusal("name new is taken by another project or environment on this server")
+	}}
+	ok := c.cleanRestore(ctx, state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}})
+	if ok || len(docker.removedV) != 0 {
+		t.Fatalf("cleanup=%v removed=%v", ok, docker.removedV)
+	}
+}
+func TestRestoreRecoveryDoesNotReleaseAnOlderMissingClaim(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "new"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}}
+	c := Controller{Store: s, Engine: docker}
+	if !c.cleanRestore(ctx, state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}}) {
+		t.Fatal("cleanup failed")
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || !slices.Contains(held, claim) {
+		t.Fatalf("claims: %v, %v", held, err)
+	}
+}

@@ -398,11 +398,19 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 	case err != nil:
 		return false
 	case !exists:
-		return c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: into}}) == nil
+		return true
 	case labels[backup.RestoreOperationLabel] != op.ID:
 		return false
 	}
-	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimVolume, Name: into}); err != nil {
+	claim := state.Claim{Kind: state.ClaimVolume, Name: into}
+	if c.Reserve != nil {
+		reserved, err := c.reserveClaims(reservationContext(ctx, op.ID), []state.Claim{claim})
+		if err != nil {
+			return false
+		}
+		reserved.added = reserved.leased
+		defer c.finishReservation(ctx, reserved, false)
+	} else if err := c.notForeign(ctx, claim); err != nil {
 		return false
 	}
 	if err = de.RemoveVolume(ctx, into); err != nil && !statusIs(err, 404) {
@@ -412,7 +420,7 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 	if err != nil || exists {
 		return false
 	}
-	return c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: into}}) == nil
+	return c.Reserve != nil || c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{claim}) == nil
 }
 
 // composeConfigVolumes is the part of `compose config --format json` that names a project's volumes.
