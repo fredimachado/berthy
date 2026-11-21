@@ -698,6 +698,17 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 			}
 		}
 	}
+	if m.Ingress != nil && m.Ingress.Cloudflare != nil {
+		connector, _, err := m.ConnectorApp()
+		if err != nil {
+			return nil, err
+		}
+		for _, role := range sortedKeys(connector.Roles) {
+			if message := m.ServiceNameError(env, ConnectorAppName, role); message != "" {
+				namesTooLong.add("ingress.cloudflare", "%s", message)
+			}
+		}
+	}
 	if len(namesTooLong) > 0 {
 		where.place(namesTooLong)
 		return nil, namesTooLong

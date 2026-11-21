@@ -400,3 +400,26 @@ func TestLoadRefusesAServiceNameOver63CharactersForThatEnvironment(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadChecksManagedIngressConnectorServiceName(t *testing.T) {
+	dir := t.TempDir()
+	base := "project: demo\nnetwork: demo\ningress:\n  cloudflare:\n    account_id: acct\n    api_token_secret: CF_TOKEN\n    image: cloudflare/cloudflared:2026.11.0\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Project: "demo"}
+	for _, n := range []int{40, 41} {
+		env := strings.Repeat("a", n)
+		_, err := LoadDetailed(dir, env)
+		if n == 40 {
+			if err != nil {
+				t.Fatalf("63-character connector: %v", err)
+			}
+			continue
+		}
+		ps, ok := err.(Problems)
+		if !ok || len(ps) != 1 || ps[0].Path != "ingress.cloudflare" || ps[0].File != "berthy.yml" || ps[0].Line != 4 || ps[0].Message != m.ServiceNameError(env, ConnectorAppName, "connector") {
+			t.Fatalf("64-character connector: %v (%+v)", err, ps)
+		}
+	}
+}
