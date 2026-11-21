@@ -1559,7 +1559,9 @@ func TestVerifyStep(t *testing.T) {
 	t.Run("without a token the agent is only asked whether it answers", func(t *testing.T) {
 		f := setUpAgent(t, exe)
 		r, _ := runVerify(f, func(o *Options) {
-			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { panic("no token, no doctor") }
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
+				panic("no token, no doctor")
+			}
 		})
 		if r.Status != StatusOK || r.Detail != "the agent answers; run berthy doctor with an admin token to check it fully" {
 			t.Fatalf("verify = %+v", r)
