@@ -61,7 +61,7 @@ func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
 	r.scheduler = NewJobs(c, sh.Engine, d, sh.Log)
 	r.backups = NewBackups(c, sh.Engine, d, r.scheduler, r.monitoring.HelperImage, sh.Log)
 	r.exporter = NewTelemetry(c, sh.Collector, d, sh.Log)
-	r.Handler = NewDeploymentHandlerWithBackups(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups)
+	r.Handler = newDeploymentHandler(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups, newLimits())
 	return r, nil
 }
 

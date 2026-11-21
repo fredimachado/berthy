@@ -64,8 +64,13 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 // NewDeploymentHandlerWithBackups is NewDeploymentHandlerWithJobs for an agent that backs up volumes. backups may be nil, in
 // which case the backup routes answer that backups are unavailable.
 func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups) http.Handler {
+	return newDeploymentHandler(c, e, col, d, tel, sched, backups, newLimits())
+}
+
+// newDeploymentHandler is NewDeploymentHandlerWithBackups with the stream limits of the hosted environment the handler serves.
+func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits) http.Handler {
 	tokens := newTokenSource(c, storeOf(d))
-	legacy := handlerWithTokens(c, e, col, d, tel, tokens)
+	legacy := handlerWithTokens(c, e, col, d, tel, tokens, lim)
 	gate := &approvalGate{c: c, d: d, tokens: tokens}
 	// serve carries out a request that is authenticated, in scope and not held for approval.
 	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
@@ -297,7 +302,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 			}
 			json.NewEncoder(w).Encode(plan)
 		case rest[0] == "operations":
-			streamOperation(w, r, d.Store, rest[1])
+			streamOperation(w, r, d.Store, rest[1], lim)
 		case rest[0] == "wait":
 			timeout := 2 * time.Minute
 			if raw := r.URL.Query().Get("timeout"); raw != "" {
@@ -955,9 +960,7 @@ func addSchemaStates(row map[string]any, before, after string) {
 	}
 }
 
-var operationWatchers = make(chan struct{}, 16)
-
-func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id string) {
+func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id string, lim *limits) {
 	if _, err := s.Operation(r.Context(), id); err != nil {
 		operationError(w, err)
 		return
@@ -972,8 +975,8 @@ func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id 
 		}
 	}
 	select {
-	case operationWatchers <- struct{}{}:
-		defer func() { <-operationWatchers }()
+	case lim.watchers <- struct{}{}:
+		defer func() { <-lim.watchers }()
 	default:
 		writeError(w, 503, "too_many_followers", "too many followers")
 		return

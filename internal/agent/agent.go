@@ -251,7 +251,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 	return serveAPI(c, handlerWithState(c, e, collector, nil, nil))
 }
 func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter) http.Handler {
-	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)))
+	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)), newLimits())
 }
 
 // storeOf is the state of a controller, or nil for an agent without state.
@@ -264,7 +264,7 @@ func storeOf(d *deploy.Controller) *state.Store {
 
 // handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
 // The handler sees the path after the environment, as mount gives it.
-func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource) http.Handler {
+func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
 		if r.Method != "GET" {
@@ -277,11 +277,11 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 		var err error
 		switch {
 		case len(rest) == 3 && rest[0] == "apps" && rest[2] == "logs":
-			serveLogs(w, r, e, rest[1], deployment)
+			serveLogs(w, r, e, rest[1], deployment, lim)
 			return
 		case len(rest) == 1 && rest[0] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
-				streamStats(w, r, collector)
+				streamStats(w, r, collector, lim)
 				return
 			}
 			if collector == nil {
@@ -522,10 +522,10 @@ func compareVersion(a, b string) int {
 	return an - bn
 }
 
-func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector) {
+func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, lim *limits) {
 	select {
-	case followSlots <- struct{}{}:
-		defer func() { <-followSlots }()
+	case lim.followers <- struct{}{}:
+		defer func() { <-lim.followers }()
 	default:
 		writeError(w, 503, "too_many_followers", "too many followers")
 		return

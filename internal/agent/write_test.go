@@ -122,7 +122,7 @@ func TestTerminalStreamCarriesStatus(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/", nil)
-	streamOperation(w, r, s, op.ID)
+	streamOperation(w, r, s, op.ID, newLimits())
 	if !strings.Contains(w.Body.String(), "event: terminal\ndata: {\"status\":\"failed\"") {
 		t.Fatal(w.Body.String())
 	}

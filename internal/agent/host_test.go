@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/scope"
 	"berthy/internal/state"
@@ -322,5 +324,82 @@ func TestCloseReleasesEveryState(t *testing.T) {
 	h.Close()
 	for _, hosted := range f.Environments {
 		openable(t, hosted)
+	}
+}
+
+// hold opens n streams of url and keeps them open until the test ends. Each one is answered before the next starts, so it
+// holds its slot when hold returns.
+func hold(t *testing.T, url, token string, n int) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	for i := 0; i < n; i++ {
+		resp := get(t, ctx, url, token)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("stream %d of %s: %d", i+1, url, resp.StatusCode)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+	}
+}
+
+func get(t *testing.T, ctx context.Context, url, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestAFullFollowerLimitOfOneEnvironmentLeavesTheOthersServing(t *testing.T) {
+	lab, dev := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "shop", Environment: "dev"}
+	sh, f := hostedFile(t, lab, dev)
+	// The stats stream sends its first sample at once, so it answers before the test holds it.
+	sh.Collector = metrics.New(metrics.NewHostReader(), nilDocker{})
+	sampled, stop := sh.Collector.Subscribe()
+	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sh.Collector.Run(ctx)
+	<-sampled
+	h := openHost(t, sh, f)
+	// A running operation of each environment, with an event, so that its stream answers at once.
+	ops := map[scope.ID]string{}
+	for _, id := range []scope.ID{lab, dev} {
+		s := h.runtimes[id].deployment.Store
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.AppendEvent(ctx, op.ID, state.Event{Kind: "progress", Data: json.RawMessage(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+		ops[id] = op.ID
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	for name, path := range map[string]func(scope.ID) string{
+		"stats followers":    func(id scope.ID) string { return id.APIPath() + "stats?watch=1" },
+		"operation watchers": func(id scope.ID) string { return id.APIPath() + "operations/" + ops[id] + "/events" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			hold(t, srv.URL+path(lab), adminOf(f, 0), maxStreams)
+			full := get(t, ctx, srv.URL+path(lab), adminOf(f, 0))
+			defer full.Body.Close()
+			body, _ := io.ReadAll(full.Body)
+			if full.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "too_many_followers") {
+				t.Fatalf("the stream past the limit of %s: %d %s", lab, full.StatusCode, body)
+			}
+			other := get(t, ctx, srv.URL+path(dev), adminOf(f, 1))
+			defer other.Body.Close()
+			if other.StatusCode != http.StatusOK {
+				t.Fatalf("the first stream of %s while %s is full: %d", dev, lab, other.StatusCode)
+			}
+		})
 	}
 }

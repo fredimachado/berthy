@@ -16,9 +16,20 @@ import (
 	"time"
 )
 
-var followSlots = make(chan struct{}, 16)
+// limits are the stream limits of one hosted environment: how many followers of its logs and stats, and how many watchers of
+// its operations, it serves at once. Each environment has its own, so a full one does not refuse the others.
+type limits struct {
+	followers, watchers chan struct{}
+}
 
-func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name string, deployment *deploy.Controller) {
+// maxStreams is how many streams of each kind one environment serves at once.
+const maxStreams = 16
+
+func newLimits() *limits {
+	return &limits{followers: make(chan struct{}, maxStreams), watchers: make(chan struct{}, maxStreams)}
+}
+
+func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name string, deployment *deploy.Controller, lim *limits) {
 	q := r.URL.Query()
 	tail := 100
 	var err error
@@ -104,8 +115,8 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		return
 	}
 	select {
-	case followSlots <- struct{}{}:
-		defer func() { <-followSlots }()
+	case lim.followers <- struct{}{}:
+		defer func() { <-lim.followers }()
 	default:
 		writeError(w, 503, "too_many_followers", "too many followers")
 		return
