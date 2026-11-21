@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "unsafe"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
@@ -17,6 +18,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/clipperhouse/displaywidth"
+	"github.com/mattn/go-runewidth"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")
@@ -26,8 +29,23 @@ var testNow = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 
 func TestMain(m *testing.M) {
 	time.Local = time.UTC
+	// huh.NewForm switches to accessible mode when TERM=dumb. go-runewidth and
+	// x/ansi copy RUNEWIDTH_EASTASIAN at init, so goldens must pin the width
+	// conditions the TUI actually uses, not only DefaultCondition.
+	os.Setenv("TERM", "xterm-256color")
+	runewidth.EastAsianWidth = false
+	runewidth.DefaultCondition.EastAsianWidth = false
+	displaywidth.DefaultOptions.EastAsianWidth = false
+	ansiWcOptions.EastAsianWidth = false
+	ansiDwOptions.EastAsianWidth = false
 	os.Exit(m.Run())
 }
+
+//go:linkname ansiWcOptions github.com/charmbracelet/x/ansi.wcOptions
+var ansiWcOptions *runewidth.Condition
+
+//go:linkname ansiDwOptions github.com/charmbracelet/x/ansi.dwOptions
+var ansiDwOptions *displaywidth.Options
 
 func u64(v uint64) *uint64        { return &v }
 func f64(v float64) *float64      { return &v }
