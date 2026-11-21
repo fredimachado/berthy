@@ -407,12 +407,13 @@ func TestConfiguredTimeoutLimitsEveryAttempt(t *testing.T) {
 type recoveringEngine struct {
 	*hookEngine
 	stopped map[string]bool
+	project string // the berthy.project label of the containers
 }
 
 func (r *recoveringEngine) InspectContainer(_ context.Context, name string) (engine.ContainerSnapshot, error) {
 	for _, n := range r.names {
 		if n == name {
-			return engine.ContainerSnapshot{ID: name, Running: !r.stopped[name], Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": r.op, "berthy.oneoff": r.roleOf(name)}}, nil
+			return engine.ContainerSnapshot{ID: name, Running: !r.stopped[name], Labels: map[string]string{"berthy.project": r.project, "berthy.environment": "stage", "berthy.operation": r.op, "berthy.oneoff": r.roleOf(name)}}, nil
 		}
 	}
 	return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
@@ -449,6 +450,27 @@ func TestRecoveryStopsTheContainerOfEveryAttempt(t *testing.T) {
 	}
 	if len(r.stopped) != 5 {
 		t.Fatalf("recovery stopped %v, want both version commands and all three apply attempts", r.stopped)
+	}
+}
+
+// A running container at a journaled name whose operation and kind labels match but whose project differs belongs to another
+// hosted environment: recovery refuses it and stops nothing.
+func TestRecoveryRefusesAContainerOfAnotherProject(t *testing.T) {
+	c, f, id, p := hookFixture(t)
+	c.Project = "shop"
+	f.exits = []int{0}
+	if _, err := c.runOneOff(context.Background(), id, p, oneOff{Ordinal: 1, Kind: "pre_hook", Argv: []string{"true"}, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	r := &recoveringEngine{hookEngine: f, stopped: map[string]bool{}, project: "blog"}
+	c.Engine = r
+	err := c.recoverHooks(context.Background(), id)
+	if err == nil || err.Error() != "one-off recovery ownership mismatch" || len(r.stopped) != 0 {
+		t.Fatalf("recovery: %v, stopped %v", err, r.stopped)
+	}
+	r.project = "shop"
+	if err = c.recoverHooks(context.Background(), id); err != nil || len(r.stopped) != 1 {
+		t.Fatalf("recovery of its own container: %v, stopped %v", err, r.stopped)
 	}
 }
 
