@@ -330,18 +330,60 @@ func TestAnInterruptedRestoreKeepsItsPartialVolumeAndRemovesItsHelperAtRecovery(
 	}
 }
 
-func TestRestoreRecoveryLeavesTheRestoreHelperOfOtherEnvironments(t *testing.T) {
-	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}, containers: []engine.InventoryContainer{
-		{ID: "mine", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "test", "berthy.helper": "restore"}},
-		{ID: "other-project", Labels: map[string]string{"berthy.project": "blog", "berthy.environment": "test", "berthy.helper": "restore"}},
-		{ID: "other-environment", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.helper": "restore"}},
-	}}
-	c := &Controller{Engine: docker, Project: "shop", Environment: "test"}
-	if !c.cleanRestore(context.Background(), state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}}) {
-		t.Fatal("cleanup failed")
+func TestRestoreRecoveryKeepsVolumeAndClaimsAndOnlyRemovesItsHelper(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "restore-recovery", ActorID: "admin", Kind: "restore", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Equal(docker.removedC, []string{"mine"}) {
-		t.Fatalf("removed containers %v", docker.removedC)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "new"}
+	if err = s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: restoreKind, Name: "new", Desired: []byte(`{"into":"new"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{"new": {"berthy.restore-operation": op.ID}}, containers: []engine.InventoryContainer{
+		{ID: "mine", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "test", "berthy.helper": "restore"}},
+		{ID: "other", Labels: map[string]string{"berthy.project": "other", "berthy.environment": "test", "berthy.helper": "restore"}},
+		{ID: "other-env", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.helper": "restore"}},
+	}}
+	calls := 0
+	c := Controller{Store: s, Engine: docker, Project: "shop", Environment: "test", Reserve: func(context.Context, []state.Claim) ([]state.Claim, error) { calls++; return nil, nil }, FinishReservation: func(context.Context, []state.Claim, []state.Claim, []state.Claim) error { calls++; return nil }}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || calls != 0 || !slices.Equal(held, []state.Claim{claim}) || !slices.Equal(docker.removedC, []string{"mine"}) || len(docker.removedV) != 0 {
+		t.Fatalf("claims=%v calls=%d containers=%v volumes=%v err=%v", held, calls, docker.removedC, docker.removedV, err)
+	}
+	if _, exists := docker.volumes["new"]; !exists {
+		t.Fatal("partial volume removed")
+	}
+}
+
+func TestRestoreRecoveryKeepsClaimWhenVolumeIsAbsent(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "missing-restore", ActorID: "admin", Kind: "restore", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "new"}
+	if err = s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}}}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || !slices.Equal(held, []state.Claim{claim}) {
+		t.Fatalf("claims=%v err=%v", held, err)
 	}
 }
 
@@ -472,32 +514,3 @@ func TestComposeVolumeNamesResolvesKeysThroughTheStoredProject(t *testing.T) {
 }
 
 var _ = engine.ComposeRun{}
-
-func TestRestoreRecoveryReservesVolumeBeforeRemovingIt(t *testing.T) {
-	ctx := context.Background()
-	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{"new": {"berthy.restore-operation": "op"}}}
-	c := Controller{Engine: docker, Reserve: func(context.Context, []state.Claim) ([]state.Claim, error) {
-		return nil, Refusal("name new is taken by another project or environment on this server")
-	}}
-	ok := c.cleanRestore(ctx, state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}})
-	if ok || len(docker.removedV) != 0 {
-		t.Fatalf("cleanup=%v removed=%v", ok, docker.removedV)
-	}
-}
-func TestRestoreRecoveryDoesNotReleaseAnOlderMissingClaim(t *testing.T) {
-	ctx := context.Background()
-	s := openStore(t)
-	claim := state.Claim{Kind: state.ClaimVolume, Name: "new"}
-	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
-		t.Fatal(err)
-	}
-	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}}
-	c := Controller{Store: s, Engine: docker}
-	if !c.cleanRestore(ctx, state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}}) {
-		t.Fatal("cleanup failed")
-	}
-	held, err := s.Claims(ctx)
-	if err != nil || !slices.Contains(held, claim) {
-		t.Fatalf("claims: %v, %v", held, err)
-	}
-}

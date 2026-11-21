@@ -331,12 +331,10 @@ type restoreCleanupEngine interface {
 	InventoryContainers(context.Context) ([]engine.InventoryContainer, error)
 	RemoveContainer(context.Context, string) error
 	VolumeLabels(context.Context, string) (map[string]string, bool, error)
-	RemoveVolume(context.Context, string) error
 }
 
 // recoverRestore ends a restore that an agent stop or crash interrupted. It removes the restore helper container the dead
-// agent left, which holds the new volume, and then the volume itself, but only a volume that carries this operation's ID in its
-// label: whatever else has that name is not this restore's, and stays. The operation says whether a partial volume may remain.
+// agent left and keeps the partial volume and its claim. The operation says whether a partial volume may remain.
 func (c *Controller) recoverRestore(ctx context.Context, op state.Operation, intents []state.Intent) error {
 	for _, i := range intents {
 		var r struct {
@@ -351,7 +349,7 @@ func (c *Controller) recoverRestore(ctx context.Context, op state.Operation, int
 	if restoresIntoCommand(intents) {
 		// No volume was made, and what the command did with the part of the backup it got cannot be told from here.
 		msg = errRestoreExecInterrupted
-	} else if c.cleanRestore(ctx, op, intents) {
+	} else if c.cleanRestore(ctx, intents) {
 		msg = errRestoreCleaned
 	}
 	return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: string(msg)}, target{})
@@ -371,7 +369,7 @@ func restoresIntoCommand(intents []state.Intent) bool {
 }
 
 // cleanRestore reports whether no partial volume of the operation is left.
-func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, intents []state.Intent) bool {
+func (c *Controller) cleanRestore(ctx context.Context, intents []state.Intent) bool {
 	de, ok := c.Engine.(restoreCleanupEngine)
 	if !ok {
 		return false
@@ -399,37 +397,8 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 			}
 		}
 	}
-	labels, exists, err := de.VolumeLabels(ctx, into)
-	switch {
-	case err != nil:
-		return false
-	case !exists:
-		return true
-	case labels[backup.RestoreOperationLabel] != op.ID:
-		return false
-	}
-	if recovering, _ := ctx.Value(recoveringKey{}).(bool); recovering {
-		return false
-	}
-	claim := state.Claim{Kind: state.ClaimVolume, Name: into}
-	if c.Reserve != nil {
-		reserved, err := c.reserveClaims(ctx, []state.Claim{claim})
-		if err != nil {
-			return false
-		}
-		reserved.added = reserved.leased
-		defer c.finishReservation(ctx, reserved)
-	} else if err := c.notForeign(ctx, claim); err != nil {
-		return false
-	}
-	if err = de.RemoveVolume(ctx, into); err != nil && !statusIs(err, 404) {
-		return false
-	}
-	_, exists, err = de.VolumeLabels(ctx, into)
-	if err != nil || exists {
-		return false
-	}
-	return c.Reserve != nil || c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{claim}) == nil
+	_, exists, err := de.VolumeLabels(ctx, into)
+	return err == nil && !exists
 }
 
 // composeConfigVolumes is the part of `compose config --format json` that names a project's volumes.
