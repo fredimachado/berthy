@@ -24,6 +24,7 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 )
 
 // The overlay helper is one container per environment, built locally from the agent's own static binary. It runs the
@@ -99,7 +100,7 @@ func (b helperBinary) tag() string { return b.digest[:helperTagLength] }
 // ensure and remove change Docker and run at most once a minute. Probe runs from the checks, whose goroutines call it
 // concurrently with those runs.
 type helperManager struct {
-	env    string
+	owner  scope.ID
 	engine helperEngine // nil without Docker
 	exe    func() (string, error)
 	goos   string
@@ -111,8 +112,6 @@ type helperManager struct {
 
 	// runMu serializes the runs that change Docker.
 	runMu sync.Mutex
-	// imageMu serializes the import of the helper image, which the probe helper and the backup containers both need.
-	imageMu sync.Mutex
 
 	// mu guards the fields below. Probe reads the running helper's token, port and error under it.
 	mu      sync.Mutex
@@ -130,9 +129,9 @@ type helperManager struct {
 
 // newHelperManager returns the helper of environment env. e is nil without Docker. log receives the message of a run
 // that fails, once until the outcome changes; messages never contain secrets.
-func newHelperManager(env string, e *engine.Engine, log func(string)) *helperManager {
+func newHelperManager(id scope.ID, e *engine.Engine, log func(string)) *helperManager {
 	m := &helperManager{
-		env:    env,
+		owner:  id,
 		exe:    os.Executable,
 		goos:   runtime.GOOS,
 		now:    time.Now,
@@ -346,9 +345,11 @@ func (m *helperManager) Image(ctx context.Context) (string, error) {
 }
 
 // image returns the helper image for bin, importing it from the agent's binary when Docker does not have it.
+var imageMu sync.Mutex
+
 func (m *helperManager) image(ctx context.Context, bin helperBinary) (engine.Image, error) {
-	m.imageMu.Lock()
-	defer m.imageMu.Unlock()
+	imageMu.Lock()
+	defer imageMu.Unlock()
 	ref := helperRepo + ":" + bin.tag()
 	img, err := m.engine.InspectImage(ctx, ref)
 	if err == nil {
@@ -385,7 +386,7 @@ func (m *helperManager) lookup(ctx context.Context) (engine.ContainerDetail, boo
 	if err != nil {
 		return engine.ContainerDetail{}, false, helperUnavailable("container inspection failed")
 	}
-	if c.Labels["berthy.helper"] != "probe" || c.Labels["berthy.environment"] != m.env {
+	if c.Labels["berthy.helper"] != "probe" || !m.owner.Owns(c.Labels) {
 		return engine.ContainerDetail{}, false, helperUnavailable("name is used by another container")
 	}
 	return c, true, nil
@@ -398,7 +399,7 @@ func (m *helperManager) create(ctx context.Context, bin helperBinary, network, n
 	if err != nil {
 		return helperUnavailable("token unavailable")
 	}
-	spec, err := helperSpec(m.env, network, helperRepo+":"+bin.tag(), token)
+	spec, err := helperSpec(m.owner, network, helperRepo+":"+bin.tag(), token)
 	if err != nil {
 		return helperUnavailable("container spec unavailable")
 	}
@@ -532,7 +533,7 @@ func (m *helperManager) holds(id string) bool {
 }
 
 // name is the helper container's name.
-func (m *helperManager) name() string { return "berthy-helper-" + m.env }
+func (m *helperManager) name() string { return "berthy-helper-" + m.owner.Slug() }
 
 // Probe runs one probe on the running helper. The helper is marked lost when it does not answer or refuses the token,
 // and the next run recreates it.
@@ -700,12 +701,14 @@ func helperArchive(binary []byte) ([]byte, error) {
 
 // helperSpec is the helper container. It is attached to the shared network, with its port published on 127.0.0.1 only,
 // a read-only root, no capabilities, no way to gain privileges, a memory limit, and a restart policy.
-func helperSpec(env, network, image, token string) (json.RawMessage, error) {
+func helperSpec(id scope.ID, network, image, token string) (json.RawMessage, error) {
+	labels := id.Labels()
+	labels["berthy.helper"] = "probe"
 	return json.Marshal(map[string]any{
 		"Image":        image,
 		"User":         helperUser,
 		"Env":          []string{monitor.HelperTokenEnv + "=" + token},
-		"Labels":       map[string]string{"berthy.environment": env, "berthy.helper": "probe"},
+		"Labels":       labels,
 		"ExposedPorts": map[string]any{helperPortKey: map[string]any{}},
 		"HostConfig": map[string]any{
 			"NetworkMode":    network,

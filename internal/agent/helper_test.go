@@ -26,6 +26,7 @@ import (
 
 	"berthy/internal/engine"
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 )
 
 // hfClock is the helper's clock. Tests move it forward to pass the one-minute limit between runs.
@@ -331,7 +332,7 @@ func writeAgentBinary(t *testing.T, version string, progs ...elf.ProgType) strin
 
 // newHfHelper returns the helper of environment lab, on the fake Docker f, for the agent binary at exe.
 func newHfHelper(f *hfDocker, exe string, clk *hfClock) *helperManager {
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	m.engine = f
 	m.exe = func() (string, error) { return exe, nil }
 	m.goos = "linux"
@@ -339,6 +340,29 @@ func newHfHelper(f *hfDocker, exe string, clk *hfClock) *helperManager {
 	// The fake Docker publishes ports that no server listens on, so a new helper is taken as listening.
 	m.await = func(context.Context, string, string) error { return nil }
 	return m
+}
+
+func TestHelperOfAnotherEnvironmentIsNeverTouched(t *testing.T) {
+	for _, labels := range []map[string]string{
+		{"berthy.project": "shop", "berthy.environment": "lab", "berthy.helper": "probe"},
+		{"berthy.environment": "prod", "berthy.helper": "probe"},
+	} {
+		f := newHfDocker()
+		m := newHfHelper(f, writeAgentBinary(t, "one"), &hfClock{t: time.Unix(1_700_000_000, 0)})
+		f.seed(m.name(), labels, "")
+		if _, _, err := m.lookup(context.Background()); err == nil {
+			t.Errorf("accepted foreign helper: %v", labels)
+		}
+	}
+}
+
+func TestHelperNameCarriesProjectAndEnvironment(t *testing.T) {
+	for _, id := range []scope.ID{{Project: "shop", Environment: "lab"}, {Project: "blog", Environment: "lab"}, {Project: "shop", Environment: "prod"}} {
+		m := newHelperManager(id, nil, nil)
+		if want := "berthy-helper-" + id.Project + "." + id.Environment; m.name() != want {
+			t.Errorf("name %q, want %q", m.name(), want)
+		}
+	}
 }
 
 // tarEntries returns the regular files of a tar archive by name, with their modes and contents.
@@ -402,14 +426,14 @@ func TestEnsureBuildsTheHelperFromTheAgentBinary(t *testing.T) {
 	}
 
 	c := f.only(t)
-	if c.name != "berthy-helper-lab" || !c.running || c.imageID != f.images["berthy-helper:"+tag] {
+	if c.name != "berthy-helper-.lab" || !c.running || c.imageID != f.images["berthy-helper:"+tag] {
 		t.Fatalf("container %+v", c)
 	}
 	s := c.spec
 	if s.Image != "berthy-helper:"+tag || s.User != "65532:65532" {
 		t.Errorf("image %q user %q", s.Image, s.User)
 	}
-	if !reflect.DeepEqual(s.Labels, map[string]string{"berthy.environment": "lab", "berthy.helper": "probe"}) {
+	if !reflect.DeepEqual(s.Labels, map[string]string{"berthy.project": "", "berthy.environment": "lab", "berthy.helper": "probe"}) {
 		t.Errorf("labels %v", s.Labels)
 	}
 	if s.HostConfig.NetworkMode != "lab-net" || !reflect.DeepEqual(s.NetworkingConfig.EndpointsConfig, map[string]any{"lab-net": map[string]any{}}) {
@@ -582,12 +606,12 @@ func TestEnsureReportsWhatBlocksTheHelper(t *testing.T) {
 	})
 	t.Run("name held by another container", func(t *testing.T) {
 		f := newHfDocker()
-		f.seed("berthy-helper-lab", map[string]string{"berthy.helper": "other"}, "")
+		f.seed("berthy-helper-.lab", map[string]string{"berthy.helper": "other"}, "")
 		m := newHfHelper(f, writeAgentBinary(t, "one"), &hfClock{t: time.Unix(1_700_000_000, 0)})
 		if err := m.ensure(ctx, "lab-net"); err == nil || err.Error() != "probe helper unavailable: name is used by another container" {
 			t.Fatalf("error %v", err)
 		}
-		if _, ok := f.names["berthy-helper-lab"]; !ok || f.createCount() != 0 {
+		if _, ok := f.names["berthy-helper-.lab"]; !ok || f.createCount() != 0 {
 			t.Fatal("another container's name was taken over")
 		}
 	})
@@ -624,7 +648,7 @@ func TestEnsureReportsWhatBlocksTheHelper(t *testing.T) {
 		}
 	})
 	t.Run("no Docker", func(t *testing.T) {
-		m := newHelperManager("lab", nil, nil)
+		m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 		m.exe = func() (string, error) { return writeAgentBinary(t, "one"), nil }
 		m.goos = "linux"
 		if err := m.ensure(ctx, "lab-net"); err == nil || err.Error() != "probe helper unavailable: Docker unavailable" {
@@ -664,7 +688,7 @@ func TestRemoveDeletesTheHelperAndItsUnusedImages(t *testing.T) {
 	if err := m.remove(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["berthy-helper-lab"]; ok {
+	if _, ok := f.names["berthy-helper-.lab"]; ok {
 		t.Fatal("the helper container was kept")
 	}
 	if _, ok := f.images["berthy-helper:"+current]; ok || !contains(f.removed, "berthy-helper:"+current) {
@@ -719,7 +743,7 @@ func TestProbeRunsOnTheHelperWithItsToken(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "detail": "HTTP 503"})
 	}))
 	defer srv.Close()
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	m.token, m.port = "tok-123", serverPort(t, srv)
 	req := monitor.HelperProbe{Kind: "http", Target: "web:8080", Path: "/health", TimeoutMS: 2000, Expect: []int{200}}
 	ok, detail, err := m.Probe(context.Background(), req)
@@ -737,7 +761,7 @@ func TestProbeMarksAHelperItCannotReachOrTrustLost(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer refuse.Close()
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	m.token, m.port = "stale", serverPort(t, refuse)
 	req := monitor.HelperProbe{Kind: "tcp", Target: "web:80", TimeoutMS: 1000}
 	if _, _, err := m.Probe(ctx, req); err == nil || err.Error() != "probe helper unavailable: token rejected" {
@@ -750,7 +774,7 @@ func TestProbeMarksAHelperItCannotReachOrTrustLost(t *testing.T) {
 		t.Fatalf("after the refusal: %v", err)
 	}
 
-	gone := newHelperManager("lab", nil, nil)
+	gone := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	gone.token, gone.port = "tok", unansweringPort(t)
 	if _, _, err := gone.Probe(ctx, req); err == nil || err.Error() != "probe helper unavailable: not answering" || gone.token != "" {
 		t.Fatalf("no answer: %v, token kept %v", err, gone.token != "")
@@ -760,7 +784,7 @@ func TestProbeMarksAHelperItCannotReachOrTrustLost(t *testing.T) {
 func TestProbeWithoutAHelperSaysWhy(t *testing.T) {
 	ctx := context.Background()
 	req := monitor.HelperProbe{Kind: "tcp", Target: "web:80", TimeoutMS: 1000}
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	if _, _, err := m.Probe(ctx, req); err == nil || err.Error() != "probe helper unavailable: not running" {
 		t.Fatalf("never started: %v", err)
 	}
@@ -805,7 +829,7 @@ func TestStatusIsTheDoctorsView(t *testing.T) {
 
 func TestBinaryInfoRereadsWhatChanged(t *testing.T) {
 	exe := writeAgentBinary(t, "one")
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	m.exe = func() (string, error) { return exe, nil }
 	first, err := m.binaryInfo()
 	if err != nil || !first.static || len(first.digest) != 64 {
@@ -873,7 +897,7 @@ func TestStaticELFAgreesWithTheTestBinary(t *testing.T) {
 
 func TestAwaitHelperWaitsForTheHelperToListen(t *testing.T) {
 	ctx := context.Background()
-	m := newHelperManager("lab", nil, nil)
+	m := newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	// A helper that answers the empty probe with 400 is up and knows the token.
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer tok" {
@@ -909,7 +933,7 @@ func TestHelperArchiveHoldsTheBinaryAlone(t *testing.T) {
 }
 
 func TestHelperSpecAsksForTheHardenedSettings(t *testing.T) {
-	raw, err := helperSpec("lab", "lab-net", "berthy-helper:0123456789ab", strings.Repeat("a", 64))
+	raw, err := helperSpec(scope.ID{Environment: "lab"}, "lab-net", "berthy-helper:0123456789ab", strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1040,7 @@ func TestImageReportsWhatBlocksIt(t *testing.T) {
 	if len(f.calls) != 0 {
 		t.Fatalf("Docker was asked %v", f.calls)
 	}
-	m = newHelperManager("lab", nil, nil)
+	m = newHelperManager(scope.ID{Environment: "lab"}, nil, nil)
 	m.exe = func() (string, error) { return writeAgentBinary(t, "one"), nil }
 	m.goos = "linux"
 	if _, err := m.Image(ctx); err == nil || err.Error() != "probe helper unavailable: Docker unavailable" {

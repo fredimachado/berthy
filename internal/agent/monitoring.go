@@ -19,6 +19,7 @@ import (
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -62,7 +63,7 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.Environment, e, log)}
+	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.ID(), e, log)}
 	w.composeServices = w.projectServices
 	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers}
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
@@ -626,7 +627,7 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 		out = append(out, heartbeatDoctorCheck(ctx, s, *m.Alerts.Heartbeat, states))
 	}
 	if hasServiceProbe(m.Probes) {
-		ok, detail := newHelperManager(environment, e, nil).status(ctx, m.Network)
+		ok, detail := newHelperManager(scope.ID{Project: c.Project, Environment: environment}, e, nil).status(ctx, m.Network)
 		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
 	}
 	if check, ok := orphanAppsCheck(ctx, s); ok {
