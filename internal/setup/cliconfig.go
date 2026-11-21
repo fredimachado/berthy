@@ -38,7 +38,8 @@ func readCLIConfig(path string) (agentclient.Config, []byte, error) {
 	}
 	c, err := agentclient.ParseConfig(b)
 	if errors.Is(err, agentclient.ErrEarlierLayout) {
-		return c, nil, err
+		// The CLI's own text sends the person to setup, which is where they are.
+		return c, nil, fmt.Errorf("the CLI configuration %s is in the layout of an earlier release: move it aside, or give --config with a new file, then run setup again", path)
 	}
 	if err != nil {
 		return c, nil, fmt.Errorf("the CLI configuration is not valid: %v", err)

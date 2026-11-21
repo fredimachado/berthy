@@ -1399,7 +1399,8 @@ func TestCLIConfigStepRefusesTheLayoutOfAnEarlierRelease(t *testing.T) {
 	var got []StepResult
 	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
 	r := stepOf(t, got, "cli_config")
-	if r.Status != StatusFailed || !strings.Contains(r.Detail, "the CLI configuration is in the layout of an earlier release") || string(mustRead(t, path)) != old {
+	want := "the CLI configuration " + path + " is in the layout of an earlier release: move it aside, or give --config with a new file, then run setup again"
+	if r.Status != StatusFailed || r.Detail != want || string(mustRead(t, path)) != old {
 		t.Fatalf("cli_config = %+v", r)
 	}
 }
