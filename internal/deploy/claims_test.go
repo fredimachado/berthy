@@ -30,6 +30,18 @@ func TestDeployRefusesAServiceNameAnotherEnvironmentHolds(t *testing.T) {
 	if _, _, err := c.Admit(ctx, Actor{ID: "test"}, req); err == nil || err.Error() != want {
 		t.Fatalf("admission: %v", err)
 	}
+	c.Store = openStore(t)
+	e := &positiveEngine{}
+	c.Engine = e
+	c.Reserve = func(context.Context, []state.Claim) error { return Refusal(want) }
+	app := req.Manifest.Apps["api"]
+	one := 1
+	app.Roles["web"] = manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	req.Manifest.Apps["api"] = app
+	out, _ := c.runDeploy(ctx, state.Operation{}, Actor{ID: "test"}, req, false)
+	if out.Err != want || e.spec != nil {
+		t.Fatalf("run: %+v; service: %s", out, e.spec)
+	}
 }
 
 func TestComposeDeployRefusesAProjectNameAnotherEnvironmentHolds(t *testing.T) {
