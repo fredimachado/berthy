@@ -401,7 +401,9 @@ func (c *Controller) checkNetworkNames(ctx context.Context, req Request) error {
 			}
 		}
 	}
-	problems := m.NetworkNameProblems(c.Environment, func(app, role string) string { return names[app+"/"+role] }, req.App)
+	problems := m.NetworkNameProblems(c.Environment, func(app, role string) (string, bool) {
+		return names[app+"/"+role], app == req.App && !req.Adopt
+	}, req.App)
 	if len(problems) != 0 {
 		return Refusal(problems[0].Message)
 	}

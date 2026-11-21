@@ -519,11 +519,11 @@ func TestNetworkNameProblemsChecksEveryNameAfterAClash(t *testing.T) {
 		"api-blue": {Kind: "image", Roles: map[string]Role{"web": {}}},
 		"last":     {Kind: "image", Roles: map[string]Role{"main": {}}},
 	}}
-	got := m.NetworkNameProblems("prod", func(app, role string) string {
+	got := m.NetworkNameProblems("prod", func(app, role string) (string, bool) {
 		if app == "api-blue" {
-			return "last-main"
+			return "last-main", true
 		}
-		return ""
+		return "", true
 	}, "")
 	if len(got) != 2 || !strings.Contains(got[1].Message, "last-main") {
 		t.Fatalf("problems: %+v", got)

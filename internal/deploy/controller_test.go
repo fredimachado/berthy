@@ -1498,7 +1498,7 @@ func TestIngressPlanRejectsConflictingConnectorDNSNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t)
-	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "legacy", ServiceID: "legacy"})
+	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "shop-prod-ingress-connector", ServiceID: "legacy"})
 	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
 	_, err = c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "ingress", Manifest: *m, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "shop-prod-ingress-connector") {
@@ -1512,7 +1512,7 @@ func TestIngressApplyReportsConflictingConnectorDNSNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t)
-	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "legacy", ServiceID: "legacy"})
+	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "shop-prod-ingress-connector", ServiceID: "legacy"})
 	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
 	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "ingress-dns", Kind: "ingress", Manifest: *m})
 	if err != nil {
@@ -1562,5 +1562,33 @@ func TestImagePlanUsesTheBoundServiceName(t *testing.T) {
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "shop-prod-api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPlanIgnoresAnAliasNeverAddedToAnAdoptedService(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "api", state.Binding{App: "api", Role: "blue-web", Name: "legacy-api", ServiceID: "legacy"})
+	c := &Controller{Store: s, Engine: &positiveEngine{}, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api-blue"] = m.Apps["web"]
+	delete(m.Apps, "web")
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api-blue", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlanRejectsAnAliasClashingWithABoundService(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "other", state.Binding{App: "other", Role: "main", Name: "api-blue-web", ServiceID: "legacy"})
+	c := &Controller{Store: s, Engine: &positiveEngine{}, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api-blue"] = m.Apps["web"]
+	delete(m.Apps, "web")
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api-blue", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "api-blue-web") {
+		t.Fatalf("plan: %v", err)
 	}
 }

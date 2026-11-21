@@ -46,9 +46,9 @@ func (m *Manifest) ComposeProject(environment, app string) string {
 }
 
 // NetworkNameProblems finds roles that would answer to the same DNS name on the environment network.
-// With a nil serviceName, only aliases are checked. Otherwise it supplies bound or adopted names when present.
+// With a nil serviceName, only aliases are checked. Otherwise it supplies the effective service name and whether the alias is introduced.
 // A non-empty targetApp reports only clashes involving that app.
-func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app, role string) string, targetApp string) Problems {
+func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app, role string) (string, bool), targetApp string) Problems {
 	type owner struct{ app, role string }
 	seen := map[string]owner{}
 	var problems Problems
@@ -69,17 +69,20 @@ func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app,
 		}
 		for _, role := range sortedKeys(a.Roles) {
 			current := owner{app, role}
-			service := m.ServiceName(environment, app, role)
-			if serviceName != nil {
-				if name := serviceName(app, role); name != "" {
-					service = name
+			var names []string
+			if serviceName == nil {
+				names = append(names, app+"-"+role)
+			} else {
+				service, alias := serviceName(app, role)
+				if service == "" {
+					service = m.ServiceName(environment, app, role)
 				}
-			}
-			reported := false
-			names := []string{app + "-" + role}
-			if serviceName != nil {
+				if alias {
+					names = append(names, app+"-"+role)
+				}
 				names = append(names, service)
 			}
+			reported := false
 			for _, name := range names {
 				if previous, ok := seen[name]; ok && previous != current {
 					if !reported && (targetApp == "" || app == targetApp || previous.app == targetApp) {
