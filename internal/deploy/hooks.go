@@ -331,7 +331,7 @@ func (p preparedPlan) oneOffSpec(argv []string, role string, limits *manifest.Re
 	if err != nil {
 		return nil, err
 	}
-	mounts, err := volumeMounts(volumes)
+	mounts, err := volumeMounts(volumes, func(v string) string { return p.Request.Manifest.VolumeName(p.Identity.Environment, v) })
 	if err != nil {
 		return nil, err
 	}

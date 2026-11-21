@@ -147,8 +147,8 @@ func TestRunJobRunsInItsOwnContainerOfTheAppliedRelease(t *testing.T) {
 	if spec.HostConfig.Memory != 64*1024*1024 || spec.HostConfig.NanoCpus != 5e8 {
 		t.Errorf("limits %+v", spec.HostConfig)
 	}
-	if len(spec.HostConfig.Mounts) != 2 || spec.HostConfig.Mounts[0].Type != "volume" || spec.HostConfig.Mounts[0].Source != "uploads" || spec.HostConfig.Mounts[0].Target != "/data" || spec.HostConfig.Mounts[0].ReadOnly ||
-		spec.HostConfig.Mounts[1].Source != "cache" || !spec.HostConfig.Mounts[1].ReadOnly {
+	if len(spec.HostConfig.Mounts) != 2 || spec.HostConfig.Mounts[0].Type != "volume" || spec.HostConfig.Mounts[0].Source != "proj-test_uploads" || spec.HostConfig.Mounts[0].Target != "/data" || spec.HostConfig.Mounts[0].ReadOnly ||
+		spec.HostConfig.Mounts[1].Source != "proj-test_cache" || !spec.HostConfig.Mounts[1].ReadOnly {
 		t.Errorf("mounts %+v", spec.HostConfig.Mounts)
 	}
 	if _, ok := spec.NetworkingConfig.EndpointsConfig["net"]; !ok {

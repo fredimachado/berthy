@@ -104,7 +104,7 @@ func (f *removeFixture) remove(requestID string, mutate func(*Request)) state.Op
 
 func (f *removeFixture) services() []string {
 	var names []string
-	for _, n := range []string{"demo-api-web", "demo-api-worker"} {
+	for _, n := range []string{"demo-test-api-web", "demo-test-api-worker"} {
 		if _, err := f.docker.InspectService(context.Background(), n); err == nil {
 			names = append(names, n)
 		}
@@ -138,7 +138,7 @@ func hasStep(list []string, want string) bool {
 func TestRemoveDeletesServicesRoutesAndStateAndKeepsVolumesAndHistory(t *testing.T) {
 	f := newRemoveFixture(t)
 	ctx := context.Background()
-	if got := f.services(); !reflect.DeepEqual(got, []string{"demo-api-web", "demo-api-worker"}) {
+	if got := f.services(); !reflect.DeepEqual(got, []string{"demo-test-api-web", "demo-test-api-worker"}) {
 		t.Fatalf("services before %v", got)
 	}
 	op := f.remove("remove", nil)
@@ -172,7 +172,7 @@ func TestRemoveDeletesServicesRoutesAndStateAndKeepsVolumesAndHistory(t *testing
 		t.Fatalf("volumes are deleted only on request: removed %v", f.docker.removed)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"deleted service demo-api-web", "deleted service demo-api-worker", "kept volume data"} {
+	for _, want := range []string{"deleted service demo-test-api-web", "deleted service demo-test-api-worker", "kept volume data"} {
 		if !hasStep(got, want) {
 			t.Fatalf("no step %q in %v", want, got)
 		}
@@ -226,7 +226,7 @@ func TestRemoveJournalsEachServiceBeforeDeletingIt(t *testing.T) {
 		}
 		names = append(names, i.Name)
 	}
-	if !reflect.DeepEqual(names, []string{"demo-api-web", "demo-api-worker"}) {
+	if !reflect.DeepEqual(names, []string{"demo-test-api-web", "demo-test-api-worker"}) {
 		t.Fatalf("intents %v", names)
 	}
 }
@@ -243,7 +243,7 @@ func TestRemoveDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	if r == nil || r.App != "api" || r.Kind != "image" || len(r.Blockers) != 0 {
 		t.Fatalf("plan %+v", plan)
 	}
-	if !reflect.DeepEqual(r.Services, []string{"demo-api-web", "demo-api-worker"}) {
+	if !reflect.DeepEqual(r.Services, []string{"demo-test-api-web", "demo-test-api-worker"}) {
 		t.Fatalf("services %v", r.Services)
 	}
 	if len(r.Volumes) != 0 || !reflect.DeepEqual(r.KeptVolumes, []string{"data"}) {
@@ -400,7 +400,7 @@ func TestRemoveRefusesAServiceThatIsNotTheBoundOne(t *testing.T) {
 	// Someone replaced the service behind the binding.
 	f.bound.mu.Lock()
 	for i := range f.bound.services {
-		if specName(f.bound.services[i].Spec) == "demo-api-web" {
+		if specName(f.bound.services[i].Spec) == "demo-test-api-web" {
 			f.bound.services[i].ID = "somebody-elses"
 		}
 	}
@@ -422,7 +422,7 @@ func TestRemoveRefusesAServiceThatIsNotTheBoundOne(t *testing.T) {
 
 func TestRemoveToleratesAServiceThatIsAlreadyGone(t *testing.T) {
 	f := newRemoveFixture(t)
-	if err := f.docker.DeleteService(context.Background(), idOf(t, f, "demo-api-worker")); err != nil {
+	if err := f.docker.DeleteService(context.Background(), idOf(t, f, "demo-test-api-worker")); err != nil {
 		t.Fatal(err)
 	}
 	op := f.remove("partial", nil)
@@ -446,8 +446,8 @@ func idOf(t *testing.T, f *removeFixture, name string) string {
 func TestRecoveryFinishesAnInterruptedRemoval(t *testing.T) {
 	f := newRemoveFixture(t)
 	ctx := context.Background()
-	web, worker := idOf(t, f, "demo-api-web"), idOf(t, f, "demo-api-worker")
-	live, err := f.docker.InspectService(ctx, "demo-api-web")
+	web, worker := idOf(t, f, "demo-test-api-web"), idOf(t, f, "demo-test-api-worker")
+	live, err := f.docker.InspectService(ctx, "demo-test-api-web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestRecoveryFinishesAnInterruptedRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for ordinal, b := range []struct{ role, name, id string }{{"web", "demo-api-web", web}, {"worker", "demo-api-worker", worker}} {
+	for ordinal, b := range []struct{ role, name, id string }{{"web", "demo-test-api-web", web}, {"worker", "demo-test-api-worker", worker}} {
 		i := state.Intent{Ordinal: ordinal + 1, Kind: "remove_service", Role: b.role, Name: b.name, ServiceID: b.id, Before: live.Spec, Desired: json.RawMessage(`{}`)}
 		if err = f.store.RecordIntent(ctx, op.ID, i); err != nil {
 			t.Fatal(err)
@@ -494,8 +494,8 @@ func TestRecoveryLeavesAServiceItDoesNotRecognise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, _ := f.docker.InspectService(ctx, "demo-api-web")
-	if err = f.store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: "remove_service", Role: "web", Name: "demo-api-web", ServiceID: "an-older-id", Before: live.Spec, Desired: json.RawMessage(`{}`)}); err != nil {
+	live, _ := f.docker.InspectService(ctx, "demo-test-api-web")
+	if err = f.store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1, Kind: "remove_service", Role: "web", Name: "demo-test-api-web", ServiceID: "an-older-id", Before: live.Spec, Desired: json.RawMessage(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.ctrl.Recover(ctx); err != nil {
@@ -765,7 +765,7 @@ func setServiceLabels(t *testing.T, f *removeFixture, name string, labels map[st
 
 func TestRemoveDeletesAnAdoptedServiceThatCarriesNoLabels(t *testing.T) {
 	f := newRemoveFixture(t)
-	for _, n := range []string{"demo-api-web", "demo-api-worker"} {
+	for _, n := range []string{"demo-test-api-web", "demo-test-api-worker"} {
 		setServiceLabels(t, f, n, nil)
 	}
 	op := f.remove("unlabeled", nil)
@@ -786,7 +786,7 @@ func TestRemoveRefusesAServiceWhoseLabelsNameAnotherOwner(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newRemoveFixture(t)
-			setServiceLabels(t, f, "demo-api-web", labels)
+			setServiceLabels(t, f, "demo-test-api-web", labels)
 			op := f.remove("foreign-labels", nil)
 			if op.State != "failed" || op.Err != "bound service ownership changed" {
 				t.Fatalf("remove %s: %s", op.State, op.Err)
@@ -800,7 +800,7 @@ func TestRemoveRefusesAServiceWhoseLabelsNameAnotherOwner(t *testing.T) {
 
 func TestRemoveRefusesAServiceLabelledForAnotherProject(t *testing.T) {
 	f := newRemoveFixture(t)
-	setServiceLabels(t, f, "demo-api-web", map[string]string{"berthy.project": "other", "berthy.environment": ingressEnv, "berthy.app": "api", "berthy.role": "web"})
+	setServiceLabels(t, f, "demo-test-api-web", map[string]string{"berthy.project": "other", "berthy.environment": ingressEnv, "berthy.app": "api", "berthy.role": "web"})
 	op := f.remove("foreign-project", nil)
 	if op.State != "failed" || op.Err != "bound service ownership changed" || len(f.services()) != 2 {
 		t.Fatalf("remove %s: %s; services %v", op.State, op.Err, f.services())

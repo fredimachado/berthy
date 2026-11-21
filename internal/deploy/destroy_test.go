@@ -344,7 +344,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 		t.Fatalf("order of removals: %v", calls)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"api: deleted service demo-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
+	for _, want := range []string{"api: deleted service demo-test-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
 		if !hasStep(got, want) {
 			t.Errorf("no step %q in %v", want, got)
 		}
@@ -618,13 +618,13 @@ func TestDestroyTunnelWithoutManagedIngressReportsNoManagedTunnel(t *testing.T) 
 func TestRecoveryFinishesAnInterruptedDestroy(t *testing.T) {
 	f := newDestroyFixture(t, true)
 	ctx := context.Background()
-	web, worker := idOf2(t, f, "demo-api-web"), idOf2(t, f, "demo-api-worker")
-	live, _ := f.docker.InspectService(ctx, "demo-api-web")
+	web, worker := idOf2(t, f, "demo-test-api-web"), idOf2(t, f, "demo-test-api-worker")
+	live, _ := f.docker.InspectService(ctx, "demo-test-api-web")
 	op, _, err := f.store.Admit(ctx, state.Admission{RequestID: "crashed", ActorID: "admin", Kind: "destroy", PublicRequest: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, b := range []struct{ role, name, id string }{{"web", "demo-api-web", web}, {"worker", "demo-api-worker", worker}} {
+	for i, b := range []struct{ role, name, id string }{{"web", "demo-test-api-web", web}, {"worker", "demo-test-api-worker", worker}} {
 		if err = f.store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: i + 1, Kind: removeServiceKind, Role: b.role, Name: b.name, ServiceID: b.id, Before: live.Spec, Desired: json.RawMessage(`{}`)}); err != nil {
 			t.Fatal(err)
 		}
@@ -639,7 +639,7 @@ func TestRecoveryFinishesAnInterruptedDestroy(t *testing.T) {
 	if err != nil || got.State != "interrupted" || got.Err != "destroy interrupted; run destroy again" {
 		t.Fatalf("operation %+v %v", got, err)
 	}
-	if _, err = f.docker.InspectService(ctx, "demo-api-worker"); !serviceMissing(err) {
+	if _, err = f.docker.InspectService(ctx, "demo-test-api-worker"); !serviceMissing(err) {
 		t.Fatalf("the half-done service deletion was not finished: %v", err)
 	}
 	if again := f.destroy("again", nil); again.State != "succeeded" {
@@ -703,8 +703,8 @@ func TestDestroyWaitsForTheTaskContainersOfDeletedServicesBeforeRemovingImages(t
 	f := newDestroyFixture(t, false)
 	removeVolumeWait = 5 * time.Second
 	f.docker.imu.Lock()
-	f.docker.containers = append(f.docker.containers, engine.InventoryContainer{ID: "task-api", ImageID: "id-acquired", State: "running", Labels: map[string]string{"com.docker.swarm.service.name": "demo-api-web"}})
-	f.docker.laggards = map[string][]string{"demo-api-web": {"task-api"}}
+	f.docker.containers = append(f.docker.containers, engine.InventoryContainer{ID: "task-api", ImageID: "id-acquired", State: "running", Labels: map[string]string{"com.docker.swarm.service.name": "demo-test-api-web"}})
+	f.docker.laggards = map[string][]string{"demo-test-api-web": {"task-api"}}
 	f.docker.imu.Unlock()
 	op := f.destroy("lag", nil)
 	if op.State != "succeeded" {

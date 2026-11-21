@@ -235,7 +235,7 @@ func TestFailedCreatedRoleKeepsTaskEvidenceBeforeTheServiceIsDeleted(t *testing.
 		t.Fatalf("diagnostics are not the three tasks of the operation, newest first: %+v", got)
 	}
 	d := got[0]
-	if d.Kind != "task" || d.Role != "web" || d.Name != "proj-web-web" || d.State != "failed" || d.ExitCode == nil || *d.ExitCode != 1 || d.Container != "c3" || d.Captured.IsZero() {
+	if d.Kind != "task" || d.Role != "web" || d.Name != "proj-test-web-web" || d.State != "failed" || d.ExitCode == nil || *d.ExitCode != 1 || d.Container != "c3" || d.Captured.IsZero() {
 		t.Fatalf("diagnostic %+v", d)
 	}
 	if !strings.Contains(d.Logs, "DATABASE_URL is required") || strings.Contains(d.Logs, "hunter2-secret") || !strings.Contains(d.Logs, "[redacted]") {

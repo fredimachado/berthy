@@ -70,7 +70,7 @@ func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, ro
 		drain = "30s"
 	}
 	order, _ := app.UpdateOrder(role)
-	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, operation, prepared.NetworkID, prepared.Image, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
+	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
 }
 
 // releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
@@ -113,7 +113,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if e != nil {
 			return
 		}
-		ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, appRouteWants(req.Manifest, req.App, bindings), req.ReplaceExisting)
+		ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, appRouteWants(req.Manifest, c.Environment, req.App, bindings), req.ReplaceExisting)
 		if err != nil {
 			outcome.Err = ingressFailure(err, errIngressPublish)
 			return
@@ -179,7 +179,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			outcome.Err = "role preflight failed"
 			return
 		}
-		name := req.Manifest.Project + "-" + req.App + "-" + role
+		name := req.Manifest.ServiceName(c.Environment, req.App, role)
 		intent := state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
 		if b, ok := byRole[role]; ok {
 			name = b.Name

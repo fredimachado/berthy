@@ -89,7 +89,7 @@ func TestDeployReportsThatThePortAnswersOnTheNetwork(t *testing.T) {
 	if got := verifyLines(t, f.store, op.ID); !reflect.DeepEqual(got, []string{okNetwork}) {
 		t.Fatalf("events %q", got)
 	}
-	if want := []string{"overlay demo-api-web:8080"}; !reflect.DeepEqual(r.calls, want) {
+	if want := []string{"overlay demo-test-api-web:8080"}; !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("reach calls %q, want %q", r.calls, want)
 	}
 }

@@ -237,7 +237,7 @@ func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		}
 		if req.DryRun {
 			// The routes an adoption publishes follow its bindings, which the plan does not yet record.
-			if err = c.dryRunPublish(ctx, &plan, req.Manifest, req.App, appRouteWants(req.Manifest, req.App, bindings), req.ReplaceExisting); err != nil {
+			if err = c.dryRunPublish(ctx, &plan, req.Manifest, req.App, appRouteWants(req.Manifest, c.Environment, req.App, bindings), req.ReplaceExisting); err != nil {
 				return Plan{}, err
 			}
 		}

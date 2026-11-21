@@ -30,7 +30,7 @@ const (
 	ingressSecret  = "CF_TOKEN"
 	ingressEnv     = "test"
 	ingressTunnel  = "demo-test"
-	apiTarget      = "http://demo-api-web:8080"
+	apiTarget      = "http://demo-test-api-web:8080"
 )
 
 // updatableFake is boundFake whose service updates store the new spec, as Docker does.
@@ -239,7 +239,7 @@ func seedDeployed(t *testing.T, s *state.Store, app string, bindings ...state.Bi
 
 // apiBinding is the web role of the deployed api app, bound to its service.
 func apiBinding() state.Binding {
-	return state.Binding{App: "api", Role: "web", Name: "demo-api-web", ServiceID: "api-web-id"}
+	return state.Binding{App: "api", Role: "web", Name: "demo-test-api-web", ServiceID: "api-web-id"}
 }
 
 // run admits an ingress request and waits for it to finish.
@@ -276,7 +276,7 @@ func (f *ingressFixture) tunnelConfig(id string) cloudflare.TunnelConfig {
 
 // connectorMissing reports whether the connector service is absent from the engine.
 func (f *ingressFixture) connectorMissing() bool {
-	_, err := f.docker.InspectService(context.Background(), "demo-ingress-connector")
+	_, err := f.docker.InspectService(context.Background(), "demo-test-ingress-connector")
 	return serviceMissing(err)
 }
 
@@ -608,7 +608,7 @@ func TestIngressApplyCreatesTunnelConnectorRouteAndRecord(t *testing.T) {
 		t.Fatalf("tunnel %+v", tunnel)
 	}
 
-	svc, err := f.docker.InspectService(ctx, "demo-ingress-connector")
+	svc, err := f.docker.InspectService(ctx, "demo-test-ingress-connector")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +671,7 @@ func TestIngressApplyCreatesTunnelConnectorRouteAndRecord(t *testing.T) {
 // connectorService returns the live connector service of the environment, or fails the test.
 func (f *ingressFixture) connectorService() engine.ServiceSnapshot {
 	f.t.Helper()
-	svc, err := f.docker.InspectService(context.Background(), "demo-ingress-connector")
+	svc, err := f.docker.InspectService(context.Background(), "demo-test-ingress-connector")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -732,14 +732,14 @@ type outageEngine struct {
 }
 
 func (e outageEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
-	if e.down.Load() && specName(spec) == "demo-ingress-connector" {
+	if e.down.Load() && specName(spec) == "demo-test-ingress-connector" {
 		return "", &engine.StatusError{Code: 500}
 	}
 	return e.Engine.CreateService(ctx, spec, auth)
 }
 
 func (e outageEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
-	if e.down.Load() && specName(spec) == "demo-ingress-connector" {
+	if e.down.Load() && specName(spec) == "demo-test-ingress-connector" {
 		return &engine.StatusError{Code: 500}
 	}
 	return e.Engine.UpdateService(ctx, id, version, spec, auth)
@@ -822,7 +822,7 @@ func TestChangedConnectorImageRollsTheConnector(t *testing.T) {
 	}
 	f.calls.reset()
 	f.applyIngress("apply-3", ingressManifestImage(t, "cloudflare/cloudflared@sha256:"+digest, ""))
-	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+	if n := f.calls.count("service update demo-test-ingress-connector"); n != 1 {
 		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
 	}
 	if n := f.connectorReleases(); n != releases+1 {
@@ -847,7 +847,7 @@ func TestChangedTunnelTokenRollsTheConnector(t *testing.T) {
 
 	f.calls.reset()
 	f.applyIngress("apply-2", m)
-	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+	if n := f.calls.count("service update demo-test-ingress-connector"); n != 1 {
 		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
 	}
 	if env := f.connectorEnv(); !slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(fresh)) {
@@ -880,7 +880,7 @@ func TestConnectorStillOnAnOldTokenIsRolledOnTheNextApply(t *testing.T) {
 
 	f.calls.reset()
 	f.applyIngress("apply-3", m)
-	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+	if n := f.calls.count("service update demo-test-ingress-connector"); n != 1 {
 		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
 	}
 	if env := f.connectorEnv(); !slices.Contains(env, "TUNNEL_TOKEN="+f.cf.TunnelToken(fresh)) {
@@ -901,7 +901,7 @@ func TestConnectorServiceDeletedOutsideBerthyIsRecreated(t *testing.T) {
 
 	f.calls.reset()
 	f.applyIngress("apply-2", m)
-	if n := f.calls.count("service create demo-ingress-connector"); n != 1 {
+	if n := f.calls.count("service create demo-test-ingress-connector"); n != 1 {
 		t.Fatalf("connector creates %d, want 1: %v", n, f.calls.all())
 	}
 	recreated := f.connectorService()
@@ -961,11 +961,11 @@ func TestConnectorScaledOutsideBerthyIsRolledBack(t *testing.T) {
 	seedDeployed(t, f.store, "api", apiBinding())
 	m := ingressManifest(t, "")
 	f.applyIngress("apply-1", m)
-	f.bound.scaleService(t, "demo-ingress-connector", 2)
+	f.bound.scaleService(t, "demo-test-ingress-connector", 2)
 
 	f.calls.reset()
 	f.applyIngress("apply-2", m)
-	if n := f.calls.count("service update demo-ingress-connector"); n != 1 {
+	if n := f.calls.count("service update demo-test-ingress-connector"); n != 1 {
 		t.Fatalf("connector updates %d, want 1: %v", n, f.calls.all())
 	}
 	var spec struct {
@@ -1221,7 +1221,7 @@ func TestIngressStatusAndTunnelHealth(t *testing.T) {
 	if err != nil || !status.Configured || status.Cloudflare != "available" || status.Tunnel == nil || status.Tunnel.Status != "healthy" || status.Tunnel.Connections != 1 {
 		t.Fatalf("status %+v %v", status, err)
 	}
-	if len(status.Connector) != 1 || status.Connector[0].Service != "demo-ingress-connector" || status.Connector[0].Running != 1 || status.Connector[0].Desired != 1 {
+	if len(status.Connector) != 1 || status.Connector[0].Service != "demo-test-ingress-connector" || status.Connector[0].Running != 1 || status.Connector[0].Desired != 1 {
 		t.Fatalf("connector %+v", status.Connector)
 	}
 	if len(status.Routes) != 1 || status.Routes[0].Target != apiTarget || status.Routes[0].DNS != "managed" {

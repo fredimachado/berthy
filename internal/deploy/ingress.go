@@ -450,14 +450,14 @@ func (c *Controller) routeWants(ctx context.Context, m manifest.Manifest, apps [
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, appRouteWants(m, name, bindings)...)
+		out = append(out, appRouteWants(m, c.Environment, name, bindings)...)
 	}
 	return sortedWants(out), nil
 }
 
 // appRouteWants lists the routes of one image app for the bindings its release holds: one for every hostname of every
-// role. A role routes to its bound service when it is bound, and to <project>-<app>-<role> otherwise.
-func appRouteWants(m manifest.Manifest, name string, bindings []state.Binding) []RouteWant {
+// role. A role routes to its bound service when it is bound, and to its manifest name otherwise.
+func appRouteWants(m manifest.Manifest, environment, name string, bindings []state.Binding) []RouteWant {
 	bound := map[string]string{}
 	for _, b := range bindings {
 		bound[b.Role] = b.Name
@@ -466,7 +466,7 @@ func appRouteWants(m manifest.Manifest, name string, bindings []state.Binding) [
 	for role, r := range m.Apps[name].Roles {
 		service := bound[role]
 		if service == "" {
-			service = m.Project + "-" + name + "-" + role
+			service = m.ServiceName(environment, name, role)
 		}
 		for _, host := range r.Hostnames {
 			out = append(out, RouteWant{Hostname: host, App: name, Role: role, Service: fmt.Sprintf("http://%s:%d", service, r.Port)})

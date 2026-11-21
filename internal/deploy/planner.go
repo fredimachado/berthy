@@ -274,7 +274,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		// The release's spec of the role, which the first deploy sends. It runs the image the service runs now, so that the
 		// image is not a difference, and takes the service's own values for the secret variables, which are read at deploy.
 		order, _ := app.UpdateOrder(role)
-		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, "adoption", net.ID, spec.TaskTemplate.ContainerSpec.Image, adoptionEnv(app.Env, spec.TaskTemplate.ContainerSpec.Env), r, order, func() string {
+		desired, e := serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), "adoption", net.ID, spec.TaskTemplate.ContainerSpec.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, adoptionEnv(app.Env, spec.TaskTemplate.ContainerSpec.Env), r, order, func() string {
 			if app.Deploy.DrainTimeout == "" {
 				return "30s"
 			}

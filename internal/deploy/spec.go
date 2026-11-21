@@ -71,7 +71,7 @@ func describeLogDriver(ld map[string]any) string {
 
 // serviceSpec is the Swarm service of a role at one release. order is how an update replaces the old version, from
 // App.UpdateOrder; the update and its rollback config both carry it.
-func serviceSpec(env, project, app, role, operation, network, image string, values []string, r manifest.Role, order, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
+func serviceSpec(env, project, app, role, name, operation, network, image string, volumeName func(string) string, values []string, r manifest.Role, order, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
 
 	grace, err := time.ParseDuration(drain)
 	if err != nil {
@@ -115,7 +115,7 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 		container["Env"] = values
 	}
 	if len(r.Volumes) > 0 {
-		mounts, e := volumeMounts(r.Volumes)
+		mounts, e := volumeMounts(r.Volumes, volumeName)
 		if e != nil {
 			return nil, e
 		}
@@ -138,7 +138,7 @@ func serviceSpec(env, project, app, role, operation, network, image string, valu
 	// Written out so the cadence is documented: a task that exits is replaced after 5 seconds, without limit. In steady
 	// state a crashed app always comes back; only a rollout stops early.
 	restart := map[string]any{"Condition": "any", "Delay": int64(5 * time.Second), "MaxAttempts": 0}
-	spec := map[string]any{"Name": project + "-" + app + "-" + role, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}, "RestartPolicy": restart}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": update, "RollbackConfig": rollback}
+	spec := map[string]any{"Name": name, "Labels": labels, "TaskTemplate": map[string]any{"ContainerSpec": container, "Networks": []any{map[string]any{"Target": network}}, "RestartPolicy": restart}, "Mode": map[string]any{"Replicated": map[string]any{"Replicas": replicas}}, "UpdateConfig": update, "RollbackConfig": rollback}
 	if r.Resources != nil {
 		nano, memory, e := resourceLimits(r.Resources)
 		if e != nil {
@@ -180,14 +180,14 @@ func resourceLimits(r *manifest.Resources) (nanoCPUs, memory int64, err error) {
 
 // volumeMounts is the Docker mounts of a role's named volumes, each written as name:/path or name:/path:ro. A service takes
 // them in its container spec and a one-off container in its host config, so a command of the role sees the files the role does.
-func volumeMounts(volumes []string) ([]any, error) {
+func volumeMounts(volumes []string, name func(string) string) ([]any, error) {
 	mounts := make([]any, 0, len(volumes))
 	for _, raw := range volumes {
 		m, err := manifest.ParseMount(raw)
 		if err != nil {
 			return nil, err
 		}
-		mounts = append(mounts, map[string]any{"Type": "volume", "Source": m.Source, "Target": m.Target, "ReadOnly": m.ReadOnly})
+		mounts = append(mounts, map[string]any{"Type": "volume", "Source": name(m.Source), "Target": m.Target, "ReadOnly": m.ReadOnly})
 	}
 	return mounts, nil
 }

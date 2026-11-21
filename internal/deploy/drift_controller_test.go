@@ -89,7 +89,7 @@ func TestDriftNamesAServiceThatIsGone(t *testing.T) {
 func TestDriftIsAnErrorWhenDockerCannotBeRead(t *testing.T) {
 	c, f := driftController(t)
 	f.mu.Lock()
-	f.failures = map[string]error{"proj-web-web": errors.New("daemon down")}
+	f.failures = map[string]error{"proj-test-web-web": errors.New("daemon down")}
 	f.mu.Unlock()
 	if _, err := c.Drift(context.Background(), "web"); err == nil {
 		t.Fatal("no error")

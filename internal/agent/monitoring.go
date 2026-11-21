@@ -337,7 +337,7 @@ func (w *Monitoring) serviceTarget(ctx context.Context, m manifest.Manifest, s m
 			}
 		}
 		// Not deployed yet: the name the deploy gives the role's Swarm service.
-		return m.Project + "-" + s.App + "-" + role, nil
+		return m.ServiceName(w.cfg.Environment, s.App, role), nil
 	case "compose":
 		if s.Role != "" {
 			return s.Role, nil

@@ -122,7 +122,7 @@ func TestDeployPublishesRouteRecordAndStateAfterTheServiceStarts(t *testing.T) {
 	if err != nil || len(routes) != 1 || routes[0].Service != apiTarget || routes[0].ZoneID != f.zone || routes[0].DNSRecordID != records[0].ID {
 		t.Fatalf("routes %+v %v", routes, err)
 	}
-	service, publish := f.calls.index("service create demo-api-web"), f.calls.index("cloudflare PUT /accounts/")
+	service, publish := f.calls.index("service create demo-test-api-web"), f.calls.index("cloudflare PUT /accounts/")
 	if service < 0 || publish < 0 || service > publish {
 		t.Fatalf("calls %v: the service must start before its routes are published", f.calls.all())
 	}
@@ -195,7 +195,7 @@ func TestPublishFailureKeepsTheNewRelease(t *testing.T) {
 	if err != nil || applied.OperationID != op.ID || !strings.HasSuffix(applied.Digest, apiFirst) {
 		t.Fatalf("applied %+v: %v", applied, err)
 	}
-	svc, err := f.docker.InspectService(ctx, "demo-api-web")
+	svc, err := f.docker.InspectService(ctx, "demo-test-api-web")
 	if err != nil || !strings.Contains(string(svc.Spec), apiFirst) {
 		t.Fatalf("service does not run the new image: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestAdoptionPublishesAfterBinding(t *testing.T) {
 	f.applyIngress("apply", ingressManifest(t, ""))
 	one := 1
 	role := manifest.Role{Service: "existing-api", Port: 8080, Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec(ingressEnv, "demo", "api", "web", "prior", "net", "ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64), nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec(ingressEnv, "demo", "api", "web", (&manifest.Manifest{Project: "demo"}).ServiceName(ingressEnv, "api", "web"), "prior", "net", "ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64), func(v string) string { return (&manifest.Manifest{Project: "demo"}).VolumeName(ingressEnv, v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestDeployCannotTakeAnotherAppsRoute(t *testing.T) {
 	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"route api.example.com belongs to app api"}) {
 		t.Fatalf("conflicts %v", reasons)
 	}
-	if n := f.calls.count("service create demo-admin-web"); n != 0 {
+	if n := f.calls.count("service create demo-test-admin-web"); n != 0 {
 		t.Fatalf("admin service created despite the conflict: %v", f.calls.all())
 	}
 
@@ -485,7 +485,7 @@ func TestDeployCannotTakeAnotherAppsRoute(t *testing.T) {
 		t.Fatalf("replace %s: %s", op.State, op.Err)
 	}
 	routes, err := f.store.IngressRoutes(ctx, "admin")
-	if err != nil || len(routes) != 1 || routes[0].Hostname != "api.example.com" || routes[0].Service != "http://demo-admin-web:9000" {
+	if err != nil || len(routes) != 1 || routes[0].Hostname != "api.example.com" || routes[0].Service != "http://demo-test-admin-web:9000" {
 		t.Fatalf("admin routes %+v %v", routes, err)
 	}
 }

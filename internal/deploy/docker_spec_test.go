@@ -215,7 +215,7 @@ func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 }
 
 func TestServiceSpecOmitsEmptyEnv(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
 	if err != nil || strings.Contains(string(b), `"Env"`) {
 		t.Fatalf("spec %s: %v", b, err)
 	}
@@ -251,7 +251,7 @@ func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
 		present bool
 	}{{"0s", false}, {"1s", true}} {
 		role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}, Interval: "5s", Timeout: "2s", StartPeriod: tc.start, Retries: &retries}}
-		b, err := serviceSpec("env", "proj", "app", "web", "op", "network", "image", nil, role, "start-first", "10s", nil, "")
+		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -344,7 +344,7 @@ func TestRoleWithANamedVolumeDeploysAndUpdates(t *testing.T) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !strings.Contains(string(e.spec), `"Source":"data"`) || strings.Contains(string(e.spec), "ReadOnly") {
+	if !strings.Contains(string(e.spec), `"Source":"proj-test_data"`) || strings.Contains(string(e.spec), "ReadOnly") {
 		t.Fatalf("stored spec: %s", e.spec)
 	}
 }
@@ -382,5 +382,43 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 	defer e.mu.Unlock()
 	if !sameSpec(e.spec, before) {
 		t.Fatalf("service not restored: %s", e.spec)
+	}
+}
+
+func TestAServiceOfTwoEnvironmentsOfOneProjectHasTwoNames(t *testing.T) {
+	role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	for _, env := range []string{"dev", "prod"} {
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var spec struct{ Name string }
+		if err := json.Unmarshal(b, &spec); err != nil {
+			t.Fatal(err)
+		}
+		if want := "proj-" + env + "-api-web"; spec.Name != want {
+			t.Errorf("got %q, want %q", spec.Name, want)
+		}
+	}
+}
+
+func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
+	role := manifest.Role{Volumes: []string{"data:/data"}, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
+	for _, env := range []string{"dev", "prod"} {
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var spec struct {
+			TaskTemplate struct {
+				ContainerSpec struct{ Mounts []struct{ Source string } }
+			}
+		}
+		if err := json.Unmarshal(b, &spec); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := spec.TaskTemplate.ContainerSpec.Mounts[0].Source, "proj-"+env+"_data"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
 	}
 }
