@@ -127,49 +127,6 @@ func TestApplySettingsOfProtectedMakesProtectionSticky(t *testing.T) {
 	}
 }
 
-func TestCheckProjectRefusesASecondProjectWhileAnAppRuns(t *testing.T) {
-	s, _, _ := testStore(t)
-	ctx := context.Background()
-	if err := s.CheckProject(ctx, "anything"); err != nil {
-		t.Fatalf("fresh environment: %v", err)
-	}
-	deployWith(t, s, "one", "api", testSettings(t, "demo", "1"))
-	if err := s.CheckProject(ctx, "demo"); err != nil {
-		t.Fatalf("same project: %v", err)
-	}
-	err := s.CheckProject(ctx, "other")
-	var pe *ProjectError
-	if !errors.As(err, &pe) || err.Error() != "environment test runs project demo; this manifest is for project other" {
-		t.Fatalf("second project: %v", err)
-	}
-	if err = s.ApplySettings(ctx, Actor{ID: "ci"}, *testSettings(t, "other", "1"), false); !errors.As(err, &pe) {
-		t.Fatalf("apply of a second project: %v", err)
-	}
-	if got, _, _ := s.Settings(ctx); got.Project != "demo" {
-		t.Fatalf("a refused apply changed the project: %+v", got)
-	}
-	// The connector is not an app of the project.
-	op, _, err := s.Admit(ctx, Admission{RequestID: "fg", ActorID: "a", Kind: "remove", PublicRequest: []byte(`{}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.ForgetApp(ctx, op.ID, "api"); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Finish(ctx, op.ID, Outcome{State: "succeeded"}); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.CheckProject(ctx, "other"); err != nil {
-		t.Fatalf("second project after every app was removed: %v", err)
-	}
-	if err = s.ApplySettings(ctx, Actor{ID: "ci"}, *testSettings(t, "other", "1"), false); err != nil {
-		t.Fatalf("apply of a new project after every app was removed: %v", err)
-	}
-	if got, _, _ := s.Settings(ctx); got.Project != "other" {
-		t.Fatalf("the new project did not replace the old one: %+v", got)
-	}
-}
-
 func TestLatestReleasesHoldsTheNewestReleaseOfEveryAppEverDeployed(t *testing.T) {
 	s, _, _ := testStore(t)
 	ctx := context.Background()

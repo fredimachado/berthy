@@ -1324,3 +1324,68 @@ func TestIngressConnectorRecordsItsTagWhenGivenByTag(t *testing.T) {
 		t.Fatalf("connector release tag %q: %v", release.Tag, err)
 	}
 }
+
+func TestADeployOfAnotherProjectsManifestIsRefused(t *testing.T) {
+	s := openStore(t)
+	f := &boundFake{}
+	c := &Controller{Engine: f, Store: s, Environment: "test", Project: "proj"}
+	op := runBound(t, s, c, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	other := dockerManifest(nil)
+	other.Project = "other"
+	req := Request{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: other}
+	const want = "environment test runs project proj; this manifest is for project other"
+	ctx := context.Background()
+	if _, _, err := c.Admit(ctx, Actor{ID: "admin"}, req); err == nil || err.Error() != want {
+		t.Fatalf("admit: %v", err)
+	}
+	dry := req
+	dry.DryRun = true
+	if _, err := c.Plan(ctx, Actor{ID: "admin"}, dry); err == nil || err.Error() != want {
+		t.Fatalf("dry run: %v", err)
+	}
+	if _, err := c.ApplySettings(ctx, Actor{ID: "admin"}, ApplyRequest{Manifest: other}); err == nil || err.Error() != want {
+		t.Fatalf("apply: %v", err)
+	}
+	if hist, _ := s.History(ctx, "web"); len(hist) != 1 {
+		t.Fatalf("a refused deploy recorded a release: %d releases", len(hist))
+	}
+	if st, _, _ := s.Settings(ctx); st.Project != "proj" {
+		t.Fatalf("a refused deploy changed the project: %+v", st)
+	}
+}
+
+func TestAnEnvironmentKeepsItsProjectAfterEveryAppIsRemoved(t *testing.T) {
+	s := openStore(t)
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Project: "proj"}
+	op := runBound(t, s, c, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
+	if op.State != "succeeded" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	ctx := context.Background()
+	rm, _, err := s.Admit(ctx, state.Admission{RequestID: "rm", ActorID: "admin", Kind: "remove", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ForgetApp(ctx, rm.ID, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, rm.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	other := dockerManifest(nil)
+	other.Project = "other"
+	const want = "environment test runs project proj; this manifest is for project other"
+	req := Request{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: other}
+	if _, _, err = c.Admit(ctx, Actor{ID: "admin"}, req); err == nil || err.Error() != want {
+		t.Fatalf("a deploy of another project with no app applied: %v", err)
+	}
+	if _, err = c.ApplySettings(ctx, Actor{ID: "admin"}, ApplyRequest{Manifest: other}); err == nil || err.Error() != want {
+		t.Fatalf("an apply of another project with no app applied: %v", err)
+	}
+	if st, _, _ := s.Settings(ctx); st.Project != "proj" {
+		t.Fatalf("the project changed: %+v", st)
+	}
+}

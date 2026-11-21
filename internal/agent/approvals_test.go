@@ -74,7 +74,7 @@ func newApprovalFixture(t *testing.T, protected bool, mutate func(*Config)) *app
 	if mutate != nil {
 		mutate(&f.cfg)
 	}
-	f.ctrl = &deploy.Controller{Engine: planEngine{}, Store: s, Environment: "lab", Protected: protected}
+	f.ctrl = &deploy.Controller{Engine: planEngine{}, Store: s, Environment: "lab", Project: "demo", Protected: protected}
 	f.h = NewDeploymentHandler(f.cfg, nil, nil, f.ctrl)
 	return f
 }

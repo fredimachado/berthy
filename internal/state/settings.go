@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -39,13 +38,6 @@ func NewSettings(m manifest.Manifest, commit string, modified bool) (*Settings, 
 	return &Settings{Project: m.Project, Commit: commit, Modified: modified, Manifest: raw, Apps: slices.Sorted(maps.Keys(m.Apps))}, nil
 }
 
-// ProjectError is the refusal of a manifest that names another project than the one the environment runs.
-type ProjectError struct{ Environment, Have, Want string }
-
-func (e *ProjectError) Error() string {
-	return fmt.Sprintf("environment %s runs project %s; this manifest is for project %s", e.Environment, e.Have, e.Want)
-}
-
 // Settings returns the environment's settings, and false when none was ever applied.
 func (s *Store) Settings(ctx context.Context) (Settings, bool, error) {
 	var st Settings
@@ -65,35 +57,6 @@ func (s *Store) Settings(ctx context.Context) (Settings, bool, error) {
 	return st, true, nil
 }
 
-// CheckProject refuses a manifest of another project than the one the environment runs. It accepts any project while no app is
-// applied, which is the case for a fresh environment and after every app was removed.
-func (s *Store) CheckProject(ctx context.Context, project string) error {
-	return s.checkProject(ctx, s.db, project)
-}
-
-type queryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func (s *Store) checkProject(ctx context.Context, q queryer, project string) error {
-	var have string
-	err := q.QueryRowContext(ctx, `SELECT project FROM environment_settings WHERE environment=?`, s.env).Scan(&have)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && have == project {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var apps int
-	if err = q.QueryRowContext(ctx, `SELECT count(*) FROM applied WHERE environment=? AND app<>?`, s.env, manifest.ConnectorAppName).Scan(&apps); err != nil {
-		return err
-	}
-	if apps == 0 {
-		return nil
-	}
-	return &ProjectError{Environment: s.env, Have: have, Want: project}
-}
-
 // putSettings writes st as the environment's settings. The caller holds the transaction.
 func (s *Store) putSettings(ctx context.Context, tx *sql.Tx, st Settings, operationID string) error {
 	if st.Project == "" || !validJSON(st.Manifest) {
@@ -108,8 +71,7 @@ func (s *Store) putSettings(ctx context.Context, tx *sql.Tx, st Settings, operat
 }
 
 // ApplySettings makes st the environment's settings, as berthy apply does, and audits it as apply. It is refused with
-// ErrConflict while anything holds the environment lock, and with a *ProjectError for another project than the one an
-// applied app runs. protected makes the environment's protection permanent, as a deploy of a protected manifest does.
+// ErrConflict while anything holds the environment lock. protected makes the environment's protection permanent, as a deploy of a protected manifest does.
 func (s *Store) ApplySettings(ctx context.Context, actor Actor, st Settings, protected bool) error {
 	if actor.ID == "" {
 		return errors.New("actor required")
@@ -120,9 +82,6 @@ func (s *Store) ApplySettings(ctx context.Context, actor Actor, st Settings, pro
 	}
 	defer tx.Rollback()
 	if err = s.checkNoLock(ctx, tx); err != nil {
-		return err
-	}
-	if err = s.checkProject(ctx, tx, st.Project); err != nil {
 		return err
 	}
 	if err = s.putSettings(ctx, tx, st, ""); err != nil {

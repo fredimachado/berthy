@@ -129,7 +129,10 @@ type Controller struct {
 	Engine      Engine
 	Store       *state.Store
 	Environment string
-	Protected   bool
+	// Project is the project this hosted environment belongs to. A deploy or an apply of a manifest of another project is
+	// refused. Empty means no check, which only tests build.
+	Project   string
+	Protected bool
 	// CloudflareURL is the Cloudflare API base URL. Empty means the production API.
 	CloudflareURL string
 	// Compose runs the Compose CLI for Compose apps. StateDir holds their working directories under compose/.
@@ -175,16 +178,11 @@ func checkRequestManifest(m manifest.Manifest) error {
 
 // checkProject refuses a deploy whose manifest names another project than the one the environment runs, before anything
 // changes. Only a deploy carries a manifest to apply: a rollback, an ingress apply and the other operations do not.
-func (c *Controller) checkProject(ctx context.Context, req Request) error {
-	if c.Store == nil || req.Kind != "" && req.Kind != "deploy" {
+func (c *Controller) checkProject(req Request) error {
+	if c.Project == "" || req.Kind != "" && req.Kind != "deploy" || req.Manifest.Project == c.Project {
 		return nil
 	}
-	err := c.Store.CheckProject(ctx, req.Manifest.Project)
-	var wrong *state.ProjectError
-	if errors.As(err, &wrong) {
-		return Refusal(wrong.Error())
-	}
-	return err
+	return Refusal(fmt.Sprintf("environment %s runs project %s; this manifest is for project %s", c.Environment, c.Project, req.Manifest.Project))
 }
 
 // Plan performs no durable or Docker mutations. It checks the manifest a client sent. A rollback's manifest is the stored
@@ -195,7 +193,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 			return Plan{}, err
 		}
 	}
-	if err := c.checkProject(ctx, req); err != nil {
+	if err := c.checkProject(req); err != nil {
 		return Plan{}, err
 	}
 	return c.plan(ctx, actor, req)
@@ -363,7 +361,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
-	if err := c.checkProject(ctx, req); err != nil {
+	if err := c.checkProject(req); err != nil {
 		return state.Operation{}, false, err
 	}
 	if req.KeepVersion || req.KeepDigest != "" {

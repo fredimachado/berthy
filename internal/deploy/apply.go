@@ -44,7 +44,7 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	if err := c.refuseLocalChanges(ctx, Request{Manifest: req.Manifest, Modified: req.Modified}); err != nil {
 		return ApplyResult{}, err
 	}
-	if err := c.checkProject(ctx, Request{Manifest: req.Manifest}); err != nil {
+	if err := c.checkProject(Request{Manifest: req.Manifest}); err != nil {
 		return ApplyResult{}, err
 	}
 	var prev manifest.Manifest
@@ -67,10 +67,6 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 		return ApplyResult{}, err
 	}
 	err = c.Store.ApplySettings(ctx, state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}, *st, req.Manifest.Protected)
-	var wrong *state.ProjectError
-	if errors.As(err, &wrong) {
-		return ApplyResult{}, Refusal(wrong.Error())
-	}
 	if err != nil {
 		return ApplyResult{}, err
 	}
