@@ -945,3 +945,163 @@ func TestComposeDownKeepsExternalNetworkClaims(t *testing.T) {
 		t.Fatalf("held: %v, %v", held, err)
 	}
 }
+
+func TestApplyHoldsEnvironmentLockBeforeReserving(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	c := Controller{Store: s, Engine: &positiveEngine{}, Environment: "test"}
+	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+		close(entered)
+		<-proceed
+		return s.AddClaimsNew(ctx, claims)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := c.ApplySettings(ctx, Actor{ID: "actor"}, ApplyRequest{Manifest: dockerManifest(nil)})
+		result <- err
+	}()
+	<-entered
+	op, created, err := s.Admit(ctx, state.Admission{RequestID: "deploy", ActorID: "actor", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err == nil && created {
+		if finishErr := s.Finish(ctx, op.ID, state.Outcome{State: "failed"}); finishErr != nil {
+			t.Error(finishErr)
+		}
+	}
+	close(proceed)
+	applyErr := <-result
+	if !errors.Is(err, state.ErrConflict) {
+		t.Fatalf("deploy admission while apply reserves: %v", err)
+	}
+	if applyErr != nil {
+		t.Fatalf("apply: %v", applyErr)
+	}
+}
+
+func TestRecoverySettlesOnlyTheClaimsThatOperationAdded(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "recover", ActorID: "actor", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := state.Claim{Kind: state.ClaimService, Name: "svc"}
+	old := state.Claim{Kind: state.ClaimService, Name: "older"}
+	if err = s.AddClaims(ctx, []state.Claim{added, old}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal([]state.Claim{added})
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 1000000, Kind: "claims", Desired: raw}); err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"Name":"svc"}`)
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "create", Name: "svc", Desired: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 0, "observed", json.RawMessage(`{"id":"id","spec":{"Name":"svc"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &positiveEngine{spec: spec}}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || !slices.Equal(got, []state.Claim{old}) {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestFirstDeployRefusesExistingServiceAndReleasesItsClaim(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "deploy", ActorID: "actor", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 10000, Kind: "oneoff", Desired: json.RawMessage(`{"HostConfig":{"Mounts":[]}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &positiveEngine{spec: json.RawMessage(`{"Name":"shop-test-api-web"}`)}, Environment: "test"}
+	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+		return s.AddClaimsForOperation(ctx, op.ID, claims)
+	}
+	one := 1
+	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	out, _ := c.runDeploy(ctx, op, Actor{ID: "actor"}, req, false)
+	if out.Err != "service name is unavailable" {
+		t.Fatalf("outcome: %+v", out)
+	}
+	claims, err := s.Claims(ctx)
+	if err != nil || slices.Contains(claims, state.Claim{Kind: state.ClaimService, Name: "shop-test-api-web"}) {
+		intents, _ := s.Intents(ctx, op.ID)
+		t.Fatalf("claims: %v, %v; intents: %+v", claims, err, intents)
+	}
+}
+
+func TestOneOffCommandsReserveNamedMountsBeforeCreatingContainers(t *testing.T) {
+	t.Run("job", func(t *testing.T) {
+		c, f := jobFixture(t)
+		called := false
+		c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+			called = true
+			if !slices.Contains(claims, state.Claim{Kind: state.ClaimVolume, Name: "proj-test_uploads"}) {
+				t.Errorf("claims: %v", claims)
+			}
+			return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
+		}
+		_, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
+		if !called || err == nil || f.callList() != "" {
+			t.Fatalf("called=%v err=%v Docker=%s", called, err, f.callList())
+		}
+	})
+	t.Run("run", func(t *testing.T) {
+		m := runManifest("main")
+		role := m.Apps["web"].Roles["main"]
+		role.Volumes = []string{"uploads:/data"}
+		m.Apps["web"].Roles["main"] = role
+		c, f, s := runFixture(t, m)
+		called := false
+		c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+			called = true
+			return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
+		}
+		op, _, err := c.Admit(context.Background(), runAdmin, runRequest("oneoff", "true"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		result, err := s.Operation(context.Background(), op.ID)
+		if err != nil || !called || result.State != "failed" || f.callList() != "" {
+			t.Fatalf("called=%v result=%+v err=%v Docker=%s", called, result, err, f.callList())
+		}
+	})
+}
+
+type unknownClaimEngine struct{ *positiveEngine }
+
+func (*unknownClaimEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	return engine.ServiceSnapshot{}, errors.New("inspection unavailable")
+}
+func TestRecoveryKeepsClaimsWhenAbsenceCannotBeConfirmed(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "recover-unknown", ActorID: "actor", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := state.Claim{Kind: state.ClaimService, Name: "unknown"}
+	if _, err = s.AddClaimsForOperation(ctx, op.ID, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &unknownClaimEngine{positiveEngine: &positiveEngine{}}}
+	if err = c.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || !slices.Contains(held, claim) {
+		t.Fatalf("claims: %v, %v", held, err)
+	}
+}

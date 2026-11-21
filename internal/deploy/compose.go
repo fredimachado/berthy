@@ -765,7 +765,7 @@ func composeDigest(file string) string {
 
 // runCompose deploys a Compose app, or with adoption records it when nothing would change. Nothing changes when the
 // plan has a blocker.
-func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) state.Outcome {
+func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome) {
 	if err := req.Manifest.Validate(); err != nil {
 		return failedWith(errComposeConfig)
 	}
@@ -797,11 +797,11 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if auth != "" {
 		defer os.RemoveAll(auth)
 	}
-	var reserved []state.Claim
+	var reserved reservation
 	defer func() {
 		settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		c.settle(settleCtx, reserved)
+		c.finishOperationReservation(settleCtx, reserved, op.ID, outcome.State)
 	}()
 	var reserve func([]state.Claim) error
 	if c.Reserve != nil {

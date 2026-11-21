@@ -88,6 +88,16 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
+	// Jobs have no operation journal; a crash can leave a reserved claim behind (issue #46).
+	reserved, err := c.reserveOneOffMounts(ctx, p, t.Volumes)
+	if err != nil {
+		return jobs.Outcome{}, err
+	}
+	defer func() {
+		capCtx, done := captureContext(ctx)
+		defer done()
+		c.finishReservation(capCtx, reserved, false)
+	}()
 	cid, err := e.CreateContainer(ctx, fmt.Sprintf("berthy-%s-%s-%s", kind, c.id().Slug(), id), spec)
 	if err != nil || cid == "" {
 		return jobs.Outcome{}, errors.New("job container unavailable")

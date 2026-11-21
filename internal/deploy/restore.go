@@ -189,7 +189,7 @@ func (c *Controller) planRestore(ctx context.Context, actor Actor, req Request) 
 
 // runRestore fills the new volume from the backup. The run is journaled first, so a recovery after a crash knows a restore was
 // under way. Failure leaves no volume: the restorer removes the one it created.
-func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor Actor, req Request) (outcome state.Outcome) {
 	step := func(text string) {
 		if data, err := json.Marshal(map[string]string{"step": text}); err == nil {
 			_ = c.Store.AppendEvent(ctx, op.ID, state.Event{Kind: "step", Data: data})
@@ -206,7 +206,7 @@ func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor A
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.settle(settleCtx, claims)
+			c.finishOperationReservation(settleCtx, claims, op.ID, outcome.State)
 		}()
 	}
 	exec := len(req.Command) > 0

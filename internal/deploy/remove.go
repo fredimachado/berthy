@@ -423,7 +423,7 @@ func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r 
 		for _, b := range bindings {
 			claims = append(claims, state.Claim{Kind: state.ClaimService, Name: b.Name})
 		}
-		if req.Volumes {
+		if req.Volumes && c.Reserve == nil {
 			for _, name := range declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) }) {
 				claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: name})
 			}
@@ -536,9 +536,12 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 func (c *Controller) removeVolume(ctx context.Context, name string, step func(string)) error {
 	claim := state.Claim{Kind: state.ClaimVolume, Name: name}
 	if c.Reserve != nil {
-		if _, err := c.reserveClaims(ctx, []state.Claim{claim}); err != nil {
+		reserved, err := c.reserveClaims(ctx, []state.Claim{claim})
+		if err != nil {
 			return err
 		}
+		reserved.added = reserved.leased
+		defer c.finishReservation(ctx, reserved, false)
 	} else if err := c.notForeign(ctx, claim); err != nil {
 		return err
 	}
@@ -553,10 +556,14 @@ func (c *Controller) removeVolume(ctx context.Context, name string, step func(st
 		switch {
 		case err == nil:
 			step("removed volume " + name)
-			c.settle(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: name}})
+			if c.Reserve == nil {
+				c.settle(ctx, []state.Claim{claim})
+			}
 			return nil
 		case errors.As(err, &status) && status.Code == 404:
-			c.settle(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: name}})
+			if c.Reserve == nil {
+				c.settle(ctx, []state.Claim{claim})
+			}
 			return nil
 		case errors.As(err, &status) && status.Code == 409:
 			if !time.Now().Before(deadline) {
@@ -651,9 +658,12 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	}
 	targets := append([]state.Claim{{Kind: state.ClaimComposeProject, Name: project}}, settleClaims...)
 	if c.Reserve != nil {
-		if _, err := c.reserveClaims(ctx, targets); err != nil {
+		reserved, err := c.reserveClaims(ctx, targets)
+		if err != nil {
 			return err
 		}
+		reserved.added = reserved.leased
+		defer c.finishReservation(ctx, reserved, false)
 	} else {
 		for _, claim := range targets {
 			if err := c.notForeign(ctx, claim); err != nil {
@@ -690,7 +700,9 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	if len(containers) > 0 {
 		return errors.New("project containers remain")
 	}
-	c.settle(ctx, append(settleClaims, state.Claim{Kind: state.ClaimComposeProject, Name: project}))
+	if c.Reserve == nil {
+		c.settle(ctx, append(settleClaims, state.Claim{Kind: state.ClaimComposeProject, Name: project}))
+	}
 	return os.RemoveAll(c.composeDir(project))
 }
 

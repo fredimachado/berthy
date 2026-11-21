@@ -69,7 +69,7 @@ func PublicMessage(s string) bool {
 var errRevertMismatch = errors.New("schema revert did not reach target")
 
 // runSchemaRevert runs the migration's revert from its own image, after the service is rolled back to the release before it when needed.
-func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, actor Actor, req Request) (outcome state.Outcome) {
 	sr, err := c.schemaRevertPlan(ctx, req)
 	if err != nil {
 		var r Refusal
@@ -86,7 +86,7 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.settle(settleCtx, claims)
+			c.finishOperationReservation(settleCtx, claims, op.ID, outcome.State)
 		}()
 	}
 	// The revert image may have been pruned since the migration ran; check it before the service changes.

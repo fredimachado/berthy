@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -229,6 +230,25 @@ func (c *Controller) settleCancelled(ctx context.Context, opID string, ordinal i
 		}
 	}
 	return cancel
+}
+
+// reserveOneOffMounts leases the resolved Docker volumes before any one-off container is created.
+func (c *Controller) reserveOneOffMounts(ctx context.Context, p preparedPlan, volumes []string) (reservation, error) {
+	if c.Reserve == nil {
+		return reservation{}, nil
+	}
+	var claims []state.Claim
+	for _, raw := range volumes {
+		mount, err := manifest.ParseMount(raw)
+		if err != nil {
+			return reservation{}, err
+		}
+		claim := state.Claim{Kind: state.ClaimVolume, Name: p.Request.Manifest.VolumeName(p.Identity.Environment, mount.Source)}
+		if !slices.Contains(claims, claim) {
+			claims = append(claims, claim)
+		}
+	}
+	return c.reserveClaims(ctx, claims)
 }
 
 func (c *Controller) runOneOffUntilDone(parent context.Context, opID string, p preparedPlan, o oneOff) (string, error) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/scope"
@@ -572,5 +575,151 @@ func TestReserveReturnsOnlyClaimsNewlyAdded(t *testing.T) {
 	added, err := h.reserve(id, []state.Claim{old, fresh, fresh})
 	if err != nil || len(added) != 1 || added[0] != fresh {
 		t.Fatalf("added: %v, %v", added, err)
+	}
+}
+
+func TestLeaseKeepsClaimUntilConcurrentUserFinishes(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	other := scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, id, other)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shared"}
+	added, err := h.reserve(id, []state.Claim{claim})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := h.reserve(id, []state.Claim{claim})
+	if err != nil || len(joined) != 0 {
+		t.Fatalf("job reservation: %v, %v", joined, err)
+	}
+	if err = h.finish(ctx, id, []state.Claim{claim}, added, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("claim became available while job holds a lease")
+	}
+	if err = h.finish(ctx, id, []state.Claim{claim}, joined, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err != nil {
+		t.Fatalf("claim remained after last lease: %v", err)
+	}
+}
+
+type deployJobLeaseEngine struct {
+	deploy.Engine
+	jobStarted chan struct{}
+	finishJob  chan struct{}
+}
+
+func (e *deployJobLeaseEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+func (e *deployJobLeaseEngine) InspectImage(_ context.Context, ref string) (engine.Image, error) {
+	if strings.Contains(ref, "example/api") {
+		return engine.Image{}, errors.New("image unavailable")
+	}
+	return engine.Image{ID: "image"}, nil
+}
+func (e *deployJobLeaseEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+}
+func (e *deployJobLeaseEngine) VolumeExists(context.Context, string) (bool, error) { return false, nil }
+func (e *deployJobLeaseEngine) CreateContainer(context.Context, string, json.RawMessage) (string, error) {
+	close(e.jobStarted)
+	return "job", nil
+}
+func (e *deployJobLeaseEngine) StartContainer(context.Context, string) error { return nil }
+func (e *deployJobLeaseEngine) WaitContainer(context.Context, string) (int, error) {
+	<-e.finishJob
+	return 0, nil
+}
+func (e *deployJobLeaseEngine) ContainerLogs(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (e *deployJobLeaseEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{}, nil
+}
+func (e *deployJobLeaseEngine) StopContainer(context.Context, string, int) error { return nil }
+func (e *deployJobLeaseEngine) RemoveContainer(context.Context, string) error    { return nil }
+
+func TestDeployFailureKeepsVolumeWhileConcurrentJobUsesIt(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	other := scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, id, other)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	c := h.runtimes[id].deployment
+	s := c.Store
+	one := 1
+	m := manifest.Manifest{Project: "one", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"shared:/data"}}}}}}
+	seed, _, err := s.Admit(ctx, state.Admission{RequestID: "seed", ActorID: "actor", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(m)
+	if err = s.Finish(ctx, seed.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "example/web@sha256:" + strings.Repeat("a", 64), Manifest: raw}}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &deployJobLeaseEngine{jobStarted: make(chan struct{}), finishJob: make(chan struct{})}
+	c.Engine = docker
+	reserved := make(chan struct{})
+	resume := make(chan struct{})
+	original := c.Reserve
+	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+		added, err := original(ctx, claims)
+		if err != nil {
+			return nil, err
+		}
+		for _, claim := range claims {
+			if claim.Kind == state.ClaimService && claim.Name == "one-prod-api-web" {
+				close(reserved)
+				<-resume
+				break
+			}
+		}
+		return added, nil
+	}
+	m.Apps["api"] = manifest.App{Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"shared:/data"}}}}
+	req := deploy.Request{RequestID: "deploy", App: "api", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}
+	op, _, err := c.Admit(ctx, deploy.Actor{ID: "actor"}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-reserved
+	jobResult := make(chan error, 1)
+	go func() {
+		_, err := c.RunJob(ctx, m, "report", manifest.Job{App: "web", Role: "web", Command: []string{"true"}, Timeout: "1m"}, 1)
+		jobResult <- err
+	}()
+	<-docker.jobStarted
+	close(resume)
+	if err = c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Operation(ctx, op.ID)
+	if err != nil || result.State != "failed" {
+		t.Fatalf("deploy: %+v, %v", result, err)
+	}
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "one-prod_shared"}
+	_, duringErr := h.reserve(other, []state.Claim{claim})
+	close(docker.finishJob)
+	if err = <-jobResult; err != nil {
+		t.Fatal(err)
+	}
+	if duringErr == nil {
+		t.Fatal("another environment took the volume while the job held it")
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err != nil {
+		t.Fatalf("claim remained after the job finished: %v", err)
 	}
 }

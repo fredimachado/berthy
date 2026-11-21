@@ -132,7 +132,7 @@ func (c *Controller) planRun(ctx context.Context, actor Actor, req Request) (Pla
 }
 
 // runRun runs the command in a new container of the applied release and removes the container once its output is recorded.
-func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor, req Request) state.Outcome {
+func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor, req Request) (outcome state.Outcome) {
 	if !actor.Admin {
 		return state.Outcome{State: "failed", Err: "administrator required"}
 	}
@@ -144,6 +144,15 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	if err != nil {
 		return state.Outcome{State: "failed", Err: publicOr(err, errRunPrepare).Error()}
 	}
+	reserved, err := c.reserveOneOffMounts(ctx, p, t.Volumes)
+	if err != nil {
+		return state.Outcome{State: "failed", Err: publicOr(err, errRunPrepare).Error()}
+	}
+	defer func() {
+		capCtx, done := captureContext(ctx)
+		defer done()
+		c.finishOperationReservation(capCtx, reserved, op.ID, outcome.State)
+	}()
 	redact, ok := c.redactor(ctx)
 	if !ok {
 		return state.Outcome{State: "failed", Err: "secret redaction unavailable"}
@@ -153,7 +162,7 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	if err != nil {
 		return state.Outcome{State: "recovery_required", Err: "run journal requires recovery"}
 	}
-	outcome := state.Outcome{State: "failed", Err: string(errRunNonzero)}
+	outcome = state.Outcome{State: "failed", Err: string(errRunNonzero)}
 	switch {
 	case runErr == nil:
 		outcome = state.Outcome{State: "succeeded"}

@@ -114,7 +114,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		defer func() {
 			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c.settle(settleCtx, claims)
+			c.finishOperationReservation(settleCtx, claims, op.ID, outcome.State)
 		}()
 	}
 	planned = target{Image: p.Image, Tag: p.Tag}
