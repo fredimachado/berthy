@@ -64,7 +64,7 @@ func hookKeys(list string) []Key {
 var Keys = slices.Concat(
 	[]Key{
 		{Path: "project", Section: "top", Type: "name", Required: true, Description: "The project's name, which prefixes service and Compose project names. Lowercase letters, digits, `_` and `-`, at most 63 characters, starting with a letter or digit."},
-		{Path: "network", Section: "top", Type: "name", Required: true, Description: "The shared overlay network that every app joins. `berthy setup` creates it when it does not exist."},
+		{Path: "network", Section: "top", Type: "name", Default: "<project>-<environment>", Description: "Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist."},
 		{Path: "protected", Section: "top", Type: "boolean", Default: "false", Description: "Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval."},
 		{Path: "registries", Section: "top", Type: "map", Description: "Registry credentials, by registry host."},
 		{Path: "apps", Section: "top", Type: "map", Required: true, NamePattern: identifier.String(), Description: "The apps, by name. At least one."},

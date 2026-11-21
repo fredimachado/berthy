@@ -28,7 +28,7 @@ func (m *Manifest) Check() Problems {
 	if !scope.ValidProject(m.Project) {
 		p.add("project", "invalid project or network")
 	}
-	if !identifier.MatchString(m.Network) {
+	if m.Network != "" && !identifier.MatchString(m.Network) {
 		p.add("network", "invalid project or network")
 	}
 	if len(m.Apps) == 0 {

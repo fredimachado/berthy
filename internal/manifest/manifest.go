@@ -964,6 +964,14 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	return selected.String(), nil
 }
 
+// NetworkName is the overlay network the environment's apps join.
+func (m *Manifest) NetworkName(environment string) string {
+	if m.Network != "" {
+		return m.Network
+	}
+	return m.Project + "-" + environment
+}
+
 // TunnelName is the tunnel's name in Cloudflare: the configured name, or <project>-<environment>.
 func (m *Manifest) TunnelName(environment string) string {
 	if m.Ingress != nil && m.Ingress.Cloudflare != nil && m.Ingress.Cloudflare.Tunnel != "" {

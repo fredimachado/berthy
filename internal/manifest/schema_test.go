@@ -86,7 +86,7 @@ func TestJSONSchemaIsDraft07WithTheRequiredKeys(t *testing.T) {
 	}
 	req := stringsOf(s["required"])
 	slices.Sort(req)
-	if strings.Join(req, ",") != "apps,network,project" {
+	if strings.Join(req, ",") != "apps,project" {
 		t.Errorf("required is %v", req)
 	}
 }

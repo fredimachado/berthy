@@ -447,3 +447,32 @@ func TestLoadChecksScopedVolumeIdentifierAtItsMount(t *testing.T) {
 		})
 	}
 }
+
+func TestAManifestWithoutANetworkLoads(t *testing.T) {
+	dir := t.TempDir()
+	data := "project: shop\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "prod"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNetworkNameDefaultsToProjectAndEnvironment(t *testing.T) {
+	m := &Manifest{Project: "shop"}
+	if got := m.NetworkName("prod"); got != "shop-prod" {
+		t.Fatalf("network = %q", got)
+	}
+	m.Network = "existing"
+	if got := m.NetworkName("prod"); got != "existing" {
+		t.Fatalf("override = %q", got)
+	}
+}
+
+func TestTheDefaultNetworkOfTheLongestPairIsAValidNetworkName(t *testing.T) {
+	m := &Manifest{Project: strings.Repeat("p", 29)}
+	if got := m.NetworkName(strings.Repeat("e", 29)); !ValidNetwork(got) {
+		t.Fatalf("invalid network %q", got)
+	}
+}

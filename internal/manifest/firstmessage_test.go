@@ -76,7 +76,7 @@ func firstMessageCases() []brokenCase {
 		broken("ingress bad image", "invalid Cloudflare image", "ingress", `json:{"cloudflare":{"account_id":"a","api_token_secret":"CF","image":"###"}}`),
 		broken("ingress image without tag", "invalid Cloudflare image: a tag or digest is required", "ingress", `json:{"cloudflare":{"account_id":"a","api_token_secret":"CF","image":"cloudflare/cloudflared"}}`),
 		broken("bad project", "invalid project or network", "project", "Bad Name"),
-		broken("bad network", "invalid project or network", "network", ""),
+		broken("bad network", "invalid project or network", "network", "Bad Network"),
 		broken("no apps", "at least one app is required", "apps", "json:{}", "jobs", nil, "backups", nil),
 		broken("registry without username", `invalid registry "ghcr.io"`, "registries", `json:{"ghcr.io":{"username":"","password_secret":"P"}}`),
 		broken("registry token reserved", "registry ghcr.io: TUNNEL_TOKEN is reserved for managed ingress", "registries", `json:{"ghcr.io":{"username":"u","password_secret":"TUNNEL_TOKEN"}}`),

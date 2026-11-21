@@ -2848,7 +2848,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `project` | name | required | The project's name, which prefixes service and Compose project names. Lowercase letters, digits, `_` and `-`, at most 63 characters, starting with a letter or digit. |
-| `network` | name | required | The shared overlay network that every app joins. `berthy setup` creates it when it does not exist. |
+| `network` | name | `<project>-<environment>` | Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist. |
 | `protected` | boolean | `false` | Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval. |
 | `registries` | map | none | Registry credentials, by registry host. |
 | `apps` | map | required | The apps, by name. At least one. |
