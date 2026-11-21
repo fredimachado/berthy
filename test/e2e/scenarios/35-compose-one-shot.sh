@@ -71,6 +71,17 @@ else
 fi
 
 # d. A migrate one-shot that web depends on: Compose waits for it during up, and it is a finished one-shot afterwards.
+# The 15s deploy_timeout is for step c to fail fast. This deploy must wait for migrate (sleep 2s) and web's healthcheck.
+write_manifest <<YML
+project: $PROJECT
+network: $NETWORK
+apps:
+  db:
+    kind: compose
+    file: compose.yml
+    deploy:
+      deploy_timeout: 120s
+YML
 cat > "$MAN/compose.yml" <<YML
 services:
   migrate:
