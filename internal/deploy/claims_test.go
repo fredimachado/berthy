@@ -659,7 +659,7 @@ func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
 type removedComposeNetworkEngine struct{ *composeDocker }
 
 func (e *removedComposeNetworkEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
-	if name == "compose-net" {
+	if name == "compose-net" || name == "external-net" {
 		return engine.Network{}, &engine.StatusError{Code: 404}
 	}
 	return engine.Network{ID: "net"}, nil

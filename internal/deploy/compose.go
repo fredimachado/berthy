@@ -325,11 +325,9 @@ type composeConfigVolume struct {
 type composeConfigFile struct {
 	Services map[string]composeConfigService `json:"services"`
 	Volumes  map[string]composeConfigVolume  `json:"volumes,omitempty"`
-	Networks map[string]struct {
-		Name string `json:"name"`
-	} `json:"networks,omitempty"`
-	Secrets map[string]composeTopFile `json:"secrets,omitempty"`
-	Configs map[string]composeTopFile `json:"configs,omitempty"`
+	Networks map[string]composeConfigVolume  `json:"networks,omitempty"`
+	Secrets  map[string]composeTopFile       `json:"secrets,omitempty"`
+	Configs  map[string]composeTopFile       `json:"configs,omitempty"`
 }
 
 func (v composeConfigVolume) external() bool {
@@ -624,7 +622,7 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 		return ComposePlan{}, errComposeConfig
 	}
 	if len(reserve) > 0 && reserve[0] != nil {
-		names, err := composeConfigNames(project, cfg)
+		names, err := composeConfigNames(project, cfg, false)
 		if err != nil {
 			return ComposePlan{}, err
 		}
@@ -1117,10 +1115,10 @@ func (c *Controller) composeNames(ctx context.Context, req Request) ([]state.Cla
 }
 
 func (c *Controller) composeNamesIn(ctx context.Context, dir string, req Request) ([]state.Claim, error) {
-	return c.composeNamesAt(ctx, dir, req.Manifest.ComposeProject(c.Environment, req.App))
+	return c.composeNamesAt(ctx, dir, req.Manifest.ComposeProject(c.Environment, req.App), false)
 }
 
-func (c *Controller) composeNamesAt(ctx context.Context, dir, project string) ([]state.Claim, error) {
+func (c *Controller) composeNamesAt(ctx context.Context, dir, project string, managedNetworksOnly bool) ([]state.Claim, error) {
 	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
 	if err != nil {
 		return nil, errComposeConfig
@@ -1129,10 +1127,10 @@ func (c *Controller) composeNamesAt(ctx context.Context, dir, project string) ([
 	if json.Unmarshal(out, &cfg) != nil {
 		return nil, errComposeConfig
 	}
-	return composeConfigNames(project, cfg)
+	return composeConfigNames(project, cfg, managedNetworksOnly)
 }
 
-func composeConfigNames(project string, cfg composeConfigFile) ([]state.Claim, error) {
+func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
 	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
 	for _, k := range sortedKeys(cfg.Volumes) {
 		if cfg.Volumes[k].Name == "" {
@@ -1141,6 +1139,9 @@ func composeConfigNames(project string, cfg composeConfigFile) ([]state.Claim, e
 		claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[k].Name})
 	}
 	for _, k := range sortedKeys(cfg.Networks) {
+		if managedNetworksOnly && cfg.Networks[k].external() {
+			continue
+		}
 		if cfg.Networks[k].Name == "" {
 			return nil, errComposeConfig
 		}

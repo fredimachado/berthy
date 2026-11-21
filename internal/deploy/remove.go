@@ -593,7 +593,7 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 		}
 	}
 	if _, err := os.Stat(c.composeDir(project)); err == nil {
-		names, err := c.composeNamesAt(ctx, c.composeDir(project), project)
+		names, err := c.composeNamesAt(ctx, c.composeDir(project), project, true)
 		if err != nil && volumes && c.Foreign != nil {
 			return err
 		}
