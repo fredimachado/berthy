@@ -699,3 +699,14 @@ func TestSetupJSONKeepsShellRedirectionsReadable(t *testing.T) {
 		t.Fatalf("output:\n%s", out)
 	}
 }
+
+// A pair over the length bound is refused before setup reaches the server: no runner is made, so nothing is run.
+func TestSetupRefusesAPairOverTheLengthBoundBeforeAnyServerStep(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(longPairManifest), 0o600)
+	made := withSetupRunner(t, &setupServer{})
+	code, out, errout := runSetupCmd("-e", strings.Repeat("e", 30), "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", dir)
+	if code != 2 || out != "" || !strings.Contains(errout, longPairMessage) || made[0] != nil {
+		t.Fatalf("exit %d, runner made %v: %q %q", code, made[0] != nil, out, errout)
+	}
+}

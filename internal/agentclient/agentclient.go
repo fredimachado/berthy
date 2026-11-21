@@ -156,6 +156,9 @@ func Resolve(path string, sel Selector) (*Target, error) {
 			return nil, fmt.Errorf("environment %s exists in several projects (%s): give --project, or run the command in the project's directory", env, strings.Join(have, ", "))
 		}
 	}
+	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
+		return nil, err
+	}
 	if entry.TokenEnv == "" {
 		return nil, errors.New("unknown environment or missing token_env")
 	}

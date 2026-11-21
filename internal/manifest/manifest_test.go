@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"berthy/internal/scope"
 )
 
 func TestLoadOverlayAndDefaults(t *testing.T) {
@@ -371,7 +373,7 @@ apps:
 	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, env := range []string{"prod", strings.Repeat("a", 63), "a-1"} {
+	for _, env := range []string{"prod", strings.Repeat("a", scope.MaxIDLength-len("demo-")), "a-1"} {
 		if _, err := Load(dir, env); err != nil {
 			t.Errorf("%q: %v", env, err)
 		}

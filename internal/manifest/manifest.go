@@ -683,6 +683,9 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	if len(refused) > 0 {
 		return nil, refused
 	}
+	if err := (scope.ID{Project: m.Project, Environment: env}).CheckLength(); err != nil {
+		return nil, err
+	}
 	if err := m.CheckVersion(version.Version); err != nil {
 		var old *TooOld
 		if errors.As(err, &old) {

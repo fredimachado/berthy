@@ -428,3 +428,16 @@ func TestA404FromAnAgentWithProjectsIsLeftAlone(t *testing.T) {
 		t.Fatalf("a refused probe: %d %s", status, data)
 	}
 }
+
+// A CLI configuration edited by hand can hold a pair the agent would refuse; Resolve refuses it too.
+func TestResolveRefusesAPairOverTheLengthBound(t *testing.T) {
+	t.Setenv("BERTHY_TEST_TOKEN", "secret-token")
+	project, env := strings.Repeat("p", 30), strings.Repeat("e", 30)
+	cfg := writeConfig(t, `{"projects":{"`+project+`":{"environments":{"`+env+`":{"url":"http://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}}}}}`)
+	for _, sel := range []Selector{{Environment: env}, {Project: project, Environment: env}} {
+		_, err := Resolve(cfg, sel)
+		if err == nil || !strings.Contains(err.Error(), "longer than 59 characters; shorten the project or environment") {
+			t.Errorf("selector %+v: %v", sel, err)
+		}
+	}
+}

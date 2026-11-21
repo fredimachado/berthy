@@ -74,3 +74,21 @@ func TestConfigShowStillPrintsOneLine(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, errs.String())
 	}
 }
+
+// longPairManifest has a project that, with a 30-character environment, makes <project>-<environment> one character too long.
+var longPairManifest = "project: " + strings.Repeat("p", 30) + "\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+
+const longPairMessage = "<project>-<environment> is longer than 59 characters; shorten the project or environment"
+
+func TestConfigValidateRefusesAPairOverTheLengthBound(t *testing.T) {
+	env := strings.Repeat("e", 30)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(longPairManifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	code := Run([]string{"config", "validate", "-e", env, "--manifest-dir", dir}, &out, &errs)
+	if code != 1 || out.Len() != 0 || !strings.Contains(errs.String(), longPairMessage) {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+}

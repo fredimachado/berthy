@@ -84,8 +84,10 @@ func TestValidProjectIsTheManifestRule(t *testing.T) {
 		if got := scope.ValidProject(c.name); got != c.ok {
 			t.Errorf("ValidProject(%q) = %v, want %v", c.name, got, c.ok)
 		}
+		// Load also bounds the pair: with the environment prod, the longest project is MaxIDLength-len("-prod").
+		loads := c.ok && len(c.name)+len("-prod") <= scope.MaxIDLength
 		err := loadProject(t, c.name)
-		if (err == nil) != c.ok {
+		if (err == nil) != loads {
 			t.Errorf("Load project %q: ValidProject=%v err=%v", c.name, scope.ValidProject(c.name), err)
 		}
 	}
