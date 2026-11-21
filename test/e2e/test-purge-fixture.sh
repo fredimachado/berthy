@@ -24,15 +24,17 @@ d() {
     'network ls')
       if [[ $* == *'--no-trunc'* ]]; then
         local network
-        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished; do
-          if [ "${RACE_NETWORK:-}" = 1 ]; then
+        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished shop-timeout; do
+          if [ "${TIMEOUT_NETWORK:-}" = 1 ]; then
+            [ "$network" = shop-timeout ] || continue
+          elif [ "${RACE_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-vanished ] && [ ! -e "$E2E_ROOT/vanished" ] || continue
           elif [ "${RETRY_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-retry ] && [ ! -e "$E2E_ROOT/retry-success" ] || continue
           elif [ "${DELAYED_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-delayed ] && [ ! -e "$E2E_ROOT/delayed-gone" ] || continue
           else
-            case $network in shop-delayed|shop-retry|shop-vanished) continue ;; esac
+            case $network in shop-delayed|shop-retry|shop-vanished|shop-timeout) continue ;; esac
             if [ -f "$E2E_ROOT/removed-networks" ] && grep -Fxq "$network" "$E2E_ROOT/removed-networks"; then continue; fi
           fi
           if [[ $* == *'{{.ID}} {{.Name}}'* ]]; then echo "id-$network $network"; else echo "id-$network"; fi
@@ -46,13 +48,14 @@ d() {
       case "${@: -1}" in
         id-shop-foreign) echo '' ;;
         id-shop-vanished) touch "$E2E_ROOT/vanished"; return 1 ;;
-        id-shop-prod|id-shop-stage|id-shop-delayed|id-shop-retry) echo "$FIXTURE_ID" ;;
+        id-shop-prod|id-shop-stage|id-shop-delayed|id-shop-retry|id-shop-timeout) echo "$FIXTURE_ID" ;;
         own-network) echo shop-prod-db ;;
         other-network) echo shop-prod-foreign-db ;;
         vanished-network) echo 'foreign network disappeared' >&2; return 1 ;;
         empty-network) echo '' ;;
       esac ;;
     'events --since')
+      if [ "${TIMEOUT_NETWORK:-}" = 1 ]; then echo disconnect; return; fi
       exec 3<> "$EVENT_FIFO"
       while read -r event <&3; do
         if [ "$event" = destroy ] && [ "${DELAYED_NETWORK:-}" = 1 ]; then touch "$E2E_ROOT/delayed-gone"; fi
@@ -60,6 +63,10 @@ d() {
       done ;;
     'network rm')
       local network=${3#id-}
+      if [ "$network" = shop-timeout ]; then
+        if [ ! -e "$E2E_ROOT/timeout-refused" ]; then touch "$E2E_ROOT/timeout-refused"; echo 'network is in use' >&2; return 1; fi
+        return 0
+      fi
       if [ "$network" = shop-retry ] && [ ! -e "$E2E_ROOT/retry-refused" ]; then
         touch "$E2E_ROOT/retry-refused"
         echo 'network has active endpoints and is in use' >&2
@@ -200,4 +207,9 @@ printf 'network\tshop-vanished\n' > "$E2E_ROOT/fixture-objects"
 RACE_NETWORK=1
 purge_fixture || { echo 'cleanup failed after the exact network vanished' >&2; exit 1; }
 unset RACE_NETWORK
+printf 'network\tshop-timeout\n' > "$E2E_ROOT/fixture-objects"
+TIMEOUT_NETWORK=1
+if out=$(purge_fixture 2>&1); then echo 'missing destroy event was accepted' >&2; exit 1; fi
+if [[ $out != *'network is in use'* ]]; then echo "cleanup lost the last Docker error: $out" >&2; exit 1; fi
+unset TIMEOUT_NETWORK
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'

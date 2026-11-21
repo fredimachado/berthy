@@ -228,7 +228,7 @@ create_environment_network() (
 
 # remove_environment_network waits on Docker events so an attached endpoint can detach before a retry.
 remove_environment_network() (
-  local id=$1 error_file events_fd events_pid event remaining deadline listing removed
+  local id=$1 error_file events_fd events_pid event remaining deadline listing removed last_error=
   error_file=$(mktemp "$E2E_ROOT/network-error.XXXXXX") || return 1
   deadline=$((SECONDS + 120))
   exec {events_fd}< <(d events --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter type=network --filter "network=$id" --filter event=disconnect --filter event=destroy --format '{{.Action}}' 2>>"$error_file")
@@ -237,17 +237,17 @@ remove_environment_network() (
   while :; do
     : > "$error_file"
     removed=0
-    if d network rm "$id" >/dev/null 2>"$error_file"; then removed=1; fi
+    if d network rm "$id" >/dev/null 2>"$error_file"; then removed=1; else last_error=$(cat "$error_file"); fi
     listing=$(d network ls --no-trunc --format '{{.ID}}') || return 1
     if ! printf '%s\n' "$listing" | grep -Fxq -- "$id"; then return 0; fi
-    if [ "$removed" = 0 ] && ! grep -Eqi 'in use|active endpoints' "$error_file"; then
-      echo "network $id removal failed: $(cat "$error_file")" >&2
+    if [ "$removed" = 0 ] && ! printf '%s\n' "$last_error" | grep -Eqi 'in use|active endpoints'; then
+      echo "network $id removal failed: $last_error" >&2
       return 1
     fi
     while :; do
       remaining=$((deadline - SECONDS))
       if [ "$remaining" -le 0 ] || ! IFS= read -r -t "$remaining" event <&"$events_fd"; then
-        echo "network $id cleanup timed out: $(cat "$error_file")" >&2
+        echo "network $id cleanup timed out: $last_error" >&2
         return 1
       fi
       [ "$event" != destroy ] || return 0
