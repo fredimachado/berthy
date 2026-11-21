@@ -55,13 +55,11 @@ var destroyTunnelWait = time.Minute
 // maxTunnelReasons bounds the reasons listed for one tunnel.
 const maxTunnelReasons = 10
 
-// destroyEngine is the part of the Docker API a destroy uses for containers and images. The Engine of a Controller may
-// implement it; without it a destroy has no containers or images to remove.
+// destroyEngine is the part of the Docker API a destroy uses for containers. The Engine of a Controller may implement it;
+// without it a destroy has no containers to remove. The images a destroy prunes go through inventoryEngine.
 type destroyEngine interface {
 	InventoryContainers(context.Context) ([]engine.InventoryContainer, error)
-	InventoryImages(context.Context) ([]engine.InventoryImage, error)
 	RemoveContainer(context.Context, string) error
-	RemoveUnusedImage(context.Context, string) error
 }
 
 // destroyApp is one app a destroy removes, with the plan of its removal.

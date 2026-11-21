@@ -354,6 +354,29 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 	}
 }
 
+// withoutImageMethods is the fixture's Docker with the two image methods shadowed by ones of another signature, so it no longer
+// has them as the engine interfaces name them.
+type withoutImageMethods struct{ *destroyDocker }
+
+func (withoutImageMethods) InventoryImages()   {}
+func (withoutImageMethods) RemoveUnusedImage() {}
+
+// A destroy needs container inventory and removal only; an engine without image methods still gets its containers cleaned up.
+func TestDestroyCleansContainersOfAnEngineWithoutImageMethods(t *testing.T) {
+	f := newDestroyFixture(t, true)
+	f.ctrl.Engine = withoutImageMethods{f.docker}
+	op := f.destroy("destroy", nil)
+	if op.State != "succeeded" {
+		t.Fatalf("destroy %s: %s", op.State, op.Err)
+	}
+	if got := f.containerIDs(); !reflect.DeepEqual(got, []string{"restore-running", "other-env-helper", "hook-running", "other-env-hook", "foreign"}) {
+		t.Fatalf("containers left: %v", got)
+	}
+	if got := f.imageIDs(); len(got) != 5 {
+		t.Fatalf("an engine without image methods lost images: %v", got)
+	}
+}
+
 func TestDestroyDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	f := newDestroyFixture(t, true)
 	before := f.cf.Snapshot()
