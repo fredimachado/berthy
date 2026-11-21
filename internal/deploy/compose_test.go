@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1246,5 +1247,34 @@ func TestTheComposeEnvironmentFileNamesTheNetwork(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "BERTHY_NETWORK='shop-test'\n") {
 		t.Fatalf("environment %s", b)
+	}
+}
+
+func TestComposeDeployIgnoresUnrelatedImageDNSClashes(t *testing.T) {
+	for _, dry := range []bool{true, false} {
+		t.Run(fmt.Sprint(dry), func(t *testing.T) {
+			c, s := composeController(t, &fakeCompose{config: configOne, hashes: hashOne}, newComposeDocker())
+			seedDeployed(t, s, "web", state.Binding{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"})
+			m := composeApp(false)
+			image := manifest.App{Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}}}
+			m.Apps["api"] = image
+			m.Apps["web"] = image
+			req := composeReq("compose-dns", composeFileOne, m)
+			actor := Actor{ID: "admin", Admin: true}
+			if dry {
+				req.DryRun = true
+				if _, err := c.Plan(context.Background(), actor, req); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			op, _, err := admit(t, c, context.Background(), actor, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
+				t.Fatalf("state %s: %s", got.State, got.Err)
+			}
+		})
 	}
 }

@@ -46,8 +46,9 @@ func (m *Manifest) ComposeProject(environment, app string) string {
 }
 
 // NetworkNameProblems finds roles that would answer to the same DNS name on the environment network.
-// serviceName, when set, supplies the effective name of a bound or adopted role.
-func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app, role string) string) Problems {
+// With a nil serviceName, only aliases are checked. Otherwise it supplies bound or adopted names when present.
+// A non-empty targetApp reports only clashes involving that app.
+func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app, role string) string, targetApp string) Problems {
 	type owner struct{ app, role string }
 	seen := map[string]owner{}
 	var problems Problems
@@ -75,9 +76,13 @@ func (m *Manifest) NetworkNameProblems(environment string, serviceName func(app,
 				}
 			}
 			reported := false
-			for _, name := range []string{app + "-" + role, service} {
+			names := []string{app + "-" + role}
+			if serviceName != nil {
+				names = append(names, service)
+			}
+			for _, name := range names {
 				if previous, ok := seen[name]; ok && previous != current {
-					if !reported {
+					if !reported && (targetApp == "" || app == targetApp || previous.app == targetApp) {
 						path := "apps." + app + ".roles." + role
 						if app == ConnectorAppName && m.Ingress != nil {
 							path = "ingress.cloudflare"

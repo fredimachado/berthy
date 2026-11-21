@@ -1497,7 +1497,9 @@ func TestIngressPlanRejectsConflictingConnectorDNSNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Controller{Store: openStore(t), Project: "shop", Environment: "prod"}
+	s := openStore(t)
+	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "legacy", ServiceID: "legacy"})
+	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
 	_, err = c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "ingress", Manifest: *m, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "shop-prod-ingress-connector") {
 		t.Fatalf("plan error: %v", err)
@@ -1510,6 +1512,7 @@ func TestIngressApplyReportsConflictingConnectorDNSNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openStore(t)
+	seedDeployed(t, s, "shop-prod-ingress", state.Binding{App: "shop-prod-ingress", Role: "connector", Name: "legacy", ServiceID: "legacy"})
 	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
 	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "ingress-dns", Kind: "ingress", Manifest: *m})
 	if err != nil {
@@ -1532,5 +1535,32 @@ func TestPlanChecksTheBindingOfAnAppNowDeclaredCompose(t *testing.T) {
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api", Version: "v1", Manifest: m, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "api-web") {
 		t.Fatalf("plan error: %v", err)
+	}
+}
+
+func TestImagePlanIgnoresUndeployedRolesInTheManifest(t *testing.T) {
+	c := &Controller{Store: openStore(t), Engine: &positiveEngine{}, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	image := m.Apps["web"]
+	m.Apps["api"] = image
+	m.Apps["shop-prod-api"] = image
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestImagePlanUsesTheBoundServiceName(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "api", state.Binding{App: "api", Role: "web", Name: "legacy-api", ServiceID: "legacy"})
+	c := &Controller{Store: s, Engine: &positiveEngine{}, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api"] = m.Apps["web"]
+	m.Apps["shop-prod-api"] = m.Apps["web"]
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "shop-prod-api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

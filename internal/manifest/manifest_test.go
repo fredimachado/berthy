@@ -480,7 +480,6 @@ func TestTheDefaultNetworkOfTheLongestPairIsAValidNetworkName(t *testing.T) {
 
 func TestLoadRejectsCollidingRoleDNSNames(t *testing.T) {
 	for _, tc := range []struct{ name, apps, second, first, clash string }{
-		{"alias and service", "  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n  shop-prod-api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n", "shop-prod-api/web", "api/web", "shop-prod-api-web"},
 		{"two aliases", "  api:\n    kind: image\n    image: alpine\n    roles:\n      blue-web: {}\n  api-blue:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n", "api-blue/web", "api/blue-web", "api-blue-web"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -502,14 +501,14 @@ func TestLoadRejectsCollidingRoleDNSNames(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsANameClashingWithTheIngressConnector(t *testing.T) {
+func TestLoadAllowsANameThatMayBeABoundConnector(t *testing.T) {
 	dir := t.TempDir()
 	doc := "project: shop\ningress:\n  cloudflare:\n    account_id: acct\n    api_token_secret: CF_TOKEN\n    image: cloudflare/cloudflared:2026.11.0\napps:\n  shop-prod-ingress:\n    kind: image\n    image: alpine\n    roles:\n      connector: {}\n"
 	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(doc), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadDetailed(dir, "prod")
-	if err == nil || !strings.Contains(err.Error(), "shop-prod-ingress-connector") {
+	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 }
@@ -525,8 +524,19 @@ func TestNetworkNameProblemsChecksEveryNameAfterAClash(t *testing.T) {
 			return "last-main"
 		}
 		return ""
-	})
+	}, "")
 	if len(got) != 2 || !strings.Contains(got[1].Message, "last-main") {
 		t.Fatalf("problems: %+v", got)
+	}
+}
+
+func TestLoadAllowsAServiceNameThatMayBeBoundElsewhere(t *testing.T) {
+	dir := t.TempDir()
+	doc := "project: shop\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n  shop-prod-api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDetailed(dir, "prod"); err != nil {
+		t.Fatal(err)
 	}
 }

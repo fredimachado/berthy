@@ -355,11 +355,25 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 
 // checkNetworkNames compares generated aliases with the names that existing and adopted roles actually use.
 func (c *Controller) checkNetworkNames(ctx context.Context, req Request) error {
-	m := req.Manifest
-	m.Apps = maps.Clone(m.Apps)
-	if m.Apps == nil {
-		m.Apps = map[string]manifest.App{}
+	if composeRequest(req) {
+		return nil
 	}
+	m := req.Manifest
+	m.Apps = map[string]manifest.App{}
+	if req.Kind == "ingress" {
+		if m.Ingress == nil {
+			return nil
+		}
+		connector, _, err := m.ConnectorApp()
+		if err != nil {
+			return err
+		}
+		m.Apps[manifest.ConnectorAppName] = connector
+		req.App = manifest.ConnectorAppName
+	} else if app, ok := req.Manifest.Apps[req.App]; ok {
+		m.Apps[req.App] = app
+	}
+	m.Ingress = nil
 	names := map[string]string{}
 	if c.Store != nil {
 		bindings, err := c.Store.Bindings(ctx, "")
@@ -387,7 +401,7 @@ func (c *Controller) checkNetworkNames(ctx context.Context, req Request) error {
 			}
 		}
 	}
-	problems := m.NetworkNameProblems(c.Environment, func(app, role string) string { return names[app+"/"+role] })
+	problems := m.NetworkNameProblems(c.Environment, func(app, role string) string { return names[app+"/"+role] }, req.App)
 	if len(problems) != 0 {
 		return Refusal(problems[0].Message)
 	}
