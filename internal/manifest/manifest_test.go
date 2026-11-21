@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"berthy/internal/scope"
 )
 
 func TestLoadOverlayAndDefaults(t *testing.T) {
@@ -373,7 +371,7 @@ apps:
 	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, env := range []string{"prod", strings.Repeat("a", scope.MaxIDLength-len("demo-")), "a-1"} {
+	for _, env := range []string{"prod", strings.Repeat("a", 50), "a-1"} {
 		if _, err := Load(dir, env); err != nil {
 			t.Errorf("%q: %v", env, err)
 		}
@@ -382,5 +380,23 @@ apps:
 		if _, err := Load(dir, env); err == nil {
 			t.Errorf("%q loaded", env)
 		}
+	}
+}
+
+func TestLoadRefusesAServiceNameOver63CharactersForThatEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDetailed(dir, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Repeat("a", 51)
+	_, err := LoadDetailed(dir, env)
+	m := Manifest{Project: "demo"}
+	ps, ok := err.(Problems)
+	if !ok || len(ps) != 1 || ps[0].Message != m.ServiceNameError(env, "api", "web") || ps[0].File != "berthy.yml" || ps[0].Line != 8 || ps[0].Path != "apps.api.roles.web" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

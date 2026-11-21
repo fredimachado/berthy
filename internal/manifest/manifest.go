@@ -686,6 +686,22 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	if err := (scope.ID{Project: m.Project, Environment: env}).CheckLength(); err != nil {
 		return nil, err
 	}
+	var namesTooLong Problems
+	for _, app := range sortedKeys(m.Apps) {
+		a := m.Apps[app]
+		if a.Kind != "image" {
+			continue
+		}
+		for _, role := range sortedKeys(a.Roles) {
+			if message := m.ServiceNameError(env, app, role); message != "" {
+				namesTooLong.add(join("apps", app)+".roles."+role, "%s", message)
+			}
+		}
+	}
+	if len(namesTooLong) > 0 {
+		where.place(namesTooLong)
+		return nil, namesTooLong
+	}
 	if err := m.CheckVersion(version.Version); err != nil {
 		var old *TooOld
 		if errors.As(err, &old) {
