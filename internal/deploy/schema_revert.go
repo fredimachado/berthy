@@ -46,6 +46,8 @@ const (
 
 var networkNameMessage = regexp.MustCompile(`^network name [a-z0-9][a-z0-9_-]{0,126} is shared by roles [a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62} and [a-z0-9][a-z0-9_-]{0,62}/[a-z0-9][a-z0-9_-]{0,62}$`)
 
+var dockerNameMessage = regexp.MustCompile(`^name [A-Za-z0-9][A-Za-z0-9._-]{0,200} (is taken by another project or environment on this server|is longer than 63 characters; shorten the project, environment, app or role)$`)
+
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
@@ -60,7 +62,7 @@ func PublicMessage(s string) bool {
 		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errRestoreCommandFailed, errRestoreExecInterrupted, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
-	return networkNameMessage.MatchString(s) || s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
+	return dockerNameMessage.MatchString(s) || networkNameMessage.MatchString(s) || s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

@@ -294,3 +294,14 @@ func TestSchemaRevertOperationRecordsRefusal(t *testing.T) {
 		t.Fatalf("operation %+v: %v", got, err)
 	}
 }
+
+func TestPublicMessageAcceptsDockerNameRefusals(t *testing.T) {
+	for _, s := range []string{"name shop-prod-eu-api-web is taken by another project or environment on this server", "name shop-prod-eu-api-web is longer than 63 characters; shorten the project, environment, app or role"} {
+		if !PublicMessage(s) {
+			t.Errorf("not public: %s", s)
+		}
+	}
+	if PublicMessage("name bad name is taken by another project or environment on this server") {
+		t.Fatal("space in name accepted")
+	}
+}
