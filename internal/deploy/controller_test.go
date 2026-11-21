@@ -1491,3 +1491,32 @@ func TestDeployReportsAnAdoptedNetworkNameClash(t *testing.T) {
 		t.Fatalf("operation: %+v", got)
 	}
 }
+
+func TestIngressPlanRejectsConflictingConnectorDNSNames(t *testing.T) {
+	m, err := manifest.DecodeJSON([]byte(`{"project":"shop","ingress":{"cloudflare":{"account_id":"acct","api_token_secret":"CF_TOKEN","image":"cloudflare/cloudflared:2026.11.0"}},"apps":{"shop-prod-ingress":{"kind":"image","image":"alpine","roles":{"connector":{}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Store: openStore(t), Project: "shop", Environment: "prod"}
+	_, err = c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "ingress", Manifest: *m, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "shop-prod-ingress-connector") {
+		t.Fatalf("plan error: %v", err)
+	}
+}
+
+func TestIngressApplyReportsConflictingConnectorDNSNames(t *testing.T) {
+	m, err := manifest.DecodeJSON([]byte(`{"project":"shop","ingress":{"cloudflare":{"account_id":"acct","api_token_secret":"CF_TOKEN","image":"cloudflare/cloudflared:2026.11.0"}},"apps":{"shop-prod-ingress":{"kind":"image","image":"alpine","roles":{"connector":{}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t)
+	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "ingress-dns", Kind: "ingress", Manifest: *m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitOperation(t, s, op.ID)
+	if got.State != "failed" || !strings.Contains(got.Err, "shop-prod-ingress-connector") {
+		t.Fatalf("operation: %+v", got)
+	}
+}

@@ -221,7 +221,7 @@ func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, 
 		}
 		return c.plan(ctx, actor, resolved)
 	}
-	if req.Kind == "" || req.Kind == "deploy" {
+	if req.Kind == "" || req.Kind == "deploy" || (req.Kind == "ingress" && req.Manifest.Ingress != nil) {
 		if err := c.checkNetworkNames(ctx, req); err != nil {
 			return Plan{}, err
 		}

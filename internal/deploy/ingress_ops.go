@@ -460,6 +460,9 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if m.Ingress == nil {
 		return c.runIngressRemoval(ctx, op, req)
 	}
+	if err := c.checkNetworkNames(ctx, req); err != nil {
+		return fail(err)
+	}
 	t, err := c.ingressTargetFor(ctx, m)
 	if err != nil {
 		return fail(err)
