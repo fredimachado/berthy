@@ -477,10 +477,13 @@ purge_fixture() {
     [ -n "$name" ] || continue
     listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
     if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
-      if ! d network rm "$name" >/dev/null 2>&1; then
-        listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
-        if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then failed=1; fi
-      fi
+      d network rm "$name" >/dev/null 2>&1 || :
+      for i in $(seq 1 60); do
+        listing=$(d network ls --format '{{.Name}}') || { failed=1; break; }
+        printf '%s\n' "$listing" | grep -Fxq -- "$name" || break
+        sleep 0.5
+      done
+      if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then failed=1; fi
     fi
   done <<< "$networks"
   rm -f "$tmp"

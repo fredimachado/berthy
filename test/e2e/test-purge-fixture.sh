@@ -15,12 +15,21 @@ printf 'compose\t%s\n' shop-prod-db >> "$E2E_ROOT/fixture-objects"
 printf 'network\t%s\n' shop-prod shop-stage >> "$E2E_ROOT/fixture-objects"
 stop_agent() { :; }
 stop_fakes() { :; }
+sleep() { :; }
 d() {
   case "$1 $2" in
     'service ls'|'images --no-trunc') ;;
     'network ls')
       if [[ $* == *'--format {{.Name}}'* ]]; then
-        printf '%s\n' shop-prod shop-stage shop-two-prod
+        if [ "${DELAYED_NETWORK:-}" = 1 ]; then
+          if [ ! -e "$E2E_ROOT/delayed-removed" ]; then echo shop-delayed
+          elif [ ! -e "$E2E_ROOT/delayed-seen" ]; then touch "$E2E_ROOT/delayed-seen"; echo shop-delayed
+          else touch "$E2E_ROOT/delayed-gone"; fi
+        else
+          for name in shop-prod shop-stage shop-two-prod; do
+            if [ ! -f "$E2E_ROOT/removed-networks" ] || ! grep -Fxq "$name" "$E2E_ROOT/removed-networks"; then echo "$name"; fi
+          done
+        fi
       elif [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then
         if [ ! -e "$E2E_ROOT/network-gone" ]; then echo own-network; fi
       elif [[ $* != *'label=com.docker.compose.project='* ]]; then
@@ -35,6 +44,7 @@ d() {
       esac ;;
     'network rm')
       printf '%s\n' "$3" >> "$E2E_ROOT/removed-networks"
+      if [ "$3" = shop-delayed ]; then touch "$E2E_ROOT/delayed-removed"; fi
       if [ "${VANISH_OWN_NETWORK:-}" = 1 ]; then touch "$E2E_ROOT/network-gone"; return 1; fi ;;
     'ps -aq')
       if [[ $* == *'label=com.docker.compose.project=shop-prod-foreign-db'* ]]; then echo other-container
@@ -147,4 +157,13 @@ if [ -e "$E2E_ROOT/fixture-objects" ]; then
   echo 'cleanup after a vanished network did not clear the ledger' >&2
   exit 1
 fi
+unset VANISH_OWN_NETWORK
+printf 'network\tshop-delayed\n' > "$E2E_ROOT/fixture-objects"
+DELAYED_NETWORK=1
+purge_fixture || { echo 'delayed network removal failed' >&2; exit 1; }
+if [ ! -e "$E2E_ROOT/delayed-gone" ]; then
+  echo 'cleanup returned before the network disappeared' >&2
+  exit 1
+fi
+unset DELAYED_NETWORK
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'
