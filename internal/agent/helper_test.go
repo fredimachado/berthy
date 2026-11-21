@@ -719,6 +719,30 @@ func TestRemoveDeletesTheHelperAndItsUnusedOldImages(t *testing.T) {
 	}
 }
 
+// When the agent's own version cannot be read, the current helper image is unknown: cleanup removes no image, since any
+// tag might be the one another hosted environment is about to use.
+func TestRemoveWithAnUnreadableBinaryRemovesNoImage(t *testing.T) {
+	f := newHfDocker()
+	clk := &hfClock{t: time.Unix(1_700_000_000, 0)}
+	m := newHfHelper(f, writeAgentBinary(t, "one"), clk)
+	ctx := context.Background()
+	if err := m.ensure(ctx, "lab-net"); err != nil {
+		t.Fatal(err)
+	}
+	f.images["berthy-helper:aaaaaaaaaaaa"] = "sha256:old"
+	m.exe = func() (string, error) { return "", errors.New("no executable") }
+	clk.t = clk.t.Add(time.Minute)
+	if err := m.remove(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.names["berthy-helper-.lab"]; ok {
+		t.Fatal("the helper container was kept")
+	}
+	if contains(f.calls, "RemoveUnusedImage") || len(f.removed) != 0 {
+		t.Fatalf("images were removed: %v (calls %v)", f.removed, f.calls)
+	}
+}
+
 func TestRemoveWithoutAHelperOnlyCleansOnce(t *testing.T) {
 	f := newHfDocker()
 	clk := &hfClock{t: time.Unix(1_700_000_000, 0)}

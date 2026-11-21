@@ -311,13 +311,13 @@ func (m *helperManager) removeNow(ctx context.Context) error {
 		}
 	}
 	// The image of the agent's own binary stays: every hosted environment shares it, and another one's backup may have
-	// resolved it and not yet created its container, which is all that would protect it. Without a readable binary nobody
-	// can make the image, so nothing needs it.
-	keep := ""
-	if bin, err := m.binaryInfo(); err == nil {
-		keep = bin.tag()
+	// resolved it and not yet created its container, which is all that would protect it. When the binary cannot be read the
+	// current tag is unknown, so no tag can be called stale: nothing is pruned, and the next run tries again.
+	bin, err := m.binaryInfo()
+	if err != nil {
+		return nil
 	}
-	m.pruneImages(ctx, keep)
+	m.pruneImages(ctx, bin.tag())
 	m.mu.Lock()
 	m.imagesClean = true
 	m.mu.Unlock()
@@ -500,6 +500,9 @@ func (m *helperManager) removeContainer(ctx context.Context, id string) error {
 // pruneImages removes the helper images other than keep that no container uses. Docker refuses the ones in use, and a
 // refusal is not an error: the next run tries again.
 func (m *helperManager) pruneImages(ctx context.Context, keep string) {
+	if keep == "" {
+		return // the current tag is unknown, so no tag is stale
+	}
 	images, err := m.engine.InventoryImages(ctx)
 	if err != nil {
 		return
