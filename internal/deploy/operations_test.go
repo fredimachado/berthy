@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/state"
 	"context"
@@ -167,6 +168,46 @@ func TestRestartJournalAndRecoveryLock(t *testing.T) {
 			}
 			if !fail && err == nil {
 				t.Fatal("completed lock remains")
+			}
+		})
+	}
+}
+// A restart reads the project from the manifest of the applied release, so a service another project's deploy labelled is
+// refused and left as it was.
+func TestRestartRefusesAServiceOfAnotherProjectThanTheAppliedRelease(t *testing.T) {
+	for label, want := range map[string]string{"other": "failed", "shop": "succeeded"} {
+		t.Run(label, func(t *testing.T) {
+			dir := t.TempDir()
+			os.Chmod(dir, 0700)
+			key := filepath.Join(dir, "key")
+			os.WriteFile(key, make([]byte, 32), 0600)
+			s, err := state.Open(dir, key, "stage")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+			ctx := context.Background()
+			first, _, err := s.Admit(ctx, state.Admission{RequestID: "first", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := json.Marshal(manifest.Manifest{Project: "shop"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: applied, Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+				t.Fatal(err)
+			}
+			op, _, err := s.Admit(ctx, state.Admission{RequestID: "restart", ActorID: "a", Kind: "restart", App: "app", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := `{"Name":"app-web","Labels":{"berthy.project":"` + label + `"},"TaskTemplate":{"ContainerSpec":{"Image":"example/app:tag"}},"Mode":{"Replicated":{"Replicas":1}}}`
+			f := &runtimeEngine{store: s, op: op.ID, spec: json.RawMessage(spec)}
+			c := Controller{Store: s, Engine: f, Environment: "stage"}
+			out := c.runOperation(ctx, op, Actor{}, Request{Kind: "restart", App: "app"})
+			if out.State != want || (want == "failed") != (f.updates == 0) {
+				t.Fatalf("%s updates=%d: %s", out.State, f.updates, out.Err)
 			}
 		})
 	}

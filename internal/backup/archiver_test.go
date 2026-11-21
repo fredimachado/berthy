@@ -288,6 +288,27 @@ func jsonOf(t *testing.T, v any) any {
 	return out
 }
 
+func TestArchiverHelperNameAndLabelsCarryTheProject(t *testing.T) {
+	f := newFakeDocker()
+	f.volumes["data"] = nil
+	a, _ := newArchiver(f)
+	a.Project = "shop"
+	if _, err := a.Archive(context.Background(), "data", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	c := f.onlyContainer(t)
+	if !regexp.MustCompile(`^berthy-archive-shop\.prod-[0-9a-f]{8}$`).MatchString(c.name) {
+		t.Errorf("name %q", c.name)
+	}
+	var got struct{ Labels map[string]string }
+	if err := json.Unmarshal(c.spec, &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.helper": "archive"}; !reflect.DeepEqual(got.Labels, want) {
+		t.Errorf("labels %v, want %v", got.Labels, want)
+	}
+}
+
 func TestArchiveStreamsTheVolumeThroughAHardenedContainer(t *testing.T) {
 	f := newFakeDocker()
 	f.volumes["data"] = nil

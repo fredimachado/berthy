@@ -618,6 +618,20 @@ func fresh(g *rig, _ string) *fakeDocker {
 	return d
 }
 
+func TestRestoredVolumeCarriesTheProjectLabel(t *testing.T) {
+	g := newRig(t)
+	g.archive("the-archive-bytes")
+	res := g.run("uploads")
+	g.docker = fresh(g, "restore")
+	g.runner.Project = "shop"
+	if err := g.runner.Restore(context.Background(), g.m, res.Key, "restored-1", "op-1"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if labels := g.docker.volumes["restored-1"]; labels["berthy.project"] != "shop" || labels["berthy.environment"] != "prod" {
+		t.Fatalf("volume labels %v", labels)
+	}
+}
+
 func TestRestoreRemovesTheNewVolumeWhenTheChecksumDiffers(t *testing.T) {
 	g := newRig(t)
 	g.archive("the-archive-bytes")
