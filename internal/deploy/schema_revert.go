@@ -78,7 +78,7 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 		}
 		return state.Outcome{State: "failed", Err: "schema revert unavailable"}
 	}
-	if sr.Image != nil && c.Reserve != nil {
+	if c.Reserve != nil {
 		claims, err := c.reserveNames(ctx, req)
 		if err != nil {
 			return failedWith(err)

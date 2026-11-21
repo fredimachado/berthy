@@ -995,11 +995,17 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 		if err != nil {
 			return nil, err
 		}
+		network := state.Claim{Kind: state.ClaimNetwork, Name: sr.Prepared.Request.Manifest.NetworkName(c.Environment)}
 		if sr.Image == nil {
-			return nil, nil
+			return []state.Claim{network}, nil
 		}
 		req.RevertSchema = false
 		req.TargetRelease = sr.Image.ID
+		claims, err := c.effectiveNames(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return append([]state.Claim{network}, claims...), nil
 	}
 	if req.Kind == "rollback" && !req.RevertSchema {
 		resolved, err := c.rollbackRequest(ctx, req)

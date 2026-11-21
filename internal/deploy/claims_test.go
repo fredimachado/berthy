@@ -669,6 +669,26 @@ func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
 	if out.Err != "name proj-test-app-web is taken by another project or environment on this server" || spy.inspections != 0 {
 		t.Fatalf("outcome: %+v; image inspections: %d", out, spy.inspections)
 	}
+	if _, err := db.Exec(`UPDATE applied SET release_id=? WHERE environment=? AND app=?`, rel.ID, "test", "app"); err != nil {
+		t.Fatal(err)
+	}
+	networkClaim := state.Claim{Kind: state.ClaimNetwork, Name: "overlay"}
+	c.Foreign = func(context.Context) (Foreign, error) {
+		return Foreign{Claims: map[state.Claim]bool{networkClaim: true}}, nil
+	}
+	c.Reserve = func(_ context.Context, claims []state.Claim) error {
+		if !slices.Contains(claims, networkClaim) {
+			return errors.New("missing migration network")
+		}
+		return Refusal("name overlay is taken by another project or environment on this server")
+	}
+	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name overlay is taken") {
+		t.Fatalf("schema-only plan: %v", err)
+	}
+	out = c.runSchemaRevert(ctx, state.Operation{}, Actor{ID: "admin", Admin: true}, req)
+	if out.Err != "name overlay is taken by another project or environment on this server" || spy.inspections != 0 {
+		t.Fatalf("schema-only outcome: %+v; image inspections: %d", out, spy.inspections)
+	}
 }
 
 type removedComposeNetworkEngine struct{ *composeDocker }
