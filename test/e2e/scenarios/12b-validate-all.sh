@@ -94,7 +94,7 @@ long_env=${long_env// /a}
 out=$("$BIN" config validate -e "$long_env" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "offline validation refuses a long service name" 1 "$code" "$out"
 expect_contains "the refusal names the service limit" "$out" "is longer than 63 characters; shorten the project, environment, app or role"
-expect_contains "the refusal names the role's file and line" "$out" "berthy.yml:8:"
+expect_contains "the refusal names the role's file and line" "$out" "berthy.yml:7:"
 
 # The generated connector is 64 characters, while the ordinary web service still fits.
 connector_suffix=-ingress-connector
