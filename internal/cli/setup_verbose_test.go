@@ -366,7 +366,7 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 	t.Run("the token of the environment goes to the server on stdin only", func(t *testing.T) {
 		server := installedServer(t, "ops@s1")
 		withSetupRunner(t, server)
-		setupDoctor = func(context.Context, string, string, string) ([]api.Check, error) { return nil, setup.ErrUnreachable }
+		setupDoctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, setup.ErrUnreachable }
 		t.Setenv("BERTHY_P5_TOKEN", envToken)
 		code, out, errout := runSetupCmd(setupArgs(t, "--verbose")...)
 		if code != 0 {

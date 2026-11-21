@@ -162,7 +162,7 @@ func actionModel(t *testing.T, w, h int) (*Model, *fakeAgent) {
 		{ID: 2, Tag: "v1.0.1", Digest: "sha256:0123456789abcdef", Commit: "c2", Created: testNow.Add(-2 * time.Hour)},
 		{ID: 1, Digest: "sha256:fedcba9876543210", Commit: "c1", Created: testNow.Add(-26 * time.Hour)},
 	}
-	prefix := "/v1/environments/prod/"
+	prefix := "/v1/projects/demo/environments/prod/"
 	srv := httptest.NewServer(agent.handler(prefix))
 	t.Cleanup(srv.Close)
 	base, _ := url.Parse(srv.URL)
@@ -784,13 +784,13 @@ func checkExact(t *testing.T, m *Model, w, h int) {
 }
 
 func TestSendRefusesAnEventsURLTheAgentDoesNotOwn(t *testing.T) {
-	for _, events := range []string{"/v1/environments/other/operations/op1/events", "//evil.example/operations/op1/events", "/v1/environments/prod/operations/op1/../op2/events"} {
+	for _, events := range []string{"/v1/projects/demo/environments/other/operations/op1/events", "//evil.example/operations/op1/events", "/v1/projects/demo/environments/prod/operations/op1/../op2/events"} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 			fmt.Fprintf(w, `{"operation_id":"op1","events_url":%q}`, events)
 		}))
 		base, _ := url.Parse(srv.URL)
-		c := newClient(t.Context(), &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/environments/prod/", Token: actionToken})
+		c := newClient(t.Context(), &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: actionToken})
 		msg := c.send(7, "restart", map[string]any{"app": "api"})()
 		srv.Close()
 		if e, ok := msg.(actionErrMsg); !ok || e.id != 7 || !strings.Contains(e.text, "invalid operation events URL") {
@@ -809,7 +809,7 @@ func TestEventTextOfACheckIsItsLine(t *testing.T) {
 func TestFollowReconnectsWithoutShowingEventsTwice(t *testing.T) {
 	var mu sync.Mutex
 	streams := 0
-	prefix := "/v1/environments/prod/"
+	prefix := "/v1/projects/demo/environments/prod/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -836,7 +836,7 @@ func TestFollowReconnectsWithoutShowingEventsTwice(t *testing.T) {
 }
 
 func TestFollowEndsWhenTheStreamEndsAndTheOperationDid(t *testing.T) {
-	prefix := "/v1/environments/prod/"
+	prefix := "/v1/projects/demo/environments/prod/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == prefix+"operations/op1" {
 			fmt.Fprint(w, `{"state":"failed","reason":"boom"}`)

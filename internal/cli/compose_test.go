@@ -19,7 +19,7 @@ const composeManifest = "project: demo\nnetwork: demo\napps:\n  db:\n    kind: c
 func composeAgent(t *testing.T, bodies *[]map[string]any) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/v1/environments/dev/deploys" || r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Method != "POST" || r.URL.Path != "/v1/projects/demo/environments/dev/deploys" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("bad request %s %s", r.Method, r.URL.Path)
 		}
 		var body map[string]any

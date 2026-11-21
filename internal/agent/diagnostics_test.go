@@ -55,12 +55,12 @@ func newDiagnosticsFixture(t *testing.T) diagnosticsFixture {
 	}
 	read := "bty.lab." + strings.Repeat("a", 64)
 	deployer := "bty.lab." + strings.Repeat("b", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployer), Scope: "deploy"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployer), Scope: "deploy"}}}
 	return diagnosticsFixture{h: NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}), store: s, read: read, deployer: deployer, failed: failed.ID, clean: clean.ID}
 }
 
 func (f diagnosticsFixture) get(path, token string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("GET", "/v1/environments/lab"+path, nil)
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab"+path, nil)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -106,7 +106,7 @@ func TestDiagnosticsAreNotFoundWithoutEvidence(t *testing.T) {
 			t.Fatalf("%s: %d %s", id, w.Code, w.Body.String())
 		}
 	}
-	r := httptest.NewRequest("POST", "/v1/environments/lab/operations/"+f.failed+"/diagnostics", nil)
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/operations/"+f.failed+"/diagnostics", nil)
 	r.Header.Set("Authorization", "Bearer "+f.deployer)
 	w := httptest.NewRecorder()
 	f.h.ServeHTTP(w, r)

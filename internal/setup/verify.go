@@ -10,22 +10,23 @@ import (
 
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/scope"
 )
 
 // ErrUnreachable is what a DoctorFunc returns when the agent could not be reached at all, as opposed to answering with an
 // error.
 var ErrUnreachable = errors.New("unreachable")
 
-// DoctorFunc asks the agent at baseURL for the doctor of env with token.
-type DoctorFunc func(ctx context.Context, baseURL, env, token string) ([]api.Check, error)
+// DoctorFunc asks the agent at baseURL for the doctor of the hosted environment project/env with token.
+type DoctorFunc func(ctx context.Context, baseURL, project, env, token string) ([]api.Check, error)
 
 // httpDoctor is the DoctorFunc that sends the request from this machine, with a 5 second connect timeout.
-func httpDoctor(ctx context.Context, baseURL, env, token string) ([]api.Check, error) {
+func httpDoctor(ctx context.Context, baseURL, project, env, token string) ([]api.Check, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
-	prefix := "/v1/environments/" + url.PathEscape(env) + "/"
+	prefix := scope.ID{Project: project, Environment: env}.APIPath()
 	body, status, err := agentclient.Do(ctx, agentclient.NewHTTPClient(), u, prefix, token, "GET", "doctor", "", nil)
 	if err != nil {
 		if errors.Is(err, agentclient.ErrInvalidResponse) {
@@ -128,7 +129,7 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	if doctor == nil {
 		doctor = httpDoctor
 	}
-	checks, err := doctor(ctx, base, s.Opts.Env, token)
+	checks, err := doctor(ctx, base, s.Opts.Project, s.Opts.Env, token)
 	prefix := ""
 	switch {
 	case err == nil:
@@ -168,7 +169,7 @@ func (s *Session) healthy(ctx context.Context) bool {
 // doctorOnServer sends the doctor request from the server. The token goes to curl on its standard input as a header line, so
 // it is in no argument and no script.
 func (s *Session) doctorOnServer(ctx context.Context, base, token string) ([]api.Check, error) {
-	u := base + "/v1/environments/" + url.PathEscape(s.Opts.Env) + "/doctor"
+	u := base + scope.ID{Project: s.Opts.Project, Environment: s.Opts.Env}.APIPath() + "doctor"
 	script := "curl -fsS --max-time 30 -H @- " + shellQuote(u)
 	res, err := s.R.Run(ctx, script, strings.NewReader("Authorization: Bearer "+token+"\n"))
 	if err != nil {

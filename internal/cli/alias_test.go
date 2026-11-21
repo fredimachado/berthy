@@ -194,7 +194,7 @@ func TestAliasRunsThroughTheAgent(t *testing.T) {
 			Role    string   `json:"role"`
 			Command []string `json:"command"`
 		}
-		if got[i].method != "POST" || got[i].path != "/v1/environments/dev/exec" {
+		if got[i].method != "POST" || got[i].path != "/v1/projects/demo/environments/dev/exec" {
 			t.Fatalf("request %d: %s %s", i, got[i].method, got[i].path)
 		}
 		if err := json.Unmarshal(got[i].body, &body); err != nil {
@@ -208,7 +208,7 @@ func TestAliasRunsThroughTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[2].method != "GET" || got[2].path != "/v1/environments/dev/apps/api/logs" || query.Get("role") != "web" || query.Get("follow") != "1" || query.Get("tail") != "5" {
+	if got[2].method != "GET" || got[2].path != "/v1/projects/demo/environments/dev/apps/api/logs" || query.Get("role") != "web" || query.Get("follow") != "1" || query.Get("tail") != "5" {
 		t.Errorf("logs request: %s %s?%s", got[2].method, got[2].path, got[2].query)
 	}
 }

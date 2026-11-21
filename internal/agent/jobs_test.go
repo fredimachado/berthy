@@ -153,7 +153,7 @@ func TestJobsListShowsNextAndLastRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := jobsHandler(t, s, &blockingExec{})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/jobs", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/jobs", monitoringToken("a"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
@@ -173,17 +173,17 @@ func TestJobsListShowsNextAndLastRun(t *testing.T) {
 	if strings.Contains(w.Body.String(), `"container"`) && strings.Contains(w.Body.String(), `"output"`) {
 		t.Fatalf("output in the list: %s", w.Body.String())
 	}
-	if w = serveRequest(t, h, http.MethodGet, "/v1/environments/lab/jobs", ""); w.Code != http.StatusUnauthorized {
+	if w = serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/jobs", ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", w.Code)
 	}
-	if w = serveRequest(t, h, http.MethodPost, "/v1/environments/lab/jobs", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
+	if w = serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/jobs", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST jobs: %d", w.Code)
 	}
 	empty := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: openIngressStore(t), Environment: "lab"})
-	if w = serveRequest(t, empty, http.MethodGet, "/v1/environments/lab/jobs", monitoringToken("a")); strings.TrimSpace(w.Body.String()) != "[]" {
+	if w = serveRequest(t, empty, http.MethodGet, "/v1/projects/demo/environments/lab/jobs", monitoringToken("a")); strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("no manifest: %d %q", w.Code, w.Body.String())
 	}
-	if w = serveRequest(t, NewDeploymentHandler(monitoringConfig(""), nil, nil, nil), http.MethodGet, "/v1/environments/lab/jobs", monitoringToken("a")); w.Code != http.StatusServiceUnavailable {
+	if w = serveRequest(t, NewDeploymentHandler(monitoringConfig(""), nil, nil, nil), http.MethodGet, "/v1/projects/demo/environments/lab/jobs", monitoringToken("a")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no state: %d", w.Code)
 	}
 }
@@ -205,22 +205,22 @@ func TestJobRunsListNewestFirstWithALimit(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &runs)
 		return w.Code, runs
 	}
-	code, runs := get("/v1/environments/lab/jobs/tick/runs")
+	code, runs := get("/v1/projects/demo/environments/lab/jobs/tick/runs")
 	if code != 200 || len(runs) != 3 || runs[0].ID < runs[1].ID {
 		t.Fatalf("runs: %d %+v", code, runs)
 	}
-	if code, runs = get("/v1/environments/lab/jobs/tick/runs?limit=1"); code != 200 || len(runs) != 1 {
+	if code, runs = get("/v1/projects/demo/environments/lab/jobs/tick/runs?limit=1"); code != 200 || len(runs) != 1 {
 		t.Fatalf("limit: %d %+v", code, runs)
 	}
 	for _, bad := range []string{"0", "101", "x", "-1"} {
-		if code, _ = get("/v1/environments/lab/jobs/tick/runs?limit=" + bad); code != 400 {
+		if code, _ = get("/v1/projects/demo/environments/lab/jobs/tick/runs?limit=" + bad); code != 400 {
 			t.Errorf("limit %s: %d", bad, code)
 		}
 	}
-	if code, runs = get("/v1/environments/lab/jobs/dump/runs"); code != 200 || len(runs) != 0 {
+	if code, runs = get("/v1/projects/demo/environments/lab/jobs/dump/runs"); code != 200 || len(runs) != 0 {
 		t.Fatalf("job without runs: %d %+v", code, runs)
 	}
-	if code, _ = get("/v1/environments/lab/jobs/nothing/runs"); code != 404 {
+	if code, _ = get("/v1/projects/demo/environments/lab/jobs/nothing/runs"); code != 404 {
 		t.Fatalf("unknown job: %d", code)
 	}
 }
@@ -239,7 +239,7 @@ func TestJobLogsNeedDeployScopeAndShowTheOutputOfAFailedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := jobsHandler(t, s, &blockingExec{})
-	path := "/v1/environments/lab/jobs/tick/logs"
+	path := "/v1/projects/demo/environments/lab/jobs/tick/logs"
 	if w := serveRequest(t, h, http.MethodGet, path, monitoringToken("a")); w.Code != http.StatusForbidden {
 		t.Fatalf("read token: %d", w.Code)
 	}
@@ -268,7 +268,7 @@ func TestJobLogsNeedDeployScopeAndShowTheOutputOfAFailedRun(t *testing.T) {
 			t.Errorf("run %s: %d", bad, code)
 		}
 	}
-	for _, missing := range []string{"/v1/environments/lab/jobs/dump/logs", "/v1/environments/lab/jobs/nothing/logs", path + "?run=999"} {
+	for _, missing := range []string{"/v1/projects/demo/environments/lab/jobs/dump/logs", "/v1/projects/demo/environments/lab/jobs/nothing/logs", path + "?run=999"} {
 		if code, _ = get(missing); code != 404 {
 			t.Errorf("%s: %d", missing, code)
 		}
@@ -281,7 +281,7 @@ func TestJobRunNeedsDeployScopeAndRunsInTheBackground(t *testing.T) {
 	recordRelease(t, s, "release-jobs", jobsManifest)
 	exec := &blockingExec{release: make(chan struct{}), started: make(chan struct{}, 2)}
 	h := jobsHandler(t, s, exec)
-	path := "/v1/environments/lab/jobs/tick/run"
+	path := "/v1/projects/demo/environments/lab/jobs/tick/run"
 	if w := serveRequest(t, h, http.MethodPost, path, monitoringToken("a")); w.Code != http.StatusForbidden {
 		t.Fatalf("read token: %d", w.Code)
 	}
@@ -302,7 +302,7 @@ func TestJobRunNeedsDeployScopeAndRunsInTheBackground(t *testing.T) {
 	if w = serveRequest(t, h, http.MethodPost, path, monitoringToken("b")); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "job is already running") {
 		t.Fatalf("second run: %d %s", w.Code, w.Body.String())
 	}
-	if w = serveRequest(t, h, http.MethodPost, "/v1/environments/lab/jobs/nothing/run", monitoringToken("b")); w.Code != http.StatusNotFound {
+	if w = serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/jobs/nothing/run", monitoringToken("b")); w.Code != http.StatusNotFound {
 		t.Fatalf("unknown job: %d", w.Code)
 	}
 	runs, _ := s.JobRuns(ctx, "tick", 5)
@@ -342,7 +342,7 @@ func TestJobRunWithoutASchedulerIsUnavailable(t *testing.T) {
 	s := openIngressStore(t)
 	recordRelease(t, s, "release-jobs", jobsManifest)
 	h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/jobs/tick/run", monitoringToken("b")); w.Code != http.StatusServiceUnavailable {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/jobs/tick/run", monitoringToken("b")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no scheduler: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -425,7 +425,7 @@ func TestDescribeIncludesTheAppsJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewDeploymentHandler(monitoringConfig(""), fakeDocker(t), nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/apps/api", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/apps/api", monitoringToken("a"))
 	var app api.App
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &app) != nil {
 		t.Fatalf("describe: %d %s", w.Code, w.Body.String())
@@ -440,7 +440,7 @@ func TestDescribeIncludesTheAppsJobs(t *testing.T) {
 	}
 	// An app without jobs keeps its old shape.
 	recordBoundRelease(t, s, "release-nojobs", monitoredManifest(``), []state.Binding{{App: "api", Role: "web", Name: "lab-api-web", ServiceID: "svc-1"}})
-	w = serveRequest(t, h, http.MethodGet, "/v1/environments/lab/apps/api", monitoringToken("a"))
+	w = serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/apps/api", monitoringToken("a"))
 	if w.Code != http.StatusOK || bytes.Contains(w.Body.Bytes(), []byte(`"jobs"`)) {
 		t.Fatalf("app without jobs: %d %s", w.Code, w.Body.String())
 	}

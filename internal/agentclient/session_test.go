@@ -19,13 +19,13 @@ func sessionTarget(t *testing.T, srv *httptest.Server) *Target {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Target{Env: "lab", Base: u, Prefix: "/v1/environments/lab/", Token: "tok"}
+	return &Target{Env: "lab", Base: u, Prefix: "/v1/projects/demo/environments/lab/", Token: "tok"}
 }
 
 func TestOpenSessionSwitchesProtocolsAndKeepsWhatFollowsTheAnswer(t *testing.T) {
 	var got session.Request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/v1/environments/lab/sessions" || r.Header.Get("Authorization") != "Bearer tok" ||
+		if r.Method != "POST" || r.URL.Path != "/v1/projects/demo/environments/lab/sessions" || r.Header.Get("Authorization") != "Bearer tok" ||
 			r.Header.Get("Upgrade") != session.Upgrade || !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
 			http.Error(w, "bad request", 400)
 			return

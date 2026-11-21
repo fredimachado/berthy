@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,15 +16,17 @@ func seen(path *string) http.Handler {
 	})
 }
 
+const labPrefix = "/v1/projects/demo/environments/lab/"
+
 func TestMountStripsThePrefix(t *testing.T) {
 	for _, tc := range []struct{ request, want string }{
-		{"/v1/environments/lab/apps", "apps"},
-		{"/v1/environments/lab/operations/op1/events", "operations/op1/events"},
-		{"/v1/environments/lab/", ""},
+		{"/v1/projects/demo/environments/lab/apps", "apps"},
+		{"/v1/projects/demo/environments/lab/operations/op1/events", "operations/op1/events"},
+		{"/v1/projects/demo/environments/lab/", ""},
 	} {
 		var got string
 		w := httptest.NewRecorder()
-		mount("/v1/environments/lab/", seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", tc.request, nil))
+		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", tc.request, nil))
 		if w.Code != http.StatusNoContent || got != tc.want {
 			t.Errorf("%s: handler saw %q with status %d, want %q", tc.request, got, w.Code, tc.want)
 		}
@@ -30,10 +34,15 @@ func TestMountStripsThePrefix(t *testing.T) {
 }
 
 func TestARequestForAnotherEnvironmentIs401(t *testing.T) {
-	for _, path := range []string{"/v1/environments/other/apps", "/v1/environments/labs/apps", "/v1/environments/other/anything/at/all"} {
+	for _, path := range []string{
+		"/v1/projects/demo/environments/other/apps",
+		"/v1/projects/demo/environments/labs/apps",
+		"/v1/projects/other/environments/lab/apps",
+		"/v1/projects/demo/environments/other/anything/at/all",
+	} {
 		var got string
 		w := httptest.NewRecorder()
-		mount("/v1/environments/lab/", seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != http.StatusUnauthorized || got != "" || w.Body.String() != "{\"code\":\"unauthorized\",\"message\":\"unauthorized\"}\n" {
 			t.Errorf("%s: %d %q, handler saw %q", path, w.Code, w.Body.String(), got)
 		}
@@ -41,18 +50,31 @@ func TestARequestForAnotherEnvironmentIs401(t *testing.T) {
 }
 
 func TestAPathThatIsNotAnAPIPathIs404(t *testing.T) {
-	for _, path := range []string{"/", "/v1", "/v1/environments", "/v1/environments/lab", "/v1/environments/other", "/v2/environments/lab/apps", "/apps"} {
+	for _, path := range []string{"/", "/v1", "/v1/projects", "/v1/projects/demo", "/v1/projects/demo/environments", "/v1/projects/demo/environments/other", "/v1/environments", "/v2/projects/demo/environments/lab/apps", "/apps"} {
 		var got string
 		w := httptest.NewRecorder()
-		mount("/v1/environments/lab/", seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		if w.Code != http.StatusNotFound || got != "" {
-			t.Errorf("%s: %d, handler saw %q", path, w.Code, got)
+		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != http.StatusNotFound || got != "" || !strings.Contains(w.Body.String(), `"message":"not found"`) {
+			t.Errorf("%s: %d %s, handler saw %q", path, w.Code, w.Body.String(), got)
+		}
+	}
+}
+
+func TestTheURLOfAnEarlierReleaseSaysToUpgradeTheCLI(t *testing.T) {
+	for _, path := range []string{"/v1/environments/lab/apps", "/v1/environments/lab/", "/v1/environments/other/agent"} {
+		var got string
+		w := httptest.NewRecorder()
+		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		var body struct{ Code, Message string }
+		const want = "this agent serves /v1/projects/<project>/environments/<environment>/: upgrade the CLI"
+		if w.Code != http.StatusNotFound || got != "" || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Code != "not_found" || body.Message != want {
+			t.Errorf("%s: %d %q, handler saw %q", path, w.Code, w.Body.String(), got)
 		}
 	}
 }
 
 func TestAPrefixIsTheEnvironmentsAPIPath(t *testing.T) {
-	if got := apiPrefix(Config{Environment: "lab"}); got != "/v1/environments/lab/" {
+	if got := apiPrefix(Config{Project: "demo", Environment: "lab"}); got != labPrefix {
 		t.Fatalf("prefix %q", got)
 	}
 }

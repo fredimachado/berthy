@@ -27,7 +27,7 @@ func TestRemoveSendsTheAppAndFlags(t *testing.T) {
 	if code := Run([]string{"remove", "api", "-e", "dev", "--config", cfg, "--volumes", "--allow-recreate", "--dry-run"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
-	if path != "/v1/environments/dev/remove" {
+	if path != "/v1/projects/demo/environments/dev/remove" {
 		t.Fatalf("path %s", path)
 	}
 	var req map[string]any
@@ -71,12 +71,12 @@ func TestRemoveNeedsOneAppAndNoManifest(t *testing.T) {
 func TestRemoveReportsWhatItDid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/remove":
+		case "/v1/projects/demo/environments/dev/remove":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: step\ndata: {\"step\":\"deleted service demo-api-web\"}\n\nid: 3\nevent: step\ndata: {\"step\":\"kept volume data\"}\n\nid: 4\nevent: succeeded\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -138,7 +138,7 @@ func TestDestroySendsTheFlagsAndShowsThePlan(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if path != "/v1/environments/dev/destroy" || req["confirm"] != "dev" || req["volumes"] != true || req["allow_recreate"] != true || req["tunnel"] != true || req["dry_run"] != true || req["request_id"] == "" {
+	if path != "/v1/projects/demo/environments/dev/destroy" || req["confirm"] != "dev" || req["volumes"] != true || req["allow_recreate"] != true || req["tunnel"] != true || req["dry_run"] != true || req["request_id"] == "" {
 		t.Fatalf("%s %s", path, body)
 	}
 	for _, want := range []string{"destroy dev", "api (image)", "demo-api-web", "db (compose)", "shop-db_data", "managed ingress", "connector", "berthy-helper-dev", "berthy-helper:aabbccddeeff", "hook-1", "ghcr.io/acme/api@sha256:1", "tunnel demo-dev: keep", "a rule for foreign.example.com remains", "blockers", "removing stateful app db needs --allow-recreate"} {
@@ -151,12 +151,12 @@ func TestDestroySendsTheFlagsAndShowsThePlan(t *testing.T) {
 func TestDestroyReportsWhatItDid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/destroy":
+		case "/v1/projects/demo/environments/dev/destroy":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: step\ndata: {\"step\":\"api: deleted service demo-api-web\"}\n\nid: 3\nevent: step\ndata: {\"step\":\"kept tunnel demo-dev: a rule for foreign.example.com remains\"}\n\nid: 4\nevent: succeeded\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		}
 	}))

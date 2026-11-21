@@ -70,7 +70,7 @@ func TestRemoteCommandsFindTheConfigThroughTheEnvironmentVariable(t *testing.T) 
 			t.Fatalf("%v: exit %d, stderr %q", args, code, errs.String())
 		}
 	}
-	want := []string{"/v1/environments/dev/apps", "/v1/environments/dev/history/api"}
+	want := []string{"/v1/projects/demo/environments/dev/apps", "/v1/projects/demo/environments/dev/history/api"}
 	if got := asked(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("paths %v, want %v", got, want)
 	}

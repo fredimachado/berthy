@@ -134,7 +134,7 @@ func TestPublicAddressFollowsTheHostRules(t *testing.T) {
 // TestListenRuleIsPinned pins which addresses the agent accepts to listen on. The rule is shared with the public ports check,
 // so a change to it shows here first.
 func TestListenRuleIsPinned(t *testing.T) {
-	base := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(monitoringToken("a")), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(monitoringToken("a")), Scope: "read"}}}
 	for addr, ok := range map[string]bool{
 		"127.0.0.1:9999":   true,
 		"[::1]:9999":       true,

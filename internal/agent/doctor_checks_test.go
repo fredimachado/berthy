@@ -93,7 +93,7 @@ func TestAgentInfoReportsItsVersion(t *testing.T) {
 	saved := version.Version
 	defer func() { version.Version = saved }()
 	version.Version = "v1.2.3"
-	w := serveRequest(t, Handler(monitoringConfig(""), nil), http.MethodGet, "/v1/environments/lab/agent", monitoringToken("a"))
+	w := serveRequest(t, Handler(monitoringConfig(""), nil), http.MethodGet, "/v1/projects/demo/environments/lab/agent", monitoringToken("a"))
 	var info struct {
 		Version string `json:"version"`
 	}
@@ -190,7 +190,7 @@ func TestDoctorLeavesTheNetworkOutWhenNoneIsKnown(t *testing.T) {
 }
 
 func TestNetworkConfigUsesTheManifestNameRule(t *testing.T) {
-	base := Config{Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest(monitoringToken("a")), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest(monitoringToken("a")), Scope: "read"}}}
 	for name, valid := range map[string]bool{
 		"lab-net":               true,
 		"a":                     true,
@@ -232,7 +232,7 @@ func TestDoctorReportsTheDeployLockWithoutItsToken(t *testing.T) {
 	if err := s.AcquireManual(context.Background(), state.Actor{ID: "admin", Name: "admin"}, "ci-bot", "freeze for release"); err != nil {
 		t.Fatal(err)
 	}
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	c, ok = findCheck(doctorChecks(t, h), "lock")
 	if !ok || !c.OK || c.Critical || !strings.HasPrefix(c.Detail, "held by ci-bot for ") || !strings.HasSuffix(c.Detail, "freeze for release") {
 		t.Fatalf("held lock: %+v found %v", c, ok)

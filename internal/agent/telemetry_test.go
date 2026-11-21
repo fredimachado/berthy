@@ -171,7 +171,7 @@ func TestDoctorReportsTelemetryExport(t *testing.T) {
 // doctorChecks returns the checks of the doctor response.
 func doctorChecks(t *testing.T, h http.Handler) []api.Check {
 	t.Helper()
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("doctor answered %d", w.Code)
 	}

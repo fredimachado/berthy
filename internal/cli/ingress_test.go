@@ -63,7 +63,7 @@ func TestIngressApplySendsManifestAndReplaceFlag(t *testing.T) {
 	if code := Run([]string{"ingress", "apply", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--dry-run", "--replace-existing"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
-	if path != "/v1/environments/dev/ingress/apply" {
+	if path != "/v1/projects/demo/environments/dev/ingress/apply" {
 		t.Fatalf("path %s", path)
 	}
 	for _, want := range []string{`"replace_existing":true`, `"dry_run":true`, `"project":"demo"`, `"hostnames":["api.example.com"]`} {
@@ -81,7 +81,7 @@ func TestIngressApplySendsManifestAndReplaceFlag(t *testing.T) {
 
 func TestIngressStatusGetsStatusEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/v1/environments/dev/ingress/status" {
+		if r.Method != "GET" || r.URL.Path != "/v1/projects/demo/environments/dev/ingress/status" {
 			t.Errorf("bad request %s %s", r.Method, r.URL.Path)
 		}
 		fmt.Fprint(w, `{"configured":false,"routes":[]}`)

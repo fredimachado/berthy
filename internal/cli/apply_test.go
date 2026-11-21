@@ -51,7 +51,7 @@ func TestApplySendsTheManifestAndPrintsTheChanges(t *testing.T) {
 	if code := Run([]string{"apply", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--dry-run", "--commit", "abc123"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
-	if *path != "/v1/environments/dev/apply" {
+	if *path != "/v1/projects/demo/environments/dev/apply" {
 		t.Fatalf("path %s", *path)
 	}
 	for _, want := range []string{`"dry_run":true`, `"commit":"abc123"`, `"project":"demo"`, `"prod":"https://prod.example.com:443"`} {

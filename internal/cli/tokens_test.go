@@ -80,7 +80,7 @@ func TestTokenCreateSendsTheRequestAndShowsTheTokenOnce(t *testing.T) {
 		t.Fatalf("output: %q", out)
 	}
 	var sent map[string]any
-	if err := json.Unmarshal([]byte(a.bodies[0]), &sent); err != nil || a.requests[0] != "POST /v1/environments/dev/tokens" {
+	if err := json.Unmarshal([]byte(a.bodies[0]), &sent); err != nil || a.requests[0] != "POST /v1/projects/demo/environments/dev/tokens" {
 		t.Fatalf("request: %v %s", a.requests, a.bodies[0])
 	}
 	if sent["name"] != "ci" || sent["scope"] != "deploy" || sent["agent"] != false || sent["expires"] != "2027-02-16T00:00:00Z" || sent["dry_run"] != false {
@@ -121,7 +121,7 @@ func TestTokenDryRunsSayWhatWouldHappen(t *testing.T) {
 	}
 	a = &tokenAgent{answer: `{"action":"token revoke","name":"ci","scope":"deploy","agent":false}`}
 	code, out, _ = runToken(t, a, "revoke", "ci", "--dry-run")
-	if code != 0 || out != "would revoke token ci (deploy)\n" || a.requests[0] != "DELETE /v1/environments/dev/tokens/ci" || !strings.Contains(a.bodies[0], `"dry_run":true`) {
+	if code != 0 || out != "would revoke token ci (deploy)\n" || a.requests[0] != "DELETE /v1/projects/demo/environments/dev/tokens/ci" || !strings.Contains(a.bodies[0], `"dry_run":true`) {
 		t.Fatalf("revoke: %d %q %v %s", code, out, a.requests, a.bodies[0])
 	}
 }
@@ -129,7 +129,7 @@ func TestTokenDryRunsSayWhatWouldHappen(t *testing.T) {
 func TestTokenRevokeSaysSo(t *testing.T) {
 	a := &tokenAgent{answer: `{"ok":true,"name":"ci"}`}
 	code, out, _ := runToken(t, a, "revoke", "ci")
-	if code != 0 || out != "revoked token ci\n" || a.requests[0] != "DELETE /v1/environments/dev/tokens/ci" || !strings.Contains(a.bodies[0], `"dry_run":false`) {
+	if code != 0 || out != "revoked token ci\n" || a.requests[0] != "DELETE /v1/projects/demo/environments/dev/tokens/ci" || !strings.Contains(a.bodies[0], `"dry_run":false`) {
 		t.Fatalf("%d %q %v %s", code, out, a.requests, a.bodies[0])
 	}
 }
@@ -142,7 +142,7 @@ func TestTokenListPrintsATable(t *testing.T) {
  {"name":"ci","scope":"deploy","agent":false,"origin":"api","created":"2026-11-17T09:00:00Z","expires":"2027-02-16T00:00:00Z","last_used":"2026-11-18T11:00:00Z"},
  {"name":"claude","scope":"deploy","agent":true,"origin":"api","created":"2026-11-10T09:00:00Z","expires":"2026-11-15T00:00:00Z"}]`}
 	code, out, _ := runToken(t, a, "list")
-	if code != 0 || a.requests[0] != "GET /v1/environments/dev/tokens" {
+	if code != 0 || a.requests[0] != "GET /v1/projects/demo/environments/dev/tokens" {
 		t.Fatalf("%d %q %v", code, out, a.requests)
 	}
 	want := []string{

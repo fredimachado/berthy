@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 )
 
 // ErrInvalidResponse is an answer of the agent that cannot be used: unreadable or over 1 MiB.
@@ -165,7 +166,7 @@ func Resolve(path string, sel Selector) (*Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Target{Project: project, Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/", Token: token}, nil
+	return &Target{Project: project, Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + scope.ID{Project: project, Environment: env}.APIPath(), Token: token}, nil
 }
 
 // parseAgentURL is the URL rule Resolve and Put share: http, a host, no user, query or fragment.

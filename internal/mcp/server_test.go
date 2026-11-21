@@ -53,7 +53,7 @@ type fakeAgent struct {
 	routes map[string]func(r request) reply
 }
 
-const base = "/v1/environments/dev/"
+const base = "/v1/projects/demo/environments/dev/"
 
 func newFakeAgent(t *testing.T) (*fakeAgent, *url.URL) {
 	t.Helper()
@@ -381,7 +381,7 @@ func TestAgentUnreachableIsAToolError(t *testing.T) {
 
 func TestExecuteDeployReadsTheManifestAndFollowsTheOperation(t *testing.T) {
 	agent, u := newFakeAgent(t)
-	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
 	agent.on("GET", "operations/op1/events", 200, "event: terminal\ndata: {}\n\n")
 	var polls int
 	agent.onFunc("GET", "operations/op1", func(request) reply {
@@ -412,7 +412,7 @@ func TestExecuteDeployReadsTheManifestAndFollowsTheOperation(t *testing.T) {
 func TestExecuteDeployReportsWhatTheChecksFound(t *testing.T) {
 	const warning = "role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?"
 	agent, u := newFakeAgent(t)
-	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
+	agent.on("POST", "deploys", 202, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
 	agent.on("GET", "operations/op1", 200, `{"id":"op1","state":"succeeded"}`)
 	agent.on("GET", "operations/op1/events", 200, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: verify\ndata: {\"role\":\"web\",\"check\":\"network\",\"status\":\"warn\",\"step\":\""+warning+"\"}\n\nevent: terminal\ndata: {}\n\n")
 	res := okResult(t, call(t, connect(t, testConfig(u, manifestDir(t))), "execute_resource_command", map[string]any{"resource_name": "api", "command": "deploy", "version": "1.2.3"}))

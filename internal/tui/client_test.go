@@ -38,7 +38,7 @@ func agentServer(t *testing.T, routes map[string]http.HandlerFunc) (*client, *ht
 	base, _ := url.Parse(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	target := &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/environments/prod/", Token: testToken}
+	target := &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: testToken}
 	return newClient(ctx, target), srv
 }
 
@@ -51,13 +51,13 @@ func jsonReply(body string) http.HandlerFunc {
 
 func TestFetchesDecodeTypedMessages(t *testing.T) {
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/agent":       jsonReply(`{"environment":"prod","hostname":"lab","protected":true}`),
-		"/v1/environments/prod/apps":        jsonReply(`[{"ref":{"kind":"image","name":"api"},"roles":[{"name":"web","desired":2,"running":2,"replicas":[]}]}]`),
-		"/v1/environments/prod/lock":        jsonReply(`{"locked":true,"holder":"ci","reason":"x"}`),
-		"/v1/environments/prod/approvals":   jsonReply(`[{"id":"a","status":"pending","summary":"deploy api v1"}]`),
-		"/v1/environments/prod/history/api": jsonReply(`[{"id":1,"digest":"sha256:a","created":"2026-11-16T10:00:00Z"},{"operation_id":"o","state":"failed","reason":"boom","created":"2026-11-16T11:00:00Z"}]`),
-		"/v1/environments/prod/df":          jsonReply(`{"host":[{"path":"/","total":10,"available":5}],"host_status":"available","docker_status":"available","docker":{"LayersSize":5}}`),
-		"/v1/environments/prod/stats":       jsonReply(`[{"time":"2026-11-16T11:59:00Z","host":{"cpu_percent":5.5},"containers":[]}]`),
+		"/v1/projects/demo/environments/prod/agent":       jsonReply(`{"environment":"prod","hostname":"lab","protected":true}`),
+		"/v1/projects/demo/environments/prod/apps":        jsonReply(`[{"ref":{"kind":"image","name":"api"},"roles":[{"name":"web","desired":2,"running":2,"replicas":[]}]}]`),
+		"/v1/projects/demo/environments/prod/lock":        jsonReply(`{"locked":true,"holder":"ci","reason":"x"}`),
+		"/v1/projects/demo/environments/prod/approvals":   jsonReply(`[{"id":"a","status":"pending","summary":"deploy api v1"}]`),
+		"/v1/projects/demo/environments/prod/history/api": jsonReply(`[{"id":1,"digest":"sha256:a","created":"2026-11-16T10:00:00Z"},{"operation_id":"o","state":"failed","reason":"boom","created":"2026-11-16T11:00:00Z"}]`),
+		"/v1/projects/demo/environments/prod/df":          jsonReply(`{"host":[{"path":"/","total":10,"available":5}],"host_status":"available","docker_status":"available","docker":{"LayersSize":5}}`),
+		"/v1/projects/demo/environments/prod/stats":       jsonReply(`[{"time":"2026-11-16T11:59:00Z","host":{"cpu_percent":5.5},"containers":[]}]`),
 	})
 	if m, ok := c.fetchInfo()().(infoMsg); !ok || !m.Protected || m.Hostname != "lab" {
 		t.Errorf("info: %#v", m)
@@ -88,11 +88,11 @@ func TestFetchesDecodeTypedMessages(t *testing.T) {
 
 func TestFetchErrors(t *testing.T) {
 	c, srv := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/apps": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/apps": func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"code":"forbidden","message":"forbidden `+testToken+`"}`, 403)
 		},
-		"/v1/environments/prod/lock": jsonReply(`not json`),
-		"/v1/environments/prod/df":   func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", 500) },
+		"/v1/projects/demo/environments/prod/lock": jsonReply(`not json`),
+		"/v1/projects/demo/environments/prod/df":   func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", 500) },
 	})
 	e, ok := c.fetchApps()().(errMsg)
 	if !ok || e.network || !strings.Contains(e.text, "HTTP 403") {
@@ -152,7 +152,7 @@ func TestLogStreamReconnectsAndSkipsSeenLines(t *testing.T) {
 	var mu sync.Mutex
 	var queries []string
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			queries = append(queries, r.URL.RawQuery)
 			n := len(queries)
@@ -208,7 +208,7 @@ func TestLogStreamReconnectsAndSkipsSeenLines(t *testing.T) {
 
 func TestStatsStreamAndCancel(t *testing.T) {
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/stats": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/stats": func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("watch") != "1" {
 				http.Error(w, "no", 400)
 				return
@@ -237,7 +237,7 @@ func TestStatsStreamAndCancel(t *testing.T) {
 
 func TestStreamRefusalIsReportedAndRetried(t *testing.T) {
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"code":"too_many_followers","message":"too many followers"}`, 503)
 		},
 	})
@@ -291,7 +291,7 @@ func expand(cmd tea.Cmd) []tea.Msg {
 
 func TestModelFollowsLogsThroughTheStream(t *testing.T) {
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "event: log\ndata: {\"role\":\"web\",\"replica\":\"1\",\"timestamp\":\"2026-11-16T12:00:00Z\",\"stream\":\"stdout\",\"message\":\"from the stream\"}\n\n")
 			w.(http.Flusher).Flush()

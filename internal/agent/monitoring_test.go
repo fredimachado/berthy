@@ -30,6 +30,7 @@ func monitoringToken(fill string) string { return "bty.lab." + strings.Repeat(fi
 // the doctor's Compose check fails quickly.
 func monitoringConfig(telegramURL string) Config {
 	return Config{
+		Project:        "demo",
 		Environment:    "lab",
 		Tokens:         []Token{{Digest: Digest(monitoringToken("a")), Scope: "read"}, {Digest: Digest(monitoringToken("b")), Scope: "deploy"}},
 		TelegramAPIURL: telegramURL,
@@ -113,7 +114,7 @@ func TestChecksEndpointListsStoredStatesByName(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/checks", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/checks", monitoringToken("a"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("read token: %d %s", w.Code, w.Body.String())
 	}
@@ -129,20 +130,20 @@ func TestChecksEndpointListsStoredStatesByName(t *testing.T) {
 	if len(rows) != 2 || rows[0].Name != "disk:/" || rows[1].Name != "probe:site" || rows[1].State != "critical" || rows[1].Detail != "HTTP 503" || !rows[1].Since.Equal(since) {
 		t.Fatalf("rows: %+v", rows)
 	}
-	if w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/checks", ""); w.Code != http.StatusUnauthorized {
+	if w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/checks", ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", w.Code)
 	}
-	if w := serveRequest(t, h, http.MethodGet, "/v1/environments/dev/checks", monitoringToken("a")); w.Code != http.StatusUnauthorized {
+	if w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/dev/checks", monitoringToken("a")); w.Code != http.StatusUnauthorized {
 		t.Fatalf("other environment: %d", w.Code)
 	}
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/checks", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/checks", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST checks: %d", w.Code)
 	}
 	empty := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: openIngressStore(t), Environment: "lab"})
-	if w := serveRequest(t, empty, http.MethodGet, "/v1/environments/lab/checks", monitoringToken("a")); strings.TrimSpace(w.Body.String()) != "[]" {
+	if w := serveRequest(t, empty, http.MethodGet, "/v1/projects/demo/environments/lab/checks", monitoringToken("a")); strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("empty checks: %q", w.Body.String())
 	}
-	if w := serveRequest(t, NewDeploymentHandler(monitoringConfig(""), nil, nil, nil), http.MethodGet, "/v1/environments/lab/checks", monitoringToken("a")); w.Code != http.StatusServiceUnavailable {
+	if w := serveRequest(t, NewDeploymentHandler(monitoringConfig(""), nil, nil, nil), http.MethodGet, "/v1/projects/demo/environments/lab/checks", monitoringToken("a")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("checks without state: %d", w.Code)
 	}
 }
@@ -150,16 +151,16 @@ func TestChecksEndpointListsStoredStatesByName(t *testing.T) {
 func TestAlertTestNeedsDeployScopeAndReportsMissingConfiguration(t *testing.T) {
 	s := openIngressStore(t)
 	h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("a")); w.Code != http.StatusForbidden {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("a")); w.Code != http.StatusForbidden {
 		t.Fatalf("read token sent a test alert: %d %s", w.Code, w.Body.String())
 	}
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", ""); w.Code != http.StatusUnauthorized {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", w.Code)
 	}
-	if w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/alerts/test", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
+	if w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b")); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET alerts/test: %d", w.Code)
 	}
-	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "alerts are not configured") {
 		t.Fatalf("no manifest: %d %s", w.Code, w.Body.String())
 	}
@@ -198,7 +199,7 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 	recordRelease(t, s, "release-alerts", monitoredManifest(`,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"-1001234567890"}}`))
 	h := NewDeploymentHandler(monitoringConfig(fake.URL), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 
-	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"channels":[{"channel":"telegram","ok":true}]}` {
 		t.Fatalf("send: %d %s", w.Code, w.Body.String())
 	}
@@ -209,14 +210,14 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 	mu.Unlock()
 
 	status.Store(http.StatusUnauthorized)
-	w = serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w = serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `{"channel":"telegram","ok":false,"error":"telegram returned HTTP 401"}`) {
 		t.Fatalf("rejected: %d %s", w.Code, w.Body.String())
 	}
 
 	// A second handler points at an address with nothing listening on it.
 	down := NewDeploymentHandler(monitoringConfig("http://"+closedLoopbackAddress(t)), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w = serveRequest(t, down, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w = serveRequest(t, down, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"error":"telegram unavailable"`) {
 		t.Fatalf("unreachable: %d %s", w.Code, w.Body.String())
 	}
@@ -240,7 +241,7 @@ func TestAlertTestWithoutSecretNamesTheChannelThatLacksIt(t *testing.T) {
 	s := openIngressStore(t)
 	recordRelease(t, s, "release-no-secret", monitoredManifest(`,"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"}}`))
 	h := NewDeploymentHandler(monitoringConfig("https://api.telegram.org"), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"channels":[{"channel":"telegram","ok":false,"error":"telegram bot token secret missing"}]}` {
 		t.Fatalf("secret missing: %d %s", w.Code, w.Body.String())
 	}
@@ -379,7 +380,7 @@ func TestDoctorReportsPeersAndTheAlertSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("doctor: %d %s", w.Code, w.Body.String())
 	}

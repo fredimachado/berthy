@@ -41,7 +41,7 @@ func TestJobLogsPrintsTheOutputAndNamesTheRunApart(t *testing.T) {
 	if !strings.Contains(errout, "run 7 of tick failed: exit status 3") {
 		t.Fatalf("stderr %q", errout)
 	}
-	if len(*requests) != 1 || (*requests)[0] != "GET /v1/environments/dev/jobs/tick/logs" {
+	if len(*requests) != 1 || (*requests)[0] != "GET /v1/projects/demo/environments/dev/jobs/tick/logs" {
 		t.Fatalf("requests %v", *requests)
 	}
 }
@@ -52,7 +52,7 @@ func TestJobLogsOfANamedRunAsJSON(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"run_id": 7`) || !strings.Contains(out, `boom [redacted]`) {
 		t.Fatalf("exit %d out %q", code, out)
 	}
-	if (*requests)[0] != "GET /v1/environments/dev/jobs/tick/logs?run=7" {
+	if (*requests)[0] != "GET /v1/projects/demo/environments/dev/jobs/tick/logs?run=7" {
 		t.Fatalf("requests %v", *requests)
 	}
 }

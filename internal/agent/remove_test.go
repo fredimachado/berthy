@@ -100,12 +100,12 @@ func TestJobsRoutesSkipRemovedApps(t *testing.T) {
 	recordRelease(t, s, "release", removedAppManifest)
 	forgetApp(t, s, "api")
 	h := jobsHandler(t, s, &blockingExec{})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/jobs", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/jobs", monitoringToken("a"))
 	var list []api.JobStatus
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list) != 1 || list[0].Name != "sweep" {
 		t.Fatalf("jobs: %d %s", w.Code, w.Body.String())
 	}
-	if w = serveRequest(t, h, http.MethodGet, "/v1/environments/lab/jobs/tick/runs", monitoringToken("a")); w.Code != http.StatusNotFound {
+	if w = serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/jobs/tick/runs", monitoringToken("a")); w.Code != http.StatusNotFound {
 		t.Fatalf("runs of a removed app's job: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -134,10 +134,10 @@ func TestRemoveRouteNeedsAnAdministratorAndReachesTheController(t *testing.T) {
 	readToken := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	call := func(method, token, body string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, "/v1/environments/lab/remove", strings.NewReader(body))
+		r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab/remove", strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -169,10 +169,10 @@ func TestDestroyRouteNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	readToken := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	call := func(method, token, body string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, "/v1/environments/lab/destroy", strings.NewReader(body))
+		r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab/destroy", strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

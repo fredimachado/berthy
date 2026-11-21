@@ -60,11 +60,11 @@ func TestStateBackupCheckStatesFromItsHistory(t *testing.T) {
 
 func TestStateBackupRunsOnDemandThroughTheAdminAPI(t *testing.T) {
 	g := newBackupRig(t)
-	if w := g.call("POST", "/v1/environments/lab/state-backup", adminToken, ""); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "not configured") {
+	if w := g.call("POST", "/v1/projects/demo/environments/lab/state-backup", adminToken, ""); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "not configured") {
 		t.Fatalf("without the block: %d %s", w.Code, w.Body.String())
 	}
 	recordAppRelease(t, g.store, "r-state", "api", stateBackupManifest(g.url))
-	const base = "/v1/environments/lab/state-backup"
+	const base = "/v1/projects/demo/environments/lab/state-backup"
 	for _, tc := range []struct {
 		name, method, path, token string
 		want                      int
@@ -79,7 +79,7 @@ func TestStateBackupRunsOnDemandThroughTheAdminAPI(t *testing.T) {
 			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())
 		}
 	}
-	w := g.call("POST", "/v1/environments/lab/state-backup", adminToken, "")
+	w := g.call("POST", "/v1/projects/demo/environments/lab/state-backup", adminToken, "")
 	var accepted struct {
 		ID int64 `json:"state_backup_run_id"`
 	}
@@ -126,7 +126,7 @@ func TestStateBackupRunsOnDemandThroughTheAdminAPI(t *testing.T) {
 // stateRuns reads the state backup's runs through the API with the read token.
 func (g *backupRig) stateRuns() []api.StateBackupRun {
 	g.t.Helper()
-	w := g.call("GET", "/v1/environments/lab/state-backup/runs?limit=5", readToken, "")
+	w := g.call("GET", "/v1/projects/demo/environments/lab/state-backup/runs?limit=5", readToken, "")
 	var runs []api.StateBackupRun
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &runs) != nil {
 		g.t.Fatalf("runs: %d %s", w.Code, w.Body.String())

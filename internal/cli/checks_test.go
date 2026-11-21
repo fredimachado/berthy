@@ -24,7 +24,7 @@ func TestChecksPrintsATableOrJSON(t *testing.T) {
 	if code := Run([]string{"checks", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if seen != "GET /v1/environments/dev/checks Bearer test-token" {
+	if seen != "GET /v1/projects/demo/environments/dev/checks Bearer test-token" {
 		t.Fatalf("request: %q", seen)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -88,7 +88,7 @@ func TestAlertsTestSendsAndReportsTheOutcome(t *testing.T) {
 	if code := Run([]string{"alerts", "test", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if method != "POST" || path != "/v1/environments/dev/alerts/test" || auth != "Bearer test-token" {
+	if method != "POST" || path != "/v1/projects/demo/environments/dev/alerts/test" || auth != "Bearer test-token" {
 		t.Fatalf("request %s %s %q", method, path, auth)
 	}
 	if out.String() != "telegram: ok\nwebhook: ok\n" {

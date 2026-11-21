@@ -20,8 +20,8 @@ import (
 )
 
 func TestLogsValidationBeforeDocker(t *testing.T) {
-	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/apps/demo/logs?grep=%5B", nil)
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/apps/demo/logs?grep=%5B", nil)
 	r.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
 	w := httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, r)
@@ -30,8 +30,8 @@ func TestLogsValidationBeforeDocker(t *testing.T) {
 	}
 }
 func TestStatsBeforeFirstSample(t *testing.T) {
-	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/stats", nil)
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/stats", nil)
 	r.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
 	w := httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, r)

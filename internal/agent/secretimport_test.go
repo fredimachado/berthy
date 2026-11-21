@@ -250,7 +250,7 @@ func TestDeletingASecretNamedImportIsStillADelete(t *testing.T) {
 // taken for an import.
 func TestSecretImportRouteIsPostOnly(t *testing.T) {
 	f := newApprovalFixture(t, false, nil)
-	r := httptest.NewRequest("GET", "/v1/environments/lab/secrets/import", nil)
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/secrets/import", nil)
 	r.Header.Set("Authorization", "Bearer "+apAdminToken)
 	w := httptest.NewRecorder()
 	f.h.ServeHTTP(w, r)

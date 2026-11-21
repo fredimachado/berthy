@@ -159,7 +159,7 @@ func (c *configCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []b
 func backupToken(fill string) string { return "bty.lab." + strings.Repeat(fill, 64) }
 
 func backupConfig() Config {
-	return Config{Environment: "lab", Tokens: []Token{
+	return Config{Project: "demo", Environment: "lab", Tokens: []Token{
 		{Name: "reader", Digest: Digest(backupToken("a")), Scope: "read"},
 		{Name: "ci", Digest: Digest(backupToken("b")), Scope: "deploy"},
 		{Name: "ops", Digest: Digest(backupToken("c")), Scope: "admin"},
@@ -248,7 +248,7 @@ func (g *backupRig) call(method, path, token, body string) *httptest.ResponseRec
 // run starts a manual run through the API and waits until it has ended.
 func (g *backupRig) run(name string) api.BackupRun {
 	g.t.Helper()
-	w := g.call("POST", "/v1/environments/lab/backups/"+name+"/run", deployToken, "")
+	w := g.call("POST", "/v1/projects/demo/environments/lab/backups/"+name+"/run", deployToken, "")
 	var accepted struct {
 		ID int64 `json:"backup_run_id"`
 	}
@@ -262,7 +262,7 @@ func (g *backupRig) wait(name string, id int64) api.BackupRun {
 	g.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		w := g.call("GET", "/v1/environments/lab/backups/"+name+"/runs?limit=100", readToken, "")
+		w := g.call("GET", "/v1/projects/demo/environments/lab/backups/"+name+"/runs?limit=100", readToken, "")
 		var runs []api.BackupRun
 		if err := json.Unmarshal(w.Body.Bytes(), &runs); err != nil {
 			g.t.Fatalf("runs: %d %s", w.Code, w.Body.String())
@@ -280,7 +280,7 @@ func (g *backupRig) wait(name string, id int64) api.BackupRun {
 
 func (g *backupRig) list(query string) []api.BackupEntry {
 	g.t.Helper()
-	w := g.call("GET", "/v1/environments/lab/backups"+query, readToken, "")
+	w := g.call("GET", "/v1/projects/demo/environments/lab/backups"+query, readToken, "")
 	var out []api.BackupEntry
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil {
 		g.t.Fatalf("list: %d %s", w.Code, w.Body.String())
@@ -324,7 +324,7 @@ func TestBackupOfAnImageAppVolumeRunsListsAndAudits(t *testing.T) {
 	if only := g.list("?backup=docs"); len(only) != 0 {
 		t.Fatalf("filtered entries: %+v", only)
 	}
-	if w := g.call("GET", "/v1/environments/lab/backups?backup=nope", readToken, ""); w.Code != 404 {
+	if w := g.call("GET", "/v1/projects/demo/environments/lab/backups?backup=nope", readToken, ""); w.Code != 404 {
 		t.Fatalf("unknown filter: %d", w.Code)
 	}
 	if _, err := g.s3.Stat(context.Background(), strings.TrimSuffix(run.Key, ".tar.gz")+".json"); err != nil {
@@ -397,18 +397,18 @@ func TestBackupRoutesNeedTheScopesOfTheTokenTable(t *testing.T) {
 		name, method, path, token, body string
 		want                            int
 	}{
-		{"list needs a token", "GET", "/v1/environments/lab/backups", "", "", 401},
-		{"read lists", "GET", "/v1/environments/lab/backups", readToken, "", 200},
-		{"read reads runs", "GET", "/v1/environments/lab/backups/uploads/runs", readToken, "", 200},
-		{"read cannot run", "POST", "/v1/environments/lab/backups/uploads/run", readToken, "", 403},
-		{"run needs POST", "GET", "/v1/environments/lab/backups/uploads/run", deployToken, "", 405},
-		{"list needs GET", "POST", "/v1/environments/lab/backups", deployToken, "", 405},
-		{"read cannot restore", "POST", "/v1/environments/lab/restore", readToken, `{"key":"k","into":"v"}`, 403},
-		{"deploy cannot restore", "POST", "/v1/environments/lab/restore", deployToken, `{"key":"k","into":"v"}`, 403},
-		{"restore needs POST", "GET", "/v1/environments/lab/restore", adminToken, "", 405},
-		{"unknown backup runs", "GET", "/v1/environments/lab/backups/nope/runs", readToken, "", 404},
-		{"unknown backup run", "POST", "/v1/environments/lab/backups/nope/run", deployToken, "", 404},
-		{"bad limit", "GET", "/v1/environments/lab/backups/uploads/runs?limit=0", readToken, "", 400},
+		{"list needs a token", "GET", "/v1/projects/demo/environments/lab/backups", "", "", 401},
+		{"read lists", "GET", "/v1/projects/demo/environments/lab/backups", readToken, "", 200},
+		{"read reads runs", "GET", "/v1/projects/demo/environments/lab/backups/uploads/runs", readToken, "", 200},
+		{"read cannot run", "POST", "/v1/projects/demo/environments/lab/backups/uploads/run", readToken, "", 403},
+		{"run needs POST", "GET", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, "", 405},
+		{"list needs GET", "POST", "/v1/projects/demo/environments/lab/backups", deployToken, "", 405},
+		{"read cannot restore", "POST", "/v1/projects/demo/environments/lab/restore", readToken, `{"key":"k","into":"v"}`, 403},
+		{"deploy cannot restore", "POST", "/v1/projects/demo/environments/lab/restore", deployToken, `{"key":"k","into":"v"}`, 403},
+		{"restore needs POST", "GET", "/v1/projects/demo/environments/lab/restore", adminToken, "", 405},
+		{"unknown backup runs", "GET", "/v1/projects/demo/environments/lab/backups/nope/runs", readToken, "", 404},
+		{"unknown backup run", "POST", "/v1/projects/demo/environments/lab/backups/nope/run", deployToken, "", 404},
+		{"bad limit", "GET", "/v1/projects/demo/environments/lab/backups/uploads/runs?limit=0", readToken, "", 400},
 	} {
 		if w := g.call(tc.method, tc.path, tc.token, tc.body); w.Code != tc.want {
 			t.Errorf("%s: %d %s", tc.name, w.Code, w.Body.String())
@@ -421,18 +421,18 @@ func TestBackupRoutesNeedTheScopesOfTheTokenTable(t *testing.T) {
 
 func TestBackupRunRefusalsRecordNothing(t *testing.T) {
 	g := newBackupRig(t)
-	w := g.call("POST", "/v1/environments/lab/backups/lost/run", deployToken, "")
+	w := g.call("POST", "/v1/projects/demo/environments/lab/backups/lost/run", deployToken, "")
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "backup lost: volume ghost is not mounted by app api") {
 		t.Fatalf("unresolved volume: %d %s", w.Code, w.Body.String())
 	}
 	// A backup of an app that is not deployed is not part of the configuration.
-	if w = g.call("POST", "/v1/environments/lab/backups/old/run", deployToken, ""); w.Code != 404 {
+	if w = g.call("POST", "/v1/projects/demo/environments/lab/backups/old/run", deployToken, ""); w.Code != 404 {
 		t.Fatalf("backup of an app that was removed: %d %s", w.Code, w.Body.String())
 	}
 	if err := g.store.DeleteSecret(context.Background(), state.Actor{ID: "ops", Name: "ops"}, "S3_SECRET_KEY"); err != nil {
 		t.Fatal(err)
 	}
-	w = g.call("POST", "/v1/environments/lab/backups/uploads/run", deployToken, "")
+	w = g.call("POST", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, "")
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "backup credentials unavailable") {
 		t.Fatalf("missing credentials: %d %s", w.Code, w.Body.String())
 	}
@@ -440,7 +440,7 @@ func TestBackupRunRefusalsRecordNothing(t *testing.T) {
 		t.Fatalf("refusals were recorded: %+v", runs)
 	}
 	unavailable := NewDeploymentHandlerWithBackups(backupConfig(), nil, nil, g.ctrl, nil, nil, nil)
-	r := httptest.NewRequest("GET", "/v1/environments/lab/backups", nil)
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/backups", nil)
 	r.Header.Set("Authorization", "Bearer "+backupToken(readToken))
 	rec := httptest.NewRecorder()
 	unavailable.ServeHTTP(rec, r)
@@ -452,14 +452,14 @@ func TestBackupRunRefusalsRecordNothing(t *testing.T) {
 func TestASecondBackupOfTheSameVolumeIsAConflict(t *testing.T) {
 	g := newBackupRig(t)
 	g.docker.block = make(chan struct{})
-	w := g.call("POST", "/v1/environments/lab/backups/uploads/run", deployToken, "")
+	w := g.call("POST", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, "")
 	var accepted struct {
 		ID int64 `json:"backup_run_id"`
 	}
 	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &accepted) != nil {
 		t.Fatalf("first run: %d %s", w.Code, w.Body.String())
 	}
-	if w = g.call("POST", "/v1/environments/lab/backups/uploads/run", deployToken, ""); w.Code != 409 || !strings.Contains(w.Body.String(), "already running") {
+	if w = g.call("POST", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, ""); w.Code != 409 || !strings.Contains(w.Body.String(), "already running") {
 		t.Fatalf("second run: %d %s", w.Code, w.Body.String())
 	}
 	runs, _ := g.store.BackupRuns(context.Background(), "uploads", 10)
@@ -475,7 +475,7 @@ func TestASecondBackupOfTheSameVolumeIsAConflict(t *testing.T) {
 func TestStoppingTheAgentRecordsTheRunAsStopped(t *testing.T) {
 	g := newBackupRig(t)
 	g.docker.block = make(chan struct{})
-	w := g.call("POST", "/v1/environments/lab/backups/uploads/run", deployToken, "")
+	w := g.call("POST", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, "")
 	var accepted struct {
 		ID int64 `json:"backup_run_id"`
 	}
@@ -511,7 +511,7 @@ func TestRestoreThroughTheAPIFillsANewVolume(t *testing.T) {
 	run := g.run("uploads")
 	body := fmt.Sprintf(`{"key":%q,"into":"restored-1"}`, run.Key)
 	// A dry run shows the plan and changes nothing.
-	w := g.call("POST", "/v1/environments/lab/restore", adminToken, strings.TrimSuffix(body, "}")+`,"dry_run":true}`)
+	w := g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, strings.TrimSuffix(body, "}")+`,"dry_run":true}`)
 	var plan struct {
 		Restore deploy.RestorePlan `json:"restore"`
 	}
@@ -521,12 +521,12 @@ func TestRestoreThroughTheAPIFillsANewVolume(t *testing.T) {
 	if g.docker.has("restored-1") {
 		t.Fatal("a dry run created the volume")
 	}
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, body)
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, body)
 	var accepted struct {
 		ID     string `json:"operation_id"`
 		Events string `json:"events_url"`
 	}
-	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &accepted) != nil || accepted.ID == "" || accepted.Events != "/v1/environments/lab/operations/"+accepted.ID+"/events" {
+	if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &accepted) != nil || accepted.ID == "" || accepted.Events != "/v1/projects/demo/environments/lab/operations/"+accepted.ID+"/events" {
 		t.Fatalf("restore: %d %s", w.Code, w.Body.String())
 	}
 	op := g.waitOperation(accepted.ID)
@@ -537,11 +537,11 @@ func TestRestoreThroughTheAPIFillsANewVolume(t *testing.T) {
 		t.Fatalf("restored volume: fed %q", got)
 	}
 	// An existing volume is refused when the request arrives.
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"uploads"}`, run.Key))
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"uploads"}`, run.Key))
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "target volume already exists") {
 		t.Fatalf("existing volume: %d %s", w.Code, w.Body.String())
 	}
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, `{"key":"api/uploads/uploads/20200101T000000Z-1.tar.gz","into":"restored-2"}`)
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, `{"key":"api/uploads/uploads/20200101T000000Z-1.tar.gz","into":"restored-2"}`)
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "backup not found") {
 		t.Fatalf("unknown key: %d %s", w.Code, w.Body.String())
 	}
@@ -553,7 +553,7 @@ func TestRestoreOfATamperedArchiveFailsAndRemovesTheVolume(t *testing.T) {
 	if _, err := g.s3.Put(context.Background(), run.Key, strings.NewReader("not the archive that was backed up"), nil); err != nil {
 		t.Fatal(err)
 	}
-	w := g.call("POST", "/v1/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"restored-1"}`, run.Key))
+	w := g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"restored-1"}`, run.Key))
 	var accepted struct {
 		ID string `json:"operation_id"`
 	}
@@ -581,10 +581,10 @@ func TestDeployedManifestDropsBackupsOfAppsThatAreNotDeployed(t *testing.T) {
 }
 
 func TestBackupsNeedStateAndDocker(t *testing.T) {
-	if b := NewBackups(Config{Environment: "lab"}, nil, nil, nil, nil, nil); b != nil {
+	if b := NewBackups(Config{Project: "demo", Environment: "lab"}, nil, nil, nil, nil, nil); b != nil {
 		t.Fatal("backups without Docker or state")
 	}
-	if b := NewBackups(Config{Environment: "lab"}, engine.New("/nonexistent.sock"), &deploy.Controller{}, nil, nil, nil); b != nil {
+	if b := NewBackups(Config{Project: "demo", Environment: "lab"}, engine.New("/nonexistent.sock"), &deploy.Controller{}, nil, nil, nil); b != nil {
 		t.Fatal("backups without state")
 	}
 	var none *Backups
@@ -620,7 +620,7 @@ func TestListAndRestoreStillWorkAfterTheAppsAreRemoved(t *testing.T) {
 		t.Fatalf("backups of removed apps are still configured: %v", m.Backups)
 	}
 	// Running a backup needs the app.
-	if w := g.call("POST", "/v1/environments/lab/backups/uploads/run", deployToken, ""); w.Code != 404 {
+	if w := g.call("POST", "/v1/projects/demo/environments/lab/backups/uploads/run", deployToken, ""); w.Code != 404 {
 		t.Fatalf("run after the removal: %d %s", w.Code, w.Body.String())
 	}
 	entries := g.list("")
@@ -631,7 +631,7 @@ func TestListAndRestoreStillWorkAfterTheAppsAreRemoved(t *testing.T) {
 		t.Fatalf("filtered entries: %+v", one)
 	}
 	for _, key := range []string{uploads.Key, docs.Key} {
-		w := g.call("POST", "/v1/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"back-%d"}`, key, len(key)))
+		w := g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"back-%d"}`, key, len(key)))
 		var accepted struct {
 			ID string `json:"operation_id"`
 		}

@@ -228,7 +228,7 @@ func TestIngressApplyOnAProtectedEnvironmentRefusesLocalChanges(t *testing.T) {
 func historyFixture(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/environments/dev/history/api" {
+		if r.URL.Path != "/v1/projects/demo/environments/dev/history/api" {
 			http.NotFound(w, r)
 			return
 		}

@@ -30,12 +30,12 @@ func newCancelServer(t *testing.T, status int, answer, end string) *cancelServer
 	s := &cancelServer{status: status, answer: answer, end: end}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/environments/dev/operations/op1/cancel":
+		case r.Method == "POST" && r.URL.Path == "/v1/projects/demo/environments/dev/operations/op1/cancel":
 			b, _ := io.ReadAll(r.Body)
 			s.post.Store(string(b))
 			w.WriteHeader(s.status)
 			fmt.Fprint(w, s.answer)
-		case r.Method == "GET" && r.URL.Path == "/v1/environments/dev/operations/op1":
+		case r.Method == "GET" && r.URL.Path == "/v1/projects/demo/environments/dev/operations/op1":
 			if s.polls.Add(1) < 2 {
 				fmt.Fprint(w, `{"id":"op1","state":"running","kind":"deploy","app":"web"}`)
 				return
@@ -121,7 +121,7 @@ func TestJobCancelStopsTheRunOfTheJob(t *testing.T) {
 	if code := Run([]string{"job", "cancel", "dump", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s %s", code, out.String(), errs.String())
 	}
-	if path.Load() != "POST /v1/environments/dev/jobs/dump/cancel" || !strings.Contains(out.String(), "cancelled the run of job dump") {
+	if path.Load() != "POST /v1/projects/demo/environments/dev/jobs/dump/cancel" || !strings.Contains(out.String(), "cancelled the run of job dump") {
 		t.Errorf("request %v output %q", path.Load(), out.String())
 	}
 	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -56,7 +56,7 @@ func newSecretFixture(t *testing.T) *secretFixture {
 	}
 	t.Cleanup(func() { s.Close() })
 	f := &secretFixture{t: t, s: s, docker: &secretDocker{spec: json.RawMessage(`{"Name":"api-web","TaskTemplate":{"ContainerSpec":{"Image":"ghcr.io/acme/api:1"}}}`)}}
-	cfg := Config{Environment: "lab", Tokens: []Token{{Name: "alice", Digest: Digest(apAdminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Name: "alice", Digest: Digest(apAdminToken), Scope: "admin"}}}
 	f.h = NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Engine: f.docker, Store: s, Environment: "lab"})
 	return f
 }
@@ -82,7 +82,7 @@ func (f *secretFixture) bindAPI() {
 
 func (f *secretFixture) call(method, path, body string) *httptest.ResponseRecorder {
 	f.t.Helper()
-	r := httptest.NewRequest(method, "/v1/environments/lab"+path, strings.NewReader(body))
+	r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab"+path, strings.NewReader(body))
 	r.Header.Set("Authorization", "Bearer "+apAdminToken)
 	w := httptest.NewRecorder()
 	f.h.ServeHTTP(w, r)

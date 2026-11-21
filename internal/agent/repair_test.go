@@ -11,10 +11,10 @@ import (
 
 func TestScopeGuard(t *testing.T) {
 	token := "bty.lab." + strings.Repeat("a", 64)
-	c := Config{Environment: "lab", Tokens: []Token{{Digest: strings.ToUpper(Digest(token)), Scope: "read"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: strings.ToUpper(Digest(token)), Scope: "read"}}}
 	called := false
 	h := authorize(newTokenSource(c, nil), "deploy", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	r := httptest.NewRequest("GET", "/v1/environments/lab/apps", nil)
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/apps", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)

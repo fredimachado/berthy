@@ -45,7 +45,7 @@ func TestDescribeAndPsShowTheAgeOfAnAppsBackups(t *testing.T) {
 	finishedBackup(t, s, "data", "k1", time.Now().Add(-3*time.Hour), "succeeded", 1536, "")
 	finishedBackup(t, s, "data", "k2", time.Now().Add(-time.Minute), "failed", 0, "upload failed: access denied")
 	h := NewDeploymentHandler(monitoringConfig(""), fakeDocker(t), nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/apps/api", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/apps/api", monitoringToken("a"))
 	var app api.App
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &app) != nil {
 		t.Fatalf("describe: %d %s", w.Code, w.Body.String())
@@ -61,7 +61,7 @@ func TestDescribeAndPsShowTheAgeOfAnAppsBackups(t *testing.T) {
 		t.Fatalf("a backup that never ran: %+v", m)
 	}
 	// ps lists the same backups under each app.
-	w = serveRequest(t, h, http.MethodGet, "/v1/environments/lab/apps", monitoringToken("a"))
+	w = serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/apps", monitoringToken("a"))
 	var apps []api.App
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &apps) != nil {
 		t.Fatalf("ps: %d %s", w.Code, w.Body.String())
@@ -77,7 +77,7 @@ func TestDescribeAndPsShowTheAgeOfAnAppsBackups(t *testing.T) {
 	}
 	// An app without backups keeps its old shape.
 	recordBoundRelease(t, s, "release-none", monitoredManifest(``), []state.Binding{{App: "api", Role: "web", Name: "lab-api-web", ServiceID: "svc-1"}})
-	w = serveRequest(t, h, http.MethodGet, "/v1/environments/lab/apps/api", monitoringToken("a"))
+	w = serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/apps/api", monitoringToken("a"))
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"backups"`) {
 		t.Fatalf("app without backups: %d %s", w.Code, w.Body.String())
 	}
@@ -206,7 +206,7 @@ func TestBackupRunsShowTheOccurrenceOfAScheduledRun(t *testing.T) {
 	if _, err := g.store.StartBackup(ctx, state.BackupRun{Backup: "uploads", App: "api", Volume: "uploads", Destination: "offsite", ObjectKey: "k-sched", Trigger: "schedule", Scheduled: at, Started: at}); err != nil {
 		t.Fatal(err)
 	}
-	w := g.call("GET", "/v1/environments/lab/backups/uploads/runs", readToken, "")
+	w := g.call("GET", "/v1/projects/demo/environments/lab/backups/uploads/runs", readToken, "")
 	var runs []api.BackupRun
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &runs) != nil || len(runs) != 1 || runs[0].Scheduled == nil || !runs[0].Scheduled.Equal(at) || runs[0].Trigger != "schedule" {
 		t.Fatalf("runs: %d %s", w.Code, w.Body.String())

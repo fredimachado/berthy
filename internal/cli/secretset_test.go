@@ -223,7 +223,7 @@ func TestSecretSetAtATerminalAsksHiddenAndSendsTheValue(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 	sent := secretChanges(bodies)
-	if len(sent) != 1 || !strings.HasSuffix(strings.Fields(sent[0])[1], "/v1/environments/dev/secrets") || !strings.Contains(sent[0], `"value":"s3cret-value"`) {
+	if len(sent) != 1 || !strings.HasSuffix(strings.Fields(sent[0])[1], "/v1/projects/demo/environments/dev/secrets") || !strings.Contains(sent[0], `"value":"s3cret-value"`) {
 		t.Fatalf("requests %q, want one secret set with the value", bodies)
 	}
 	if !strings.Contains(errout.String(), "Value of CF_TOKEN (hidden): ") || !strings.Contains(errout.String(), "https://dash.cloudflare.com/?to=/:account/api-tokens") {

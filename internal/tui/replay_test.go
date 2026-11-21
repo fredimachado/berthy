@@ -102,7 +102,7 @@ func TestStreamShowsInterleavedLinesAndFillsTheGapOnReconnect(t *testing.T) {
 	var mu sync.Mutex
 	n := 0
 	c, _ := agentServer(t, map[string]http.HandlerFunc{
-		"/v1/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
+		"/v1/projects/demo/environments/prod/apps/api/logs": func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			n++
 			conn := n

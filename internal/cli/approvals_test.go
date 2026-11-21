@@ -140,7 +140,7 @@ func TestApprovalsListsPendingOrAllAsATable(t *testing.T) {
 	if code := Run([]string{"approvals", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if seen[0] != "GET /v1/environments/dev/approvals?status=pending Bearer test-token" {
+	if seen[0] != "GET /v1/projects/demo/environments/dev/approvals?status=pending Bearer test-token" {
 		t.Fatalf("request: %q", seen[0])
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -156,7 +156,7 @@ func TestApprovalsListsPendingOrAllAsATable(t *testing.T) {
 	if code := Run([]string{"approvals", "-e", "dev", "--config", cfg, "--all"}, &out, &errout); code != 0 {
 		t.Fatalf("all: exit %d: %s", code, errout.String())
 	}
-	if seen[1] != "GET /v1/environments/dev/approvals Bearer test-token" {
+	if seen[1] != "GET /v1/projects/demo/environments/dev/approvals Bearer test-token" {
 		t.Fatalf("all request: %q", seen[1])
 	}
 	for _, want := range []string{"STATUS", "approved", "alice", `secret set \x1b[31mDATABASE_URL`} {
@@ -182,18 +182,18 @@ func TestApproveShowsThePlanThenExecutesAndStreamsTheOperation(t *testing.T) {
 	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "GET /v1/environments/dev/approvals":
+		case "GET /v1/projects/demo/environments/dev/approvals":
 			note("list")
 			fmt.Fprint(w, approvalsListBody)
-		case "POST /v1/environments/dev/approvals/ap1/approve":
+		case "POST /v1/projects/demo/environments/dev/approvals/ap1/approve":
 			note("approve")
-			w.Header().Set("Location", "/v1/environments/dev/operations/op1/events")
+			w.Header().Set("Location", "/v1/projects/demo/environments/dev/operations/op1/events")
 			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "GET /v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "GET /v1/projects/demo/environments/dev/operations/op1/events":
 			note("events")
 			fmt.Fprint(w, "id: 1\nevent: progress\ndata: {}\n\n")
-		case "GET /v1/environments/dev/operations/op1":
+		case "GET /v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
@@ -265,7 +265,7 @@ func TestRejectSendsTheReasonAndReportsIt(t *testing.T) {
 	if code := Run([]string{"reject", "ap1", "-e", "dev", "--config", cfg, "-m", "not during the sale"}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if h.paths[0] != "POST /v1/environments/dev/approvals/ap1/reject" || h.bodies[0] != `{"reason":"not during the sale"}` || !strings.Contains(out.String(), "rejected: ap1") {
+	if h.paths[0] != "POST /v1/projects/demo/environments/dev/approvals/ap1/reject" || h.bodies[0] != `{"reason":"not during the sale"}` || !strings.Contains(out.String(), "rejected: ap1") {
 		t.Fatalf("request %v %v, output %q", h.paths, h.bodies, out.String())
 	}
 	out.Reset()

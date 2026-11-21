@@ -235,15 +235,15 @@ func TestJobCancelStopsTheRunningJobAndNeedsTheDeployScope(t *testing.T) {
 		return jobs.Outcome{Container: "container-1"}, c.Err()
 	})
 	sched := jobScheduler(s, exec)
-	h := NewDeploymentHandlerWithJobs(Config{Environment: "lab", Tokens: []Token{{Name: "reader", Digest: Digest(monitoringToken("a")), Scope: "read"}, {Name: "ci", Digest: Digest(monitoringToken("b")), Scope: "deploy"}}}, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, nil, sched)
-	cancelPath := "/v1/environments/lab/jobs/manual/cancel"
+	h := NewDeploymentHandlerWithJobs(Config{Project: "demo", Environment: "lab", Tokens: []Token{{Name: "reader", Digest: Digest(monitoringToken("a")), Scope: "read"}, {Name: "ci", Digest: Digest(monitoringToken("b")), Scope: "deploy"}}}, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, nil, sched)
+	cancelPath := "/v1/projects/demo/environments/lab/jobs/manual/cancel"
 	if w := serveRequest(t, h, http.MethodPost, cancelPath, monitoringToken("b")); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "job is not running") {
 		t.Fatalf("a job that is not running: %d %s", w.Code, w.Body.String())
 	}
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/jobs/nothing/cancel", monitoringToken("b")); w.Code != http.StatusNotFound {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/jobs/nothing/cancel", monitoringToken("b")); w.Code != http.StatusNotFound {
 		t.Fatalf("an unknown job: %d", w.Code)
 	}
-	if w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/jobs/manual/run", monitoringToken("b")); w.Code != http.StatusAccepted {
+	if w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/jobs/manual/run", monitoringToken("b")); w.Code != http.StatusAccepted {
 		t.Fatalf("run: %d %s", w.Code, w.Body.String())
 	}
 	<-started

@@ -28,7 +28,7 @@ func runtimeConfig(t *testing.T) (Shared, Config) {
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
-	c := Config{Environment: "lab", Listen: "127.0.0.1:19501", StateDir: dir, KeyFile: key,
+	c := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:19501", StateDir: dir, KeyFile: key,
 		Tokens: []Token{{Name: "reader", Digest: Digest(apReadToken), Scope: "read"}}}
 	return Shared{Engine: engine.New(filepath.Join(dir, "missing.sock"))}, c
 }
@@ -44,7 +44,7 @@ func TestARuntimeServesItsEnvironmentAndCloseReleasesTheState(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	r.Handler.ServeHTTP(w, newGet("/v1/environments/lab/agent", apReadToken))
+	r.Handler.ServeHTTP(w, newGet("/v1/projects/demo/environments/lab/agent", apReadToken))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"environment":"lab"`) {
 		t.Errorf("agent: %d %s", w.Code, w.Body.String())
 	}

@@ -65,8 +65,19 @@ func TestResolveReadsTargetAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Token != "secret-token" || got.Prefix != "/base/v1/environments/dev/" || got.Base.Host != "127.0.0.1:9000" || got.Env != "dev" || got.Project != "demo" {
+	if got.Token != "secret-token" || got.Prefix != "/base/v1/projects/demo/environments/dev/" || got.Base.Host != "127.0.0.1:9000" || got.Env != "dev" || got.Project != "demo" {
 		t.Fatalf("target %+v", got)
+	}
+}
+
+func TestResolveBuildsTheProjectPath(t *testing.T) {
+	t.Setenv("BERTHY_TEST_TOKEN", "secret-token")
+	cfg := writeConfig(t, `{"projects":{"demo":{"environments":{"dev":{"url":"http://127.0.0.1:9000/base/","token_env":"BERTHY_TEST_TOKEN"}}},"other-app":{"environments":{"dev":{"url":"http://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}}}}}`)
+	for project, want := range map[string]string{"demo": "/base/v1/projects/demo/environments/dev/", "other-app": "/v1/projects/other-app/environments/dev/"} {
+		got, err := Resolve(cfg, Selector{Project: project, Environment: "dev"})
+		if err != nil || got.Prefix != want {
+			t.Errorf("project %s: prefix %q, %v, want %q", project, got.Prefix, err, want)
+		}
 	}
 }
 

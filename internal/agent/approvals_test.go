@@ -62,7 +62,7 @@ func newApprovalFixture(t *testing.T, protected bool, mutate func(*Config)) *app
 	}
 	t.Cleanup(func() { s.Close() })
 	f := &approvalFixture{t: t, s: s, dir: dir, now: apStartTime}
-	f.cfg = Config{Environment: "lab", Protected: protected, clock: func() time.Time { return f.now }, Tokens: []Token{
+	f.cfg = Config{Project: "demo", Environment: "lab", Protected: protected, clock: func() time.Time { return f.now }, Tokens: []Token{
 		{Name: "reader", Digest: Digest(apReadToken), Scope: "read"},
 		{Name: "ci", Digest: Digest(apDeployToken), Scope: "deploy"},
 		{Name: "alice", Digest: Digest(apAdminToken), Scope: "admin"},
@@ -81,7 +81,7 @@ func newApprovalFixture(t *testing.T, protected bool, mutate func(*Config)) *app
 
 func (f *approvalFixture) call(method, path, token, body string) *httptest.ResponseRecorder {
 	f.t.Helper()
-	r := httptest.NewRequest(method, "/v1/environments/lab"+path, strings.NewReader(body))
+	r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab"+path, strings.NewReader(body))
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -164,7 +164,7 @@ func sameJSON(t *testing.T, a, b []byte) bool {
 func TestAuthenticateCarriesTheAgentMark(t *testing.T) {
 	f := newApprovalFixture(t, true, nil)
 	for token, want := range map[string]bool{apAdminToken: false, apDeployToken: false, apAgentDeploy: true, apAgentAdmin: true} {
-		r := httptest.NewRequest("GET", "/v1/environments/lab/audit", nil)
+		r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/audit", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		actor, _, status := authenticate(newTokenSource(f.cfg, f.s), r)
 		if status != http.StatusOK || actor.Agent != want {
@@ -174,7 +174,7 @@ func TestAuthenticateCarriesTheAgentMark(t *testing.T) {
 }
 
 func TestApprovalTTLIsValidated(t *testing.T) {
-	base := Config{Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest(apAdminToken), Scope: "admin"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest(apAdminToken), Scope: "admin"}}}
 	for ttl, ok := range map[string]bool{"": true, "15m": true, "1m": true, "2h": true, "59s": false, "0s": false, "-5m": false, "soon": false} {
 		c := base
 		c.ApprovalTTL = ttl
@@ -681,7 +681,7 @@ func TestSecretAndLockDryRunsReturnARealPlan(t *testing.T) {
 		`{"action":"secret set","name":"DATABASE_URL","registry":"ghcr.io","exists":false,"services":[]}`)
 	del := func() string {
 		t.Helper()
-		r := httptest.NewRequest("DELETE", "/v1/environments/lab/secrets/DATABASE_URL", strings.NewReader(`{"dry_run":true}`))
+		r := httptest.NewRequest("DELETE", "/v1/projects/demo/environments/lab/secrets/DATABASE_URL", strings.NewReader(`{"dry_run":true}`))
 		r.Header.Set("Authorization", "Bearer "+apAdminToken)
 		w := httptest.NewRecorder()
 		f.h.ServeHTTP(w, r)

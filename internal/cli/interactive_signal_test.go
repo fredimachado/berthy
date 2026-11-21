@@ -44,7 +44,7 @@ func TestTerminationWhileTheTerminalIsRawRestoresItAndExitsWithTheSignal(t *test
 				t.Fatal(err)
 			}
 			u, _ := url.Parse(a.URL)
-			target := &agentclient.Target{Env: "dev", Base: u, Prefix: "/v1/environments/dev/", Token: "t"}
+			target := &agentclient.Target{Env: "dev", Base: u, Prefix: "/v1/projects/demo/environments/dev/", Token: "t"}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)

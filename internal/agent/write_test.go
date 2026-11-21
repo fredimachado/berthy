@@ -15,13 +15,13 @@ import (
 func TestWriteAuthorizationBeforeDecode(t *testing.T) {
 	read := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}}}
 	h := HandlerWithRuntime(cfg, nil, nil, nil)
 	for _, tc := range []struct {
 		token, env string
 		want       int
 	}{{read, "lab", 403}, {deployToken, "other", 401}, {deployToken, "lab", 503}} {
-		r := httptest.NewRequest(http.MethodPost, "/v1/environments/"+tc.env+"/deploys", strings.NewReader("not json"))
+		r := httptest.NewRequest(http.MethodPost, "/v1/projects/demo/environments/"+tc.env+"/deploys", strings.NewReader("not json"))
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -52,10 +52,10 @@ func TestOperationProjectionAndEventReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	for _, path := range []string{"/operations/" + op.ID, "/operations/" + op.ID + "/events"} {
-		r := httptest.NewRequest("GET", "/v1/environments/lab"+path, nil)
+		r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab"+path, nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -86,8 +86,8 @@ func TestHistoryDoesNotExposeManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
@@ -97,8 +97,8 @@ func TestHistoryDoesNotExposeManifest(t *testing.T) {
 }
 func TestTokenIdentityDoesNotRevealVerifier(t *testing.T) {
 	token := "bty.lab." + strings.Repeat("a", 64)
-	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/audit", nil)
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/audit", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	actor, _, status := authenticate(newTokenSource(c, nil), r)
 	if status != http.StatusOK || actor.ID == Digest(token) {
@@ -138,8 +138,8 @@ func TestWaitRejectsUnboundedTimeout(t *testing.T) {
 	}
 	defer s.Close()
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/wait/app?timeout=24h", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/wait/app?timeout=24h", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
@@ -170,13 +170,13 @@ func TestExecOutputIsAdminOnly(t *testing.T) {
 	}
 	read := "bty.lab." + strings.Repeat("a", 64)
 	admin := "bty.lab." + strings.Repeat("b", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(admin), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(admin), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	for _, tc := range []struct {
 		token string
 		code  int
 	}{{read, 403}, {admin, 200}} {
-		r := httptest.NewRequest("GET", "/v1/environments/lab/operations/"+op.ID+"/output", nil)
+		r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/operations/"+op.ID+"/output", nil)
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -207,8 +207,8 @@ func TestHistoryIncludesFailuresWithoutPrivateErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)

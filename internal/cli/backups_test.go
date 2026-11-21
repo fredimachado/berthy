@@ -32,7 +32,7 @@ func TestBackupListPrintsATableOrJSON(t *testing.T) {
 	if code := Run([]string{"backup", "list", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if seen != "GET /v1/environments/dev/backups Bearer test-token" {
+	if seen != "GET /v1/projects/demo/environments/dev/backups Bearer test-token" {
 		t.Fatalf("request: %q", seen)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -89,14 +89,14 @@ func (a *backupAgent) handler(t *testing.T) http.Handler {
 		defer a.mu.Unlock()
 		a.requests = append(a.requests, r.Method+" "+r.URL.RequestURI())
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/environments/dev/backups/uploads/run":
+		case r.Method == "POST" && r.URL.Path == "/v1/projects/demo/environments/dev/backups/uploads/run":
 			if a.post != nil {
 				a.post(w)
 				return
 			}
 			w.WriteHeader(202)
 			fmt.Fprint(w, `{"backup_run_id":7}`)
-		case r.Method == "GET" && r.URL.Path == "/v1/environments/dev/backups/uploads/runs":
+		case r.Method == "GET" && r.URL.Path == "/v1/projects/demo/environments/dev/backups/uploads/runs":
 			a.polls++
 			if a.polls < a.finishAt {
 				fmt.Fprint(w, `[{"id":7,"backup":"uploads","trigger":"manual","started":"2026-11-16T10:00:00Z","status":"running"}]`)
@@ -139,7 +139,7 @@ func TestBackupRunWaitsForSuccess(t *testing.T) {
 	if a.polls != 3 {
 		t.Fatalf("polls: %d", a.polls)
 	}
-	if got := a.requests[len(a.requests)-1]; got != "GET /v1/environments/dev/backups/uploads/runs?limit=1" {
+	if got := a.requests[len(a.requests)-1]; got != "GET /v1/projects/demo/environments/dev/backups/uploads/runs?limit=1" {
 		t.Fatalf("poll request: %s", got)
 	}
 	a = &backupAgent{finishAt: 1, final: succeededBackup}
@@ -220,7 +220,7 @@ func TestRestoreSendsTheKeyAndTheNewVolume(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if path != "/v1/environments/dev/restore" || req["key"] != "api/uploads/uploads/k.tar.gz" || req["into"] != "restored-1" || req["dry_run"] != true || req["request_id"] == "" {
+	if path != "/v1/projects/demo/environments/dev/restore" || req["key"] != "api/uploads/uploads/k.tar.gz" || req["into"] != "restored-1" || req["dry_run"] != true || req["request_id"] == "" {
 		t.Fatalf("%s %s", path, body)
 	}
 	for _, want := range []string{"restore api/uploads/uploads/k.tar.gz", "into volume restored-1", "uploads", "1.5 KiB", backupSum} {
@@ -238,12 +238,12 @@ func TestRestoreReportsTheOperation(t *testing.T) {
 	state := "succeeded"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/restore":
+		case "/v1/projects/demo/environments/dev/restore":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: step\ndata: {\"step\":\"restoring k into volume restored-1\"}\n\nid: 3\nevent: step\ndata: {\"step\":\"restored volume restored-1\"}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			if state == "failed" {
 				fmt.Fprint(w, `{"state":"failed","kind":"restore","error":"backup checksum mismatch"}`)
 				return

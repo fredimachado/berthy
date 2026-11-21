@@ -42,7 +42,7 @@ func TestKeyRotatePrintsTheNewKeyIDAndHowToCopyTheKeyButNeverTheKey(t *testing.T
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d out %q err %q", code, out, errout)
 	}
-	if len(a.got) != 1 || a.got[0] != `POST /v1/environments/dev/key/rotate {"dry_run":false}` {
+	if len(a.got) != 1 || a.got[0] != `POST /v1/projects/demo/environments/dev/key/rotate {"dry_run":false}` {
 		t.Fatalf("request: %v", a.got)
 	}
 	for _, want := range []string{

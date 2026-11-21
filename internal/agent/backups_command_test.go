@@ -85,22 +85,22 @@ func TestACommandBackupRunsListsAndRestoresIntoACommandThroughTheAPI(t *testing.
 	}
 
 	// A restore into a volume refuses it, and a restore into a command takes it.
-	w := g.call("POST", "/v1/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"restored-1"}`, run.Key))
+	w := g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"into":"restored-1"}`, run.Key))
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "command backup") {
 		t.Fatalf("restore into a volume: %d %s", w.Code, w.Body.String())
 	}
 	body2 := fmt.Sprintf(`{"key":%q,"app":"files","service":"db","command":["pg_restore","-d","scratch"],"dry_run":true}`, run.Key)
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, body2)
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, body2)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"target":"files service db"`) || !strings.Contains(w.Body.String(), `"command":["pg_restore","-d","scratch"]`) {
 		t.Fatalf("dry run: %d %s", w.Code, w.Body.String())
 	}
 	if len(e.ran) != 1 {
 		t.Fatalf("a dry run ran a command: %v", e.ran)
 	}
-	if w = g.call("POST", "/v1/environments/lab/restore", deployToken, strings.Replace(body2, `"dry_run":true`, `"dry_run":false`, 1)); w.Code != 403 {
+	if w = g.call("POST", "/v1/projects/demo/environments/lab/restore", deployToken, strings.Replace(body2, `"dry_run":true`, `"dry_run":false`, 1)); w.Code != 403 {
 		t.Fatalf("restore with a deploy token: %d %s", w.Code, w.Body.String())
 	}
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, strings.Replace(body2, `"dry_run":true`, `"dry_run":false`, 1))
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, strings.Replace(body2, `"dry_run":true`, `"dry_run":false`, 1))
 	var accepted struct {
 		ID string `json:"operation_id"`
 	}
@@ -115,7 +115,7 @@ func TestACommandBackupRunsListsAndRestoresIntoACommandThroughTheAPI(t *testing.
 	}
 	// A volume backup is refused by restore --exec.
 	vol := g.run("uploads")
-	w = g.call("POST", "/v1/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"app":"files","service":"db","command":["pg_restore"]}`, vol.Key))
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, fmt.Sprintf(`{"key":%q,"app":"files","service":"db","command":["pg_restore"]}`, vol.Key))
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "volume backup") {
 		t.Fatalf("restore --exec of a volume backup: %d %s", w.Code, w.Body.String())
 	}

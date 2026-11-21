@@ -67,7 +67,7 @@ func deployAllFixture(t *testing.T, manifestYAML string, agent *fakeDeployAgent)
 func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	const base = "/v1/environments/dev/"
+	const base = "/v1/projects/demo/environments/dev/"
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
 	case r.Method == "GET" && rest == "agent":

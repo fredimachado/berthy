@@ -9,7 +9,7 @@ import (
 )
 
 func TestListenValidation(t *testing.T) {
-	c := Config{Environment: "lab", Tokens: []Token{{Digest: Digest("x"), Scope: "read"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("x"), Scope: "read"}}}
 	for _, x := range []struct {
 		addr string
 		ok   bool
@@ -22,12 +22,12 @@ func TestListenValidation(t *testing.T) {
 }
 func TestOutageKeepsDoctorAndDiskAvailable(t *testing.T) {
 	token := "bty.lab." + strings.Repeat("a", 64)
-	h := Handler(Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, nil)
+	h := Handler(Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, nil)
 	for _, x := range []struct {
 		path string
 		code int
 	}{{"agent", 200}, {"doctor", 200}, {"df", 200}, {"apps", 503}} {
-		r := httptest.NewRequest(http.MethodGet, "/v1/environments/lab/"+x.path, nil)
+		r := httptest.NewRequest(http.MethodGet, "/v1/projects/demo/environments/lab/"+x.path, nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

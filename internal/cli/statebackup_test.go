@@ -34,10 +34,10 @@ func (a *stateAgent) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.requests = append(a.requests, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/environments/dev/state-backup":
+		case r.Method == "POST" && r.URL.Path == "/v1/projects/demo/environments/dev/state-backup":
 			w.WriteHeader(202)
 			fmt.Fprint(w, `{"state_backup_run_id":7}`)
-		case r.Method == "GET" && r.URL.Path == "/v1/environments/dev/state-backup/runs":
+		case r.Method == "GET" && r.URL.Path == "/v1/projects/demo/environments/dev/state-backup/runs":
 			a.polls++
 			if a.polls < a.finishAt {
 				fmt.Fprint(w, `[{"id":7,"trigger":"manual","started":"2026-11-16T10:00:00Z","status":"running"}]`)

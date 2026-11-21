@@ -88,7 +88,7 @@ func setIngress(t *testing.T, s *state.Store) {
 func credentialDoctor(t *testing.T, cfg Config, s *state.Store) (map[string]api.Check, string) {
 	t.Helper()
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	checks := doctorChecks(t, h)
 	found := map[string]api.Check{}
 	for _, c := range checks {

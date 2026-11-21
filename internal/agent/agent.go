@@ -304,7 +304,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 			}
 		case len(rest) == 1 && rest[0] == "agent":
 			host, _ := os.Hostname()
-			result = map[string]any{"environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
+			result = map[string]any{"project": c.Project, "environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
 		case len(rest) == 1 && rest[0] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")

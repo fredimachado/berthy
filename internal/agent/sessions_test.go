@@ -181,7 +181,7 @@ func (f *sessionFixture) open(token string, headers map[string]string, body stri
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { conn.Close() })
-	req, err := http.NewRequest("POST", f.srv.URL+"/v1/environments/lab/sessions", strings.NewReader(body))
+	req, err := http.NewRequest("POST", f.srv.URL+"/v1/projects/demo/environments/lab/sessions", strings.NewReader(body))
 	if err != nil {
 		f.t.Fatal(err)
 	}

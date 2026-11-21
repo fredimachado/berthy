@@ -31,7 +31,7 @@ func TestRestoreExecSendsTheCommandAndShowsWhereItWouldRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	command, _ := req["command"].([]any)
-	if path != "/v1/environments/dev/restore" || req["key"] != "db/command/main-db/k.gz" || req["app"] != "db" || req["service"] != "postgres" || req["timeout"] != "2h" ||
+	if path != "/v1/projects/demo/environments/dev/restore" || req["key"] != "db/command/main-db/k.gz" || req["app"] != "db" || req["service"] != "postgres" || req["timeout"] != "2h" ||
 		req["dry_run"] != true || len(command) != 4 || command[0] != "pg_restore" || command[3] != "scratch" || req["into"] != nil {
 		t.Fatalf("%s %s", path, body)
 	}
@@ -71,12 +71,12 @@ func TestRestoreExecNeedsACommandAndExcludesInto(t *testing.T) {
 func TestRestoreExecShowsTheStepsAndTheReasonOfAFailedCommand(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/restore":
+		case "/v1/projects/demo/environments/dev/restore":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: step\ndata: {\"step\":\"restoring k into the command on db\"}\n\nid: 2\nevent: step\ndata: {\"step\":\"pg_restore: error: could not connect\"}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"failed","kind":"restore","error":"restore command failed","reason":"command exited with code 1: pg_restore: error: could not connect"}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)

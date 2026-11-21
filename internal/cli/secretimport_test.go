@@ -124,7 +124,7 @@ func TestSecretImportOfTwentyLinesIsOneRequest(t *testing.T) {
 	if code := Run([]string{"secret", "import", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if len(bodies) != 1 || !strings.HasPrefix(bodies[0], "POST /v1/environments/dev/secrets/import ") {
+	if len(bodies) != 1 || !strings.HasPrefix(bodies[0], "POST /v1/projects/demo/environments/dev/secrets/import ") {
 		t.Fatalf("requests %q, want one POST to secrets/import", bodies)
 	}
 	var sent api.SecretImport

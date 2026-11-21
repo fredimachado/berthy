@@ -67,11 +67,11 @@ func TestIngressRoutesEnforceScopeAndAdministratorForReplace(t *testing.T) {
 	readToken := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	call := func(method, path, token string, body []byte) *httptest.ResponseRecorder {
 		t.Helper()
-		r := httptest.NewRequest(method, "/v1/environments/lab"+path, strings.NewReader(string(body)))
+		r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab"+path, strings.NewReader(string(body)))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -115,10 +115,10 @@ func TestIngressAdminDryRunReturnsThePlanWithoutWriting(t *testing.T) {
 	srv := httptest.NewServer(fake.Handler())
 	t.Cleanup(srv.Close)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(adminToken), Scope: "admin"}}}
 	ctrl := &deploy.Controller{Engine: planEngine{}, Store: s, Environment: "lab", CloudflareURL: srv.URL + "/client/v4"}
 	h := NewDeploymentHandler(cfg, nil, nil, ctrl)
-	r := httptest.NewRequest("POST", "/v1/environments/lab/ingress/apply", strings.NewReader(string(ingressTestRequest(t, false))))
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/ingress/apply", strings.NewReader(string(ingressTestRequest(t, false))))
 	r.Header.Set("Authorization", "Bearer "+adminToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -155,9 +155,9 @@ func TestDoctorReportsTunnelHealthWhenIngressIsConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab", CloudflareURL: srv.URL + "/client/v4"})
-	r := httptest.NewRequest("GET", "/v1/environments/lab/doctor", nil)
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/doctor", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -167,7 +167,7 @@ func TestDoctorReportsTunnelHealthWhenIngressIsConfigured(t *testing.T) {
 }
 
 func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
-	base := Config{Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	for raw, ok := range map[string]bool{
 		"https://api.cloudflare.com/client/v4": true,
 		"http://127.0.0.1:9999":                true,
@@ -190,7 +190,7 @@ func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
 
 func TestLoadRejectsPlainHTTPCloudflareURL(t *testing.T) {
 	// The URL rule lives in Validate, which Load calls, so the allow and deny cases run on every platform.
-	base := Config{Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	for raw, ok := range map[string]bool{"http://example.com": false, "http://127.0.0.1:9999": true} {
 		c := base
 		c.CloudflareAPIURL = raw

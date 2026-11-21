@@ -123,7 +123,7 @@ func withSetupBuild(t *testing.T, exe string) {
 	setupBuild = func() setup.Build {
 		return setup.Build{OS: "linux", Arch: "amd64", Path: exe, Version: "v0.0.1-test"}
 	}
-	setupDoctor = func(context.Context, string, string, string) ([]api.Check, error) {
+	setupDoctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 		return []api.Check{{Name: "agent", OK: true, Critical: true, Detail: "v0.0.1-test"}}, nil
 	}
 	t.Setenv("BERTHY_P5_TOKEN", "")

@@ -24,7 +24,7 @@ func TestComposeCommandConfig(t *testing.T) {
 	if got := dockerHost("/srv/docker.sock"); got != "unix:///srv/docker.sock" {
 		t.Fatalf("host %q", got)
 	}
-	base := Config{Environment: "lab", Listen: "127.0.0.1:19387", Tokens: []Token{{Digest: Digest("bty.lab.x"), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:19387", Tokens: []Token{{Digest: Digest("bty.lab.x"), Scope: "read"}}}
 	base.ComposeCommand = []string{"docker", ""}
 	if err := base.Validate(); err == nil {
 		t.Fatal("empty compose_command element accepted")
@@ -40,11 +40,11 @@ func TestRecreateFlagNeedsAdministratorAtTheHandler(t *testing.T) {
 	readToken := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	body := `{"app":"db","dry_run":true,"allow_recreate":true,"compose_file":"services: {}\n","manifest":{"project":"demo","network":"berthy","apps":{"db":{"kind":"compose","file":"compose.yaml"}}}}`
 	call := func(token string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/v1/environments/lab/deploys", strings.NewReader(body))
+		r := httptest.NewRequest(http.MethodPost, "/v1/projects/demo/environments/lab/deploys", strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -62,9 +62,9 @@ func TestRecreateFlagNeedsAdministratorAtTheHandler(t *testing.T) {
 func TestDoctorListsComposeCheckAsNonCritical(t *testing.T) {
 	s := openIngressStore(t)
 	readToken := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", StateDir: t.TempDir(), DockerSocket: "/nonexistent/berthy-test.sock", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}}}
+	cfg := Config{Project: "demo", Environment: "lab", StateDir: t.TempDir(), DockerSocket: "/nonexistent/berthy-test.sock", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-	r := httptest.NewRequest(http.MethodGet, "/v1/environments/lab/doctor", nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/projects/demo/environments/lab/doctor", nil)
 	r.Header.Set("Authorization", "Bearer "+readToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)

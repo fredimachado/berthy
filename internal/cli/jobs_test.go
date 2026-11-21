@@ -27,7 +27,7 @@ func TestJobsPrintsATableOrJSON(t *testing.T) {
 	if code := Run([]string{"jobs", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
-	if seen != "GET /v1/environments/dev/jobs Bearer test-token" {
+	if seen != "GET /v1/projects/demo/environments/dev/jobs Bearer test-token" {
 		t.Fatalf("request: %q", seen)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -106,16 +106,16 @@ func (a *jobAgent) handler(t *testing.T) http.Handler {
 		defer a.mu.Unlock()
 		a.requests = append(a.requests, r.Method+" "+r.URL.RequestURI())
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/environments/dev/jobs/tick/run":
+		case r.Method == "POST" && r.URL.Path == "/v1/projects/demo/environments/dev/jobs/tick/run":
 			if a.post != nil {
 				a.post(w)
 				return
 			}
 			w.WriteHeader(202)
 			fmt.Fprint(w, `{"run_id":7}`)
-		case r.Method == "GET" && r.URL.Path == "/v1/environments/dev/jobs":
+		case r.Method == "GET" && r.URL.Path == "/v1/projects/demo/environments/dev/jobs":
 			fmt.Fprintf(w, `[{"name":"tick","app":"api","timeout":%q}]`, a.timeout)
-		case r.Method == "GET" && r.URL.Path == "/v1/environments/dev/jobs/tick/runs":
+		case r.Method == "GET" && r.URL.Path == "/v1/projects/demo/environments/dev/jobs/tick/runs":
 			a.polls++
 			if a.polls < a.finishAt {
 				fmt.Fprint(w, `[{"id":7,"job":"tick","trigger":"manual","started":"2026-11-16T10:00:00Z","status":"running"}]`)
@@ -151,7 +151,7 @@ func TestJobRunWaitsForSuccess(t *testing.T) {
 	if a.polls != 3 {
 		t.Fatalf("polls: %d", a.polls)
 	}
-	if got := a.requests[len(a.requests)-1]; got != "GET /v1/environments/dev/jobs/tick/runs?limit=1" {
+	if got := a.requests[len(a.requests)-1]; got != "GET /v1/projects/demo/environments/dev/jobs/tick/runs?limit=1" {
 		t.Fatalf("poll request: %s", got)
 	}
 }

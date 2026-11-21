@@ -17,16 +17,16 @@ func runAgent(t *testing.T, state, output string, exitCode int, body *string) *h
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/run":
+		case "/v1/projects/demo/environments/dev/run":
 			data, _ := io.ReadAll(r.Body)
 			*body = string(data)
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprintf(w, `{"id":"op1","state":%q,"kind":"run","app":"web"}`, state)
-		case "/v1/environments/dev/operations/op1/output":
+		case "/v1/projects/demo/environments/dev/operations/op1/output":
 			fmt.Fprintf(w, `{"output":%q,"exit_code":%d}`, output, exitCode)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)

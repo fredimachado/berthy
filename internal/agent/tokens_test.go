@@ -397,19 +397,19 @@ func TestLastUsedIsWrittenAtMostOncePerTokenPerMinute(t *testing.T) {
 }
 
 func TestAnAgentWithoutStateAuthenticatesFromTheFileAlone(t *testing.T) {
-	c := Config{Environment: "lab", Tokens: []Token{{Name: "ci", Digest: Digest(apDeployToken), Scope: "deploy"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Name: "ci", Digest: Digest(apDeployToken), Scope: "deploy"}}}
 	src := newTokenSource(c, nil)
-	r := newGet("/v1/environments/lab/apps", apDeployToken)
+	r := newGet("/v1/projects/demo/environments/lab/apps", apDeployToken)
 	if e, status := src.identify(r); status != http.StatusOK || e.Name != "ci" {
 		t.Fatalf("identify: %+v %d", e, status)
 	}
-	if _, status := src.identify(newGet("/v1/environments/lab/apps", apReadToken)); status != http.StatusUnauthorized {
+	if _, status := src.identify(newGet("/v1/projects/demo/environments/lab/apps", apReadToken)); status != http.StatusUnauthorized {
 		t.Fatalf("unknown: %d", status)
 	}
 }
 
 func TestConfigNamesAreValidatedAndUnique(t *testing.T) {
-	base := Config{Environment: "lab", Listen: "127.0.0.1:9999"}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999"}
 	tok := func(name, token string) Token { return Token{Name: name, Digest: Digest(token), Scope: "admin"} }
 	for name, tokens := range map[string][]Token{
 		"a bad name":    {tok("has space", apAdminToken)},

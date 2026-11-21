@@ -30,7 +30,7 @@ func TestTunnelTokenSecretIsReservedForIngress(t *testing.T) {
 	}
 	defer s.Close()
 	admin := "bty.lab." + strings.Repeat("d", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(admin), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(admin), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -41,13 +41,13 @@ func TestTunnelTokenSecretIsReservedForIngress(t *testing.T) {
 		return w
 	}
 	// A positive control shows the refusals below come from the reserved name, not from the request shape.
-	if w := call("POST", "/v1/environments/lab/secrets", `{"name":"APP_KEY","value":"v"}`); w.Code != http.StatusOK {
+	if w := call("POST", "/v1/projects/demo/environments/lab/secrets", `{"name":"APP_KEY","value":"v"}`); w.Code != http.StatusOK {
 		t.Fatalf("ordinary secret refused: %d %s", w.Code, w.Body.String())
 	}
 	for _, tc := range []struct{ name, method, path, body string }{
-		{"set", "POST", "/v1/environments/lab/secrets", `{"name":"TUNNEL_TOKEN","value":"v"}`},
-		{"dry run set", "POST", "/v1/environments/lab/secrets", `{"name":"TUNNEL_TOKEN","value":"v","dry_run":true}`},
-		{"delete", "DELETE", "/v1/environments/lab/secrets/TUNNEL_TOKEN", `{}`},
+		{"set", "POST", "/v1/projects/demo/environments/lab/secrets", `{"name":"TUNNEL_TOKEN","value":"v"}`},
+		{"dry run set", "POST", "/v1/projects/demo/environments/lab/secrets", `{"name":"TUNNEL_TOKEN","value":"v","dry_run":true}`},
+		{"delete", "DELETE", "/v1/projects/demo/environments/lab/secrets/TUNNEL_TOKEN", `{}`},
 	} {
 		w := call(tc.method, tc.path, tc.body)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "TUNNEL_TOKEN is reserved for managed ingress") {

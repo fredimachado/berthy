@@ -216,7 +216,7 @@ func agentSession(t *testing.T, f Runner, exe string, dry bool, mod func(*Option
 		Build:  Build{OS: "linux", Arch: "amd64", Path: exe, Version: "v0.0.1-test"},
 		Now:    func() time.Time { return fixedNow },
 		Getenv: func(string) string { return "" },
-		Doctor: func(context.Context, string, string, string) ([]api.Check, error) { return okChecks(), nil },
+		Doctor: func(context.Context, string, string, string, string) ([]api.Check, error) { return okChecks(), nil },
 	}
 	if mod != nil {
 		mod(&o)
@@ -1474,18 +1474,18 @@ func TestVerifyStep(t *testing.T) {
 	}
 	t.Run("reachable and healthy", func(t *testing.T) {
 		f := setUpAgent(t, exe)
-		var asked [3]string
+		var asked [4]string
 		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
-			o.Doctor = func(_ context.Context, base, env, tok string) ([]api.Check, error) {
-				asked = [3]string{base, env, tok}
+			o.Doctor = func(_ context.Context, base, project, env, tok string) ([]api.Check, error) {
+				asked = [4]string{base, project, env, tok}
 				return append(okChecks(), api.Check{Name: "disk", OK: false, Critical: false, Detail: "91% used"}), nil
 			}
 		})
 		if r.Status != StatusOK || r.Detail != "agent v0.0.1-test, 3 of 4 checks ok (not ok: disk: 91% used)" {
 			t.Fatalf("verify = %+v", r)
 		}
-		if asked != [3]string{"http://" + listenIP + ":7710", "p5", token} {
+		if asked != [4]string{"http://" + listenIP + ":7710", "shop", "p5", token} {
 			t.Errorf("asked = %v", asked)
 		}
 		for _, c := range f.calls {
@@ -1498,7 +1498,7 @@ func TestVerifyStep(t *testing.T) {
 		f := setUpAgent(t, exe)
 		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
-			o.Doctor = func(context.Context, string, string, string) ([]api.Check, error) {
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 				return []api.Check{{Name: "agent", OK: true, Critical: true, Detail: "v1"}, {Name: "swarm", OK: false, Critical: true, Detail: "not a manager"}, {Name: "network", OK: false, Critical: true, Detail: "missing"}}, nil
 			}
 		})
@@ -1509,7 +1509,7 @@ func TestVerifyStep(t *testing.T) {
 	t.Run("a refused token fails the step", func(t *testing.T) {
 		r, _ := runVerify(setUpAgent(t, exe), func(o *Options) {
 			withToken(o)
-			o.Doctor = func(context.Context, string, string, string) ([]api.Check, error) {
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 				return nil, errors.New("agent returned HTTP 401")
 			}
 		})
@@ -1523,7 +1523,7 @@ func TestVerifyStep(t *testing.T) {
 		f.doctorBody = doctorBody(okChecks())
 		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
-			o.Doctor = func(context.Context, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
 		})
 		if r.Status != StatusOK || !strings.HasPrefix(r.Detail, "this machine cannot reach http://"+listenIP+":7710; checked on the server: agent v0.0.1-test, 3 of 3 checks ok") {
 			t.Fatalf("verify = %+v", r)
@@ -1535,7 +1535,7 @@ func TestVerifyStep(t *testing.T) {
 		if string(c.stdin) != "Authorization: Bearer "+token+"\n" {
 			t.Errorf("stdin = %q", c.stdin)
 		}
-		if strings.Contains(c.script, token) || !strings.Contains(c.script, "curl -fsS --max-time 30 -H @- 'http://"+listenIP+":7710/v1/environments/p5/doctor'") {
+		if strings.Contains(c.script, token) || !strings.Contains(c.script, "curl -fsS --max-time 30 -H @- 'http://"+listenIP+":7710/v1/projects/shop/environments/p5/doctor'") {
 			t.Errorf("script = %q", c.script)
 		}
 		for _, other := range f.calls {
@@ -1550,7 +1550,7 @@ func TestVerifyStep(t *testing.T) {
 		f.doctorCode = 22
 		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
-			o.Doctor = func(context.Context, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
 		})
 		if r.Status != StatusFailed || strings.Contains(r.Detail, token) || !strings.Contains(r.Detail, "checking on the server failed") {
 			t.Fatalf("verify = %+v", r)
@@ -1559,7 +1559,7 @@ func TestVerifyStep(t *testing.T) {
 	t.Run("without a token the agent is only asked whether it answers", func(t *testing.T) {
 		f := setUpAgent(t, exe)
 		r, _ := runVerify(f, func(o *Options) {
-			o.Doctor = func(context.Context, string, string, string) ([]api.Check, error) { panic("no token, no doctor") }
+			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { panic("no token, no doctor") }
 		})
 		if r.Status != StatusOK || r.Detail != "the agent answers; run berthy doctor with an admin token to check it fully" {
 			t.Fatalf("verify = %+v", r)
@@ -1581,7 +1581,7 @@ func TestVerifyStep(t *testing.T) {
 		f := freshAgentServer(t)
 		var used string
 		s := agentSession(t, f, exe, false, func(o *Options) {
-			o.Doctor = func(_ context.Context, _, _, tok string) ([]api.Check, error) { used = tok; return okChecks(), nil }
+			o.Doctor = func(_ context.Context, _, _, _, tok string) ([]api.Check, error) { used = tok; return okChecks(), nil }
 		})
 		if _, ok := runSteps(s); !ok || used != s.Token || used == "" {
 			t.Fatalf("used %q, made %q", used, s.Token)
@@ -1597,7 +1597,7 @@ func TestHTTPDoctorTellsUnreachableFromRefused(t *testing.T) {
 	}
 	addr := l.Addr().String()
 	l.Close()
-	_, err = httpDoctor(context.Background(), "http://"+addr, "p5", "tok")
+	_, err = httpDoctor(context.Background(), "http://"+addr, "shop", "p5", "tok")
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("err = %v", err)
 	}

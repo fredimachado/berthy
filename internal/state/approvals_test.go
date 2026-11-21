@@ -20,7 +20,7 @@ var (
 )
 
 func newApproval(summary string) Approval {
-	return Approval{ActorID: agentActor.ID, ActorName: agentActor.Name, Remote: agentActor.Remote, Method: "POST", Path: "/v1/environments/test/secrets",
+	return Approval{ActorID: agentActor.ID, ActorName: agentActor.Name, Remote: agentActor.Remote, Method: "POST", Path: "/v1/projects/demo/environments/test/secrets",
 		Summary: summary, Plan: []byte(`{"dry_run":true}`), Created: approvalT0, Expires: approvalT0.Add(15 * time.Minute)}
 }
 

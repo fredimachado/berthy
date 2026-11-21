@@ -29,7 +29,7 @@ func diagnosticsConfig(t *testing.T, url string) string {
 
 func TestDiagnosticsCommandPrintsEvidenceAsText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/v1/environments/dev/operations/op1/diagnostics" || r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Method != "GET" || r.URL.Path != "/v1/projects/demo/environments/dev/operations/op1/diagnostics" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("request %s %s", r.Method, r.URL.Path)
 		}
 		fmt.Fprint(w, cannedDiagnostics)
@@ -113,12 +113,12 @@ func TestFailedDeployPointsToItsDiagnostics(t *testing.T) {
 		t.Run(tc.state+strings.Join(tc.args, ""), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/v1/environments/dev/deploys":
+				case "/v1/projects/demo/environments/dev/deploys":
 					w.WriteHeader(202)
-					fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-				case "/v1/environments/dev/operations/op1/events":
+					fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+				case "/v1/projects/demo/environments/dev/operations/op1/events":
 					fmt.Fprint(w, "id: 1\nevent: failed\ndata: {}\n\n")
-				case "/v1/environments/dev/operations/op1":
+				case "/v1/projects/demo/environments/dev/operations/op1":
 					fmt.Fprintf(w, `{"state":%q,"reason":"role web: task exited with code 1"}`, tc.state)
 				default:
 					t.Errorf("unexpected path %s", r.URL.Path)

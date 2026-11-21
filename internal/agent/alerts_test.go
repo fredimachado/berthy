@@ -272,7 +272,7 @@ func TestTheMonitorsReminderIntervalIsTheAlertsBlocks(t *testing.T) {
 // testAlertChannels runs alerts test through the handler and returns the status and the per-channel results.
 func testAlertChannels(t *testing.T, h http.Handler) (int, []map[string]any) {
 	t.Helper()
-	w := serveRequest(t, h, http.MethodPost, "/v1/environments/lab/alerts/test", monitoringToken("b"))
+	w := serveRequest(t, h, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	var body struct {
 		Channels []map[string]any `json:"channels"`
 	}
@@ -378,7 +378,7 @@ func TestDoctorAndTheMonitorCheckTheWebhookSecrets(t *testing.T) {
 	doctor := func() map[string]api.Check {
 		t.Helper()
 		h := NewDeploymentHandler(monitoringConfig(tg.srv.URL), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-		w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+		w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 		var body struct {
 			Checks []api.Check `json:"checks"`
 		}

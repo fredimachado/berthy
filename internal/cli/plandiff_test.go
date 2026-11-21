@@ -166,7 +166,7 @@ func TestHistoryDiffAsksForTheDiffAndPrintsIt(t *testing.T) {
 	if code := Run([]string{"history", "api", "--diff", "5", "3", "-e", "dev", "--config", cfg, "--json"}, &out, &errout); code != 0 || !strings.Contains(out.String(), `"area": "web"`) {
 		t.Fatalf("json: %d %s", code, out.String())
 	}
-	want := []string{"GET /v1/environments/dev/history/api/diff?release=5", "GET /v1/environments/dev/history/api/diff?base=3&release=5"}
+	want := []string{"GET /v1/projects/demo/environments/dev/history/api/diff?release=5", "GET /v1/projects/demo/environments/dev/history/api/diff?base=3&release=5"}
 	if got := paths(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("requests %q", got)
 	}

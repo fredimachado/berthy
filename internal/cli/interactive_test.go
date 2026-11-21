@@ -38,7 +38,7 @@ func newSessionAgent(t *testing.T, script func(conn io.Writer)) *sessionAgent {
 		a.mu.Lock()
 		a.calls[r.URL.Path]++
 		a.mu.Unlock()
-		if r.URL.Path != "/v1/environments/dev/sessions" {
+		if r.URL.Path != "/v1/projects/demo/environments/dev/sessions" {
 			w.Write([]byte(`{"app":"web","image":"x","roles":["main"]}`))
 			return
 		}
@@ -120,7 +120,7 @@ func TestExecInteractiveSendsASessionRequestAndExitsWithTheCommandsCode(t *testi
 	if r.Kind != "exec" || r.App != "web" || r.Role != "main" || strings.Join(r.Command, " ") != "sh -c exit 7" || r.TTY || r.Size != nil || r.Timeout != "" {
 		t.Fatalf("request %+v", r)
 	}
-	if a.calls["/v1/environments/dev/exec"] != 0 {
+	if a.calls["/v1/projects/demo/environments/dev/exec"] != 0 {
 		t.Error("an operation was asked for")
 	}
 }
@@ -184,7 +184,7 @@ func TestInteractiveDryRunIsTheOrdinaryPlan(t *testing.T) {
 	cfg := ingressCLIConfig(t, a.URL)
 	var out, errout bytes.Buffer
 	code := Run([]string{"exec", "web", "-i", "--dry-run", "-e", "dev", "--config", cfg, "--", "sh"}, &out, &errout)
-	if code != 0 || a.calls["/v1/environments/dev/exec"] != 1 || a.calls["/v1/environments/dev/sessions"] != 0 {
+	if code != 0 || a.calls["/v1/projects/demo/environments/dev/exec"] != 1 || a.calls["/v1/projects/demo/environments/dev/sessions"] != 0 {
 		t.Fatalf("exit %d err %q calls %v", code, errout.String(), a.calls)
 	}
 }
@@ -217,7 +217,7 @@ func TestRunInteractiveForwardsStandardInputAndEndsItAtEOF(t *testing.T) {
 		frame(session.Exit, `{"code":0}`)(conn)
 	})
 	u, _ := url.Parse(a.URL)
-	target := &agentclient.Target{Env: "dev", Base: u, Prefix: "/v1/environments/dev/", Token: "t"}
+	target := &agentclient.Target{Env: "dev", Base: u, Prefix: "/v1/projects/demo/environments/dev/", Token: "t"}
 	var out, errout bytes.Buffer
 	code := runInteractive(context.Background(), target, session.Request{Kind: "exec", App: "web", Command: []string{"cat"}}, strings.NewReader("a dump\nof data\n"), &out, &errout)
 	if code != 0 {

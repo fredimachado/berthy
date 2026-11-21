@@ -48,8 +48,8 @@ func TestHistoryRowsCarryTheLocalChangesFlagOnlyWhenSet(t *testing.T) {
 	finish("failed-clean", state.Admission{Commit: "ghi"}, state.Outcome{State: "failed", Err: "private error"})
 
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)

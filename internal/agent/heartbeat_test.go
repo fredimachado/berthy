@@ -118,7 +118,7 @@ func TestDoctorShowsTheHeartbeatFromItsStoredCheck(t *testing.T) {
 	doctor := func() api.Check {
 		t.Helper()
 		h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
-		w := serveRequest(t, h, http.MethodGet, "/v1/environments/lab/doctor", monitoringToken("a"))
+		w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 		var body struct {
 			Checks []api.Check `json:"checks"`
 		}

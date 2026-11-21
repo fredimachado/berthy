@@ -24,7 +24,7 @@ func TestConfigValidateOffline(t *testing.T) {
 }
 func TestDeployDryRunSendsManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/v1/environments/dev/deploys" || r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Method != "POST" || r.URL.Path != "/v1/projects/demo/environments/dev/deploys" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("bad request %s %s", r.Method, r.URL.Path)
 		}
 		fmt.Fprint(w, `{"app":"api","roles":["web"]}`)
@@ -45,16 +45,16 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 	for _, tc := range []struct {
 		name, events, state string
 		want                int
-	}{{"success", "/v1/environments/dev/operations/op1/events", "succeeded", 0}, {"rollback", "/v1/environments/dev/operations/op1/events", "rolled_back", 1}, {"external", "https://evil.example/events", "succeeded", 1}} {
+	}{{"success", "/v1/projects/demo/environments/dev/operations/op1/events", "succeeded", 0}, {"rollback", "/v1/projects/demo/environments/dev/operations/op1/events", "rolled_back", 1}, {"external", "https://evil.example/events", "succeeded", 1}} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/v1/environments/dev/deploys":
+				case "/v1/projects/demo/environments/dev/deploys":
 					w.WriteHeader(202)
 					fmt.Fprintf(w, `{"operation_id":"op1","events_url":%q}`, tc.events)
-				case "/v1/environments/dev/operations/op1/events":
+				case "/v1/projects/demo/environments/dev/operations/op1/events":
 					fmt.Fprint(w, "id: 1\nevent: progress\ndata: {}\n\n")
-				case "/v1/environments/dev/operations/op1":
+				case "/v1/projects/demo/environments/dev/operations/op1":
 					fmt.Fprintf(w, `{"state":%q}`, tc.state)
 				default:
 					t.Errorf("unexpected path %s", r.URL.Path)
@@ -78,12 +78,12 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/deploys":
+		case "/v1/projects/demo/environments/dev/deploys":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		}
 	}))
@@ -105,12 +105,12 @@ func TestDeployShowsWhatItsChecksFound(t *testing.T) {
 	const warning = "role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/deploys":
+		case "/v1/projects/demo/environments/dev/deploys":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: verify\ndata: {\"role\":\"web\",\"check\":\"network\",\"status\":\"warn\",\"step\":\""+warning+"\"}\n\nid: 3\nevent: succeeded\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		}
 	}))
@@ -142,7 +142,7 @@ func TestDeployShowsWhatItsChecksFound(t *testing.T) {
 
 func TestScaleDoesNotLoadCheckoutManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/environments/dev/scale" {
+		if r.URL.Path != "/v1/projects/demo/environments/dev/scale" {
 			t.Errorf("path %s", r.URL.Path)
 		}
 		fmt.Fprint(w, `{"ok":true}`)
@@ -163,7 +163,7 @@ func TestScaleSendsZeroReplicas(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/v1/environments/dev/scale" {
+		if r.URL.Path != "/v1/projects/demo/environments/dev/scale" {
 			t.Errorf("path %s", r.URL.Path)
 		}
 		raw, _ := io.ReadAll(r.Body)
@@ -274,7 +274,7 @@ func TestRecoveryResolvePostsReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
-				if r.Method != "POST" || r.URL.Path != "/v1/environments/dev/operations/OPID/resolve" || r.Header.Get("Authorization") != "Bearer test-token" || string(body) != tc.body {
+				if r.Method != "POST" || r.URL.Path != "/v1/projects/demo/environments/dev/operations/OPID/resolve" || r.Header.Get("Authorization") != "Bearer test-token" || string(body) != tc.body {
 					t.Errorf("bad request %s %s %s", r.Method, r.URL.Path, body)
 				}
 				fmt.Fprint(w, `{"operation_id":"OPID","resolved":false}`)
@@ -323,14 +323,14 @@ func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
 func TestExecShowsWhyItFailedBeforeItRan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/environments/dev/exec":
+		case "/v1/projects/demo/environments/dev/exec":
 			w.WriteHeader(202)
-			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/environments/dev/operations/op1/events"}`)
-		case "/v1/environments/dev/operations/op1/events":
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
 			fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\n")
-		case "/v1/environments/dev/operations/op1":
+		case "/v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"id":"op1","state":"failed","kind":"exec","app":"db","error":"the app has several services: name one with --service"}`)
-		case "/v1/environments/dev/operations/op1/output":
+		case "/v1/projects/demo/environments/dev/operations/op1/output":
 			w.WriteHeader(404)
 			fmt.Fprint(w, `{"code":"not_found","message":"output unavailable"}`)
 		default:

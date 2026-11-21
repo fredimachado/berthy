@@ -91,8 +91,8 @@ func TestHistoryShowsRecordedSchemaStates(t *testing.T) {
 	finish("plain", state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "d2", Manifest: []byte(`{}`)}})
 	failed := finish("failed", state.Outcome{State: "failed", SchemaBefore: "v1", SchemaAfter: "v2"})
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
@@ -150,11 +150,11 @@ func TestRecoveryResolveScopesValidationAndResult(t *testing.T) {
 	readToken := "bty.lab." + strings.Repeat("a", 64)
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	call := func(method, path, token, body string) *httptest.ResponseRecorder {
 		t.Helper()
-		r := httptest.NewRequest(method, "/v1/environments/lab"+path, strings.NewReader(body))
+		r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab"+path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -253,8 +253,8 @@ func TestHistoryShowsTheTagOfAReleaseOnlyWhenThereIsOne(t *testing.T) {
 	finish("tagged", state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "tagged-digest", Tag: "v1.0.2", Manifest: []byte(`{}`)}})
 	finish("untagged", state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "untagged-digest", Manifest: []byte(`{}`)}})
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
-	r := httptest.NewRequest("GET", "/v1/environments/lab/history/app", nil)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
@@ -313,9 +313,9 @@ func TestAppliedShowsTheReleaseAnAppRunsNow(t *testing.T) {
 		}
 	}
 	token := "bty.lab." + strings.Repeat("a", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	get := func(app string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "/v1/environments/lab/applied/"+app, nil)
+		r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/applied/"+app, nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
 		NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)
@@ -352,9 +352,9 @@ func TestKeepVersionDeployOfAnAppNeverDeployedIsRefusedWithItsMessage(t *testing
 	}
 	defer s.Close()
 	token := "bty.lab." + strings.Repeat("b", 64)
-	cfg := Config{Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "deploy"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "deploy"}}}
 	body := `{"app":"api","request_id":"r1","keep_version":true,"manifest":{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}}`
-	r := httptest.NewRequest("POST", "/v1/environments/lab/deploys", strings.NewReader(body))
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/deploys", strings.NewReader(body))
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}).ServeHTTP(w, r)

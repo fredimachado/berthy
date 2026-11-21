@@ -40,7 +40,7 @@ func versionAgent(t *testing.T, agentVersion string, failing bool) (*Target, *at
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Target{Env: "prod", Base: u, Prefix: "/v1/environments/prod/", Token: "test-token"}, &requests
+	return &Target{Env: "prod", Base: u, Prefix: "/v1/projects/demo/environments/prod/", Token: "test-token"}, &requests
 }
 
 func manifestNeeding(minVersion string) manifest.Manifest {
