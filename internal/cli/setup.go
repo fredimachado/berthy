@@ -186,10 +186,11 @@ func setupSettings(dir, env, network string, protected bool) (setupFrom, error) 
 	m, err := manifest.Load(dir, env)
 	switch {
 	case err == nil:
-		if network != "" && network != m.Network {
-			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, m.Network, env)
+		name := m.NetworkName(env)
+		if network != "" && network != name {
+			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, name, env)
 		}
-		return setupFrom{project: m.Project, network: m.Network, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
+		return setupFrom{project: m.Project, network: name, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		if network == "" {
 			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --network NAME", dir)

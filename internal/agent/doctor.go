@@ -23,10 +23,10 @@ func doctorNetwork(ctx context.Context, c Config, deployment *deploy.Controller)
 		return "", false
 	}
 	m, err := settingsManifest(ctx, deployment.Store)
-	if err != nil || m.Network == "" {
+	if err != nil {
 		return "", false
 	}
-	return m.Network, true
+	return m.NetworkName(c.Environment), true
 }
 
 // networkCheck reports whether the shared network exists as an attachable overlay of the swarm scope, which is the kind the

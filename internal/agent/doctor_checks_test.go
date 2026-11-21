@@ -261,3 +261,14 @@ func TestDoctorKeepsItsOrderWithTheAgentFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorChecksTheDefaultNetwork(t *testing.T) {
+	e, asked := doctorDocker(t, map[string]string{"demo-lab": attachableOverlay})
+	s := openIngressStore(t)
+	recordRelease(t, s, "default-network", strings.Replace(monitoredManifest(""), `,"network":"demo"`, "", 1))
+	h := NewDeploymentHandler(monitoringConfig(""), e, nil, &deploy.Controller{Store: s, Environment: "lab"})
+	c, ok := findCheck(doctorChecks(t, h), "network")
+	if !ok || !c.OK || c.Detail != "demo-lab" {
+		t.Fatalf("network: %+v found %v, asked %v", c, ok, asked())
+	}
+}

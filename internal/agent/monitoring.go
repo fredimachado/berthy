@@ -185,7 +185,7 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 // otherwise. The probes report the outcome, so nothing is returned.
 func (w *Monitoring) maintainHelper(ctx context.Context, m *manifest.Manifest) {
 	if m != nil && hasServiceProbe(m.Probes) {
-		_ = w.helper.ensure(ctx, m.Network)
+		_ = w.helper.ensure(ctx, m.NetworkName(w.cfg.Environment))
 		return
 	}
 	_ = w.helper.remove(ctx)
@@ -627,7 +627,7 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 		out = append(out, heartbeatDoctorCheck(ctx, s, *m.Alerts.Heartbeat, states))
 	}
 	if hasServiceProbe(m.Probes) {
-		ok, detail := newHelperManager(scope.ID{Project: c.Project, Environment: environment}, e, nil).status(ctx, m.Network)
+		ok, detail := newHelperManager(scope.ID{Project: c.Project, Environment: environment}, e, nil).status(ctx, m.NetworkName(environment))
 		out = append(out, api.Check{Name: "probe_helper", OK: ok, Detail: detail})
 	}
 	if check, ok := orphanAppsCheck(ctx, s); ok {

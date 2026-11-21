@@ -422,3 +422,24 @@ func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
 		}
 	}
 }
+
+func TestARoleIsReachableByAppAndRoleOnItsNetwork(t *testing.T) {
+	b, err := serviceSpec("prod", "shop", "api", "web", "shop-prod-api-web", "op", "shop-prod", "image", func(v string) string { return v }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Task struct {
+			Networks []struct {
+				Target  string
+				Aliases []string
+			}
+		} `json:"TaskTemplate"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Task.Networks) != 1 || s.Task.Networks[0].Target != "shop-prod" || !slices.Contains(s.Task.Networks[0].Aliases, "api-web") {
+		t.Fatalf("networks: %+v", s.Task.Networks)
+	}
+}

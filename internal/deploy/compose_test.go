@@ -617,7 +617,7 @@ func TestComposeStageWritesEnvironmentAndRegistryAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The Berthy identity comes first, sorted; the app's own variables follow, sorted by name.
-	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\nMODE='one'\nNOTE='plain value'\n"
+	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_NETWORK='berthy'\nBERTHY_PROJECT='shop'\n" + `DB_PASSWORD="it's \"quoted\" \$HOME \\back"` + "\nMODE='one'\nNOTE='plain value'\n"
 	if string(env) != want {
 		t.Fatalf("environment file %q, want %q", env, want)
 	}
@@ -1229,5 +1229,22 @@ func TestAComposeAppOfTwoEnvironmentsRunsUnderTwoProjects(t *testing.T) {
 				t.Errorf("compose used %q", run.Project)
 			}
 		}
+	}
+}
+
+func TestTheComposeEnvironmentFileNamesTheNetwork(t *testing.T) {
+	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
+	m := composeApp(false)
+	m.Network = ""
+	dir := t.TempDir()
+	if _, err := c.stageCompose(context.Background(), dir, composeReq("network", composeFileOne, m)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "BERTHY_NETWORK='shop-test'\n") {
+		t.Fatalf("environment %s", b)
 	}
 }

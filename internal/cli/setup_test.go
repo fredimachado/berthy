@@ -710,3 +710,37 @@ func TestSetupRefusesAPairOverTheLengthBoundBeforeAnyServerStep(t *testing.T) {
 		t.Fatalf("exit %d, runner made %v: %q %q", code, made[0] != nil, out, errout)
 	}
 }
+
+func TestSetupWithAManifestWithoutANetworkUsesTheDefault(t *testing.T) {
+	dir := projectDir(t)
+	p := filepath.Join(dir, "berthy.yml")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(string(b), "network: p5net\n", "", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := setupSettings(dir, "prod", "", false)
+	if err != nil || got.network != "shop-prod" {
+		t.Fatalf("settings %+v: %v", got, err)
+	}
+	server := installedServer(t, "ops@s1")
+	server.config = strings.ReplaceAll(server.config, "p5net", "shop-p5")
+	withSetupRunner(t, server)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", dir, "--json")
+	if code != 0 || !strings.Contains(out, "shop-p5 (attachable overlay)") {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	if _, err := setupSettings(dir, "prod", "other", false); err == nil {
+		t.Fatal("accepted a different network flag")
+	}
+}
+
+func TestSetupWithoutAManifestStillNeedsANetwork(t *testing.T) {
+	dir := t.TempDir()
+	_, err := setupSettings(dir, "prod", "", false)
+	if err == nil || err.Error() != "there is no berthy.yml in "+dir+": pass --network NAME" {
+		t.Fatalf("error: %v", err)
+	}
+}

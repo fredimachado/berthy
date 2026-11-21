@@ -135,7 +135,7 @@ func (c *Controller) applyRemovable(ctx context.Context, m manifest.Manifest) (f
 
 // connectorRequest is the deploy request that runs the connector app, with the commit and checkout flag of from. withToken is
 // false only before the tunnel token is stored, so the connector can still be planned.
-func connectorRequest(m manifest.Manifest, from Request, withToken bool) (Request, error) {
+func connectorRequest(m manifest.Manifest, from Request, environment string, withToken bool) (Request, error) {
 	app, version, err := m.ConnectorApp()
 	if err != nil {
 		return Request{}, err
@@ -143,7 +143,7 @@ func connectorRequest(m manifest.Manifest, from Request, withToken bool) (Reques
 	if !withToken {
 		app.Env.Secret = nil
 	}
-	synth := manifest.Manifest{Project: m.Project, Network: m.Network, Protected: m.Protected, Registries: m.Registries, Apps: map[string]manifest.App{manifest.ConnectorAppName: app}, Connector: true}
+	synth := manifest.Manifest{Project: m.Project, Network: m.NetworkName(environment), Protected: m.Protected, Registries: m.Registries, Apps: map[string]manifest.App{manifest.ConnectorAppName: app}, Connector: true}
 	return Request{App: manifest.ConnectorAppName, Version: version, Commit: from.Commit, Modified: from.Modified, Manifest: synth, Kind: "deploy"}, nil
 }
 
@@ -417,7 +417,7 @@ func (c *Controller) planIngress(ctx context.Context, actor Actor, req Request) 
 	if t.removal {
 		ip.RemoveConnector = true
 	} else {
-		creq, err := connectorRequest(m, req, c.tokenStored(ctx))
+		creq, err := connectorRequest(m, req, c.Environment, c.tokenStored(ctx))
 		if err != nil {
 			return Plan{}, err
 		}
@@ -487,7 +487,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 		return fail(errIngressConflict)
 	}
 	// The connector must be deployable before anything is created in Cloudflare.
-	preflight, err := connectorRequest(m, req, c.tokenStored(ctx))
+	preflight, err := connectorRequest(m, req, c.Environment, c.tokenStored(ctx))
 	if err != nil {
 		return fail(err)
 	}
@@ -516,7 +516,7 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 	if err != nil {
 		return fail(errTunnelToken)
 	}
-	connector, err := connectorRequest(m, req, true)
+	connector, err := connectorRequest(m, req, c.Environment, true)
 	if err != nil {
 		return fail(err)
 	}

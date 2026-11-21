@@ -200,3 +200,13 @@ func testFile(envs ...Hosted) File {
 		Environments: envs,
 	}
 }
+
+func TestFileValidateRefusesANetworkOver63Characters(t *testing.T) {
+	for _, n := range []int{63, 64} {
+		f := testFile(testHosted("shop", "prod", strings.Repeat("n", n)))
+		err := f.Validate()
+		if (err == nil) != (n == 63) {
+			t.Errorf("length %d: %v", n, err)
+		}
+	}
+}

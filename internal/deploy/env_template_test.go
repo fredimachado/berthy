@@ -160,7 +160,7 @@ func TestComposeEnvFileGivesTheFilledTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\nA_PLAIN='x'\nDATABASE_URL='" + templateFilled + "'\n"
+	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_NETWORK='berthy'\nBERTHY_PROJECT='shop'\nA_PLAIN='x'\nDATABASE_URL='" + templateFilled + "'\n"
 	if string(raw) != want {
 		t.Fatalf("environment file %q, want %q", raw, want)
 	}

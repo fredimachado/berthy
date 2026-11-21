@@ -97,7 +97,7 @@ func TestComposeEnvFileGivesTheMappedVariableTheSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(raw)
-	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_PROJECT='shop'\nDB_PASS='postgres://web'\n"
+	want := "BERTHY_APP='db'\nBERTHY_ENVIRONMENT='test'\nBERTHY_NETWORK='berthy'\nBERTHY_PROJECT='shop'\nDB_PASS='postgres://web'\n"
 	if got != want {
 		t.Fatalf("environment file %q, want %q", got, want)
 	}
