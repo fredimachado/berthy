@@ -507,7 +507,12 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // was just deleted take a moment to go, so the removal is tried again for a while. A volume that stays in use is kept and
 // reported; it is not an error.
 func (c *Controller) removeVolume(ctx context.Context, name string, step func(string)) error {
-	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimVolume, Name: name}); err != nil {
+	claim := state.Claim{Kind: state.ClaimVolume, Name: name}
+	if c.Reserve != nil {
+		if _, err := c.reserveClaims(ctx, []state.Claim{claim}); err != nil {
+			return err
+		}
+	} else if err := c.notForeign(ctx, claim); err != nil {
 		return err
 	}
 	ve, ok := c.Engine.(volumeEngine)
@@ -573,9 +578,6 @@ func (c *Controller) removeProject(ctx context.Context, opID, project string, vo
 // composeDown runs `compose down --remove-orphans`, with --volumes when asked, confirms no container of the project is
 // left, and deletes the project's working directory.
 func (c *Controller) composeDown(ctx context.Context, project string, volumes bool) error {
-	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimComposeProject, Name: project}); err != nil {
-		return err
-	}
 	if err := c.composeReady(); err != nil {
 		return err
 	}
@@ -612,10 +614,19 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	}
 	for _, name := range volumeNames {
 		claim := state.Claim{Kind: state.ClaimVolume, Name: name}
-		if err := c.notForeign(ctx, claim); err != nil {
+		settleClaims = append(settleClaims, claim)
+	}
+	targets := append([]state.Claim{{Kind: state.ClaimComposeProject, Name: project}}, settleClaims...)
+	if c.Reserve != nil {
+		if _, err := c.reserveClaims(ctx, targets); err != nil {
 			return err
 		}
-		settleClaims = append(settleClaims, claim)
+	} else {
+		for _, claim := range targets {
+			if err := c.notForeign(ctx, claim); err != nil {
+				return err
+			}
+		}
 	}
 	args := []string{"down", "--remove-orphans"}
 	if volumes {

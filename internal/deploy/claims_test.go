@@ -807,3 +807,82 @@ func TestAdmissionRetryFindsRecordedRequestBeforeNameChecks(t *testing.T) {
 		t.Fatalf("hash conflict: %v", err)
 	}
 }
+
+type volumeRetryBarrier struct {
+	*volumeDocker
+	first  chan struct{}
+	resume chan struct{}
+	calls  int
+}
+
+func (d *volumeRetryBarrier) RemoveVolume(ctx context.Context, name string) error {
+	d.calls++
+	if d.calls == 1 {
+		close(d.first)
+		<-d.resume
+		return &engine.StatusError{Code: 409}
+	}
+	return d.volumeDocker.RemoveVolume(ctx, name)
+}
+func TestVolumeRemovalReservesAcrossRetries(t *testing.T) {
+	ctx := context.Background()
+	a, b := openStore(t), openStore(t)
+	var mu sync.Mutex
+	reserve := func(own, other *state.Store) func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			held, err := other.Claims(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, claim := range claims {
+				if slices.Contains(held, claim) {
+					return nil, Refusal("name data is taken by another project or environment on this server")
+				}
+			}
+			return own.AddClaimsNew(ctx, claims)
+		}
+	}
+	docker := &volumeRetryBarrier{volumeDocker: &volumeDocker{loggedEngine: &loggedEngine{calls: &callLog{}}, volumes: map[string]string{"data": ""}}, first: make(chan struct{}), resume: make(chan struct{})}
+	c := Controller{Store: a, Engine: docker, Reserve: reserve(a, b), Foreign: func(ctx context.Context) (Foreign, error) {
+		held, err := b.Claims(ctx)
+		f := Foreign{Claims: map[state.Claim]bool{}}
+		for _, cl := range held {
+			f.Claims[cl] = true
+		}
+		return f, err
+	}}
+	result := make(chan error, 1)
+	go func() { result <- c.removeVolume(ctx, "data", func(string) {}) }()
+	<-docker.first
+	_, otherErr := reserve(b, a)(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: "data"}})
+	close(docker.resume)
+	removeErr := <-result
+	if otherErr == nil {
+		t.Fatalf("another environment reserved the volume during the retry; removal: %v", removeErr)
+	}
+	if removeErr != nil {
+		t.Fatalf("removal: %v", removeErr)
+	}
+}
+
+func TestComposeDownReservesBeforeDockerChanges(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		if !slices.Contains(claims, state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}) {
+			t.Fatalf("project missing: %v", claims)
+		}
+		return nil, Refusal("name shared is taken by another project or environment on this server")
+	}
+	err := c.composeDown(context.Background(), "shared", false)
+	if err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+		t.Fatalf("compose down: %v", err)
+	}
+	for _, run := range runner.runs {
+		if run.Args[0] == "down" {
+			t.Fatal("down ran before reservation")
+		}
+	}
+}
