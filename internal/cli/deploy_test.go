@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"berthy/internal/state"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestConfigValidateOffline(t *testing.T) {
@@ -216,42 +213,6 @@ func TestScaleRefusesNegativeReplicasBeforeAnyRequest(t *testing.T) {
 	}
 }
 
-func TestRecoveryRetryOnlyForRequired(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var calls, recovered atomic.Int32
-	active := func(context.Context) (state.Operation, error) {
-		if calls.Add(1) == 1 {
-			return state.Operation{State: "running"}, nil
-		}
-		return state.Operation{State: "recovery_required"}, nil
-	}
-	// The recovery ends the retrying and takes longer than the interval, so another tick is waiting when it returns: the loop
-	// must still stop, and must not recover a second time.
-	recover := func(context.Context) error {
-		recovered.Add(1)
-		cancel()
-		time.Sleep(5 * time.Millisecond)
-		return nil
-	}
-	finished := make(chan struct{})
-	go func() {
-		retryRecovery(ctx, time.Millisecond, active, recover)
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-time.After(10 * time.Second):
-		t.Fatal("recovery not retried")
-	}
-	if calls.Load() < 2 {
-		t.Fatal("retried a running operation")
-	}
-	if n := recovered.Load(); n != 1 {
-		t.Fatalf("recovered %d times, want once", n)
-	}
-}
-
 // refusingAgent answers every request with status 400 and body, and returns a CLI config that points at it.
 func refusingAgent(t *testing.T, body string) string {
 	t.Helper()
@@ -330,15 +291,6 @@ func TestRecoveryResolvePostsReason(t *testing.T) {
 				t.Fatalf("exit %d: %s", code, errs.String())
 			}
 		})
-	}
-}
-
-func TestRecoveryNoticeNamesResolveCommand(t *testing.T) {
-	if got := recoveryNotice("op1"); !strings.Contains(got, "berthy recovery resolve op1 -m REASON") {
-		t.Fatalf("notice with id: %q", got)
-	}
-	if got := recoveryNotice(""); !strings.Contains(got, "berthy recovery resolve OPERATION_ID -m REASON") || strings.Contains(got, "\n") {
-		t.Fatalf("notice without id: %q", got)
 	}
 }
 

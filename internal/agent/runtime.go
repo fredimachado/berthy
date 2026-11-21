@@ -1,0 +1,200 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"berthy/internal/deploy"
+	"berthy/internal/engine"
+	"berthy/internal/jobs"
+	"berthy/internal/metrics"
+	"berthy/internal/state"
+	"berthy/internal/telemetry"
+)
+
+// Shared is what the agent has once and every hosted environment of the process uses.
+type Shared struct {
+	Engine    *engine.Engine
+	Collector *metrics.Collector
+	Log       func(string)
+}
+
+// Runtime is one hosted environment while the agent runs: its state, controller, reports, monitor, scheduler, backups and
+// telemetry, and the handler of its API.
+type Runtime struct {
+	Config  Config
+	Handler http.Handler
+
+	log        func(string)
+	deployment *deploy.Controller
+	reports    *Reports
+	monitoring *Monitoring
+	scheduler  *jobs.Scheduler
+	backups    *Backups
+	exporter   *telemetry.Exporter
+
+	// Set by Start. Close waits for each worker that was started.
+	cancel                                                       context.CancelFunc
+	reportsDone, recoveryDone, monitorDone, jobsDone, exportDone chan struct{}
+}
+
+// OpenRuntime opens the environment's state and builds its controller, its workers and its handler. It starts nothing: no
+// goroutine runs, nothing reads Docker and nothing is recovered until Start.
+func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
+	if c.StateDir == "" || c.KeyFile == "" {
+		return nil, errors.New("a hosted environment needs state_dir and key_file")
+	}
+	d, err := OpenDeployment(c, sh.Engine)
+	if err != nil {
+		return nil, err
+	}
+	r := &Runtime{Config: c, log: sh.Log, deployment: d}
+	r.reports = NewReports(c, d.Store, sh.Log)
+	// The observer is set before recovery, so an operation that recovery ends is reported too.
+	d.Observer = r.reports
+	r.monitoring = NewMonitoring(c, sh.Engine, sh.Collector, d, sh.Log)
+	// The checks at the end of a deploy reach each role's port from the overlay helper the monitor keeps.
+	d.Reacher = r.monitoring
+	r.scheduler = NewJobs(c, sh.Engine, d, sh.Log)
+	r.backups = NewBackups(c, sh.Engine, d, r.scheduler, r.monitoring.HelperImage, sh.Log)
+	r.exporter = NewTelemetry(c, sh.Collector, d, sh.Log)
+	r.Handler = NewDeploymentHandlerWithBackups(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups)
+	return r, nil
+}
+
+// Start recovers the environment's operations and starts its workers under ctx. Requests are served only after it. When it
+// fails, Close still releases what it started.
+func (r *Runtime) Start(ctx context.Context) error {
+	ctx, r.cancel = context.WithCancel(ctx)
+	r.reportsDone = make(chan struct{})
+	go func() {
+		defer close(r.reportsDone)
+		r.reports.Run(ctx)
+	}()
+	recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
+	err := r.deployment.Recover(recoveryCtx)
+	done()
+	if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
+		return errors.New("deployment recovery failed")
+	}
+	// Recover reports the first move into recovery_required as success, so the lock is checked as well.
+	if op, activeErr := r.deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {
+		r.logf(recoveryNotice(op.ID))
+	} else if errors.Is(err, deploy.ErrRecoveryPending) {
+		r.logf(recoveryNotice(""))
+	}
+	// A running agent owns no interactive session of an earlier process: their containers go, in whatever state they are.
+	cleanupCtx, cleaned := context.WithTimeout(ctx, 30*time.Second)
+	err = r.deployment.RemoveOrphanSessions(cleanupCtx)
+	cleaned()
+	if err != nil {
+		r.logf("session and job container cleanup failed")
+	}
+	r.recoveryDone = make(chan struct{})
+	go func() {
+		defer close(r.recoveryDone)
+		retryRecovery(ctx, 10*time.Second, r.deployment.Store.Active, r.deployment.Recover)
+	}()
+	r.monitorDone = make(chan struct{})
+	go func() {
+		defer close(r.monitorDone)
+		r.monitoring.Run(ctx)
+	}()
+	r.jobsDone = make(chan struct{})
+	go func() {
+		defer close(r.jobsDone)
+		r.scheduler.Run(ctx)
+	}()
+	r.backups.Start(ctx)
+	if r.exporter != nil {
+		r.exportDone = make(chan struct{})
+		go func() {
+			defer close(r.exportDone)
+			r.exporter.Run(ctx)
+		}()
+	}
+	return nil
+}
+
+// CloseSessions closes the open interactive sessions: http.Server.Shutdown does not track a connection a handler took over.
+func (r *Runtime) CloseSessions(ctx context.Context) { r.deployment.CloseSessions(ctx) }
+
+// Close stops what Start started and then closes the state, last started first. It may follow a failed Start, and an
+// OpenRuntime without Start.
+func (r *Runtime) Close() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	// The workers stop before the store closes. The last export is flushed after the monitor's stop, and the runs of the
+	// scheduler and the backups end and are recorded.
+	awaitWorker(r.exportDone)
+	r.backups.Wait()
+	awaitWorker(r.jobsDone)
+	awaitWorker(r.monitorDone)
+	awaitWorker(r.recoveryDone)
+	// A running operation records its outcome and the reports hear of it. The agent no longer takes requests by now, so no
+	// operation starts after this wait.
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), operationGrace)
+	operationsEnded := r.deployment.Drain(waitCtx) == nil
+	cancelWait()
+	// The queued records and messages are sent before the store closes.
+	awaitWorker(r.reportsDone)
+	r.reports.Wait()
+	// The store is closed only when no operation is left running: one that is would write to a closed store. It is left open
+	// otherwise, as it is when the agent is killed, and the next start recovers the operation.
+	if operationsEnded {
+		r.deployment.Store.Close()
+	} else {
+		r.logf("operations still running at exit: they are recovered at the next start")
+	}
+}
+
+// awaitWorker waits for a worker that Start started; done is nil for one that was not.
+func awaitWorker(done chan struct{}) {
+	if done != nil {
+		<-done
+	}
+}
+
+func (r *Runtime) logf(msg string) {
+	if r.log != nil {
+		r.log(msg)
+	}
+}
+
+// operationGrace is how long a stopping agent lets a running operation record its outcome before it leaves it to the recovery of the
+// next start.
+const operationGrace = 30 * time.Second
+
+func retryRecovery(ctx context.Context, interval time.Duration, active func(context.Context) (state.Operation, error), recover func(context.Context) error) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// A tick can be waiting when the context ends, and select picks between two ready cases at random.
+			if ctx.Err() != nil {
+				return
+			}
+			attempt, done := context.WithTimeout(ctx, 30*time.Second)
+			op, err := active(attempt)
+			if err == nil && op.State == "recovery_required" {
+				_ = recover(attempt)
+			}
+			done()
+		}
+	}
+}
+
+// recoveryNotice is the line printed at startup while an operation waits for recovery. id is empty when it is unknown.
+func recoveryNotice(id string) string {
+	if id == "" {
+		id = "OPERATION_ID"
+	}
+	return fmt.Sprintf(`deployment recovery required; check "berthy lock status" and resolve with "berthy recovery resolve %s -m REASON"`, id)
+}

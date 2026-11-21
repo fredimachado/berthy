@@ -4,7 +4,6 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
-	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
 	"berthy/internal/mcp"
@@ -12,7 +11,6 @@ import (
 	"berthy/internal/monitor"
 	"berthy/internal/probehelper"
 	"berthy/internal/scope"
-	"berthy/internal/state"
 	"berthy/internal/tui"
 	"berthy/internal/version"
 	"berthy/internal/volarchive"
@@ -188,107 +186,19 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			events.Run(ctx)
 		}()
 		defer func() { cancel(); <-eventsDone }()
-		deployment, err := agent.OpenDeployment(c, eng)
+		collector := metrics.New(metrics.NewHostReader(), eng)
+		rt, err := agent.OpenRuntime(agent.Shared{Engine: eng, Collector: collector, Log: func(msg string) { fmt.Fprintln(errout, msg) }}, c)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		if deployment != nil {
-			// The store is closed only when no operation is left running: one that is would write to a closed store. It is left open
-			// otherwise, as it is when the agent is killed, and the next start recovers the operation.
-			operationsEnded := false
-			defer func() {
-				if operationsEnded {
-					deployment.Store.Close()
-				} else {
-					fmt.Fprintln(errout, "operations still running at exit: they are recovered at the next start")
-				}
-			}()
-			// The observer is set before recovery, so an operation that recovery ends is reported too.
-			reports := agent.NewReports(c, deployment.Store, func(msg string) { fmt.Fprintln(errout, msg) })
-			deployment.Observer = reports
-			reportsDone := make(chan struct{})
-			go func() {
-				defer close(reportsDone)
-				reports.Run(ctx)
-			}()
-			// Registered after the store's Close, so it runs first: the queued records and messages are sent before the store closes.
-			defer func() { cancel(); <-reportsDone; reports.Wait() }()
-			// Registered after the reports' stop, so it runs first: a running operation records its outcome and the reports hear of
-			// it. The agent no longer takes requests by now, so no operation starts after this wait.
-			defer func() {
-				waitCtx, done := context.WithTimeout(context.Background(), operationGrace)
-				defer done()
-				operationsEnded = deployment.Drain(waitCtx) == nil
-			}()
-			recoveryCtx, done := context.WithTimeout(ctx, 30*time.Second)
-			err = deployment.Recover(recoveryCtx)
-			done()
-			if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
-				fmt.Fprintln(errout, "deployment recovery failed")
-				return 1
-			}
-			// Recover reports the first move into recovery_required as success, so the lock is checked as well.
-			if op, activeErr := deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {
-				fmt.Fprintln(errout, recoveryNotice(op.ID))
-			} else if errors.Is(err, deploy.ErrRecoveryPending) {
-				fmt.Fprintln(errout, recoveryNotice(""))
-			}
-			// A running agent owns no interactive session of an earlier process: their containers go, in whatever state they are.
-			cleanupCtx, cleaned := context.WithTimeout(ctx, 30*time.Second)
-			err = deployment.RemoveOrphanSessions(cleanupCtx)
-			cleaned()
-			if err != nil {
-				fmt.Fprintln(errout, "session and job container cleanup failed")
-			}
-			stopped := make(chan struct{})
-			go func() {
-				defer close(stopped)
-				retryRecovery(ctx, 10*time.Second, deployment.Store.Active, deployment.Recover)
-			}()
-			defer func() { cancel(); <-stopped }()
-		}
-		collector := metrics.New(metrics.NewHostReader(), eng)
+		defer func() { cancel(); rt.Close() }()
 		go collector.Run(ctx)
-		monitoring := agent.NewMonitoring(c, eng, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
-		if monitoring != nil {
-			// The checks at the end of a deploy reach each role's port from the overlay helper the monitor keeps.
-			deployment.Reacher = monitoring
-			monitorDone := make(chan struct{})
-			go func() {
-				defer close(monitorDone)
-				monitoring.Run(ctx)
-			}()
-			// Registered after the store's Close, so it runs first: the monitor stops before the store closes.
-			defer func() { cancel(); <-monitorDone }()
+		if err = rt.Start(ctx); err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
 		}
-		scheduler := agent.NewJobs(c, eng, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
-		if scheduler != nil {
-			jobsDone := make(chan struct{})
-			go func() {
-				defer close(jobsDone)
-				scheduler.Run(ctx)
-			}()
-			// Registered after the store's Close, so it runs first: the runs end and are recorded before the store closes.
-			defer func() { cancel(); <-jobsDone }()
-		}
-		backups := agent.NewBackups(c, eng, deployment, scheduler, monitoring.HelperImage, func(msg string) { fmt.Fprintln(errout, msg) })
-		if backups != nil {
-			backups.Start(ctx)
-			// Registered after the store's Close, so it runs first: the runs end and are recorded before the store closes.
-			defer func() { cancel(); backups.Wait() }()
-		}
-		exporter := agent.NewTelemetry(c, collector, deployment, func(msg string) { fmt.Fprintln(errout, msg) })
-		if exporter != nil {
-			exportDone := make(chan struct{})
-			go func() {
-				defer close(exportDone)
-				exporter.Run(ctx)
-			}()
-			// Registered after the monitor's stop, so the last export is flushed before the store closes.
-			defer func() { cancel(); <-exportDone }()
-		}
-		server := http.Server{Addr: c.Listen, Handler: agent.NewDeploymentHandlerWithBackups(c, eng, collector, deployment, exporter, scheduler, backups), ReadHeaderTimeout: 5 * time.Second}
+		server := http.Server{Addr: c.Listen, Handler: rt.Handler, ReadHeaderTimeout: 5 * time.Second}
 		shutdown := make(chan struct{})
 		go func() {
 			defer close(shutdown)
@@ -297,9 +207,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			defer done()
 			// http.Server.Shutdown does not track a connection a handler took over, so the open sessions are closed here: the containers
 			// of run sessions are stopped and removed before the agent exits.
-			if deployment != nil {
-				deployment.CloseSessions(shutdownCtx)
-			}
+			rt.CloseSessions(shutdownCtx)
 			_ = server.Shutdown(shutdownCtx)
 		}()
 		fmt.Fprintf(errout, "berthy agent %s listening on %s\n", version.String(), c.Listen)
@@ -491,39 +399,6 @@ func runProbeHelper(errout io.Writer) int {
 	return 0
 }
 
-// operationGrace is how long a stopping agent lets a running operation record its outcome before it leaves it to the recovery of the
-// next start.
-const operationGrace = 30 * time.Second
-
-func retryRecovery(ctx context.Context, interval time.Duration, active func(context.Context) (state.Operation, error), recover func(context.Context) error) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// A tick can be waiting when the context ends, and select picks between two ready cases at random.
-			if ctx.Err() != nil {
-				return
-			}
-			attempt, done := context.WithTimeout(ctx, 30*time.Second)
-			op, err := active(attempt)
-			if err == nil && op.State == "recovery_required" {
-				_ = recover(attempt)
-			}
-			done()
-		}
-	}
-}
-
-// recoveryNotice is the line printed at startup while an operation waits for recovery. id is empty when it is unknown.
-func recoveryNotice(id string) string {
-	if id == "" {
-		id = "OPERATION_ID"
-	}
-	return fmt.Sprintf(`deployment recovery required; check "berthy lock status" and resolve with "berthy recovery resolve %s -m REASON"`, id)
-}
 func printText(w io.Writer, v any, indent string) {
 	switch x := v.(type) {
 	case map[string]any:
