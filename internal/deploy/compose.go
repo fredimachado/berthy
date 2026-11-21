@@ -621,11 +621,11 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	if json.Unmarshal(out, &cfg) != nil || len(cfg.Services) == 0 {
 		return ComposePlan{}, errComposeConfig
 	}
+	names, err := composeConfigNames(project, cfg, false)
+	if err != nil {
+		return ComposePlan{}, err
+	}
 	if len(reserve) > 0 && reserve[0] != nil {
-		names, err := composeConfigNames(project, cfg, false)
-		if err != nil {
-			return ComposePlan{}, err
-		}
 		if err := reserve[0](names); err != nil {
 			return ComposePlan{}, err
 		}
@@ -1131,6 +1131,9 @@ func (c *Controller) composeNamesAt(ctx context.Context, dir, project string, ma
 }
 
 func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
+	if !engine.ValidName(project) {
+		return nil, invalidComposeName("project", project)
+	}
 	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
 	for _, k := range sortedKeys(cfg.Volumes) {
 		if managedNetworksOnly && cfg.Volumes[k].external() {
@@ -1138,6 +1141,9 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 		}
 		if cfg.Volumes[k].Name == "" {
 			return nil, errComposeConfig
+		}
+		if !engine.ValidName(cfg.Volumes[k].Name) {
+			return nil, invalidComposeName("volume", cfg.Volumes[k].Name)
 		}
 		claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[k].Name})
 	}
@@ -1148,7 +1154,14 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 		if cfg.Networks[k].Name == "" {
 			return nil, errComposeConfig
 		}
+		if !engine.ValidName(cfg.Networks[k].Name) {
+			return nil, invalidComposeName("network", cfg.Networks[k].Name)
+		}
 		claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: cfg.Networks[k].Name})
 	}
 	return claims, nil
+}
+
+func invalidComposeName(kind, name string) Refusal {
+	return Refusal(fmt.Sprintf("Compose %s name %q is invalid; Docker names must be at most 128 characters and start with a letter or digit, followed by letters, digits, '.', '_' or '-'", kind, name))
 }

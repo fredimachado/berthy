@@ -111,6 +111,46 @@ func TestComposeRunReservesAgainBeforeUp(t *testing.T) {
 	}
 }
 
+func TestComposeRejectsUninspectableNamesBeforeReservation(t *testing.T) {
+	for _, kind := range []string{"networks", "volumes"} {
+		for _, length := range []int{128, 129} {
+			t.Run(kind+strconv.Itoa(length), func(t *testing.T) {
+				name := strings.Repeat("a", length)
+				runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"` + kind + `":{"item":{"name":"` + name + `"}}}`, hashes: hashOne}
+				c, _ := composeController(t, runner, newComposeDocker())
+				calls := 0
+				c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { calls++; return claims, nil }
+				req := composeReq("names", composeFileOne, composeApp(false))
+				if length == 129 {
+					if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), name) {
+						t.Fatalf("dry run: %v", err)
+					}
+				}
+				out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
+				if length == 129 {
+					if calls != 0 || !strings.Contains(out.Err, name) || !strings.Contains(out.Err, "128") || !PublicMessage(out.Err) {
+						t.Fatalf("outcome=%+v reservations=%d", out, calls)
+					}
+				} else if calls == 0 {
+					t.Fatalf("valid name was not reserved: %+v", out)
+				}
+			})
+		}
+	}
+}
+
+func TestInvalidComposeNameMessageIsPublicAndStrict(t *testing.T) {
+	for _, name := range []string{"bad/name", "bad\nname", `bad"name`, strings.Repeat("a", 129)} {
+		msg := string(invalidComposeName("network", name))
+		if !PublicMessage(msg) {
+			t.Fatalf("not public: %q", msg)
+		}
+		if PublicMessage(msg + " extra") {
+			t.Fatalf("accepted extra text: %q", msg)
+		}
+	}
+}
+
 func TestImageRunReservesAgainBeforeDockerChanges(t *testing.T) {
 	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
 	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
