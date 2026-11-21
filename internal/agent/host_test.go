@@ -762,6 +762,56 @@ func TestRemovalDoesNotReleaseAnActivelyLeasedClaim(t *testing.T) {
 
 type absentNetworkLeaseEngine struct{ *deployJobLeaseEngine }
 
+type changingVolumeEngine struct {
+	*deployJobLeaseEngine
+	exists atomic.Bool
+}
+
+func (e *changingVolumeEngine) VolumeExists(context.Context, string) (bool, error) {
+	return e.exists.Load(), nil
+}
+
+func TestReleaseRechecksAbsenceAfterAnotherOperationEnds(t *testing.T) {
+	ctx := context.Background()
+	id := scope.ID{Project: "one", Environment: "prod"}
+	other := scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, id, other)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	c := h.runtimes[id].deployment
+	docker := &changingVolumeEngine{deployJobLeaseEngine: &deployJobLeaseEngine{}}
+	c.Engine = docker
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shared"}
+	if err = c.Store.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	checked := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		<-checked
+		added, err := h.reserve(id, []state.Claim{claim})
+		if err == nil {
+			docker.exists.Store(true)
+			err = h.finish(ctx, id, []state.Claim{claim}, added, nil)
+		}
+		done <- err
+	}()
+	// The removal observed the volume absent before the concurrent operation created it.
+	close(checked)
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err = c.FinishReservation(ctx, nil, []state.Claim{claim}, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.reserve(other, []state.Claim{claim}); err == nil {
+		t.Fatal("released a claim after the volume was created")
+	}
+}
+
 func (*absentNetworkLeaseEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
 	return engine.Network{}, &engine.StatusError{Code: 404}
 }

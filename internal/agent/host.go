@@ -65,7 +65,7 @@ func Open(sh Shared, f File) (*Host, error) {
 			return h.reserveContext(ctx, id, claims)
 		}
 		r.deployment.FinishReservation = func(ctx context.Context, leased, added, eligible []state.Claim) error {
-			return h.finish(ctx, id, leased, added, eligible)
+			return h.finishConfirmed(ctx, id, leased, added, eligible, r.deployment.AbsentClaims)
 		}
 		r.deployment.Foreign = func(ctx context.Context) (deploy.Foreign, error) {
 			h.claimsMu.Lock()
@@ -133,6 +133,10 @@ func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.C
 
 // finish drops leases and releases confirmed-absent targets only while no operation uses them.
 func (h *Host) finish(ctx context.Context, id scope.ID, leased, candidates, eligible []state.Claim) error {
+	return h.finishConfirmed(ctx, id, leased, candidates, eligible, nil)
+}
+
+func (h *Host) finishConfirmed(ctx context.Context, id scope.ID, leased, candidates, eligible []state.Claim, confirm func(context.Context, []state.Claim) []state.Claim) error {
 	h.claimsMu.Lock()
 	defer h.claimsMu.Unlock()
 	seen := map[state.Claim]bool{}
@@ -154,6 +158,9 @@ func (h *Host) finish(ctx context.Context, id scope.ID, leased, candidates, elig
 		if slices.Contains(candidates, claim) && h.leases[id][claim] == 0 {
 			release = append(release, claim)
 		}
+	}
+	if confirm != nil && len(release) > 0 {
+		release = confirm(ctx, release)
 	}
 	return h.runtimes[id].deployment.Store.ReleaseClaims(ctx, release)
 }

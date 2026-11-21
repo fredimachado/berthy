@@ -1165,6 +1165,11 @@ func (c *Controller) absentClaims(ctx context.Context, claims []state.Claim) []s
 	return gone
 }
 
+// AbsentClaims confirms which names no longer exist in Docker.
+func (c *Controller) AbsentClaims(ctx context.Context, claims []state.Claim) []state.Claim {
+	return c.absentClaims(ctx, claims)
+}
+
 type removalReleasesKey struct{}
 
 type removalReleases struct{ claims []state.Claim }
