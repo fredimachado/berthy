@@ -19,8 +19,17 @@ manifest() {
   if [ -n "${2:-}" ]; then deploy=$(printf '    deploy:\n      verify: %s' "$2")$'\n'; fi
   cat <<YML
 project: $PROJECT
-network: $NETWORK
 apps:
+  reader:
+    kind: image
+    image: $REG/e2e/web
+    roles:
+      main:
+        health:
+          test: ["CMD", "true"]
+          interval: 2s
+          timeout: 2s
+          retries: 3
   web:
     kind: image
     image: $REG/e2e/web
@@ -44,6 +53,12 @@ expect_contains "the deploy says the port answers on the network" "$out" "role m
 expect_not_contains "no warning for a port that answers" "$out" "does not answer"
 helpers=$(d ps -q --filter label=berthy.helper=probe --filter label=berthy.environment="$ENVN" | wc -l)
 expect_eq "the overlay helper that made the check is running" "1" "$helpers"
+
+out=$(adm deploy reader --version v1 --manifest-dir "$MAN" 2>&1); code=$?
+expect_code "deploy another app on the environment network" 0 "$code" "$out"
+out=$(adm exec reader -- wget -qO- http://web-main/ 2>&1); code=$?
+expect_code "another app reaches web by its app-role alias" 0 "$code" "$out"
+expect_contains "the alias returns the web page" "$out" "nginx"
 
 # 2. A wrong port warns, and the deploy still succeeds with the new version serving.
 manifest 8081 | write_manifest

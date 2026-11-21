@@ -12,13 +12,16 @@ printf '{"project":"other","environment":"lab","state_dir":"%s"}\n' "$RUN/state-
 # The Compose project was removed without --volumes, so its directory is already gone.
 printf 'volume\t%s\n' shop-prod_data shop-stage_data other-lab_data > "$E2E_ROOT/fixture-objects"
 printf 'compose\t%s\n' shop-prod-db >> "$E2E_ROOT/fixture-objects"
+printf 'network\t%s\n' shop-prod shop-stage >> "$E2E_ROOT/fixture-objects"
 stop_agent() { :; }
 stop_fakes() { :; }
 d() {
   case "$1 $2" in
     'service ls'|'images --no-trunc') ;;
     'network ls')
-      if [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then
+      if [[ $* == *'--format {{.Name}}'* ]]; then
+        printf '%s\n' shop-prod shop-stage shop-two-prod
+      elif [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then
         if [ ! -e "$E2E_ROOT/network-gone" ]; then echo own-network; fi
       elif [[ $* != *'label=com.docker.compose.project='* ]]; then
         printf '%s\n' own-network other-network vanished-network empty-network
@@ -97,6 +100,10 @@ for entry in $'volume\tshop-prod_team-lab_data' $'compose\tshop-prod-foreign-db'
 done
 if ! purge_fixture; then
   echo 'cleanup failed when a foreign network disappeared' >&2
+  exit 1
+fi
+if ! grep -qx shop-prod "$E2E_ROOT/removed-networks" || ! grep -qx shop-stage "$E2E_ROOT/removed-networks" || grep -qx shop-two-prod "$E2E_ROOT/removed-networks"; then
+  echo 'cleanup missed an owned network or removed shop-two network' >&2
   exit 1
 fi
 sort "$E2E_ROOT/removed-volumes" > "$E2E_ROOT/actual-volumes"

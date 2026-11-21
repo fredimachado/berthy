@@ -44,6 +44,7 @@ printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP author
 # scenario 07, which writes the configuration of an older agent. Keys match agent.File; the agent rejects unknown keys. The
 # Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
 printf '%s\n' "$admin_entry" > "$RUN/admin-entry.json" || die "cannot write the admin entry"
+create_environment_network "$NETWORK" || die "cannot create the environment network"
 write_fragment "$PROJECT" "$ENVN" "$RUN/state" "$RUN/state.key" "$admin_entry" || die "cannot write the environment's fragment"
 write_agent_config || die "cannot write agent.json"
 

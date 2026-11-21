@@ -28,7 +28,7 @@ MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
 # container or a port. For example: ENVN=e2e9 PROJECT=e2e9 REG=127.0.0.1:15031 REG_NAME=e2e9-registry AGENT_LISTEN=127.0.0.1:19511.
 ENVN=${ENVN:-e2e}
 PROJECT=${PROJECT:-e2e}
-NETWORK=berthy-phase2-lab
+NETWORK=$PROJECT-$ENVN
 REG=${REG:-127.0.0.1:15021}          # throwaway unauthenticated registry
 REG_NAME=${REG_NAME:-e2e-registry}   # its container name
 AGENT_LISTEN=${AGENT_LISTEN:-127.0.0.1:19501}
@@ -210,6 +210,21 @@ write_fragment() {
     > "$RUN/environments.d/$1-$2.json"
 }
 
+# create_environment_network records the exact network before creating it, so interrupted setup can remove it.
+create_environment_network() (
+  local name=$1 lock listing
+  mkdir -p "$E2E_ROOT" || return 1
+  exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
+  flock -x "$lock" || return 1
+  listing=$(d network ls --format '{{.Name}}') || return 1
+  if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
+    echo "fixture refuses existing unrecorded network $name" >&2
+    return 1
+  fi
+  printf 'network\t%s\n' "$name" >> "$E2E_ROOT/fixture-objects" || return 1
+  d network create --driver overlay --attachable "$name" >/dev/null || return 1
+)
+
 # env_dir PROJECT ENV: the manifest directory of a hosted environment of the fixture: $MAN for the first, $MAN-PROJECT-ENV for
 # one that add_environment made.
 env_dir() {
@@ -239,6 +254,7 @@ add_environment() {
   printf "export %s='%s'\n" "$var" "$token" >> "$RUN/env.sh" || return 1
   export "$var=$token"
   (umask 077 && mkdir -p "$state" && head -c 32 /dev/urandom > "$RUN/key-$project-$env") || return 1
+  create_environment_network "$project-$env" || return 1
   write_fragment "$project" "$env" "$state" "$RUN/key-$project-$env" "$entry" || return 1
   mkdir -p "$(env_dir "$project" "$env")" && PROJECT=$project base_manifest > "$(env_dir "$project" "$env")/berthy.yml" || return 1
   "$BIN" context add --project "$project" -e "$env" --url "http://$AGENT_LISTEN" --token-env "$var" --config "$RUN/admin.json" >/dev/null || return 1
@@ -334,12 +350,11 @@ write_manifest() {
   cat > "$MAN/berthy.yml"
 }
 
-# base_manifest: prints the default manifest. Project e2e, network berthy-phase2-lab, one image app "web" from the
+# base_manifest: prints the default manifest with one image app "web" from the
 # e2e registry, and one role "main" with a health check that always passes.
 base_manifest() {
   cat <<YML
 project: $PROJECT
-network: $NETWORK
 apps:
   web:
     kind: image
@@ -360,7 +375,7 @@ YML
 purge_fixture() {
   local i v f project env state kind name lock tmp owner listing labels escaped failed=0
   local -a ids owners
-  local volumes="" projects=""
+  local volumes="" projects="" networks=""
   stop_agent
   stop_fakes
   owners=("$PROJECT"$'\t'"$ENVN")
@@ -379,6 +394,7 @@ purge_fixture() {
       case $kind in
         volume) volumes+=$'\n'"$name" ;;
         compose) projects+=$'\n'"$name" ;;
+        network) networks+=$'\n'"$name" ;;
         *) failed=1 ;;
       esac
     done < "$E2E_ROOT/fixture-objects"
@@ -457,6 +473,16 @@ purge_fixture() {
       done < "$tmp"
     fi
   done <<< "$volumes"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
+    if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
+      if ! d network rm "$name" >/dev/null 2>&1; then
+        listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
+        if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then failed=1; fi
+      fi
+    fi
+  done <<< "$networks"
   rm -f "$tmp"
   [ "$failed" -ne 0 ] || rm -f "$E2E_ROOT/fixture-objects"
   flock -u "$lock"

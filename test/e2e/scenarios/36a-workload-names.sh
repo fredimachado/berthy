@@ -22,7 +22,6 @@ for env in "$ENVN" "$OTHER"; do
   dir=$(env_dir "$PROJECT" "$env")
   cat > "$dir/berthy.yml" <<YML
 project: $PROJECT
-network: $NETWORK
 apps:
   web:
     kind: image
@@ -57,6 +56,9 @@ for env in "$ENVN" "$OTHER"; do
   project="$PROJECT-$env-db"
   spec=$(service_spec "$svc" 2>&1); code=$?
   expect_code "service $svc exists" 0 "$code" "$spec"
+  netid=$(d network inspect --format '{{.Id}}' "$PROJECT-$env" 2>&1); code=$?
+  expect_code "environment network $PROJECT-$env exists" 0 "$code" "$netid"
+  expect_contains "service $svc joins its environment network" "$spec" "$netid"
   expect_contains "service $svc mounts its environment volume" "$spec" "\"Source\":\"$vol\""
   out=$(d ps -q --filter "label=com.docker.compose.project=$project" --filter status=running); code=$?
   expect_code "inspect Compose project $project" 0 "$code" "$out"
