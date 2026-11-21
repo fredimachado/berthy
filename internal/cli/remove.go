@@ -104,7 +104,6 @@ func printDestroyPlan(out, errout io.Writer, data []byte, env string) int {
 		}
 	}
 	section("helper containers to remove:", d.Helpers)
-	section("helper images to remove unless a container uses them:", d.HelperImages)
 	section("hook and migration containers to remove:", d.OneOffs)
 	section("images to remove:", d.Images)
 	if t := d.Tunnel; t != nil {

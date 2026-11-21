@@ -678,7 +678,7 @@ func TestEnsureRunsOncePerMinute(t *testing.T) {
 	}
 }
 
-func TestRemoveDeletesTheHelperAndItsUnusedImages(t *testing.T) {
+func TestRemoveDeletesTheHelperAndItsUnusedOldImages(t *testing.T) {
 	f := newHfDocker()
 	clk := &hfClock{t: time.Unix(1_700_000_000, 0)}
 	m := newHfHelper(f, writeAgentBinary(t, "one"), clk)
@@ -698,8 +698,10 @@ func TestRemoveDeletesTheHelperAndItsUnusedImages(t *testing.T) {
 	if _, ok := f.names["berthy-helper-.lab"]; ok {
 		t.Fatal("the helper container was kept")
 	}
-	if _, ok := f.images["berthy-helper:"+current]; ok || !contains(f.removed, "berthy-helper:"+current) {
-		t.Fatalf("the helper's image was kept: removed %v", f.removed)
+	// The image is shared by every hosted environment of the agent: another one's backup may have resolved it and not yet
+	// created its container, so only older images go.
+	if _, ok := f.images["berthy-helper:"+current]; !ok || contains(f.removed, "berthy-helper:"+current) {
+		t.Fatalf("the current helper image was removed: removed %v", f.removed)
 	}
 	if !contains(f.removed, "berthy-helper:aaaaaaaaaaaa") {
 		t.Fatalf("the unused old image was kept: removed %v", f.removed)

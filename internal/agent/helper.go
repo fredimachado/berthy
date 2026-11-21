@@ -289,7 +289,7 @@ func (m *helperManager) ensureNow(ctx context.Context, network string) error {
 	return m.create(ctx, bin, network, netID, img.ID)
 }
 
-// removeNow deletes the helper container, if there is one, and then the helper images that no container uses.
+// removeNow deletes the helper container, if there is one, and then the older helper images that no container uses.
 func (m *helperManager) removeNow(ctx context.Context) error {
 	if m.engine == nil {
 		return nil
@@ -310,7 +310,14 @@ func (m *helperManager) removeNow(ctx context.Context) error {
 			return nil
 		}
 	}
-	m.pruneImages(ctx, "")
+	// The image of the agent's own binary stays: every hosted environment shares it, and another one's backup may have
+	// resolved it and not yet created its container, which is all that would protect it. Without a readable binary nobody
+	// can make the image, so nothing needs it.
+	keep := ""
+	if bin, err := m.binaryInfo(); err == nil {
+		keep = bin.tag()
+	}
+	m.pruneImages(ctx, keep)
 	m.mu.Lock()
 	m.imagesClean = true
 	m.mu.Unlock()

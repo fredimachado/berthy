@@ -192,6 +192,7 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 	}
 	d.images = []engine.InventoryImage{
 		{ID: "id-helper", RepoTags: []string{helperTag}},
+		{ID: "id-stale-helper", RepoTags: []string{"berthy-helper:bbbbbbbbbbbb"}},
 		{ID: "id-acquired", RepoDigests: []string{acquiredRef}},
 		{ID: "id-held", RepoDigests: []string{heldRef}},
 		{ID: "id-foreign", RepoTags: []string{"nginx:alpine"}},
@@ -283,8 +284,9 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 	if got := f.containerIDs(); !reflect.DeepEqual(got, []string{"restore-running", "other-env-helper", "hook-running", "other-env-hook", "foreign"}) {
 		t.Fatalf("containers left: %v", got)
 	}
-	if got := f.imageIDs(); !reflect.DeepEqual(got, []string{"id-helper", "id-held", "id-foreign"}) {
-		// The helper image stays while a running restore helper uses it, and the held image while a foreign container does.
+	if got := f.imageIDs(); !reflect.DeepEqual(got, []string{"id-helper", "id-stale-helper", "id-held", "id-foreign"}) {
+		// Every helper image stays, the unused one too: it belongs to the agent, which every hosted environment shares, and
+		// another environment's backup may be about to use it. The held image stays while a foreign container uses it.
 		t.Fatalf("images left: %v", got)
 	}
 	if got := describeRules(f.tunnelConfig(f.tunnelID)); !reflect.DeepEqual(got, []string{"||http_status:404"}) {
@@ -342,7 +344,7 @@ func TestDestroyRemovesWhatBerthyMadeInOrderAndKeepsTheRest(t *testing.T) {
 		t.Fatalf("order of removals: %v", calls)
 	}
 	got := steps(t, f.store, op.ID)
-	for _, want := range []string{"api: deleted service demo-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef, "kept image " + helperTag + ": in use"} {
+	for _, want := range []string{"api: deleted service demo-api-web", "db: brought down Compose project demo-db", "api: kept volume data", "removed container berthy-helper-test", "removed container archive-1", "kept container restore-1: running", "removed container hook-1", "kept container hook-2: running", "removed image " + acquiredRef} {
 		if !hasStep(got, want) {
 			t.Errorf("no step %q in %v", want, got)
 		}
@@ -369,8 +371,8 @@ func TestDestroyDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	if !reflect.DeepEqual(p.Helpers, []string{"berthy-helper-test", "archive-1"}) || !reflect.DeepEqual(p.OneOffs, []string{"hook-1"}) {
 		t.Fatalf("helpers %v one-offs %v", p.Helpers, p.OneOffs)
 	}
-	if !reflect.DeepEqual(p.HelperImages, []string{helperTag}) || !reflect.DeepEqual(p.Images, []string{acquiredRef}) {
-		t.Fatalf("images %v %v", p.HelperImages, p.Images)
+	if !reflect.DeepEqual(p.Images, []string{acquiredRef}) {
+		t.Fatalf("images %v", p.Images)
 	}
 	if !p.RemoveConnector {
 		t.Fatal("the plan does not say the connector goes")
@@ -381,7 +383,7 @@ func TestDestroyDryRunListsEverythingAndChangesNothing(t *testing.T) {
 	if got := f.allServices(); len(got) != 3 {
 		t.Fatalf("a dry run deleted services: %v", got)
 	}
-	if len(f.containerIDs()) != 8 || len(f.imageIDs()) != 4 {
+	if len(f.containerIDs()) != 8 || len(f.imageIDs()) != 5 {
 		t.Fatal("a dry run removed containers or images")
 	}
 	if !reflect.DeepEqual(f.cf.Snapshot(), before) {
@@ -409,7 +411,7 @@ func TestDestroyRefusesWholeWhenAStatefulComposeAppNeedsAllowRecreate(t *testing
 	if got := f.allServices(); len(got) != 3 {
 		t.Fatalf("nothing may be removed: %v", got)
 	}
-	if len(f.containerIDs()) != 8 || len(f.imageIDs()) != 4 || len(downRuns(f.runner)) != 0 || !reflect.DeepEqual(f.cf.Snapshot(), before) {
+	if len(f.containerIDs()) != 8 || len(f.imageIDs()) != 5 || len(downRuns(f.runner)) != 0 || !reflect.DeepEqual(f.cf.Snapshot(), before) {
 		t.Fatal("something was removed")
 	}
 	if applied, _ := f.store.AppliedApps(context.Background()); len(applied) != 3 {

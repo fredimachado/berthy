@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -32,10 +31,9 @@ type DestroyPlan struct {
 	Apps            []RemovePlan    `json:"apps,omitempty"`
 	Ingress         []IngressChange `json:"ingress,omitempty"` // routes and records no app's removal covers
 	RemoveConnector bool            `json:"remove_connector,omitempty"`
-	Helpers         []string        `json:"helpers,omitempty"`       // helper containers to remove
-	HelperImages    []string        `json:"helper_images,omitempty"` // helper images to remove unless a container still uses them
-	OneOffs         []string        `json:"one_offs,omitempty"`      // finished hook and migration containers to remove
-	Images          []string        `json:"images,omitempty"`        // acquired images that nothing will use
+	Helpers         []string        `json:"helpers,omitempty"`  // helper containers to remove
+	OneOffs         []string        `json:"one_offs,omitempty"` // finished hook and migration containers to remove
+	Images          []string        `json:"images,omitempty"`   // acquired images that nothing will use
 	Tunnel          *TunnelPlan     `json:"tunnel,omitempty"`
 	Blockers        []string        `json:"blockers,omitempty"`
 }
@@ -56,8 +54,6 @@ var destroyTunnelWait = time.Minute
 
 // maxTunnelReasons bounds the reasons listed for one tunnel.
 const maxTunnelReasons = 10
-
-var helperImagePattern = regexp.MustCompile(`^` + engine.HelperRepo + `:[0-9a-f]{12}$`)
 
 // destroyEngine is the part of the Docker API a destroy uses for containers and images. The Engine of a Controller may
 // implement it; without it a destroy has no containers or images to remove.
@@ -231,17 +227,6 @@ func (c *Controller) destroyFor(ctx context.Context, actor Actor, req Request) (
 				d.plan.OneOffs = append(d.plan.OneOffs, containerName(ctr))
 			}
 		}
-		images, err := de.InventoryImages(ctx)
-		if err != nil {
-			return nil, errors.New("image inventory unavailable")
-		}
-		for _, img := range images {
-			for _, tag := range img.RepoTags {
-				if helperImagePattern.MatchString(tag) {
-					d.plan.HelperImages = append(d.plan.HelperImages, tag)
-				}
-			}
-		}
 		if _, ok := c.Engine.(inventoryEngine); ok {
 			candidates, err := c.prunePlanWithout(ctx, gone)
 			if err != nil {
@@ -413,7 +398,7 @@ func (c *Controller) runDestroy(ctx context.Context, op state.Operation, actor A
 	return state.Outcome{State: "succeeded"}
 }
 
-// removeContainersAndImages removes the helper and one-off containers, the helper images that nothing uses, and the images
+// removeContainersAndImages removes the helper and one-off containers and the images
 // Berthy acquired that nothing uses. It reports what it keeps.
 func (c *Controller) removeContainersAndImages(ctx context.Context, d *destruction, step func(string)) state.Outcome {
 	de, ok := c.Engine.(destroyEngine)
@@ -440,26 +425,6 @@ func (c *Controller) removeContainersAndImages(ctx context.Context, d *destructi
 				return state.Outcome{State: "failed", Err: string(errDestroyContainers)}
 			}
 			step("removed container " + containerName(ctr))
-		}
-	}
-	images, err := de.InventoryImages(ctx)
-	if err != nil {
-		return state.Outcome{State: "failed", Err: string(errDestroyImages)}
-	}
-	for _, img := range images {
-		for _, tag := range img.RepoTags {
-			if !helperImagePattern.MatchString(tag) {
-				continue
-			}
-			switch err = de.RemoveUnusedImage(ctx, tag); {
-			case err == nil:
-				step("removed image " + tag)
-			case statusIs(err, 409):
-				step("kept image " + tag + ": in use")
-			case statusIs(err, 404):
-			default:
-				return state.Outcome{State: "failed", Err: string(errDestroyImages)}
-			}
 		}
 	}
 	if _, ok := c.Engine.(inventoryEngine); ok {

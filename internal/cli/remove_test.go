@@ -126,7 +126,7 @@ func TestDestroySendsTheFlagsAndShowsThePlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		path, body = r.URL.Path, string(b)
-		fmt.Fprint(w, `{"roles":[],"destroy":{"apps":[{"app":"api","kind":"image","services":["demo-api-web"],"kept_volumes":["data"]},{"app":"db","kind":"compose","project":"shop-db","services":["database"],"volumes":["shop-db_data"]}],"remove_connector":true,"helpers":["berthy-helper-dev"],"helper_images":["berthy-helper:aabbccddeeff"],"one_offs":["hook-1"],"images":["ghcr.io/acme/api@sha256:1"],"tunnel":{"name":"demo-dev","id":"t1","delete":false,"reasons":["a rule for foreign.example.com remains"]},"blockers":["removing stateful app db needs --allow-recreate"]}}`)
+		fmt.Fprint(w, `{"roles":[],"destroy":{"apps":[{"app":"api","kind":"image","services":["demo-api-web"],"kept_volumes":["data"]},{"app":"db","kind":"compose","project":"shop-db","services":["database"],"volumes":["shop-db_data"]}],"remove_connector":true,"helpers":["berthy-helper-dev"],"one_offs":["hook-1"],"images":["ghcr.io/acme/api@sha256:1"],"tunnel":{"name":"demo-dev","id":"t1","delete":false,"reasons":["a rule for foreign.example.com remains"]},"blockers":["removing stateful app db needs --allow-recreate"]}}`)
 	}))
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
@@ -141,7 +141,7 @@ func TestDestroySendsTheFlagsAndShowsThePlan(t *testing.T) {
 	if path != "/v1/projects/demo/environments/dev/destroy" || req["confirm"] != "dev" || req["volumes"] != true || req["allow_recreate"] != true || req["tunnel"] != true || req["dry_run"] != true || req["request_id"] == "" {
 		t.Fatalf("%s %s", path, body)
 	}
-	for _, want := range []string{"destroy dev", "api (image)", "demo-api-web", "db (compose)", "shop-db_data", "managed ingress", "connector", "berthy-helper-dev", "berthy-helper:aabbccddeeff", "hook-1", "ghcr.io/acme/api@sha256:1", "tunnel demo-dev: keep", "a rule for foreign.example.com remains", "blockers", "removing stateful app db needs --allow-recreate"} {
+	for _, want := range []string{"destroy dev", "api (image)", "demo-api-web", "db (compose)", "shop-db_data", "managed ingress", "connector", "berthy-helper-dev", "hook-1", "ghcr.io/acme/api@sha256:1", "tunnel demo-dev: keep", "a rule for foreign.example.com remains", "blockers", "removing stateful app db needs --allow-recreate"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("plan output lacks %q:\n%s", want, out.String())
 		}
