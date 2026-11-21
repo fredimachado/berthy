@@ -53,7 +53,7 @@ expect_code "a running task container exists after the change" 0 "$code" "$log"
 expect_contains "container logs with the role's rotation" "$log" '{"Type":"json-file","Config":{"max-file":"5","max-size":"50m"}}'
 
 # Adoption: a service Berthy did not create has no log driver, so its plan names the rotation the next deploy will apply.
-out=$(d service create --name "$PROJECT-adopt" --label berthy.environment=$ENVN --network "$NETWORK" --health-cmd true --health-interval 2s "$REG/e2e/web@$WEB_V1_DIGEST" 2>&1); code=$?
+out=$(d service create --name "$PROJECT-adopt" --label berthy.project=$PROJECT --label berthy.environment=$ENVN --network "$NETWORK" --health-cmd true --health-interval 2s "$REG/e2e/web@$WEB_V1_DIGEST" 2>&1); code=$?
 expect_code "create a service Berthy did not make" 0 "$code" "$out"
 wait_for "the adopted service is healthy" adopt_healthy
 expect_code "the adopted service has a healthy task" 0 "$?"

@@ -18,7 +18,7 @@ for dir in "$RUN" "$LOG" "$MAN"; do
   esac
 done
 
-purge_fixture
+purge_fixture || die "previous fixture cleanup is incomplete"
 rm -rf "$RUN" "$LOG" "$MAN" "$MAN"-*
 mkdir -p "$RUN/state" "$LOG" "$MAN" || die "cannot create the fixture directories"
 

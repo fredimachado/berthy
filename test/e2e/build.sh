@@ -32,4 +32,5 @@ build_to "$OTLP_BIN" ./test/fakeotlp || exit 1
 build_to "$HOOK_BIN" ./test/fakewebhook || exit 1
 build_to "$S3_BIN" ./test/fakes3 || exit 1
 build_to "$TUI_BIN" ./test/tuidriver || exit 1
+build_to "$NAMES_BIN" ./test/e2e/fixture-names || exit 1
 "$BIN" version

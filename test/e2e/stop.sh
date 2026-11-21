@@ -4,5 +4,5 @@
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
-purge_fixture
+purge_fixture || exit 1
 echo "stopped: agent and fakes stopped, e2e services, containers, volumes and $REG_NAME removed"

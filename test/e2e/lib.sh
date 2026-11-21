@@ -19,6 +19,7 @@ OTLP_BIN=$E2E_ROOT/bin/fakeotlp
 HOOK_BIN=$E2E_ROOT/bin/fakewebhook
 S3_BIN=$E2E_ROOT/bin/fakes3
 TUI_BIN=$E2E_ROOT/bin/tuidriver
+NAMES_BIN=$E2E_ROOT/bin/fixture-names
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
 MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
@@ -46,13 +47,57 @@ if [ -f "$RUN/env.sh" ]; then . "$RUN/env.sh"; fi
 # asks the credential helper that the user's Windows-side config names, which does not exist in WSL.
 d() { DOCKER_CONFIG=$E2E_ROOT/docker-config "$DOCKER_BIN" --host "unix://$SOCK" "$@"; }
 
+# record_deploy PROJECT ENV [ARGS]: journal names before a deploy can create them, including on interruption.
+record_deploy() (
+  local project=$1 env=$2 dir=. app= arg kind name tmp lock existing
+  shift 2
+  for arg in "$@"; do [ "$arg" = --dry-run ] && return 0; done
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --manifest-dir) shift; [ $# -gt 0 ] || return 0; dir=$1 ;;
+      --manifest-dir=*) dir=${1#*=} ;;
+      --version|--commit|--request-id|--project) shift; [ $# -gt 0 ] || return 0 ;;
+      --*) ;;
+      *) [ -n "$app" ] || app=$1 ;;
+    esac
+    shift
+  done
+  [ -x "$NAMES_BIN" ] || { echo 'fixture-names is unavailable' >&2; return 1; }
+  tmp=$(mktemp "$E2E_ROOT/fixture-names.XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  if ! "$NAMES_BIN" "$dir" "$project" "$env" "$app" > "$tmp"; then rm -f "$tmp"; return 0; fi
+  exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
+  flock -x "$lock" || return 1
+  touch "$E2E_ROOT/fixture-objects" || return 1
+  while IFS=$'\t' read -r kind name; do
+    [ -n "$name" ] || continue
+    grep -Fxq -- "$kind"$'\t'"$name" "$E2E_ROOT/fixture-objects" && continue
+    case $kind in
+      volume)
+        existing=$(d volume ls --format '{{.Name}}') || { rm -f "$tmp"; return 1; }
+        if printf '%s\n' "$existing" | grep -Fxq -- "$name"; then existing=yes; else existing=; fi
+        ;;
+      compose)
+        existing=$(d ps -aq --filter "label=com.docker.compose.project=$name") || { rm -f "$tmp"; return 1; }
+        existing+=$(d network ls -q --filter "label=com.docker.compose.project=$name") || { rm -f "$tmp"; return 1; }
+        existing+=$(d volume ls -q --filter "label=com.docker.compose.project=$name") || { rm -f "$tmp"; return 1; }
+        ;;
+      *) rm -f "$tmp"; return 1 ;;
+    esac
+    [ -n "$existing" ] || printf '%s\t%s\n' "$kind" "$name" >> "$E2E_ROOT/fixture-objects" || { rm -f "$tmp"; return 1; }
+  done < "$tmp"
+  rm -f "$tmp"
+  flock -u "$lock"
+  exec {lock}>&-
+)
+
 # adm CMD [ARGS]: berthy as the admin token. Flags go right after the command name, so a "-- cmd" tail stays last. It names only
 # the environment, so it is right while one project has $ENVN; with a second project that has it, use env_cmd.
-adm() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/admin.json" "$@"; }
+adm() { local c=$1; shift; [ "$c" != deploy ] || record_deploy "$PROJECT" "$ENVN" "$@" || return 1; "$BIN" "$c" -e "$ENVN" --config "$RUN/admin.json" "$@"; }
 
 # ci CMD [ARGS]: berthy as the agent token "ci" (scope deploy, agent: true), for approval scenarios. setup.sh makes it
 # through the API.
-ci() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ci.json" "$@"; }
+ci() { local c=$1; shift; [ "$c" != deploy ] || record_deploy "$PROJECT" "$ENVN" "$@" || return 1; "$BIN" "$c" -e "$ENVN" --config "$RUN/ci.json" "$@"; }
 
 # api_token NAME [FLAGS]: makes a token through the API as the admin token ("token create"), and prints its value. Nothing
 # else is printed, so the caller can capture it.
@@ -71,7 +116,7 @@ make_ciadmin() {
   printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$t" >> "$RUN/env.sh" || return 1
   export BERTHY_CIADMIN_TOKEN=$t
   printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json" || return 1
-  cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
+  cia() { local c=$1; shift; [ "$c" != deploy ] || record_deploy "$PROJECT" "$ENVN" "$@" || return 1; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
 }
 
 # curl_local ARGS: curl to the loopback fakes and the registry, never through a proxy.
@@ -199,7 +244,7 @@ add_environment() {
 env_cmd() {
   local project=$1 env=$2 c=$3
   shift 3
-  (cd "$(env_dir "$project" "$env")" && "$BIN" "$c" -e "$env" --config "$RUN/admin.json" "$@")
+  (cd "$(env_dir "$project" "$env")" && { [ "$c" != deploy ] || record_deploy "$project" "$env" "$@"; } && "$BIN" "$c" -e "$env" --config "$RUN/admin.json" "$@")
 }
 
 # start_agent: starts the agent and waits until /healthz answers, which it does only once every hosted environment has started.
@@ -303,46 +348,55 @@ YML
 }
 
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
-# containers labelled berthy.environment=$ENVN, the $REG_NAME container, and volumes and Compose projects owned by the
-# hosted environments in this fixture.
+# containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
 purge_fixture() {
-  local i v f project env state dir
-  local -a ids states
-  local scopes="$PROJECT-$ENVN" projects=""
+  local i v f project env state kind name lock tmp owner listing failed=0
+  local -a ids owners
+  local volumes="" projects=""
   stop_agent
   stop_fakes
-  states=("$RUN/state")
+  owners=("$PROJECT"$'\t'"$ENVN")
   for f in "$RUN"/environments.d/*.json; do
     [ -f "$f" ] || continue
     IFS=$'\t' read -r project env state < <(jq -r 'select((.project | type) == "string" and (.environment | type) == "string" and (.state_dir | type) == "string") | [.project, .environment, .state_dir] | @tsv' "$f" 2>/dev/null) || continue
     if [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ && $env =~ ^[a-z0-9][a-z0-9-]*$ && $state == "$RUN"/* ]]; then
-      scopes+=$'\n'"$project-$env"
-      states+=("$state")
+      owners+=("$project"$'\t'"$env")
     fi
   done
-  for state in "${states[@]}"; do
-    for dir in "$state"/compose/*; do
-      [ -d "$dir" ] || continue
-      project=${dir##*/}
-      case $project in .*|*.next|*.old) continue ;; esac
-      projects+=$'\n'"$project"
-    done
-  done
-  mapfile -t ids < <(d service ls -q --filter label=berthy.environment=$ENVN)
-  if [ ${#ids[@]} -gt 0 ]; then
-    d service rm "${ids[@]}" >/dev/null
+  mkdir -p "$E2E_ROOT" || return 1
+  exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
+  flock -x "$lock" || return 1
+  if [ -f "$E2E_ROOT/fixture-objects" ]; then
+    while IFS=$'\t' read -r kind name; do
+      case $kind in
+        volume) volumes+=$'\n'"$name" ;;
+        compose) projects+=$'\n'"$name" ;;
+        *) failed=1 ;;
+      esac
+    done < "$E2E_ROOT/fixture-objects"
   fi
-  for i in $(seq 1 60); do
-    mapfile -t ids < <(d service ls -q --filter label=berthy.environment=$ENVN)
-    [ ${#ids[@]} -eq 0 ] && break
-    sleep 0.5
-  done
-
-  for i in $(seq 1 60); do
-    mapfile -t ids < <(d ps -aq --filter label=berthy.environment=$ENVN)
-    [ ${#ids[@]} -eq 0 ] && break
-    d rm -f "${ids[@]}" >/dev/null 2>&1
-    sleep 0.5
+  for owner in "${owners[@]}"; do
+    IFS=$'\t' read -r project env <<< "$owner"
+    listing=$(d service ls -q --filter "label=berthy.project=$project" --filter "label=berthy.environment=$env") || { failed=1; continue; }
+    ids=(); [ -z "$listing" ] || mapfile -t ids <<< "$listing"
+    if [ ${#ids[@]} -gt 0 ]; then
+      d service rm "${ids[@]}" >/dev/null || failed=1
+    fi
+    for i in $(seq 1 60); do
+      listing=$(d service ls -q --filter "label=berthy.project=$project" --filter "label=berthy.environment=$env") || { failed=1; break; }
+      ids=(); [ -z "$listing" ] || mapfile -t ids <<< "$listing"
+      [ ${#ids[@]} -eq 0 ] && break
+      sleep 0.5
+    done
+    [ ${#ids[@]} -eq 0 ] || failed=1
+    for i in $(seq 1 60); do
+      listing=$(d ps -aq --filter "label=berthy.project=$project" --filter "label=berthy.environment=$env") || { failed=1; break; }
+      ids=(); [ -z "$listing" ] || mapfile -t ids <<< "$listing"
+      [ ${#ids[@]} -eq 0 ] && break
+      d rm -f "${ids[@]}" >/dev/null 2>&1 || failed=1
+      sleep 0.5
+    done
+    [ ${#ids[@]} -eq 0 ] || failed=1
   done
 
   d rm -fv "$REG_NAME" >/dev/null 2>&1
@@ -353,40 +407,44 @@ purge_fixture() {
     awk -v p="$REG/e2e/" 'index($1, p) == 1 { if ($2 == "<none>") print $1 "@" $3; else print $1 ":" $2 }' |
     while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
 
-  # Compose objects are selected by their project label and the fixture's stored project directories.
-  d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' |
-    awk -v projects="$projects" 'BEGIN { n = split(projects, p, "\n"); for (i = 1; i <= n; i++) if (p[i] != "") owned[p[i]] = 1 } owned[$2] { print $1 }' |
-    while read -r c; do d rm -f "$c" >/dev/null 2>&1; done
-  d network ls --filter label=com.docker.compose.project -q |
-    while read -r n; do
-      project=$(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null)
+  # The ledger survives a removed Compose working directory and failed cleanup.
+  tmp=$(mktemp "$E2E_ROOT/fixture-cleanup.XXXXXX") || return 1
+  if ! d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' > "$tmp"; then
+    failed=1
+  else
+    while read -r v project; do
       if [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
-        d network rm "$n" >/dev/null 2>&1 || echo "network $n is still in use and was kept" >&2
+        d rm -f "$v" >/dev/null 2>&1 || failed=1
       fi
-    done
-
-  d volume ls --format '{{.Name}} {{.Labels}}' |
-    awk -v scopes="$scopes" -v projects="$projects" '
-      BEGIN {
-        n = split(scopes, s, "\n")
-        count = split(projects, p, "\n")
-        for (i = 1; i <= count; i++) if (p[i] != "") owned[p[i]] = 1
-      }
-      {
-        hit = 0; compose = 0
-        count = split($2, labels, ",")
-        for (i = 1; i <= count; i++) {
-          if (index(labels[i], "com.docker.compose.project=") == 1) {
-            compose = 1
-            if (owned[substr(labels[i], length("com.docker.compose.project=") + 1)]) hit = 1
-          }
-        }
-        if (!compose) for (i = 1; i <= n; i++) if (index($1, s[i] "_") == 1) hit = 1
-        if (hit) print $1
-      }' |
+    done < "$tmp"
+  fi
+  if ! d network ls --filter label=com.docker.compose.project -q > "$tmp"; then
+    failed=1
+  else
     while read -r v; do
-      d volume rm "$v" >/dev/null 2>&1 || echo "volume $v is still in use and was kept" >&2
-    done
+      project=$(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$v" 2>/dev/null) || { failed=1; continue; }
+      if [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
+        d network rm "$v" >/dev/null 2>&1 || failed=1
+      fi
+    done < "$tmp"
+  fi
+  if ! d volume ls --format '{{.Name}} {{.Labels}}' > "$tmp"; then
+    failed=1
+  else
+    while read -r v labels; do
+      [ -n "$v" ] || continue
+      project=$(printf '%s\n' "$labels" | tr ',' '\n' | sed -n 's/^com.docker.compose.project=//p')
+      if { [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; } ||
+         { [ -z "$project" ] && printf '%s\n' "$volumes" | grep -Fxq -- "$v"; }; then
+        d volume rm "$v" >/dev/null 2>&1 || { echo "volume $v is still in use and was kept" >&2; failed=1; }
+      fi
+    done < "$tmp"
+  fi
+  rm -f "$tmp"
+  [ "$failed" -ne 0 ] || rm -f "$E2E_ROOT/fixture-objects"
+  flock -u "$lock"
+  exec {lock}>&-
+  [ "$failed" -eq 0 ]
 }
 
 # Assertions. Each prints "  ok   NAME" or "  FAIL NAME: DETAIL" and counts the failures in E2E_FAILS.
