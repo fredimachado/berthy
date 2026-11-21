@@ -106,9 +106,15 @@ func TestExpandAliasPlacesTheEnvironmentAfterTheFirstWord(t *testing.T) {
 		{"manifest dir is kept for a deploy alias", "ship", []string{"-e", "dev", "--manifest-dir", dir},
 			[]string{"deploy", "-e", "dev", "--manifest-dir", dir, "api", "--version", "v1"}},
 	} {
-		got, ok, err := expandAlias(tc.cmd, tc.args)
-		if err != nil || !ok || !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s: got %q ok %v err %v, want %q", tc.name, got, ok, err, tc.want)
+		// Whether or not the line keeps --manifest-dir, the directory the alias was found in is returned, for the command to find its
+		// project in.
+		wantDir := "."
+		if slices.Contains(tc.args, "--manifest-dir") {
+			wantDir = dir
+		}
+		got, gotDir, ok, err := expandAlias(tc.cmd, tc.args)
+		if err != nil || !ok || !reflect.DeepEqual(got, tc.want) || gotDir != wantDir {
+			t.Errorf("%s: got %q dir %q ok %v err %v, want %q dir %q", tc.name, got, gotDir, ok, err, tc.want, wantDir)
 		}
 	}
 }
@@ -133,7 +139,7 @@ func TestExpandAliasRefusesWhatItCannotExpand(t *testing.T) {
 		{"missing value", "console", []string{"-e"}, false, "missing value for -e"},
 		{"bad alias set", "console", []string{"-e", "prod", "--manifest-dir", shadowing}, true, "deploy"},
 	} {
-		got, ok, err := expandAlias(tc.cmd, tc.args)
+		got, _, ok, err := expandAlias(tc.cmd, tc.args)
 		if got != nil || ok != tc.isAlias || err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %q ok %v err %v, want ok %v and an error with %q", tc.name, got, ok, err, tc.isAlias, tc.want)
 		}

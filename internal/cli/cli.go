@@ -11,6 +11,7 @@ import (
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/probehelper"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/tui"
 	"berthy/internal/version"
@@ -36,7 +37,11 @@ import (
 	"time"
 )
 
-func Run(args []string, out, errout io.Writer) int {
+func Run(args []string, out, errout io.Writer) int { return runIn(args, out, errout, ".") }
+
+// runIn is Run for a command line that may have come from an alias. dir is the manifest directory a command that reads no manifest
+// looks in for its project: "." for a line the person typed, and for an expanded alias the directory the alias was found in.
+func runIn(args []string, out, errout io.Writer, dir string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errout, "usage: berthy <setup|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
@@ -46,7 +51,7 @@ func Run(args []string, out, errout io.Writer) int {
 	if !slices.Contains(builtinCommands, cmd) && !strings.HasPrefix(cmd, "-") {
 		// An alias is expanded before any flag is checked. expandAlias returns no error only for an alias, so the expanded
 		// line starts with a built-in command and is not expanded again.
-		expanded, isAlias, err := expandAlias(cmd, args)
+		expanded, aliasDir, isAlias, err := expandAlias(cmd, args)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			if isAlias {
@@ -54,7 +59,7 @@ func Run(args []string, out, errout io.Writer) int {
 			}
 			return 2
 		}
-		return Run(expanded, out, errout)
+		return runIn(expanded, out, errout, aliasDir)
 	}
 	if cmd == "version" {
 		// Local: it prints this build's version and needs no agent or config.
@@ -97,7 +102,7 @@ func Run(args []string, out, errout io.Writer) int {
 		return runStateRestore(args, out, errout)
 	}
 	if isDeploymentCommand(cmd) {
-		return runDeployment(cmd, args, out, errout)
+		return runDeployment(cmd, args, out, errout, dir)
 	}
 	if cmd == "agent" && len(args) > 0 && args[0] == "token" {
 		return runAgentToken(args[1:], out, errout)
@@ -309,12 +314,16 @@ func Run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "remote commands require -e")
 		return 2
 	}
+	if !scope.ValidEnvironment(env) {
+		fmt.Fprintln(errout, "valid -e environment required")
+		return 2
+	}
 	path, err := agentclient.ConfigPath(config)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: "."})
+	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

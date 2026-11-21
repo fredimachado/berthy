@@ -59,8 +59,9 @@ func checkAliases(aliases map[string]string) error {
 // expandAlias returns the command line the alias cmd of the manifest stands for. The person's -e, --config and --manifest-dir
 // go right after the alias's first word, and every other argument the person gave goes at the end. ok reports whether cmd is
 // an alias of the manifest. When it is not, err says why cmd is unknown. When it is, but the manifest's aliases cannot run,
-// ok is true and err names the alias.
-func expandAlias(cmd string, args []string) (expanded []string, ok bool, err error) {
+// ok is true and err names the alias. dir is the manifest directory the alias was found in: the expanded line may not take
+// --manifest-dir, and the command still has to find its project in that directory, not in the one it runs in.
+func expandAlias(cmd string, args []string) (expanded []string, dir string, ok bool, err error) {
 	dir, env := ".", ""
 	var flags, manifestDir, rest []string
 	for i := 0; i < len(args); i++ {
@@ -72,7 +73,7 @@ func expandAlias(cmd string, args []string) (expanded []string, ok bool, err err
 		switch a {
 		case "-e", "--config", "--manifest-dir":
 			if i+1 == len(args) {
-				return nil, false, fmt.Errorf("missing value for %s", a)
+				return nil, "", false, fmt.Errorf("missing value for %s", a)
 			}
 			i++
 			switch a {
@@ -94,23 +95,23 @@ func expandAlias(cmd string, args []string) (expanded []string, ok bool, err err
 		// Aliases live in the manifest, and an overlay is per environment, so -e is needed to read them. Without -e the CLI cannot
 		// tell a typo from an alias, so the message says both.
 		if _, statErr := os.Stat(filepath.Join(dir, "berthy.yml")); statErr == nil {
-			return nil, false, fmt.Errorf("unknown command %s (an alias of the manifest needs -e)", cmd)
+			return nil, "", false, fmt.Errorf("unknown command %s (an alias of the manifest needs -e)", cmd)
 		}
-		return nil, false, unknown
+		return nil, "", false, unknown
 	}
 	m, err := manifest.Load(dir, env)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, unknown
+		return nil, "", false, unknown
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("unknown command %s (the manifest did not load: %v)", cmd, err)
+		return nil, "", false, fmt.Errorf("unknown command %s (the manifest did not load: %v)", cmd, err)
 	}
 	value, found := m.Aliases[cmd]
 	if !found {
-		return nil, false, unknown
+		return nil, "", false, unknown
 	}
 	if err := checkAliases(m.Aliases); err != nil {
-		return nil, true, err
+		return nil, "", true, err
 	}
 	words := strings.Fields(value)
 	line := func(pairs []string) []string {
@@ -120,9 +121,9 @@ func expandAlias(cmd string, args []string) (expanded []string, ok bool, err err
 	}
 	// --manifest-dir is read for the lookup above. It goes on to the expanded line only when that command takes it.
 	if withDir := line(append(slices.Clone(flags), manifestDir...)); len(manifestDir) > 0 && acceptsFlag(withDir, "--manifest-dir") {
-		return withDir, true, nil
+		return withDir, dir, true, nil
 	}
-	return line(flags), true, nil
+	return line(flags), dir, true, nil
 }
 
 // acceptsFlag reports whether the command line takes flag. It asks the list that already refuses the flags a change command does

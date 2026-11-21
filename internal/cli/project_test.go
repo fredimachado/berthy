@@ -83,3 +83,34 @@ func TestACommandWithAnEnvironmentOfSeveralProjectsIsRefusedBeforeAnyRequest(t *
 		t.Fatalf("a refused command sent %d and %d requests", cardio.Load(), slice.Load())
 	}
 }
+
+func TestAnAliasFoundThroughManifestDirReachesTheProjectOfThatDirectory(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	sliceDir := writeAliasDir(t, strings.Replace(aliasManifest, "project: demo", "project: sliceup", 1)+"  list: ps\n")
+	// The person is in the checkout of another project, whose prod is not the one the alias means.
+	t.Chdir(projectDirOf(t, "cardiotennis"))
+	// "list" is a read command and "hist" a deployment command that takes no --manifest-dir: the expanded line has none.
+	for i, alias := range []string{"list", "hist"} {
+		var out, errout bytes.Buffer
+		if code := Run([]string{alias, "-e", "prod", "--config", cfg, "--manifest-dir", sliceDir}, &out, &errout); code != 0 {
+			t.Fatalf("%s: exit %d: %s", alias, code, errout.String())
+		}
+		if cardio.Load() != 0 || slice.Load() != int32(i+1) {
+			t.Fatalf("%s reached cardiotennis %d times and sliceup %d times", alias, cardio.Load(), slice.Load())
+		}
+	}
+}
+
+func TestAReadCommandRefusesAnInvalidEnvironmentLikeTheOthers(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	for _, cmd := range []string{"ps", "doctor", "logs"} {
+		var out, errout bytes.Buffer
+		code := Run([]string{cmd, "api", "-e", "prod_1", "--config", cfg}, &out, &errout)
+		if code != 2 || errout.String() != "valid -e environment required\n" || out.Len() != 0 {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", cmd, code, out.String(), errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatalf("a refused command sent requests")
+	}
+}

@@ -356,7 +356,8 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 	return "", key
 }
 
-func runDeployment(cmd string, args []string, out, errout io.Writer) int {
+// runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
+func runDeployment(cmd string, args []string, out, errout io.Writer, dir string) int {
 	f, err := parseDeploymentArgs(args)
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -444,12 +445,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer) int {
 		b, _ := json.Marshal(loaded.Manifest)
 		return printResponse(out, errout, b, f.json)
 	}
+	projectDir := dir
+	if slices.Contains(f.given, "--manifest-dir") {
+		projectDir = f.dir
+	}
 	cfgPath, err := agentclient.ConfigPath(f.config)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Environment: f.env, ManifestDir: f.dir})
+	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Environment: f.env, ManifestDir: projectDir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
