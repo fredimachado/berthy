@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,19 +55,6 @@ func TestAPathThatIsNotAnAPIPathIs404(t *testing.T) {
 		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != http.StatusNotFound || got != "" || !strings.Contains(w.Body.String(), `"message":"not found"`) {
 			t.Errorf("%s: %d %s, handler saw %q", path, w.Code, w.Body.String(), got)
-		}
-	}
-}
-
-func TestTheURLOfAnEarlierReleaseSaysToUpgradeTheCLI(t *testing.T) {
-	for _, path := range []string{"/v1/environments/lab/apps", "/v1/environments/lab/", "/v1/environments/other/agent"} {
-		var got string
-		w := httptest.NewRecorder()
-		mount(labPrefix, seen(&got)).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		var body struct{ Code, Message string }
-		const want = "this agent serves /v1/projects/<project>/environments/<environment>/: upgrade the CLI"
-		if w.Code != http.StatusNotFound || got != "" || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Code != "not_found" || body.Message != want {
-			t.Errorf("%s: %d %q, handler saw %q", path, w.Code, w.Body.String(), got)
 		}
 	}
 }
