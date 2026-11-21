@@ -46,8 +46,8 @@ printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s",
   || die "cannot write agent.json"
 
 # CLI configurations. Each names its token by environment variable, so the token never sits in a file the CLI reads.
-printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_ADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/admin.json" || die "cannot write admin.json"
-printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CI_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ci.json" || die "cannot write ci.json"
+printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_ADMIN_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/admin.json" || die "cannot write admin.json"
+printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CI_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/ci.json" || die "cannot write ci.json"
 
 # Registry: throwaway and unauthenticated, in memory, so nothing it holds outlives the run.
 d run -d --name "$REG_NAME" --label berthy.e2e=1 -p "$REG:5000" --tmpfs /var/lib/registry registry:2 >/dev/null \

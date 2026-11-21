@@ -6,7 +6,8 @@
 #   b. config show, which stops at the first problem, prints that one message only;
 #   c. a deploy of the broken manifest is refused with the first problem, and creates nothing;
 #   d. with the mistakes fixed, config validate prints manifest valid and exits 0;
-#   e. config validate -e prod_1 against the scenario's manifest directory is refused, and the message names the environment.
+#   e. config validate -e prod_1 against the scenario's manifest directory is refused by the CLI: its exact message, exit 2;
+#   f. an overlay that sets project: other is refused by config validate, with the overlay's file and the line of the key.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -68,13 +69,20 @@ out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "the fixed manifest validates" 0 "$code" "$out"
 expect_eq "the fixed manifest prints manifest valid" "manifest valid" "$out"
 
-# An environment name with _ is refused, even against a valid manifest directory.
+# An environment name with _ is refused by the CLI before anything is read, with its own message and exit code 2.
 out=$("$BIN" config validate -e prod_1 --manifest-dir "$MAN" 2>&1); code=$?
-if [ "$code" -ne 0 ]; then
-  pass "config validate refuses environment prod_1 (exit $code)"
-else
-  fail "config validate refuses environment prod_1" "exit 0"
-fi
-expect_contains "the refusal names the environment" "$out" "environment"
+expect_code "config validate refuses environment prod_1" 2 "$code" "$out"
+expect_eq "the refusal of prod_1 is the CLI's message" "valid -e environment required" "$out"
+
+# An overlay cannot change the project: the problem is placed at the overlay's file and at the line of the key.
+cat > "$MAN/$OVERLAY" <<YML
+network: $NETWORK
+project: other
+YML
+out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1); code=$?
+expect_code "config validate refuses an overlay with another project" 1 "$code" "$out"
+expect_eq "the refusal names the overlay, the line and the rule" "$OVERLAY:2:1: project is set in berthy.yml only: an environment cannot have another project
+1 problem" "$out"
+rm -f "$MAN/$OVERLAY"
 
 finish

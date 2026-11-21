@@ -11,7 +11,7 @@ set -uo pipefail
 as_token() {
   local token=$1 c=$2
   shift 2
-  printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_SCENARIO_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/scenario.json"
+  printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_SCENARIO_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/scenario.json"
   BERTHY_SCENARIO_TOKEN=$token "$BIN" "$c" -e "$ENVN" --config "$RUN/scenario.json" "$@"
 }
 

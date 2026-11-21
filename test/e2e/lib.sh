@@ -69,7 +69,7 @@ make_ciadmin() {
   case $t in bty.$ENVN.*) ;; *) return 1 ;; esac
   printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$t" >> "$RUN/env.sh" || return 1
   export BERTHY_CIADMIN_TOKEN=$t
-  printf '{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}\n' "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json" || return 1
+  printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json" || return 1
   cia() { local c=$1; shift; "$BIN" "$c" -e "$ENVN" --config "$RUN/ciadmin.json" "$@"; }
 }
 
