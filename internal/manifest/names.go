@@ -1,6 +1,9 @@
 package manifest
 
-import "fmt"
+import (
+	"berthy/internal/dockername"
+	"fmt"
+)
 
 // ServiceName is the Swarm service of a role.
 func (m *Manifest) ServiceName(environment, app, role string) string {
@@ -20,6 +23,15 @@ func (m *Manifest) ServiceNameError(environment, app, role string) string {
 	name := m.ServiceName(environment, app, role)
 	if len(name) > MaxServiceName {
 		return fmt.Sprintf("name %s is longer than 63 characters; shorten the project, environment, app or role", name)
+	}
+	return ""
+}
+
+// VolumeNameError reports a scoped volume name the engine cannot address.
+func (m *Manifest) VolumeNameError(environment, volume string) string {
+	name := m.VolumeName(environment, volume)
+	if !dockername.Valid(name) {
+		return fmt.Sprintf("volume name %s is not a valid Docker identifier; shorten the volume, project or environment", name)
 	}
 	return ""
 }

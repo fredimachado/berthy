@@ -693,8 +693,18 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 			continue
 		}
 		for _, role := range sortedKeys(a.Roles) {
+			path := join("apps", app) + ".roles." + role
 			if message := m.ServiceNameError(env, app, role); message != "" {
-				namesTooLong.add(join("apps", app)+".roles."+role, "%s", message)
+				namesTooLong.add(path, "%s", message)
+			}
+			for i, raw := range a.Roles[role].Volumes {
+				mount, err := ParseMount(raw)
+				if err != nil {
+					return nil, err
+				}
+				if message := m.VolumeNameError(env, mount.Source); message != "" {
+					namesTooLong.add(path+".volumes."+strconv.Itoa(i), "%s", message)
+				}
 			}
 		}
 	}

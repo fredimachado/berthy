@@ -10,10 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"berthy/internal/dockername"
 )
 
 const maxDockerResponse = 8 << 20
@@ -79,13 +80,11 @@ type InventoryService struct {
 	Spec, PreviousSpec json.RawMessage
 }
 
-var dockerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
-
 // ValidName reports whether s is a Docker identifier the engine accepts for a container.
-func ValidName(s string) bool { return dockerID.MatchString(s) }
+func ValidName(s string) bool { return dockername.Valid(s) }
 
 func pathID(id string) (string, error) {
-	if !dockerID.MatchString(id) {
+	if !dockername.Valid(id) {
 		return "", fmt.Errorf("invalid Docker identifier")
 	}
 	return url.PathEscape(id), nil

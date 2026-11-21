@@ -423,3 +423,27 @@ func TestLoadChecksManagedIngressConnectorServiceName(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadChecksScopedVolumeIdentifierAtItsMount(t *testing.T) {
+	for _, n := range []int{118, 119} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			dir := t.TempDir()
+			volume := strings.Repeat("v", n)
+			base := fmt.Sprintf("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web:\n        volumes:\n          - %s:/data\n", volume)
+			if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(base), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadDetailed(dir, "prod")
+			if n == 118 {
+				if err != nil {
+					t.Fatalf("128-character volume: %v", err)
+				}
+				return
+			}
+			ps, ok := err.(Problems)
+			if !ok || len(ps) != 1 || ps[0].Path != "apps.api.roles.web.volumes.0" || ps[0].File != "berthy.yml" || ps[0].Line != 10 || !strings.Contains(ps[0].Message, "shorten the volume, project or environment") || !strings.Contains(ps[0].Message, "demo-prod_"+volume) {
+				t.Fatalf("129-character volume: %v (%+v)", err, ps)
+			}
+		})
+	}
+}
