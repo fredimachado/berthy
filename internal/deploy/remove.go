@@ -423,9 +423,32 @@ func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r 
 		for _, b := range bindings {
 			claims = append(claims, state.Claim{Kind: state.ClaimService, Name: b.Name})
 		}
-		if req.Volumes && c.Reserve == nil {
-			for _, name := range declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) }) {
-				claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: name})
+		if req.Volumes {
+			declared := declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) })
+			if c.Reserve == nil {
+				for _, name := range declared {
+					claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: name})
+				}
+			} else {
+				held, err := c.Store.Claims(ctx)
+				if err != nil {
+					return state.Outcome{State: "failed", Err: string(errRemoveState)}
+				}
+				var volumes []state.Claim
+				for _, name := range declared {
+					claim := state.Claim{Kind: state.ClaimVolume, Name: name}
+					if slices.Contains(held, claim) {
+						volumes = append(volumes, claim)
+					}
+				}
+				if len(volumes) > 0 {
+					reserved, err := c.reserveClaims(ctx, volumes)
+					if err != nil {
+						return removeFailure(err, errRemoveVolume)
+					}
+					reserved.added = reserved.leased
+					c.finishReservation(ctx, reserved, false)
+				}
 			}
 		}
 		c.settle(ctx, claims)

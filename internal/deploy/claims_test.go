@@ -1105,3 +1105,29 @@ func TestRecoveryKeepsClaimsWhenAbsenceCannotBeConfirmed(t *testing.T) {
 		t.Fatalf("claims: %v, %v", held, err)
 	}
 }
+
+func TestRemovalSettlesClaimOfAlreadyAbsentDeclaredVolume(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "shop-test_data"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "remove", ActorID: "actor", Kind: "remove", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docker := &volumeDocker{loggedEngine: &loggedEngine{calls: &callLog{}}, volumes: map[string]string{}}
+	c := Controller{Store: s, Engine: docker, Environment: "test", Reserve: s.AddClaimsNew}
+	app := manifest.App{Kind: "image", Roles: map[string]manifest.Role{"web": {Volumes: []string{"data:/data"}}}}
+	r := &removal{m: manifest.Manifest{Project: "shop"}, app: app, plan: RemovePlan{Kind: "image"}}
+	journal := 0
+	out := c.removeApp(ctx, op.ID, Request{App: "api", Volumes: true}, r, func(string) {}, &journal)
+	if out.State != "succeeded" {
+		t.Fatalf("outcome: %+v", out)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || slices.Contains(held, claim) {
+		t.Fatalf("claims: %v, %v", held, err)
+	}
+}
