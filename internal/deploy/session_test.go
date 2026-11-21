@@ -518,6 +518,26 @@ func TestRemoveOrphanSessionsRemovesOnlyThisEnvironmentsSessionAndJobContainers(
 	}
 }
 
+func TestOrphanCleanupLeavesTheContainersOfOtherEnvironments(t *testing.T) {
+	c, f := runSessionFixture(t)
+	c.Project = "shop"
+	f.labels["mine"] = map[string]string{"berthy.project": "shop", "berthy.environment": "test", "berthy.oneoff": "job"}
+	f.labels["other-project"] = map[string]string{"berthy.project": "blog", "berthy.environment": "test", "berthy.oneoff": "job"}
+	f.labels["other-environment"] = map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.session": "a"}
+	f.running["other-project"] = true
+	if err := c.RemoveOrphanSessions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.labels["mine"]; ok {
+		t.Error("own job was kept")
+	}
+	for _, name := range []string{"other-project", "other-environment"} {
+		if _, ok := f.labels[name]; !ok {
+			t.Errorf("%s was removed", name)
+		}
+	}
+}
+
 func TestNoSessionOpensOnceTheAgentIsStopping(t *testing.T) {
 	c, f := runSessionFixture(t)
 	c.CloseSessions(context.Background())

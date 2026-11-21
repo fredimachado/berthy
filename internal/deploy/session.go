@@ -264,12 +264,13 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 		return errRunPrepare
 	}
 	id := hex.EncodeToString(random[:])
-	labels := map[string]string{"berthy.environment": c.Environment, "berthy.session": id, "berthy.oneoff": "session"}
+	labels := c.id().Labels()
+	labels["berthy.session"], labels["berthy.oneoff"] = id, "session"
 	spec, err := p.oneOffSpec(req.Command, t.Role, t.Limits, t.Volumes, labels, &terminal{TTY: req.TTY})
 	if err != nil {
 		return errRunPrepare
 	}
-	container, err := e.CreateContainer(ctx, "berthy-session-"+id, spec)
+	container, err := e.CreateContainer(ctx, "berthy-session-"+c.id().Slug()+"-"+id, spec)
 	if err != nil || container == "" {
 		return errors.New("interactive session unavailable")
 	}
@@ -406,7 +407,7 @@ func (c *Controller) RemoveOrphanSessions(ctx context.Context) error {
 	var failed error
 	for _, ct := range containers {
 		_, session := ct.Labels["berthy.session"]
-		if !session && !commandKinds[ct.Labels["berthy.oneoff"]] || ct.Labels["berthy.environment"] != c.Environment {
+		if !session && !commandKinds[ct.Labels["berthy.oneoff"]] || !c.id().Owns(ct.Labels) {
 			continue
 		}
 		if err = e.RemoveContainer(ctx, ct.ID); err != nil {

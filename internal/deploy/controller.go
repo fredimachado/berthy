@@ -15,10 +15,15 @@ import (
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/version"
 	"github.com/distribution/reference"
 )
+
+func (c *Controller) id() scope.ID {
+	return scope.ID{Project: c.Project, Environment: c.Environment}
+}
 
 type Request struct {
 	App     string `json:"app"`
