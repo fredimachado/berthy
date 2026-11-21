@@ -146,7 +146,7 @@ Berthy manages two kinds of application: image apps for stateless services and C
 - **Stateful apps are separate.** Deploying an image app never touches a Compose app. Restarting or recreating a Compose app marked `stateful` always takes an explicit command that names it.
 - **Dependencies.** An app can name, in `depends_on`, the apps that must be deployed before it. The list orders `berthy deploy` without an app and nothing else: a deploy of one app does not deploy or check its dependencies. See Deploying every app.
 - **Images are pinned by digest.** The agent resolves the tag to a digest at deploy time and records it. Rollback uses the recorded digest. Protected environments reject every tag, `latest` and a git SHA alike, and deploy only by digest. A release also records the tag the deploy asked for (`--version v1.0.2` records `v1.0.2`), which `history` shows as `tag`. The tag is a label only: the digest is what runs, and nothing decides from it. A digest deploy, a Compose app and an adoption record no tag, and a rollback records the tag of the release it returns to.
-- **Compose project names are explicit.** A Compose app runs under the project name `<project>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
+- **Compose project names are explicit.** A Compose app runs under the project name `<project>-<environment>-<app>` unless `project_name` sets another. Compose names volumes after the project, so the name must not change once an app holds data.
 - **Adoption.** Existing services and Compose projects can be adopted by name without being recreated. See Adopting an existing deployment.
 - **Services deleted outside Berthy.** If a role's service is gone under both its bound name and its recorded ID, the next deploy or rollback recreates it under that name and binds the new service to the role. A service that carries the bound name under a different ID, or that still exists under its ID after a rename, is refused before any service changes.
 - **One shared network.** All apps join one attachable overlay network, so the ingress app resolves them by name. Its name is set in the manifest, so an existing network can be kept. `berthy setup` creates it when it does not exist.
@@ -428,7 +428,7 @@ The fields are `account_id`, `api_token_secret` and `image` (required), and `rep
 
 - **One tunnel per environment.** Every published app in the environment shares it.
 - **A hostname belongs to one role.** The same hostname on two roles fails validation.
-- **The target is worked out for you.** A hostname routes to `http://<project>-<app>-<role>:<port>`, the role's service name on the shared network. Swarm spreads requests across the role's healthy replicas.
+- **The target is worked out for you.** A hostname routes to `http://<project>-<environment>-<app>-<role>:<port>`, the role's service name on the shared network. Swarm spreads requests across the role's healthy replicas.
 - **The domain must already be in the Cloudflare account.** Berthy finds the zone from the hostname and does not add domains.
 
 ### What Berthy manages
@@ -1199,7 +1199,7 @@ backups:
 ```
 
 - For a Compose app, `volume` is the key in the Compose file's top-level `volumes` block. Berthy resolves it using the app's Compose project name and any explicit volume name.
-- For an image app, `volume` is the Docker volume name mounted by one of its roles. A role declares mounts under `volumes`, with entries such as `uploads:/app/uploads`.
+- For an image app, `volume` is the manifest volume name mounted by one of its roles. A role declares mounts under `volumes`, with entries such as `uploads:/app/uploads`.
 - Omit `schedule` to run a backup only through `backup run` or a deploy hook.
 - **Schedules.** A backup with a `schedule` runs once per cron occurrence (read in the manifest's `timezone`), with the trigger `schedule`. The agent reads the manifest of the deployed apps every minute, so a changed schedule takes effect at the next minute after its deploy. Each occurrence is recorded in the agent's state before it runs and at most once, so restarting the agent in the same minute, or a second process on the same state, cannot run it twice. Occurrences that pass while the agent is down are not made up. If a backup of the same Docker volume is still running at an occurrence, the occurrence is skipped: nothing is recorded, the agent logs `skipped: previous backup still running`, and nothing alerts. A scheduled run that cannot start, such as one whose credentials are gone, is recorded as a failed run so that the backup's check shows why. Every scheduled run is written to the audit log with the backup as the caller (`backup:<name>`, action `backup_run:<name>`, outcomes `started`, then `succeeded` or `failed`).
 - `retention.keep` defaults to `all`. Set it to a number to retain that many successful backups for the job.
@@ -1216,7 +1216,7 @@ Backups of the same volume run one at a time: a second one is refused with `409`
 
 A failed run is recorded as `failed` with a detail that starts with the step that failed: `preparation failed`, `archive failed`, `command failed`, `upload failed` or `sidecar failed`. A run that the agent's stop cut short reads `agent stopped during the backup`, and one that a crash left running reads `agent restarted during the backup`.
 
-**Which volume.** For an image app, `volume` must be the source of a named-volume mount of one of its roles, and the Docker volume has that name. For a Compose app, `volume` is a key of the Compose file's top-level `volumes`, and the agent asks Compose, with the project's stored files, for the Docker name (an external volume has the name it declares). A volume the app does not mount is refused: `backup <name>: volume <volume> is not mounted by app <app>`. A backup of an app that is not deployed is not part of the configuration.
+**Which volume.** For an image app, `volume` must be the source of a named-volume mount of one of its roles, and its Docker volume is named `<project>-<environment>_<volume>`. For a Compose app, `volume` is a key of the Compose file's top-level `volumes`, and the agent asks Compose, with the project's stored files, for the Docker name (an external volume has the name it declares). A volume the app does not mount is refused: `backup <name>: volume <volume> is not mounted by app <app>`. A backup of an app that is not deployed is not part of the configuration.
 
 **What storage holds.** Objects of a backup sit under `<prefix>/<backup>/`, where `<prefix>` is the backup's `prefix` or `<app>/<volume>`:
 

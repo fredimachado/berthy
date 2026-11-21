@@ -517,10 +517,10 @@ apps:
 | `resources.cpu` | CPU limit in cores, such as `"1.0"` or `"0.5"`. | no limit |
 | `resources.memory` | Memory limit, such as `512M`, `1G`, `256MiB`. | no limit |
 | `hostnames` | Public hostnames for managed ingress. See [step 7](#step-7-put-it-on-the-internet). | none |
-| `service` | The name of an existing Swarm service to adopt. See [adoption](#adopting-an-app-that-already-runs). | `<project>-<app>-<role>` |
+| `service` | The name of an existing Swarm service to adopt. See [adoption](#adopting-an-app-that-already-runs). | `<project>-<environment>-<app>-<role>` |
 | `logging` | The log driver and options of the role's containers. See **Log rotation** below. | `json-file` or `local` with `max-size: 10m`, `max-file: 3` |
 
-Berthy names the Swarm service `<project>-<app>-<role>`. The API's web role is `todo-api-web`. Other containers on the network can reach it at that name.
+Berthy names the Swarm service `<project>-<environment>-<app>-<role>`. The API's web role is `todo-prod-api-web`. Other containers on the network can reach it at that name.
 
 **Log rotation.** Docker keeps a container's logs in files. Berthy gives each role's containers a limit, so a chatty app cannot fill the disk: at most 3 files of 10 MB each. This applies when the role sets no `logging` and the server's default log driver is `json-file` or `local`. To choose the driver or the limits, set `logging`:
 
@@ -660,7 +660,7 @@ These run during a deploy. [Step 6](#step-6-ship-a-new-version-of-the-api) expla
 | --- | --- |
 | `file` | The Compose file, relative to the manifest directory. It must be a regular file inside it, not larger than 512 KiB. The CLI reads it and sends it with the deploy. |
 | `stateful` | `true` means a command that would recreate or remove this app is refused unless it carries `--allow-recreate` and an admin token. |
-| `project_name` | The Compose project name. Default `<project>-<app>`, so `todo-postgres`. Compose names volumes after it, so **never change it** once the app holds data. Set it to the existing name when you adopt a running project. |
+| `project_name` | The Compose project name. Default `<project>-<environment>-<app>`, so `todo-prod-postgres`. Compose names volumes after it, so **never change it** once the app holds data. Set it to the existing name when you adopt a running project. |
 
 Compose rules to remember:
 
@@ -984,7 +984,7 @@ Create a GitHub token (classic) that can only read packages:
 Value of GHCR_TOKEN (hidden):
 checked: ghcr.io lets this credential pull acme/todo-api
 ok: true
-todo-api-web: now pulls from ghcr.io with the new password
+todo-prod-api-web: now pulls from ghcr.io with the new password
 ```
 
 Berthy gives the new password to each running service that pulls from ghcr.io. Swarm keeps its own copy of the pull password with each service, and uses it whenever a server has to pull the image, for example when a second server starts a replica. Berthy updates that copy and restarts nothing: the tasks keep running. A service whose tasks were failing to pull with the old password recovers by itself within seconds. Compose apps are not touched. Nothing runs with their copy of the password, so they get the new one at their next deploy.
@@ -996,7 +996,7 @@ The service lines say:
 - `services not updated: REASON`: the agent could not look at the services at all.
 - `no running service pulls from ghcr.io yet`: nothing is deployed from that registry yet, so there is nothing to update.
 
-When a service is not updated, or the services could not be looked at, the last line reads `Run the command again to retry the services that were not updated.` The secret is stored in every case, and the command exits with `0`. Running the command again is safe. With `--json`, the command prints the agent's answer instead, such as `{"ok":true,"registry":"ghcr.io","services":[{"name":"todo-api-web","updated":true}]}`.
+When a service is not updated, or the services could not be looked at, the last line reads `Run the command again to retry the services that were not updated.` The secret is stored in every case, and the command exits with `0`. Running the command again is safe. With `--json`, the command prints the agent's answer instead, such as `{"ok":true,"registry":"ghcr.io","services":[{"name":"todo-prod-api-web","updated":true}]}`.
 
 **The Cloudflare API token.** Set the new token under the same name:
 
@@ -1029,7 +1029,7 @@ Every deploy starts the same way: look at the plan first.
 berthy deploy redis -e prod --dry-run
 ```
 
-`--dry-run` prints the plan and acts on nothing. Many commands that change something accept it (the [reference](#commands) lists which). For a Compose app the plan lists the Compose project (`todo-redis`), each service with its action (`create`, `keep`, `recreate` or `remove`) and each volume with `create` or `keep`.
+`--dry-run` prints the plan and acts on nothing. Many commands that change something accept it (the [reference](#commands) lists which). For a Compose app the plan lists the Compose project (`todo-prod-redis`), each service with its action (`create`, `keep`, `recreate` or `remove`) and each volume with `create` or `keep`.
 
 Then run it for real:
 
@@ -1738,7 +1738,7 @@ After that, **`berthy deploy api` keeps the routes in step**: as the last step o
 | --- | --- |
 | Tunnel | Found by name, or created as a remotely managed tunnel. |
 | Connector | A Swarm service on the shared network, with the tunnel's token as a secret. It shows in `ps` as `ingress`, and `logs` and `restart` work on it. |
-| Routes | One rule per hostname in the tunnel's configuration. A hostname routes to `http://<project>-<app>-<role>:<port>`, here `http://todo-api-web:8080`. Swarm spreads requests across healthy replicas. |
+| Routes | One rule per hostname in the tunnel's configuration. A hostname routes to `http://<project>-<environment>-<app>-<role>:<port>`, here `http://todo-prod-api-web:8080`. Swarm spreads requests across healthy replicas. |
 | DNS | One proxied `CNAME` per hostname, pointing at the tunnel. |
 
 The name `ingress` is reserved: you cannot name an app that.
@@ -2906,7 +2906,7 @@ Roles belong to image apps.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `service` | name | `<project>-<app>-<role>` | The name of the role's Swarm service. Set it to adopt an existing service. |
+| `service` | name | `<project>-<environment>-<app>-<role>` | The name of the role's Swarm service. Set it to adopt an existing service. |
 | `command` | list | the image's | The container's command, as a list. |
 | `entrypoint` | list | the image's | The container's entrypoint, as a list. `command` is passed to it as arguments. |
 | `user` | string | the image's | The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`. |
@@ -3135,7 +3135,7 @@ See [step 12](#step-12-the-terminal-ui).
 | `/var/lib/berthy/key` | The encryption key. `berthy:berthy`, mode `0600`. Never uploaded. |
 | `/var/lib/berthy/key.prev` | The key from before the last rotation, kept until the next state snapshot succeeds. `key.next` exists only while a rotation runs. |
 
-Besides these, Berthy creates Docker objects: Swarm services named `<project>-<app>-<role>`, Compose projects named `<project>-<app>`, the shared overlay network, a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.*` labels.
+Besides these, Berthy creates Docker objects: Swarm services named `<project>-<environment>-<app>-<role>`, Compose projects named `<project>-<environment>-<app>`, the shared overlay network, a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.*` labels.
 
 ---
 

@@ -111,7 +111,7 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.hooks.post_deploy", Section: "apps", Type: "list", Applies: "image", Description: "Steps that run in order after the new version is serving."},
 		{Path: "apps.<name>.migrations", Section: "apps", Type: "map", Applies: "image", Description: "Database migrations, which run as a step of the deploy after the pre-deploy hooks."},
 
-		{Path: "apps.<name>.roles.<role>.service", Section: "roles", Type: "name", Default: "<project>-<app>-<role>", Description: "The name of the role's Swarm service. Set it to adopt an existing service."},
+		{Path: "apps.<name>.roles.<role>.service", Section: "roles", Type: "name", Default: "<project>-<environment>-<app>-<role>", Description: "The name of the role's Swarm service. Set it to adopt an existing service."},
 		{Path: "apps.<name>.roles.<role>.command", Section: "roles", Type: "list", Default: "the image's", Description: "The container's command, as a list."},
 		{Path: "apps.<name>.roles.<role>.entrypoint", Section: "roles", Type: "list", Default: "the image's", Description: "The container's entrypoint, as a list. `command` is passed to it as arguments."},
 		{Path: "apps.<name>.roles.<role>.user", Section: "roles", Type: "string", Default: "the image's", Description: "The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`."},
