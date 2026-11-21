@@ -369,9 +369,6 @@ func (c *Controller) checkNetworkNames(ctx context.Context, req Request) error {
 		for _, b := range bindings {
 			names[b.App+"/"+b.Role] = b.Name
 			app := m.Apps[b.App]
-			if app.Kind != "" && app.Kind != "image" {
-				continue
-			}
 			app.Kind = "image"
 			app.Roles = maps.Clone(app.Roles)
 			if app.Roles == nil {

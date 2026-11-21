@@ -1520,3 +1520,17 @@ func TestIngressApplyReportsConflictingConnectorDNSNames(t *testing.T) {
 		t.Fatalf("operation: %+v", got)
 	}
 }
+
+func TestPlanChecksTheBindingOfAnAppNowDeclaredCompose(t *testing.T) {
+	s := openStore(t)
+	seedDeployed(t, s, "web", state.Binding{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"})
+	c := &Controller{Store: s, Project: "shop", Environment: "prod"}
+	m := dockerManifest(nil)
+	m.Project = "shop"
+	m.Apps["api"] = m.Apps["web"]
+	m.Apps["web"] = manifest.App{Kind: "compose", File: "compose.yml"}
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api", Version: "v1", Manifest: m, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "api-web") {
+		t.Fatalf("plan error: %v", err)
+	}
+}
