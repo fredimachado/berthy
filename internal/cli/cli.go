@@ -183,7 +183,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		defer cancel()
 		eng := engine.New(c.DockerSocket)
 		// The one reader of Docker's event feed. It wakes the monitor and the rollouts early; their own reads still decide.
-		events := engine.NewEventHub(eng, c.Environment)
+		events := engine.NewEventHub(eng)
 		eventsDone := make(chan struct{})
 		go func() {
 			defer close(eventsDone)

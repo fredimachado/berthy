@@ -30,7 +30,7 @@ func shopMonitoring(t *testing.T, d *downFake) (*Monitoring, *state.Store) {
 // runHub runs the engine's event hub until the test ends and waits until the feed is open.
 func runHub(t *testing.T, e *engine.Engine) {
 	t.Helper()
-	hub := engine.NewEventHub(e, "lab")
+	hub := engine.NewEventHub(e)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); hub.Run(ctx) }()

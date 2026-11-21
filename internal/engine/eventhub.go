@@ -40,7 +40,7 @@ var EventFilterWatched = EventFilter{
 // correctness. After a dropped connection it asks Docker again from the time of the last event it saw.
 type EventHub struct {
 	open func(ctx context.Context, since time.Time) (EventStream, error)
-	// keep says whether an event is the environment's. Events it refuses are not given to anyone.
+	// keep says whether an event is one of Berthy's. Events it refuses are not given to anyone.
 	keep  func(Event) bool
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration)
@@ -55,16 +55,17 @@ type subscription struct {
 	ch    chan Event
 }
 
-// NewEventHub returns the hub of e for the environment env, and makes it the one e.Watch and e.EventsLive use. It is set
-// before anything watches. A container belongs to the environment when it carries its label, or when it belongs to a Compose
-// project, which Berthy does not label. A service event names no labels, so every service event is kept.
-func NewEventHub(e *Engine, env string) *EventHub {
+// NewEventHub returns the hub of e, and makes it the one e.Watch and e.EventsLive use. It is set before anything watches. It
+// serves every hosted environment of the agent, so a container event is kept when it carries an environment label of any
+// environment, or when it belongs to a Compose project, which Berthy does not label. A service event names no labels, so every
+// service event is kept. The hub only wakes readers early: each reader still decides what is its own.
+func NewEventHub(e *Engine) *EventHub {
 	h := &EventHub{
 		open: func(ctx context.Context, since time.Time) (EventStream, error) {
 			return e.Events(ctx, since, EventFilterWatched)
 		},
 		keep: func(ev Event) bool {
-			return ev.Type != "container" || ev.Attributes["berthy.environment"] == env || ev.Attributes["com.docker.compose.project"] != ""
+			return ev.Type != "container" || ev.Attributes["berthy.environment"] != "" || ev.Attributes["com.docker.compose.project"] != ""
 		},
 	}
 	e.hub = h
