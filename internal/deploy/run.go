@@ -101,21 +101,27 @@ func (c *Controller) runTarget(ctx context.Context, req Request) (runTarget, err
 	return t, nil
 }
 
-// prepareRun readies a run of the applied release: it resolves the target, prepares the image's execution and makes sure the
-// image is on the host. An error that may be shown to the person is a Refusal; any other is not.
-func (c *Controller) prepareRun(ctx context.Context, req Request) (runTarget, preparedPlan, error) {
+// prepareRun resolves a role, leases its named mounts, and then makes sure its image is present.
+func (c *Controller) prepareRun(ctx context.Context, req Request) (runTarget, preparedPlan, reservation, error) {
 	t, err := c.runTarget(ctx, req)
 	if err != nil {
-		return runTarget{}, preparedPlan{}, err
+		return runTarget{}, preparedPlan{}, reservation{}, err
 	}
 	p, err := c.prepareExecution(ctx, Request{App: req.App, Manifest: t.Manifest}, Plan{Image: t.Release.Digest, Tag: t.Release.Tag})
 	if err != nil {
-		return runTarget{}, preparedPlan{}, errRunPrepare
+		return runTarget{}, preparedPlan{}, reservation{}, errRunPrepare
+	}
+	reserved, err := c.reserveOneOffMounts(ctx, p, t.Volumes)
+	if err != nil {
+		return runTarget{}, preparedPlan{}, reservation{}, err
 	}
 	if _, msg, err := c.ensureImage(ctx, p); err != nil {
-		return runTarget{}, preparedPlan{}, Refusal(msg)
+		capCtx, done := captureContext(ctx)
+		c.finishReservation(capCtx, reserved, true)
+		done()
+		return runTarget{}, preparedPlan{}, reservation{}, Refusal(msg)
 	}
-	return t, p, nil
+	return t, p, reserved, nil
 }
 
 // planRun is the dry run and the approval plan of a run: the applied release's image and the role, never a container, so the
@@ -140,11 +146,7 @@ func (c *Controller) runRun(ctx context.Context, op state.Operation, actor Actor
 	if !ok {
 		return state.Outcome{State: "failed", Err: "one-off containers unavailable"}
 	}
-	t, p, err := c.prepareRun(ctx, req)
-	if err != nil {
-		return state.Outcome{State: "failed", Err: publicOr(err, errRunPrepare).Error()}
-	}
-	reserved, err := c.reserveOneOffMounts(ctx, p, t.Volumes)
+	t, p, reserved, err := c.prepareRun(ctx, req)
 	if err != nil {
 		return state.Outcome{State: "failed", Err: publicOr(err, errRunPrepare).Error()}
 	}

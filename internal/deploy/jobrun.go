@@ -70,7 +70,7 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	if !ok {
 		return jobs.Outcome{}, errors.New("one-off containers unavailable")
 	}
-	t, p, err := c.prepareRun(ctx, Request{App: job.App, Role: job.Role, Command: job.Command, Timeout: job.Timeout})
+	t, p, reserved, err := c.prepareRun(ctx, Request{App: job.App, Role: job.Role, Command: job.Command, Timeout: job.Timeout})
 	if err != nil {
 		var r Refusal
 		if errors.As(err, &r) {
@@ -78,6 +78,13 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 		}
 		return jobs.Outcome{}, err
 	}
+	// Jobs have no operation journal; a crash can leave a reserved claim behind (issue #46).
+	touched := false
+	defer func() {
+		capCtx, done := captureContext(ctx)
+		defer done()
+		c.finishReservation(capCtx, reserved, !touched)
+	}()
 	labels := c.id().Labels()
 	labels["berthy."+kind], labels["berthy.oneoff"] = name, kind
 	var term *terminal
@@ -88,16 +95,7 @@ func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string,
 	if err != nil {
 		return jobs.Outcome{}, err
 	}
-	// Jobs have no operation journal; a crash can leave a reserved claim behind (issue #46).
-	reserved, err := c.reserveOneOffMounts(ctx, p, t.Volumes)
-	if err != nil {
-		return jobs.Outcome{}, err
-	}
-	defer func() {
-		capCtx, done := captureContext(ctx)
-		defer done()
-		c.finishReservation(capCtx, reserved, false)
-	}()
+	touched = true
 	cid, err := e.CreateContainer(ctx, fmt.Sprintf("berthy-%s-%s-%s", kind, c.id().Slug(), id), spec)
 	if err != nil || cid == "" {
 		return jobs.Outcome{}, errors.New("job container unavailable")

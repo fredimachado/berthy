@@ -354,8 +354,35 @@ func TestRestoreCommandReservesRoleVolumesBeforeCreatingContainer(t *testing.T) 
 		}
 		return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
 	}
-	_, err := c.RunCommand(context.Background(), imageJobManifest(), "restore", "op", "op", webJob, jobs.Streams{Stdin: strings.NewReader("backup")})
-	if !called || err == nil || f.callList() != "" {
-		t.Fatalf("called=%v err=%v Docker=%s", called, err, f.callList())
+	out, err := c.RunCommand(context.Background(), imageJobManifest(), "restore", "op", "op", webJob, jobs.Streams{Stdin: strings.NewReader("backup")})
+	if !called || err != nil || !strings.Contains(out.Detail, "name proj-test_uploads is taken") || f.callList() != "" {
+		t.Fatalf("called=%v outcome=%+v err=%v Docker=%s", called, out, err, f.callList())
+	}
+}
+
+type pullBeforeReservationEngine struct {
+	*jobFake
+	pulls int
+}
+
+func (e *pullBeforeReservationEngine) InspectImage(context.Context, string) (engine.Image, error) {
+	return engine.Image{}, &engine.StatusError{Code: 404}
+}
+func (e *pullBeforeReservationEngine) PullImage(context.Context, string, *engine.RegistryAuth) error {
+	e.pulls++
+	return errors.New("unexpected pull")
+}
+func TestOneOffReservesMountsBeforePullingImage(t *testing.T) {
+	c, f := jobFixture(t)
+	docker := &pullBeforeReservationEngine{jobFake: f}
+	c.Engine = docker
+	called := false
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		called = true
+		return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
+	}
+	out, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
+	if err != nil || !called || docker.pulls != 0 || !strings.Contains(out.Detail, "name proj-test_uploads is taken") {
+		t.Fatalf("called=%v pulls=%d outcome=%+v err=%v", called, docker.pulls, out, err)
 	}
 }

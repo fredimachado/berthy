@@ -251,10 +251,19 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 	if !ok {
 		return errors.New("interactive sessions unavailable")
 	}
-	t, p, err := c.prepareRun(ctx, Request{App: req.App, Role: req.Role, Command: req.Command, Timeout: req.Timeout})
+	t, p, reserved, err := c.prepareRun(ctx, Request{App: req.App, Role: req.Role, Command: req.Command, Timeout: req.Timeout})
 	if err != nil {
 		return publicOr(err, errRunPrepare)
 	}
+	// Sessions have no operation journal; a crash can leave a reserved claim behind (issue #46).
+	transferred, touched := false, false
+	defer func() {
+		if !transferred {
+			capCtx, done := captureContext(ctx)
+			defer done()
+			c.finishReservation(capCtx, reserved, !touched)
+		}
+	}()
 	limit := t.Timeout
 	if req.Timeout == "" {
 		limit = 0 // runTarget gives the default hour; an interactive run ends when the person leaves
@@ -270,6 +279,7 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 	if err != nil {
 		return errRunPrepare
 	}
+	touched = true
 	container, err := e.CreateContainer(ctx, "berthy-session-"+c.id().Slug()+"-"+id, spec)
 	if err != nil || container == "" {
 		return errors.New("interactive session unavailable")
@@ -332,8 +342,14 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 		if timer != nil {
 			timer.Stop()
 		}
+		defer func() {
+			capCtx, done := captureContext(ctx)
+			defer done()
+			c.finishReservation(capCtx, reserved, false)
+		}()
 		return remove(ctx)
 	}
+	transferred = true
 	s.setSize(ctx, req)
 	return nil
 }

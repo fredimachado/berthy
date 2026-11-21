@@ -1050,9 +1050,9 @@ func TestOneOffCommandsReserveNamedMountsBeforeCreatingContainers(t *testing.T) 
 			}
 			return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
 		}
-		_, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
-		if !called || err == nil || f.callList() != "" {
-			t.Fatalf("called=%v err=%v Docker=%s", called, err, f.callList())
+		out, err := c.RunJob(context.Background(), imageJobManifest(), "report", webJob, 7)
+		if !called || err != nil || !strings.Contains(out.Detail, "name proj-test_uploads is taken") || f.callList() != "" {
+			t.Fatalf("called=%v outcome=%+v err=%v Docker=%s", called, out, err, f.callList())
 		}
 	})
 	t.Run("run", func(t *testing.T) {

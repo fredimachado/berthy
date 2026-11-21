@@ -603,3 +603,54 @@ func TestCloseSessionsGivesUpWhenItsContextEnds(t *testing.T) {
 	defer cancel()
 	c.CloseSessions(ctx)
 }
+
+func TestInteractiveRunReservesVolumesBeforeCreatingContainer(t *testing.T) {
+	m := runManifest("main")
+	role := m.Apps["web"].Roles["main"]
+	role.Volumes = []string{"uploads:/data"}
+	m.Apps["web"].Roles["main"] = role
+	c, f, _ := runFixture(t, m)
+	sf := newRunSessionFake()
+	sf.runFake = f
+	c.Engine = sf
+	called := false
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		called = true
+		return nil, Refusal("name proj-test_uploads is taken by another project or environment on this server")
+	}
+	s, err := c.OpenSession(context.Background(), sessionAdmin, session.Request{Kind: "run", App: "web", Command: []string{"true"}})
+	if s != nil {
+		_ = s.Close(context.Background())
+	}
+	if !called || err == nil || f.callList() != "" {
+		t.Fatalf("called=%v err=%v Docker=%s", called, err, f.callList())
+	}
+}
+
+func TestInteractiveRunKeepsVolumeLeaseUntilSessionCloses(t *testing.T) {
+	m := runManifest("main")
+	role := m.Apps["web"].Roles["main"]
+	role.Volumes = []string{"uploads:/data"}
+	m.Apps["web"].Roles["main"] = role
+	c, f, _ := runFixture(t, m)
+	sf := newRunSessionFake()
+	sf.runFake = f
+	c.Engine = sf
+	finished := 0
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { return claims, nil }
+	c.FinishReservation = func(_ context.Context, leased, added, eligible []state.Claim) error { finished++; return nil }
+	s, err := c.OpenSession(context.Background(), sessionAdmin, session.Request{Kind: "run", App: "web", Command: []string{"true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := finished
+	if err = s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if before != 0 || finished != 1 {
+		t.Fatalf("lease finishes: before close=%d after=%d", before, finished)
+	}
+	if err = s.Close(context.Background()); err != nil || finished != 1 {
+		t.Fatalf("second close: %v finishes=%d", err, finished)
+	}
+}
