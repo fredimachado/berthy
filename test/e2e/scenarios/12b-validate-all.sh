@@ -5,7 +5,8 @@
 #   a. config validate exits 1 and prints the four problems, each once, with the file, line and column, and the count;
 #   b. config show, which stops at the first problem, prints that one message only;
 #   c. a deploy of the broken manifest is refused with the first problem, and creates nothing;
-#   d. with the mistakes fixed, config validate prints manifest valid and exits 0.
+#   d. with the mistakes fixed, config validate prints manifest valid and exits 0;
+#   e. config validate -e prod_1 against the scenario's manifest directory is refused, and the message names the environment.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -66,5 +67,14 @@ base_manifest | write_manifest || exit 1
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "the fixed manifest validates" 0 "$code" "$out"
 expect_eq "the fixed manifest prints manifest valid" "manifest valid" "$out"
+
+# An environment name with _ is refused, even against a valid manifest directory.
+out=$("$BIN" config validate -e prod_1 --manifest-dir "$MAN" 2>&1); code=$?
+if [ "$code" -ne 0 ]; then
+  pass "config validate refuses environment prod_1 (exit $code)"
+else
+  fail "config validate refuses environment prod_1" "exit 0"
+fi
+expect_contains "the refusal names the environment" "$out" "environment"
 
 finish
