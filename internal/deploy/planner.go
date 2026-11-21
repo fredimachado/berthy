@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 
 	"berthy/internal/engine"
@@ -194,6 +195,37 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 	return out, nil
 }
 
+// adoptionVolumeMismatch prevents a later deploy from silently replacing an adopted service's data.
+func adoptionVolumeMismatch(live, desired json.RawMessage) error {
+	type mounts struct {
+		TaskTemplate struct {
+			ContainerSpec struct {
+				Mounts []struct{ Type, Source, Target string }
+			}
+		}
+	}
+	var before, after mounts
+	if json.Unmarshal(live, &before) != nil || json.Unmarshal(desired, &after) != nil {
+		return errors.New("invalid adoption mounts")
+	}
+	for _, existing := range before.TaskTemplate.ContainerSpec.Mounts {
+		if existing.Type != "volume" {
+			continue
+		}
+		matched := false
+		for _, wanted := range after.TaskTemplate.ContainerSpec.Mounts {
+			if wanted.Type == "volume" && wanted.Target == existing.Target && wanted.Source == existing.Source {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return Refusal(fmt.Sprintf("adoption would change volume %s; align the manifest first", existing.Source))
+		}
+	}
+	return nil
+}
+
 // planAdoption inspects existing services without creating, updating, or pulling anything.
 func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []state.Binding, error) {
 	if err := req.Manifest.Validate(); err != nil {
@@ -288,6 +320,9 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		}
 		if e = adoptableService(live.Spec, net.ID); e != nil {
 			return Plan{}, nil, errors.New("unsafe or incompatible adoption service")
+		}
+		if e = adoptionVolumeMismatch(live.Spec, desired); e != nil {
+			return Plan{}, nil, e
 		}
 		p.Changes = append(p.Changes, specChanges(role, live.Spec, desired)...)
 		tasks, e := c.Engine.ServiceTasks(ctx, live.ID)

@@ -1389,3 +1389,30 @@ func TestAnEnvironmentKeepsItsProjectAfterEveryAppIsRemoved(t *testing.T) {
 		t.Fatalf("the project changed: %+v", st)
 	}
 }
+
+func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
+	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
+	one := 1
+	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data"}}
+	spec, err := serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return v }, nil, role, "start-first", "1s", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Engine: &positiveEngine{spec: spec}, Environment: "test"}
+	req := Request{Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": role}}}}}
+	_, _, err = c.planAdoption(context.Background(), req)
+	if err == nil || err.Error() != "adoption would change volume data; align the manifest first" {
+		t.Fatalf("adoption: %v", err)
+	}
+	if !PublicMessage(err.Error()) {
+		t.Fatalf("refusal is not public: %v", err)
+	}
+	spec, err = serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return req.Manifest.VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Engine = &positiveEngine{spec: spec}
+	if _, _, err = c.planAdoption(context.Background(), req); err != nil {
+		t.Fatalf("matching scoped volume refused: %v", err)
+	}
+}
