@@ -654,3 +654,34 @@ func TestInteractiveRunKeepsVolumeLeaseUntilSessionCloses(t *testing.T) {
 		t.Fatalf("second close: %v finishes=%d", err, finished)
 	}
 }
+
+type panicResizeSession struct{ *runSessionFake }
+
+func (*panicResizeSession) ResizeContainer(context.Context, string, uint16, uint16) error {
+	panic("resize")
+}
+
+func TestInteractiveResizePanicDropsVolumeLease(t *testing.T) {
+	m := runManifest("main")
+	role := m.Apps["web"].Roles["main"]
+	role.Volumes = []string{"uploads:/data"}
+	m.Apps["web"].Roles["main"] = role
+	c, f, _ := runFixture(t, m)
+	sf := newRunSessionFake()
+	sf.runFake = f
+	c.Engine = &panicResizeSession{sf}
+	finished := 0
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { return claims, nil }
+	c.FinishReservation = func(_ context.Context, leased, added, eligible []state.Claim) error { finished++; return nil }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("resize did not panic")
+			}
+		}()
+		_, _ = c.OpenSession(context.Background(), sessionAdmin, session.Request{Kind: "run", App: "web", Command: []string{"true"}, TTY: true, Size: &session.Size{Rows: 24, Cols: 80}})
+	}()
+	if finished != 1 {
+		t.Fatalf("lease finishes: %d", finished)
+	}
+}

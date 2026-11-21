@@ -182,13 +182,19 @@ func (c *Controller) OpenSession(ctx context.Context, actor Actor, req session.R
 		c.sessions.unreserve()
 		return nil, err
 	}
+	published := false
+	defer func() {
+		if !published {
+			closeCtx, cancel := captureContext(ctx)
+			defer cancel()
+			_ = s.Close(closeCtx)
+		}
+	}()
+	s.setSize(ctx, req)
 	if err = c.sessions.publish(s); err != nil {
-		// The agent began to stop while the session was opened: it is closed here, as CloseSessions would have.
-		closeCtx, cancel := captureContext(ctx)
-		defer cancel()
-		_ = s.Close(closeCtx)
 		return nil, err
 	}
+	published = true
 	return s, nil
 }
 
@@ -234,7 +240,6 @@ func (c *Controller) openExecSession(ctx context.Context, s *Session, req sessio
 		return 0, errors.New("exit status unavailable")
 	}
 	s.release = func(context.Context) error { return nil }
-	s.setSize(ctx, req)
 	return nil
 }
 
@@ -349,7 +354,6 @@ func (c *Controller) openRunSession(ctx context.Context, s *Session, req session
 		return remove(ctx)
 	}
 	transferred = true
-	s.setSize(ctx, req)
 	return nil
 }
 
