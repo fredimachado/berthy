@@ -226,6 +226,36 @@ create_environment_network() (
   d network create --driver overlay --attachable --label "berthy-e2e.fixture=$FIXTURE_ID" "$name" >/dev/null || return 1
 )
 
+# remove_environment_network waits on Docker events so an attached endpoint can detach before a retry.
+remove_environment_network() (
+  local id=$1 error_file events_fd events_pid event remaining deadline listing removed
+  error_file=$(mktemp "$E2E_ROOT/network-error.XXXXXX") || return 1
+  deadline=$((SECONDS + 120))
+  exec {events_fd}< <(d events --since "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter type=network --filter "network=$id" --filter event=disconnect --filter event=destroy --format '{{.Action}}' 2>>"$error_file")
+  events_pid=$!
+  trap 'kill "$events_pid" 2>/dev/null || :; wait "$events_pid" 2>/dev/null || :; rm -f "$error_file"' EXIT
+  while :; do
+    : > "$error_file"
+    removed=0
+    if d network rm "$id" >/dev/null 2>"$error_file"; then removed=1; fi
+    listing=$(d network ls --no-trunc --format '{{.ID}}') || return 1
+    if ! printf '%s\n' "$listing" | grep -Fxq -- "$id"; then return 0; fi
+    if [ "$removed" = 0 ] && ! grep -Eqi 'in use|active endpoints' "$error_file"; then
+      echo "network $id removal failed: $(cat "$error_file")" >&2
+      return 1
+    fi
+    while :; do
+      remaining=$((deadline - SECONDS))
+      if [ "$remaining" -le 0 ] || ! IFS= read -r -t "$remaining" event <&"$events_fd"; then
+        echo "network $id cleanup timed out: $(cat "$error_file")" >&2
+        return 1
+      fi
+      [ "$event" != destroy ] || return 0
+      if [ "$event" = disconnect ] && [ "$removed" = 0 ]; then break; fi
+    done
+  done
+)
+
 # env_dir PROJECT ENV: the manifest directory of a hosted environment of the fixture: $MAN for the first, $MAN-PROJECT-ENV for
 # one that add_environment made.
 env_dir() {
@@ -374,7 +404,7 @@ YML
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
 # containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
 purge_fixture() {
-  local i v f project env state kind name lock tmp owner listing labels escaped failed=0
+  local i v f project env state kind name lock tmp owner listing labels escaped id network_name failed=0
   local -a ids owners
   local volumes="" projects="" networks=""
   stop_agent
@@ -476,18 +506,17 @@ purge_fixture() {
   done <<< "$volumes"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
-    if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
-      labels=$(d network inspect --format '{{index .Labels "berthy-e2e.fixture"}}' "$name") || { failed=1; continue; }
+    listing=$(d network ls --no-trunc --format '{{.ID}} {{.Name}}') || { failed=1; continue; }
+    while read -r id network_name; do
+      [ "$network_name" = "$name" ] || continue
+      if ! labels=$(d network inspect --format '{{index .Labels "berthy-e2e.fixture"}}' "$id" 2>/dev/null); then
+        listing=$(d network ls --no-trunc --format '{{.ID}}') || { failed=1; continue; }
+        if printf '%s\n' "$listing" | grep -Fxq -- "$id"; then failed=1; fi
+        continue
+      fi
       [ "$labels" = "$FIXTURE_ID" ] || continue
-      d network rm "$name" >/dev/null 2>&1 || :
-      for i in $(seq 1 60); do
-        listing=$(d network ls --format '{{.Name}}') || { failed=1; break; }
-        printf '%s\n' "$listing" | grep -Fxq -- "$name" || break
-        sleep 0.5
-      done
-      if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then failed=1; fi
-    fi
+      remove_environment_network "$id" || failed=1
+    done <<< "$listing"
   done <<< "$networks"
   rm -f "$tmp"
   [ "$failed" -ne 0 ] || rm -f "$E2E_ROOT/fixture-objects"
