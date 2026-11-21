@@ -609,6 +609,9 @@ func (s *schemaRevertImageSpy) InspectImage(ctx context.Context, name string) (e
 func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key")
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
