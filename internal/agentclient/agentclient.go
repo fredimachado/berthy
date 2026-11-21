@@ -161,11 +161,20 @@ func Resolve(path string, sel Selector) (*Target, error) {
 	if token == "" {
 		return nil, errors.New("token environment variable is empty")
 	}
-	u, err := url.Parse(entry.URL)
+	u, err := parseAgentURL(entry.URL)
+	if err != nil {
+		return nil, err
+	}
+	return &Target{Project: project, Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/", Token: token}, nil
+}
+
+// parseAgentURL is the URL rule Resolve and Put share: http, a host, no user, query or fragment.
+func parseAgentURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("invalid agent URL")
 	}
-	return &Target{Project: project, Env: env, Base: u, Prefix: strings.TrimRight(u.Path, "/") + "/v1/environments/" + url.PathEscape(env) + "/", Token: token}, nil
+	return u, nil
 }
 
 // NewHTTPClient is the HTTP client for the agent: no proxy, short connect and header limits, and no redirects.
