@@ -20,7 +20,7 @@ var deploymentCommands = []string{"config", "deploy", "apply", "rollback", "rest
 var readCommandNames = []string{"ps", "describe", "stats", "logs", "df", "doctor", "checks", "jobs", "agent-info"}
 
 // localCommands are the built-ins that never call the agent through a manifest alias: they serve, set up or print locally.
-var localCommands = []string{"version", "docs", "probe-helper", "volume-archive", "volume-extract", "mcp", "ui", "setup", "state-restore", "agent"}
+var localCommands = []string{"version", "docs", "probe-helper", "volume-archive", "volume-extract", "mcp", "ui", "setup", "context", "state-restore", "agent"}
 
 // agentCommands are the commands that call the agent, and so may be the first word of an alias.
 var agentCommands = slices.Concat(deploymentCommands, readCommandNames)
