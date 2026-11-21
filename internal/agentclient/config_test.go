@@ -34,6 +34,7 @@ func TestPutRefuses(t *testing.T) {
 	}{
 		{"invalid project", "Bad Project", "dev", good},
 		{"invalid environment", "demo", "Prod", good},
+		{"project and environment too long together", strings.Repeat("p", 30), strings.Repeat("e", 30), good},
 		{"URL with a user", "demo", "dev", Environment{URL: "http://user:pw@127.0.0.1:9000", TokenEnv: "BERTHY_TEST_TOKEN"}},
 		{"URL with a query", "demo", "dev", Environment{URL: "http://127.0.0.1:9000?x=1", TokenEnv: "BERTHY_TEST_TOKEN"}},
 		{"https", "demo", "dev", Environment{URL: "https://127.0.0.1:9000", TokenEnv: "BERTHY_TEST_TOKEN"}},

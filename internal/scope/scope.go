@@ -28,6 +28,19 @@ func ValidProject(s string) bool { return projectName.MatchString(s) }
 // characters.
 func ValidEnvironment(s string) bool { return environmentName.MatchString(s) }
 
+// MaxIDLength is the longest <project>-<environment>. A role's Swarm service is named <project>-<environment>-<app>-<role> and
+// Docker allows 63 characters for it, so a longer pair could never deploy anything. It also keeps every name Berthy gives a
+// container of its own, which carries the slug, within Docker's 128.
+const MaxIDLength = 59
+
+// CheckLength refuses a hosted environment whose <project>-<environment> is longer than MaxIDLength.
+func (id ID) CheckLength() error {
+	if len(id.Project)+1+len(id.Environment) > MaxIDLength {
+		return fmt.Errorf("<project>-<environment> is longer than %d characters; shorten the project or environment", MaxIDLength)
+	}
+	return nil
+}
+
 // String is project/environment.
 func (id ID) String() string { return id.Project + "/" + id.Environment }
 

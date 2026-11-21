@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"berthy/internal/scope"
@@ -93,6 +94,19 @@ func TestFileValidateRefuses(t *testing.T) {
 		if err := tc.file.Validate(); err == nil {
 			t.Errorf("%s accepted", tc.name)
 		}
+	}
+}
+
+func TestFileValidateBoundsTheLengthOfProjectAndEnvironment(t *testing.T) {
+	project := strings.Repeat("p", 30)
+	longest := testHosted(project, strings.Repeat("e", scope.MaxIDLength-31), "longest")
+	if err := testFile(longest).Validate(); err != nil {
+		t.Fatalf("the longest allowed pair: %v", err)
+	}
+	tooLong := testHosted(project, strings.Repeat("e", scope.MaxIDLength-30), "too-long")
+	err := testFile(tooLong).Validate()
+	if err == nil || !strings.Contains(err.Error(), "longer than 59 characters") {
+		t.Fatalf("a pair one character too long: %v", err)
 	}
 }
 

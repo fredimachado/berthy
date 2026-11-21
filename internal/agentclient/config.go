@@ -49,6 +49,9 @@ func (c *Config) Put(project, env string, e Environment) (changed bool, err erro
 	if !scope.ValidEnvironment(env) {
 		return false, errors.New("invalid environment")
 	}
+	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
+		return false, err
+	}
 	if _, err := parseAgentURL(e.URL); err != nil {
 		return false, err
 	}

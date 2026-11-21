@@ -114,3 +114,15 @@ func loadProject(t *testing.T, project string) error {
 	_, err := manifest.Load(dir, "prod")
 	return err
 }
+
+func TestCheckLengthAtItsBoundary(t *testing.T) {
+	ok := scope.ID{Project: strings.Repeat("p", 30), Environment: strings.Repeat("e", scope.MaxIDLength-31)}
+	if err := ok.CheckLength(); err != nil {
+		t.Errorf("a %d-character pair: %v", scope.MaxIDLength, err)
+	}
+	long := scope.ID{Project: ok.Project, Environment: ok.Environment + "e"}
+	err := long.CheckLength()
+	if err == nil || !strings.Contains(err.Error(), "shorten the project or environment") {
+		t.Errorf("a %d-character pair: %v", scope.MaxIDLength+1, err)
+	}
+}

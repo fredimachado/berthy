@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/scope"
 )
 
 // fakeContainer is a container of the fake Docker.
@@ -286,6 +287,20 @@ func jsonOf(t *testing.T, v any) any {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func TestArchiverHelperNamesOfTheLongestEnvironmentAreValidDockerNames(t *testing.T) {
+	for _, kind := range []string{"archive", "restore"} {
+		f := newFakeDocker()
+		a, _ := newArchiver(f)
+		a.Project, a.Env = strings.Repeat("p", 30), strings.Repeat("e", scope.MaxIDLength-31)
+		if _, err := a.create(context.Background(), kind, "data"); err != nil {
+			t.Fatal(err)
+		}
+		if c := f.onlyContainer(t); !engine.ValidName(c.name) {
+			t.Errorf("%s: name %q (%d characters) is not a valid Docker identifier", kind, c.name, len(c.name))
+		}
+	}
 }
 
 func TestArchiverHelperNameAndLabelsCarryTheProject(t *testing.T) {

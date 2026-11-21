@@ -81,6 +81,9 @@ type InventoryService struct {
 
 var dockerID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
 
+// ValidName reports whether s is a Docker identifier the engine accepts for a container.
+func ValidName(s string) bool { return dockerID.MatchString(s) }
+
 func pathID(id string) (string, error) {
 	if !dockerID.MatchString(id) {
 		return "", fmt.Errorf("invalid Docker identifier")

@@ -356,6 +356,13 @@ func TestHelperOfAnotherEnvironmentIsNeverTouched(t *testing.T) {
 	}
 }
 
+func TestHelperNameOfTheLongestEnvironmentIsAValidDockerName(t *testing.T) {
+	id := scope.ID{Project: strings.Repeat("p", 30), Environment: strings.Repeat("e", scope.MaxIDLength-31)}
+	if name := newHelperManager(id, nil, nil).name(); !engine.ValidName(name) {
+		t.Errorf("name %q (%d characters) is not a valid Docker identifier", name, len(name))
+	}
+}
+
 func TestHelperNameCarriesProjectAndEnvironment(t *testing.T) {
 	for _, id := range []scope.ID{{Project: "shop", Environment: "lab"}, {Project: "blog", Environment: "lab"}, {Project: "shop", Environment: "prod"}} {
 		m := newHelperManager(id, nil, nil)

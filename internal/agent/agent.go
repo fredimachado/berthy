@@ -124,6 +124,9 @@ func (c Config) Validate() error {
 	if !scope.ValidEnvironment(c.Environment) {
 		return fmt.Errorf("invalid environment")
 	}
+	if err := (scope.ID{Project: c.Project, Environment: c.Environment}).CheckLength(); err != nil {
+		return err
+	}
 	host, port, err := net.SplitHostPort(c.Listen)
 	if err != nil {
 		return fmt.Errorf("invalid listen address: %w", err)
