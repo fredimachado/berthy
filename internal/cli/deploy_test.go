@@ -351,3 +351,38 @@ func TestExecShowsWhyItFailedBeforeItRan(t *testing.T) {
 		t.Fatalf("exit %d, out %q, err %q", got, out.String(), errs.String())
 	}
 }
+
+func TestConfigValidateRefusesAServiceNameOver63Characters(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_CONFIG", filepath.Join(dir, "config.json"))
+	env := strings.Repeat("a", 51)
+	var out, errs bytes.Buffer
+	code := Run([]string{"config", "validate", "-e", env, "--manifest-dir", dir}, &out, &errs)
+	if code != 1 || !strings.Contains(errs.String(), "is longer than 63 characters; shorten the project, environment, app or role") || !strings.Contains(errs.String(), "berthy.yml:8:") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+}
+
+func TestDeployRefusesALongServiceNameBeforeSendingAnything(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Repeat("a", 51)
+	cfg := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{%q:{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, env, server.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", env, "--config", cfg, "--manifest-dir", dir, "--version", "v1", "--dry-run"}, &out, &errs)
+	if code != 1 || !strings.Contains(errs.String(), "is longer than 63 characters; shorten the project, environment, app or role") || calls.Load() != 0 {
+		t.Fatalf("exit %d, requests %d, stdout %q, stderr %q", code, calls.Load(), out.String(), errs.String())
+	}
+}
