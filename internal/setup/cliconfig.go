@@ -47,10 +47,9 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	case errors.Is(err, agentclient.ErrEarlierLayout):
 		// The CLI's own text sends the person to setup, which is where they are.
 		return "", "", fmt.Errorf("the CLI configuration %s is in the layout of an earlier release: move it aside, or give --config with a new file, then run setup again", path)
+	case errors.Is(err, agentclient.ErrUnreadable):
+		return "", "", err
 	case err != nil:
-		if strings.HasPrefix(err.Error(), "cannot read config ") {
-			return "", "", err
-		}
 		return "", "", fmt.Errorf("the CLI configuration is not valid: %v", err)
 	}
 	have := c.Projects[project].Environments[env]

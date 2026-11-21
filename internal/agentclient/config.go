@@ -15,6 +15,9 @@ import (
 
 var tokenEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// ErrUnreadable is a CLI configuration path that exists but cannot be read.
+var ErrUnreadable = errors.New("cannot read config")
+
 // ReadConfig reads the CLI configuration at path, strictly as ParseConfig does. A missing file is an empty configuration.
 func ReadConfig(path string) (Config, error) {
 	b, err := os.ReadFile(path)
@@ -22,7 +25,7 @@ func ReadConfig(path string) (Config, error) {
 	case errors.Is(err, fs.ErrNotExist):
 		return Config{}, nil
 	case err != nil:
-		return Config{}, fmt.Errorf("cannot read config %s", path)
+		return Config{}, fmt.Errorf("%w %s", ErrUnreadable, path)
 	}
 	return ParseConfig(b)
 }

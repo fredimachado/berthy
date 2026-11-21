@@ -1405,6 +1405,28 @@ func TestCLIConfigStepRefusesTheLayoutOfAnEarlierRelease(t *testing.T) {
 	}
 }
 
+func TestCLIConfigStepDistinguishesAReadFailureFromInvalidJSON(t *testing.T) {
+	exe := elfFile(t, emX86)
+	run := func(t *testing.T, path string) StepResult {
+		t.Helper()
+		s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path })
+		var got []StepResult
+		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
+		return stepOf(t, got, "cli_config")
+	}
+	dir := t.TempDir()
+	r := run(t, dir)
+	if want := "cannot read config " + dir; r.Status != StatusFailed || r.Detail != want {
+		t.Fatalf("a directory as the file: %+v, want %q", r, want)
+	}
+	path := filepath.Join(t.TempDir(), "cli.json")
+	writeCLIConfig(t, path, `{`)
+	r = run(t, path)
+	if want := "the CLI configuration is not valid: invalid config"; r.Status != StatusFailed || r.Detail != want {
+		t.Fatalf("invalid JSON: %+v, want %q", r, want)
+	}
+}
+
 // compactJSON is b without its indentation, with the keys in the order encoding/json writes them.
 func compactJSON(t *testing.T, b []byte) string {
 	t.Helper()
