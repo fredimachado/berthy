@@ -656,12 +656,12 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	// Merge into a copy, so the files' own trees keep their positions to place the problems by.
 	where := locator{base: source{names[0], base}}
 	merged := cloneNode(base)
-	var warnings Problems
+	var warnings, refused Problems
 	if overlay != nil {
 		where.overlay = &source{names[1], overlay}
-		o := overlayMerge{baseName: names[0]}
+		o := overlayMerge{baseName: names[0], overlayName: names[1]}
 		o.merge(merged, overlay, "")
-		warnings = o.warnings
+		warnings, refused = o.warnings, o.problems
 	}
 	var value any
 	if err = merged.Decode(&value); err != nil {
@@ -676,8 +676,12 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 		var ps Problems
 		if errors.As(err, &ps) {
 			where.place(ps)
+			return nil, append(refused, ps...)
 		}
 		return nil, err
+	}
+	if len(refused) > 0 {
+		return nil, refused
 	}
 	if err := m.CheckVersion(version.Version); err != nil {
 		var old *TooOld

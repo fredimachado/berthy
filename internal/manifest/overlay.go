@@ -10,10 +10,13 @@ import (
 
 // overlayMerge applies an overlay to a copy of the base tree. A map is merged key by key. A null removes its key, and any other
 // value replaces the base's, a list included. What the overlay does that a person should know is kept as warnings: a null that
-// removes nothing, and a list that replaces the base list and leaves out some of its entries.
+// removes nothing, and a list that replaces the base list and leaves out some of its entries. The project is the base's alone:
+// an environment's project is fixed, and a reader that wants it reads the base file only (ProjectName).
 type overlayMerge struct {
-	baseName string // the base file's name, for the messages
-	warnings Problems
+	baseName    string // the base file's name, for the messages
+	overlayName string // the overlay's file name, where its problems are placed
+	warnings    Problems
+	problems    Problems
 }
 
 // merge applies overlay to base, which are the mappings at path in the merged tree and in the overlay.
@@ -23,6 +26,11 @@ func (o *overlayMerge) merge(base, overlay *yaml.Node, path string) {
 		at := join(path, k.Value)
 		j := keyIndex(base, k.Value)
 		switch {
+		case at == "project":
+			o.problems = append(o.problems, Problem{
+				Message: "project is set in " + o.baseName + " only: an environment cannot have another project",
+				File:    o.overlayName, Line: k.Line, Column: k.Column,
+			})
 		case isNull(v) && j >= 0:
 			base.Content = slices.Delete(base.Content, j, j+2)
 		case isNull(v):

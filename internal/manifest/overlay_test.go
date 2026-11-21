@@ -223,3 +223,22 @@ func TestNullInTheBaseStillRefusesTheWholeFile(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestAnOverlayCannotSetTheProject(t *testing.T) {
+	const want = "project is set in berthy.yml only: an environment cannot have another project"
+	for name, overlay := range map[string]string{
+		"another project":  "network: demo\nproject: other\n",
+		"the same project": "network: demo\nproject: demo\n",
+		"null":             "network: demo\nproject: null\n",
+	} {
+		ps := loadProblems(t, map[string]string{"berthy.yml": overlayBase, "berthy.prod.yml": overlay})
+		if len(ps) != 1 || ps[0].Message != want || placedAt(ps[0]) != [3]any{"berthy.prod.yml", 2, 1} {
+			t.Errorf("%s: got %+v", name, []Problem(ps))
+		}
+	}
+	// The refusal is one of the problems of the overlay, not the only one.
+	ps := loadProblems(t, map[string]string{"berthy.yml": overlayBase, "berthy.prod.yml": "project: other\nnope: 1\n"})
+	if len(ps) != 2 || ps[0].Message != want || ps[1].Message != `unknown field "nope"` {
+		t.Errorf("with another problem: got %+v", []Problem(ps))
+	}
+}

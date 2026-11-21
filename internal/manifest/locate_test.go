@@ -136,12 +136,12 @@ func TestLoadReportsATypeErrorWithItsLine(t *testing.T) {
 func TestLoadReportsEveryTypeErrorAndSkipsTheChecks(t *testing.T) {
 	ps := loadProblems(t, map[string]string{
 		"berthy.yml":      strings.Replace(positionBase, "port: 8080", "replicas: \"two\"\n        port: \"80\"", 1),
-		"berthy.prod.yml": "project: 5\nbackups:\n  data:\n    app: nope\n",
+		"berthy.prod.yml": "network: 5\nbackups:\n  data:\n    app: nope\n",
 	})
 	want := Problems{
 		{Path: "apps.api.roles.web.port", File: "berthy.yml", Line: 10, Column: 9},
 		{Path: "apps.api.roles.web.replicas", File: "berthy.yml", Line: 9, Column: 9},
-		{Path: "project", File: "berthy.prod.yml", Line: 1, Column: 1},
+		{Path: "network", File: "berthy.prod.yml", Line: 1, Column: 1},
 	}
 	if len(ps) != len(want) {
 		t.Fatalf("got %+v", []Problem(ps))
