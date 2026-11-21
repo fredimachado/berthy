@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"berthy/internal/engine"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"context"
 	"encoding/json"
@@ -384,17 +385,29 @@ func TestPruneLeavesTheHelperAlone(t *testing.T) {
 func TestPruneOnlyStoppedMatchingHook(t *testing.T) {
 	h := state.CompletedOneOff{ID: "one", OperationID: "op", Role: "pre_hook"}
 	good := engine.ContainerSnapshot{ID: "one", Labels: map[string]string{"berthy.environment": "stage", "berthy.operation": "op", "berthy.oneoff": "pre_hook"}}
-	if !ownedFinishedHook(good, h, "stage") {
+	if !ownedFinishedHook(good, h, scope.ID{Environment: "stage"}) {
 		t.Fatal("owned stopped hook rejected")
 	}
 	good.Running = true
-	if ownedFinishedHook(good, h, "stage") {
+	if ownedFinishedHook(good, h, scope.ID{Environment: "stage"}) {
 		t.Fatal("running hook accepted")
 	}
 	good.Running = false
 	good.ID = "other"
-	if ownedFinishedHook(good, h, "stage") {
+	if ownedFinishedHook(good, h, scope.ID{Environment: "stage"}) {
 		t.Fatal("foreign container accepted")
+	}
+}
+
+func TestAFinishedHookOfAnotherEnvironmentIsNotOurs(t *testing.T) {
+	h := state.CompletedOneOff{ID: "one", OperationID: "op", Role: "pre_hook"}
+	for _, labels := range []map[string]string{
+		{"berthy.project": "blog", "berthy.environment": "stage", "berthy.operation": "op", "berthy.oneoff": "pre_hook"},
+		{"berthy.project": "shop", "berthy.environment": "prod", "berthy.operation": "op", "berthy.oneoff": "pre_hook"},
+	} {
+		if ownedFinishedHook(engine.ContainerSnapshot{ID: "one", Labels: labels}, h, scope.ID{Project: "shop", Environment: "stage"}) {
+			t.Errorf("foreign hook accepted: %v", labels)
+		}
 	}
 }
 

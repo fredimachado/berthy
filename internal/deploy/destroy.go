@@ -122,7 +122,7 @@ func idle(ctr engine.InventoryContainer) bool {
 // backup helper or a hook or migration container, only once it has stopped. It returns "" for anything else. The second
 // result is whether the container is a helper (as opposed to a one-off).
 func (c *Controller) destroyable(ctr engine.InventoryContainer) (string, bool) {
-	if ctr.Labels["berthy.environment"] != c.Environment {
+	if !c.id().Owns(ctr.Labels) {
 		return "", false
 	}
 	switch kind := ctr.Labels["berthy.helper"]; {

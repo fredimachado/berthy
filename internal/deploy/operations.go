@@ -15,6 +15,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/jobs"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"github.com/distribution/reference"
 )
@@ -421,7 +422,7 @@ func (c *Controller) pruneNow(ctx context.Context) (removed []string, failure st
 				}
 				return nil, "hook inspection failed"
 			}
-			if !ownedFinishedHook(container, h, c.Environment) {
+			if !ownedFinishedHook(container, h, c.id()) {
 				continue
 			}
 			if e = he.RemoveContainer(ctx, h.ID); e != nil {
@@ -756,8 +757,8 @@ type hookPruner interface {
 	RemoveContainer(context.Context, string) error
 }
 
-func ownedFinishedHook(c engine.ContainerSnapshot, h state.CompletedOneOff, environment string) bool {
-	return !c.Running && c.ID == h.ID && c.Labels["berthy.environment"] == environment && c.Labels["berthy.operation"] == h.OperationID && c.Labels["berthy.oneoff"] == h.Role
+func ownedFinishedHook(c engine.ContainerSnapshot, h state.CompletedOneOff, id scope.ID) bool {
+	return !c.Running && c.ID == h.ID && id.Owns(c.Labels) && c.Labels["berthy.operation"] == h.OperationID && c.Labels["berthy.oneoff"] == h.Role
 }
 
 func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff, error) {
@@ -782,7 +783,7 @@ func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff
 			}
 			return nil, errors.New("hook inspection failed")
 		}
-		if ownedFinishedHook(container, h, c.Environment) {
+		if ownedFinishedHook(container, h, c.id()) {
 			out = append(out, h)
 		}
 	}

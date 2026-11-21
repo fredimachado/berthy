@@ -472,6 +472,20 @@ func TestDestroyTwiceIsHarmless(t *testing.T) {
 	}
 }
 
+func TestDestroyLeavesTheHelperAndOneOffsOfOtherEnvironments(t *testing.T) {
+	c := Controller{Project: "shop", Environment: "test"}
+	for _, kind := range []string{"berthy.helper", "berthy.oneoff"} {
+		for _, labels := range []map[string]string{
+			{"berthy.project": "blog", "berthy.environment": "test", kind: "archive"},
+			{"berthy.project": "shop", "berthy.environment": "prod", kind: "archive"},
+		} {
+			if name, _ := c.destroyable(engine.InventoryContainer{ID: "foreign", Names: []string{"/foreign"}, Labels: labels}); name != "" {
+				t.Errorf("foreign %s accepted for removal: %v", kind, labels)
+			}
+		}
+	}
+}
+
 func TestDestroyDeletesACleanTunnel(t *testing.T) {
 	f := newDestroyFixture(t, false)
 	p := f.plan(func(r *Request) { r.Tunnel = true })
