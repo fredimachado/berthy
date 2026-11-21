@@ -1132,7 +1132,7 @@ func (c *Controller) composeNamesAt(ctx context.Context, dir, project string, ma
 
 func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
 	if !engine.ValidName(project) {
-		return nil, invalidComposeName("project", project)
+		return nil, invalidComposeName("project", "")
 	}
 	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
 	for _, k := range sortedKeys(cfg.Volumes) {
@@ -1143,7 +1143,7 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 			return nil, errComposeConfig
 		}
 		if !engine.ValidName(cfg.Volumes[k].Name) {
-			return nil, invalidComposeName("volume", cfg.Volumes[k].Name)
+			return nil, invalidComposeName("volumes", k)
 		}
 		claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[k].Name})
 	}
@@ -1155,13 +1155,22 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 			return nil, errComposeConfig
 		}
 		if !engine.ValidName(cfg.Networks[k].Name) {
-			return nil, invalidComposeName("network", cfg.Networks[k].Name)
+			return nil, invalidComposeName("networks", k)
 		}
 		claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: cfg.Networks[k].Name})
 	}
 	return claims, nil
 }
 
-func invalidComposeName(kind, name string) Refusal {
-	return Refusal(fmt.Sprintf("Compose %s name %q is invalid; Docker names must be at most 128 characters and start with a letter or digit, followed by letters, digits, '.', '_' or '-'", kind, name))
+var composeResourceKey = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+
+func invalidComposeName(kind, key string) Refusal {
+	resource := kind
+	if kind != "project" {
+		if !composeResourceKey.MatchString(key) {
+			return errComposeConfig
+		}
+		resource += "." + key
+	}
+	return Refusal(fmt.Sprintf("Compose %s name is not a valid Docker name of at most 128 characters", resource))
 }

@@ -122,13 +122,13 @@ func TestComposeRejectsUninspectableNamesBeforeReservation(t *testing.T) {
 				c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { calls++; return claims, nil }
 				req := composeReq("names", composeFileOne, composeApp(false))
 				if length == 129 {
-					if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), name) {
+					if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), kind+".item") || strings.Contains(err.Error(), name) {
 						t.Fatalf("dry run: %v", err)
 					}
 				}
 				out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
 				if length == 129 {
-					if calls != 0 || !strings.Contains(out.Err, name) || !strings.Contains(out.Err, "128") || !PublicMessage(out.Err) {
+					if calls != 0 || !strings.Contains(out.Err, kind+".item") || strings.Contains(out.Err, name) || !strings.Contains(out.Err, "128") || !PublicMessage(out.Err) {
 						t.Fatalf("outcome=%+v reservations=%d", out, calls)
 					}
 				} else if calls == 0 {
@@ -140,8 +140,8 @@ func TestComposeRejectsUninspectableNamesBeforeReservation(t *testing.T) {
 }
 
 func TestInvalidComposeNameMessageIsPublicAndStrict(t *testing.T) {
-	for _, name := range []string{"bad/name", "bad\nname", `bad"name`, strings.Repeat("a", 129)} {
-		msg := string(invalidComposeName("network", name))
+	for _, key := range []string{"backend", "db-data", "_private", "db.1"} {
+		msg := string(invalidComposeName("networks", key))
 		if !PublicMessage(msg) {
 			t.Fatalf("not public: %q", msg)
 		}
@@ -149,6 +149,87 @@ func TestInvalidComposeNameMessageIsPublicAndStrict(t *testing.T) {
 			t.Fatalf("accepted extra text: %q", msg)
 		}
 	}
+	for _, msg := range []string{
+		"Compose networks name is not a valid Docker name of at most 128 characters",
+		"Compose networks.bad/name name is not a valid Docker name of at most 128 characters",
+		"Compose network name \"secret\" is invalid; Docker names must be at most 128 characters and start with a letter or digit, followed by letters, digits, '.', '_' or '-'",
+	} {
+		if PublicMessage(msg) {
+			t.Fatalf("unexpected public message: %q", msg)
+		}
+	}
+}
+
+type interpolatedNetworkRunner struct{ *fakeCompose }
+
+func (r *interpolatedNetworkRunner) Run(ctx context.Context, call engine.ComposeRun) ([]byte, []byte, error) {
+	if len(call.Args) > 1 && call.Args[0] == "config" && call.Args[1] == "--format" {
+		env, err := os.ReadFile(filepath.Join(call.Dir, ".env"))
+		if err != nil {
+			return nil, nil, err
+		}
+		var value string
+		for _, line := range strings.Split(string(env), "\n") {
+			if strings.HasPrefix(line, "DATABASE_URL=") {
+				value = strings.Trim(strings.TrimPrefix(line, "DATABASE_URL="), "'")
+			}
+		}
+		config, err := json.Marshal(map[string]any{"services": map[string]any{"database": map[string]string{"image": "alpine"}}, "networks": map[string]any{"backend": map[string]string{"name": value}}})
+		return config, nil, err
+	}
+	return r.fakeCompose.Run(ctx, call)
+}
+
+func TestInvalidInterpolatedComposeNetworkNeverDisclosesSecret(t *testing.T) {
+	ctx := context.Background()
+	const secret = "postgres://user:password@database/app"
+	runner := &fakeCompose{hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	c.Compose = &interpolatedNetworkRunner{runner}
+	if err := s.PutSecret(ctx, state.Actor{ID: "admin", Name: "admin"}, state.SecretInfo{Name: "DB_URL"}, []byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+	m := composeApp(false)
+	app := m.Apps["db"]
+	app.Env = manifest.Env{Secret: []manifest.SecretVar{{Var: "DATABASE_URL", Secret: "DB_URL"}}}
+	m.Apps["db"] = app
+	req := composeReq("secret-network", "services:\n  database:\n    image: alpine\nnetworks:\n  backend:\n    name: ${DATABASE_URL}\n", m)
+	t.Run("dry-run", func(t *testing.T) {
+		_, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+		if err == nil {
+			t.Fatal("invalid name accepted")
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Error("dry-run disclosed the secret")
+		}
+		if !strings.Contains(err.Error(), "networks.backend") {
+			t.Error("dry-run did not name networks.backend")
+		}
+	})
+	t.Run("operation", func(t *testing.T) {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "secret-network", ActorID: "admin", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := c.runCompose(ctx, op, Actor{ID: "admin", Admin: true}, req, false)
+		if err = s.Finish(ctx, op.ID, out); err != nil {
+			t.Fatal(err)
+		}
+		recorded, err := s.Operation(ctx, op.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(recorded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), secret) {
+			t.Error("operation record disclosed the secret")
+		}
+		if !strings.Contains(string(body), "networks.backend") {
+			t.Error("operation record did not name networks.backend")
+		}
+	})
 }
 
 func TestImageRunReservesAgainBeforeDockerChanges(t *testing.T) {

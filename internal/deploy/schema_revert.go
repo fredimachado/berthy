@@ -49,7 +49,7 @@ var networkNameMessage = regexp.MustCompile(`^network name [a-z0-9][a-z0-9_-]{0,
 
 var dockerNameMessage = regexp.MustCompile(`^name [A-Za-z0-9][A-Za-z0-9._-]{0,200} (is taken by another project or environment on this server|is longer than 63 characters; shorten the project, environment, app or role)$`)
 
-var invalidComposeNameMessage = regexp.MustCompile(`^Compose (project|network|volume) name "([^"\\\x00-\x1f\x7f]|\\(["\\abfnrtv]|x[0-9a-f]{2}|u[0-9a-f]{4}|U[0-9a-f]{8}))*" is invalid; Docker names must be at most 128 characters and start with a letter or digit, followed by letters, digits, '\.', '_' or '-'$`)
+var invalidComposeNameMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}) name is not a valid Docker name of at most 128 characters$`)
 
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
