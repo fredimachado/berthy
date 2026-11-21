@@ -12,7 +12,7 @@ printf '{"project":"other","environment":"lab","state_dir":"%s"}\n' "$RUN/state-
 # The Compose project was removed without --volumes, so its directory is already gone.
 printf 'volume\t%s\n' shop-prod_data shop-stage_data other-lab_data > "$E2E_ROOT/fixture-objects"
 printf 'compose\t%s\n' shop-prod-db >> "$E2E_ROOT/fixture-objects"
-printf 'network\t%s\n' shop-prod shop-stage >> "$E2E_ROOT/fixture-objects"
+printf 'network\t%s\n' shop-prod shop-stage shop-foreign >> "$E2E_ROOT/fixture-objects"
 stop_agent() { :; }
 stop_fakes() { :; }
 sleep() { :; }
@@ -26,7 +26,7 @@ d() {
           elif [ ! -e "$E2E_ROOT/delayed-seen" ]; then touch "$E2E_ROOT/delayed-seen"; echo shop-delayed
           else touch "$E2E_ROOT/delayed-gone"; fi
         else
-          for name in shop-prod shop-stage shop-two-prod; do
+          for name in shop-prod shop-stage shop-two-prod shop-foreign; do
             if [ ! -f "$E2E_ROOT/removed-networks" ] || ! grep -Fxq "$name" "$E2E_ROOT/removed-networks"; then echo "$name"; fi
           done
         fi
@@ -37,6 +37,8 @@ d() {
       fi ;;
     'network inspect')
       case "${@: -1}" in
+        shop-foreign) echo '' ;;
+        shop-prod|shop-stage|shop-delayed) echo "$FIXTURE_ID" ;;
         own-network) echo shop-prod-db ;;
         other-network) echo shop-prod-foreign-db ;;
         vanished-network) echo 'foreign network disappeared' >&2; return 1 ;;
@@ -112,6 +114,7 @@ if ! purge_fixture; then
   echo 'cleanup failed when a foreign network disappeared' >&2
   exit 1
 fi
+if grep -qx shop-foreign "$E2E_ROOT/removed-networks"; then echo "cleanup removed foreign network with a journaled name" >&2; exit 1; fi
 if ! grep -qx shop-prod "$E2E_ROOT/removed-networks" || ! grep -qx shop-stage "$E2E_ROOT/removed-networks" || grep -qx shop-two-prod "$E2E_ROOT/removed-networks"; then
   echo 'cleanup missed an owned network or removed shop-two network' >&2
   exit 1

@@ -12,6 +12,7 @@ SOCK=/var/tmp/berthy-phase2/docker.sock
 COMPOSE_BIN=/var/tmp/berthy-phase1/cli-plugins/docker-compose
 
 E2E_ROOT=${E2E_ROOT:-$HOME/berthy-e2e/harness}
+FIXTURE_ID=$(printf '%s' "$(realpath -m "$E2E_ROOT")" | sha256sum | cut -d' ' -f1)
 SRC=$E2E_ROOT/src            # rsynced copy of the repo (native fs)
 BIN=$E2E_ROOT/bin/berthy
 TG_BIN=$E2E_ROOT/bin/faketelegram
@@ -222,7 +223,7 @@ create_environment_network() (
     return 1
   fi
   printf 'network\t%s\n' "$name" >> "$E2E_ROOT/fixture-objects" || return 1
-  d network create --driver overlay --attachable "$name" >/dev/null || return 1
+  d network create --driver overlay --attachable --label "berthy-e2e.fixture=$FIXTURE_ID" "$name" >/dev/null || return 1
 )
 
 # env_dir PROJECT ENV: the manifest directory of a hosted environment of the fixture: $MAN for the first, $MAN-PROJECT-ENV for
@@ -477,6 +478,8 @@ purge_fixture() {
     [ -n "$name" ] || continue
     listing=$(d network ls --format '{{.Name}}') || { failed=1; continue; }
     if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
+      labels=$(d network inspect --format '{{index .Labels "berthy-e2e.fixture"}}' "$name") || { failed=1; continue; }
+      [ "$labels" = "$FIXTURE_ID" ] || continue
       d network rm "$name" >/dev/null 2>&1 || :
       for i in $(seq 1 60); do
         listing=$(d network ls --format '{{.Name}}') || { failed=1; break; }
