@@ -376,7 +376,7 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 		return false
 	}
 	for _, ctr := range containers {
-		if ctr.Labels["berthy.environment"] == c.Environment && ctr.Labels["berthy.helper"] == "restore" {
+		if c.id().Owns(ctr.Labels) && ctr.Labels["berthy.helper"] == "restore" {
 			if err = de.RemoveContainer(ctx, ctr.ID); err != nil && !statusIs(err, 404) {
 				return false
 			}

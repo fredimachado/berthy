@@ -325,6 +325,21 @@ func TestAnInterruptedRestoreRemovesItsPartialVolumeAndHelperAtRecovery(t *testi
 	}
 }
 
+func TestRestoreRecoveryLeavesTheRestoreHelperOfOtherEnvironments(t *testing.T) {
+	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}, containers: []engine.InventoryContainer{
+		{ID: "mine", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "test", "berthy.helper": "restore"}},
+		{ID: "other-project", Labels: map[string]string{"berthy.project": "blog", "berthy.environment": "test", "berthy.helper": "restore"}},
+		{ID: "other-environment", Labels: map[string]string{"berthy.project": "shop", "berthy.environment": "prod", "berthy.helper": "restore"}},
+	}}
+	c := &Controller{Engine: docker, Project: "shop", Environment: "test"}
+	if !c.cleanRestore(context.Background(), state.Operation{ID: "op"}, []state.Intent{{Kind: restoreKind, Desired: []byte(`{"into":"new"}`)}}) {
+		t.Fatal("cleanup failed")
+	}
+	if !slices.Equal(docker.removedC, []string{"mine"}) {
+		t.Fatalf("removed containers %v", docker.removedC)
+	}
+}
+
 func TestRecoveryOfARestoreNeverRemovesAVolumeItDidNotCreate(t *testing.T) {
 	for name, label := range map[string]func(string) map[string]string{
 		"no labels":      func(string) map[string]string { return map[string]string{} },
