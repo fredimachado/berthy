@@ -279,7 +279,7 @@ remove_environment_network() (
     fi
     list_networks || return 1
     if ! printf '%s\n' "$listing" | grep -Fxq -- "$id"; then return 0; fi
-    if [ "$removed" = 0 ] && ! printf '%s\n' "$last_error" | grep -Eqi 'in use|active endpoints'; then
+    if [ "$removed" = 0 ] && ! printf '%s\n' "$last_error" | grep -Eqi 'in use|active endpoints|network( [[:alnum:]_.-]+)? not found|no such network'; then
       echo "network $id removal failed: $last_error" >&2
       return 1
     fi

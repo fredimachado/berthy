@@ -25,8 +25,10 @@ d() {
     'network ls')
       if [[ $* == *'--no-trunc'* ]]; then
         local network
-        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished shop-timeout shop-early; do
-          if [ "${EARLY_DESTROY:-}" = 1 ]; then
+        for network in shop-prod shop-stage shop-two-prod shop-foreign shop-delayed shop-retry shop-vanished shop-timeout shop-early shop-notfound; do
+          if [ "${NOTFOUND_NETWORK:-}" = 1 ]; then
+            [ "$network" = shop-notfound ] && [ ! -e "$E2E_ROOT/notfound-gone" ] || continue
+          elif [ "${EARLY_DESTROY:-}" = 1 ]; then
             [ "$network" = shop-early ] && [ ! -e "$E2E_ROOT/early-gone" ] || continue
           elif [ "${TIMEOUT_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-timeout ] || continue
@@ -37,7 +39,7 @@ d() {
           elif [ "${DELAYED_NETWORK:-}" = 1 ]; then
             [ "$network" = shop-delayed ] && [ ! -e "$E2E_ROOT/delayed-gone" ] || continue
           else
-            case $network in shop-delayed|shop-retry|shop-vanished|shop-timeout|shop-early) continue ;; esac
+            case $network in shop-delayed|shop-retry|shop-vanished|shop-timeout|shop-early|shop-notfound) continue ;; esac
             if [ -f "$E2E_ROOT/removed-networks" ] && grep -Fxq "$network" "$E2E_ROOT/removed-networks"; then continue; fi
           fi
           if [[ $* == *'{{.ID}} {{.Name}}'* ]]; then echo "id-$network $network"; else echo "id-$network"; fi
@@ -51,7 +53,7 @@ d() {
       case "${@: -1}" in
         id-shop-foreign) echo '' ;;
         id-shop-vanished) touch "$E2E_ROOT/vanished"; return 1 ;;
-        id-shop-prod|id-shop-stage|id-shop-delayed|id-shop-retry|id-shop-timeout|id-shop-early) echo "$FIXTURE_ID" ;;
+        id-shop-prod|id-shop-stage|id-shop-delayed|id-shop-retry|id-shop-timeout|id-shop-early|id-shop-notfound) echo "$FIXTURE_ID" ;;
         own-network) echo shop-prod-db ;;
         other-network) echo shop-prod-foreign-db ;;
         vanished-network) echo 'foreign network disappeared' >&2; return 1 ;;
@@ -66,6 +68,12 @@ d() {
       done ;;
     'network rm')
       local network=${3#id-}
+      if [ "$network" = shop-notfound ]; then
+        if [ ! -e "$E2E_ROOT/notfound-refused" ]; then
+          touch "$E2E_ROOT/notfound-refused"; echo 'network not found' >&2; printf 'destroy\n' > "$EVENT_FIFO"; return 1
+        fi
+        touch "$E2E_ROOT/notfound-gone"; return 0
+      fi
       if [ "$network" = shop-early ]; then
         if [ ! -e "$E2E_ROOT/early-refused" ]; then
           touch "$E2E_ROOT/early-refused"; echo 'network is in use' >&2; printf 'destroy\n' > "$EVENT_FIFO"; return 1
@@ -226,6 +234,11 @@ EARLY_DESTROY=1
 purge_fixture || { echo 'cleanup failed after an early local destroy event' >&2; exit 1; }
 if [ ! -e "$E2E_ROOT/early-gone" ]; then echo 'cleanup cleared the journal while the network ID remained' >&2; exit 1; fi
 unset EARLY_DESTROY
+printf 'network\tshop-notfound\n' > "$E2E_ROOT/fixture-objects"
+NOTFOUND_NETWORK=1
+purge_fixture || { echo 'cleanup failed when Docker had not yet forgotten the network ID' >&2; exit 1; }
+[ -e "$E2E_ROOT/notfound-gone" ] || { echo 'cleanup did not wait for the network ID to disappear' >&2; exit 1; }
+unset NOTFOUND_NETWORK
 # A Docker call may hang even while its event watcher stays open.
 mkfifo "$E2E_ROOT/watch-ready" "$E2E_ROOT/stall"
 cat > "$E2E_ROOT/bin/stalled-docker" <<'DOCKER'
