@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"time"
 
 	"berthy/internal/backup"
 	"berthy/internal/state"
@@ -51,7 +52,7 @@ var dockerNameMessage = regexp.MustCompile(`^name [A-Za-z0-9][A-Za-z0-9._-]{0,20
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
-	case errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
+	case "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,
@@ -76,6 +77,17 @@ func (c *Controller) runSchemaRevert(ctx context.Context, op state.Operation, ac
 			return state.Outcome{State: "failed", Err: string(r)}
 		}
 		return state.Outcome{State: "failed", Err: "schema revert unavailable"}
+	}
+	if sr.Image != nil && c.Reserve != nil {
+		claims, err := c.reserveNames(ctx, req)
+		if err != nil {
+			return failedWith(err)
+		}
+		defer func() {
+			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			c.settle(settleCtx, claims)
+		}()
 	}
 	// The revert image may have been pruned since the migration ran; check it before the service changes.
 	if _, msg, err := c.ensureImage(ctx, sr.Prepared); err != nil {

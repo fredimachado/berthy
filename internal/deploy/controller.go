@@ -208,6 +208,9 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if err := c.checkProject(req); err != nil {
 		return Plan{}, err
 	}
+	if err := c.checkNames(ctx, req); err != nil {
+		return Plan{}, err
+	}
 	return c.plan(ctx, actor, req)
 }
 
@@ -379,6 +382,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		}
 	}
 	if err := c.checkProject(req); err != nil {
+		return state.Operation{}, false, err
+	}
+	if err := c.checkNames(ctx, req); err != nil {
 		return state.Operation{}, false, err
 	}
 	if req.KeepVersion || req.KeepDigest != "" {
@@ -961,4 +967,192 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 		return schemaRevert{}, err
 	}
 	return schemaRevert{Source: src, Prepared: p, Target: target, Revert: args, Version: app.Migrations.Version, Timeout: app.Migrations.TimeoutDuration(), Image: image}, nil
+}
+
+// effectiveNames returns the Docker names an operation will take after resolving its inputs.
+func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.Claim, error) {
+	if req.Kind == "ingress" && req.Manifest.Ingress != nil {
+		connector, err := connectorRequest(req.Manifest, req, c.Environment, false)
+		if err != nil {
+			return nil, err
+		}
+		return c.effectiveNames(ctx, connector)
+	}
+	if req.Kind == "apply" {
+		return []state.Claim{{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}}, nil
+	}
+	if req.Kind == "restore" {
+		if req.RestoreInto == "" {
+			return nil, nil
+		}
+		return []state.Claim{{Kind: state.ClaimVolume, Name: req.RestoreInto}}, nil
+	}
+	if req.Kind == "rollback" && req.RevertSchema {
+		sr, err := c.schemaRevertPlan(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if sr.Image == nil {
+			return nil, nil
+		}
+		req.RevertSchema = false
+		req.TargetRelease = sr.Image.ID
+	}
+	if req.Kind == "rollback" && !req.RevertSchema {
+		resolved, err := c.rollbackRequest(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		resolved.Kind = "deploy"
+		return c.effectiveNames(ctx, resolved)
+	}
+	if req.Kind != "" && req.Kind != "deploy" {
+		return nil, nil
+	}
+	app, ok := req.Manifest.Apps[req.App]
+	if !ok {
+		return nil, nil
+	}
+	if app.Kind == "compose" {
+		return c.composeNames(ctx, req)
+	}
+	if app.Kind != "image" {
+		return nil, nil
+	}
+	bindings := map[string]string{}
+	if c.Store != nil {
+		bs, err := c.Store.Bindings(ctx, req.App)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range bs {
+			bindings[b.Role] = b.Name
+		}
+	}
+	claims := []state.Claim{{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}}
+	for _, role := range sortedKeys(app.Roles) {
+		r := app.Roles[role]
+		name := bindings[role]
+		if req.Adopt {
+			name = r.Service
+		}
+		if name == "" {
+			if msg := req.Manifest.ServiceNameError(c.Environment, req.App, role); msg != "" {
+				return nil, Refusal(msg)
+			}
+			name = req.Manifest.ServiceName(c.Environment, req.App, role)
+		}
+		claims = append(claims, state.Claim{Kind: state.ClaimService, Name: name})
+		for _, raw := range r.Volumes {
+			mount, err := manifest.ParseMount(raw)
+			if err != nil {
+				return nil, err
+			}
+			claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: req.Manifest.VolumeName(c.Environment, mount.Source)})
+		}
+	}
+	return claims, nil
+}
+
+func (c *Controller) checkNames(ctx context.Context, req Request) error {
+	if c.Foreign == nil {
+		return nil
+	}
+	claims, err := c.effectiveNames(ctx, req)
+	if err != nil {
+		return err
+	}
+	foreign, err := c.Foreign(ctx)
+	if err != nil {
+		return err
+	}
+	for _, claim := range claims {
+		if foreign.Claims[claim] {
+			return Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", claim.Name))
+		}
+	}
+	return nil
+}
+
+func (c *Controller) reserveNames(ctx context.Context, req Request) ([]state.Claim, error) {
+	if c.Reserve == nil {
+		return nil, nil
+	}
+	claims, err := c.effectiveNames(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.reserveClaims(ctx, claims)
+}
+
+func (c *Controller) reserveClaims(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
+	held, err := c.Store.Claims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	existing := map[state.Claim]bool{}
+	for _, claim := range held {
+		existing[claim] = true
+	}
+	if err := c.Reserve(ctx, claims); err != nil {
+		return nil, err
+	}
+	var added []state.Claim
+	for _, claim := range claims {
+		if !existing[claim] {
+			added = append(added, claim)
+			existing[claim] = true
+		}
+	}
+	return added, nil
+}
+
+// settle gives up claims only after Docker confirms their objects are absent.
+func (c *Controller) settle(ctx context.Context, claims []state.Claim) {
+	if c.Store == nil || c.Engine == nil {
+		return
+	}
+	var gone []state.Claim
+	for _, claim := range claims {
+		absent := false
+		switch claim.Kind {
+		case state.ClaimService:
+			_, err := c.Engine.InspectService(ctx, claim.Name)
+			absent = serviceMissing(err)
+		case state.ClaimNetwork:
+			_, err := c.Engine.InspectNetwork(ctx, claim.Name)
+			absent = statusIs(err, 404)
+		case state.ClaimVolume:
+			if e, ok := c.Engine.(interface {
+				VolumeExists(context.Context, string) (bool, error)
+			}); ok {
+				exists, err := e.VolumeExists(ctx, claim.Name)
+				absent = err == nil && !exists
+			}
+		case state.ClaimComposeProject:
+			if e, ok := c.Engine.(composeEngine); ok {
+				containers, err := e.ComposeContainers(ctx, claim.Name)
+				absent = err == nil && len(containers) == 0
+			}
+		}
+		if absent {
+			gone = append(gone, claim)
+		}
+	}
+	_ = c.Store.ReleaseClaims(ctx, gone)
+}
+
+// notForeign refuses a destructive call on a name held by another hosted environment.
+func (c *Controller) notForeign(ctx context.Context, claim state.Claim) error {
+	if c.Foreign == nil {
+		return nil
+	}
+	foreign, err := c.Foreign(ctx)
+	if err != nil {
+		return err
+	}
+	if foreign.Claims[claim] {
+		return Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", claim.Name))
+	}
+	return nil
 }

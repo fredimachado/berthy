@@ -325,8 +325,11 @@ type composeConfigVolume struct {
 type composeConfigFile struct {
 	Services map[string]composeConfigService `json:"services"`
 	Volumes  map[string]composeConfigVolume  `json:"volumes,omitempty"`
-	Secrets  map[string]composeTopFile       `json:"secrets,omitempty"`
-	Configs  map[string]composeTopFile       `json:"configs,omitempty"`
+	Networks map[string]struct {
+		Name string `json:"name"`
+	} `json:"networks,omitempty"`
+	Secrets map[string]composeTopFile `json:"secrets,omitempty"`
+	Configs map[string]composeTopFile `json:"configs,omitempty"`
 }
 
 func (v composeConfigVolume) external() bool {
@@ -608,7 +611,7 @@ func firstDifference(p ComposePlan) string {
 }
 
 // composePlanIn plans req inside dir, which holds the staged files. It makes no changes.
-func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor, req Request, adopt bool) (ComposePlan, error) {
+func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor, req Request, adopt bool, reserve ...func([]state.Claim) error) (ComposePlan, error) {
 	project := req.Manifest.ComposeProject(c.Environment, req.App)
 	app := req.Manifest.Apps[req.App]
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
@@ -619,6 +622,15 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	var cfg composeConfigFile
 	if json.Unmarshal(out, &cfg) != nil || len(cfg.Services) == 0 {
 		return ComposePlan{}, errComposeConfig
+	}
+	if len(reserve) > 0 && reserve[0] != nil {
+		names, err := composeConfigNames(project, cfg)
+		if err != nil {
+			return ComposePlan{}, err
+		}
+		if err := reserve[0](names); err != nil {
+			return ComposePlan{}, err
+		}
 	}
 	hashOut, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--hash", "*"}})
 	if err != nil {
@@ -787,7 +799,21 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	if auth != "" {
 		defer os.RemoveAll(auth)
 	}
-	plan, err := c.composePlanIn(ctx, stage, actor, req, req.Adopt)
+	var reserved []state.Claim
+	defer func() {
+		settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c.settle(settleCtx, reserved)
+	}()
+	var reserve func([]state.Claim) error
+	if c.Reserve != nil {
+		reserve = func(names []state.Claim) error {
+			var err error
+			reserved, err = c.reserveClaims(ctx, names)
+			return err
+		}
+	}
+	plan, err := c.composePlanIn(ctx, stage, actor, req, req.Adopt, reserve)
 	if err != nil {
 		return failedWith(err)
 	}
@@ -1069,4 +1095,56 @@ func (c *Controller) appliedCompose(ctx context.Context, app string) (manifest.M
 	}
 	a, ok := m.Apps[app]
 	return m, ok && a.Kind == "compose", nil
+}
+
+func (c *Controller) composeNames(ctx context.Context, req Request) ([]state.Claim, error) {
+	if err := c.composeReady(); err != nil {
+		return nil, err
+	}
+	dir, err := c.newComposeDir(".names-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	auth, err := c.stageCompose(ctx, dir, req)
+	if err != nil {
+		return nil, err
+	}
+	if auth != "" {
+		defer os.RemoveAll(auth)
+	}
+	return c.composeNamesIn(ctx, dir, req)
+}
+
+func (c *Controller) composeNamesIn(ctx context.Context, dir string, req Request) ([]state.Claim, error) {
+	return c.composeNamesAt(ctx, dir, req.Manifest.ComposeProject(c.Environment, req.App))
+}
+
+func (c *Controller) composeNamesAt(ctx context.Context, dir, project string) ([]state.Claim, error) {
+	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
+	if err != nil {
+		return nil, errComposeConfig
+	}
+	var cfg composeConfigFile
+	if json.Unmarshal(out, &cfg) != nil {
+		return nil, errComposeConfig
+	}
+	return composeConfigNames(project, cfg)
+}
+
+func composeConfigNames(project string, cfg composeConfigFile) ([]state.Claim, error) {
+	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
+	for _, k := range sortedKeys(cfg.Volumes) {
+		if cfg.Volumes[k].Name == "" {
+			return nil, errComposeConfig
+		}
+		claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[k].Name})
+	}
+	for _, k := range sortedKeys(cfg.Networks) {
+		if cfg.Networks[k].Name == "" {
+			return nil, errComposeConfig
+		}
+		claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: cfg.Networks[k].Name})
+	}
+	return claims, nil
 }

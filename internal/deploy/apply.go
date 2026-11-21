@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"time"
 
 	"berthy/internal/manifest"
 	"berthy/internal/state"
@@ -47,6 +48,10 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	if err := c.checkProject(Request{Manifest: req.Manifest}); err != nil {
 		return ApplyResult{}, err
 	}
+	namesReq := Request{Kind: "apply", Manifest: req.Manifest}
+	if err := c.checkNames(ctx, namesReq); err != nil {
+		return ApplyResult{}, err
+	}
 	var prev manifest.Manifest
 	if st, ok, err := c.Store.Settings(ctx); err != nil {
 		return ApplyResult{}, err
@@ -61,6 +66,17 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	}
 	if req.DryRun {
 		return result, nil
+	}
+	if c.Reserve != nil {
+		claims, err := c.reserveNames(ctx, namesReq)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		defer func() {
+			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			c.settle(settleCtx, claims)
+		}()
 	}
 	st, err := state.NewSettings(req.Manifest, req.Commit, req.Modified)
 	if err != nil {

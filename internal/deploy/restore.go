@@ -198,6 +198,17 @@ func (c *Controller) runRestore(ctx context.Context, op state.Operation, actor A
 	if _, err := c.restoreCheck(ctx, actor, req); err != nil {
 		return state.Outcome{State: "failed", Err: string(restoreRefusal(err, errRestoreFailed))}
 	}
+	if req.RestoreInto != "" && c.Reserve != nil {
+		claims, err := c.reserveNames(ctx, req)
+		if err != nil {
+			return failedWith(err)
+		}
+		defer func() {
+			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			c.settle(settleCtx, claims)
+		}()
+	}
 	exec := len(req.Command) > 0
 	desired, err := json.Marshal(struct {
 		Key  string `json:"key"`
@@ -387,14 +398,21 @@ func (c *Controller) cleanRestore(ctx context.Context, op state.Operation, inten
 	case err != nil:
 		return false
 	case !exists:
-		return true
+		return c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: into}}) == nil
 	case labels[backup.RestoreOperationLabel] != op.ID:
+		return false
+	}
+	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimVolume, Name: into}); err != nil {
 		return false
 	}
 	if err = de.RemoveVolume(ctx, into); err != nil && !statusIs(err, 404) {
 		return false
 	}
-	return true
+	_, exists, err = de.VolumeLabels(ctx, into)
+	if err != nil || exists {
+		return false
+	}
+	return c.Store == nil || c.Store.ReleaseClaims(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: into}}) == nil
 }
 
 // composeConfigVolumes is the part of `compose config --format json` that names a project's volumes.

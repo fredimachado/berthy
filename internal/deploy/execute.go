@@ -102,6 +102,21 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 		return
 	}
+	if c.Reserve != nil {
+		claims, err := c.reserveNames(ctx, req)
+		if err != nil {
+			var refusal Refusal
+			if errors.As(err, &refusal) && PublicMessage(string(refusal)) {
+				outcome.Err = string(refusal)
+			}
+			return
+		}
+		defer func() {
+			settleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			c.settle(settleCtx, claims)
+		}()
+	}
 	planned = target{Image: p.Image, Tag: p.Tag}
 	if req.Adopt {
 		plan, bindings, e := c.planAdoption(ctx, req)

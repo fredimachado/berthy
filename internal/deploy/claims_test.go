@@ -1,0 +1,724 @@
+package deploy
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"berthy/internal/engine"
+	"berthy/internal/manifest"
+	"berthy/internal/state"
+)
+
+func TestDeployRefusesAServiceNameAnotherEnvironmentHolds(t *testing.T) {
+	ctx := context.Background()
+	claim := state.Claim{Kind: state.ClaimService, Name: "shop-prod-eu-api-web"}
+	c := &Controller{Environment: "prod-eu", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), RequestID: "one", Manifest: manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {}}}}}}
+	want := "name shop-prod-eu-api-web is taken by another project or environment on this server"
+	if _, err := c.Plan(ctx, Actor{ID: "test"}, req); err == nil || err.Error() != want {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(ctx, Actor{ID: "test"}, req); err == nil || err.Error() != want {
+		t.Fatalf("admission: %v", err)
+	}
+}
+
+func TestComposeDeployRefusesAProjectNameAnotherEnvironmentHolds(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	m := composeApp(false)
+	app := m.Apps["db"]
+	app.ProjectName = "shared"
+	m.Apps["db"] = app
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	req := composeReq("project", composeFileOne, m)
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+		t.Fatalf("admit: %v", err)
+	}
+	if runner.upRuns() != 0 {
+		t.Fatal("compose up ran")
+	}
+}
+
+func TestComposeDeployRefusesAVolumeNameTheFileSetsThatAnotherEnvironmentHolds(t *testing.T) {
+	for _, external := range []string{"false", "true"} {
+		t.Run(external, func(t *testing.T) {
+			runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"volumes":{"pgdata":{"name":"pgdata","external":` + external + `}}}`, hashes: hashOne}
+			c, _ := composeController(t, runner, newComposeDocker())
+			claim := state.Claim{Kind: state.ClaimVolume, Name: "pgdata"}
+			c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+			_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("volume", composeFileOne, composeApp(false)))
+			if err == nil || !strings.Contains(err.Error(), "name pgdata is taken") {
+				t.Fatalf("plan: %v", err)
+			}
+			if runner.upRuns() != 0 {
+				t.Fatal("compose up ran")
+			}
+		})
+	}
+}
+
+func TestComposeDeployRefusesANetworkAnotherEnvironmentHolds(t *testing.T) {
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"networks":{"shared":{"name":"shared-net","external":true}}}`, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: "shared-net"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("network", composeFileOne, composeApp(false)))
+	if err == nil || !strings.Contains(err.Error(), "name shared-net is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+	if runner.upRuns() != 0 {
+		t.Fatal("compose up ran")
+	}
+}
+
+func TestComposeRunReservesAgainBeforeUp(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Reserve = func(context.Context, []state.Claim) error {
+		return Refusal("name shared is taken by another project or environment on this server")
+	}
+	outcome := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, composeReq("run", composeFileOne, composeApp(false)), false)
+	if outcome.Err != "name shared is taken by another project or environment on this server" || runner.upRuns() != 0 {
+		t.Fatalf("outcome: %+v; up calls: %d", outcome, runner.upRuns())
+	}
+}
+
+func TestImageRunReservesAgainBeforeDockerChanges(t *testing.T) {
+	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
+	c.Reserve = func(context.Context, []state.Claim) error {
+		return Refusal("name shared is taken by another project or environment on this server")
+	}
+	one := 1
+	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
+	outcome, _ := c.runDeploy(context.Background(), state.Operation{}, Actor{ID: "actor"}, req, false)
+	if outcome.Err != "name shared is taken by another project or environment on this server" {
+		t.Fatalf("outcome: %+v", outcome)
+	}
+}
+
+func TestRestoreIntoRefusesAVolumeAnotherEnvironmentHolds(t *testing.T) {
+	c := restoreController(t, &fakeRestorer{})
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "restored-1"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	req := restoreRequest("conflict")
+	if _, err := c.Plan(context.Background(), restoreAdmin, req); err == nil || !strings.Contains(err.Error(), "name restored-1 is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(context.Background(), restoreAdmin, req); err == nil || !strings.Contains(err.Error(), "name restored-1 is taken") {
+		t.Fatalf("admit: %v", err)
+	}
+}
+
+func TestTwoRestoresIntoOneNameHaveOneWinner(t *testing.T) {
+	ctx := context.Background()
+	r := &fakeRestorer{}
+	a, b := restoreController(t, r), restoreController(t, r)
+	var mu sync.Mutex
+	var barrier sync.WaitGroup
+	barrier.Add(2)
+	held := false
+	for _, c := range []*Controller{a, b} {
+		c := c
+		c.Reserve = func(ctx context.Context, claims []state.Claim) error {
+			barrier.Done()
+			barrier.Wait()
+			mu.Lock()
+			defer mu.Unlock()
+			if held {
+				return Refusal("name restored-1 is taken by another project or environment on this server")
+			}
+			held = true
+			return c.Store.AddClaims(ctx, claims)
+		}
+	}
+	ops := make([]state.Operation, 2)
+	for i, c := range []*Controller{a, b} {
+		var err error
+		ops[i], _, err = c.Store.Admit(ctx, state.Admission{RequestID: "r", ActorID: "admin", Kind: "restore", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	results := make(chan state.Outcome, 2)
+	for i, c := range []*Controller{a, b} {
+		i, c := i, c
+		go func() { <-start; results <- c.runRestore(ctx, ops[i], restoreAdmin, restoreRequest("r")) }()
+	}
+	close(start)
+	first := <-results
+	second := <-results
+	loser, winner := first, second
+	if first.State == "succeeded" {
+		loser, winner = second, first
+	}
+	if loser.State != "failed" || !strings.Contains(loser.Err, "name restored-1 is taken") || winner.State != "succeeded" {
+		t.Fatalf("outcomes: %+v, %+v", loser, winner)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.restores) != 1 {
+		t.Fatalf("restore calls: %v", r.restores)
+	}
+}
+
+func TestApplyRefusesANetworkAnotherEnvironmentHolds(t *testing.T) {
+	c, _ := composeController(t, &fakeCompose{}, newComposeDocker())
+	m := composeApp(false)
+	m.Network = "shared"
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: "shared"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	for _, dry := range []bool{true, false} {
+		_, err := c.ApplySettings(context.Background(), Actor{ID: "admin"}, ApplyRequest{Manifest: m, DryRun: dry})
+		if err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+			t.Fatalf("dry=%v: %v", dry, err)
+		}
+	}
+}
+
+func TestRemoveNeverBringsDownAProjectOrDeletesAVolumeAnotherEnvironmentHolds(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	docker := newComposeDocker()
+	docker.volumes["pgdata"] = true
+	c, _ := composeController(t, runner, docker)
+	claims := map[state.Claim]bool{{Kind: state.ClaimComposeProject, Name: "shared"}: true, {Kind: state.ClaimVolume, Name: "pgdata"}: true}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: claims}, nil }
+	if err := c.composeDown(context.Background(), "shared", true); err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+		t.Fatalf("compose down: %v", err)
+	}
+	if err := c.removeVolume(context.Background(), "pgdata", func(string) {}); err == nil || !strings.Contains(err.Error(), "name pgdata is taken") {
+		t.Fatalf("volume delete: %v", err)
+	}
+	for _, call := range runner.runs {
+		if call.Args[0] == "down" {
+			t.Fatal("compose down ran")
+		}
+	}
+	if !docker.volumes["pgdata"] {
+		t.Fatal("volume removed")
+	}
+}
+
+func TestInvalidNetworkRefusalIsPublic(t *testing.T) {
+	m := composeApp(false)
+	m.Network = strings.Repeat("a", 64)
+	err := m.Validate()
+	if err == nil || err.Error() != "invalid project or network" {
+		t.Fatalf("validation: %v", err)
+	}
+	if !PublicMessage(err.Error()) {
+		t.Fatalf("not public: %v", err)
+	}
+}
+
+func TestRemovalReleasesAServiceConfirmedGone(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimService, Name: "gone"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &positiveEngine{}}
+	if err := c.deleteBoundService(ctx, state.Intent{Name: "gone", ServiceID: "id"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestRemoveWithoutVolumesKeepsTheVolumesClaim(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "data"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &volumeDocker{loggedEngine: &loggedEngine{calls: &callLog{}}, volumes: map[string]string{"data": ""}}
+	c := Controller{Store: s, Engine: docker}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "admin", Kind: "remove", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := 0
+	out := c.removeApp(ctx, op.ID, Request{App: "app"}, &removal{plan: RemovePlan{Kind: "image", KeptVolumes: []string{"data"}}}, func(string) {}, &journal)
+	if out.State != "succeeded" {
+		t.Fatalf("remove: %+v", out)
+	}
+	if err := s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || len(got) != 1 || got[0] != claim {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+	other := Controller{Foreign: func(ctx context.Context) (Foreign, error) {
+		cs, err := s.Claims(ctx)
+		f := Foreign{Claims: map[state.Claim]bool{}}
+		for _, c := range cs {
+			f.Claims[c] = true
+		}
+		return f, err
+	}}
+	if err := other.notForeign(ctx, claim); err == nil {
+		t.Fatal("another environment could take the retained volume")
+	}
+}
+
+func TestRemoveWithVolumesReleasesTheVolumesClaim(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "data"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &volumeDocker{loggedEngine: &loggedEngine{calls: &callLog{}}, volumes: map[string]string{"data": ""}}
+	c := Controller{Store: s, Engine: docker}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "admin", Kind: "remove", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := 0
+	out := c.removeApp(ctx, op.ID, Request{App: "app", Volumes: true}, &removal{plan: RemovePlan{Kind: "image", Volumes: []string{"data"}}}, func(string) {}, &journal)
+	if out.State != "succeeded" {
+		t.Fatalf("remove: %+v", out)
+	}
+	if err := s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestRemoveReleasesTheClaimOfAServiceAlreadyGone(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimService, Name: "shop-test-api-web"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {}}}}}
+	raw, _ := json.Marshal(m)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "deploy", ActorID: "admin", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Digest: "sha256:" + strings.Repeat("a", 64), Manifest: raw, Bindings: []state.Binding{{App: "api", Role: "web", Name: claim.Name, ServiceID: "id"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err = s.Admit(ctx, state.Admission{RequestID: "remove", ActorID: "admin", Kind: "remove", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: &positiveEngine{}, Environment: "test"}
+	out := c.runRemove(ctx, op, Actor{ID: "admin", Admin: true}, Request{App: "api"})
+	if out.State != "succeeded" {
+		t.Fatalf("remove: %+v", out)
+	}
+	if err := s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+type namesByComposeDirectory struct {
+	*fakeCompose
+	firstDir string
+	count    int
+}
+
+func (f *namesByComposeDirectory) Run(ctx context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
+	if len(r.Args) > 1 && r.Args[0] == "config" && r.Args[1] != "--hash" {
+		if f.firstDir == "" {
+			f.firstDir = r.Dir
+		}
+		f.count++
+		name := "v" + strings.TrimPrefix(filepath.Base(r.Dir), ".") + strconv.Itoa(f.count)
+		return []byte(`{"services":{"database":{"image":"alpine"}},"volumes":{"data":{"name":"` + name + `"}}}`), nil, nil
+	}
+	return f.fakeCompose.Run(ctx, r)
+}
+
+func TestComposeRunReservesTheNamesOfItsStagedFiles(t *testing.T) {
+	runner := &namesByComposeDirectory{fakeCompose: &fakeCompose{hashes: hashOne}}
+	c, _ := composeController(t, runner.fakeCompose, newComposeDocker())
+	c.Compose = runner
+	var reserved []state.Claim
+	c.Reserve = func(_ context.Context, claims []state.Claim) error {
+		reserved = claims
+		return Refusal("compose deploy failed")
+	}
+	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, composeReq("r", composeFileOne, composeApp(false)), false)
+	want := "v" + strings.TrimPrefix(filepath.Base(runner.firstDir), ".") + "1"
+	if !slices.Contains(reserved, state.Claim{Kind: state.ClaimVolume, Name: want}) {
+		t.Fatalf("stage %s reserved %v", runner.firstDir, reserved)
+	}
+}
+
+func TestAdoptByAnExplicitServiceNameRefusesAServiceOfAnotherEnvironment(t *testing.T) {
+	claim := state.Claim{Kind: state.ClaimService, Name: "existing"}
+	c := Controller{Environment: "test", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	req := Request{Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {Service: "existing"}}}}}}
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req)
+	if err == nil || !strings.Contains(err.Error(), "name existing is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+}
+
+func TestTheAgentRefusesALongServiceNameWithTheManifestsText(t *testing.T) {
+	ctx := context.Background()
+	app := strings.Repeat("a", 45)
+	m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{app: {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {}}}}}
+	req := Request{App: app, Manifest: m}
+	c := Controller{Environment: "production", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{}}, nil }}
+	want := m.ServiceNameError(c.Environment, app, "web")
+	if want == "" {
+		t.Fatal("test name fits")
+	}
+	if _, err := c.Plan(ctx, Actor{ID: "admin"}, req); err == nil || err.Error() != want || !PublicMessage(err.Error()) {
+		t.Fatalf("plan: %v, want %s", err, want)
+	}
+	s := openStore(t)
+	c.Store = s
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "a", ActorID: "admin", Kind: "deploy", App: app, PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(m)
+	if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Digest: "sha256:" + strings.Repeat("a", 64), Manifest: raw, Bindings: []state.Binding{{App: app, Role: "web", Name: "short", ServiceID: "id"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	names, err := c.effectiveNames(ctx, req)
+	if err != nil || !slices.Contains(names, state.Claim{Kind: state.ClaimService, Name: "short"}) {
+		t.Fatalf("bound role: %v, %v", names, err)
+	}
+}
+
+func TestRollbackRefusesANameAnotherEnvironmentTookSince(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	m := manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {}}}}}
+	raw, _ := json.Marshal(m)
+	for _, id := range []string{"first", "second"} {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: id, ActorID: "admin", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Digest: "sha256:" + strings.Repeat("a", 64), Manifest: raw}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim := state.Claim{Kind: state.ClaimService, Name: "shop-test-api-web"}
+	c := Controller{Store: s, Environment: "test", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	req := Request{Kind: "rollback", App: "api", RequestID: "rollback"}
+	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shop-test-api-web is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shop-test-api-web is taken") {
+		t.Fatalf("admit: %v", err)
+	}
+}
+
+func TestTheNameCheckLeavesThePlanByteIdentical(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	req := composeReq("plan", composeFileOne, composeApp(false))
+	req.DryRun = true
+	before, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{}}, nil }
+	after, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("plan changed:\n%s\n%s", a, b)
+	}
+}
+
+type failedFirstDeployEngine struct{ *positiveEngine }
+
+func (e *failedFirstDeployEngine) InspectImage(context.Context, string) (engine.Image, error) {
+	return engine.Image{}, errors.New("image unavailable")
+}
+func (e *failedFirstDeployEngine) VolumeExists(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func TestAFailedFirstDeployReleasesTheNamesItDidNotCreate(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	c := Controller{Store: s, Engine: &failedFirstDeployEngine{positiveEngine: &positiveEngine{}}, Environment: "test"}
+	c.Reserve = func(ctx context.Context, claims []state.Claim) error { return s.AddClaims(ctx, claims) }
+	one := 1
+	req := Request{App: "api", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "shop", Network: "overlay", Apps: map[string]manifest.App{"api": {Kind: "image", Image: "example/api", Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data"}}}}}}}
+	out, _ := c.runDeploy(ctx, state.Operation{}, Actor{ID: "actor"}, req, false)
+	if out.State != "failed" {
+		t.Fatalf("deploy: %+v", out)
+	}
+	got, err := s.Claims(ctx)
+	want := []state.Claim{{Kind: state.ClaimNetwork, Name: "overlay"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestFailedRestoreReleasesOnlyAConfirmedAbsentVolume(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		t.Run(strconv.FormatBool(exists), func(t *testing.T) {
+			ctx := context.Background()
+			s := openStore(t)
+			docker := newComposeDocker()
+			docker.volumes["restored-1"] = exists
+			c := Controller{Store: s, Engine: docker, Environment: "test", Restorer: &fakeRestorer{err: errors.New("failed")}}
+			c.Reserve = func(ctx context.Context, claims []state.Claim) error { return s.AddClaims(ctx, claims) }
+			op, _, err := s.Admit(ctx, state.Admission{RequestID: "r", ActorID: "admin", Kind: "restore", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := c.runRestore(ctx, op, restoreAdmin, restoreRequest("r"))
+			if out.State != "failed" {
+				t.Fatalf("restore: %+v", out)
+			}
+			if err := s.Finish(ctx, op.ID, out); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Claims(ctx)
+			if err != nil || (len(got) == 1) != exists {
+				t.Fatalf("claims: %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestDestructiveCallsStopWhenForeignClaimsCannotBeRead(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	want := errors.New("claims unavailable")
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{}, want }
+	if err := c.composeDown(context.Background(), "project", true); !errors.Is(err, want) {
+		t.Fatalf("down: %v", err)
+	}
+	if err := c.removeVolume(context.Background(), "data", func(string) {}); !errors.Is(err, want) {
+		t.Fatalf("volume: %v", err)
+	}
+	if len(downRuns(runner)) != 0 {
+		t.Fatal("compose down ran")
+	}
+}
+
+func TestComposeDownRefusesAProjectVolumeAnotherEnvironmentHolds(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	docker := newComposeDocker()
+	docker.projectVolumes = []string{"pgdata"}
+	c, _ := composeController(t, runner, docker)
+	c.Foreign = func(context.Context) (Foreign, error) {
+		return Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimVolume, Name: "pgdata"}: true}}, nil
+	}
+	err := c.composeDown(context.Background(), "shared", true)
+	if err == nil || !strings.Contains(err.Error(), "name pgdata is taken") {
+		t.Fatalf("down: %v", err)
+	}
+	if len(downRuns(runner)) != 0 {
+		t.Fatal("compose down ran")
+	}
+}
+
+func TestRestoreRecoveryReleasesAConfirmedAbsentVolumeClaim(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimVolume, Name: "restored-1"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	docker := &restoreDocker{positiveEngine: &positiveEngine{}, volumes: map[string]map[string]string{}}
+	c := Controller{Store: s, Engine: docker, Environment: "test"}
+	intents := []state.Intent{{Kind: restoreKind, Desired: json.RawMessage(`{"into":"restored-1"}`)}}
+	if !c.cleanRestore(ctx, state.Operation{ID: "op"}, intents) {
+		t.Fatal("absent volume not confirmed")
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestIngressAdmissionChecksTheConnectorName(t *testing.T) {
+	m := withIngress(t, removeApps())
+	claim := state.Claim{Kind: state.ClaimService, Name: m.ServiceName("test", manifest.ConnectorAppName, "connector")}
+	c := Controller{Environment: "test", Foreign: func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }}
+	req := Request{Kind: "ingress", RequestID: "ingress", Manifest: m}
+	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name "+claim.Name+" is taken") {
+		t.Fatalf("admit: %v", err)
+	}
+}
+
+type schemaRevertImageSpy struct {
+	*revertFake
+	inspections int
+}
+
+func (s *schemaRevertImageSpy) InspectImage(ctx context.Context, name string) (engine.Image, error) {
+	s.inspections++
+	return s.revertFake.positiveEngine.InspectImage(ctx, name)
+}
+
+func TestSchemaRevertChecksRollbackNamesBeforeImageWork(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	old, _, err := s.Admit(ctx, state.Admission{RequestID: "old", ActorID: "admin", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, old.ID, state.Outcome{State: "succeeded", SchemaAfter: "v1", Release: releaseOf(oldImage)}); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := s.Applied(ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration, _, err := s.Admit(ctx, state.Admission{RequestID: "migration", ActorID: "admin", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := json.Marshal(struct {
+		Manifest manifest.Manifest `json:"manifest"`
+		Image    string            `json:"image"`
+	}{revertManifest(), newImage})
+	if err := s.RecordIntent(ctx, migration.ID, state.Intent{Ordinal: 9000, Kind: "schema_source", Desired: source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, migration.ID, state.Outcome{State: "succeeded", SchemaBefore: "v1", SchemaAfter: "v2", Release: releaseOf(newImage)}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE releases SET created=1000 WHERE id=?; UPDATE operations SET started=2000 WHERE id=?`, rel.ID, migration.ID); err != nil {
+		t.Fatal(err)
+	}
+	spy := &schemaRevertImageSpy{revertFake: newRevertFake(s, "", nil)}
+	c := Controller{Store: s, Engine: spy, Environment: "test"}
+	claim := state.Claim{Kind: state.ClaimService, Name: "proj-test-app-web"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	c.Reserve = func(context.Context, []state.Claim) error {
+		return Refusal("name proj-test-app-web is taken by another project or environment on this server")
+	}
+	req := Request{Kind: "rollback", App: "app", RevertSchema: true, TargetRelease: rel.ID}
+	if _, err := c.Plan(ctx, Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name proj-test-app-web is taken") {
+		t.Fatalf("plan: %v", err)
+	}
+	out := c.runSchemaRevert(ctx, state.Operation{}, Actor{ID: "admin", Admin: true}, req)
+	if out.Err != "name proj-test-app-web is taken by another project or environment on this server" || spy.inspections != 0 {
+		t.Fatalf("outcome: %+v; image inspections: %d", out, spy.inspections)
+	}
+}
+
+type removedComposeNetworkEngine struct{ *composeDocker }
+
+func (e *removedComposeNetworkEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	if name == "compose-net" {
+		return engine.Network{}, &engine.StatusError{Code: 404}
+	}
+	return engine.Network{ID: "net"}, nil
+}
+func TestComposeDownReleasesOnlyNetworksConfirmedGone(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"networks":{"gone":{"name":"compose-net"},"kept":{"name":"external-net","external":true}}}`, hashes: hashOne}
+	docker := newComposeDocker()
+	c, s := composeController(t, runner, docker)
+	c.Engine = &removedComposeNetworkEngine{composeDocker: docker}
+	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: "project"}, {Kind: state.ClaimNetwork, Name: "compose-net"}, {Kind: state.ClaimNetwork, Name: "external-net"}}
+	if err := s.AddClaims(ctx, claims); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.composeDir("project"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.composeDown(ctx, "project", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Claims(ctx)
+	if err != nil || !slices.Equal(got, []state.Claim{{Kind: state.ClaimNetwork, Name: "external-net"}}) {
+		t.Fatalf("claims: %v, %v", got, err)
+	}
+}
+
+func TestRecordedComposeRemovalRefusesForeignProjectAndVolume(t *testing.T) {
+	for _, kind := range []string{state.ClaimComposeProject, state.ClaimVolume} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			runner := &fakeCompose{config: configOne, hashes: hashOne}
+			docker := newComposeDocker()
+			docker.projectVolumes = []string{"shop-test-db_data"}
+			c, s := composeController(t, runner, docker)
+			m := composeApp(false)
+			raw, _ := json.Marshal(m)
+			deploy, _, err := s.Admit(ctx, state.Admission{RequestID: "deploy", ActorID: "admin", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Finish(ctx, deploy.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Digest: composeDigest(composeFileOne), Manifest: raw}}); err != nil {
+				t.Fatal(err)
+			}
+			claim := state.Claim{Kind: kind, Name: "shop-test-db"}
+			if kind == state.ClaimVolume {
+				claim.Name = "shop-test-db_data"
+			}
+			c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+			op, _, err := s.Admit(ctx, state.Admission{RequestID: "remove", ActorID: "admin", Kind: "remove", App: "db", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := c.runRemove(ctx, op, Actor{ID: "admin", Admin: true}, Request{App: "db", Volumes: true})
+			if err := s.Finish(ctx, op.ID, out); err != nil {
+				t.Fatal(err)
+			}
+			if out.State != "failed" || !strings.Contains(out.Err, "name "+claim.Name+" is taken") || len(downRuns(runner)) != 0 || !docker.volumes["shop-test-db_data"] {
+				t.Fatalf("outcome %+v; down: %v; volumes: %v", out, downRuns(runner), docker.volumes)
+			}
+		})
+	}
+}

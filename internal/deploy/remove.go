@@ -387,6 +387,22 @@ func (c *Controller) removeApp(ctx context.Context, opID string, req Request, r 
 	for _, name := range r.plan.KeptVolumes {
 		step("kept volume " + name)
 	}
+	if r.plan.Kind == "image" {
+		bindings, err := c.Store.Bindings(ctx, req.App)
+		if err != nil {
+			return state.Outcome{State: "failed", Err: string(errRemoveState)}
+		}
+		var claims []state.Claim
+		for _, b := range bindings {
+			claims = append(claims, state.Claim{Kind: state.ClaimService, Name: b.Name})
+		}
+		if req.Volumes {
+			for _, name := range declaredVolumes(r.app, func(v string) string { return r.m.VolumeName(c.Environment, v) }) {
+				claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: name})
+			}
+		}
+		c.settle(ctx, claims)
+	}
 	if err := c.Store.ForgetIngressRoutes(ctx, opID, req.App); err != nil {
 		return state.Outcome{State: "failed", Err: string(errRemoveState)}
 	}
@@ -446,6 +462,7 @@ func (c *Controller) removeServices(ctx context.Context, opID string, r *removal
 // deleteBoundService deletes the service a journaled intent names, if it is still the one that was bound, and waits until
 // Docker no longer knows it. A service that is already gone counts as deleted.
 func (c *Controller) deleteBoundService(ctx context.Context, i state.Intent) error {
+	defer c.settle(ctx, []state.Claim{{Kind: state.ClaimService, Name: i.Name}})
 	live, err := c.Engine.InspectService(ctx, i.Name)
 	if serviceMissing(err) {
 		return nil
@@ -490,6 +507,9 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // was just deleted take a moment to go, so the removal is tried again for a while. A volume that stays in use is kept and
 // reported; it is not an error.
 func (c *Controller) removeVolume(ctx context.Context, name string, step func(string)) error {
+	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimVolume, Name: name}); err != nil {
+		return err
+	}
 	ve, ok := c.Engine.(volumeEngine)
 	if !ok {
 		return errRemoveVolume
@@ -501,8 +521,10 @@ func (c *Controller) removeVolume(ctx context.Context, name string, step func(st
 		switch {
 		case err == nil:
 			step("removed volume " + name)
+			c.settle(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: name}})
 			return nil
 		case errors.As(err, &status) && status.Code == 404:
+			c.settle(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: name}})
 			return nil
 		case errors.As(err, &status) && status.Code == 409:
 			if !time.Now().Before(deadline) {
@@ -539,6 +561,10 @@ func (c *Controller) removeProject(ctx context.Context, opID, project string, vo
 	}
 	if err = c.composeDown(ctx, project, volumes); err != nil {
 		_ = c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":false}`))
+		var refusal Refusal
+		if errors.As(err, &refusal) {
+			return err
+		}
 		return errRemoveCompose
 	}
 	return c.Store.MarkStep(ctx, opID, ordinal, "finished", json.RawMessage(`{"ok":true}`))
@@ -547,8 +573,49 @@ func (c *Controller) removeProject(ctx context.Context, opID, project string, vo
 // composeDown runs `compose down --remove-orphans`, with --volumes when asked, confirms no container of the project is
 // left, and deletes the project's working directory.
 func (c *Controller) composeDown(ctx context.Context, project string, volumes bool) error {
+	if err := c.notForeign(ctx, state.Claim{Kind: state.ClaimComposeProject, Name: project}); err != nil {
+		return err
+	}
 	if err := c.composeReady(); err != nil {
 		return err
+	}
+	var settleClaims []state.Claim
+	var volumeNames []string
+	if volumes {
+		if pe, ok := c.Engine.(projectVolumeEngine); ok {
+			var err error
+			volumeNames, err = pe.ProjectVolumes(ctx, project)
+			if err != nil {
+				return err
+			}
+		} else if c.Foreign != nil {
+			return errRemoveCompose
+		}
+	}
+	if _, err := os.Stat(c.composeDir(project)); err == nil {
+		names, err := c.composeNamesAt(ctx, c.composeDir(project), project)
+		if err != nil && volumes && c.Foreign != nil {
+			return err
+		}
+		if err == nil {
+			for _, claim := range names {
+				if claim.Kind == state.ClaimNetwork {
+					settleClaims = append(settleClaims, claim)
+				}
+				if volumes && claim.Kind == state.ClaimVolume {
+					volumeNames = append(volumeNames, claim.Name)
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for _, name := range volumeNames {
+		claim := state.Claim{Kind: state.ClaimVolume, Name: name}
+		if err := c.notForeign(ctx, claim); err != nil {
+			return err
+		}
+		settleClaims = append(settleClaims, claim)
 	}
 	args := []string{"down", "--remove-orphans"}
 	if volumes {
@@ -579,6 +646,7 @@ func (c *Controller) composeDown(ctx context.Context, project string, volumes bo
 	if len(containers) > 0 {
 		return errors.New("project containers remain")
 	}
+	c.settle(ctx, append(settleClaims, state.Claim{Kind: state.ClaimComposeProject, Name: project}))
 	return os.RemoveAll(c.composeDir(project))
 }
 
