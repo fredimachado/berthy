@@ -358,7 +358,7 @@ YML
 # purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
 # containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
 purge_fixture() {
-  local i v f project env state kind name lock tmp owner listing failed=0
+  local i v f project env state kind name lock tmp owner listing labels escaped failed=0
   local -a ids owners
   local volumes="" projects=""
   stop_agent
@@ -417,37 +417,46 @@ purge_fixture() {
 
   # The ledger survives a removed Compose working directory and failed cleanup.
   tmp=$(mktemp "$E2E_ROOT/fixture-cleanup.XXXXXX") || return 1
-  if ! d ps -a --filter label=com.docker.compose.project --format '{{.ID}} {{.Label "com.docker.compose.project"}}' > "$tmp"; then
-    failed=1
-  else
-    while read -r v project; do
-      if [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
-        d rm -f "$v" >/dev/null 2>&1 || failed=1
-      fi
-    done < "$tmp"
-  fi
-  if ! d network ls --filter label=com.docker.compose.project -q > "$tmp"; then
-    failed=1
-  else
-    while read -r v; do
-      project=$(d network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$v" 2>/dev/null) || { failed=1; continue; }
-      if [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
-        d network rm "$v" >/dev/null 2>&1 || failed=1
-      fi
-    done < "$tmp"
-  fi
-  if ! d volume ls --format '{{.Name}} {{.Labels}}' > "$tmp"; then
-    failed=1
-  else
-    while read -r v labels; do
-      [ -n "$v" ] || continue
-      project=$(printf '%s\n' "$labels" | tr ',' '\n' | sed -n 's/^com.docker.compose.project=//p')
-      if { [ -n "$project" ] && printf '%s\n' "$projects" | grep -Fxq -- "$project"; } ||
-         { [ -z "$project" ] && printf '%s\n' "$volumes" | grep -Fxq -- "$v"; }; then
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    if ! d ps -aq --filter "label=com.docker.compose.project=$project" > "$tmp"; then
+      failed=1
+    else
+      while read -r v; do d rm -f "$v" >/dev/null 2>&1 || failed=1; done < "$tmp"
+    fi
+    if ! d network ls -q --filter "label=com.docker.compose.project=$project" > "$tmp"; then
+      failed=1
+    else
+      while read -r v; do
+        if ! d network rm "$v" >/dev/null 2>&1; then
+          listing=$(d network ls -q --filter "label=com.docker.compose.project=$project") || { failed=1; continue; }
+          if printf '%s\n' "$listing" | grep -Fxq -- "$v"; then failed=1; fi
+        fi
+      done < "$tmp"
+    fi
+    if ! d volume ls -q --filter "label=com.docker.compose.project=$project" > "$tmp"; then
+      failed=1
+    else
+      while read -r v; do
         d volume rm "$v" >/dev/null 2>&1 || { echo "volume $v is still in use and was kept" >&2; failed=1; }
-      fi
-    done < "$tmp"
-  fi
+      done < "$tmp"
+    fi
+  done <<< "$projects"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    escaped=${name//./\\.}
+    if ! d volume ls --filter "name=^${escaped}$" --format '{{.Name}} {{.Labels}}' > "$tmp"; then
+      failed=1
+    else
+      while read -r v labels; do
+        [ "$v" = "$name" ] || continue
+        project=$(printf '%s\n' "$labels" | tr ',' '\n' | sed -n 's/^com.docker.compose.project=//p')
+        if [ -z "$project" ]; then
+          d volume rm "$v" >/dev/null 2>&1 || { echo "volume $v is still in use and was kept" >&2; failed=1; }
+        fi
+      done < "$tmp"
+    fi
+  done <<< "$volumes"
   rm -f "$tmp"
   [ "$failed" -ne 0 ] || rm -f "$E2E_ROOT/fixture-objects"
   flock -u "$lock"

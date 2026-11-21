@@ -18,21 +18,35 @@ d() {
   case "$1 $2" in
     'service ls'|'images --no-trunc') ;;
     'network ls')
-      if [[ $* == *'label=com.docker.compose.project='* ]]; then :; else printf '%s\n' own-network other-network empty-network; fi ;;
+      if [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then
+        if [ ! -e "$E2E_ROOT/network-gone" ]; then echo own-network; fi
+      elif [[ $* != *'label=com.docker.compose.project='* ]]; then
+        printf '%s\n' own-network other-network vanished-network empty-network
+      fi ;;
     'network inspect')
       case "${@: -1}" in
         own-network) echo shop-prod-db ;;
         other-network) echo shop-prod-foreign-db ;;
+        vanished-network) echo 'foreign network disappeared' >&2; return 1 ;;
         empty-network) echo '' ;;
       esac ;;
-    'network rm') printf '%s\n' "$3" >> "$E2E_ROOT/removed-networks" ;;
-    'ps -aq') [[ $* != *'label=com.docker.compose.project=shop-prod-foreign-db'* ]] || echo other-container ;;
+    'network rm')
+      printf '%s\n' "$3" >> "$E2E_ROOT/removed-networks"
+      if [ "${VANISH_OWN_NETWORK:-}" = 1 ]; then touch "$E2E_ROOT/network-gone"; return 1; fi ;;
+    'ps -aq')
+      if [[ $* == *'label=com.docker.compose.project=shop-prod-foreign-db'* ]]; then echo other-container
+      elif [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then echo own-container; fi ;;
     'ps -a') printf '%s\n' 'own-container shop-prod-db' 'other-container shop-two-lab-db' 'similar-container shop-prod-foreign-db' ;;
     'volume ls')
       if [ "${3:-}" = --format ] && [ "${4:-}" = '{{.Name}}' ]; then
         printf '%s\n' shop-prod_data shop-stage_data other-lab_data shop-two-lab_data shop-prod_team-lab_data
-      elif [[ $* == *'label=com.docker.compose.project='* ]]; then
-        :
+      elif [[ $* == *'label=com.docker.compose.project=shop-prod-db'* ]]; then
+        echo shop-prod-db_data
+      elif [[ $* == *'label=com.docker.compose.project='* ]]; then :
+      elif [[ $* == *'name=^shop-prod_data$'* ]]; then echo 'shop-prod_data '
+      elif [[ $* == *'name=^shop-stage_data$'* ]]; then echo 'shop-stage_data '
+      elif [[ $* == *'name=^other-lab_data$'* ]]; then echo 'other-lab_data '
+      elif [[ $* == *'--filter name='* ]]; then :
       else
         printf '%s\n' \
           'shop-prod_data ' 'shop-stage_data ' 'other-lab_data ' 'shop-two-lab_data ' 'shop-prod_team-lab_data ' \
@@ -81,7 +95,10 @@ done
 for entry in $'volume\tshop-prod_team-lab_data' $'compose\tshop-prod-foreign-db'; do
   if grep -Fxq "$entry" "$E2E_ROOT/fixture-objects"; then echo "claimed existing foreign name: $entry" >&2; exit 1; fi
 done
-purge_fixture
+if ! purge_fixture; then
+  echo 'cleanup failed when a foreign network disappeared' >&2
+  exit 1
+fi
 sort "$E2E_ROOT/removed-volumes" > "$E2E_ROOT/actual-volumes"
 printf '%s\n' other-lab_data shop-prod-db_data shop-prod_data shop-stage_data | sort > "$E2E_ROOT/want-volumes"
 if ! diff -u "$E2E_ROOT/want-volumes" "$E2E_ROOT/actual-volumes"; then
@@ -114,6 +131,13 @@ unset FAIL_VOLUME
 purge_fixture
 if [ -e "$E2E_ROOT/fixture-objects" ]; then
   echo 'successful retry did not clear the ledger' >&2
+  exit 1
+fi
+printf 'compose\tshop-prod-db\n' > "$E2E_ROOT/fixture-objects"
+VANISH_OWN_NETWORK=1
+purge_fixture || { echo 'an already removed network failed cleanup' >&2; exit 1; }
+if [ -e "$E2E_ROOT/fixture-objects" ]; then
+  echo 'cleanup after a vanished network did not clear the ledger' >&2
   exit 1
 fi
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'
