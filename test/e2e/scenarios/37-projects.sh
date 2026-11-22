@@ -41,6 +41,7 @@ apps:
 jobs:
   hold:
     app: web
+    timeout: 5m
     command: ["sh", "-c", "trap 'exit 1' TERM; touch /data/ready; while [ ! -e /data/go ]; do sleep 1 & wait \$!; done"]
 YML
   cat > "$dir/compose.yml" <<YML
@@ -102,6 +103,7 @@ out=$(cd "$E2E_ROOT" && "$BIN" ps -e "$ENVN" --project "$P2" --config "$RUN/admi
 out=$(env_cmd "$PROJECT" "$ENVN" deploy web --version v1 --manifest-dir "$(env_dir "$P2" "$ENVN")" 2>&1); code=$?
 expect_code 'other manifest refused' 2 "$code" "$out"
 expect_contains 'mismatch names project' "$out" 'is for project'
+first_db=$(d ps -q --filter "label=com.docker.compose.project=$PROJECT-$ENVN-db")
 # A second app in the same environment cannot reuse a Compose project either.
 dir=$(env_dir "$PROJECT" "$ENVN")
 cp "$dir/berthy.yml" "$dir/original.yml"
@@ -127,6 +129,7 @@ sed -i "s/pgdata: {}/pgdata: {name: ${PROJECT}-${ENVN}-db_pgdata}/" "$dir/compos
 out=$(env_cmd "$P2" "$ENVN" deploy db 2>&1); code=$?
 expect_code 'claimed Compose volume refused' 1 "$code" "$out"
 expect_contains 'volume refusal names owner' "$out" "name $PROJECT-$ENVN-db_pgdata is taken by another project or environment on this server"
+expect_eq 'first Compose container survives refused claims' "$first_db" "$(d ps -q --filter "label=com.docker.compose.project=$PROJECT-$ENVN-db")"
 # A kept Compose volume remains claimed after removal.
 out=$(env_cmd "$PROJECT" "$EB" remove db 2>&1); expect_code 'remove db but keep volume' 0 "$?" "$out"
 sed -i "s/${PROJECT}-${ENVN}-db_pgdata/${PROJECT}-${EB}-db_pgdata/" "$dir/compose.yml"
@@ -137,11 +140,13 @@ out=$(env_cmd "$PROJECT" "$EB" deploy db 2>&1); expect_code 'redeploy db after k
 # A graceful agent restart keeps workload containers and interrupts the job in its own environment.
 ids=$(for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do read -r p e <<< "$pair"; d ps -q --filter "label=com.docker.swarm.service.name=$p-$e-web-main"; d ps -q --filter "label=com.docker.compose.project=$p-$e-db"; done)
 env_cmd "$PROJECT" "$EB" job run hold > "$RUN/hold.out" 2>&1 & jobpid=$!
+ready=1
 for i in $(seq 1 120); do
-  out=$(env_cmd "$PROJECT" "$EB" exec web -- test -e /data/ready 2>&1); [ $? -eq 0 ] && break
+  out=$(env_cmd "$PROJECT" "$EB" exec web -- test -e /data/ready 2>&1); ready=$?
+  [ "$ready" -eq 0 ] && break
   sleep 0.5
 done
-expect_code 'job installed its TERM handler' 0 "$?" "$out"
+expect_code 'job installed its TERM handler' 0 "$ready" "$out"
 stop_agent
 wait "$jobpid" || true
 start_agent || exit 1
@@ -165,11 +170,13 @@ for pair in "$P2 $ENVN" "$PROJECT $EB"; do
 done
 # A running job in the surviving environment must outlive another environment's destroy.
 env_cmd "$PROJECT" "$EB" job run hold > "$RUN/hold-after.out" 2>&1 & jobpid=$!
+ready=1
 for i in $(seq 1 120); do
-  out=$(env_cmd "$PROJECT" "$EB" exec web -- test -e /data/ready 2>&1); [ $? -eq 0 ] && break
+  out=$(env_cmd "$PROJECT" "$EB" exec web -- test -e /data/ready 2>&1); ready=$?
+  [ "$ready" -eq 0 ] && break
   sleep 0.5
 done
-expect_code 'second hold job is ready' 0 "$?" "$out"
+expect_code 'second hold job is ready' 0 "$ready" "$out"
 # Stop the last v1 workload without removing its release before checking Docker references.
 out=$(env_cmd "$PROJECT" "$ENVN" scale web --role main --replicas 0 2>&1); expect_code 'scale first web to zero' 0 "$?" "$out"
 for id in $(d ps -q); do image=$(d inspect -f '{{.Config.Image}}' "$id"); expect_not_contains "container $id does not run v1" "$image" "$WEB_V1_DIGEST"; done
