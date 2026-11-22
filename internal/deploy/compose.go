@@ -389,6 +389,7 @@ type composeInputs struct {
 	Hashes        map[string]string
 	Containers    []engine.ComposeContainer
 	VolumeExists  map[string]bool // by resolved volume name, for every non-external volume
+	HostVolumes   map[string]bool // by Compose volume key
 }
 
 func portBlocker(service, port string) string {
@@ -478,7 +479,7 @@ func buildComposePlan(in composeInputs) ComposePlan {
 	if !in.Admin {
 		for _, key := range sortedKeys(in.Config.Volumes) {
 			v := in.Config.Volumes[key]
-			if (v.Driver != "" && v.Driver != "local") || len(v.DriverOpts) > 0 {
+			if (v.Driver != "" && v.Driver != "local") || len(v.DriverOpts) > 0 || in.HostVolumes[key] {
 				blockers = append(blockers, fmt.Sprintf("volume %s uses a host-access driver%s", key, hostAccessSuffix))
 			}
 		}
@@ -675,6 +676,28 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	if err != nil {
 		return ComposePlan{}, errComposePlan
 	}
+	inspector, ok := c.Engine.(interface {
+		InspectVolume(context.Context, string) (string, map[string]string, error)
+	})
+	hostVolumes := map[string]bool{}
+	for _, service := range cfg.Services {
+		for _, mount := range service.Volumes {
+			volume, ok := cfg.Volumes[mount.Source]
+			if mount.Type != "volume" || !ok {
+				continue
+			}
+			if inspector == nil {
+				return ComposePlan{}, errComposeUnavailable
+			}
+			driver, options, err := inspector.InspectVolume(ctx, volume.Name)
+			if err != nil && !statusIs(err, 404) {
+				return ComposePlan{}, errComposePlan
+			}
+			if err == nil && ((driver != "" && driver != "local") || len(options) > 0) {
+				hostVolumes[mount.Source] = true
+			}
+		}
+	}
 	exists := map[string]bool{}
 	for _, key := range sortedKeys(cfg.Volumes) {
 		v := cfg.Volumes[key]
@@ -702,6 +725,7 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 		Hashes:        hashes,
 		Containers:    containers,
 		VolumeExists:  exists,
+		HostVolumes:   hostVolumes,
 	}), nil
 }
 

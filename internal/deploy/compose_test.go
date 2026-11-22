@@ -206,6 +206,13 @@ func (d *composeDocker) VolumeExists(_ context.Context, name string) (bool, erro
 	return d.volumes[name], nil
 }
 
+func (d *composeDocker) InspectVolume(_ context.Context, name string) (string, map[string]string, error) {
+	if !d.volumes[name] {
+		return "", nil, &engine.StatusError{Code: 404}
+	}
+	return "local", nil, nil
+}
+
 func composeController(t *testing.T, runner *fakeCompose, docker *composeDocker) (*Controller, *state.Store) {
 	t.Helper()
 	// A deploy polls compose ps at pollFast, twice before it calls the project ready.
@@ -1367,5 +1374,41 @@ func TestComposeRollbackDoesNotRequireOldEnvironmentNetwork(t *testing.T) {
 	}
 	if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
 		t.Fatalf("rollback: %+v", got)
+	}
+}
+
+type existingHostVolumeEngine struct{ *composeDocker }
+
+func (e existingHostVolumeEngine) InspectVolume(_ context.Context, name string) (string, map[string]string, error) {
+	if name == "host-backed" {
+		return "local", map[string]string{"type": "none", "o": "bind", "device": "/private/host/path"}, nil
+	}
+	return "", nil, &engine.StatusError{Code: 404}
+}
+
+func TestExistingExternalHostVolumeNeedsAdmin(t *testing.T) {
+	config := `{"services":{"database":{"image":"alpine:3.20","volumes":[{"type":"volume","source":"data","target":"/data"}]}},"volumes":{"data":{"name":"host-backed","external":true}}}`
+	runner := &fakeCompose{config: config, hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	c.Engine = existingHostVolumeEngine{newComposeDocker()}
+	ctx := context.Background()
+	want := "volume data uses a host-access driver; deploy it with an admin token"
+	for _, tc := range []struct {
+		actor              Actor
+		id, state, message string
+	}{
+		{Actor{ID: "ci"}, "external-ci", "failed", want}, {Actor{ID: "admin", Admin: true}, "external-admin", "succeeded", ""},
+	} {
+		op, _, err := admit(t, c, ctx, tc.actor, composeReq(tc.id, composeFileOne, composeApp(false)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := waitComposeOperation(t, s, op.ID)
+		if got.State != tc.state || got.Err != tc.message {
+			t.Fatalf("%s: %s %q", tc.id, got.State, got.Err)
+		}
+	}
+	if runner.upRuns() != 1 {
+		t.Fatalf("ran up %d times", runner.upRuns())
 	}
 }

@@ -216,6 +216,19 @@ func (e *Engine) VolumeLabels(ctx context.Context, name string) (map[string]stri
 }
 
 // VolumeExists reports whether Docker holds a volume with this name. Docker answers 404 for a volume it does not hold.
+func (e *Engine) InspectVolume(ctx context.Context, name string) (string, map[string]string, error) {
+	p, err := pathID(name)
+	if err != nil {
+		return "", nil, err
+	}
+	var v struct {
+		Driver  string
+		Options map[string]string
+	}
+	err = e.jsonRequest(ctx, "GET", "/volumes/"+p, nil, nil, &v)
+	return v.Driver, v.Options, err
+}
+
 func (e *Engine) VolumeExists(ctx context.Context, name string) (bool, error) {
 	p, err := pathID(name)
 	if err != nil {
