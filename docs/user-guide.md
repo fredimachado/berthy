@@ -32,14 +32,14 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 
 ## How to read the commands
 
-- `prod` is the environment in the story. The server is `10.0.0.5`, and its agent listens on `10.0.0.5:7710`.
-- Commands that talk to the agent need `-e prod`, which names the environment. They find the CLI configuration file on their own, from the first of these that is set:
+- `prod` is the environment in the story, of the project `todo`. The server is `10.0.0.5`, and its agent listens on `10.0.0.5:7710`.
+- Commands that talk to the agent need `-e prod`, which names the environment. The project comes from `--project`, else the `project` of `berthy.yml` in the directory you run from, else the only project that has that environment. They find the CLI configuration file on their own, from the first of these that is set:
 
   1. `--config <file>`
   2. the `BERTHY_CONFIG` environment variable
   3. `berthy/config.json` in your user configuration directory: `~/.config/berthy/config.json` on Linux (or `$XDG_CONFIG_HOME/berthy/config.json` when that is set), `~/Library/Application Support/berthy/config.json` on macOS, and `%AppData%\berthy\config.json` on Windows
 
-  The file maps each environment to its agent and names the variable that holds its token. It never holds a token. When none of the three is set, or the file is missing, the error names the path it looked for.
+  The file maps each project and environment to its agent and names the variable that holds its token. It never holds a token. When none of the three is set, or the file is missing, the error names the path it looked for.
 
 - `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
@@ -60,12 +60,13 @@ The agent lives on the server, next to Docker. It deploys apps, checks their hea
         |   private network (VPN)  |        plain HTTP, scoped token
         +-------------+------------+
                       v
-  +------------------ Server (one per environment) --------------------+
+  +------------------ Server ------------------------------------------+
   |  Berthy agent  (systemd service, API on a private address)         |
   |     |                                                              |
+  |     +--> hosted environments (project/environment), each with      |
+  |     |    its own state, key, tokens, network and Docker names      |
   |     +--> Docker Swarm: image apps (api)                            |
   |     +--> Docker Compose: postgres, redis, ...                      |
-  |     +--> state: one encrypted SQLite file                          |
   +-----|-------------|---------------|---------------|----------------+
         |             |               |               |
         v             v               v               v
@@ -78,7 +79,7 @@ The agent lives on the server, next to Docker. It deploys apps, checks their hea
 
 A few decisions shape everything else:
 
-- **One agent per server, one server per environment.** `prod` and `dev` are different servers, each with its own agent, secrets and tokens.
+- **One agent per server.** That agent hosts any number of (project, environment) pairs. `todo/prod` and `shop/prod` can share a server; so can `todo/prod` and `todo/stage`. Each hosted environment has its own secrets and tokens.
 - **Private network only.** The agent listens on one private address and speaks plain HTTP. The private network (a VPN such as WireGuard or Tailscale) encrypts it. Every request carries a token.
 - **Swarm is always on.** Image apps run as Docker Swarm services, even on one server. That gives rolling updates and rollback.
 - **Git is the source of truth.** What you want lives in a manifest in your repository. Every deploy sends the manifest of the commit you deploy. Nothing is configured by hand on the server.
@@ -88,7 +89,10 @@ A few decisions shape everything else:
 
 | Word | Meaning |
 | --- | --- |
-| **Environment** | One named target: its own server, agent, overlay file, secrets and tokens. This guide uses `prod` and `dev`. Every command names one with `-e`. There is no default. |
+| **Project** | One application and what supports it, described by one manifest (`berthy.yml`, key `project`). Unrelated to every other project. |
+| **Environment** | One named target of a project, such as `prod` or `dev`, with its overlay file. Every command names one with `-e`. There is no default. Two projects may both have `prod`. |
+| **Hosted environment** | A (project, environment) pair as an agent runs it, written `project/environment`. It owns its state, key, tokens, network, Docker objects and claimed names. It is the unit of isolation, of the deploy lock, of the state backup and of `destroy`. |
+| **Context** | One entry of the CLI configuration: a project's environment, the URL of its agent, and the variable that holds its token. `berthy setup` writes it on the machine that runs it; `berthy context add` writes it on any other. |
 | **App** | One thing Berthy runs, named in the manifest: `api`, `postgres`, `redis`. |
 | **Kind** | How an app runs. `image` apps are Swarm services made from a registry image. `compose` apps are `docker compose` projects made from a Compose file in your repository. |
 | **Role** | A part of an image app that runs the same image with its own replica count, command, health check and resources. The API has one role, `web`. You could add a `worker` role later. |
@@ -98,14 +102,14 @@ A few decisions shape everything else:
 | **Digest** | A `sha256:` hash that names one exact image. A tag such as `1.4.2` can move. A digest cannot. Berthy pins every deploy to a digest. |
 | **Stateful** | A Compose app marked `stateful: true`. It holds data, so Berthy never recreates or removes it unless the command says so with `--allow-recreate`. |
 | **Protected** | An environment marked `protected: true`. It refuses mutable tags (you deploy a digest), and it holds changes that AI agents ask for until a person approves them. |
-| **Token** | The secret a client sends to the agent. Each token has one environment and one scope: `read`, `deploy` or `admin`. Setup makes the first `admin` token; every other token is made with `berthy token create`, kept as a digest in the agent's state, and can expire. |
+| **Token** | The secret a client sends to the agent. Each token has one hosted environment and one scope: `read`, `deploy` or `admin`. Setup makes the first `admin` token; every other token is made with `berthy token create`, kept as a digest in that environment's state, and can expire. |
 | **Agent token** | A token marked as belonging to an AI agent. On a protected environment its changes are held. It can never approve anything, and it can never make or revoke a token. |
 | **Approval** | A change that an agent token asked for on a protected environment. It waits for a person to approve or reject it, and expires after 15 minutes. |
 | **Lock** | The environment's deploy lock. A deploy takes it for its length. You can also take it by hand to freeze deploys. |
 | **Manifest** | The YAML that says what you want: `berthy.yml` plus one overlay per environment. |
 | **Overlay** | `berthy.<environment>.yml`. It changes the base manifest for one environment. |
 | **Secret** | A value the agent stores encrypted on the server, set with `berthy secret set`. The manifest names it. It never holds the value. |
-| **Agent state** | The agent's SQLite file: secrets, releases, history, audit log. Secrets are sealed with a key file that stays on the server. |
+| **Agent state** | One hosted environment's SQLite file: secrets, releases, history, audit log, claimed Docker names. Secrets are sealed with that environment's key file on the server. |
 
 **Token scopes** in one table (the full list is in the [reference](#token-scopes)):
 
@@ -321,7 +325,7 @@ A development build on macOS or Windows has no release to download, so give it `
 
 #### Setup is safe to run again
 
-A second run repairs what is missing and changes nothing else. It never replaces the encryption key, the tokens or the agent's state, and it never touches a running app.
+A second run repairs what is missing and changes nothing else. It never replaces the encryption key, the tokens or the agent's state, and it never touches a running app. Run one `berthy setup` at a time against a server: two runs that add different environments can read the same `agent.json` and lose one entry. (A setup lock is planned: #53.)
 
 Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped.
 
@@ -354,13 +358,48 @@ If the directory has a manifest, setup reads the project, `network` and `protect
 | --- | --- |
 | Binary | `/usr/local/bin/berthy` |
 | Agent configuration | `/etc/berthy/agent.json`, owner `berthy:berthy`, mode `0600`. The folder `/etc/berthy` is `root:berthy`, mode `0750`. |
-| State (SQLite) | `/var/lib/berthy/state`, `berthy:berthy`, mode `0700` |
-| Encryption key | `/var/lib/berthy/key`, `berthy:berthy`, mode `0600` |
+| State of one hosted environment | `/var/lib/berthy/environments/<project>/<environment>/state`, `berthy:berthy`, mode `0700` |
+| Encryption key of one hosted environment | `/var/lib/berthy/environments/<project>/<environment>/key`, `berthy:berthy`, mode `0600` |
 | Service | `/etc/systemd/system/berthy.service`, running as the `berthy` user in the `docker` group, with `StateDirectoryMode=0700` |
 
 The agent's configuration is plain JSON. Its keys are listed in the [reference](#agent-configuration).
 
 > **Setup does not do these.** It does not create the server, its users, its firewall or your private network. It does not install the VPN. It does not change Docker's storage driver, its default log driver or its daemon options. Each role's log rotation is set on its service instead, in step 2. It does not write a manifest: that is step 2. It deploys nothing.
+
+#### More than one project or environment on a server
+
+`berthy setup -e ENV` on a server that already runs an agent adds that hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Run it from the other project's repository, or pass `--project` and `--network` when there is no manifest.
+
+Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
+
+There is no command that removes a hosted environment from a server. After `destroy`, remove its entry from `agent.json` and its directory under `/var/lib/berthy/environments/` by hand.
+
+#### Alerts about the server
+
+Host checks (disk, memory, Docker, public ports, reboot) still run inside every hosted environment's monitor and alert on that environment's own channels. A full disk on a server with three hosted environments therefore sends three alerts, one on each environment's Telegram chat or webhook. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project in those messages, are planned: #55, #56.
+
+#### Another laptop
+
+`berthy setup` writes the CLI configuration on the machine that runs it. On a second laptop, add the same hosted environment without SSH:
+
+```bash
+berthy context add --project todo -e prod --url "http://10.0.0.5:7710" --token-env BERTHY_TODO_PROD_TOKEN
+```
+
+That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. Set the variable to the token you already keep, then the other commands work. `berthy context list` shows each context and whether its variable is set (`yes` or `no`), never the token. `berthy context remove --project todo -e prod` removes the entry. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
+
+#### A server set up before projects
+
+An `agent.json` of a release before projects cannot be upgraded in place. Setup refuses it and prints the commands that move the old install aside. Run them yourself; they delete nothing:
+
+```bash
+sudo systemctl stop berthy
+sudo mv /etc/berthy /etc/berthy.pre-projects
+sudo mv /var/lib/berthy /var/lib/berthy.pre-projects
+sudo chmod 0700 /var/lib/berthy.pre-projects
+```
+
+Then run `berthy setup` again. The old apps keep running under their old names; remove them with the old CLI's `destroy` before, or by hand after. The old state and key stay in `/var/lib/berthy.pre-projects`.
 
 #### Check that it works
 
@@ -1423,7 +1462,7 @@ A clean CI checkout needs no `--commit`: without one, the deploy records `HEAD` 
 Its inputs are environment variables: `BERTHY_ENV` (`prod`), `BERTHY_CONFIG` (a CLI configuration file), `IMAGE_DIGEST`, `BERTHY_TOKEN`, and optionally `APP` (default `api`) and `BERTHY_BIN`. The CLI configuration in CI names the variable that holds the token:
 
 ```json
-{ "environments": { "prod": { "url": "http://10.0.0.5:7710", "token_env": "BERTHY_TOKEN" } } }
+{ "projects": { "todo": { "environments": { "prod": { "url": "http://10.0.0.5:7710", "token_env": "BERTHY_TOKEN" } } } } }
 ```
 
 The command waits for the result and exits non-zero if the deploy fails or rolls back. Steps after it, such as tagging a release, run only after a deploy that succeeded.
@@ -1596,7 +1635,7 @@ What an app owns is not applied: its own `apps` entry, the `jobs` and `backups` 
 
 `apply` needs the `deploy` scope and is refused while the deploy lock is held. On a protected environment an agent token's `apply` is held for approval like any change.
 
-An environment runs one project. A manifest whose `project` differs from the one deployed is refused by `deploy` and by `apply`, before anything changes, with `environment prod runs project todo; this manifest is for project other`. Once every app is removed, the environment takes a new project.
+The project of a hosted environment is fixed when setup creates it. A manifest whose `project` differs is refused by `deploy` and by `apply`, before anything changes, with `environment prod runs project todo; this manifest is for project other`. An overlay cannot set `project`. To run another project, set up another hosted environment.
 
 #### Restart and scale
 
@@ -1848,6 +1887,8 @@ berthy alerts test -e prod
 ```
 
 `alerts test` sends a test message to every configured channel and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
+
+Host checks (disk, memory, Docker, public ports, reboot) alert on this environment's channels, like every other check of the environment. On a server with several hosted environments, a host problem alerts once per environment. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project, are planned: #55, #56.
 
 ##### The webhook
 
@@ -2653,7 +2694,7 @@ berthy destroy -e prod --confirm shop/prod --dry-run
 berthy destroy -e prod --confirm shop/prod
 ```
 
-`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers and images; stopped one-off containers; and images no container uses.
+`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers (not helper images: those belong to the agent); stopped one-off containers; and images this environment pulled that nothing else on the agent retains.
 
 | Flag | Meaning |
 | --- | --- |
@@ -2737,7 +2778,7 @@ Practise this on a test server before you need it.
 
 ### Commands
 
-Every command that talks to an agent needs `-e <env>`. It reads the CLI configuration file that [How to read the commands](#how-to-read-the-commands) describes; `--config <file>` names another. The tables list only the other flags. Most commands take `--json`.
+Every command that talks to an agent needs `-e <env>`. It picks the project with `--project`, else from the manifest directory, else the only project that has that environment. It reads the CLI configuration file that [How to read the commands](#how-to-read-the-commands) describes; `--config <file>` names another. The tables list only the other flags. Most commands take `--json`.
 
 A name from the manifest's `aliases` runs the command line it stands for; see [Aliases](#aliases). It is expanded before any flag is checked. Quotes are not interpreted, `-e` and `--config` are not allowed in it, the arguments you give after the name are appended, and the MCP server does not offer it.
 
@@ -2818,7 +2859,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. |
+| `setup` | `-e`, `--project`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, and `yes` or `no` for whether the variable is set. Never a token. An empty or missing file prints nothing. |
 | `context remove` | `--project`, `-e`, `--config` | Remove one context from the CLI configuration. |
@@ -3077,38 +3118,50 @@ A probe has exactly one of `http`, `tcp` and `service`.
 
 ### Agent configuration
 
-The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` writes. It must not be readable by group or others (mode `0600`). Unknown keys are errors. You normally do not edit it: tokens are made with `berthy token create`.
+The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` writes. It must not be readable by group or others (mode `0600`). Unknown keys are errors. You normally do not edit it: tokens are made with `berthy token create`. An `agent.json` of a release before projects (one environment at the top level, no `environments` list) is refused: set the server up again with `berthy setup` after [moving the old install aside](#a-server-set-up-before-projects).
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `environment` | yes | The environment name, such as `prod`. |
 | `listen` | yes | `address:port`. The address must be a loopback, private or VPN (`100.64.0.0/10`) IP, never `0.0.0.0`. |
 | `docker_socket` | no | Path to the Docker socket. Default `/var/run/docker.sock`. |
-| `state_dir` | with `key_file` | Directory of the state (SQLite). Setup uses `/var/lib/berthy/state`. |
-| `key_file` | with `state_dir` | The 32-byte encryption key. Setup uses `/var/lib/berthy/key`. Without state and key the agent is read-only: no deploys. |
-| `protected` | no | `true` marks the environment as protected from the first start. |
-| `network` | no | The shared network. `doctor` checks it. Setup writes it from the manifest. |
 | `approval_ttl` | no | How long a held request waits, a Go duration of at least `1m`. Default `15m`. |
 | `compose_command` | no | The Compose command as a list. Default `["docker", "compose"]`. The Compose plugin must be installed system-wide, or this must name a standalone Compose binary. |
 | `cloudflare_api_url` | no | Overrides the Cloudflare API base URL. `https`, or `http` on a loopback host. For tests. |
 | `telegram_api_url` | no | Overrides the Telegram Bot API base URL. Same rule. For tests. |
-| `tokens` | yes, at least one | List of `{"name": ..., "digest": <64 hex>, "scope": "read"\|"deploy"\|"admin", "agent": true\|false}`. `name` and `agent` are optional. Digests must be unique, and so must names (letters, digits, `.`, `-`, `_`). Setup writes the first `admin` token here, and `--new-token` adds one. A token here never expires and cannot be revoked through the API: remove it from the file and restart the agent. Every token made with `berthy token create` is in the agent's state instead, and the agent accepts both. A token name is unique across the two. |
+| `environments` | yes, at least one | List of hosted environments. Each entry is below. A (project, environment) pair, a `state_dir`, a `key_file` and a `network` each appear once in the file. |
+
+Each entry of `environments`:
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `project` | yes | The project name. |
+| `environment` | yes | The environment name, such as `prod`. |
+| `state_dir` | yes | Directory of this environment's state (SQLite). Setup uses `/var/lib/berthy/environments/<project>/<environment>/state`. |
+| `key_file` | yes | The 32-byte encryption key for that state. Setup uses `/var/lib/berthy/environments/<project>/<environment>/key`. Every hosted environment has state and a key. |
+| `protected` | no | `true` marks the environment as protected from the first start. |
+| `network` | no | The shared network of this hosted environment. `doctor` checks it. Setup writes it from the manifest, or defaults it to `<project>-<environment>`. |
+| `tokens` | yes, at least one | List of `{"name": ..., "digest": <64 hex>, "scope": "read"\|"deploy"\|"admin", "agent": true\|false}`. `name` and `agent` are optional. Digests must be unique across the whole file, and so must names within one entry (letters, digits, `.`, `-`, `_`). Setup writes the first `admin` token here, and `--new-token` adds one. A token here never expires and cannot be revoked through the API: remove it from the file and restart the agent. Every token made with `berthy token create` is in that environment's state instead, and the agent accepts both. A token name is unique across the two for that environment. |
 
 Example (the digest is a placeholder):
 
 ```json
 {
-  "environment": "prod",
   "listen": "10.0.0.5:7710",
   "docker_socket": "/var/run/docker.sock",
-  "state_dir": "/var/lib/berthy/state",
-  "key_file": "/var/lib/berthy/key",
-  "protected": true,
-  "network": "todo",
   "approval_ttl": "15m",
-  "tokens": [
-    { "name": "admin", "digest": "<64 hex characters>", "scope": "admin" },
-    { "name": "claude", "digest": "<64 hex characters>", "scope": "deploy", "agent": true }
+  "environments": [
+    {
+      "project": "todo",
+      "environment": "prod",
+      "state_dir": "/var/lib/berthy/environments/todo/prod/state",
+      "key_file": "/var/lib/berthy/environments/todo/prod/key",
+      "protected": true,
+      "network": "todo",
+      "tokens": [
+        { "name": "admin", "digest": "<64 hex characters>", "scope": "admin" },
+        { "name": "claude", "digest": "<64 hex characters>", "scope": "deploy", "agent": true }
+      ]
+    }
   ]
 }
 ```
@@ -3140,17 +3193,20 @@ See [step 12](#step-12-the-terminal-ui).
 | `/usr/local/bin/berthy` | The binary. |
 | `/etc/berthy/agent.json` | The agent's configuration. Owner `berthy:berthy`, mode `0600`. `/etc/berthy` is `root:berthy`, mode `0750`. |
 | `/etc/systemd/system/berthy.service` | The service. It runs `berthy agent --config /etc/berthy/agent.json` as the `berthy` user in the `docker` group, with `StateDirectoryMode=0700`. |
-| `/var/lib/berthy/state/` | The state: `state.db` (SQLite), and `compose/<project>/` with each Compose app's stored files and `.env`. |
-| `/var/lib/berthy/key` | The encryption key. `berthy:berthy`, mode `0600`. Never uploaded. |
-| `/var/lib/berthy/key.prev` | The key from before the last rotation, kept until the next state snapshot succeeds. `key.next` exists only while a rotation runs. |
+| `/var/lib/berthy/environments/<project>/<environment>/state/` | One hosted environment's state: `state.db` (SQLite), and `compose/<app>/` with each Compose app's stored files and `.env`. |
+| `/var/lib/berthy/environments/<project>/<environment>/key` | That environment's encryption key. `berthy:berthy`, mode `0600`. Never uploaded. |
+| `/var/lib/berthy/environments/<project>/<environment>/key.prev` | The key from before the last rotation, kept until the next state snapshot succeeds. `key.next` exists only while a rotation runs. |
 
-Besides these, Berthy creates Docker objects: Swarm services named `<project>-<environment>-<app>-<role>`, Compose projects named `<project>-<environment>-<app>`, the shared overlay network, a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.*` labels.
+Besides these, Berthy creates Docker objects: Swarm services named `<project>-<environment>-<app>-<role>`, Compose projects named `<project>-<environment>-<app>`, role volumes named `<project>-<environment>_<volume>`, one attachable overlay network per hosted environment (default `<project>-<environment>`), a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.project` and `berthy.environment` labels.
 
 ---
 
 ## 6. Limits and what is not there yet
 
-- **One server per environment.** Image apps are Swarm services, so a three-server cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
+- **One agent per server, any number of hosted environments.** Image apps are Swarm services, so a three-server Swarm cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
+- **No upgrade in place from a release before projects.** Move the old configuration, state and key aside, then run setup again ([A server set up before projects](#a-server-set-up-before-projects)).
+- **No command that removes a hosted environment** from a server. After `destroy`, remove its entry and directory by hand.
+- **Host ports are shared** by everything on a server. Two hosted environments cannot both publish the same host port.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
 - **Limited secret interpolation.** A template (`env.template`) joins secrets into one value with `${NAME}` only: no defaults, no nesting, no URL encoding and no references to variables. Berthy can make a random secret on the server with `berthy secret generate`. See step 2 and [generating a random secret](#generate-a-random-secret).
