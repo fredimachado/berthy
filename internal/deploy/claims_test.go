@@ -1762,3 +1762,17 @@ func TestComposeNetworkModeRejectsNetworkID(t *testing.T) {
 		t.Fatal("accepted network ID in network_mode")
 	}
 }
+
+func TestComposeDefaultNetworkModeNeedsNoLookupOrClaim(t *testing.T) {
+	cfg := composeConfigFile{Services: map[string]composeConfigService{"web": {NetworkMode: "default"}}}
+	if err := (&Controller{}).checkComposeNetworkModes(context.Background(), cfg); err != nil {
+		t.Fatalf("default lookup: %v", err)
+	}
+	claims, err := composeConfigNames("project", cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(claims, state.Claim{Kind: state.ClaimNetwork, Name: "default"}) {
+		t.Fatalf("default claimed: %v", claims)
+	}
+}

@@ -1162,7 +1162,7 @@ func (c *Controller) composeNamesAtWithLabels(ctx context.Context, dir, project 
 }
 
 func namedComposeNetworkMode(mode string) bool {
-	return mode != "" && mode != "host" && mode != "none" && mode != "bridge" && !strings.HasPrefix(mode, "service:") && !strings.HasPrefix(mode, "container:")
+	return mode != "" && mode != "host" && mode != "none" && mode != "bridge" && mode != "default" && !strings.HasPrefix(mode, "service:") && !strings.HasPrefix(mode, "container:")
 }
 
 func (c *Controller) checkComposeNetworkModes(ctx context.Context, cfg composeConfigFile) error {
