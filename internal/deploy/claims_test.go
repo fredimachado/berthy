@@ -1776,3 +1776,24 @@ func TestComposeDefaultNetworkModeNeedsNoLookupOrClaim(t *testing.T) {
 		t.Fatalf("default claimed: %v", claims)
 	}
 }
+
+func TestComposeExternalNetworkRejectsNetworkID(t *testing.T) {
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"networks":{"peer":{"name":"peerid","external":true}}}`, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Engine = composeModeIDLookup{newComposeDocker()}
+	req := composeReq("external-id", composeFileOne, composeApp(false))
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
+		t.Fatal("plan accepted network ID")
+	}
+	if out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false); out.State != "failed" || runner.upRuns() != 0 {
+		t.Fatalf("execution: %+v", out)
+	}
+}
+
+func TestComposeAllowsNewNetwork(t *testing.T) {
+	cfg := composeConfigFile{Networks: map[string]composeConfigVolume{"new": {Name: "new-net"}}}
+	c := &Controller{Engine: &composeNetworkInventory{}}
+	if err := c.checkComposeNetworkModes(context.Background(), cfg); err != nil {
+		t.Fatalf("new network: %v", err)
+	}
+}
