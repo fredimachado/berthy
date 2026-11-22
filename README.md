@@ -2,7 +2,7 @@
 
 Berthy deploys and runs apps on your own Docker servers. One Go binary is the agent on the server, the CLI on your laptop and in CI, a terminal UI, and an MCP server for AI agents. You describe your apps in a manifest in your repository, CI builds and pushes the images, and Berthy deploys them: zero-downtime image rollouts, automatic rollback, health checks and alerts, scheduled commands, volume backups, and approvals for changes that AI agents ask for.
 
-It is for a small team that runs a web application on its own servers, one server per environment. It has no web dashboard and builds no images.
+It is for a small team that runs one or several web applications on its own servers. One agent hosts any number of (project, environment) pairs. It has no web dashboard and builds no images.
 
 Berthy was built to replace a Dokploy setup, and its author is moving all their own projects from Dokploy to Berthy. [How it compares](#how-it-compares) with Dokploy, Kamal, Coolify, Dokku and CapRover is below, including when you should pick one of them instead.
 
@@ -10,7 +10,7 @@ Berthy was built to replace a Dokploy setup, and its author is moving all their 
 
 Berthy makes choices so that you do not have to. If you disagree with several of these, another tool in the comparison will suit you better.
 
-- **One server per environment.** `prod` and `dev` are different servers, each with its own agent, secrets and tokens. There is no central server.
+- **One agent per server.** That agent hosts any number of (project, environment) pairs, of one or several projects. Each hosted environment has its own secrets and tokens. There is no central server.
 - **Swarm for stateless apps, Compose for stateful ones.** Image apps run as Docker Swarm services, even on one server, for rolling updates and rollback. Databases and caches are Docker Compose apps, and a `stateful` one is never recreated unless a command names it.
 - **CI builds, Berthy deploys.** Berthy never builds an image. It deploys images that already exist in a registry, pinned by digest.
 - **Protected environments take digests, not tags.** A tag can move. On a `protected` environment, only a `sha256:` digest is accepted.
@@ -56,10 +56,10 @@ With the GitHub CLI: `gh release download v0.1.0 -R fredimachado/berthy -p 'bert
 ```bash
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
-export BERTHY_PROD_TOKEN=<the admin token setup printed>
+export BERTHY_HELLO_PROD_TOKEN=<the admin token setup printed>
 ```
 
-Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets.
+The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest below). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
 
 **3. Write a manifest** in your repository. `berthy.yml`:
 
@@ -132,7 +132,7 @@ Berthy's author wrote this section, so read it with that in mind. Every cell bel
 | Where images are built | In your CI. Berthy only deploys | On your machine or a remote builder, pushed to a registry | On the server or a build server (Nixpacks, Railpack, Dockerfile, buildpacks), or an existing image | On the server or a build server (Nixpacks, Railpack, Dockerfile, Compose), or an existing image | On the server (Dockerfile or buildpacks), or from an image | On the server from a `captain-definition`, or an existing image |
 | Orchestration | Docker Swarm for image apps, Compose for stateful apps | Plain Docker over SSH | Docker Swarm, Compose or Stack | Docker and Compose. Swarm is deprecated | Plain Docker on one server. An optional k3s scheduler | Docker Swarm |
 | Databases | Compose apps marked `stateful`, from your own Compose file | Accessories, managed separately from the app | Managed MySQL, PostgreSQL, MongoDB, MariaDB, libSQL, Redis | One-click databases | Plugins | Deployed as apps or one-click apps |
-| Multi-server | One server per environment. A Swarm cluster is not set up by Berthy yet | Yes, a list of hosts | Remote servers, or Swarm nodes | Yes, standalone servers. Swarm is deprecated | One server, or the k3s scheduler | Yes, Swarm nodes |
+| Multi-server | One agent per server, any number of hosted environments. A Swarm cluster is not set up by Berthy yet | Yes, a list of hosts | Remote servers, or Swarm nodes | Yes, standalone servers. Swarm is deprecated | One server, or the k3s scheduler | Yes, Swarm nodes |
 | License | MIT | MIT | Apache-2.0, except a proprietary directory | Apache-2.0 | MIT | Apache-2.0 with an appendix |
 | Written in | Go, one binary | Ruby | TypeScript | PHP | Shell | TypeScript |
 
@@ -158,7 +158,7 @@ Main documentation and sources:
 
 ### Which one to choose
 
-- **Choose Berthy when** CI already builds your images, you run one server (or a few, one per environment) behind a VPN, and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.1.0.
+- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.1.0.
 - **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram. It also needs a private network to reach the agent.
 - **Choose Kamal when** you want deploys over plain SSH with nothing but Docker on the servers, builds in your own pipeline, and several hosts in one config file. It runs from your machine over SSH, with no agent of its own on the server.
 - **Choose Dokploy when** you want a web UI with builds on the server, managed databases with backups, templates, notifications, and Swarm or remote servers.
