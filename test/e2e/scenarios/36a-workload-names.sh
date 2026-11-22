@@ -71,10 +71,10 @@ cp "$dir/berthy.yml" "$dir/berthy.yml.saved"
 sed -i "/file: compose.yml/a\\    project_name: $PROJECT-$ENVN-db" "$dir/berthy.yml"
 out=$(env_cmd "$PROJECT" "$OTHER" deploy db --dry-run 2>&1); code=$?
 expect_code "refuse a Compose project owned by the first environment in a dry run" 1 "$code" "$out"
-expect_contains "the dry run names the held project" "$out" "name $PROJECT-$ENVN-db is taken by another project or environment on this server"
+expect_contains "the dry run names the Compose project" "$out" "Compose project name is taken by another project or environment on this server"
 out=$(env_cmd "$PROJECT" "$OTHER" deploy db 2>&1); code=$?
 expect_code "refuse a Compose project owned by the first environment on admission" 1 "$code" "$out"
-expect_contains "admission names the held project" "$out" "name $PROJECT-$ENVN-db is taken by another project or environment on this server"
+expect_contains "admission names the Compose project" "$out" "Compose project name is taken by another project or environment on this server"
 mv "$dir/berthy.yml.saved" "$dir/berthy.yml"
 out=$(env_cmd "$PROJECT" "$OTHER" remove web --volumes 2>&1); code=$?
 expect_code "remove the second environment's image app and volume" 0 "$code" "$out"

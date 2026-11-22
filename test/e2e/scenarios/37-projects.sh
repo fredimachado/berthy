@@ -267,19 +267,19 @@ cp "$dir/berthy.yml" "$dir/original.yml"
 sed -i "/file: compose.yml/a\\    project_name: $PROJECT-$ENVN-db" "$dir/berthy.yml"
 out=$(env_cmd "$P2" "$ENVN" deploy db 2>&1); code=$?
 expect_code 'claimed Compose project refused' 1 "$code" "$out"
-expect_contains 'Compose refusal names owner' "$out" "name $PROJECT-$ENVN-db is taken by another project or environment on this server"
+expect_contains 'Compose refusal names the project' "$out" "Compose project name is taken by another project or environment on this server"
 mv "$dir/original.yml" "$dir/berthy.yml"
 sed -i "s/pgdata: {}/pgdata: {name: ${PROJECT}-${ENVN}-db_pgdata}/" "$dir/compose.yml"
 out=$(env_cmd "$P2" "$ENVN" deploy db 2>&1); code=$?
 expect_code 'claimed Compose volume refused' 1 "$code" "$out"
-expect_contains 'volume refusal names owner' "$out" "name $PROJECT-$ENVN-db_pgdata is taken by another project or environment on this server"
+expect_contains 'volume refusal names the file key' "$out" "Compose volumes.pgdata name is taken by another project or environment on this server"
 expect_eq 'first Compose container survives refused claims' "$first_db" "$(d ps -q --filter "label=com.docker.compose.project=$PROJECT-$ENVN-db")"
 # A kept Compose volume remains claimed after removal.
 out=$(env_cmd "$PROJECT" "$EB" remove db 2>&1); expect_code 'remove db but keep volume' 0 "$?" "$out"
 sed -i "s/${PROJECT}-${ENVN}-db_pgdata/${PROJECT}-${EB}-db_pgdata/" "$dir/compose.yml"
 out=$(env_cmd "$P2" "$ENVN" deploy db 2>&1); code=$?
 expect_code 'kept volume refused' 1 "$code" "$out"
-expect_contains 'kept volume refusal names owner' "$out" "name $PROJECT-$EB-db_pgdata is taken by another project or environment on this server"
+expect_contains 'kept volume refusal names the file key' "$out" "Compose volumes.pgdata name is taken by another project or environment on this server"
 out=$(env_cmd "$PROJECT" "$EB" deploy db 2>&1); expect_code 'redeploy db after kept-volume check' 0 "$?" "$out"
 # A graceful agent restart keeps workload containers and interrupts the job in its own environment.
 ids=$(for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do read -r p e <<< "$pair"; d ps -q --filter "label=com.docker.swarm.service.name=$p-$e-web-main"; d ps -q --filter "label=com.docker.compose.project=$p-$e-db"; done)
