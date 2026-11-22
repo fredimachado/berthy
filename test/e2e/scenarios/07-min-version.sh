@@ -58,13 +58,25 @@ restart_with() {
 }
 
 # old_agent_state: gives the old agent a state directory and a key of its own, a configuration in the layout of its release (one
-# environment, no projects). The agent of this tree has migrated the fixture's state
-# to schema 14, which the agent of 6acd0ce (schema 13) refuses to open, so the old agent must never see that state.
+# environment, no projects), and a CLI configuration that holds an old-shape token. The stand-in of 6acd0ce only accepts
+# bty.<environment>.<hex>; an operator's saved tokens from that release have that shape, so the older-agent probe can
+# authenticate. The agent of this tree has migrated the fixture's state to schema 14, which the agent of 6acd0ce (schema 13)
+# refuses to open, so the old agent must never see that state.
 old_agent_state() {
+  local out token entry
   mkdir -p "$RUN/old/state" && chmod 700 "$RUN/old/state" || return 1
   head -c 32 /dev/urandom > "$RUN/old/state.key" && chmod 600 "$RUN/old/state.key" || return 1
+  out=$("$OLD080" agent token -e "$ENVN" --name admin --scope admin) || return 1
+  token=$(printf '%s\n' "$out" | sed -n 's/^token: //p')
+  entry=$(printf '%s\n' "$out" | sed -n '3p')
+  case $token in bty.$ENVN.*) ;; *) return 1 ;; esac
+  case $entry in \{*) ;; *) return 1 ;; esac
+  printf "export BERTHY_OLD_ADMIN_TOKEN='%s'\n" "$token" >> "$RUN/env.sh" || return 1
+  export BERTHY_OLD_ADMIN_TOKEN=$token
+  printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_OLD_ADMIN_TOKEN"}}}}}\n' \
+    "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/old/admin.json" || return 1
   printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"tokens":[%s]}\n' \
-    "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/old/state" "$RUN/old/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$(cat "$RUN/admin-entry.json")" > "$OLD_CFG" \
+    "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/old/state" "$RUN/old/state.key" "$TG_LISTEN" "$COMPOSE_BIN" "$entry" > "$OLD_CFG" \
     && chmod 600 "$OLD_CFG"
 }
 
@@ -133,15 +145,15 @@ expect_contains "the service runs the pinned v1 digest" "$spec" "$WEB_V1_DIGEST"
 old_agent_state || { echo "cannot give the old agent its own state" >&2; exit 1; }
 restart_with "$OLD080" "$OLD_CFG" || exit 1
 manifest_with_min "" | write_manifest || exit 1
-out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
+out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/old/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent: the deploy is refused: exit" 1 "$code"
 expect_contains "old agent: it answers 404" "$out" "agent returned HTTP 404"
 expect_contains "old agent: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
 manifest_with_min 0.9.0 | write_manifest || exit 1
-out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
+out=$("$CLI090" deploy web --version v1 -e "$ENVN" --config "$RUN/old/admin.json" --manifest-dir "$MAN" 2>&1); code=$?
 expect_eq "old agent with min_version: the deploy is refused: exit" 1 "$code"
 expect_contains "old agent with min_version: the CLI names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
-out=$("$CLI090" ps -e "$ENVN" --config "$RUN/admin.json" 2>&1); code=$?
+out=$("$CLI090" ps -e "$ENVN" --config "$RUN/old/admin.json" 2>&1); code=$?
 expect_eq "old agent: ps is refused: exit" 1 "$code"
 expect_contains "old agent: ps names the older release" "$out" "the agent runs an older release than this CLI; upgrade it with berthy setup"
 
