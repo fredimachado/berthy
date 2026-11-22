@@ -194,6 +194,11 @@ func checkRequestManifest(m manifest.Manifest) error {
 // checkProject refuses a deploy whose manifest names another project than the one the environment runs, before anything
 // changes. Only a deploy carries a manifest to apply: a rollback, an ingress apply and the other operations do not.
 func (c *Controller) checkProject(req Request) error {
+	if req.Kind == "" || req.Kind == "deploy" {
+		if problems := req.Manifest.ComposeProjectProblems(c.Environment); len(problems) > 0 {
+			return Refusal(problems[0].Message)
+		}
+	}
 	if c.Project == "" || req.Kind != "" && req.Kind != "deploy" || req.Manifest.Project == c.Project {
 		return nil
 	}

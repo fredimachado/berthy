@@ -540,3 +540,29 @@ func TestLoadAllowsAServiceNameThatMayBeBoundElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadRefusesSharedComposeProjects(t *testing.T) {
+	for _, project := range []string{"shared", "demo-prod-alpha"} {
+		t.Run(project, func(t *testing.T) {
+			first := "shared"
+			if project == "demo-prod-alpha" {
+				first = ""
+			}
+			src := "project: demo\napps:\n  alpha:\n    kind: compose\n    file: alpha.yml\n"
+			if first != "" {
+				src += "    project_name: " + first + "\n"
+			}
+			src += "  beta:\n    kind: compose\n    file: beta.yml\n    project_name: " + project + "\n"
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(src), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadDetailed(dir, "prod")
+			ps, ok := err.(Problems)
+			want := "Compose project " + project + " is shared by apps alpha and beta"
+			if !ok || len(ps) != 1 || ps[0].Path != "apps.beta" || ps[0].Message != want {
+				t.Fatalf("problems: %v", err)
+			}
+		})
+	}
+}

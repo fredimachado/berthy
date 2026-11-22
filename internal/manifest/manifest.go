@@ -688,6 +688,7 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	}
 	var namesTooLong Problems
 	namesTooLong = append(namesTooLong, m.NetworkNameProblems(env, nil, "")...)
+	namesTooLong = append(namesTooLong, m.ComposeProjectProblems(env)...)
 	for _, app := range sortedKeys(m.Apps) {
 		a := m.Apps[app]
 		if a.Kind != "image" {

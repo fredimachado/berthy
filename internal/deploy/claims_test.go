@@ -1436,3 +1436,19 @@ func TestRetryReleasesNetworkInventoriedBeforeInterruptedDown(t *testing.T) {
 		t.Fatalf("claims: %v, %v", held, err)
 	}
 }
+
+func TestAgentRefusesSharedComposeProjects(t *testing.T) {
+	c := Controller{Environment: "prod"}
+	m := manifest.Manifest{Project: "demo", Apps: map[string]manifest.App{"alpha": {Kind: "compose", File: "alpha.yml"}, "beta": {Kind: "compose", File: "beta.yml", ProjectName: "demo-prod-alpha"}}}
+	req := Request{Kind: "deploy", App: "alpha", RequestID: "duplicate", Manifest: m}
+	want := "Compose project demo-prod-alpha is shared by apps alpha and beta"
+	if _, err := c.Plan(context.Background(), Actor{ID: "a"}, req); err == nil || err.Error() != want || !PublicMessage(err.Error()) {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, _, err := c.Admit(context.Background(), Actor{ID: "a"}, req); err == nil || err.Error() != want {
+		t.Fatalf("admit: %v", err)
+	}
+	if PublicMessage(want + " extra") {
+		t.Fatal("accepted unsafe message")
+	}
+}

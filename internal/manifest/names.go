@@ -45,6 +45,24 @@ func (m *Manifest) ComposeProject(environment, app string) string {
 	return m.Project + "-" + environment + "-" + app
 }
 
+// ComposeProjectProblems finds Compose apps that resolve to the same project.
+func (m *Manifest) ComposeProjectProblems(environment string) Problems {
+	seen := map[string]string{}
+	var problems Problems
+	for _, app := range sortedKeys(m.Apps) {
+		if m.Apps[app].Kind != "compose" {
+			continue
+		}
+		name := m.ComposeProject(environment, app)
+		if previous, ok := seen[name]; ok {
+			problems.add("apps."+app, "Compose project %s is shared by apps %s and %s", name, previous, app)
+		} else {
+			seen[name] = app
+		}
+	}
+	return problems
+}
+
 // NetworkNameProblems finds roles that would answer to the same DNS name on the environment network.
 // With a nil serviceName, only aliases are checked. Otherwise it supplies the effective service name and whether the alias is introduced.
 // A non-empty targetApp reports only clashes involving that app.
