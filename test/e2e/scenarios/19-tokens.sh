@@ -18,10 +18,10 @@ as_token() {
 # 1. An admin makes a deploy token. The value is shown once, in the output of the create.
 out=$(adm token create deployer --scope deploy 2>&1); code=$?
 expect_code "create a deploy token" 0 "$code" "$out"
-expect_contains "the create names the token and says it is shown once" "$out" "token deployer (deploy), shown once, store it now: bty.$ENVN."
+expect_contains "the create names the token and says it is shown once" "$out" "token deployer (deploy), shown once, store it now: bty.$PROJECT.$ENVN."
 value=$(printf '%s\n' "$out" | sed -n 's/.*store it now: //p')
 second=$(adm token create second --scope deploy --json | sed -n 's/^ *"token": "\(bty\.[^"]*\)".*/\1/p')
-case $second in bty.$ENVN.*) pass "the --json create returns the value" ;; *) fail "the --json create returns the value" "no token in the output" ;; esac
+case $second in bty.$PROJECT.$ENVN.*) pass "the --json create returns the value" ;; *) fail "the --json create returns the value" "no token in the output" ;; esac
 
 # 2. The token deploys web, at once and with no restart of the agent.
 out=$(as_token "$value" deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?

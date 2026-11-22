@@ -316,7 +316,7 @@ if [ "$code" -eq 0 ]; then
   holders=$(jq -r --arg image "$v1_id" '.[] | select(.ImageID == $image) | .Id' <<< "$inventory")
   expect_eq 'no container holds v1' '' "$holders"
 fi
-out=$(env_cmd "$PROJECT" "$ENVN" destroy --confirm "$ENVN" 2>&1); expect_code 'destroy first environment' 0 "$?" "$out"
+out=$(env_cmd "$PROJECT" "$ENVN" destroy --confirm "$PROJECT/$ENVN" 2>&1); expect_code 'destroy first environment' 0 "$?" "$out"
 d image inspect "$REG/e2e/web@$WEB_V1_DIGEST" >/dev/null 2>&1; expect_code 'retained v1 image remains' 0 "$?"
 history=$(env_cmd "$PROJECT" "$EB" history web --json 2>&1)
 release=$(printf '%s' "$history" | python3 -c 'import json,sys; x=json.load(sys.stdin); print(next(r["id"] for r in x if "'"$WEB_V1_DIGEST"'" in str(r)))')

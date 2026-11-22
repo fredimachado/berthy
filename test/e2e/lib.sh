@@ -136,7 +136,7 @@ api_token() {
 make_ciadmin() {
   local t
   t=$(api_token ci-admin --scope admin --agent) || return 1
-  case $t in bty.$ENVN.*) ;; *) return 1 ;; esac
+  case $t in bty.$PROJECT.$ENVN.*) ;; *) return 1 ;; esac
   printf "export BERTHY_CIADMIN_TOKEN='%s'\n" "$t" >> "$RUN/env.sh" || return 1
   export BERTHY_CIADMIN_TOKEN=$t
   printf '{"projects":{"%s":{"environments":{"%s":{"url":"http://%s","token_env":"BERTHY_CIADMIN_TOKEN"}}}}}\n' "$PROJECT" "$ENVN" "$AGENT_LISTEN" > "$RUN/ciadmin.json" || return 1
@@ -333,10 +333,10 @@ add_environment() {
   local project=$1 env=$2 var out token entry state
   var=$(env_var "$project" "$env")
   state=$RUN/state-$project-$env
-  out=$("$BIN" agent token -e "$env" --name admin --scope admin) || return 1
+  out=$("$BIN" agent token --project "$project" -e "$env" --name admin --scope admin) || return 1
   token=$(printf '%s\n' "$out" | sed -n 's/^token: //p')
   entry=$(printf '%s\n' "$out" | sed -n '3p')
-  case $token in bty.$env.*) ;; *) return 1 ;; esac
+  case $token in bty.$project.$env.*) ;; *) return 1 ;; esac
   case $entry in \{*) ;; *) return 1 ;; esac
   printf "export %s='%s'\n" "$var" "$token" >> "$RUN/env.sh" || return 1
   export "$var=$token"

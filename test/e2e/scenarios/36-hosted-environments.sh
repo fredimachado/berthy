@@ -51,7 +51,7 @@ expect_code "deploy v1" 0 "$code" "$out"
 
 # 2. An unknown project is 401 like a bad token. The URL of an earlier release is 404 and says what to do.
 expect_eq "an unknown project is 401" 401 "$(status "$(api nope "$ENVN")agent" "$BERTHY_ADMIN_TOKEN")"
-expect_eq "a bad token is 401" 401 "$(status "$(api "$PROJECT" "$ENVN")agent" "bty.$ENVN.$(printf '0%.0s' $(seq 1 64))")"
+expect_eq "a bad token is 401" 401 "$(status "$(api "$PROJECT" "$ENVN")agent" "bty.$PROJECT.$ENVN.$(printf '0%.0s' $(seq 1 64))")"
 expect_eq "the right token is 200" 200 "$(status "$(api "$PROJECT" "$ENVN")agent" "$BERTHY_ADMIN_TOKEN")"
 out=$(curl_local "http://$AGENT_LISTEN/v1/environments/$ENVN/agent" -H "Authorization: Bearer $BERTHY_ADMIN_TOKEN" -w ' %{http_code}')
 expect_contains "the old URL is 404" "$out" " 404"
@@ -107,11 +107,11 @@ restore || exit 1
 
 cp -a "$RUN/state-$SECOND-$ENVN" "$RUN/state-copy" && cp "$RUN/key-$SECOND-$ENVN" "$RUN/key-copy" || exit 1
 # The copies need token entries of their own: agent.json refuses a digest twice.
-fresh_entry() { "$BIN" agent token -e "$1" --name admin --scope admin | sed -n '3p'; }
-write_fragment "$PROJECT-three" "$ENVN" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "$ENVN")" && write_agent_config || exit 1
+fresh_entry() { "$BIN" agent token --project "$1" -e "$2" --name admin --scope admin | sed -n '3p'; }
+write_fragment "$PROJECT-three" "$ENVN" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "$PROJECT-three" "$ENVN")" && write_agent_config || exit 1
 refused "a claimed state given to another project" "state in $RUN/state-copy: state belongs to $SECOND/$ENVN, not $PROJECT-three/$ENVN"
 restore || exit 1
-write_fragment "$SECOND" "${ENVN}c" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "${ENVN}c")" && write_agent_config || exit 1
+write_fragment "$SECOND" "${ENVN}c" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "$SECOND" "${ENVN}c")" && write_agent_config || exit 1
 refused "a claimed state given to another environment" "state in $RUN/state-copy: state belongs to $SECOND/$ENVN, not $SECOND/${ENVN}c"
 restore || exit 1
 

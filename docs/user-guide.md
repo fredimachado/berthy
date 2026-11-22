@@ -1375,7 +1375,7 @@ berthy token create ci -e prod --scope deploy --expires 90d
 ```
 
 ```text
-token ci (deploy, expires 2027-02-16), shown once, store it now: bty.prod.<64 hex characters>
+token ci (deploy, expires 2027-02-16), shown once, store it now: bty.<project>.prod.<64 hex characters>
 ```
 
 - The token is the secret. It is printed once. Put it in your CI's secret store. The agent keeps only its digest, in its state, so a [state snapshot](#step-15-rebuild-a-server) carries it too.
@@ -2649,15 +2649,15 @@ An app that you delete from the manifest keeps running. `doctor` lists it as `or
 #### Destroy an environment
 
 ```bash
-berthy destroy -e prod --confirm prod --dry-run
-berthy destroy -e prod --confirm prod
+berthy destroy -e prod --confirm shop/prod --dry-run
+berthy destroy -e prod --confirm shop/prod
 ```
 
-`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must repeat the environment name, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers and images; stopped one-off containers; and images no container uses.
+`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers and images; stopped one-off containers; and images no container uses.
 
 | Flag | Meaning |
 | --- | --- |
-| `--confirm <env>` | Required. Must equal `-e`. |
+| `--confirm <project/environment>` | Required. Must equal the hosted environment. |
 | `--volumes` | Also delete volumes. Without it, volumes stay. |
 | `--allow-recreate` | Required if a `stateful` app is among them. |
 | `--tunnel` | Also delete the Cloudflare tunnel, but only when nothing else uses it (no hostname rules, no DNS record pointing at it, no active connection). The result names each reason it was kept. |
@@ -2825,7 +2825,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | `config show` | `-e`, `--manifest-dir`, `--json`, `--origin` | Print the merged manifest. With `--origin`, one line per value with the file and line that set it, or `default`. |
 | `config schema` | `--overlay` | Print a JSON Schema (draft-07) of the manifest, or with `--overlay` of an overlay, for an editor. Needs no `-e`. |
 | `docs` | an optional section name | Print the manifest reference, or one section of it, such as `docs backups`. |
-| `agent token` | `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin` | Make a token offline and print it once, with its digest and the object for the `tokens` list of `agent.json`. No agent, no network. To make a token on a running agent, use `token create`. |
+| `agent token` | `--project`, `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin`, `--config` | Make a token offline and print it once, with its digest and the object for the `tokens` list of `agent.json`, and a `context add` line for another machine. No agent, no network. To make a token on a running agent, use `token create`. |
 | `state-restore` | `--endpoint`, `--bucket`, `--region`, `--object`, `--out`, `--key-file` | Rebuild the agent's state from a snapshot. Credentials from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. |
 | `agent` | `--config <file>` | Run the agent (Linux only). `berthy.service` runs this. |
 | `ui` | `-e`, `--config` | The terminal UI. |
@@ -3111,7 +3111,7 @@ Example (the digest is a placeholder):
 }
 ```
 
-The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use server-sent events, so `curl` and AI agents can read them without a client library. Only `GET /healthz` needs no token. A token is `bty.<environment>.<64 hex characters>`, sent as `Authorization: Bearer <token>`. It works only for its own environment.
+The agent API is HTTP and JSON. Streams (logs, metrics, operation events) use server-sent events, so `curl` and AI agents can read them without a client library. Only `GET /healthz` needs no token. A token is `bty.<project>.<environment>.<64 hex characters>`, sent as `Authorization: Bearer <token>`. It works only for its own hosted environment.
 
 ### Token scopes
 

@@ -25,10 +25,10 @@ mkdir -p "$RUN/state" "$LOG" "$MAN" || die "cannot create the fixture directorie
 # Tokens. Only the admin token is in the agent's configuration, as berthy setup writes it. "agent token" prints "token: ...",
 # "sha256: ..." and the JSON entry for the agent's configuration. The token is captured into variables and written only to
 # env.sh; it is never echoed. The ci token is made through the API once the agent runs (below).
-admin_out=$("$BIN" agent token -e "$ENVN" --name admin --scope admin) || die "could not make the admin token"
+admin_out=$("$BIN" agent token --project "$PROJECT" -e "$ENVN" --name admin --scope admin) || die "could not make the admin token"
 admin_token=$(printf '%s\n' "$admin_out" | sed -n 's/^token: //p')
 admin_entry=$(printf '%s\n' "$admin_out" | sed -n '3p')
-case $admin_token in bty.$ENVN.*) ;; *) die "the admin token has an unexpected shape" ;; esac
+case $admin_token in bty.$PROJECT.$ENVN.*) ;; *) die "the admin token has an unexpected shape" ;; esac
 case $admin_entry in \{*) ;; *) die "the admin entry has an unexpected shape" ;; esac
 printf "export BERTHY_ADMIN_TOKEN='%s'\n" "$admin_token" > "$RUN/env.sh" || die "cannot write env.sh"
 . "$RUN/env.sh"
@@ -81,7 +81,7 @@ start_agent || die "the agent did not start"
 # The ci token, an agent token that may deploy, is made the way a person makes one: through the API, with no shell on the
 # server and no restart.
 ci_token=$(api_token ci --scope deploy --agent) || die "could not make the ci token"
-case $ci_token in bty.$ENVN.*) ;; *) die "the ci token has an unexpected shape" ;; esac
+case $ci_token in bty.$PROJECT.$ENVN.*) ;; *) die "the ci token has an unexpected shape" ;; esac
 printf "export BERTHY_CI_TOKEN='%s'\n" "$ci_token" >> "$RUN/env.sh" || die "cannot write env.sh"
 . "$RUN/env.sh"
 unset ci_token
