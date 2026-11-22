@@ -198,6 +198,11 @@ func Send(ctx context.Context, c *http.Client, method, address, token string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return SendRequest(ctx, c, req, token)
+}
+
+// SendRequest sends a prepared request and checks a 404 for an older agent.
+func SendRequest(ctx context.Context, c *http.Client, req *http.Request, token string) (*http.Response, error) {
 	resp, err := c.Do(req)
 	if err != nil || resp.StatusCode != http.StatusNotFound {
 		return resp, err

@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"berthy/internal/agentclient"
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,5 +174,40 @@ func TestDeployRefusesAManifestOfAnotherProjectThanTheFlag(t *testing.T) {
 	}
 	if cardio.Load() != 0 || slice.Load() != 0 {
 		t.Fatalf("sent %d and %d requests", cardio.Load(), slice.Load())
+	}
+}
+
+func TestAFollowedStreamAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/dev/agent" {
+			w.WriteHeader(200)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cfg := ingressCLIConfig(t, srv.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"logs", "api", "--follow", "-e", "dev", "--config", cfg}, &out, &errout)
+	if code == 0 || !strings.Contains(errout.String(), "the agent runs an older release than this CLI") {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+}
+
+func TestOperationStreamAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/dev/agent" {
+			w.WriteHeader(200)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	var out, errout bytes.Buffer
+	prefix := "/v1/projects/demo/environments/dev/"
+	code := watchOperation(context.Background(), agentclient.NewHTTPClient(), u, "token", prefix, "id", prefix+"operations/id/events", &out, &errout, false, "deploy", "dev")
+	if code == 0 || !strings.Contains(errout.String(), agentclient.OlderAgentMessage) {
+		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 }

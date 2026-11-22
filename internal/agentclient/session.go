@@ -64,6 +64,9 @@ func OpenSession(ctx context.Context, t *Target, req session.Request) (net.Conn,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
+		if resp.StatusCode == http.StatusNotFound {
+			resp = olderAgent(ctx, NewHTTPClient(), httpReq.URL, t.Token, resp)
+		}
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fail(errors.New(Message(resp.StatusCode, data)))
 	}

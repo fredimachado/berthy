@@ -1033,7 +1033,14 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		if cursor != "" {
 			req.Header.Set("Last-Event-ID", cursor)
 		}
-		resp, err := c.Do(req)
+		resp, err := agentclient.SendRequest(streamCtx, c, req, token)
+		if err == nil && resp.StatusCode == http.StatusNotFound {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			cancel()
+			fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, body))
+			return 1
+		}
 		if err == nil && resp.StatusCode == 200 {
 			scanner := bufio.NewScanner(resp.Body)
 			scanner.Buffer(make([]byte, 4096), 1<<20)

@@ -220,3 +220,20 @@ func TestOtherCommandsRefuseTheTokenFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestATokenCommandAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/dev/agent" {
+			w.WriteHeader(200)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cfg := ingressCLIConfig(t, srv.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"token", "list", "-e", "dev", "--config", cfg}, &out, &errout)
+	if code == 0 || !strings.Contains(errout.String(), "the agent runs an older release than this CLI") {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+}

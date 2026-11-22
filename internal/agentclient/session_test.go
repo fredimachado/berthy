@@ -99,3 +99,18 @@ func TestOpenSessionWithAnUnreachableAgent(t *testing.T) {
 		t.Fatal("no error")
 	}
 }
+
+func TestAnInteractiveSessionAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/lab/agent" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	_, _, err := OpenSession(context.Background(), sessionTarget(t, srv), session.Request{Kind: "exec", App: "api", Command: []string{"sh"}})
+	if err == nil || !strings.Contains(err.Error(), OlderAgentMessage) {
+		t.Fatalf("error %v", err)
+	}
+}
