@@ -24,6 +24,10 @@ d() {
   case "$1 $2" in
     'images --no-trunc') ;;
     'service ls')
+      if [ -n "${INSPECT_ERROR:-}" ]; then
+        echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
+        return 1
+      fi
       if [[ $* == *'--format'* ]]; then
         [ -f "$E2E_ROOT/alive-services" ] && cat "$E2E_ROOT/alive-services"
         return 0
@@ -35,10 +39,15 @@ d() {
       return 0 ;;
     'service inspect')
       local name=${*: -1}
+      if [ "${INSPECT_ERROR:-}" = "$name" ]; then
+        echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
+        return 1
+      fi
       if [ -f "$E2E_ROOT/alive-services" ] && grep -Fxq -- "$name" "$E2E_ROOT/alive-services"; then
         echo '{}'
         return 0
       fi
+      echo "Error: No such service: $name" >&2
       return 1 ;;
     'service rm')
       shift 2
@@ -364,4 +373,17 @@ if [ -e "$E2E_ROOT/fixture-objects" ]; then
   echo 'successful second-agent cleanup did not clear the ledger' >&2
   exit 1
 fi
+# A Docker inspect error (not "not found") must not count as absence: keep the journal and fail.
+printf 'service\tshop-error-svc\n' > "$E2E_ROOT/fixture-objects"
+INSPECT_ERROR=shop-error-svc
+if purge_fixture; then
+  echo 'inspect error was reported as successful cleanup' >&2
+  exit 1
+fi
+if ! grep -Fxq $'service\tshop-error-svc' "$E2E_ROOT/fixture-objects"; then
+  echo 'inspect error lost its service journal entry' >&2
+  exit 1
+fi
+unset INSPECT_ERROR
+rm -f "$E2E_ROOT/fixture-objects"
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'

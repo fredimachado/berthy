@@ -508,6 +508,28 @@ apps:
 YML
 }
 
+# service_gone NAME ERRFILE: 0 if the service is confirmed absent, 1 if it is present, 2 if the lookup
+# failed. Absence is only confirmed when docker service inspect answers "not found" / "no such service",
+# or when an exact-name listing succeeds and returns no match. Any other error is a lookup failure.
+service_gone() {
+  local name=$1 err=$2 listing
+  if d service inspect "$name" >/dev/null 2>"$err"; then
+    return 1
+  fi
+  if grep -Eqi 'no such service|not found' "$err"; then
+    return 0
+  fi
+  # Inspect failed for a reason other than not-found. An exact-name listing that succeeds
+  # with no match can still confirm absence; a listing error is a cleanup failure.
+  if ! listing=$(d service ls --format '{{.Name}}' 2>"$err"); then
+    return 2
+  fi
+  if printf '%s\n' "$listing" | grep -Fxq -- "$name"; then
+    return 1
+  fi
+  return 0
+}
+
 # purge_fixture: stops both agents and the fakes, then removes what this harness made on the daemon: Swarm services
 # and containers of the first agent's hosted environments, the $REG_NAME container, and objects recorded in the
 # fixture's ledger (including the second agent's services, journaled by name so a leftover agent2.json cannot
@@ -530,6 +552,7 @@ purge_fixture() {
   mkdir -p "$E2E_ROOT" || return 1
   exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
   flock -x "$lock" || return 1
+  tmp=$(mktemp "$E2E_ROOT/fixture-cleanup.XXXXXX") || return 1
   if [ -f "$E2E_ROOT/fixture-objects" ]; then
     while IFS=$'\t' read -r kind name; do
       case $kind in
@@ -543,16 +566,34 @@ purge_fixture() {
   fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if d service inspect "$name" >/dev/null 2>&1; then
+    service_gone "$name" "$tmp"
+    status=$?
+    if [ "$status" -eq 1 ]; then
       d service rm "$name" >/dev/null || failed=1
+    elif [ "$status" -eq 2 ]; then
+      echo "service $name lookup failed: $(cat "$tmp")" >&2
+      failed=1
+      continue
     fi
     for i in $(seq 1 60); do
-      if ! d service inspect "$name" >/dev/null 2>&1; then
+      service_gone "$name" "$tmp"
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        break
+      fi
+      if [ "$status" -eq 2 ]; then
+        echo "service $name lookup failed: $(cat "$tmp")" >&2
+        failed=1
         break
       fi
       sleep 0.5
     done
-    if d service inspect "$name" >/dev/null 2>&1; then
+    service_gone "$name" "$tmp"
+    status=$?
+    if [ "$status" -eq 1 ]; then
+      failed=1
+    elif [ "$status" -eq 2 ]; then
+      echo "service $name lookup failed: $(cat "$tmp")" >&2
       failed=1
     fi
   done <<< "$services"
@@ -589,7 +630,6 @@ purge_fixture() {
     while read -r ref; do d rmi "$ref" >/dev/null 2>&1; done
 
   # The ledger survives a removed Compose working directory and failed cleanup.
-  tmp=$(mktemp "$E2E_ROOT/fixture-cleanup.XXXXXX") || return 1
   while IFS= read -r project; do
     [ -n "$project" ] || continue
     if ! d ps -aq --filter "label=com.docker.compose.project=$project" > "$tmp"; then
