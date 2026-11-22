@@ -1201,9 +1201,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 }
 
 func manifestMatchesTarget(errout io.Writer, dir, project, target string) bool {
-	if project == target {
-		return true
+	if err := agentclient.CheckManifestProject(dir, project, target); err != nil {
+		fmt.Fprintln(errout, err)
+		return false
 	}
-	fmt.Fprintf(errout, "the manifest in %s is for project %s, not %s\n", dir, project, target)
-	return false
+	return true
 }

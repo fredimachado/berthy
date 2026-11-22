@@ -3,6 +3,7 @@ package agentclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,15 @@ var (
 	ErrVersionRequired   = UsageError("an image app needs a version")
 	ErrVersionNotAllowed = UsageError("a compose app takes no version")
 )
+
+// CheckManifestProject refuses a deploy whose manifest is for a different project than the target. The text is the same for
+// the CLI and for MCP, so a mismatch is refused before any request in both.
+func CheckManifestProject(dir, have, want string) error {
+	if have == want {
+		return nil
+	}
+	return fmt.Errorf("the manifest in %s is for project %s, not %s", dir, have, want)
+}
 
 // PrepareDeploy fills in what a deploy request carries from the manifest directory: the merged manifest for env and, for a
 // Compose app, its Compose file. req.App and req.Version are set. It refuses an image app without a version (unless it keeps

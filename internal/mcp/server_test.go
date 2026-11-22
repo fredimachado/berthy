@@ -119,7 +119,7 @@ func (f *fakeAgent) only(t *testing.T) request {
 
 func testConfig(u *url.URL, dir string) Config {
 	return Config{
-		Target:        &agentclient.Target{Env: "dev", Base: u, Prefix: base, Token: testToken},
+		Target:        &agentclient.Target{Project: "demo", Env: "dev", Base: u, Prefix: base, Token: testToken},
 		ManifestDir:   dir,
 		Version:       "test",
 		PollInterval:  2 * time.Millisecond,
@@ -663,6 +663,40 @@ func TestTheMCPServerTakesTheProjectFlag(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := Run([]string{"-e", "prod", "--project", "Bad_Name", "--config", cfg}, strings.NewReader(""), &out, &errs); code != 2 || !strings.Contains(errs.String(), "valid --project required") || out.Len() != 0 {
 		t.Fatalf("invalid project: exit %d, stderr %q", code, errs.String())
+	}
+}
+
+func TestDeployRefusesAManifestOfAnotherProjectBeforeAnyRequest(t *testing.T) {
+	cardioN, sliceN := new(atomic.Int32), new(atomic.Int32)
+	serve := func(n *atomic.Int32) *url.URL {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			n.Add(1)
+		}))
+		t.Cleanup(srv.Close)
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	_ = serve(cardioN)
+	slice := serve(sliceN)
+	dir := t.TempDir()
+	manifest := "project: cardiotennis\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(slice, dir)
+	cfg.Target.Project = "sliceup"
+	cfg.Target.Env = "prod"
+	cfg.Target.Prefix = "/v1/projects/sliceup/environments/prod/"
+	res := call(t, connect(t, cfg), "execute_resource_command", map[string]any{"resource_name": "api", "command": "deploy", "version": "v1"})
+	want := "the manifest in " + dir + " is for project cardiotennis, not sliceup"
+	if !res.IsError || !strings.Contains(text(t, res), want) {
+		t.Fatalf("%v %q", res.IsError, text(t, res))
+	}
+	if cardioN.Load() != 0 || sliceN.Load() != 0 {
+		t.Fatalf("sent %d and %d requests", cardioN.Load(), sliceN.Load())
 	}
 }
 

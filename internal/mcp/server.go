@@ -550,6 +550,9 @@ func (t *tools) execute(ctx context.Context, _ *sdk.CallToolRequest, in executeI
 				}
 				return nil, nil, t.fail("%s", err)
 			}
+			if err := agentclient.CheckManifestProject(t.c.ManifestDir, req.Manifest.Project, t.c.Target.Project); err != nil {
+				return nil, nil, t.fail("%s", err)
+			}
 			if err := agentclient.CheckAgentVersion(ctx, t.http, t.c.Target, req.Manifest); err != nil {
 				return nil, nil, t.fail("%s", err)
 			}
