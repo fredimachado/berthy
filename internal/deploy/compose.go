@@ -71,6 +71,8 @@ const (
 	errComposeUnavailable   Refusal = "Compose unavailable"
 	errComposeFiles         Refusal = "compose project files unavailable"
 	errComposeConfig        Refusal = "compose configuration invalid"
+	errComposeNetwork       Refusal = "Compose network unavailable or name mismatch"
+	errComposeOverlay       Refusal = "overlay network unavailable"
 	errComposePlan          Refusal = "compose plan failed"
 	errComposeJournal       Refusal = "compose journal failed"
 	errComposeUp            Refusal = "compose up failed"
@@ -623,12 +625,12 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	app := req.Manifest.Apps[req.App]
 	if !req.rollback {
 		if c.Engine == nil {
-			return ComposePlan{}, errors.New("overlay network unavailable")
+			return ComposePlan{}, errComposeOverlay
 		}
 		networkName := req.Manifest.NetworkName(c.Environment)
 		network, err := c.Engine.InspectNetwork(ctx, networkName)
 		if err != nil || network.Name != networkName || network.Driver != "overlay" || network.Scope != "swarm" || !network.Attachable {
-			return ComposePlan{}, errors.New("overlay network unavailable")
+			return ComposePlan{}, errComposeOverlay
 		}
 	}
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
@@ -1205,7 +1207,7 @@ func (c *Controller) checkComposeNetworkModes(ctx context.Context, cfg composeCo
 		}
 		network, err := c.Engine.InspectNetwork(ctx, name)
 		if err != nil && !statusIs(err, 404) || err == nil && network.Name != name {
-			return errComposeConfig
+			return errComposeNetwork
 		}
 	}
 	for _, key := range sortedKeys(cfg.Services) {

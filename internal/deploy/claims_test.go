@@ -1779,14 +1779,28 @@ func TestComposeDefaultNetworkModeNeedsNoLookupOrClaim(t *testing.T) {
 
 func TestComposeExternalNetworkRejectsNetworkID(t *testing.T) {
 	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine"}},"networks":{"peer":{"name":"peerid","external":true}}}`, hashes: hashOne}
-	c, _ := composeController(t, runner, newComposeDocker())
+	c, s := composeController(t, runner, newComposeDocker())
 	c.Engine = composeModeIDLookup{newComposeDocker()}
 	req := composeReq("external-id", composeFileOne, composeApp(false))
 	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
 		t.Fatal("plan accepted network ID")
 	}
-	if out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false); out.State != "failed" || runner.upRuns() != 0 {
-		t.Fatalf("execution: %+v", out)
+	assertComposeNetworkRefusal(t, c, s, runner, req, "Compose network unavailable or name mismatch")
+}
+
+func assertComposeNetworkRefusal(t *testing.T, c *Controller, s *state.Store, runner *fakeCompose, req Request, want string) {
+	t.Helper()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: "admin", Kind: "deploy", App: req.App, PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := c.runCompose(ctx, op, Actor{ID: "admin", Admin: true}, req, false)
+	if err := s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "failed" || out.Err != want || runner.upRuns() != 0 {
+		t.Fatalf("execution: %+v; up=%d", out, runner.upRuns())
 	}
 }
 
@@ -1808,15 +1822,13 @@ func (e nonAttachableComposeNetwork) InspectNetwork(ctx context.Context, name st
 
 func TestComposeRejectsNonAttachableEnvironmentNetwork(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
-	c, _ := composeController(t, runner, newComposeDocker())
+	c, s := composeController(t, runner, newComposeDocker())
 	c.Engine = nonAttachableComposeNetwork{newComposeDocker()}
 	req := composeReq("non-attachable", composeFileOne, composeApp(false))
 	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
 		t.Fatal("non-attachable network accepted")
 	}
-	if out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false); out.State != "failed" || runner.upRuns() != 0 {
-		t.Fatalf("execution: %+v", out)
-	}
+	assertComposeNetworkRefusal(t, c, s, runner, req, "overlay network unavailable")
 }
 
 type claimReservationError struct{ claim state.Claim }
