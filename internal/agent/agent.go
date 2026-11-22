@@ -229,7 +229,7 @@ func HandlerWithMetrics(c Config, e *engine.Engine, collector *metrics.Collector
 	return serveAPI(c, handlerWithState(c, e, collector, nil, nil))
 }
 func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter) http.Handler {
-	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)), newLimits())
+	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)), newLimits(), nil)
 }
 
 // storeOf is the state of a controller, or nil for an agent without state.
@@ -242,7 +242,7 @@ func storeOf(d *deploy.Controller) *state.Store {
 
 // handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
 // The handler sees the path after the environment, as mount gives it.
-func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits) http.Handler {
+func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits, keep func(map[string]string) bool) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
 		if r.Method != "GET" {
@@ -259,7 +259,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 			return
 		case len(rest) == 1 && rest[0] == "stats":
 			if r.URL.Query().Get("watch") == "1" && collector != nil {
-				streamStats(w, r, collector, lim)
+				streamStats(w, r, collector, lim, keep)
 				return
 			}
 			if collector == nil {
@@ -271,14 +271,20 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					writeError(w, 400, "bad_request", "invalid since duration")
 					return
 				}
-				result = collector.Since(d)
+				samples := collector.Since(d)
+				for i := range samples {
+					samples[i] = samples[i].Only(keep)
+				}
+				result = samples
 			} else {
 				var ready bool
-				result, ready = collector.Latest()
+				var sample metrics.Sample
+				sample, ready = collector.Latest()
 				if !ready {
 					writeError(w, 503, "sample_not_ready", "sample not ready")
 					return
 				}
+				result = sample.Only(keep)
 			}
 		case len(rest) == 1 && rest[0] == "agent":
 			host, _ := os.Hostname()
@@ -504,7 +510,7 @@ func compareVersion(a, b string) int {
 	return an - bn
 }
 
-func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, lim *limits) {
+func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, lim *limits, keep func(map[string]string) bool) {
 	select {
 	case lim.followers <- struct{}{}:
 		defer func() { <-lim.followers }()
@@ -529,7 +535,7 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, l
 		if !ok || !shouldEmitSample(s.Time, last) {
 			return true
 		}
-		b, err := json.Marshal(s)
+		b, err := json.Marshal(s.Only(keep))
 		if err != nil {
 			return false
 		}

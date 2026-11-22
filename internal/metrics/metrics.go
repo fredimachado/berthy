@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -10,8 +11,15 @@ import (
 const interval = 10 * time.Second
 
 type HostReader interface{ Read(context.Context) Host }
+
+// ContainerRef is a running container the collector samples: its id and the labels Docker lists for it.
+type ContainerRef struct {
+	ID     string
+	Labels map[string]string
+}
+
 type DockerReader interface {
-	Containers(context.Context) ([]string, error)
+	Containers(context.Context) ([]ContainerRef, error)
 	Stats(context.Context, string) (RawContainer, error)
 }
 type Mount struct {
@@ -94,12 +102,12 @@ func (c *Collector) collect(ctx context.Context) {
 	next := map[string]baseline{}
 	work, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	ids, err := c.docker.Containers(work)
+	refs, err := c.docker.Containers(work)
 	if err != nil {
 		s.DockerError = err.Error()
 	} else {
-		sort.Strings(ids)
-		s.Containers = make([]Container, len(ids))
+		sort.Slice(refs, func(i, j int) bool { return refs[i].ID < refs[j].ID })
+		s.Containers = make([]Container, len(refs))
 		s.ContainersFresh = true
 		jobs := make(chan int)
 		var wg sync.WaitGroup
@@ -108,9 +116,9 @@ func (c *Collector) collect(ctx context.Context) {
 			go func() {
 				defer wg.Done()
 				for n := range jobs {
-					id := ids[n]
+					id := refs[n].ID
 					raw, e := c.docker.Stats(work, id)
-					item := Container{ID: id}
+					item := Container{ID: id, Labels: maps.Clone(refs[n].Labels)}
 					if e != nil {
 						item.Error = e.Error()
 					} else {
@@ -141,7 +149,7 @@ func (c *Collector) collect(ctx context.Context) {
 				}
 			}()
 		}
-		for i := range ids {
+		for i := range refs {
 			jobs <- i
 		}
 		close(jobs)
@@ -172,6 +180,7 @@ func clone(s Sample) Sample {
 	s.Host.Errors = append([]string(nil), s.Host.Errors...)
 	s.Containers = append([]Container(nil), s.Containers...) // copy pointed-to values so callers cannot mutate stored samples
 	for i := range s.Containers {
+		s.Containers[i].Labels = maps.Clone(s.Containers[i].Labels)
 		if p := s.Containers[i].CPUPercent; p != nil {
 			v := *p
 			s.Containers[i].CPUPercent = &v

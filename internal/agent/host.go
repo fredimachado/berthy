@@ -58,8 +58,13 @@ func Open(sh Shared, f File) (*Host, error) {
 			seen[claim] = r.Config.ID()
 		}
 	}
+	ids := make([]scope.ID, len(h.order))
+	for i, r := range h.order {
+		ids[i] = r.Config.ID()
+	}
 	for _, r := range h.order {
 		id := r.Config.ID()
+		r.hosted = ids
 		r.deployment.Network = r.Config.Network
 		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 			return h.reserveContext(ctx, id, claims)

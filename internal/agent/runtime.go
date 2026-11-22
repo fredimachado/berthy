@@ -11,6 +11,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/jobs"
 	"berthy/internal/metrics"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 )
@@ -35,6 +36,9 @@ type Runtime struct {
 	scheduler  *jobs.Scheduler
 	backups    *Backups
 	exporter   *telemetry.Exporter
+	// hosted is every hosted environment of this agent, set at Open. visible uses it to hide containers whose labels name
+	// another one.
+	hosted []scope.ID
 
 	// Set by Start. Close waits for each worker that was started.
 	cancel                                                       context.CancelFunc
@@ -61,8 +65,75 @@ func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
 	r.scheduler = NewJobs(c, sh.Engine, d, sh.Log)
 	r.backups = NewBackups(c, sh.Engine, d, r.scheduler, r.monitoring.HelperImage, sh.Log)
 	r.exporter = NewTelemetry(c, sh.Collector, d, sh.Log)
-	r.Handler = newDeploymentHandler(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups, newLimits())
+	r.Handler = newDeploymentHandler(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups, newLimits(), r.visible)
 	return r, nil
+}
+
+// visible reports whether a container belongs in this environment's stats and export.
+func (r *Runtime) visible(labels map[string]string) bool {
+	own := r.ownClaims()
+	foreign, ok := r.foreignClaims()
+	if !ok {
+		return r.ownContainer(labels, own)
+	}
+	if name := labels["com.docker.swarm.service.name"]; name != "" {
+		claim := state.Claim{Kind: state.ClaimService, Name: name}
+		if foreign[claim] {
+			return false
+		}
+		if own[claim] {
+			return true
+		}
+	}
+	if name := labels["com.docker.compose.project"]; name != "" && foreign[state.Claim{Kind: state.ClaimComposeProject, Name: name}] {
+		return false
+	}
+	id := r.Config.ID()
+	if id.Owns(labels) {
+		return true
+	}
+	for _, other := range r.hosted {
+		if other != id && other.Owns(labels) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runtime) ownClaims() map[state.Claim]bool {
+	out := map[state.Claim]bool{}
+	if r.deployment == nil || r.deployment.Store == nil {
+		return out
+	}
+	claims, err := r.deployment.Store.Claims(context.Background())
+	if err != nil {
+		return out
+	}
+	for _, c := range claims {
+		out[c] = true
+	}
+	return out
+}
+
+func (r *Runtime) foreignClaims() (map[state.Claim]bool, bool) {
+	if r.deployment == nil || r.deployment.Foreign == nil {
+		return nil, false
+	}
+	f, err := r.deployment.Foreign(context.Background())
+	if err != nil {
+		return nil, false
+	}
+	return f.Claims, true
+}
+
+func (r *Runtime) ownContainer(labels map[string]string, own map[state.Claim]bool) bool {
+	if name := labels["com.docker.swarm.service.name"]; name != "" && own[state.Claim{Kind: state.ClaimService, Name: name}] {
+		return true
+	}
+	if name := labels["com.docker.compose.project"]; name != "" && own[state.Claim{Kind: state.ClaimComposeProject, Name: name}] {
+		return true
+	}
+	return r.Config.ID().Owns(labels)
 }
 
 // Start recovers the environment's operations and starts its workers under ctx. Requests are served only after it. When it

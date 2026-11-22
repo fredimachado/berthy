@@ -16,7 +16,9 @@ type fakeDocker struct {
 	err error
 }
 
-func (f *fakeDocker) Containers(context.Context) ([]string, error)        { return []string{"abc"}, f.err }
+func (f *fakeDocker) Containers(context.Context) ([]ContainerRef, error) {
+	return []ContainerRef{{ID: "abc"}}, f.err
+}
 func (f *fakeDocker) Stats(context.Context, string) (RawContainer, error) { return f.raw, f.err }
 func TestCollectorRatesAndRetention(t *testing.T) {
 	now := time.Unix(10000, 0)
@@ -114,7 +116,9 @@ func TestPartialContainerFailureMarksSampleStale(t *testing.T) {
 
 type partialDocker struct{}
 
-func (partialDocker) Containers(context.Context) ([]string, error) { return []string{"x"}, nil }
+func (partialDocker) Containers(context.Context) ([]ContainerRef, error) {
+	return []ContainerRef{{ID: "x"}}, nil
+}
 func (partialDocker) Stats(context.Context, string) (RawContainer, error) {
 	return RawContainer{}, errors.New("gone")
 }

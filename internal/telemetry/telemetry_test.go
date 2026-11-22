@@ -36,7 +36,9 @@ func (f fakeHost) Read(context.Context) metrics.Host { return f.host }
 
 type fakeDocker struct{}
 
-func (fakeDocker) Containers(context.Context) ([]string, error) { return []string{containerID}, nil }
+func (fakeDocker) Containers(context.Context) ([]metrics.ContainerRef, error) {
+	return []metrics.ContainerRef{{ID: containerID}}, nil
+}
 func (fakeDocker) Stats(context.Context, string) (metrics.RawContainer, error) {
 	return metrics.RawContainer{MemoryUsage: 300, MemoryLimit: 1000, NetworkRXBytes: 10, NetworkTXBytes: 20, BlockReadBytes: 30, BlockWriteBytes: 40}, nil
 }

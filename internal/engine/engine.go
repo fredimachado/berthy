@@ -323,16 +323,16 @@ func Select(apps []api.App, name string) (api.App, int) {
 	return found[0], 200
 }
 
-func (e *Engine) Containers(ctx context.Context) ([]string, error) {
-	var cs []struct{ ID string }
+func (e *Engine) Containers(ctx context.Context) ([]metrics.ContainerRef, error) {
+	var cs []container
 	if err := e.Get(ctx, "/containers/json", &cs); err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(cs))
+	out := make([]metrics.ContainerRef, 0, len(cs))
 	for _, c := range cs {
-		ids = append(ids, c.ID)
+		out = append(out, metrics.ContainerRef{ID: c.ID, Labels: c.Labels})
 	}
-	return ids, nil
+	return out, nil
 }
 func (e *Engine) Stats(ctx context.Context, id string) (metrics.RawContainer, error) {
 	var v struct {

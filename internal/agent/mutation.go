@@ -64,13 +64,13 @@ func NewDeploymentHandlerWithJobs(c Config, e *engine.Engine, col *metrics.Colle
 // NewDeploymentHandlerWithBackups is NewDeploymentHandlerWithJobs for an agent that backs up volumes. backups may be nil, in
 // which case the backup routes answer that backups are unavailable.
 func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups) http.Handler {
-	return newDeploymentHandler(c, e, col, d, tel, sched, backups, newLimits())
+	return newDeploymentHandler(c, e, col, d, tel, sched, backups, newLimits(), nil)
 }
 
 // newDeploymentHandler is NewDeploymentHandlerWithBackups with the stream limits of the hosted environment the handler serves.
-func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits) http.Handler {
+func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits, keep func(map[string]string) bool) http.Handler {
 	tokens := newTokenSource(c, storeOf(d))
-	legacy := handlerWithTokens(c, e, col, d, tel, tokens, lim)
+	legacy := handlerWithTokens(c, e, col, d, tel, tokens, lim, keep)
 	gate := &approvalGate{c: c, d: d, tokens: tokens}
 	// serve carries out a request that is authenticated, in scope and not held for approval.
 	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
