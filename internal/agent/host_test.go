@@ -1034,12 +1034,12 @@ func TestPruneAndDestroyReportUnreadableForeignHistory(t *testing.T) {
 	}
 	for _, kind := range []string{"prune", "destroy"} {
 		t.Run(kind, func(t *testing.T) {
-			body := `{"dry_run":true,"confirm":"lab"}`
+			body := `{"dry_run":true,"confirm":"demo/lab"}`
 			w := f.call("POST", "/"+kind, apAdminToken, body)
 			if w.Code != 400 || !strings.Contains(w.Body.String(), "release history unavailable") {
 				t.Errorf("dry run: %d %s", w.Code, w.Body.String())
 			}
-			w = f.call("POST", "/"+kind, apAdminToken, `{"request_id":"`+kind+`","confirm":"lab"}`)
+			w = f.call("POST", "/"+kind, apAdminToken, `{"request_id":"`+kind+`","confirm":"demo/lab"}`)
 			if w.Code != 202 {
 				t.Fatalf("admit: %d %s", w.Code, w.Body.String())
 			}
