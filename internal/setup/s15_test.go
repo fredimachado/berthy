@@ -70,7 +70,20 @@ func s15Add(t *testing.T, project, env string) (agent.File, agent.File, *agentFa
 	if !ok {
 		t.Fatalf("setup: %+v", got)
 	}
-	return before, s15StagedFile(t, f), f, s
+	after := s15StagedFile(t, f)
+	if len(after.Environments) != 2 {
+		t.Fatalf("environments: %+v", after.Environments)
+	}
+	added := after.Environments[1]
+	if added.StateDir != "/var/lib/berthy/environments/shop/p5/state" || added.KeyFile != "/var/lib/berthy/environments/shop/p5/key" || added.Network != "p5net" || len(added.Tokens) != 1 || added.Tokens[0].Digest != agent.Digest(s.Token) || added.Tokens[0].Scope != "admin" || !s.TokenLive {
+		t.Fatalf("new environment: %+v, token live: %v", added, s.TokenLive)
+	}
+	for _, c := range f.calls {
+		if agentChange(c.script) && (strings.Contains(c.script, before.Environments[0].StateDir) || strings.Contains(c.script, before.Environments[0].KeyFile)) {
+			t.Fatalf("a changing script names another environment's state or key: %s", c.script)
+		}
+	}
+	return before, after, f, s
 }
 
 func TestSetupAddsAnEnvironmentOfAnotherProject(t *testing.T) {
