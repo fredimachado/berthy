@@ -205,7 +205,8 @@ out=$("$MCP_BIN" --command "$BIN mcp -e $ENVN --project $P2 --config $RUN/admin.
 expect_code "mcp list_resources of P2/E" 0 "$code" "$out"
 mcp_err=$(jq -r '.calls[0].is_error' "$mcp_dir/results.json")
 expect_eq "list_resources is not an error" false "$mcp_err"
-mcp_names=$(jq -r '.calls[0].structured.resources[].ref.name' "$mcp_dir/results.json" | sort)
+# Unclaimed swarm services stay visible on every environment (D9). The hosted apps of P2/E are image and compose.
+mcp_names=$(jq -r '.calls[0].structured.resources[] | select(.ref.kind=="image" or .ref.kind=="compose") | .ref.name' "$mcp_dir/results.json" | sort)
 expect_eq "list_resources names exactly web and the db compose app" "$want" "$mcp_names"
 out=$(env_cmd "$PROJECT" "$ENVN" deploy web --version v1 --manifest-dir "$(env_dir "$P2" "$ENVN")" 2>&1); code=$?
 expect_code 'other manifest refused' 2 "$code" "$out"
