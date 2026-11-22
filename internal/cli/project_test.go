@@ -211,3 +211,16 @@ func TestOperationStreamAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T)
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 }
+
+func TestAnEmptyProjectFlagIsInvalid(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	for _, cmd := range []string{"ps", "history"} {
+		var out, errout bytes.Buffer
+		if code := Run([]string{cmd, "-e", "prod", "--project", "", "--config", cfg}, &out, &errout); code != 2 {
+			t.Errorf("%s: exit %d: %s", cmd, code, errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatal("sent request")
+	}
+}

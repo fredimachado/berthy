@@ -110,7 +110,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		return runAgentToken(args[1:], out, errout)
 	}
 	var config, env, project string
-	var jsonOutput, watch bool
+	var jsonOutput, watch, projectGiven bool
 	var since, tail, grep, role, replica string
 	var follow bool
 	var positional []string
@@ -126,6 +126,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 				config = args[i]
 			} else if args[i-1] == "--project" {
 				project = args[i]
+				projectGiven = true
 			} else {
 				env = args[i]
 			}
@@ -233,7 +234,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
-	if project != "" && !scope.ValidProject(project) {
+	if projectGiven && !scope.ValidProject(project) {
 		fmt.Fprintln(errout, "valid --project required")
 		return 2
 	}

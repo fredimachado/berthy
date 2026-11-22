@@ -369,7 +369,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
-	if f.project != "" && !scope.ValidProject(f.project) {
+	if slices.Contains(f.given, "--project") && !scope.ValidProject(f.project) {
 		fmt.Fprintln(errout, "valid --project required")
 		return 2
 	}
