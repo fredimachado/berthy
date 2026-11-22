@@ -1167,6 +1167,18 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 		}
 		claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: cfg.Networks[k].Name})
 	}
+	if !managedNetworksOnly {
+		for _, key := range sortedKeys(cfg.Services) {
+			mode := cfg.Services[key].NetworkMode
+			if mode == "" || mode == "host" || mode == "none" || mode == "bridge" || strings.HasPrefix(mode, "service:") || strings.HasPrefix(mode, "container:") {
+				continue
+			}
+			if !engine.ValidName(mode) {
+				return nil, errComposeConfig
+			}
+			claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: mode})
+		}
+	}
 	return claims, nil
 }
 

@@ -1634,3 +1634,21 @@ func TestComposeClaimIsKeptWhenAppliedReleaseCannotBeRead(t *testing.T) {
 		t.Fatalf("claim after unreadable release: %v %v", held, err)
 	}
 }
+
+func TestComposeNetworkModeReservesExistingNetwork(t *testing.T) {
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine","network_mode":"peer-overlay"}}}`, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: "peer-overlay"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	req := composeReq("mode", composeFileOne, composeApp(false))
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
+		t.Fatal("peer network accepted")
+	}
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		if !slices.Contains(claims, claim) {
+			t.Fatal("network mode was not reserved")
+		}
+		return claims, nil
+	}
+	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
+}
