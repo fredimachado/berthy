@@ -1797,3 +1797,24 @@ func TestComposeAllowsNewNetwork(t *testing.T) {
 		t.Fatalf("new network: %v", err)
 	}
 }
+
+type nonAttachableComposeNetwork struct{ *composeDocker }
+
+func (e nonAttachableComposeNetwork) InspectNetwork(ctx context.Context, name string) (engine.Network, error) {
+	n, err := e.composeDocker.InspectNetwork(ctx, name)
+	n.Attachable = false
+	return n, err
+}
+
+func TestComposeRejectsNonAttachableEnvironmentNetwork(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Engine = nonAttachableComposeNetwork{newComposeDocker()}
+	req := composeReq("non-attachable", composeFileOne, composeApp(false))
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
+		t.Fatal("non-attachable network accepted")
+	}
+	if out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false); out.State != "failed" || runner.upRuns() != 0 {
+		t.Fatalf("execution: %+v", out)
+	}
+}

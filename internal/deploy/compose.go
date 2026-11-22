@@ -625,7 +625,7 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	}
 	networkName := req.Manifest.NetworkName(c.Environment)
 	network, err := c.Engine.InspectNetwork(ctx, networkName)
-	if err != nil || network.Name != networkName {
+	if err != nil || network.Name != networkName || network.Driver != "overlay" || network.Scope != "swarm" || !network.Attachable {
 		return ComposePlan{}, errors.New("overlay network unavailable")
 	}
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
