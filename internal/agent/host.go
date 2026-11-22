@@ -114,6 +114,13 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 		if err == nil {
 			f.Ingress = append(f.Ingress, ingress)
 		}
+		kept, err := r.deployment.Store.KeptTunnel(ctx)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return deploy.Foreign{}, err
+		}
+		if err == nil {
+			f.Ingress = append(f.Ingress, kept)
+		}
 		images, err := r.deployment.RetainedImages(ctx)
 		if err != nil {
 			return deploy.Foreign{}, err

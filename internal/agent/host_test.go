@@ -1178,3 +1178,29 @@ func TestForeignIncludesPeerIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestForeignIncludesPeerKeptTunnel(t *testing.T) {
+	ids := []scope.ID{{Project: "one", Environment: "prod"}, {Project: "two", Environment: "prod"}}
+	sh, file := hostedFile(t, ids...)
+	h, err := Open(sh, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	ctx := context.Background()
+	peer := h.runtimes[ids[1]].deployment.Store
+	op, _, err := peer.Admit(ctx, state.Admission{RequestID: "kept", ActorID: "admin", Kind: "destroy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = peer.SetKeptTunnel(ctx, op.ID, state.IngressState{AccountID: "acct", APITokenSecret: "TOKEN", TunnelID: "kept-id", TunnelName: "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = peer.Finish(ctx, op.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := h.foreign(ctx, ids[0])
+	if err != nil || len(foreign.Ingress) != 1 || foreign.Ingress[0].TunnelID != "kept-id" {
+		t.Fatalf("foreign: %+v, %v", foreign, err)
+	}
+}

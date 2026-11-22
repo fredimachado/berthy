@@ -270,6 +270,13 @@ func (c *Controller) tunnelPlan(ctx context.Context, st *state.IngressState, has
 		return &TunnelPlan{Reasons: []string{"no managed tunnel"}}, nil
 	}
 	plan := &TunnelPlan{Name: st.TunnelName, ID: st.TunnelID}
+	if err := c.checkForeignTunnel(ctx, st.AccountID, st.TunnelID); err != nil {
+		if errors.Is(err, errTunnelForeign) {
+			plan.Reasons = []string{string(errTunnelForeign)}
+			return plan, nil
+		}
+		return nil, err
+	}
 	cf, err := c.cloudflareClient(ctx, st.APITokenSecret)
 	if err != nil {
 		plan.Reasons = []string{string(errCloudflareSecret)}
@@ -561,6 +568,12 @@ func (c *Controller) finishTunnel(ctx context.Context, opID string, step func(st
 	}
 	if len(reasons) > 0 {
 		return keep(reasons...)
+	}
+	if err = c.checkForeignTunnel(ctx, st.AccountID, st.TunnelID); err != nil {
+		if errors.Is(err, errTunnelForeign) {
+			return keep(string(errTunnelForeign))
+		}
+		return err
 	}
 	if err = cf.DeleteTunnel(ctx, st.AccountID, st.TunnelID); err != nil && !notFound(err) {
 		return keep("Cloudflare refused to delete it")

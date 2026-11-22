@@ -126,6 +126,10 @@ func (d *destroyDocker) ComposeContainers(context.Context, string) ([]engine.Com
 	return append([]engine.ComposeContainer(nil), d.project...), nil
 }
 
+func (d *destroyDocker) InspectVolume(context.Context, string) (string, map[string]string, error) {
+	return "local", nil, nil
+}
+
 func (d *destroyDocker) ProjectVolumes(context.Context, string) ([]string, error) {
 	return []string{"shop-db_data"}, nil
 }
@@ -785,5 +789,30 @@ func TestDestroyReadsForeignImagesBeforeRemovingAnything(t *testing.T) {
 				t.Fatalf("outcome %+v reads %d calls %v", op, reads, base.calls.all())
 			}
 		})
+	}
+}
+
+func TestKeptTunnelCannotBeTakenOrDeletedByPeer(t *testing.T) {
+	f := newDestroyFixture(t, false)
+	if op := f.destroy("keep-tunnel", nil); op.State != "succeeded" {
+		t.Fatalf("destroy: %+v", op)
+	}
+	kept, err := f.store.KeptTunnel(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := *f.ctrl
+	peer.Foreign = func(context.Context) (Foreign, error) { return Foreign{Ingress: []state.IngressState{kept}}, nil }
+	if _, err := peer.ingressTargetFor(context.Background(), ingressManifest(t, "")); err == nil || err.Error() != string(errTunnelForeign) {
+		t.Fatalf("peer ingress: %v", err)
+	}
+	f.ctrl.Foreign = func(context.Context) (Foreign, error) { return Foreign{Ingress: []state.IngressState{kept}}, nil }
+	plan := f.plan(func(r *Request) { r.Tunnel = true })
+	if plan.Tunnel == nil || plan.Tunnel.Delete || !slices.Contains(plan.Tunnel.Reasons, string(errTunnelForeign)) {
+		t.Fatalf("destroy plan: %+v", plan.Tunnel)
+	}
+	op := f.destroy("refuse-peer-tunnel", func(r *Request) { r.Tunnel = true })
+	if f.tunnel() == nil {
+		t.Fatalf("destroy deleted peer tunnel: %+v", op)
 	}
 }
