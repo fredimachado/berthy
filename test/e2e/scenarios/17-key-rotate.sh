@@ -63,7 +63,7 @@ out=$(adm key rotate 2>&1); code=$?
 expect_code "key rotate" 0 "$code" "$out"
 expect_contains "it says what it resealed" "$out" "rotated the state key: "
 expect_contains "it says the previous key is kept" "$out" "the previous key is kept on the server until the next state snapshot succeeds"
-expect_contains "it prints the command that copies the new key" "$out" 'mv -f "$tmp" '"$PROJECT.$ENVN.key"
+expect_contains "it prints the command that copies the new key" "$out" "set -C; sudo cat $key > $PROJECT.$ENVN.key."
 expect_not_contains "it never prints the old key" "$out" "$old_hex"
 expect_not_contains "it never prints the new key" "$out" "$(key_hex "$key")"
 if [ "$(key_sum)" != "$old_sum" ]; then pass "the key file holds a new key"; else fail "the key file holds a new key" "it is unchanged"; fi

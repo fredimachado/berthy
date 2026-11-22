@@ -242,11 +242,12 @@ setup of todo/prod on ops@10.0.0.5: done
 admin token for todo/prod (shown once, store it now): <token>
 
 next steps:
-  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: macOS/Linux: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; }) Windows PowerShell: & { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList 'ops@10.0.0.5 "sudo cat /var/lib/berthy/environments/todo/prod/key"' -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'todo.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
-  2. store the admin token above, and set it in $BERTHY_TODO_PROD_TOKEN when you run berthy
-  3. set the secrets the manifest names: berthy secret set NAME -e prod --project todo --config /home/me/.config/berthy/config.json
-  4. apply the managed ingress: berthy ingress apply -e prod --project todo --config /home/me/.config/berthy/config.json
-  5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --project todo --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --project todo --config /home/me/.config/berthy/config.json --version REF)
+  1. run the command from a private folder, such as your home folder (cd ~), and keep the file private
+  2. in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > todo.prod.key.20261122T153012Z)
+  3. store the admin token above, and set it in $BERTHY_TODO_PROD_TOKEN when you run berthy
+  4. set the secrets the manifest names: berthy secret set NAME -e prod --project todo --config /home/me/.config/berthy/config.json
+  5. apply the managed ingress: berthy ingress apply -e prod --project todo --config /home/me/.config/berthy/config.json
+  6. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --project todo --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --project todo --config /home/me/.config/berthy/config.json --version REF)
 ```
 
 The token comes **after** the step lines, once. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
@@ -296,11 +297,11 @@ A development build on macOS or Windows has no release to download, so give it `
 2. **The encryption key.** It lives on the server at `/var/lib/berthy/environments/todo/prod/key` (32 bytes). It seals every secret in the agent's state. The agent never uploads it. If the server dies and you do not have it, the secrets are gone. Copy it somewhere off the server, as the next steps say:
 
    ```bash
-   (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; })
-   chmod 600 todo.prod.key
+   (umask 077; set -C; ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > todo.prod.key.20261122T153012Z)
+   chmod 600 todo.prod.key.20261122T153012Z
    ```
 
-   Keep `todo.prod.key` in a password manager or your provisioning tool's vault.
+   Keep `todo.prod.key.20261122T153012Z` in a password manager or your provisioning tool's vault.
 
    If the copy leaks, or someone who had it leaves, replace the key with [`berthy key rotate`](#rotate-the-encryption-key).
 
@@ -2375,7 +2376,8 @@ berthy key rotate -e prod
 ```text
 rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33
 the previous key is kept on the server until the next state snapshot succeeds
-copy the new key off the server now: macOS/Linux: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { sudo cat /var/lib/berthy/environments/todo/prod/key > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; }) Windows PowerShell (replace <user>@<server>): & { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList '<user>@<server> "sudo cat /var/lib/berthy/environments/todo/prod/key"' -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'todo.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
+run the command from a private folder, such as your home folder (cd ~), and keep the file private
+in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; sudo cat /var/lib/berthy/environments/todo/prod/key > todo.prod.key.20261122T153012Z)
 ```
 
 The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Copy the new key off the server as the last line says, and replace your old copy.
@@ -2677,16 +2679,16 @@ The order:
 
 1. **Provision** a new server with the same private address (or a new one, and change `--listen` and the CLI configuration). Berthy does not do this part: the server, its users, its firewall and its VPN are yours.
 
-2. **Restore the agent's state.** It needs neither an agent nor the old server. Put the Berthy binary and your saved key (`todo.prod.key`, from step 1) on the new server (mode `0600`), find a snapshot (`berthy-state/prod/<time>.db` in the bucket), and run, as root:
+2. **Restore the agent's state.** It needs neither an agent nor the old server. Put the Berthy binary and your saved key (`todo.prod.key.20261122T153012Z`, from step 1) on the new server (mode `0600`), find a snapshot (`berthy-state/prod/<time>.db` in the bucket), and run, as root:
 
    ```bash
    install -d -m 0700 /var/lib/berthy
-   chmod 600 todo.prod.key
+   chmod 600 todo.prod.key.20261122T153012Z
    BERTHY_S3_ACCESS_KEY=<access key> BERTHY_S3_SECRET_KEY=<secret key> \
      berthy state-restore \
        --endpoint https://s3.example.com --bucket acme-todo-backups --region eu-central-1 \
        --object berthy-state/prod/20261116T031700Z.db \
-       --out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key
+       --out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z
    ```
 
    | Flag | Meaning |
@@ -2704,7 +2706,7 @@ The order:
 
    ```bash
    berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 \
-     --key-file ./todo.prod.key --config ~/.config/berthy/config.json
+     --key-file ./todo.prod.key.20261122T153012Z --config ~/.config/berthy/config.json
    ```
 
    Setup makes the managed parent directories traversable by the `berthy` user, installs your key instead of making one, gives the restored state to that user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.

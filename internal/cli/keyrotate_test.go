@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rotateAgent answers `key rotate` with status and body, and keeps what it was sent.
@@ -48,7 +49,7 @@ func TestKeyRotatePrintsTheNewKeyIDAndHowToCopyTheKeyButNeverTheKey(t *testing.T
 	for _, want := range []string{
 		"rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33",
 		"the previous key is kept on the server until the next state snapshot succeeds",
-		`mv -f "$tmp" demo.dev.key`,
+		"> demo.dev.key.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -95,10 +96,16 @@ func TestKeyNeedsRotate(t *testing.T) {
 	}
 }
 
-func TestKeyRotateShowsBothKeyCopyForms(t *testing.T) {
-	a := &rotateAgent{status: 200, body: `{"old_key_id":"old","new_key_id":"new","key_file":"/srv/keys/my key"}`}
-	code, out, errout := runKeyRotate(t, a)
-	if code != 0 || !strings.Contains(out, "macOS/Linux:") || !strings.Contains(out, "Windows PowerShell") || !strings.Contains(out, "<user>@<server>") {
-		t.Fatalf("exit %d: %s %s", code, out, errout)
+func TestKeyRotateShowsTimestampedPosixKeyCopy(t *testing.T) {
+	old := keyCopyNow
+	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
+	t.Cleanup(func() { keyCopyNow = old })
+	for _, tc := range []struct{ path, quoted string }{{"/srv/key", "/srv/key"}, {"/srv/keys/my key", "'/srv/keys/my key'"}} {
+		a := &rotateAgent{status: 200, body: `{"old_key_id":"old","new_key_id":"new","key_file":"` + tc.path + `"}`}
+		code, out, errout := runKeyRotate(t, a)
+		want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; sudo cat ` + tc.quoted + ` > demo.dev.key.20261122T153012Z)`
+		if code != 0 || !strings.Contains(out, want) || !strings.Contains(out, "private folder") || strings.Contains(out, "Windows PowerShell:") {
+			t.Fatalf("exit %d: %s %s", code, out, errout)
+		}
 	}
 }

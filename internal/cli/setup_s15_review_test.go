@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"berthy/internal/scope"
 )
@@ -15,50 +16,39 @@ func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T
 	if err != nil {
 		t.Skipf("sh is not available: %v", err)
 	}
+	old := keyCopyNow
+	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
+	t.Cleanup(func() { keyCopyNow = old })
 	id := scope.ID{Project: "shop", Environment: "prod"}
-	step := setupNextSteps(id, "/srv/keys/my key", "", false, "ops@s1", "T", true, false, "")[0]
-	_, command, ok := strings.Cut(step, "macOS/Linux: ")
-	if !ok {
-		t.Fatal(step)
-	}
-	command, _, ok = strings.Cut(command, " Windows PowerShell: ")
+	step := setupNextSteps(id, "/srv/keys/my key", "", false, "ops@s1", "T", true, false, "")[1]
+	_, command, ok := strings.Cut(step, ": ")
 	if !ok {
 		t.Fatal(step)
 	}
 	dir := t.TempDir()
-	backup := filepath.Join(dir, "shop.prod.key")
-	if err := os.WriteFile(backup, []byte("previous"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	run := func(body string) error {
-		c := exec.Command(sh, "-c", "ssh() { printf '%s\\n' \"$@\" > args; "+body+"; }; "+command)
+	backup := filepath.Join(dir, "shop.prod.key.20261122T153012Z")
+	run := func() error {
+		c := exec.Command(sh, "-c", "ssh() { printf '%s\\n' \"$@\" > args; printf 01234567890123456789012345678901; }; "+command)
 		c.Dir = dir
 		return c.Run()
 	}
-	if err := run("return 1"); err == nil {
-		t.Fatal("failure accepted")
-	}
-	b, _ := os.ReadFile(backup)
-	if string(b) != "previous" {
-		t.Fatalf("backup changed: %q", b)
-	}
-	args, _ := os.ReadFile(filepath.Join(dir, "args"))
-	if string(args) != "ops@s1\nsudo cat '/srv/keys/my key'\n" {
-		t.Fatalf("ssh arguments: %q", args)
-	}
-	if err := run("printf short"); err == nil {
-		t.Fatal("short key accepted")
-	}
-	b, _ = os.ReadFile(backup)
-	if string(b) != "previous" {
-		t.Fatalf("short copy changed backup: %q", b)
-	}
-	if err := run("printf 01234567890123456789012345678901"); err != nil {
+	if err := run(); err != nil {
 		t.Fatal(err)
 	}
-	b, _ = os.ReadFile(backup)
-	if string(b) != "01234567890123456789012345678901" {
-		t.Fatalf("new backup: %q", b)
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil || string(args) != "ops@s1\nsudo cat '/srv/keys/my key'\n" {
+		t.Fatalf("ssh arguments: %q %v", args, err)
+	}
+	b, err := os.ReadFile(backup)
+	if err != nil || string(b) != "01234567890123456789012345678901" {
+		t.Fatalf("backup: %q %v", b, err)
+	}
+	if err := run(); err == nil {
+		t.Fatal("overwrote existing backup")
+	}
+	after, _ := os.ReadFile(backup)
+	if string(after) != string(b) {
+		t.Fatalf("backup changed: %q", after)
 	}
 }
 
@@ -81,7 +71,7 @@ func TestSetupFollowUpsNameProjectAndManifestDirectory(t *testing.T) {
 		t.Fatalf("follow-ups: %s", out)
 	}
 	steps := setupNextSteps(scope.ID{Project: "sliceup", Environment: "prod"}, "/key", cfg, true, "this server", "TOKEN", true, true, dir)
-	for _, step := range steps[2:] {
+	for _, step := range steps[3:] {
 		if !strings.Contains(step, "--project sliceup") || !strings.Contains(step, "--manifest-dir "+shellWord(dir)) {
 			t.Errorf("follow-up lacks project or manifest: %s", step)
 		}
@@ -107,11 +97,11 @@ func TestRebuildExamplesUseTheHostedStateAndSavedKey(t *testing.T) {
 		t.Fatal("next section missing")
 	}
 	g = g[start : start+4+end]
-	if !strings.Contains(g, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key") || !strings.Contains(g, "--key-file ./todo.prod.key --config") || strings.Contains(g, "`prod.key`") {
+	if !strings.Contains(g, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z") || !strings.Contains(g, "--key-file ./todo.prod.key.20261122T153012Z --config") || strings.Contains(g, "`prod.key`") {
 		t.Fatal("guide rebuild uses inconsistent key or state path")
 	}
 	s := string(spec)
-	if !strings.Contains(s, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key") {
+	if !strings.Contains(s, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z") {
 		t.Fatal("spec restore uses wrong state or key")
 	}
 }
@@ -129,26 +119,52 @@ func TestKeyCopyShellTestSkipsWithoutSh(t *testing.T) {
 	}
 }
 
-func TestSetupKeyCopyShowsBothShellForms(t *testing.T) {
-	for _, tc := range []struct {
-		key         string
-		remote      string
-		posixRemote string
-	}{
-		{"/srv/key", "sudo cat /srv/key", `'sudo cat /srv/key'`},
-		{"/srv/keys/my key", "sudo cat '/srv/keys/my key'", `'sudo cat '\''/srv/keys/my key'\'''`},
+func TestTimestampedKeyCopyText(t *testing.T) {
+	old := keyCopyNow
+	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
+	t.Cleanup(func() { keyCopyNow = old })
+	for _, tc := range []struct{ key, remote string }{
+		{"/srv/key", `'sudo cat /srv/key'`},
+		{"/srv/keys/my key", `'sudo cat '\''/srv/keys/my key'\'''`},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
-			id := scope.ID{Project: "shop", Environment: "prod"}
-			step := setupNextSteps(id, tc.key, "", false, "ops@s1", "T", false, false, "")[0]
-			posix := `(umask 077; tmp=$(mktemp ./shop.prod.key.XXXXXX) && { ssh 'ops@s1' ` + tc.posixRemote + ` > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" shop.prod.key; status=$?; rm -f "$tmp"; exit "$status"; })`
-			arg := "ops@s1 \"" + tc.remote + "\""
-			arg = "'" + strings.ReplaceAll(arg, "'", "''") + "'"
-			powershell := "& { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList " + arg + " -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'shop.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }"
-			want := "keep a copy of the encryption key off the server, in a password manager or your provisioning vault: macOS/Linux: " + posix + " Windows PowerShell: " + powershell
-			if step != want {
-				t.Fatalf("got %q\nwant %q", step, want)
+			steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, tc.key, "", false, "ops@s1", "T", false, false, "")
+			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), and keep the file private" {
+				t.Fatalf("instruction: %q", steps[0])
+			}
+			want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@s1' ` + tc.remote + ` > shop.prod.key.20261122T153012Z)`
+			if steps[1] != want {
+				t.Fatalf("got %q\nwant %q", steps[1], want)
 			}
 		})
+	}
+}
+
+func TestTimestampedKeyCopyDoesNotOverwrite(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("sh is not available: %v", err)
+	}
+	old := keyCopyNow
+	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
+	t.Cleanup(func() { keyCopyNow = old })
+	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/srv/keys/my key", "", false, "ops@s1", "T", false, false, "")
+	_, command, ok := strings.Cut(steps[1], ": ")
+	if !ok {
+		t.Fatal(steps)
+	}
+	dir := t.TempDir()
+	backup := filepath.Join(dir, "shop.prod.key.20261122T153012Z")
+	if err := os.WriteFile(backup, []byte("existing backup"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command(sh, "-c", "ssh() { printf 01234567890123456789012345678901; }; "+command)
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err == nil || !(strings.Contains(string(out), "exists") || strings.Contains(string(out), "overwrite")) {
+		t.Fatalf("expected noclobber refusal, got %v: %s", err, out)
+	}
+	b, err := os.ReadFile(backup)
+	if err != nil || string(b) != "existing backup" {
+		t.Fatalf("backup %q: %v", b, err)
 	}
 }

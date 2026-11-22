@@ -24,7 +24,7 @@ func printKeyRotation(out, errout io.Writer, data []byte, id scope.ID) int {
 	fmt.Fprintf(out, "rotated the state key: %d values resealed, key %s replaces %s\n", rep.Values, terminalSafe(rep.NewKeyID), terminalSafe(rep.OldKeyID))
 	fmt.Fprintln(out, "the previous key is kept on the server until the next state snapshot succeeds")
 	keyFile := terminalSafe(rep.KeyFile)
-	posix, powershell := keyCopyForms("sudo cat "+shellWord(keyFile), keyFile, "", id, true)
-	fmt.Fprintf(out, "copy the new key off the server now: macOS/Linux: %s Windows PowerShell (replace <user>@<server>): %s\n", posix, powershell)
+	fmt.Fprintln(out, "run the command from a private folder, such as your home folder (cd ~), and keep the file private")
+	fmt.Fprintf(out, "in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): %s\n", keyCopyCommand("sudo cat "+shellWord(keyFile), id))
 	return 0
 }
