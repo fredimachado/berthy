@@ -54,6 +54,14 @@ d() {
   fi
 }
 
+# container_image_inventory reads container IDs and image IDs from one Docker snapshot, including stopped containers.
+container_image_inventory() {
+  local inventory
+  inventory=$(curl --noproxy '*' --unix-socket "$SOCK" --fail --silent --show-error --max-time 30 'http://localhost/containers/json?all=1') || return 1
+  jq -e 'type == "array" and all(.[]; (.Id | type == "string" and length > 0) and (.ImageID | type == "string" and length > 0))' <<< "$inventory" >/dev/null || return 1
+  printf '%s\n' "$inventory"
+}
+
 # record_deploy PROJECT ENV [ARGS]: journal names before a deploy can create them, including on interruption.
 record_deploy() (
   local project=$1 env=$2 dir=. app= arg kind name tmp pending combined lock existing

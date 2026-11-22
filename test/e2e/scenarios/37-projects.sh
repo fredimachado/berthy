@@ -267,14 +267,11 @@ done
 v1_id=$(d image inspect --format '{{.Id}}' "$REG/e2e/web@$WEB_V1_DIGEST" 2>&1); code=$?
 expect_code 'inspect v1 image ID before destroy' 0 "$code" "$v1_id"
 [ -n "$v1_id" ] || fail 'v1 image ID is present' 'empty ID'
-all_ids=$(d ps -aq --no-trunc 2>&1); code=$?
-expect_code 'list all containers before destroy' 0 "$code" "$all_ids"
+inventory=$(container_image_inventory 2>&1); code=$?
+expect_code 'list all container image IDs before destroy' 0 "$code" "$inventory"
 if [ "$code" -eq 0 ]; then
-  for id in $all_ids; do
-    container_image=$(d inspect -f '{{.Image}}' "$id" 2>&1); code=$?
-    expect_code "inspect container image $id" 0 "$code" "$container_image"
-    if [ "$code" -eq 0 ] && [ "$container_image" = "$v1_id" ]; then fail "container $id does not hold v1" "$container_image"; fi
-  done
+  holders=$(jq -r --arg image "$v1_id" '.[] | select(.ImageID == $image) | .Id' <<< "$inventory")
+  expect_eq 'no container holds v1' '' "$holders"
 fi
 out=$(env_cmd "$PROJECT" "$ENVN" destroy --confirm "$ENVN" 2>&1); expect_code 'destroy first environment' 0 "$?" "$out"
 d image inspect "$REG/e2e/web@$WEB_V1_DIGEST" >/dev/null 2>&1; expect_code 'retained v1 image remains' 0 "$?"
