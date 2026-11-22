@@ -77,6 +77,25 @@ PY
     fi
   done
 done
+# A sample may include unclaimed containers, but must include ours and exclude both peers.
+stats_ids_match() {
+  jq -e --argjson owned "$1" --argjson foreign "$2" '
+    (.containers | map(.id)) as $ids |
+    .containers_fresh == true and ($ids | length > 0) and
+    ([$owned[] | select(. as $id | $ids | index($id) == null)] | length == 0) and
+    ([$foreign[] | select(. as $id | $ids | index($id) != null)] | length == 0)
+  ' >/dev/null
+}
+owned_fixture='["web","db"]'
+foreign_fixture='["foreign-web","foreign-db"]'
+printf '%s' '{"containers_fresh":true,"containers":[{"id":"web"},{"id":"db"},{"id":"unclaimed"}]}' | stats_ids_match "$owned_fixture" "$foreign_fixture"
+expect_code 'stats assertion permits unclaimed containers' 0 "$?"
+printf '%s' '{"containers_fresh":true,"containers":[]}' | stats_ids_match "$owned_fixture" "$foreign_fixture"
+expect_code 'stats assertion rejects an empty sample' 1 "$?"
+printf '%s' '{"containers_fresh":true,"containers":[{"id":"web"},{"id":"db"},{"id":"foreign-db"}]}' | stats_ids_match "$owned_fixture" "$foreign_fixture"
+expect_code 'stats assertion rejects a peer container' 1 "$?"
+printf '%s' '{"containers_fresh":true,"containers":[{"id":"web"}]}' | stats_ids_match "$owned_fixture" "$foreign_fixture"
+expect_code 'stats assertion rejects a missing owned container' 1 "$?"
 # Workload names and storage are scoped to the pair.
 for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
   read -r p e <<< "$pair"
@@ -97,15 +116,35 @@ for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
     expect_not_contains "ps $p/$e excludes $op/$oe" "$names" "$op-$oe-db"
     expect_not_contains "ps $p/$e excludes $op/$oe web service" "$names" "$op-$oe-web-main"
   done
-  out=$(env_cmd "$p" "$e" stats --json 2>&1); code=$?
-  expect_code "stats $p/$e" 0 "$code" "$out"
+  webid=$(d ps --no-trunc -q --filter "label=com.docker.swarm.service.name=$p-$e-web-main"); code=$?
+  expect_code "list web task $p/$e" 0 "$code" "$webid"
+  dbid=$(d ps --no-trunc -q --filter "label=com.docker.compose.project=$p-$e-db"); code=$?
+  expect_code "list db container $p/$e" 0 "$code" "$dbid"
+  [ -n "$webid" ] && [ -n "$dbid" ] && [ "$(printf '%s\n%s\n' "$webid" "$dbid" | wc -l)" -eq 2 ] || fail "two containers exist $p/$e" "web=$webid db=$dbid"
+  expected=$(printf '%s\n%s\n' "$webid" "$dbid" | jq -R -s 'split("\n") | map(select(length > 0))')
+  foreign_ids=''
   for other in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
     read -r op oe <<< "$other"
     [ "$p/$e" = "$op/$oe" ] && continue
-    for id in $(d ps -q --filter "label=com.docker.swarm.service.name=$op-$oe-web-main"); do
-      expect_not_contains "stats $p/$e excludes $op/$oe" "$out" "$id"
-    done
+    other_web=$(d ps --no-trunc -q --filter "label=com.docker.swarm.service.name=$op-$oe-web-main"); code=$?
+    expect_code "list peer web task $op/$oe" 0 "$code" "$other_web"
+    other_db=$(d ps --no-trunc -q --filter "label=com.docker.compose.project=$op-$oe-db"); code=$?
+    expect_code "list peer db container $op/$oe" 0 "$code" "$other_db"
+    [ -n "$other_web" ] && [ -n "$other_db" ] || fail "peer containers exist $op/$oe" "web=$other_web db=$other_db"
+    foreign_ids+="$(printf '%s\n%s\n' "$other_web" "$other_db")"$'\n'
   done
+  foreign=$(printf '%s' "$foreign_ids" | jq -R -s 'split("\n") | map(select(length > 0))')
+  stats_match() {
+    env_cmd "$p" "$e" stats --json 2>/dev/null | stats_ids_match "$expected" "$foreign"
+  }
+  matched=false
+  for i in $(seq 1 120); do
+    if stats_match; then matched=true; break; fi
+    sleep 0.5
+  done
+  if "$matched"; then pass "stats contains owned and excludes peer containers $p/$e"; else
+    out=$(env_cmd "$p" "$e" stats --json 2>&1); fail "stats contains owned and excludes peer containers $p/$e" "$out"
+  fi
   out=$(env_cmd "$p" "$e" history web 2>&1); expect_contains "history $p/$e" "$out" "$WEB_V1_DIGEST"
 done
 out=$(env_cmd "$PROJECT" "$EB" logs "$P2-$ENVN-web-main" 2>&1); code=$?
