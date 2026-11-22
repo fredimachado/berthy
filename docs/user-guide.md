@@ -1539,7 +1539,7 @@ A new version can fail for reasons only its own output explains: a missing setti
    ...
    state: rolled_back
    reason: role web: task exited with code 1 (gave up after 3 failed starts)
-   diagnostics: berthy diagnostics <operation id> -e prod
+   diagnostics: berthy diagnostics <operation id> -e prod --project <project>
    ```
 
    Other reasons read `role web: container never became healthy (last check: exit 1)`, `pre-deploy command 1 exited with code 3`, `migration apply exited with code 2 (after 3 attempts)` and `pre-deploy backup main-db failed: upload failed`. A reason never carries the app's output, so it is safe in history.

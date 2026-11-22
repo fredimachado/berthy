@@ -206,7 +206,7 @@ func TestOperationStreamAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T)
 	u, _ := url.Parse(srv.URL)
 	var out, errout bytes.Buffer
 	prefix := "/v1/projects/demo/environments/dev/"
-	code := watchOperation(context.Background(), agentclient.NewHTTPClient(), u, "token", prefix, "id", prefix+"operations/id/events", &out, &errout, false, "deploy", "dev")
+	code := watchOperation(context.Background(), agentclient.NewHTTPClient(), u, "token", prefix, "id", prefix+"operations/id/events", &out, &errout, false, "deploy", "dev", "demo")
 	if code == 0 || !strings.Contains(errout.String(), agentclient.OlderAgentMessage) {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}

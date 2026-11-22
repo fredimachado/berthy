@@ -465,6 +465,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	f.project = target.Project
 	u, token, prefix := target.Base, target.Token, target.Prefix
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
@@ -882,7 +883,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			fmt.Fprintln(errout, "invalid operation events URL")
 			return 1
 		}
-		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env)
+		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
 	}
 	if status != http.StatusOK {
 		fmt.Fprintln(errout, agentclient.Message(status, data))
@@ -1020,7 +1021,7 @@ func withChecks(data []byte, checks []json.RawMessage) []byte {
 	return out
 }
 
-func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env string) int {
+func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string) int {
 	cursor := ""
 	failures := 0
 	// checks are the verify events of the operation: what the checks at the end of a deploy found.
@@ -1145,7 +1146,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 						if asJSON {
 							hint = errout
 						}
-						fmt.Fprintln(hint, failureHint(env, id))
+						fmt.Fprintln(hint, failureHint(env, project, id))
 					}
 					return 1
 				}

@@ -119,6 +119,6 @@ func terminalSafe(s string) string {
 
 // failureHint is the pointer a failed deploy leaves for the person or agent that must find out why. The operation's own
 // output already carries its reason.
-func failureHint(env, id string) string {
-	return fmt.Sprintf("diagnostics: berthy diagnostics %s -e %s", id, env)
+func failureHint(env, project, id string) string {
+	return fmt.Sprintf("diagnostics: berthy diagnostics %s -e %s --project %s", id, env, project)
 }

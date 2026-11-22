@@ -130,7 +130,7 @@ func TestFailedDeployPointsToItsDiagnostics(t *testing.T) {
 			args := append([]string{"deploy", "api", "-e", "dev", "--config", diagnosticsConfig(t, server.URL), "--manifest-dir", dir, "--version", "v1"}, tc.args...)
 			var out, errs bytes.Buffer
 			code := Run(args, &out, &errs)
-			hint := "diagnostics: berthy diagnostics op1 -e dev"
+			hint := "diagnostics: berthy diagnostics op1 -e dev --project demo"
 			if tc.hint != (strings.Contains(out.String(), hint) || strings.Contains(errs.String(), hint)) {
 				t.Fatalf("hint expected %v:\nstdout %q\nstderr %q", tc.hint, out.String(), errs.String())
 			}
@@ -145,5 +145,34 @@ func TestFailedDeployPointsToItsDiagnostics(t *testing.T) {
 				t.Fatalf("--json stdout is not one document: %q", out.String())
 			}
 		})
+	}
+}
+
+func TestFailedDeployDiagnosticsNamesResolvedProject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/projects/demo/environments/dev/deploys":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
+		case "/v1/projects/demo/environments/dev/operations/op1/events":
+			fmt.Fprint(w, "event: failed\ndata: {}\n\n")
+		case "/v1/projects/demo/environments/dev/operations/op1":
+			fmt.Fprint(w, `{"state":"failed"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("DIAG_PROJECT_TOKEN", "token")
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	config := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"DIAG_PROJECT_TOKEN"}}},"other":{"environments":{"dev":{"url":%q,"token_env":"DIAG_PROJECT_TOKEN"}}}}}`, srv.URL, srv.URL)
+	if err := os.WriteFile(cfg, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := projectDirOf(t, "demo")
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "v1"}, &out, &errs)
+	if code != 1 || !strings.Contains(out.String(), "berthy diagnostics op1 -e dev --project demo") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
 }
