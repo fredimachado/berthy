@@ -127,11 +127,11 @@ func (r *Runtime) foreignClaims() (map[state.Claim]bool, bool) {
 }
 
 func (r *Runtime) ownContainer(labels map[string]string, own map[state.Claim]bool) bool {
-	if name := labels["com.docker.swarm.service.name"]; name != "" && own[state.Claim{Kind: state.ClaimService, Name: name}] {
-		return true
+	if name := labels["com.docker.swarm.service.name"]; name != "" {
+		return own[state.Claim{Kind: state.ClaimService, Name: name}]
 	}
-	if name := labels["com.docker.compose.project"]; name != "" && own[state.Claim{Kind: state.ClaimComposeProject, Name: name}] {
-		return true
+	if name := labels["com.docker.compose.project"]; name != "" {
+		return own[state.Claim{Kind: state.ClaimComposeProject, Name: name}]
 	}
 	return r.Config.ID().Owns(labels)
 }

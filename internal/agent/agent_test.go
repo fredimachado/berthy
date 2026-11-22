@@ -222,4 +222,15 @@ func TestVisibleFailsClosedWhenForeignClaimsCannotBeRead(t *testing.T) {
 	if r.visible(map[string]string{"com.docker.swarm.service.name": "legacy-web"}) {
 		t.Fatal("unclaimed swarm task listed when foreign claims cannot be read")
 	}
+	lab := scope.ID{Project: "demo", Environment: "lab"}
+	stolen := lab.Labels()
+	stolen["com.docker.swarm.service.name"] = "legacy-web"
+	if r.visible(stolen) {
+		t.Fatal("lab-labelled task of a service this environment does not hold listed when foreign claims cannot be read")
+	}
+	stolen = lab.Labels()
+	stolen["com.docker.compose.project"] = "shop-prod"
+	if r.visible(stolen) {
+		t.Fatal("lab-labelled compose container of a project this environment does not hold listed when foreign claims cannot be read")
+	}
 }
