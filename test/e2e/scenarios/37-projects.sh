@@ -85,10 +85,18 @@ for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
   d volume inspect "${p}-${e}_data" >/dev/null 2>&1; expect_code "volume $p/$e" 0 "$?"
   ids=$(d ps -q --filter "label=com.docker.compose.project=$p-$e-db")
   [ -n "$ids" ] && pass "Compose $p/$e" || fail "Compose $p/$e" "no container"
-  out=$(env_cmd "$p" "$e" ps 2>&1); code=$?
+  out=$(env_cmd "$p" "$e" ps --json 2>&1); code=$?
   expect_code "ps $p/$e" 0 "$code" "$out"
-  expect_contains "ps shows web" "$out" web
-  expect_contains "ps shows db" "$out" db
+  names=$(printf '%s' "$out" | jq -r '.[].ref.name' 2>&1); code=$?
+  expect_code "parse ps names $p/$e" 0 "$code" "$names"
+  printf '%s\n' "$names" | grep -Fxq web && pass "ps lists web $p/$e" || fail "ps lists web $p/$e" "$names"
+  printf '%s\n' "$names" | grep -Fxq "$p-$e-db" && pass "ps lists db $p/$e" || fail "ps lists db $p/$e" "$names"
+  for other in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
+    read -r op oe <<< "$other"
+    [ "$p/$e" = "$op/$oe" ] && continue
+    expect_not_contains "ps $p/$e excludes $op/$oe" "$names" "$op-$oe-db"
+    expect_not_contains "ps $p/$e excludes $op/$oe web service" "$names" "$op-$oe-web-main"
+  done
   out=$(env_cmd "$p" "$e" stats --json 2>&1); code=$?
   expect_code "stats $p/$e" 0 "$code" "$out"
   for other in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
@@ -104,10 +112,16 @@ out=$(env_cmd "$PROJECT" "$EB" logs "$P2-$ENVN-web-main" 2>&1); code=$?
 expect_code 'another environment service logs are refused' 1 "$code" "$out"
 out=$(env_cmd "$PROJECT" "$ENVN" run web -- sh -c 'echo x > /data/f' 2>&1); expect_code 'write first volume' 0 "$?" "$out"
 out=$(env_cmd "$PROJECT" "$EB" run web -- sh -c 'test ! -e /data/f' 2>&1); expect_code 'second volume is separate' 0 "$?" "$out"
-printf secret | env_cmd "$PROJECT" "$ENVN" secret set A_ONLY >/dev/null 2>&1
+out=$(printf secret | env_cmd "$PROJECT" "$ENVN" secret set A_ONLY 2>&1); code=$?
+expect_code 'set first environment secret' 0 "$code" "$out"
+out=$(env_cmd "$PROJECT" "$ENVN" secret list 2>&1); code=$?
+expect_code 'list first environment secrets' 0 "$code" "$out"
+expect_contains 'first environment lists its secret' "$out" A_ONLY
 for pair in "$P2 $ENVN" "$PROJECT $EB"; do
   read -r p e <<< "$pair"
-  out=$(env_cmd "$p" "$e" secret list 2>&1); expect_not_contains "secret isolated in $p/$e" "$out" A_ONLY
+  out=$(env_cmd "$p" "$e" secret list 2>&1); code=$?
+  expect_code "list secrets $p/$e" 0 "$code" "$out"
+  expect_not_contains "secret isolated in $p/$e" "$out" A_ONLY
 done
 for pair in "$P2 $ENVN" "$PROJECT $EB"; do
   read -r p e <<< "$pair"
