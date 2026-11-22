@@ -193,7 +193,7 @@ func TestSetupUsageErrors(t *testing.T) {
 		"wildcard listen":        {"-e", "p5", "--host", "ops@s1", "--listen", "0.0.0.0:7710", "--network", "n"},
 		"listen without port":    {"-e", "p5", "--host", "ops@s1", "--listen", "10.0.0.1", "--network", "n"},
 		"no network":             {"-e", "p5", "--host", "ops@s1", "--listen", "10.0.0.1:7710"},
-		"bad network":            {"-e", "p5", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "Bad Net"},
+		"bad network":            {"-e", "p5", "--project", "shop", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "Bad Net"},
 		"unknown flag":           {"-e", "p5", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "n", "--force"},
 		"positional":             {"-e", "p5", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "n", "extra"},
 	}
@@ -721,7 +721,7 @@ func TestSetupWithAManifestWithoutANetworkUsesTheDefault(t *testing.T) {
 	if err := os.WriteFile(p, []byte(strings.Replace(string(b), "network: p5net\n", "", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := setupSettings(dir, "prod", "", false)
+	got, err := setupSettings(dir, "prod", "", "", false)
 	if err != nil || got.network != "shop-prod" {
 		t.Fatalf("settings %+v: %v", got, err)
 	}
@@ -732,15 +732,40 @@ func TestSetupWithAManifestWithoutANetworkUsesTheDefault(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "shop-p5 (attachable overlay)") {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
-	if _, err := setupSettings(dir, "prod", "other", false); err == nil {
+	if _, err := setupSettings(dir, "prod", "", "other", false); err == nil {
 		t.Fatal("accepted a different network flag")
 	}
 }
 
-func TestSetupWithoutAManifestStillNeedsANetwork(t *testing.T) {
+func TestSetupWithoutAManifestNeedsAProject(t *testing.T) {
 	dir := t.TempDir()
-	_, err := setupSettings(dir, "prod", "", false)
-	if err == nil || err.Error() != "there is no berthy.yml in "+dir+": pass --network NAME" {
+	_, err := setupSettings(dir, "prod", "", "", false)
+	if err == nil || err.Error() != "there is no berthy.yml in "+dir+": pass --project NAME" {
 		t.Fatalf("error: %v", err)
+	}
+}
+
+func TestSetupNeedsAProjectWithoutAManifest(t *testing.T) {
+	made := withSetupRunner(t, &setupServer{})
+	code, _, errout := runSetupCmd("-e", "prod", "--host", "ops@s1", "--manifest-dir", t.TempDir(), "--network", "test")
+	if code != 2 || !strings.Contains(errout, "--project") || made[0] != nil {
+		t.Fatalf("exit %d, runner %v, stderr %q", code, made[0], errout)
+	}
+}
+
+func TestSetupRefusesALongPairWithoutAManifestBeforeAnyServerStep(t *testing.T) {
+	made := withSetupRunner(t, &setupServer{})
+	code, _, errout := runSetupCmd("-e", strings.Repeat("e", 30), "--project", strings.Repeat("p", 30), "--host", "ops@s1", "--manifest-dir", t.TempDir())
+	if code != 2 || !strings.Contains(errout, longPairMessage) || made[0] != nil {
+		t.Fatalf("exit %d, runner %v, stderr %q", code, made[0], errout)
+	}
+}
+
+func TestSetupWithoutAManifestDefaultsTheNetwork(t *testing.T) {
+	server := &setupServer{target: "ops@s1"}
+	withSetupRunner(t, server)
+	runSetupCmd("-e", "prod", "--project", "shop", "--host", "ops@s1", "--manifest-dir", t.TempDir())
+	if !server.ran("shop-prod") {
+		t.Fatalf("network not probed: %v", server.scripts)
 	}
 }

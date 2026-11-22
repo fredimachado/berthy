@@ -20,7 +20,7 @@ import (
 	"berthy/internal/version"
 )
 
-const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
+const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--config PATH]\n" +
 	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]"
 
@@ -60,6 +60,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	fset.SetOutput(errout)
 	fset.Usage = func() { fmt.Fprintln(errout, setupUsage) }
 	env := fset.String("e", "", "environment")
+	project := fset.String("project", "", "project name")
 	host := fset.String("host", "", "USER@SERVER to set up over ssh")
 	local := fset.Bool("local", false, "set up the server this command runs on")
 	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run")
@@ -101,7 +102,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 			return usage("%v", err)
 		}
 	}
-	from, err := setupSettings(*dir, *env, *network, *protected)
+	from, err := setupSettings(*dir, *env, *project, *network, *protected)
 	if err != nil {
 		return usage("%v", err)
 	}
@@ -182,23 +183,35 @@ type setupFrom struct {
 
 // setupSettings finds the network and protected setting: from the merged manifest of the environment when the directory has
 // one, from the flags otherwise. A flag that disagrees with the manifest is an error.
-func setupSettings(dir, env, network string, protected bool) (setupFrom, error) {
+func setupSettings(dir, env, project, network string, protected bool) (setupFrom, error) {
+	if project != "" && !scope.ValidProject(project) {
+		return setupFrom{}, fmt.Errorf("invalid --project %q", project)
+	}
 	m, err := manifest.Load(dir, env)
 	switch {
 	case err == nil:
+		if project != "" && project != m.Project {
+			return setupFrom{}, fmt.Errorf("--project %s differs from the project %s in the manifest", project, m.Project)
+		}
 		name := m.NetworkName(env)
 		if network != "" && network != name {
 			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, name, env)
 		}
 		return setupFrom{project: m.Project, network: name, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
 	case errors.Is(err, fs.ErrNotExist):
+		if project == "" {
+			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --project NAME", dir)
+		}
+		if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
+			return setupFrom{}, err
+		}
 		if network == "" {
-			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --network NAME", dir)
+			network = (&manifest.Manifest{Project: project}).NetworkName(env)
 		}
 		if !manifest.ValidNetwork(network) {
 			return setupFrom{}, fmt.Errorf("invalid --network %q: lowercase letters, digits, - and _", network)
 		}
-		return setupFrom{network: network, protected: protected}, nil
+		return setupFrom{project: project, network: network, protected: protected}, nil
 	}
 	return setupFrom{}, fmt.Errorf("manifest of %s: %v", env, err)
 }
