@@ -83,17 +83,21 @@ func (c *Controller) runBackupHook(ctx context.Context, opID string, p preparedP
 	if c.Backups == nil {
 		return fail("backups unavailable")
 	}
-	release, err := c.Store.Applied(ctx, b.App)
-	if errors.Is(err, sql.ErrNoRows) {
-		step("backup " + name + " skipped: app " + b.App + " is not deployed")
-		return nil
-	}
-	if err != nil {
-		return fail("state unavailable")
-	}
 	var applied manifest.Manifest
-	if json.Unmarshal(release.Manifest, &applied) != nil {
-		return fail("applied manifest unavailable")
+	if kind == "post_hook" && b.App == p.Request.App {
+		applied = p.Request.Manifest
+	} else {
+		release, err := c.Store.Applied(ctx, b.App)
+		if errors.Is(err, sql.ErrNoRows) {
+			step("backup " + name + " skipped: app " + b.App + " is not deployed")
+			return nil
+		}
+		if err != nil {
+			return fail("state unavailable")
+		}
+		if json.Unmarshal(release.Manifest, &applied) != nil {
+			return fail("applied manifest unavailable")
+		}
 	}
 	target, ok := applied.Apps[b.App]
 	if !ok {

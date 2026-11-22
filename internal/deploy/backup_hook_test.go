@@ -257,3 +257,19 @@ func TestBackupHookRefusesUnownedAppliedTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestPostDeployBackupUsesNewlyVerifiedAppVolume(t *testing.T) {
+	c, _, fb, id, p := backupHookRig(t, BackupResult{Status: "succeeded"}, "db")
+	p.Request.App = "db"
+	p.Request.Manifest.Apps["db"] = manifest.App{Kind: "image", Roles: map[string]manifest.Role{"db": {Volumes: []string{"added:/data"}}}, Hooks: manifest.Hooks{PostDeploy: []manifest.Hook{{Backup: "main-db"}}}}
+	p.Request.Manifest.Backups["main-db"] = manifest.Backup{App: "db", Volume: "added", Destination: "offsite"}
+	if err := c.Store.AddClaims(context.Background(), []state.Claim{{Kind: state.ClaimVolume, Name: "proj-stage_added"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runPost(context.Background(), id, p); err != nil {
+		t.Fatalf("post-deploy backup: %v", err)
+	}
+	if len(fb.ran) != 1 || fb.manifest.Apps["db"].Roles["db"].Volumes[0] != "added:/data" {
+		t.Fatalf("backup: %+v", fb)
+	}
+}
