@@ -1336,7 +1336,8 @@ func (e missingOldComposeNetwork) InspectNetwork(ctx context.Context, name strin
 }
 
 func TestComposeRollbackDoesNotRequireOldEnvironmentNetwork(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	config := strings.Replace(configOne, `"volumes":{"data":{"name":"shop-test-db_data"}}`, `"networks":{"default":{"name":"project-default"}},"volumes":{"data":{"name":"shop-test-db_data"}}`, 1)
+	runner := &fakeCompose{config: config, hashes: hashOne}
 	c, s := composeController(t, runner, newComposeDocker())
 	ctx := context.Background()
 	admin := Actor{ID: "admin", Admin: true}
@@ -1361,6 +1362,9 @@ func TestComposeRollbackDoesNotRequireOldEnvironmentNetwork(t *testing.T) {
 	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
 		if slices.Contains(claims, state.Claim{Kind: state.ClaimNetwork, Name: "old-overlay"}) {
 			t.Error("rollback reserved old environment network")
+		}
+		if !slices.Contains(claims, state.Claim{Kind: state.ClaimNetwork, Name: "project-default"}) {
+			t.Error("rollback did not reserve its Compose network")
 		}
 		return claims, nil
 	}
