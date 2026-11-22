@@ -181,7 +181,7 @@ cat > "$tui_dir/script.json" <<JSON
   {"keys": ["q"]}
 ]
 JSON
-out=$("$TUI_BIN" --command "$BIN ui -e $ENVN --project $P2 --config $RUN/admin.json" --size 120x40 --script "$tui_dir/script.json" --out "$tui_dir/out" --timeout 60s --redact-env "$(env_var "$P2" "$ENVN")" 2>&1); code=$?
+out=$("$TUI_BIN" --command "$BIN ui -e $ENVN --project $P2 --config $RUN/admin.json" --size 200x40 --script "$tui_dir/script.json" --out "$tui_dir/out" --timeout 60s --redact-env "$(env_var "$P2" "$ENVN")" 2>&1); code=$?
 expect_code "the terminal interface opens P2/E" 0 "$code" "$out"
 screen=$(cat "$tui_dir"/out/*first*.txt 2>/dev/null)
 expect_contains "the first screen names P2/E" "$screen" "$P2/$ENVN"
