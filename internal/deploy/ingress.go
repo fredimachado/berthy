@@ -13,6 +13,7 @@ import (
 
 	"berthy/internal/cloudflare"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -250,6 +251,9 @@ func (s *ingressSync) dnsFor(ctx context.Context, w RouteWant, prev *state.Ingre
 			}
 		}
 	}
+	if conflict, ok := foreignManagedConflict(w.Hostname, id, records); ok {
+		return dnsStep{Want: w}, conflict, nil
+	}
 	switch {
 	case len(records) == 0:
 		step.Action = "add"
@@ -272,6 +276,18 @@ func (s *ingressSync) dnsFor(ctx context.Context, w RouteWant, prev *state.Ingre
 		step.Replace = records
 	}
 	return step, "", nil
+}
+
+// foreignManagedConflict reports a conflict when any of records carries Berthy's managed mark for a different hosted environment.
+func foreignManagedConflict(hostname string, id scope.ID, records []cloudflare.DNSRecord) (string, bool) {
+	for _, r := range records {
+		other, ok := cloudflare.ManagedBy(r)
+		if !ok || other == id {
+			continue
+		}
+		return "DNS name " + hostname + " is managed by " + other.String(), true
+	}
+	return "", false
 }
 
 // dnsRemoval plans the end of the record Berthy keeps for a hostname that is leaving the tunnel: deleted when Berthy

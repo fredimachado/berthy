@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"berthy/internal/cloudflare"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -31,6 +32,53 @@ func adoptedFixture(t *testing.T) (f *ingressFixture, tunnelID, recordID string)
 		t.Fatalf("deploy %s: %s", op.State, op.Err)
 	}
 	return f, tunnelID, recordID
+}
+
+func TestIngressApplyRefusesARecordManagedByAnotherProject(t *testing.T) {
+	f := newIngressFixture(t)
+	m := ingressManifest(t, "")
+	f.applyIngress("apply", m)
+	tunnelID := f.tunnel().ID
+	other := scope.ID{Project: "other", Environment: "prod"}
+	foreign := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{
+		Type: "CNAME", Name: "api.example.com", Content: cloudflare.TunnelTarget(tunnelID), Proxied: true,
+		Comment: cloudflare.RecordComment(other),
+	})
+	writes := f.cf.RecordWrites
+	op := f.deploy("deploy", "api", apiFirst, m)
+	if op.State != "failed" || op.Err != "ingress hostname conflict" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by other/prod"}) {
+		t.Fatalf("conflicts %v", reasons)
+	}
+	records := f.cf.Records(f.zone)
+	if len(records) != 1 || records[0].ID != foreign || records[0].Comment != cloudflare.RecordComment(other) || f.cf.RecordWrites != writes {
+		t.Fatalf("foreign record changed: %+v writes %d->%d", records, writes, f.cf.RecordWrites)
+	}
+}
+
+func TestIngressReplaceRefusesARecordManagedByAnotherProject(t *testing.T) {
+	f := newIngressFixture(t)
+	m := ingressManifest(t, "")
+	f.applyIngress("apply", m)
+	other := scope.ID{Project: "other", Environment: "prod"}
+	foreign := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{
+		Type: "CNAME", Name: "api.example.com", Content: "elsewhere.example.net", Proxied: true,
+		Comment: cloudflare.RecordComment(other),
+	})
+	writes := f.cf.RecordWrites
+	op := f.run(Request{RequestID: "takeover", App: "api", Version: apiFirst, Manifest: m, ReplaceExisting: true})
+	if op.State != "failed" || op.Err != "ingress hostname conflict" {
+		t.Fatalf("state %s: %s", op.State, op.Err)
+	}
+	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by other/prod"}) {
+		t.Fatalf("conflicts %v", reasons)
+	}
+	records := f.cf.Records(f.zone)
+	if len(records) != 1 || records[0].ID != foreign || records[0].Comment != cloudflare.RecordComment(other) || records[0].Content != "elsewhere.example.net" || f.cf.RecordWrites != writes {
+		t.Fatalf("foreign record changed: %+v writes %d->%d", records, writes, f.cf.RecordWrites)
+	}
 }
 
 func TestDeployRecordsWhatBerthyCreatedAsCreated(t *testing.T) {

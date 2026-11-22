@@ -369,6 +369,12 @@ func TestARecordOfAnotherProjectIsNotManaged(t *testing.T) {
 	if cloudflare.IsManaged(managed, ours) {
 		t.Fatal("a record of another project was treated as managed")
 	}
+	if got, ok := cloudflare.ManagedBy(managed); !ok || got != theirs {
+		t.Fatalf("ManagedBy %+v %v", got, ok)
+	}
+	if _, ok := cloudflare.ManagedBy(cloudflare.DNSRecord{Comment: "someone else's"}); ok {
+		t.Fatal("unmarked record reported as managed")
+	}
 }
 
 func TestZonesListsEveryZoneOfTheAccountAcrossPages(t *testing.T) {

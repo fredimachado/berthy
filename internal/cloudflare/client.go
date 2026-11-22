@@ -220,6 +220,19 @@ func IsManaged(r DNSRecord, id scope.ID) bool {
 	return r.Comment == RecordComment(id)
 }
 
+// ManagedBy reports the hosted environment named in r's managed mark, when the comment is one.
+func ManagedBy(r DNSRecord) (scope.ID, bool) {
+	prefix, suffix := ManagedComment+" (", ")"
+	if !strings.HasPrefix(r.Comment, prefix) || !strings.HasSuffix(r.Comment, suffix) {
+		return scope.ID{}, false
+	}
+	id, err := scope.Parse(strings.TrimSuffix(strings.TrimPrefix(r.Comment, prefix), suffix))
+	if err != nil {
+		return scope.ID{}, false
+	}
+	return id, true
+}
+
 // TokenStatus is what Cloudflare says about the API token a client carries.
 type TokenStatus struct {
 	Status  string    // "active", "disabled" or "expired"
