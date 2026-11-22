@@ -181,6 +181,12 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+dataDir)
 		did = append(did, "prepared "+dataDir)
 	}
+	for _, dir := range managedParents(stateDir, keyPath) {
+		if stat := pf.ParentStats[dir]; stat != "root:berthy 750" && stat != wantPrivateDir {
+			fix = append(fix, "install -d -o root -g berthy -m 0750 "+shellQuote(dir))
+			did = append(did, "prepared "+dir)
+		}
+	}
 	if pf.StateDirStat != wantPrivateDir {
 		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+shellQuote(stateDir))
 		did = append(did, "prepared "+stateDir)

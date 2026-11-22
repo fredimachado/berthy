@@ -255,3 +255,20 @@ func TestSetupRefusesOverlappingRotationKeyBeforeChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupMakesRestoredStateParentsTraversable(t *testing.T) {
+	exe := elfFile(t, emX86)
+	f := setUpAgent(t, exe)
+	f.probe = with(f.probe, "parent_0=root:root 700", "parent_1=root:root 700", "parent_2=root:root 700")
+	s := agentSession(t, f, exe, false, nil)
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"key", keyStep}}, func(r StepResult) { got = append(got, r) })
+	if lastResult(got).Status != StatusChanged {
+		t.Fatalf("key step: %+v", got)
+	}
+	for _, p := range []string{"/var/lib/berthy/environments", "/var/lib/berthy/environments/shop", "/var/lib/berthy/environments/shop/p5"} {
+		if !f.ran("install -d -o root -g berthy -m 0750 '" + p + "'") {
+			t.Errorf("missing traversal permission for %s: %v", p, f.scripts())
+		}
+	}
+}

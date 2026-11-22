@@ -3,6 +3,9 @@ package setup
 import (
 	"context"
 	"fmt"
+	"path"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -181,6 +184,22 @@ type PathFacts struct {
 	KeyExists                     bool
 	KeySHA, KeyStat, StateDirStat string
 	StateDB, StateForeign         bool
+	ParentStats                   map[string]string
+}
+
+func managedParents(stateDir, keyFile string) []string {
+	seen := map[string]bool{}
+	for _, name := range []string{stateDir, keyFile} {
+		for dir := path.Dir(path.Clean(name)); strings.HasPrefix(dir, dataDir+"/"); dir = path.Dir(dir) {
+			seen[dir] = true
+		}
+	}
+	parents := make([]string, 0, len(seen))
+	for dir := range seen {
+		parents = append(parents, dir)
+	}
+	slices.Sort(parents)
+	return parents
 }
 
 func probePaths(ctx context.Context, r Runner, stateDir, keyFile string) (PathFacts, error) {
@@ -201,16 +220,21 @@ if [ -f "$k" ]; then
   echo "key_sha=$(sha256sum "$k" 2>/dev/null | cut -d' ' -f1)"
   echo "key_stat=$(stat -c '%%s %%U:%%G %%a' "$k" 2>/dev/null)"
 fi
-exit 0
 `
-	res, err := r.Run(ctx, fmt.Sprintf(script, shellQuote(stateDir), shellQuote(keyFile)), nil)
+	command := fmt.Sprintf(script, shellQuote(stateDir), shellQuote(keyFile))
+	parents := managedParents(stateDir, keyFile)
+	for i, dir := range parents {
+		command += fmt.Sprintf("echo \"parent_%d=$(stat -c '%%U:%%G %%a' %s 2>/dev/null)\"\n", i, shellQuote(dir))
+	}
+	command += "exit 0\n"
+	res, err := r.Run(ctx, command, nil)
 	if err != nil {
 		return PathFacts{}, fmt.Errorf("reading hosted environment paths: %w", err)
 	}
 	if res.Code != 0 {
 		return PathFacts{}, fmt.Errorf("reading hosted environment paths: %s", failureText(res))
 	}
-	var f PathFacts
+	f := PathFacts{ParentStats: make(map[string]string)}
 	for _, line := range strings.Split(string(res.Stdout), "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
@@ -229,6 +253,12 @@ exit 0
 			f.StateDB = v == "yes"
 		case "state_foreign":
 			f.StateForeign = v == "yes"
+		default:
+			if strings.HasPrefix(k, "parent_") {
+				if i, err := strconv.Atoi(strings.TrimPrefix(k, "parent_")); err == nil && i >= 0 && i < len(parents) {
+					f.ParentStats[parents[i]] = v
+				}
+			}
 		}
 	}
 	return f, nil

@@ -60,7 +60,13 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	switch {
 	case script == "id -u; id -un":
 		return Result{Stdout: []byte("0\nroot\n")}, nil
-	case strings.Contains(script, "uname -s"), strings.Contains(script, "# hosted path probe"):
+	case strings.Contains(script, "# hosted path probe"):
+		out := strings.Join(f.probe, "\n")
+		if strings.Contains(out, "state_dir_stat=") && !strings.Contains(out, "parent_0=") {
+			out += "\nparent_0=root:berthy 750\nparent_1=root:berthy 750\nparent_2=berthy:berthy 700"
+		}
+		return Result{Stdout: []byte(out + "\n")}, nil
+	case strings.Contains(script, "uname -s"):
 		return Result{Stdout: []byte(strings.Join(f.probe, "\n") + "\n")}, nil
 	case script == "cat "+configPath:
 		return Result{Stdout: []byte(f.config)}, nil

@@ -58,7 +58,13 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	switch {
 	case script == "id -u; id -un":
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
-	case strings.Contains(script, "uname -s"), strings.Contains(script, "# hosted path probe"):
+	case strings.Contains(script, "# hosted path probe"):
+		out := s.nextProbe()
+		if strings.Contains(out, "state_dir_stat=") && !strings.Contains(out, "parent_0=") {
+			out += "\nparent_0=root:berthy 750\nparent_1=root:berthy 750\nparent_2=berthy:berthy 700\n"
+		}
+		return setup.Result{Stdout: []byte(out)}, nil
+	case strings.Contains(script, "uname -s"):
 		return setup.Result{Stdout: []byte(s.nextProbe())}, nil
 	case strings.Contains(script, "curl -fsS --max-time 30"):
 		return setup.Result{Stdout: []byte(`{"checks":[{"name":"agent","ok":true,"critical":true,"detail":"v0.0.1-test"}]}`)}, nil

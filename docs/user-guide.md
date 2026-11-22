@@ -231,7 +231,7 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
+✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
 ✓ token       created an admin token named admin; it is shown once, at the end
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
@@ -2707,7 +2707,7 @@ The order:
      --key-file ./todo.prod.key --config ~/.config/berthy/config.json
    ```
 
-   Setup installs your key instead of making one, gives the restored state to the `berthy` user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.
+   Setup makes the managed parent directories traversable by the `berthy` user, installs your key instead of making one, gives the restored state to that user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.
 
    **The tokens you made with `berthy token create` are part of the state.** The snapshot holds their digests, so your CI and AI agent tokens work again as soon as the restored agent starts, with the values you already gave them. Only the first `admin` token lives in the agent's configuration, so setup makes a new one: it is printed once, as on the first run. A token whose expiry has passed is still refused.
 
