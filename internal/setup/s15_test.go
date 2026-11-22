@@ -235,3 +235,23 @@ func TestSetupRefusesAnOverlongNetworkBeforeAnyChange(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupRefusesOverlappingRotationKeyBeforeChanges(t *testing.T) {
+	file := s15File(t, "other", "prod", "other-prod")
+	file.Environments[0].KeyFile = "/var/lib/berthy/environments/shop/prod/key.next"
+	f := s15Server(t, file)
+	original := f.config
+	s := agentSession(t, f, elfFile(t, emX86), false, func(o *Options) { o.Env = "prod" })
+	got, ok := runSteps(s)
+	if ok || lastResult(got).Step != "check" {
+		t.Fatalf("result: %+v", got)
+	}
+	if f.config != original {
+		t.Fatal("existing config changed")
+	}
+	for _, c := range f.calls {
+		if agentChange(c.script) {
+			t.Fatalf("changing script: %s", c.script)
+		}
+	}
+}

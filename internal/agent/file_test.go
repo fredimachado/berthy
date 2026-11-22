@@ -210,3 +210,26 @@ func TestFileValidateRefusesANetworkOver63Characters(t *testing.T) {
 		}
 	}
 }
+
+func TestFileValidateRefusesOverlappingHostedPaths(t *testing.T) {
+	first := testHosted("other", "prod", "other-prod")
+	first.StateDir = "/var/lib/berthy/other/state"
+	first.KeyFile = "/var/lib/berthy/environments/shop/prod/key.next"
+	second := testHosted("shop", "prod", "shop-prod")
+	second.StateDir = "/var/lib/berthy/environments/shop/prod/state"
+	second.KeyFile = "/var/lib/berthy/environments/shop/prod/key"
+	for _, tc := range []struct {
+		name string
+		a, b Hosted
+	}{
+		{"rotation next", first, second},
+		{"rotation next reversed", second, first},
+		{"nested states", Hosted{Project: "a", Environment: "p", StateDir: "/state/a", KeyFile: "/keys/a", Tokens: []Token{{Digest: Digest("a"), Scope: "admin"}}}, Hosted{Project: "b", Environment: "p", StateDir: "/state/a/child", KeyFile: "/keys/b", Tokens: []Token{{Digest: Digest("b"), Scope: "admin"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := testFile(tc.a, tc.b).Validate(); err == nil {
+				t.Fatal("overlapping paths accepted")
+			}
+		})
+	}
+}

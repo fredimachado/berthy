@@ -145,13 +145,13 @@ func (s *Store) RotateKey(ctx context.Context, actor Actor, dryRun bool) (Rotate
 		return rep, err
 	}
 	rep.NewKeyID = next.id.String()
-	if err = writeKeyFile(s.keyFile+nextSuffix, raw); err != nil {
+	if err = writeKeyFile(s.keyFile+KeyNextSuffix, raw); err != nil {
 		return rep, fmt.Errorf("cannot write the next key: %w", err)
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			os.Remove(s.keyFile + nextSuffix)
+			os.Remove(s.keyFile + KeyNextSuffix)
 		}
 	}()
 

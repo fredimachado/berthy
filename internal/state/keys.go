@@ -15,8 +15,8 @@ import (
 //
 // The state's own key check says which key is current, so a crash at any point leaves a state that Open can settle.
 const (
-	nextSuffix = ".next"
-	prevSuffix = ".prev"
+	KeyNextSuffix = ".next"
+	KeyPrevSuffix = ".prev"
 )
 
 // keyFiles are the keys found beside a key file. next and prev are nil when absent or unreadable: only main must be there.
@@ -45,7 +45,7 @@ func loadKeyFiles(keyFile string) (keyFiles, error) {
 		}
 		return &k
 	}
-	kf.next, kf.prev = optional(nextSuffix), optional(prevSuffix)
+	kf.next, kf.prev = optional(KeyNextSuffix), optional(KeyPrevSuffix)
 	return kf, nil
 }
 
@@ -92,7 +92,7 @@ func settleKeyFiles(keyFile string, finish bool, old stateKey) error {
 	if finish {
 		return finishRotation(keyFile, old)
 	}
-	if err := os.Remove(keyFile + nextSuffix); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(keyFile + KeyNextSuffix); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -101,10 +101,10 @@ func settleKeyFiles(keyFile string, finish bool, old stateKey) error {
 // finishRotation renames the key files after a rotation committed: the old key is kept as <key>.prev and the next key takes
 // the key's place. The key file exists at every step, and the steps can be run again after a crash.
 func finishRotation(keyFile string, old stateKey) error {
-	if err := writeKeyFile(keyFile+prevSuffix, old.raw); err != nil {
+	if err := writeKeyFile(keyFile+KeyPrevSuffix, old.raw); err != nil {
 		return err
 	}
-	if err := os.Rename(keyFile+nextSuffix, keyFile); err != nil {
+	if err := os.Rename(keyFile+KeyNextSuffix, keyFile); err != nil {
 		return err
 	}
 	return syncDir(filepath.Dir(keyFile))
@@ -167,7 +167,7 @@ func (s *Store) ForgetPreviousKey(ctx context.Context, snapshotKeyID string) err
 	if snapshotKeyID != s.keys.current.id.String() {
 		return nil
 	}
-	if err := os.Remove(s.keyFile + prevSuffix); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(s.keyFile + KeyPrevSuffix); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	s.keys.others = nil

@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
+
+	"berthy/internal/state"
 )
 
 // File is agent.json: what the agent process needs, and the environments it hosts.
@@ -125,12 +128,48 @@ func (f File) Validate() error {
 			digests[d] = true
 		}
 	}
+	for i, a := range f.Environments {
+		for _, b := range f.Environments[i+1:] {
+			if hostedPathsOverlap(a, b) {
+				return fmt.Errorf("hosted environment paths overlap: %s/%s and %s/%s", a.Project, a.Environment, b.Project, b.Environment)
+			}
+		}
+	}
 	for _, c := range f.Configs() {
 		if err := c.Validate(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// hostedPathsOverlap compares Linux server paths, including rotation files.
+func hostedPathsOverlap(a, b Hosted) bool {
+	clean := func(p string) string { return path.Clean("/" + p) }
+	contains := func(dir, p string) bool { return p == dir || strings.HasPrefix(p, strings.TrimRight(dir, "/")+"/") }
+	ad, bd := clean(a.StateDir), clean(b.StateDir)
+	if contains(ad, bd) || contains(bd, ad) {
+		return true
+	}
+	ak, bk := clean(a.KeyFile), clean(b.KeyFile)
+	af := []string{ak, ak + state.KeyNextSuffix, ak + state.KeyPrevSuffix}
+	bf := []string{bk, bk + state.KeyNextSuffix, bk + state.KeyPrevSuffix}
+	for _, x := range af {
+		if contains(bd, x) {
+			return true
+		}
+		for _, y := range bf {
+			if x == y {
+				return true
+			}
+		}
+	}
+	for _, y := range bf {
+		if contains(ad, y) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f File) Configs() []Config {
