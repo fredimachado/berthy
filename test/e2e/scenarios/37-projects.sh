@@ -188,14 +188,18 @@ expect_contains "the first screen names P2/E" "$screen" "$P2/$ENVN"
 want=$(printf '%s\n' web "$P2-$ENVN-db" | sort)
 tui_names=$(printf '%s\n' "$screen" | python3 -c '
 import re, sys
+prefix = sys.argv[1]
 names = []
 for line in sys.stdin:
-    m = re.search(r"│ [▌ ]  (\S+)\s+(image|compose)\b", line)
+    m = re.search(r"│ [▌ ]  (\S+)\s+(image|compose|swarm)\b", line)
     if m:
         names.append(m.group(1))
-print("\n".join(sorted(names)))
-')
-expect_eq "the first screen lists exactly web and the db compose app" "$want" "$tui_names"
+ours = [n for n in names if n == "web" or n.startswith(prefix)]
+print("\n".join(sorted(ours)))
+' "$PROJECT-")
+expect_eq "the first screen lists exactly P2/E web and db among this fixture" "$want" "$tui_names"
+expect_not_contains "the first screen excludes the first project's compose app" "$screen" "$PROJECT-$ENVN-db"
+expect_not_contains "the first screen excludes the other environment's compose app" "$screen" "$PROJECT-${EB}-db"
 mcp_dir=$LOG/mcp-p2
 rm -rf "$mcp_dir"; mkdir -p "$mcp_dir"
 cat > "$mcp_dir/calls.json" <<'JSON'
@@ -205,9 +209,11 @@ out=$("$MCP_BIN" --command "$BIN mcp -e $ENVN --project $P2 --config $RUN/admin.
 expect_code "mcp list_resources of P2/E" 0 "$code" "$out"
 mcp_err=$(jq -r '.calls[0].is_error' "$mcp_dir/results.json")
 expect_eq "list_resources is not an error" false "$mcp_err"
-# Unclaimed swarm services stay visible on every environment (D9). The hosted apps of P2/E are image and compose.
-mcp_names=$(jq -r '.calls[0].structured.resources[] | select(.ref.kind=="image" or .ref.kind=="compose") | .ref.name' "$mcp_dir/results.json" | sort)
-expect_eq "list_resources names exactly web and the db compose app" "$want" "$mcp_names"
+mcp_text=$(jq -r '.calls[0].structured.resources[].ref.name' "$mcp_dir/results.json")
+mcp_names=$(jq -r --arg p "$PROJECT-" '.calls[0].structured.resources[].ref.name | select(. == "web" or startswith($p))' "$mcp_dir/results.json" | sort)
+expect_eq "list_resources names exactly P2/E web and db among this fixture" "$want" "$mcp_names"
+expect_not_contains "list_resources excludes the first project's compose app" "$mcp_text" "$PROJECT-$ENVN-db"
+expect_not_contains "list_resources excludes the other environment's compose app" "$mcp_text" "$PROJECT-${EB}-db"
 out=$(env_cmd "$PROJECT" "$ENVN" deploy web --version v1 --manifest-dir "$(env_dir "$P2" "$ENVN")" 2>&1); code=$?
 expect_code 'other manifest refused' 2 "$code" "$out"
 expect_contains 'mismatch names project' "$out" 'is for project'
