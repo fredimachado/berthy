@@ -38,13 +38,26 @@ Berthy makes choices so that you do not have to. If you disagree with several of
 
 You need a Linux server with systemd (amd64 or arm64), a private address on it, and an account that is `root` or has passwordless `sudo`. Setup does not create the server, its firewall or your VPN. Read the [user guide](docs/user-guide.md#step-1-prepare-a-server-and-set-it-up) before you point it at a server you care about.
 
-This quick start needs a CLI that has **projects**: one agent hosts any number of (project, environment) pairs. Released builds through v0.2.0 do not. Use the next release once it ships, or build from this repository:
+This quick start needs a CLI that has **projects**: one agent hosts any number of (project, environment) pairs. Released builds through v0.2.0 do not. Use the next release once it ships, or build from this repository.
+
+`go build` makes a CLI for the machine you build on. Setup can upload that binary only when this CLI is a Linux build of the server's architecture. On a matching Linux machine:
 
 ```bash
 git clone https://github.com/fredimachado/berthy.git
 cd berthy
 go build -o berthy ./cmd/berthy
 sudo mv berthy /usr/local/bin/berthy
+berthy version
+```
+
+On any other machine, build a Linux binary for the server and pass it with `--binary` to both setup commands below. Use `amd64` or `arm64` to match the server:
+
+```bash
+git clone https://github.com/fredimachado/berthy.git
+cd berthy
+GOOS=linux GOARCH=amd64 go build -o berthy-linux-amd64 ./cmd/berthy
+go build -o berthy ./cmd/berthy    # CLI for this machine
+sudo mv berthy /usr/local/bin/berthy   # or keep it on PATH another way
 berthy version
 ```
 
@@ -88,9 +101,21 @@ Check both without a server: `berthy config validate -e prod`.
 
 **2. Set up the server** from the directory that holds that manifest. Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default. With no `berthy.yml` in the directory, pass `--project hello` instead.
 
+From a matching Linux CLI (uploads itself):
+
 ```bash
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
+```
+
+From any other machine, pass the Linux binary you built:
+
+```bash
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary ./berthy-linux-amd64 --dry-run
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary ./berthy-linux-amd64
+```
+
+```bash
 export BERTHY_HELLO_PROD_TOKEN=<the admin token setup printed>
 ```
 

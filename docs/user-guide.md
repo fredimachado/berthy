@@ -391,6 +391,8 @@ network: todo-stage
 berthy setup -e stage --host ops@10.0.0.5
 ```
 
+The checked-in Compose files in `examples/todo/deploy/` still say `name: todo`, so a released CLI can run them. On a projects build, before you deploy `todo/stage` beside `todo/prod` on the same agent, change both Compose files in your own checkout to `name: ${BERTHY_NETWORK}`. Prod already holds the network name `todo`; stage must join `todo-stage` instead, and Berthy sets `BERTHY_NETWORK` in the Compose project's `.env` for that.
+
 Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`, once each has its own network. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
 
 There is no command that removes a hosted environment from a server. After `destroy`, stop the agent, remove that entry from `agent.json` and its directory under `/var/lib/berthy/environments/`, then start the agent again only if at least one hosted environment remains. An `agent.json` with no environments is refused.
@@ -411,10 +413,10 @@ That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TO
 
 #### A server set up before projects
 
-An `agent.json` of a release before projects cannot be upgraded in place. Setup refuses it and prints the commands that move the old install aside. A CLI configuration of that earlier layout is also refused before setup connects. Prepare the laptop first, while the old agent still answers:
+An `agent.json` of a release before projects cannot be upgraded in place. Setup refuses it and prints the commands that move the old install aside. A CLI configuration of that earlier layout is also refused before setup connects. Do the steps in this order, while the old agent still answers where you need it:
 
-1. **Move the old CLI configuration aside**, or pass `--config` with a new path for the rest of this procedure. The default file is `~/.config/berthy/config.json` on Linux.
-2. **Optional:** remove the old apps with the old CLI's `destroy` while the old agent still answers.
+1. **Optional:** remove the old apps with the old CLI's `destroy`, while the old agent and its CLI configuration are both still available.
+2. **Move the old CLI configuration aside**, or pass `--config` with a new path for the rest of this procedure. The default file is `~/.config/berthy/config.json` on Linux.
 3. **On the server**, stop the agent and move the old install aside (these commands delete nothing):
 
 ```bash
@@ -424,7 +426,7 @@ sudo mv /var/lib/berthy /var/lib/berthy.pre-projects
 sudo chmod 0700 /var/lib/berthy.pre-projects
 ```
 
-4. Run `berthy setup` again (with the new CLI configuration path if you chose one). The old state and key stay in `/var/lib/berthy.pre-projects`. If you skipped step 2, the old apps keep running under their old names; remove them by hand.
+4. Run `berthy setup` again (with the new CLI configuration path if you chose one). The old state and key stay in `/var/lib/berthy.pre-projects`. If you skipped step 1, the old apps keep running under their old names; remove them by hand.
 
 #### Check that it works
 
@@ -1660,7 +1662,7 @@ What an app owns is not applied: its own `apps` entry, the `jobs` and `backups` 
 
 `apply` needs the `deploy` scope and is refused while the deploy lock is held. On a protected environment an agent token's `apply` is held for approval like any change.
 
-The project of a hosted environment is fixed when setup creates it. With a conflicting `--project`, `deploy` and `apply` stop before they send anything, with `the manifest in <dir> is for project <have>, not <want>`. Without `--project`, the manifest selects the project. An overlay cannot set `project`. To run another project, set up another hosted environment.
+The project of a hosted environment is fixed when setup creates it. When the CLI has resolved a target and that project's name differs from the manifest, `deploy` and `apply` stop before they send anything, with `the manifest in <dir> is for project <have>, not <want>`. If `--project` names a project/environment that is not in the CLI configuration, resolution fails first with `no environment <env> for project <project> in the CLI configuration`. Without `--project`, the manifest selects the project. An overlay cannot set `project`. To run another project, set up another hosted environment.
 
 #### Restart and scale
 
@@ -2715,11 +2717,11 @@ An app that you delete from the manifest keeps running. `doctor` lists it as `or
 #### Destroy an environment
 
 ```bash
-berthy destroy --project todo -e prod --confirm todo/prod --dry-run
-berthy destroy --project todo -e prod --confirm todo/prod
+berthy destroy --project todo -e prod --confirm todo/prod --allow-recreate --dry-run
+berthy destroy --project todo -e prod --confirm todo/prod --allow-recreate
 ```
 
-`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers (not helper images: those belong to the agent); stopped one-off containers; and images this environment pulled that nothing else on the agent retains.
+`destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. `--allow-recreate` is required when a `stateful` app such as `postgres` is among them; without it the dry run shows a blocker and the real destroy removes nothing. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers (not helper images: those belong to the agent); stopped one-off containers; and images this environment pulled that nothing else on the agent retains.
 
 | Flag | Meaning |
 | --- | --- |
