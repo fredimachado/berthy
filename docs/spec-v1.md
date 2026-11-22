@@ -339,7 +339,7 @@ Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, 
 ```json
 {"environment": "prod", "target": "ops@s1", "dry_run": false, "ok": true,
  "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}],
- "token": "bty.prod.…", "next_steps": ["keep a copy of the encryption key off the server, …"]}
+ "token": "bty.shop.prod.…", "next_steps": ["keep a copy of the encryption key off the server, …"]}
 ```
 
 `token` is present only when this run made a token. `next_steps` is present after a successful run that is not a dry run. `commands` is present on each step only with `--verbose`: the scripts the step sent, each as it was sent, and in a dry run also the scripts a real run would send. A dry run makes no token, writes no file and sends only reads to the server: the steps that would change something report `would_change`, and `verify` reports `skipped` with `would check the agent`.
