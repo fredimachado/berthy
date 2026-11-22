@@ -100,7 +100,7 @@ expect_code "backup run of the dump command" 0 "$code" "$out"
 expect_contains "the run succeeded" "$out" "status: succeeded"
 key=$(sed -n 's/^key: //p' <<<"$out")
 case $key in
-  db/command/main-db/*.gz) pass "the key is under the app's command directory: $key" ;;
+  $PROJECT/$ENVN/db/command/main-db/*.gz) pass "the key is under the app's command directory: $key" ;;
   *) fail "the key is under the app's command directory" "got '$key'" ;;
 esac
 out=$(adm backup list --backup main-db 2>&1); code=$?
@@ -108,7 +108,7 @@ expect_code "backup list" 0 "$code" "$out"
 expect_contains "the backup is listed" "$out" "$key"
 expect_contains "it has no volume" "$out" "command"
 expect_not_contains "its size is not zero" "$out" " 0 B "
-objects=$(s3_objects "db/command/main-db/")
+objects=$(s3_objects "$PROJECT/$ENVN/db/command/main-db/")
 expect_contains "the sidecar is stored" "$objects" "${key%.gz}.json"
 expect_eq "the object and its sidecar are all that is stored" "2" "$(grep -o '"key"' <<<"$objects" | wc -l)"
 # The stored object is a gzip of the dump (pg_dump -Fc starts with PGDMP).
@@ -122,7 +122,7 @@ expect_contains "the run says the command exited 3" "$out" "exited with code 3"
 expect_contains "the run keeps the end of its standard error" "$out" "dump went wrong: no such table"
 out=$(adm backup list --backup broken 2>&1)
 expect_contains "nothing is listed for the failed backup" "$out" "no backups"
-expect_eq "no object is left for the failed backup" "0" "$(grep -o '"key"' <<<"$(s3_objects 'db/command/broken/')" | wc -l)"
+expect_eq "no object is left for the failed backup" "0" "$(grep -o '"key"' <<<"$(s3_objects "$PROJECT/$ENVN/db/command/broken/")" | wc -l)"
 checked=""
 for _ in $(seq 1 40); do
   out=$(adm checks 2>&1)
@@ -186,7 +186,7 @@ expect_code "backup run of an image app's command" 0 "$code" "$out"
 expect_contains "it succeeded" "$out" "status: succeeded"
 note=$(sed -n 's/^key: //p' <<<"$out")
 case $note in
-  web/command/note/*.gz) pass "the key of an image app's command backup: $note" ;;
+  $PROJECT/$ENVN/web/command/note/*.gz) pass "the key of an image app's command backup: $note" ;;
   *) fail "the key of an image app's command backup" "got '$note'" ;;
 esac
 expect_eq "the output of the command is what is stored" "note-from-a-one-off-container" "$(curl_local "http://$S3_LISTEN/$S3_BUCKET/$note" | gzip -dc)"

@@ -158,7 +158,7 @@ var Keys = slices.Concat(
 		{Path: "backups.<name>.timeout", Section: "backups", Type: "duration", Default: defaultJobTimeout, Description: "For a command backup: the time limit of the command, from `1s` to `24h`. A command past it is stopped and the backup fails."},
 		{Path: "backups.<name>.schedule", Section: "backups", Type: "string", Default: "on demand", Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the backup runs only on demand or from a deploy hook."},
 		{Path: "backups.<name>.destination", Section: "backups", Type: "name", Required: true, Description: "A key of `destinations`."},
-		{Path: "backups.<name>.prefix", Section: "backups", Type: "string", Default: "<app>/<volume>", Description: "Where the backup's objects sit in the bucket. A command backup has `<app>/command` in place of `<app>/<volume>`."},
+		{Path: "backups.<name>.prefix", Section: "backups", Type: "string", Default: "<app>/<volume>", Description: "Where the backup's objects sit in the bucket, under `<project>/<environment>/`. A command backup has `<app>/command` in place of `<app>/<volume>`."},
 		{Path: "backups.<name>.before", Section: "backups", Type: "name", Description: "For a volume backup: a job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. A command backup needs no such job."},
 		{Path: "backups.<name>.retention", Section: "backups", Type: "map", Description: "How many backups to keep."},
 		{Path: "backups.<name>.retention.keep", Section: "backups", Type: "integer or all", Default: "all", Description: "`all`, or a whole number of at least 1: keep that many of the newest successful backups."},
@@ -171,7 +171,7 @@ var Keys = slices.Concat(
 		{Path: "destinations.<name>.secret_key_secret", Section: "destinations", Type: "secret name", Required: true, Description: "The secret that holds the secret key."},
 
 		{Path: "state_backup.destination", Section: "state_backup", Type: "name", Required: true, Description: "A key of `destinations`."},
-		{Path: "state_backup.prefix", Section: "state_backup", Type: "string", Default: "berthy-state/<environment>", Description: "The object prefix of the snapshots."},
+		{Path: "state_backup.prefix", Section: "state_backup", Type: "string", Default: "berthy-state", Description: "The object prefix of the snapshots, under `<project>/<environment>/`."},
 		{Path: "state_backup.schedule", Section: "state_backup", Type: "string", Default: DefaultStateBackupSchedule, Description: "A five-field cron expression, read in the manifest's `timezone`, UTC by default. The default is daily at 03:17."},
 		{Path: "state_backup.keep", Section: "state_backup", Type: "integer", Default: "14", Description: "The number of snapshots kept, from 1 to 1000."},
 

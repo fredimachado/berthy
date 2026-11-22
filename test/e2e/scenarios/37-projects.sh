@@ -48,6 +48,21 @@ jobs:
     app: web
     timeout: 5m
     command: ["sh", "-c", "trap 'exit 1' TERM; touch /data/ready; while [ ! -e /data/go ]; do sleep 1 & wait \$!; done"]
+destinations:
+  offsite:
+    type: s3
+    endpoint: http://$S3_LISTEN
+    bucket: $S3_BUCKET
+    access_key_secret: S3_ACCESS_KEY
+    secret_key_secret: S3_SECRET_KEY
+backups:
+  data:
+    app: web
+    volume: data
+    destination: offsite
+    prefix: shared
+    retention:
+      keep: 1
 YML
   cat > "$dir/compose.yml" <<YML
 services:
@@ -146,6 +161,21 @@ for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
     out=$(env_cmd "$p" "$e" stats --json 2>&1); fail "stats contains owned and excludes peer containers $p/$e" "$out"
   fi
   out=$(env_cmd "$p" "$e" history web 2>&1); expect_contains "history $p/$e" "$out" "$WEB_V1_DIGEST"
+done
+# Two environments of one project share a bucket and the same explicit prefix; each keeps its own archive.
+for e in "$ENVN" "$EB"; do
+  printf 'AKIAE2ETESTACCESS' | env_cmd "$PROJECT" "$e" secret set S3_ACCESS_KEY >/dev/null 2>&1
+  printf 'e2e-test-secret-key-0123456789' | env_cmd "$PROJECT" "$e" secret set S3_SECRET_KEY >/dev/null 2>&1
+  for n in 1 2; do
+    out=$(env_cmd "$PROJECT" "$e" backup run data 2>&1); code=$?
+    expect_code "backup data $PROJECT/$e #$n" 0 "$code" "$out"
+  done
+done
+for e in "$ENVN" "$EB"; do
+  objects=$(s3_objects "$PROJECT/$e/")
+  archives=$(grep -o '"key":"[^"]*\.tar\.gz"' <<<"$objects" | wc -l)
+  expect_eq "one archive under $PROJECT/$e/" "1" "$archives"
+  expect_contains "archive key is scoped $PROJECT/$e" "$objects" "$PROJECT/$e/shared/data/"
 done
 out=$(env_cmd "$PROJECT" "$EB" logs "$P2-$ENVN-web-main" 2>&1); code=$?
 expect_code 'another environment service logs are refused' 1 "$code" "$out"

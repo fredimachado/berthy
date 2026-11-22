@@ -143,7 +143,7 @@ func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
 
 // stateRestoreArgs are the arguments of a restore of object from the bucket at endpoint into out.
 func stateRestoreArgs(endpoint, object, out, keyPath string) []string {
-	return []string{"state-restore", "--endpoint", endpoint, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	return []string{"state-restore", "--project", "demo", "--endpoint", endpoint, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
 }
 
 func TestStateRestoreTakesCredentialsOnlyFromTheEnvironment(t *testing.T) {

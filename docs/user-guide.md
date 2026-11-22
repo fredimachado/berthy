@@ -2335,7 +2335,7 @@ The agent's SQLite file holds its releases, history, audit log, checks and **sec
 ```yaml
 state_backup:
   destination: offsite
-  prefix: berthy-state/prod
+  prefix: berthy-state
   schedule: "17 3 * * *"
   keep: 14
 ```
@@ -2343,7 +2343,7 @@ state_backup:
 | Key | Meaning | Default |
 | --- | --- | --- |
 | `destination` | A key of `destinations`. | required |
-| `prefix` | Object prefix. Each segment may hold letters, digits and `._@+=-`. | `berthy-state/<environment>` |
+| `prefix` | Object prefix under `<project>/<environment>/`. Each segment may hold letters, digits and `._@+=-`. | `berthy-state` |
 | `schedule` | Cron, read in the `timezone`. | `17 3 * * *` |
 | `keep` | Snapshots to keep, 1 to 1000. | `14` |
 
@@ -2358,7 +2358,7 @@ berthy state-backup -e prod
 ```text
 run: 3
 status: succeeded
-key: berthy-state/prod/20261116T031700Z.db
+key: todo/prod/berthy-state/20261116T031700Z.db
 size: 412000
 sha256: <hash>
 ```
@@ -2679,20 +2679,21 @@ The order:
 
 1. **Provision** a new server with the same private address (or a new one, and change `--listen` and the CLI configuration). Berthy does not do this part: the server, its users, its firewall and its VPN are yours.
 
-2. **Restore the agent's state.** It needs neither an agent nor the old server. Put the Berthy binary and your saved key (`todo.prod.key.20261122T153012Z`, from step 1) on the new server (mode `0600`), find a snapshot (`berthy-state/prod/<time>.db` in the bucket), and run, as root:
+2. **Restore the agent's state.** It needs neither an agent nor the old server. Put the Berthy binary and your saved key (`todo.prod.key.20261122T153012Z`, from step 1) on the new server (mode `0600`), find a snapshot (`todo/prod/berthy-state/<time>.db` in the bucket), and run, as root:
 
    ```bash
    install -d -m 0700 /var/lib/berthy
    chmod 600 todo.prod.key.20261122T153012Z
    BERTHY_S3_ACCESS_KEY=<access key> BERTHY_S3_SECRET_KEY=<secret key> \
-     berthy state-restore \
+     berthy state-restore --project todo \
        --endpoint https://s3.example.com --bucket acme-todo-backups --region eu-central-1 \
-       --object berthy-state/prod/20261116T031700Z.db \
+       --object todo/prod/berthy-state/20261116T031700Z.db \
        --out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z
    ```
 
    | Flag | Meaning |
    | --- | --- |
+   | `--project <name>` | The project the snapshot belongs to. |
    | `--endpoint <url>` | The S3-compatible endpoint. |
    | `--bucket <name>` | The bucket. |
    | `--region <r>` | The bucket's region, when the storage needs one. |
@@ -2979,7 +2980,7 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | `timeout` | duration | `1h` | For a command backup: the time limit of the command, from `1s` to `24h`. A command past it is stopped and the backup fails. |
 | `schedule` | string | on demand | A five-field cron expression, read in the manifest's `timezone`, UTC by default. Without it the backup runs only on demand or from a deploy hook. |
 | `destination` | name | required | A key of `destinations`. |
-| `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket. A command backup has `<app>/command` in place of `<app>/<volume>`. |
+| `prefix` | string | `<app>/<volume>` | Where the backup's objects sit in the bucket, under `<project>/<environment>/`. A command backup has `<app>/command` in place of `<app>/<volume>`. |
 | `before` | name | none | For a volume backup: a job to run first, such as one that dumps a database. If it fails, the backup fails and nothing is uploaded. A command backup needs no such job. |
 | `retention` | map | none | How many backups to keep. |
 | `retention.keep` | integer or all | `all` | `all`, or a whole number of at least 1: keep that many of the newest successful backups. |
@@ -3000,7 +3001,7 @@ Hooks and migrations belong to image apps. A step is either `backup` or `run`, n
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `destination` | name | required | A key of `destinations`. |
-| `prefix` | string | `berthy-state/<environment>` | The object prefix of the snapshots. |
+| `prefix` | string | `berthy-state` | The object prefix of the snapshots, under `<project>/<environment>/`. |
 | `schedule` | string | 17 3 * * * | A five-field cron expression, read in the manifest's `timezone`, UTC by default. The default is daily at 03:17. |
 | `keep` | integer | `14` | The number of snapshots kept, from 1 to 1000. |
 

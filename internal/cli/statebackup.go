@@ -15,6 +15,7 @@ import (
 
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/statebackup"
 )
@@ -25,6 +26,7 @@ import (
 func runStateRestore(args []string, out, errout io.Writer) int {
 	fs := flag.NewFlagSet("state-restore", flag.ContinueOnError)
 	fs.SetOutput(errout)
+	project := fs.String("project", "", "project the snapshot belongs to")
 	endpoint := fs.String("endpoint", "", "S3-compatible endpoint URL")
 	region := fs.String("region", "", "bucket region, when the storage needs one")
 	bucket := fs.String("bucket", "", "bucket name")
@@ -34,8 +36,8 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 || *endpoint == "" || *bucket == "" || *object == "" || *dir == "" || *keyFile == "" {
-		fmt.Fprintln(errout, "usage: berthy state-restore --endpoint URL --bucket NAME [--region R] --object KEY --out DIR --key-file PATH")
+	if fs.NArg() != 0 || *project == "" || !scope.ValidProject(*project) || *endpoint == "" || *bucket == "" || *object == "" || *dir == "" || *keyFile == "" {
+		fmt.Fprintln(errout, "usage: berthy state-restore --project PROJECT --endpoint URL --bucket NAME [--region R] --object KEY --out DIR --key-file PATH")
 		return 2
 	}
 	access, secret := os.Getenv("BERTHY_S3_ACCESS_KEY"), os.Getenv("BERTHY_S3_SECRET_KEY")
@@ -46,7 +48,7 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	rep, err := statebackup.Restore(ctx, statebackup.RestoreOptions{Endpoint: *endpoint, Region: *region, Bucket: *bucket, Object: *object,
-		Out: *dir, KeyFile: *keyFile, AccessKey: access, SecretKey: secret})
+		Out: *dir, KeyFile: *keyFile, Project: *project, AccessKey: access, SecretKey: secret})
 	var mismatch *statebackup.KeyMismatchError
 	switch {
 	case errors.As(err, &mismatch):
