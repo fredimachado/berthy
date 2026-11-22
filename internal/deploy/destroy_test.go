@@ -714,3 +714,17 @@ func TestDestroyWaitsForTheTaskContainersOfDeletedServicesBeforeRemovingImages(t
 		t.Fatalf("the image of a deleted service's task was kept: %v", f.imageIDs())
 	}
 }
+
+func TestDestroyKeepsAnImageAnotherEnvironmentRetains(t *testing.T) {
+	f := newDestroyFixture(t, false)
+	f.ctrl.Foreign = func(context.Context) (Foreign, error) {
+		return Foreign{Images: map[string]bool{acquiredRef: true}}, nil
+	}
+	op := f.destroy("destroy-retained", nil)
+	if op.State != "succeeded" {
+		t.Fatalf("destroy: %+v", op)
+	}
+	if !slices.Contains(f.imageIDs(), "id-acquired") {
+		t.Fatalf("retained image removed: %v", f.imageIDs())
+	}
+}

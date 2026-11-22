@@ -487,11 +487,19 @@ func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions)
 	if err != nil {
 		return nil, inventoryFailure(err, "service inventory unavailable")
 	}
-	history, err := c.Store.History(ctx, "")
+	refs, err := c.retainedImages(ctx, gone.apps)
 	if err != nil {
-		return nil, errPruneHistory
+		return nil, err
 	}
-	refs := map[string]bool{}
+	if c.Foreign != nil {
+		foreign, err := c.Foreign(ctx)
+		if err != nil {
+			return nil, errPruneHistory
+		}
+		for ref := range foreign.Images {
+			refs[ref] = true
+		}
+	}
 	ids := map[string]bool{}
 	aliases := map[string]string{}
 	for _, img := range images {
@@ -532,12 +540,31 @@ func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions)
 			}
 		}
 	}
+	for ref := range refs {
+		if id := aliases[ref]; id != "" {
+			ids[id] = true
+		}
+	}
+	return pruneCandidates(owned, refs, ids), nil
+}
+
+// RetainedImages returns the references protected by this environment's release history.
+func (c *Controller) RetainedImages(ctx context.Context) (map[string]bool, error) {
+	return c.retainedImages(ctx, nil)
+}
+
+func (c *Controller) retainedImages(ctx context.Context, goneApps map[string]bool) (map[string]bool, error) {
+	history, err := c.Store.History(ctx, "")
+	if err != nil {
+		return nil, errPruneHistory
+	}
+	refs := map[string]bool{}
 	seen := map[string]int{}
 	retains := map[string]int{}
 	for _, r := range history {
 		if _, ok := retains[r.App]; !ok {
 			current, e := c.Store.Applied(ctx, r.App)
-			if gone.apps[r.App] {
+			if goneApps[r.App] {
 				e = sql.ErrNoRows
 			}
 			switch {
@@ -570,12 +597,7 @@ func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions)
 		}
 		seen[r.App]++
 	}
-	for ref := range refs {
-		if id := aliases[ref]; id != "" {
-			ids[id] = true
-		}
-	}
-	return pruneCandidates(owned, refs, ids), nil
+	return refs, nil
 }
 
 type execEngine interface {

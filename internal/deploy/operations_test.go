@@ -682,3 +682,46 @@ func TestExecPlanNamesTheCommandSoAPersonCanReviewIt(t *testing.T) {
 		t.Fatalf("an image app's exec plan names the role's service: %+v", plan.Exec)
 	}
 }
+
+func TestPruneKeepsAnImageAnotherEnvironmentRetains(t *testing.T) {
+	s, op := pruneFixture(t)
+	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{{ID: "id-old", RepoDigests: []string{"old", "alias"}}, {ID: "id-prev", RepoDigests: []string{"prev"}}, {ID: "id-current", RepoDigests: []string{"current"}}}}
+	c := Controller{Store: s, Engine: f, Foreign: func(context.Context) (Foreign, error) { return Foreign{Images: map[string]bool{"alias": true}}, nil }}
+	out := c.runOperation(context.Background(), op, Actor{Admin: true}, Request{Kind: "prune"})
+	if out.State != "succeeded" || len(f.removed) != 2 || f.removed[0] == "old" || f.removed[1] == "old" {
+		t.Fatalf("outcome %+v removed %v", out, f.removed)
+	}
+}
+
+func TestPruneFailsWhenTheOthersRetainedImagesCannotBeRead(t *testing.T) {
+	s, op := pruneFixture(t)
+	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{{ID: "id-old", RepoDigests: []string{"old"}}, {ID: "id-prev", RepoDigests: []string{"prev"}}, {ID: "id-current", RepoDigests: []string{"current"}}}}
+	c := Controller{Store: s, Engine: f, Foreign: func(context.Context) (Foreign, error) { return Foreign{}, errors.New("unavailable") }}
+	out := c.runOperation(context.Background(), op, Actor{Admin: true}, Request{Kind: "prune"})
+	if out.State != "failed" || out.Err != "release history unavailable" || len(f.removed) != 0 {
+		t.Fatalf("outcome %+v removed %v", out, f.removed)
+	}
+}
+
+func TestRetainedImagesIsTheRuleOfPrune(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	for _, release := range []struct{ id, digest string }{{"one", "old"}, {"two", "prev"}, {"three", "current"}} {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: release.id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: release.digest, Manifest: []byte(`{"apps":{"app":{"deploy":{"retain":2}}}}`)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := Controller{Store: s}
+	refs, err := c.RetainedImages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs["old"] || !refs["prev"] || !refs["current"] {
+		t.Fatalf("retained %v", refs)
+	}
+}
