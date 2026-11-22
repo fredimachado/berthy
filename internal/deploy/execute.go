@@ -350,6 +350,12 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 		recoveryCancel()
 		if recoveryErr != nil {
+			for _, message := range compensationMessages(recoveryErr) {
+				if c.Log != nil {
+					c.Log(message)
+				}
+				c.storeDiagnostics(context.Background(), op.ID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}}, "")
+			}
 			outcome.State = "recovery_required"
 			outcome.Err = "rollout recovery required"
 			return
@@ -520,10 +526,35 @@ func (c *Controller) ensureImage(ctx context.Context, p preparedPlan) (engine.Im
 	return img, "", nil
 }
 
+const (
+	compensationIntents = "compensation: could not read the operation's intents"
+	compensationChanged = "compensation: service changed outside Berthy"
+	compensationUpdate  = "compensation: restore update failed"
+	compensationHealth  = "compensation: previous release did not become healthy before the deadline"
+	compensationRemove  = "compensation: created service could not be removed"
+	compensationFailed  = "compensation: failed"
+)
+
+func compensationMessages(err error) []string {
+	var messages []string
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			messages = append(messages, compensationMessages(e)...)
+		}
+		return messages
+	}
+	switch err.Error() {
+	case compensationIntents, compensationChanged, compensationUpdate, compensationHealth, compensationRemove:
+		return []string{err.Error()}
+	default:
+		return []string{compensationFailed}
+	}
+}
+
 func (c *Controller) compensateRollout(ctx context.Context, opID, app string) error {
 	intents, err := c.Store.Intents(ctx, opID)
 	if err != nil {
-		return err
+		return errors.New(compensationIntents)
 	}
 	var combined error
 	for n := len(intents) - 1; n >= 0; n-- {
@@ -534,6 +565,9 @@ func (c *Controller) compensateRollout(ctx context.Context, opID, app string) er
 			e = c.restoreUpdate(ctx, app, i)
 		case "create":
 			e = c.removeCreated(ctx, i)
+			if e != nil {
+				e = errors.New(compensationRemove)
+			}
 		}
 		combined = errors.Join(combined, e)
 	}
@@ -590,14 +624,14 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 	}
 	if !sameSpec(live.Spec, i.Before) {
 		if !matchesStoredSpec(i.Desired, live.Spec) {
-			return errors.New("service changed outside operation")
+			return errors.New(compensationChanged)
 		}
 		auth, err := c.operationAuth(ctx, app, i.Before)
 		if err != nil {
 			return err
 		}
 		if err = c.Engine.UpdateService(ctx, live.ID, live.Version, i.Before, auth); err != nil {
-			return errors.New("service restoration uncertain")
+			return errors.New(compensationUpdate)
 		}
 		live, err = c.Engine.InspectService(ctx, i.Name)
 		if err != nil || live.ID != i.ServiceID || !sameSpec(live.Spec, i.Before) {
@@ -625,10 +659,18 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		if _, ok := ref.(reference.Canonical); !ok {
 			return errors.New("prior image is not pinned")
 		}
-		return waitImageHealthy(ctx, c.Engine, i.ServiceID, before.TaskTemplate.ContainerSpec.Image, before.Mode.Replicated.Replicas)
+		err = waitImageHealthy(ctx, c.Engine, i.ServiceID, before.TaskTemplate.ContainerSpec.Image, before.Mode.Replicated.Replicas)
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return errors.New(compensationHealth)
+		}
+		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	return waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
+	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.New(compensationHealth)
+	}
+	return err
 }
 
 // renamed is spec with its Name set to name.

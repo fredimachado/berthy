@@ -59,6 +59,7 @@ func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	d.Log = sh.Log
 	r := &Runtime{Config: c, log: sh.Log, deployment: d}
 	r.reports = NewReports(c, d.Store, sh.Log)
 	// The observer is set before recovery, so an operation that recovery ends is reported too.

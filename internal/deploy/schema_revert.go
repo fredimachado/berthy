@@ -56,7 +56,7 @@ var sharedComposeProjectMessage = regexp.MustCompile(`^Compose project [a-z0-9][
 // PublicMessage reports whether s is a refusal text that may be shown to clients.
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
-	case "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
+	case compensationIntents, compensationChanged, compensationUpdate, compensationHealth, compensationRemove, compensationFailed, "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,

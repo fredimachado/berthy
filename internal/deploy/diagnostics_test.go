@@ -758,3 +758,57 @@ func TestStartAttemptWordingOfTheReason(t *testing.T) {
 		t.Fatalf("reason %q", got)
 	}
 }
+
+type failingRestoreEngine struct{ *diagFake }
+
+func (f failingRestoreEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	if strings.Contains(string(spec), strings.Repeat("a", 64)) {
+		return errors.New("private docker error")
+	}
+	return f.diagFake.UpdateService(ctx, id, version, spec, auth)
+}
+
+func TestFailedCompensationRecordsCategoryAndKeepsLock(t *testing.T) {
+	f := newDiagFake()
+	f.tasksFor = func(generation, image string) []engine.ServiceTask {
+		if strings.Contains(image, strings.Repeat("b", 64)) {
+			return failedTasks(generation, 2)
+		}
+		return []engine.ServiceTask{{ID: "good", ContainerID: "c-good", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": generation}, Image: image}}
+	}
+	f.diagnose = exitedContainers(2, "starting")
+	c, s := diagController(t, f)
+	if op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil)); op.State != "succeeded" {
+		t.Fatalf("first: %+v", op)
+	}
+	c.Engine = failingRestoreEngine{f}
+	op := deployWeb(t, c, s, "second", "b", webManifest("1m", withStartAttempts(2)))
+	if op.State != "recovery_required" || op.Reason != "role web: task exited with code 1 (gave up after 2 failed starts)" {
+		t.Fatalf("operation: %+v", op)
+	}
+	lock, err := s.Lock(context.Background())
+	if err != nil || lock.OperationID != op.ID {
+		t.Fatalf("lock: %+v, %v", lock, err)
+	}
+	const want = "compensation: restore update failed"
+	found := false
+	for _, d := range storedDiagnostics(t, s, op.ID) {
+		if d.Error == want {
+			found = true
+		}
+	}
+	if !found || !PublicMessage(want) {
+		t.Fatalf("missing public compensation category in diagnostics: %+v", storedDiagnostics(t, s, op.ID))
+	}
+}
+
+func TestCompensationReportsPreviousHealthDeadline(t *testing.T) {
+	before := json.RawMessage(`{"Name":"svc","Mode":{"Replicated":{"Replicas":1}},"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"old"}}}}`)
+	c := Controller{Engine: &positiveEngine{spec: before, unhealthy: true}}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
+	defer cancel()
+	err := c.restoreUpdate(ctx, "web", state.Intent{Name: "svc", ServiceID: "id", Before: before})
+	if got := compensationMessages(err); len(got) != 1 || got[0] != "compensation: previous release did not become healthy before the deadline" {
+		t.Fatalf("category %v, error %v", got, err)
+	}
+}
