@@ -5,3 +5,11 @@
 - Proven: The test failed for both start and restart before the subscription fix.
 - Existing violations: 1 filter fixed, 0 baselined.
 - Follow-up: none.
+
+## 2026-11-22: Classify replaced services during compensation
+- Rule: When restoring an update, distinguish a confirmed service ID mismatch from an inspection failure, because a replaced service was changed outside Berthy.
+- Level: 2; a behavior test detects the wrong category and checks the replacement is untouched.
+- Enforced by: TestCompensationReportsReplacedService.
+- Proven: The test failed with the generic category before the fix.
+- Existing violations: 1 recovery check fixed, 0 baselined.
+- Follow-up: none.

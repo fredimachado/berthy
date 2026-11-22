@@ -619,8 +619,11 @@ func (c *Controller) removeCreated(ctx context.Context, i state.Intent) error {
 }
 func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Intent) error {
 	live, err := c.Engine.InspectService(ctx, i.Name)
-	if err != nil || live.ID != i.ServiceID {
+	if err != nil {
 		return errors.New("bound service recovery inspection failed")
+	}
+	if live.ID != i.ServiceID {
+		return errors.New(compensationChanged)
 	}
 	if !sameSpec(live.Spec, i.Before) {
 		if !matchesStoredSpec(i.Desired, live.Spec) {

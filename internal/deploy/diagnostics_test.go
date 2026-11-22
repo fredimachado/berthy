@@ -812,3 +812,16 @@ func TestCompensationReportsPreviousHealthDeadline(t *testing.T) {
 		t.Fatalf("category %v, error %v", got, err)
 	}
 }
+
+func TestCompensationReportsReplacedService(t *testing.T) {
+	live := json.RawMessage(`{"Name":"svc","version":"replacement"}`)
+	e := &positiveEngine{spec: live}
+	c := Controller{Engine: e}
+	err := c.restoreUpdate(context.Background(), "web", state.Intent{Name: "svc", ServiceID: "old-id", Before: json.RawMessage(`{"Name":"svc","version":"old"}`)})
+	if got := compensationMessages(err); len(got) != 1 || got[0] != "compensation: service changed outside Berthy" {
+		t.Fatalf("category %v, error %v", got, err)
+	}
+	if string(e.spec) != string(live) {
+		t.Fatalf("replaced service was modified: %s", e.spec)
+	}
+}
