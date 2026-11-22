@@ -32,7 +32,7 @@ func (ev Event) Resync() bool { return ev.Type == ResyncType && ev.Action == Res
 // judges. Everything else, such as the health checks' exec events, never leaves Docker.
 var EventFilterWatched = EventFilter{
 	Types:   []string{"container", "service"},
-	Actions: []string{"die", "oom", "health_status", "update", "remove"},
+	Actions: []string{"start", "restart", "die", "oom", "health_status", "update", "remove"},
 }
 
 // EventHub reads Docker's event feed on one goroutine, Run, and gives each event to the subscribers that asked for it. It

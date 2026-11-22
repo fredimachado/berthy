@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -34,10 +36,11 @@ type downFake struct {
 	eng *engine.Engine
 	mu  sync.Mutex
 	// reads counts the requests for the container list; oom is what the container's inspect reports.
-	reads  int
-	oom    bool
-	down   bool // the container list answers an error
-	events chan string
+	reads   int
+	oom     bool
+	down    bool // the container list answers an error
+	events  chan string
+	filters chan map[string][]string
 }
 
 func (d *downFake) setDown(v bool) {
@@ -63,7 +66,7 @@ func (d *downFake) push(line string) { d.events <- line }
 
 func newDownFake(t *testing.T) *downFake {
 	t.Helper()
-	d := &downFake{events: make(chan string, 64)}
+	d := &downFake{events: make(chan string, 64), filters: make(chan map[string][]string, 1)}
 	// The directory is short on purpose: a Unix socket path holds about 108 bytes.
 	dir, err := os.MkdirTemp("", "bd")
 	if err != nil {
@@ -81,11 +84,29 @@ func newDownFake(t *testing.T) *downFake {
 		case "/version":
 			w.Write([]byte(`{"ApiVersion":"1.50","MinAPIVersion":"1.24"}`))
 		case "/v1.44/events":
+			var filters map[string][]string
+			if err := json.Unmarshal([]byte(r.URL.Query().Get("filters")), &filters); err != nil {
+				t.Errorf("event filters: %v", err)
+				return
+			}
+			select {
+			case d.filters <- filters:
+			default:
+			}
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush()
 			for {
 				select {
 				case line := <-d.events:
+					var event struct{ Type, Action string }
+					if err := json.Unmarshal([]byte(line), &event); err != nil {
+						t.Errorf("event: %v", err)
+						continue
+					}
+					action := strings.SplitN(event.Action, ":", 2)[0]
+					if !slices.Contains(filters["type"], event.Type) || !slices.Contains(filters["event"], action) {
+						continue
+					}
 					w.Write([]byte(line + "\n"))
 					w.(http.Flusher).Flush()
 				case <-r.Context().Done():

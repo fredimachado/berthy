@@ -180,3 +180,44 @@ func TestADieEventAsksForAReadOfTheInventory(t *testing.T) {
 	d.push(dieEvent)
 	waitUntil(t, "the die event to ask for a read", w.readNow.Load)
 }
+
+type eventWakeCheck struct{ ran chan struct{} }
+
+func (c eventWakeCheck) Name() string            { return "down:shop-lab-db/db" }
+func (c eventWakeCheck) Interval() time.Duration { return time.Hour }
+func (c eventWakeCheck) Failures() int           { return 1 }
+func (c eventWakeCheck) Run(context.Context) monitor.Result {
+	c.ran <- struct{}{}
+	return monitor.Result{State: monitor.OK}
+}
+
+func TestContainerStartsWakeDownCheckThroughHub(t *testing.T) {
+	for _, action := range []string{"start", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			d := newDownFake(t)
+			w, s := shopMonitoring(t, d)
+			runHub(t, d.eng)
+			filters := <-d.filters
+			if !slices.Contains(filters["event"], action) {
+				t.Fatalf("Docker subscription omits %s: %v", action, filters)
+			}
+			ran := make(chan struct{}, 2)
+			w.mon = &monitor.Monitor{Env: "lab", Store: s, Checks: func(context.Context) []monitor.Check { return []monitor.Check{eventWakeCheck{ran}} }}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); w.Run(ctx) }()
+			defer func() { cancel(); <-done }()
+			select {
+			case <-ran:
+			case <-time.After(30 * time.Second):
+				t.Fatal("initial check did not run")
+			}
+			d.push(`{"Type":"container","Action":"` + action + `","Actor":{"ID":"c1","Attributes":{"com.docker.compose.project":"shop-lab-db"}}}`)
+			select {
+			case <-ran:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s did not wake the down check", action)
+			}
+		})
+	}
+}
