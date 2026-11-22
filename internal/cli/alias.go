@@ -48,6 +48,9 @@ func checkAliases(aliases map[string]string) error {
 			return fmt.Errorf("alias %s: its first word must be a command that talks to an agent", name)
 		}
 		for _, w := range words {
+			if w == "--" {
+				break
+			}
 			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
 				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line", name, w)
 			}

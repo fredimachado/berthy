@@ -272,3 +272,26 @@ func TestBuiltinCommandsAllDispatch(t *testing.T) {
 		t.Errorf("made-up name: exit %d, stderr %q", code, errs.String())
 	}
 }
+
+func TestAliasPassesProjectFlagAfterCommandSeparator(t *testing.T) {
+	srv, requests := aliasAgent(t)
+	t.Setenv("BERTHY_CONFIG", ingressCLIConfig(t, srv.URL))
+	t.Chdir(writeAliasDir(t, strings.Replace(aliasManifest, "bin/console", "bin/console --project demo", 1)))
+	var out, errs bytes.Buffer
+	if code := Run([]string{"console", "-e", "dev"}, &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs.String())
+	}
+	got := requests()
+	if len(got) != 1 {
+		t.Fatalf("requests: %v", got)
+	}
+	var body struct {
+		Command []string `json:"command"`
+	}
+	if err := json.Unmarshal(got[0].body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Command, []string{"bin/console", "--project", "demo"}) {
+		t.Fatalf("command %q", body.Command)
+	}
+}
