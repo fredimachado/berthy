@@ -96,7 +96,7 @@ func dockerUp(version string) []string {
 }
 
 func setUpServer() []string {
-	return with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true")...)
+	return with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)
 }
 
 func newSession(f *fakeServer, dry bool) *Session {
@@ -312,8 +312,8 @@ func TestStepFailures(t *testing.T) {
 		{"worker", with(base(), with(dockerUp("29.9.3"), "swarm=active false")...), nil, "swarm", "this server is a worker in another Swarm"},
 		{"locked swarm", with(base(), with(dockerUp("29.9.3"), "swarm=locked false")...), nil, "swarm", "the Swarm state is locked"},
 		{"pending swarm", with(base(), with(dockerUp("29.9.3"), "swarm=pending false")...), nil, "swarm", "the Swarm state is pending"},
-		{"bridge network", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=bridge local false")...), nil, "network", "network p5net exists but is not an attachable overlay"},
-		{"overlay not attachable", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm false")...), nil, "network", "network p5net exists but is not an attachable overlay"},
+		{"bridge network", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=bridge local false p5net")...), nil, "network", "network p5net exists but is not an attachable overlay"},
+		{"overlay not attachable", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm false p5net")...), nil, "network", "network p5net exists but is not an attachable overlay"},
 		{"network error", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network_error=Error response from daemon: multiple matches")...), nil, "network", "could not inspect network p5net: Error response from daemon: multiple matches"},
 		{"listen address not assigned", setUpServer(), func(o *Options) { o.ListenIP = net.ParseIP("172.31.250.99") }, "check", "172.31.250.99 is not assigned to this server: --listen needs one of its addresses"},
 		{"not linux", with(setUpServer()[1:], "os=Darwin"), nil, "check", "this server runs Darwin, not Linux"},
@@ -347,7 +347,7 @@ func TestStepFailures(t *testing.T) {
 func TestDockerStoppedAndDisabledIsStartedAndEnabled(t *testing.T) {
 	stopped := with(base(), "docker=/usr/bin/docker", "docker_client_version=29.9.3", "docker_active=inactive", "docker_enabled=disabled")
 	f := newServer(stopped)
-	g := &sequenceServer{fakeServer: f, outputs: [][]string{stopped, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true")...)}}
+	g := &sequenceServer{fakeServer: f, outputs: [][]string{stopped, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)}}
 	var got []StepResult
 	ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if !ok {
@@ -366,7 +366,7 @@ func TestDockerStoppedAndDisabledIsStartedAndEnabled(t *testing.T) {
 }
 
 func TestDockerEnabledOnly(t *testing.T) {
-	probe := with(base(), "docker=/usr/bin/docker", "docker_client_version=29.9.3", "docker_active=active", "docker_enabled=disabled", "docker_version=29.9.3", "swarm=active true", "network=overlay swarm true")
+	probe := with(base(), "docker=/usr/bin/docker", "docker_client_version=29.9.3", "docker_active=active", "docker_enabled=disabled", "docker_version=29.9.3", "swarm=active true", "network=overlay swarm true p5net")
 	f := newServer(probe)
 	got, ok := runAll(t, f, false)
 	if !ok || got[2].Detail != "enabled Docker 29.9.3" {
@@ -408,7 +408,7 @@ func TestInstallFailureShowsTheLastLines(t *testing.T) {
 func TestInstallUsesWgetWithoutCurl(t *testing.T) {
 	probe := []string{"os=Linux", "arch=aarch64", "systemd=yes", "addr=" + listenIP, "wget=/usr/bin/wget"}
 	f := newServer(probe)
-	g := &sequenceServer{fakeServer: f, outputs: [][]string{probe, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true")...)}}
+	g := &sequenceServer{fakeServer: f, outputs: [][]string{probe, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)}}
 	got, _ := func() ([]StepResult, bool) {
 		var got []StepResult
 		ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
@@ -669,5 +669,13 @@ func TestTailBufferKeepsTheEnd(t *testing.T) {
 func TestCleanReplacesControlCharacters(t *testing.T) {
 	if got := clean("a\x1b[31mb\nc\u0085"); strings.ContainsAny(got, "\x1b\n\u0085") {
 		t.Fatalf("clean = %q", got)
+	}
+}
+
+func TestSetupRejectsNetworkIDInsteadOfName(t *testing.T) {
+	f := newServer(with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true peer-overlay")...))
+	results, ok := runAll(t, f, false)
+	if ok || lastResult(results).Step != "network" {
+		t.Fatalf("accepted network ID: %+v", results)
 	}
 }

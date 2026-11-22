@@ -1672,3 +1672,21 @@ func TestComposeDeployReservesEnvironmentNetwork(t *testing.T) {
 	}
 	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
 }
+
+type composeNetworkIDLookup struct{ *composeDocker }
+
+func (e composeNetworkIDLookup) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{ID: "peerid", Name: "peer-overlay", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+
+func TestComposeRejectsEnvironmentNetworkID(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Engine = composeNetworkIDLookup{newComposeDocker()}
+	m := composeApp(false)
+	m.Network = "peerid"
+	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("id", composeFileOne, m))
+	if err == nil {
+		t.Fatal("accepted network ID")
+	}
+}

@@ -696,6 +696,7 @@ func TestConfigMergeKeepsWhatSetupDoesNotOwn(t *testing.T) {
 		c.DockerSocket = "/run/custom.sock"
 		c.Tokens = append(c.Tokens, agent.Token{Name: "ci", Digest: strings.Repeat("d", 64), Scope: "deploy"}, agent.Token{Name: "bot", Digest: strings.Repeat("e", 64), Scope: "read", Agent: true})
 	})
+	f.probe = with(without(f.probe, "network="), "network=overlay swarm true newnet")
 	s := agentSession(t, f, exe, false, func(o *Options) { o.Network = "newnet"; o.Protected = false })
 	got, ok := runSteps(s)
 	if !ok {

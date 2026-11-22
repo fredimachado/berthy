@@ -205,6 +205,9 @@ func (e *Engine) InspectNetwork(ctx context.Context, name string) (Network, erro
 	}
 	var n Network
 	err = e.jsonRequest(ctx, "GET", "/networks/"+p, nil, nil, &n)
+	if err == nil && n.Name != name {
+		return Network{}, fmt.Errorf("network name does not match requested name")
+	}
 	return n, err
 }
 func refPath(ref string) (string, error) {

@@ -620,6 +620,14 @@ func firstDifference(p ComposePlan) string {
 func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor, req Request, adopt bool, reserve ...func([]state.Claim) error) (ComposePlan, error) {
 	project := req.Manifest.ComposeProject(c.Environment, req.App)
 	app := req.Manifest.Apps[req.App]
+	if c.Engine == nil {
+		return ComposePlan{}, errors.New("overlay network unavailable")
+	}
+	networkName := req.Manifest.NetworkName(c.Environment)
+	network, err := c.Engine.InspectNetwork(ctx, networkName)
+	if err != nil || network.Name != networkName {
+		return ComposePlan{}, errors.New("overlay network unavailable")
+	}
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
 	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
 	if err != nil {

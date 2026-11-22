@@ -70,8 +70,8 @@ type positiveEngine struct {
 	unhealthy bool
 }
 
-func (e *positiveEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
-	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+func (e *positiveEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{ID: "net", Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
 }
 func (e *positiveEngine) ResolveImage(context.Context, string, *engine.RegistryAuth) (string, error) {
 	return "", errors.New("unexpected resolution")
@@ -953,8 +953,8 @@ func specName(spec json.RawMessage) string {
 	return s.Name
 }
 
-func (f *boundFake) InspectNetwork(context.Context, string) (engine.Network, error) {
-	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+func (f *boundFake) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{ID: "net", Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
 }
 func (f *boundFake) ResolveImage(context.Context, string, *engine.RegistryAuth) (string, error) {
 	return "", errors.New("unexpected resolution")
@@ -1590,5 +1590,30 @@ func TestPlanRejectsAnAliasClashingWithABoundService(t *testing.T) {
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{App: "api-blue", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "api-blue-web") {
 		t.Fatalf("plan: %v", err)
+	}
+}
+
+type networkIDLookup struct{ *boundFake }
+
+func (e networkIDLookup) InspectNetwork(context.Context, string) (engine.Network, error) {
+	return engine.Network{ID: "peerid", Name: "peer-overlay", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+
+func TestDeployRejectsNetworkIDInsteadOfName(t *testing.T) {
+	c := &Controller{Engine: networkIDLookup{&boundFake{}}, Store: openStore(t), Environment: "test"}
+	m := dockerManifest(nil)
+	m.Network = "peerid"
+	req := Request{App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m}
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin"}, req); err == nil {
+		t.Fatal("accepted network ID")
+	}
+}
+
+func TestApplyRejectsNetworkIDInsteadOfName(t *testing.T) {
+	c := &Controller{Engine: networkIDLookup{&boundFake{}}, Store: openStore(t), Environment: "test"}
+	m := dockerManifest(nil)
+	m.Network = "peerid"
+	if _, err := c.ApplySettings(context.Background(), Actor{ID: "admin"}, ApplyRequest{Manifest: m}); err == nil {
+		t.Fatal("accepted network ID")
 	}
 }

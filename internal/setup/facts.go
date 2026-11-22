@@ -27,6 +27,7 @@ type Facts struct {
 	SwarmManager bool
 
 	NetworkFound      bool
+	NetworkName       string
 	NetworkDriver     string
 	NetworkScope      string
 	NetworkAttachable bool
@@ -68,7 +69,7 @@ if [ -n "$d" ]; then
     command -v timeout >/dev/null 2>&1 && t="timeout 30"
     echo "docker_version=$($t docker version --format '{{.Server.Version}}' 2>/dev/null)"
     echo "swarm=$($t docker info --format '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}' 2>/dev/null)"
-    out=$($t docker network inspect -f '{{.Driver}} {{.Scope}} {{.Attachable}}' %s 2>&1)
+    out=$($t docker network inspect -f '{{.Driver}} {{.Scope}} {{.Attachable}} {{.Name}}' %s 2>&1)
     if [ $? -eq 0 ]; then
       echo "network=$out"
     else
@@ -106,7 +107,11 @@ func Probe(ctx context.Context, r Runner, network string) (*Facts, error) {
 	if res.Code != 0 {
 		return nil, fmt.Errorf("could not read the state of %s: %s", r.Target(), failureText(res))
 	}
-	return ParseFacts(string(res.Stdout)), nil
+	facts := ParseFacts(string(res.Stdout))
+	if facts.NetworkFound && facts.NetworkName != network {
+		facts.NetworkError = "inspected network name does not match the requested name"
+	}
+	return facts, nil
 }
 
 // ParseFacts reads the key=value lines of the probe. Lines it does not know, or cannot split, are ignored.
@@ -153,6 +158,9 @@ func ParseFacts(out string) *Facts {
 			if fields := strings.Fields(value); len(fields) >= 3 {
 				f.NetworkFound = true
 				f.NetworkDriver, f.NetworkScope, f.NetworkAttachable = fields[0], fields[1], fields[2] == "true"
+				if len(fields) >= 4 {
+					f.NetworkName = fields[3]
+				}
 			}
 		case "network_error":
 			f.NetworkError = value

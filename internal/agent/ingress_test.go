@@ -24,8 +24,8 @@ const ingressTestCFToken = "cf-test-token-not-real"
 // planEngine answers the one Docker call a dry run makes, the overlay network check.
 type planEngine struct{ deploy.Engine }
 
-func (planEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
-	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+func (planEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{ID: "net", Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
 }
 
 // openIngressStore returns an empty encrypted state store for environment lab.

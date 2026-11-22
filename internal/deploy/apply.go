@@ -48,6 +48,13 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	if err := c.checkProject(ctx, Request{Manifest: req.Manifest}); err != nil {
 		return ApplyResult{}, err
 	}
+	if c.Engine != nil {
+		name := req.Manifest.NetworkName(c.Environment)
+		network, err := c.Engine.InspectNetwork(ctx, name)
+		if err != nil && !statusIs(err, 404) || err == nil && network.Name != name {
+			return ApplyResult{}, errors.New("overlay network unavailable")
+		}
+	}
 	namesReq := Request{Kind: "apply", Manifest: req.Manifest}
 	if err := c.checkNames(ctx, namesReq); err != nil {
 		return ApplyResult{}, err

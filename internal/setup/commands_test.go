@@ -192,7 +192,11 @@ func TestDryRunListsWhatARealRunSendsInEachStep(t *testing.T) {
 			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("c", 64))
 			return f
 		}, nil},
-		{"new configuration", func(t *testing.T) *agentFake { return setUpAgent(t, exe) },
+		{"new configuration", func(t *testing.T) *agentFake {
+			f := setUpAgent(t, exe)
+			f.probe = with(without(f.probe, "network="), "network=overlay swarm true newnet")
+			return f
+		},
 			func(_ *testing.T, o *Options) { o.Network = "newnet" }},
 		{"unit changed", func(t *testing.T) *agentFake {
 			f := setUpAgent(t, exe)

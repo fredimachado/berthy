@@ -108,7 +108,7 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 	if err != nil {
 		return Plan{}, errors.New("overlay network unavailable")
 	}
-	if n.Driver != "overlay" || n.Scope != "swarm" || !n.Attachable {
+	if n.Name != req.Manifest.NetworkName(c.Environment) || n.Driver != "overlay" || n.Scope != "swarm" || !n.Attachable {
 		return Plan{}, errors.New("network must be an attachable swarm overlay")
 	}
 	named, err := reference.ParseNormalizedNamed(image)
@@ -157,7 +157,7 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 
 func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) (preparedPlan, error) {
 	n, err := c.Engine.InspectNetwork(ctx, req.Manifest.NetworkName(c.Environment))
-	if err != nil || n.Driver != "overlay" || n.Scope != "swarm" || !n.Attachable {
+	if err != nil || n.Name != req.Manifest.NetworkName(c.Environment) || n.Driver != "overlay" || n.Scope != "swarm" || !n.Attachable {
 		return preparedPlan{}, errors.New("overlay network unavailable")
 	}
 	out := preparedPlan{Request: req, Image: p.Image, NetworkID: n.ID}
@@ -240,7 +240,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		return Plan{}, nil, errors.New("Docker unavailable")
 	}
 	net, err := c.Engine.InspectNetwork(ctx, req.Manifest.NetworkName(c.Environment))
-	if err != nil || net.Driver != "overlay" || net.Scope != "swarm" || !net.Attachable {
+	if err != nil || net.Name != req.Manifest.NetworkName(c.Environment) || net.Driver != "overlay" || net.Scope != "swarm" || !net.Attachable {
 		return Plan{}, nil, errors.New("overlay network unavailable")
 	}
 	daemonDriver, err := c.daemonLogDriver(ctx)
