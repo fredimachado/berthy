@@ -1722,7 +1722,7 @@ func TestValidInterpolatedComposeCollisionNeverDisclosesSecret(t *testing.T) {
 		}
 	}
 	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
-		return nil, Refusal("name " + secret + " is taken by another project or environment on this server")
+		return nil, ClaimConflict{Claim: claim}
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "private-op", ActorID: "admin", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
 	if err != nil {
@@ -1816,5 +1816,44 @@ func TestComposeRejectsNonAttachableEnvironmentNetwork(t *testing.T) {
 	}
 	if out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false); out.State != "failed" || runner.upRuns() != 0 {
 		t.Fatalf("execution: %+v", out)
+	}
+}
+
+type claimReservationError struct{ claim state.Claim }
+
+func (e claimReservationError) Error() string {
+	return "name " + e.claim.Name + " is taken by another project or environment on this server"
+}
+func (e claimReservationError) ConflictingClaim() state.Claim { return e.claim }
+
+func TestComposeConflictIdentifiesTheClaimKindAndServiceMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string
+		claim        state.Claim
+		label        string
+	}{
+		{"mode", `{"services":{"database":{"image":"alpine","network_mode":"shared"}}}`, state.Claim{Kind: state.ClaimNetwork, Name: "shared"}, "services.database.network_mode"},
+		{"volume", `{"services":{"database":{"image":"alpine"}},"volumes":{"data":{"name":"shared"}},"networks":{"backend":{"name":"shared"}}}`, state.Claim{Kind: state.ClaimVolume, Name: "shared"}, "volumes.data"},
+		{"network", `{"services":{"database":{"image":"alpine"}},"volumes":{"data":{"name":"shared"}},"networks":{"backend":{"name":"shared"}}}`, state.Claim{Kind: state.ClaimNetwork, Name: "shared"}, "networks.backend"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeCompose{config: tc.config, hashes: hashOne}
+			c, _ := composeController(t, runner, newComposeDocker())
+			c.Foreign = func(context.Context) (Foreign, error) {
+				return Foreign{Claims: map[state.Claim]bool{tc.claim: true}}, nil
+			}
+			c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
+				return nil, claimReservationError{tc.claim}
+			}
+			want := "Compose " + tc.label + " name is taken by another project or environment on this server"
+			req := composeReq("collision", composeFileOne, composeApp(false))
+			if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || err.Error() != want {
+				t.Fatalf("plan: %v", err)
+			}
+			out := c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
+			if out.Err != want || !PublicMessage(want) {
+				t.Fatalf("execution: %+v", out)
+			}
+		})
 	}
 }

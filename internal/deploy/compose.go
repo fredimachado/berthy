@@ -1261,7 +1261,7 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 			if !namedComposeNetworkMode(mode) {
 				continue
 			}
-			if !engine.ValidName(mode) {
+			if !composeResourceKey.MatchString(key) || !engine.ValidName(mode) {
 				return nil, errComposeConfig
 			}
 			claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: mode})
@@ -1284,8 +1284,8 @@ func composeClaimLabels(project string, cfg composeConfigFile) map[state.Claim]s
 	}
 	for _, key := range sortedKeys(cfg.Services) {
 		claim := state.Claim{Kind: state.ClaimNetwork, Name: cfg.Services[key].NetworkMode}
-		if _, ok := labels[claim]; !ok {
-			labels[claim] = "project"
+		if _, ok := labels[claim]; !ok && namedComposeNetworkMode(claim.Name) && composeResourceKey.MatchString(key) {
+			labels[claim] = "services." + key + ".network_mode"
 		}
 	}
 	return labels
@@ -1296,8 +1296,9 @@ func composeClaimConflict(label string) Refusal {
 }
 
 func sanitizeComposeConflict(err error, labels map[state.Claim]string) error {
-	for claim, label := range labels {
-		if err.Error() == fmt.Sprintf("name %s is taken by another project or environment on this server", claim.Name) {
+	var conflict interface{ ConflictingClaim() state.Claim }
+	if errors.As(err, &conflict) {
+		if label, ok := labels[conflict.ConflictingClaim()]; ok {
 			return composeClaimConflict(label)
 		}
 	}

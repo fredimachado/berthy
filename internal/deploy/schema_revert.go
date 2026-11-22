@@ -50,7 +50,7 @@ var networkNameMessage = regexp.MustCompile(`^network name [a-z0-9][a-z0-9_-]{0,
 
 var dockerNameMessage = regexp.MustCompile(`^name [A-Za-z0-9][A-Za-z0-9._-]{0,200} (is taken by another project or environment on this server|is longer than 63 characters; shorten the project, environment, app or role)$`)
 
-var composeClaimConflictMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}) name is taken by another project or environment on this server$`)
+var composeClaimConflictMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}|services\.[A-Za-z0-9_.-]{1,128}\.network_mode) name is taken by another project or environment on this server$`)
 
 var invalidComposeNameMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}) name is not a valid Docker name of at most 128 characters$`)
 

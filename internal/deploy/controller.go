@@ -138,6 +138,15 @@ type Foreign struct {
 	Ingress []state.IngressState
 }
 
+type ClaimConflict struct{ Claim state.Claim }
+
+func (e ClaimConflict) Error() string {
+	return fmt.Sprintf("name %s is taken by another project or environment on this server", e.Claim.Name)
+}
+
+func (e ClaimConflict) Unwrap() error                 { return Refusal(e.Error()) }
+func (e ClaimConflict) ConflictingClaim() state.Claim { return e.Claim }
+
 type Controller struct {
 	Reserve           func(context.Context, []state.Claim) ([]state.Claim, error)
 	FinishReservation func(context.Context, []state.Claim, []state.Claim, []state.Claim) error

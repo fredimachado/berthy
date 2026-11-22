@@ -161,7 +161,7 @@ func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.C
 	}
 	for _, c := range claims {
 		if foreign[c] {
-			return nil, deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
+			return nil, deploy.ClaimConflict{Claim: c}
 		}
 	}
 	added, err := h.runtimes[id].deployment.Store.AddClaimsNew(ctx, claims)
