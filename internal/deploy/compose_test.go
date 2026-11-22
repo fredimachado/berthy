@@ -1416,3 +1416,60 @@ func TestExistingExternalHostVolumeNeedsAdmin(t *testing.T) {
 		t.Fatalf("ran up %d times", runner.upRuns())
 	}
 }
+
+type missingExternalComposeNetwork struct{ *composeDocker }
+
+func (e missingExternalComposeNetwork) InspectNetwork(ctx context.Context, name string) (engine.Network, error) {
+	if name == "missing-ext" {
+		return engine.Network{}, &engine.StatusError{Code: 404}
+	}
+	return e.composeDocker.InspectNetwork(ctx, name)
+}
+
+func TestComposeRollbackRefusesMissingExternalNetworkBeforeReplacingFiles(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	ctx := context.Background()
+	actor := Actor{ID: "admin", Admin: true}
+	for _, tc := range []struct{ id, file string }{{"first", composeFileOne}, {"second", composeFileTwo}} {
+		op, _, err := admit(t, c, ctx, actor, composeReq(tc.id, tc.file, composeApp(false)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
+			t.Fatalf("%s: %+v", tc.id, got)
+		}
+	}
+	if err := c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runner.config = `{"services":{"database":{"image":"alpine"}},"networks":{"external":{"name":"missing-ext","external":true}}}`
+	c.Engine = missingExternalComposeNetwork{newComposeDocker()}
+	calls := 0
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) { calls++; return claims, nil }
+	req := Request{RequestID: "missing-network", App: "db", Kind: "rollback", Manifest: composeApp(false)}
+	if _, err := c.Plan(ctx, actor, req); err == nil || err.Error() != string(errComposeNetwork) {
+		t.Fatalf("plan: %v", err)
+	}
+	resolved, err := c.rollbackRequest(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, Kind: "rollback", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upBefore := runner.upRuns()
+	out := c.runCompose(ctx, op, actor, resolved, true)
+	if err = s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	if out.State != "failed" || out.Err != string(errComposeNetwork) || calls != 0 || runner.upRuns() != upBefore {
+		t.Fatalf("execution: %+v; reservations=%d", out, calls)
+	}
+	m := composeApp(false)
+	file, err := os.ReadFile(filepath.Join(c.composeDir(m.ComposeProject("test", "db")), "compose.yaml"))
+	if err != nil || string(file) != composeFileTwo {
+		t.Fatalf("current project file: %q, %v", file, err)
+	}
+}

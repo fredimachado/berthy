@@ -1206,7 +1206,7 @@ func (c *Controller) checkComposeNetworkModes(ctx context.Context, cfg composeCo
 			return invalidComposeName("networks", key)
 		}
 		network, err := c.Engine.InspectNetwork(ctx, name)
-		if err != nil && !statusIs(err, 404) || err == nil && network.Name != name {
+		if err != nil && (!statusIs(err, 404) || cfg.Networks[key].external()) || err == nil && network.Name != name {
 			return errComposeNetwork
 		}
 	}
