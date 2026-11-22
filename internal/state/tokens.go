@@ -58,7 +58,12 @@ func (s *Store) tokens(ctx context.Context, q interface {
 
 // Tokens returns the tokens made through the API, oldest first.
 func (s *Store) Tokens(ctx context.Context) ([]Token, error) {
-	return s.tokens(ctx, s.db)
+	db, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := s.tokens(ctx, db)
+	return tokens, s.closed(err)
 }
 
 // CreateToken stores a token and audits token_create:<name> in the same transaction. It returns ErrConflict when a token has
@@ -67,7 +72,7 @@ func (s *Store) CreateToken(ctx context.Context, actor Actor, t Token) error {
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -103,7 +108,7 @@ func (s *Store) RevokeToken(ctx context.Context, actor Actor, name string, guard
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -147,7 +152,7 @@ func (s *Store) TouchTokens(ctx context.Context, used map[string]time.Time) erro
 	if len(used) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -162,7 +167,7 @@ func (s *Store) TouchTokens(ctx context.Context, used map[string]time.Time) erro
 
 // TokenUse returns when each token was last used, by digest. A token that was never used has no entry.
 func (s *Store) TokenUse(ctx context.Context) (map[string]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT digest,last_used FROM token_use WHERE environment=?`, s.env)
+	rows, err := s.query(ctx, `SELECT digest,last_used FROM token_use WHERE environment=?`, s.env)
 	if err != nil {
 		return nil, err
 	}

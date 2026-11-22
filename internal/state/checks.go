@@ -37,7 +37,7 @@ func toMilli(t time.Time) int64 {
 
 // Checks returns the stored state of every check, sorted by name.
 func (s *Store) Checks(ctx context.Context) ([]CheckState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,state,detail,since,notified_state,notified FROM checks WHERE environment=? ORDER BY name`, s.env)
+	rows, err := s.query(ctx, `SELECT name,state,detail,since,notified_state,notified FROM checks WHERE environment=? ORDER BY name`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -62,13 +62,13 @@ func (s *Store) PutCheck(ctx context.Context, c CheckState) error {
 	if c.Name == "" || len(c.Name) > 200 || !checkStates[c.State] || c.NotifiedState != "" && !checkStates[c.NotifiedState] || len(c.Detail) > maxCheckDetail {
 		return errors.New("invalid check state")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET state=excluded.state,detail=excluded.detail,since=excluded.since,notified_state=excluded.notified_state,notified=excluded.notified`, s.env, c.Name, c.State, c.Detail, toMilli(c.Since), c.NotifiedState, toMilli(c.Notified))
+	_, err := s.exec(ctx, `INSERT INTO checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(environment,name) DO UPDATE SET state=excluded.state,detail=excluded.detail,since=excluded.since,notified_state=excluded.notified_state,notified=excluded.notified`, s.env, c.Name, c.State, c.Detail, toMilli(c.Since), c.NotifiedState, toMilli(c.Notified))
 	return err
 }
 
 // DeleteCheck removes the stored state of a check that is no longer configured. A missing check is not an error.
 func (s *Store) DeleteCheck(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM checks WHERE environment=? AND name=?`, s.env, name)
+	_, err := s.exec(ctx, `DELETE FROM checks WHERE environment=? AND name=?`, s.env, name)
 	return err
 }
 
@@ -77,7 +77,7 @@ func (s *Store) RecordAudit(ctx context.Context, actor Actor, action, outcome st
 	if actor.ID == "" || action == "" || outcome == "" {
 		return errors.New("actor, action and outcome required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}

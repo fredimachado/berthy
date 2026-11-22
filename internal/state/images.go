@@ -14,7 +14,7 @@ func (s *Store) RecordImageAcquired(ctx context.Context, ref, id string) error {
 	if ref == "" || id == "" {
 		return errors.New("image ref and ID required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -37,7 +37,7 @@ func (s *Store) RecordImageAcquired(ctx context.Context, ref, id string) error {
 	return tx.Commit()
 }
 func (s *Store) AcquiredImages(ctx context.Context) ([]AcquiredImage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT ref,image_id FROM acquired_images WHERE environment=? ORDER BY ref`, s.env)
+	rows, err := s.query(ctx, `SELECT ref,image_id FROM acquired_images WHERE environment=? ORDER BY ref`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (s *Store) AcquiredImages(ctx context.Context) ([]AcquiredImage, error) {
 	return out, rows.Err()
 }
 func (s *Store) ForgetImage(ctx context.Context, ref, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ type CompletedOneOff struct{ OperationID, ID, Name, Role string }
 // commands that finished, and any one-off that created a container but never finished, such as one that timed out. Their
 // output lives on in the operation's diagnostics. A step that never created a container has none to list.
 func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after','run')) ORDER BY i.operation_id,i.ordinal`, s.env)
+	rows, err := s.query(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after','run')) ORDER BY i.operation_id,i.ordinal`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ type HistoryOperation struct {
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}

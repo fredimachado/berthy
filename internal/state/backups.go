@@ -47,7 +47,7 @@ func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if b.Backup == "" || b.App == "" || b.Destination == "" || b.ObjectKey == "" || !backupTriggers[b.Trigger] || b.Started.IsZero() || (b.Trigger == "schedule") == b.Scheduled.IsZero() {
 		return 0, errors.New("invalid backup run")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -86,7 +86,7 @@ func (s *Store) FinishBackup(ctx context.Context, id int64, status string, size 
 	if len(detail) > maxBackupDetail {
 		detail = detail[:maxBackupDetail]
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE backups SET status=?,size=?,sha256=?,detail=?,finished=? WHERE environment=? AND id=? AND status='running'`,
+	res, err := s.exec(ctx, `UPDATE backups SET status=?,size=?,sha256=?,detail=?,finished=? WHERE environment=? AND id=? AND status='running'`,
 		status, size, sha256, detail, now(), s.env, id)
 	if err != nil {
 		return err
@@ -101,7 +101,7 @@ func (s *Store) FinishBackup(ctx context.Context, id int64, status string, size 
 // run is never listed as successful. If its upload completed just before the crash, an object may exist under its key;
 // backup list shows what is in storage, so that object is visible even though no run records it as a success.
 func (s *Store) AbandonRunningBackups(ctx context.Context) (int, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE backups SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedBackupDetail, now(), s.env)
+	res, err := s.exec(ctx, `UPDATE backups SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedBackupDetail, now(), s.env)
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +129,7 @@ func (s *Store) SetBackupObjectKey(ctx context.Context, id int64, key string) er
 		return errors.New("invalid backup object key")
 	}
 	// OR IGNORE turns a key that another run holds into an update of no rows.
-	res, err := s.db.ExecContext(ctx, `UPDATE OR IGNORE backups SET object_key=? WHERE environment=? AND id=? AND status='running'`, key, s.env, id)
+	res, err := s.exec(ctx, `UPDATE OR IGNORE backups SET object_key=? WHERE environment=? AND id=? AND status='running'`, key, s.env, id)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (s *Store) BackupRuns(ctx context.Context, backup string, limit int) ([]Bac
 	if limit < 1 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND (?='' OR backup=?) ORDER BY id DESC LIMIT ?`, s.env, backup, backup, limit)
+	rows, err := s.query(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND (?='' OR backup=?) ORDER BY id DESC LIMIT ?`, s.env, backup, backup, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (s *Store) BackupRuns(ctx context.Context, backup string, limit int) ([]Bac
 // LastSuccessfulBackups returns, for each backup, its newest run that succeeded. Failed and running runs are ignored. A
 // backup that never succeeded is absent.
 func (s *Store) LastSuccessfulBackups(ctx context.Context) (map[string]BackupRun, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND id IN (SELECT MAX(id) FROM backups WHERE environment=? AND status='succeeded' GROUP BY backup)`, s.env, s.env)
+	rows, err := s.query(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND id IN (SELECT MAX(id) FROM backups WHERE environment=? AND status='succeeded' GROUP BY backup)`, s.env, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ type BackupHistory struct {
 // BackupHistory returns the history of one backup.
 func (s *Store) BackupHistory(ctx context.Context, backup string) (BackupHistory, error) {
 	var h BackupHistory
-	rows, err := s.db.QueryContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND status='succeeded' ORDER BY id DESC LIMIT 2`, s.env, backup)
+	rows, err := s.query(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND status='succeeded' ORDER BY id DESC LIMIT 2`, s.env, backup)
 	if err != nil {
 		return h, err
 	}
@@ -206,7 +206,7 @@ func (s *Store) BackupHistory(ctx context.Context, backup string) (BackupHistory
 	if err = rows.Close(); err != nil {
 		return h, err
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND (status='succeeded' OR status='failed' AND detail NOT IN (?,?)) ORDER BY id DESC LIMIT 1`, s.env, backup, StoppedBackupDetail, AbandonedBackupDetail)
+	row := s.queryRow(ctx, `SELECT `+backupColumns+` FROM backups WHERE environment=? AND backup=? AND (status='succeeded' OR status='failed' AND detail NOT IN (?,?)) ORDER BY id DESC LIMIT 1`, s.env, backup, StoppedBackupDetail, AbandonedBackupDetail)
 	last, err := scanBackupRun(row)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

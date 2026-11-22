@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -55,5 +56,36 @@ func TestAStateOfVersion18GetsTheClaimsTable(t *testing.T) {
 	}
 	if err := s.AddClaims(context.Background(), []Claim{{Kind: ClaimNetwork, Name: "net"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClaimsOnAClosedStoreIsErrClosed(t *testing.T) {
+	s, _, _ := testStore(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s.hold = func() {
+		close(entered)
+		<-release
+	}
+	errc := make(chan error, 1)
+	go func() {
+		_, err := s.Claims(context.Background())
+		errc <- err
+	}()
+	select {
+	case <-entered:
+	case <-t.Context().Done():
+		t.Fatal("Claims never started")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-errc; !errors.Is(err, ErrClosed) {
+		t.Fatalf("in-flight Claims: %v, want ErrClosed", err)
+	}
+	_, err := s.Claims(context.Background())
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("after Close: %v, want ErrClosed", err)
 	}
 }

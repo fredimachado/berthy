@@ -18,7 +18,7 @@ func (e *OwnerError) Error() string {
 // call checks both. The owner is the metadata rows project and environment only. A fresh state can hold check rows
 // before any audit row exists, so the environment is never inferred from other tables.
 func (s *Store) Claim(ctx context.Context, project string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}

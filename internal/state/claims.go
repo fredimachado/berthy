@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"errors"
 )
 
 // Claim is a Docker name this environment holds.
@@ -16,12 +15,16 @@ const (
 )
 
 func (s *Store) Claims(ctx context.Context) ([]Claim, error) {
-	if s.db == nil {
-		return nil, errors.New("state is closed")
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT kind,name FROM claims WHERE environment=? ORDER BY kind,name`, s.env)
+	db, err := s.handle()
 	if err != nil {
 		return nil, err
+	}
+	if s.hold != nil {
+		s.hold()
+	}
+	rows, err := db.QueryContext(ctx, `SELECT kind,name FROM claims WHERE environment=? ORDER BY kind,name`, s.env)
+	if err != nil {
+		return nil, s.closed(err)
 	}
 	defer rows.Close()
 	var claims []Claim
@@ -42,7 +45,7 @@ func (s *Store) AddClaims(ctx context.Context, claims []Claim) error {
 
 // AddClaimsNew adds claims and returns only those inserted by this transaction.
 func (s *Store) AddClaimsNew(ctx context.Context, claims []Claim) ([]Claim, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +75,7 @@ func (s *Store) ReleaseClaims(ctx context.Context, claims []Claim) error {
 }
 
 func (s *Store) changeClaims(ctx context.Context, claims []Claim, query string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}

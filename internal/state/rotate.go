@@ -110,7 +110,7 @@ func (s *Store) RotateKey(ctx context.Context, actor Actor, dryRun bool) (Rotate
 	}
 	defer s.rotate.Unlock()
 	// The transaction holds the store's only connection, so nothing else changes the state until it ends.
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return rep, err
 	}

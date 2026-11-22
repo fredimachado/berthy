@@ -58,7 +58,7 @@ func (s *Store) StartStateBackup(ctx context.Context, r StateBackupRun) (int64, 
 	if r.Key == "" || r.Started.IsZero() || (r.Trigger != "schedule" && r.Trigger != "manual") || (r.Trigger == "schedule") == r.Scheduled.IsZero() {
 		return 0, errors.New("invalid state backup run")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -93,7 +93,7 @@ func (s *Store) FinishStateBackup(ctx context.Context, id int64, status string, 
 	if len(detail) > maxBackupDetail {
 		detail = detail[:maxBackupDetail]
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE state_backups SET status=?,size=?,sha256=?,detail=?,finished=? WHERE environment=? AND id=? AND status='running'`,
+	res, err := s.exec(ctx, `UPDATE state_backups SET status=?,size=?,sha256=?,detail=?,finished=? WHERE environment=? AND id=? AND status='running'`,
 		status, size, sha256, detail, now(), s.env, id)
 	if err != nil {
 		return err
@@ -106,7 +106,7 @@ func (s *Store) FinishStateBackup(ctx context.Context, id int64, status string, 
 
 // AbandonRunningStateBackups fails every state backup run that a previous process left running, and returns how many.
 func (s *Store) AbandonRunningStateBackups(ctx context.Context) (int, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE state_backups SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedStateBackupDetail, now(), s.env)
+	res, err := s.exec(ctx, `UPDATE state_backups SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedStateBackupDetail, now(), s.env)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +119,7 @@ func (s *Store) StateBackupRuns(ctx context.Context, limit int) ([]StateBackupRu
 	if limit < 1 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? ORDER BY id DESC LIMIT ?`, s.env, limit)
+	rows, err := s.query(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? ORDER BY id DESC LIMIT ?`, s.env, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (s *Store) StateBackupRuns(ctx context.Context, limit int) ([]StateBackupRu
 // StateBackupHistory returns the last finished and the last successful run of the state backup.
 func (s *Store) StateBackupHistory(ctx context.Context) (StateBackupHistory, error) {
 	var h StateBackupHistory
-	success, err := scanStateBackupRun(s.db.QueryRowContext(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? AND status='succeeded' ORDER BY id DESC LIMIT 1`, s.env))
+	success, err := scanStateBackupRun(s.queryRow(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? AND status='succeeded' ORDER BY id DESC LIMIT 1`, s.env))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
@@ -146,7 +146,7 @@ func (s *Store) StateBackupHistory(ctx context.Context) (StateBackupHistory, err
 	default:
 		h.Success = &success
 	}
-	last, err := scanStateBackupRun(s.db.QueryRowContext(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? AND (status='succeeded' OR status='failed' AND detail NOT IN (?,?)) ORDER BY id DESC LIMIT 1`, s.env, StoppedStateBackupDetail, AbandonedStateBackupDetail))
+	last, err := scanStateBackupRun(s.queryRow(ctx, `SELECT `+stateBackupColumns+` FROM state_backups WHERE environment=? AND (status='succeeded' OR status='failed' AND detail NOT IN (?,?)) ORDER BY id DESC LIMIT 1`, s.env, StoppedStateBackupDetail, AbandonedStateBackupDetail))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
@@ -162,7 +162,7 @@ func (s *Store) StateBackupHistory(ctx context.Context) (StateBackupHistory, err
 // the copy is sealed with, which is the key a restore needs. A rotation cannot run between the copy and that answer: both
 // happen while this call holds the store's only connection.
 func (s *Store) Snapshot(ctx context.Context, path string) (keyID string, err error) {
-	conn, err := s.db.Conn(ctx)
+	conn, err := s.conn(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -187,6 +187,6 @@ func (s *Store) Snapshot(ctx context.Context, path string) (keyID string, err er
 // SchemaVersion returns the database's schema version, which the snapshot records.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var v int
-	err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v)
+	err := s.queryRow(ctx, `PRAGMA user_version`).Scan(&v)
 	return v, err
 }

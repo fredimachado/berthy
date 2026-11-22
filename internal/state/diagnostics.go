@@ -29,7 +29,7 @@ func (s *Store) PutDiagnostics(ctx context.Context, opID string, items []json.Ra
 	if len(items) > maxDiagnosticItems || total > maxDiagnosticBytes {
 		return errors.New("diagnostics too large")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func (s *Store) PutDiagnostics(ctx context.Context, opID string, items []json.Ra
 // Diagnostics returns the diagnostics stored for an operation of this environment, oldest first. An operation without any
 // has none.
 func (s *Store) Diagnostics(ctx context.Context, opID string) ([]json.RawMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT d.seq,d.sealed FROM diagnostics d JOIN operations o ON o.id=d.operation_id WHERE o.environment=? AND o.id=? ORDER BY d.seq`, s.env, opID)
+	rows, err := s.query(ctx, `SELECT d.seq,d.sealed FROM diagnostics d JOIN operations o ON o.id=d.operation_id WHERE o.environment=? AND o.id=? ORDER BY d.seq`, s.env, opID)
 	if err != nil {
 		return nil, err
 	}

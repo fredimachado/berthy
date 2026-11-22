@@ -43,7 +43,7 @@ func (s *Store) Settings(ctx context.Context) (Settings, bool, error) {
 	var st Settings
 	var ms int64
 	var apps []byte
-	err := s.db.QueryRowContext(ctx, `SELECT project,manifest,apps,commit_sha,modified,operation_id,updated FROM environment_settings WHERE environment=?`, s.env).Scan(&st.Project, &st.Manifest, &apps, &st.Commit, &st.Modified, &st.OperationID, &ms)
+	err := s.queryRow(ctx, `SELECT project,manifest,apps,commit_sha,modified,operation_id,updated FROM environment_settings WHERE environment=?`, s.env).Scan(&st.Project, &st.Manifest, &apps, &st.Commit, &st.Modified, &st.OperationID, &ms)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Settings{}, false, nil
 	}
@@ -76,7 +76,7 @@ func (s *Store) ApplySettings(ctx context.Context, actor Actor, st Settings, pro
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,7 @@ func (s *Store) ApplySettings(ctx context.Context, actor Actor, st Settings, pro
 // LatestReleases returns the newest release of every app that was ever deployed, whether or not the app is applied now. It
 // includes the ingress connector's. Bindings are not filled in.
 func (s *Store) LatestReleases(ctx context.Context) (map[string]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND id IN (SELECT max(id) FROM releases WHERE environment=? GROUP BY app)`, s.env, s.env)
+	rows, err := s.query(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND id IN (SELECT max(id) FROM releases WHERE environment=? GROUP BY app)`, s.env, s.env)
 	if err != nil {
 		return nil, err
 	}

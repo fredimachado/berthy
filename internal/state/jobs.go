@@ -67,7 +67,7 @@ func (s *Store) StartJobRun(ctx context.Context, r JobRun) (int64, error) {
 	if len(r.Detail) > maxJobDetail {
 		r.Detail = r.Detail[:maxJobDetail]
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -134,7 +134,7 @@ func (s *Store) FinishJobRunWithOutput(ctx context.Context, id int64, status str
 			return err
 		}
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE job_runs SET status=?,exit_code=?,detail=?,finished=?,output_sealed=? WHERE environment=? AND id=? AND status='running'`, status, code, detail, now(), sealed, s.env, id)
+	res, err := s.exec(ctx, `UPDATE job_runs SET status=?,exit_code=?,detail=?,finished=?,output_sealed=? WHERE environment=? AND id=? AND status='running'`, status, code, detail, now(), sealed, s.env, id)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (s *Store) JobOutput(ctx context.Context, job string, id int64) (JobRun, st
 		args = args[:2]
 	}
 	var sealed []byte
-	r, err := scanJobRun(s.db.QueryRowContext(ctx, query, args...), &sealed)
+	r, err := scanJobRun(s.queryRow(ctx, query, args...), &sealed)
 	if err != nil {
 		return JobRun{}, "", err
 	}
@@ -171,7 +171,7 @@ func (s *Store) JobOutput(ctx context.Context, job string, id int64) (JobRun, st
 // AbandonRunningJobs fails every run a previous process left running, and returns how many it failed. The command may
 // still be running inside its container: only the agent's wait for it ended.
 func (s *Store) AbandonRunningJobs(ctx context.Context) (int, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE job_runs SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedJobDetail, now(), s.env)
+	res, err := s.exec(ctx, `UPDATE job_runs SET status='failed',detail=?,finished=? WHERE environment=? AND status='running'`, AbandonedJobDetail, now(), s.env)
 	if err != nil {
 		return 0, err
 	}
@@ -202,7 +202,7 @@ func (s *Store) JobRuns(ctx context.Context, job string, limit int) ([]JobRun, e
 	if limit < 1 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+jobRunColumns+` FROM job_runs WHERE environment=? AND (?='' OR job=?) ORDER BY id DESC LIMIT ?`, s.env, job, job, limit)
+	rows, err := s.query(ctx, `SELECT `+jobRunColumns+` FROM job_runs WHERE environment=? AND (?='' OR job=?) ORDER BY id DESC LIMIT ?`, s.env, job, job, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +221,7 @@ func (s *Store) JobRuns(ctx context.Context, job string, limit int) ([]JobRun, e
 // LastJobRuns returns, for each job, its newest run that succeeded or failed. Skipped and interrupted runs, and runs still running, are
 // ignored. A job that has none is absent.
 func (s *Store) LastJobRuns(ctx context.Context) (map[string]JobRun, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+jobRunColumns+` FROM job_runs WHERE environment=? AND id IN (SELECT MAX(id) FROM job_runs WHERE environment=? AND status IN ('succeeded','failed') GROUP BY job)`, s.env, s.env)
+	rows, err := s.query(ctx, `SELECT `+jobRunColumns+` FROM job_runs WHERE environment=? AND id IN (SELECT MAX(id) FROM job_runs WHERE environment=? AND status IN ('succeeded','failed') GROUP BY job)`, s.env, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +239,7 @@ func (s *Store) LastJobRuns(ctx context.Context) (map[string]JobRun, error) {
 
 // SetJobRunContainer records the container a running run executes in. It returns ErrConflict when the run is not running.
 func (s *Store) SetJobRunContainer(ctx context.Context, id int64, container string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE job_runs SET container=? WHERE environment=? AND id=? AND status='running'`, container, s.env, id)
+	res, err := s.exec(ctx, `UPDATE job_runs SET container=? WHERE environment=? AND id=? AND status='running'`, container, s.env, id)
 	if err != nil {
 		return err
 	}

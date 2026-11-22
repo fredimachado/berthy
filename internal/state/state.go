@@ -17,20 +17,27 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrConflict = errors.New("state conflict")
+var (
+	ErrConflict = errors.New("state conflict")
+	// ErrClosed is returned by a method that needs the database after Close.
+	ErrClosed = errors.New("state is closed")
+)
 
 type Store struct {
 	db      *sql.DB
 	env     string
 	owner   *os.File
 	keyFile string
-	// keys is the keyring. mu guards it: a rotation holds the write lock while it reseals the values and swaps the ring, so no
+	// keys is the keyring. mu guards it and db: a rotation holds the write lock while it reseals the values and swaps the ring, so no
 	// value is sealed with the old key after the new one is committed. That holds for a value sealed after its transaction began,
 	// since the rotation holds the only connection until it commits; a value sealed before BeginTx must belong to a lock holder,
-	// which a rotation refuses. rotate serializes the rotation with ForgetPreviousKey.
+	// which a rotation refuses. rotate serializes the rotation with ForgetPreviousKey. Close takes the write lock so a late
+	// reader never sees a nil db.
 	mu     sync.RWMutex
 	keys   keyring
 	rotate sync.Mutex
+	// hold, if set, runs after a reader has the db handle and before it queries. Tests use it as a barrier.
+	hold func()
 }
 type Admission struct {
 	RequestID, ActorID, ActorName, Remote, Kind, App, Commit string
@@ -330,19 +337,97 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() error {
+	s.mu.Lock()
+	db, owner := s.db, s.owner
+	s.db, s.owner = nil, nil
+	s.mu.Unlock()
 	var err error
-	if s.db != nil {
-		err = s.db.Close()
-		s.db = nil
+	if db != nil {
+		err = db.Close()
 	}
-	if s.owner != nil {
-		e := s.owner.Close()
-		s.owner = nil
+	if owner != nil {
+		e := owner.Close()
 		if err == nil {
 			err = e
 		}
 	}
 	return err
+}
+
+func (s *Store) handle() (*sql.DB, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil, ErrClosed
+	}
+	return s.db, nil
+}
+
+func (s *Store) closed(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, e := s.handle(); e != nil {
+		return e
+	}
+	return err
+}
+
+func (s *Store) begin(ctx context.Context) (*sql.Tx, error) {
+	db, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	return tx, s.closed(err)
+}
+
+func (s *Store) query(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	db, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	return rows, s.closed(err)
+}
+
+func (s *Store) exec(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	db, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	res, err := db.ExecContext(ctx, q, args...)
+	return res, s.closed(err)
+}
+
+func (s *Store) conn(ctx context.Context) (*sql.Conn, error) {
+	db, err := s.handle()
+	if err != nil {
+		return nil, err
+	}
+	c, err := db.Conn(ctx)
+	return c, s.closed(err)
+}
+
+type scannedRow struct {
+	row *sql.Row
+	err error
+	s   *Store
+}
+
+func (s *Store) queryRow(ctx context.Context, q string, args ...any) scannedRow {
+	db, err := s.handle()
+	if err != nil {
+		return scannedRow{err: err, s: s}
+	}
+	return scannedRow{row: db.QueryRowContext(ctx, q, args...), s: s}
+}
+
+func (r scannedRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	return r.s.closed(r.row.Scan(dest...))
 }
 func randomID() (string, error) {
 	b := make([]byte, 16)
@@ -386,7 +471,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if a.RequestID == "" || a.ActorID == "" || a.Kind == "" || !publicJSON(a.PublicRequest) {
 		return Operation{}, false, errors.New("invalid admission")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -425,7 +510,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	}
 	return Operation{ID: id, Admission: a, State: "running", Started: time.UnixMilli(started).UTC()}, true, nil
 }
-func operationQuery(row *sql.Row) (Operation, error) {
+func operationQuery(row interface{ Scan(...any) error }) (Operation, error) {
 	var o Operation
 	var hash []byte
 	var started int64
@@ -437,7 +522,7 @@ func operationQuery(row *sql.Row) (Operation, error) {
 
 // AdmissionForRequest finds an existing admission and enforces request idempotency.
 func (s *Store) AdmissionForRequest(ctx context.Context, requestID, actorID string, hash [32]byte) (Operation, error) {
-	op, err := operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, requestID))
+	op, err := operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, requestID))
 	if err != nil {
 		return Operation{}, err
 	}
@@ -447,10 +532,10 @@ func (s *Store) AdmissionForRequest(ctx context.Context, requestID, actorID stri
 	return op, nil
 }
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
+	return operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
 }
 func (s *Store) Active(ctx context.Context) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
+	return operationQuery(s.queryRow(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
 }
 func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMessage) error {
 	if !publicJSON(data) {
@@ -483,7 +568,7 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -510,7 +595,7 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 	if phase == "" || !validJSON(receipt) {
 		return errors.New("invalid step")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -533,7 +618,7 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 	return tx.Commit()
 }
 func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.ordinal,i.kind,i.role,i.name,i.service_id,i.generation,i.seen_version,i.deadline,i.before_sealed,i.desired_sealed,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.id=? ORDER BY i.ordinal`, s.env, id)
+	rows, err := s.query(ctx, `SELECT i.ordinal,i.kind,i.role,i.name,i.service_id,i.generation,i.seen_version,i.deadline,i.before_sealed,i.desired_sealed,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.id=? ORDER BY i.ordinal`, s.env, id)
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +651,7 @@ func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
 
 // IntentOperations finds operations that journaled a named step in this environment.
 func (s *Store) IntentOperations(ctx context.Context, kind, name string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT i.operation_id FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND i.kind=? AND i.name=?`, s.env, kind, name)
+	rows, err := s.query(ctx, `SELECT DISTINCT i.operation_id FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND i.kind=? AND i.name=?`, s.env, kind, name)
 	if err != nil {
 		return nil, err
 	}
@@ -583,7 +668,7 @@ func (s *Store) IntentOperations(ctx context.Context, kind, name string) ([]stri
 }
 
 func (s *Store) AppendEvent(ctx context.Context, id string, e Event) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -600,7 +685,7 @@ func (s *Store) EventsAfter(ctx context.Context, id string, after uint64, limit 
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id,e.kind,e.data,e.created FROM events e JOIN operations o ON o.id=e.operation_id WHERE o.environment=? AND o.id=? AND e.id>? ORDER BY e.id LIMIT ?`, s.env, id, after, limit)
+	rows, err := s.query(ctx, `SELECT e.id,e.kind,e.data,e.created FROM events e JOIN operations o ON o.id=e.operation_id WHERE o.environment=? AND o.id=? AND e.id>? ORDER BY e.id LIMIT ?`, s.env, id, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -632,7 +717,7 @@ func (s *Store) LatestEvents(ctx context.Context, kinds []string, since time.Tim
 		marks[i] = "?"
 		args = append(args, k)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT o.app,MAX(e.created) FROM events e JOIN operations o ON o.id=e.operation_id WHERE o.environment=? AND e.created>=? AND o.kind IN (`+strings.Join(marks, ",")+`) GROUP BY o.app`, args...)
+	rows, err := s.query(ctx, `SELECT o.app,MAX(e.created) FROM events e JOIN operations o ON o.id=e.operation_id WHERE o.environment=? AND e.created>=? AND o.kind IN (`+strings.Join(marks, ",")+`) GROUP BY o.app`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +747,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 			o.Event = event
 		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -743,7 +828,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	if reason == "" {
 		return errors.New("reason required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -778,7 +863,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	return tx.Commit()
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
+	rows, err := s.query(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -798,7 +883,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 
 // LatestMigration returns the newest finished deploy of app that recorded a schema state.
 func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.db.QueryRowContext(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
+	return operationQuery(s.queryRow(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {
@@ -807,7 +892,7 @@ func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, val
 	if info.Name == "" {
 		return errors.New("empty secret name")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -835,7 +920,7 @@ func (s *Store) GenerateSecret(ctx context.Context, actor Actor, name string, re
 	if name == "" {
 		return false, errors.New("empty secret name")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -923,7 +1008,12 @@ func (s *Store) classifySecrets(ctx context.Context, q rowQuerier, names []strin
 // ClassifySecrets reports which of names are new and which replace a stored plain secret, as PutSecrets would find them. It
 // writes nothing.
 func (s *Store) ClassifySecrets(ctx context.Context, names []string) (create, replace []string, err error) {
-	return s.classifySecrets(ctx, s.db, names)
+	db, err := s.handle()
+	if err != nil {
+		return nil, nil, err
+	}
+	create, replace, err = s.classifySecrets(ctx, db, names)
+	return create, replace, s.closed(err)
 }
 
 // PutSecrets stores every write in one transaction: all of them, or none when any one fails. It refuses with ErrConflict while
@@ -945,7 +1035,7 @@ func (s *Store) PutSecrets(ctx context.Context, actor Actor, writes []SecretWrit
 		seen[w.Name] = true
 		names = append(names, w.Name)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -978,7 +1068,7 @@ func (s *Store) PutOperationSecret(ctx context.Context, opID, name string, value
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1007,7 +1097,7 @@ func (s *Store) DeleteOperationSecret(ctx context.Context, opID, name string) er
 	if name == "" {
 		return errors.New("empty secret name")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1036,14 +1126,14 @@ func (s *Store) DeleteOperationSecret(ctx context.Context, opID, name string) er
 func (s *Store) Secret(ctx context.Context, name string) (SecretInfo, []byte, error) {
 	var b []byte
 	info := SecretInfo{Name: name}
-	if err := s.db.QueryRowContext(ctx, `SELECT registry,sealed FROM secrets WHERE environment=? AND name=?`, s.env, name).Scan(&info.Registry, &b); err != nil {
+	if err := s.queryRow(ctx, `SELECT registry,sealed FROM secrets WHERE environment=? AND name=?`, s.env, name).Scan(&info.Registry, &b); err != nil {
 		return info, nil, err
 	}
 	v, err := s.open(secretRecord(name, info.Registry), b)
 	return info, v, err
 }
 func (s *Store) Secrets(ctx context.Context) ([]SecretInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,registry FROM secrets WHERE environment=? ORDER BY name`, s.env)
+	rows, err := s.query(ctx, `SELECT name,registry FROM secrets WHERE environment=? ORDER BY name`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -1062,7 +1152,7 @@ func (s *Store) DeleteSecret(ctx context.Context, actor Actor, name string) erro
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1096,7 +1186,7 @@ func (s *Store) AcquireManual(ctx context.Context, actor Actor, holder, reason s
 	if holder == "" || reason == "" {
 		return errors.New("holder and reason required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1116,7 +1206,7 @@ func (s *Store) ReleaseManual(ctx context.Context, actor Actor) error {
 	if actor.ID == "" {
 		return errors.New("actor required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1139,7 +1229,7 @@ func (s *Store) ReleaseManual(ctx context.Context, actor Actor) error {
 func (s *Store) Lock(ctx context.Context) (Lock, error) {
 	var l Lock
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(operation_id,''),holder,reason,acquired FROM locks WHERE environment=?`, s.env).Scan(&l.OperationID, &l.Holder, &l.Reason, &ms)
+	err := s.queryRow(ctx, `SELECT COALESCE(operation_id,''),holder,reason,acquired FROM locks WHERE environment=?`, s.env).Scan(&l.OperationID, &l.Holder, &l.Reason, &ms)
 	l.Acquired = time.UnixMilli(ms).UTC()
 	return l, err
 }
@@ -1147,12 +1237,12 @@ func (s *Store) Lock(ctx context.Context) (Lock, error) {
 func (s *Store) Applied(ctx context.Context, app string) (Release, error) {
 	var r Release
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after,r.tag,r.modified FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag, &r.Modified)
+	err := s.queryRow(ctx, `SELECT r.id,r.app,r.digest,r.commit_sha,r.manifest,r.created,r.operation_id,r.schema_before,r.schema_after,r.tag,r.modified FROM releases r JOIN applied a ON a.release_id=r.id WHERE a.environment=? AND a.app=?`, s.env, app).Scan(&r.ID, &r.App, &r.Digest, &r.Commit, &r.Manifest, &ms, &r.OperationID, &r.SchemaBefore, &r.SchemaAfter, &r.Tag, &r.Modified)
 	r.Created = time.UnixMilli(ms).UTC()
 	if err != nil {
 		return r, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT app,role,name,service_id FROM bindings WHERE environment=? AND app=? ORDER BY role`, s.env, app)
+	rows, err := s.query(ctx, `SELECT app,role,name,service_id FROM bindings WHERE environment=? AND app=? ORDER BY role`, s.env, app)
 	if err != nil {
 		return r, err
 	}
@@ -1170,7 +1260,7 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created FROM audit a WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
+	rows, err := s.query(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created FROM audit a WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1193,7 +1283,7 @@ func (s *Store) Ingress(ctx context.Context) (IngressState, error) {
 	var st IngressState
 	var dns int
 	var ms int64
-	err := s.db.QueryRowContext(ctx, `SELECT account_id,api_token_secret,tunnel_id,tunnel_name,dns,updated FROM ingress WHERE environment=?`, s.env).Scan(&st.AccountID, &st.APITokenSecret, &st.TunnelID, &st.TunnelName, &dns, &ms)
+	err := s.queryRow(ctx, `SELECT account_id,api_token_secret,tunnel_id,tunnel_name,dns,updated FROM ingress WHERE environment=?`, s.env).Scan(&st.AccountID, &st.APITokenSecret, &st.TunnelID, &st.TunnelName, &dns, &ms)
 	if err != nil {
 		return IngressState{}, err
 	}
@@ -1216,7 +1306,7 @@ func (s *Store) SetIngress(ctx context.Context, opID string, st IngressState) er
 	if st.DNS {
 		dns = 1
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1241,7 +1331,7 @@ func (s *Store) keptTunnelName() string { return "kept_tunnel:" + s.env }
 // Only names and IDs are kept, never a token.
 func (s *Store) KeptTunnel(ctx context.Context) (IngressState, error) {
 	var raw []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE name=?`, s.keptTunnelName()).Scan(&raw); err != nil {
+	if err := s.queryRow(ctx, `SELECT value FROM metadata WHERE name=?`, s.keptTunnelName()).Scan(&raw); err != nil {
 		return IngressState{}, err
 	}
 	var st IngressState
@@ -1261,7 +1351,7 @@ func (s *Store) SetKeptTunnel(ctx context.Context, opID string, st IngressState)
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1278,7 +1368,7 @@ func (s *Store) SetKeptTunnel(ctx context.Context, opID string, st IngressState)
 // ClearKeptTunnel forgets the remembered tunnel. It is not an error when there is none. It requires the environment lock to
 // be held by opID.
 func (s *Store) ClearKeptTunnel(ctx context.Context, opID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1295,7 +1385,7 @@ func (s *Store) ClearKeptTunnel(ctx context.Context, opID string) error {
 // ClearIngress removes the environment's managed ingress configuration and every route in it.
 // It requires the environment lock to be held by opID.
 func (s *Store) ClearIngress(ctx context.Context, opID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1318,7 +1408,7 @@ func (s *Store) ForgetApp(ctx context.Context, opID, app string) error {
 	if app == "" {
 		return errors.New("app required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1337,7 +1427,7 @@ func (s *Store) ForgetApp(ctx context.Context, opID, app string) error {
 
 // IngressRoutes returns the routes of app, or of every app when app is empty, ordered by hostname.
 func (s *Store) IngressRoutes(ctx context.Context, app string) ([]IngressRoute, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT hostname,app,role,service,zone_id,dns_record_id,route_created,dns_created,dns_prior_comment FROM ingress_routes WHERE environment=? AND (?='' OR app=?) ORDER BY hostname`, s.env, app, app)
+	rows, err := s.query(ctx, `SELECT hostname,app,role,service,zone_id,dns_record_id,route_created,dns_created,dns_prior_comment FROM ingress_routes WHERE environment=? AND (?='' OR app=?) ORDER BY hostname`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}
@@ -1361,7 +1451,7 @@ func (s *Store) SetIngressRoute(ctx context.Context, opID string, r IngressRoute
 	if r.Hostname == "" || r.App == "" || r.Role == "" || r.Service == "" {
 		return errors.New("invalid ingress route")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1389,7 +1479,7 @@ func (s *Store) ForgetIngressRoutes(ctx context.Context, opID, app string) error
 	if app == "" {
 		return errors.New("app required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1405,7 +1495,7 @@ func (s *Store) ForgetIngressRoutes(ctx context.Context, opID, app string) error
 
 // AppliedApps lists the apps that have an applied release, in name order.
 func (s *Store) AppliedApps(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT app FROM applied WHERE environment=? ORDER BY app`, s.env)
+	rows, err := s.query(ctx, `SELECT app FROM applied WHERE environment=? ORDER BY app`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -1424,7 +1514,7 @@ func (s *Store) AppliedApps(ctx context.Context) ([]string, error) {
 // DeleteIngressRoute removes the route for hostname. It returns sql.ErrNoRows when there is none.
 // It requires the environment lock to be held by opID.
 func (s *Store) DeleteIngressRoute(ctx context.Context, opID, hostname string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1445,11 +1535,11 @@ func (s *Store) DeleteIngressRoute(ctx context.Context, opID, hostname string) e
 
 func (s *Store) Protected(ctx context.Context) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM protection WHERE environment=?`, s.env).Scan(&n)
+	err := s.queryRow(ctx, `SELECT count(*) FROM protection WHERE environment=?`, s.env).Scan(&n)
 	return n != 0, err
 }
 func (s *Store) Bindings(ctx context.Context, app string) ([]Binding, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT app,role,name,service_id FROM bindings WHERE environment=? AND (?='' OR app=?) ORDER BY app,role`, s.env, app, app)
+	rows, err := s.query(ctx, `SELECT app,role,name,service_id FROM bindings WHERE environment=? AND (?='' OR app=?) ORDER BY app,role`, s.env, app, app)
 	if err != nil {
 		return nil, err
 	}

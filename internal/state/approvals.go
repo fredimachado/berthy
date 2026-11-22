@@ -66,7 +66,7 @@ func (s *Store) CreateApproval(ctx context.Context, a Approval, request []byte) 
 	if err != nil {
 		return Approval{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return Approval{}, err
 	}
@@ -134,7 +134,7 @@ func (s *Store) expireDue(ctx context.Context, tx *sql.Tx, actor Actor, now time
 // ExpireApprovals marks the pending approvals that have run past their expiry at now as expired, audited as actor, and returns
 // how many.
 func (s *Store) ExpireApprovals(ctx context.Context, actor Actor, now time.Time) (int, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -152,7 +152,7 @@ func (s *Store) Approvals(ctx context.Context, status string, now time.Time) ([]
 	if _, err := s.ExpireApprovals(ctx, systemActor, now); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE environment=? AND (?='' OR status=?) ORDER BY created DESC, rowid DESC`, s.env, status, status)
+	rows, err := s.query(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE environment=? AND (?='' OR status=?) ORDER BY created DESC, rowid DESC`, s.env, status, status)
 	if err != nil {
 		return nil, err
 	}
@@ -171,13 +171,13 @@ func (s *Store) Approvals(ctx context.Context, status string, now time.Time) ([]
 // Approval returns one approval as it is stored. It returns sql.ErrNoRows when there is none. Expiry is not applied here: a
 // pending approval past its expiry is expired by ExpireApprovals or by the decision that finds it.
 func (s *Store) Approval(ctx context.Context, id string) (Approval, error) {
-	return scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE environment=? AND id=?`, s.env, id))
+	return scanApproval(s.queryRow(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE environment=? AND id=?`, s.env, id))
 }
 
 // ApprovalRequest returns the request body held with an approval.
 func (s *Store) ApprovalRequest(ctx context.Context, id string) ([]byte, error) {
 	var sealed []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT request_sealed FROM approvals WHERE environment=? AND id=?`, s.env, id).Scan(&sealed); err != nil {
+	if err := s.queryRow(ctx, `SELECT request_sealed FROM approvals WHERE environment=? AND id=?`, s.env, id).Scan(&sealed); err != nil {
 		return nil, err
 	}
 	return s.open(approvalRecord(id), sealed)
@@ -203,7 +203,7 @@ func (s *Store) DecideApproval(ctx context.Context, id string, decider Actor, de
 		return Approval{}, errors.New("actor required")
 	}
 	result = boundResult(result)
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return Approval{}, err
 	}
@@ -245,7 +245,7 @@ func (s *Store) FinishApproval(ctx context.Context, id, status, result string) e
 	if status != "approved" && status != "failed" {
 		return errors.New("invalid approval status")
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status=?,result=? WHERE environment=? AND id=? AND status='approved' AND result=''`, status, boundResult(result), s.env, id)
+	res, err := s.exec(ctx, `UPDATE approvals SET status=?,result=? WHERE environment=? AND id=? AND status='approved' AND result=''`, status, boundResult(result), s.env, id)
 	if err != nil {
 		return err
 	}
