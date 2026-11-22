@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,13 +17,15 @@ import (
 // fakeBackups is the agent's side of a backup hook. Its calls go into the order of the engine's, so a test sees where in the
 // run of a deploy a backup happened.
 type fakeBackups struct {
-	f      *hookEngine
-	result BackupResult
-	err    error
-	ran    []string
+	f        *hookEngine
+	result   BackupResult
+	err      error
+	ran      []string
+	manifest manifest.Manifest
 }
 
 func (b *fakeBackups) RunBackup(_ context.Context, m manifest.Manifest, name string) (BackupResult, error) {
+	b.manifest = m
 	b.ran = append(b.ran, name)
 	b.f.calls = append(b.f.calls, "backup:"+name)
 	if _, ok := m.Backups[name]; !ok {
@@ -34,6 +37,10 @@ func (b *fakeBackups) RunBackup(_ context.Context, m manifest.Manifest, name str
 // backupHookRig is hookFixture with the apps in deployed already applied, and a backup main-db of the app db. The hook
 // operation holds the lock, so a hook that runs one-off commands can be driven too.
 func backupHookRig(t *testing.T, result BackupResult, deployed ...string) (*Controller, *hookEngine, *fakeBackups, string, preparedPlan) {
+	return backupHookRigWithApp(t, result, manifest.App{Kind: "image", Roles: map[string]manifest.Role{"db": {Volumes: []string{"dumps:/data"}}}}, deployed...)
+}
+
+func backupHookRigWithApp(t *testing.T, result BackupResult, target manifest.App, deployed ...string) (*Controller, *hookEngine, *fakeBackups, string, preparedPlan) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
@@ -49,19 +56,33 @@ func backupHookRig(t *testing.T, result BackupResult, deployed ...string) (*Cont
 	}
 	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
+	applied := manifest.Manifest{Project: "proj", Apps: map[string]manifest.App{"db": target}}
+	encoded, err := json.Marshal(applied)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, app := range deployed {
 		op, _, err := s.Admit(ctx, state.Admission{RequestID: "deploy-" + app, ActorID: "actor", Kind: "deploy", App: app, PublicRequest: []byte(`{}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: []byte(`{}`)}}); err != nil {
+		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: app, Manifest: encoded}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	claims := []state.Claim{{Kind: state.ClaimVolume, Name: applied.VolumeName("stage", "dumps")}, {Kind: state.ClaimComposeProject, Name: applied.ComposeProject("stage", "db")}}
+	if err := s.AddClaims(ctx, claims); err != nil {
+		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "req", ActorID: "actor", Kind: "deploy", PublicRequest: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := s.Finish(context.Background(), op.ID, state.Outcome{State: "succeeded"}); err != nil {
+			t.Error(err)
+		}
+	})
 	f := &hookEngine{store: s, op: op.ID}
 	fb := &fakeBackups{f: f, result: result}
 	c := &Controller{Engine: f, Store: s, Environment: "stage", Backups: fb}
@@ -193,5 +214,46 @@ func TestAFailedPostDeployBackupIsReportedLikeAPostCommand(t *testing.T) {
 	fb.result = BackupResult{RunID: 4, Status: "succeeded"}
 	if err = c.runPost(context.Background(), id, p); err != nil {
 		t.Fatalf("a successful post-deploy backup: %v", err)
+	}
+}
+
+func TestBackupHookUsesAppliedComposeProject(t *testing.T) {
+	c, _, fb, id, p := backupHookRigWithApp(t, BackupResult{Status: "succeeded"}, manifest.App{Kind: "compose", ProjectName: "owned-project"}, "db")
+	ctx := context.Background()
+	app := p.Request.Manifest.Apps["db"]
+	app.ProjectName = "peer-project"
+	p.Request.Manifest.Apps["db"] = app
+	p.Request.Manifest.Backups["main-db"] = manifest.Backup{App: "db", Command: []string{"dump"}, Destination: "offsite"}
+	if err := c.runBackupHook(ctx, id, p, "pre_hook", 1, "main-db"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fb.manifest.ComposeProject("stage", "db"); got != "owned-project" {
+		t.Fatalf("backup ran against project %q", got)
+	}
+	if p.Request.Manifest.ComposeProject("stage", "db") != "peer-project" {
+		t.Fatal("incoming manifest was changed")
+	}
+}
+
+func TestBackupHookRefusesUnownedAppliedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		app    manifest.App
+		backup manifest.Backup
+		claim  state.Claim
+	}{
+		{"project", manifest.App{Kind: "compose", ProjectName: "owned-project"}, manifest.Backup{App: "db", Command: []string{"dump"}}, state.Claim{Kind: state.ClaimComposeProject, Name: "owned-project"}},
+		{"volume", manifest.App{Kind: "image", Roles: map[string]manifest.Role{"db": {Volumes: []string{"dumps:/data"}}}}, manifest.Backup{App: "db", Volume: "dumps"}, state.Claim{Kind: state.ClaimVolume, Name: "proj-stage_dumps"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _, fb, id, p := backupHookRigWithApp(t, BackupResult{Status: "succeeded"}, tc.app, "db")
+			if err := c.Store.ReleaseClaims(context.Background(), []state.Claim{tc.claim}); err != nil {
+				t.Fatal(err)
+			}
+			p.Request.Manifest.Backups["main-db"] = tc.backup
+			if err := c.runBackupHook(context.Background(), id, p, "pre_hook", 1, "main-db"); err == nil || len(fb.ran) != 0 {
+				t.Fatalf("err %v; backups %v", err, fb.ran)
+			}
+		})
 	}
 }

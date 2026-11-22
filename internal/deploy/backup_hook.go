@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +25,7 @@ type BackupResult struct {
 }
 
 // BackupRunner runs a volume backup for a `backup:` hook and waits for it. The agent supplies it. It runs the backup of the
-// manifest it is given, which is the manifest being deployed. Its errors are backup.Refusal values when the backup could not
+// manifest it is given, with the backup target taken from its applied release. Its errors are backup.Refusal values when the backup could not
 // start, and then no run was made.
 type BackupRunner interface {
 	RunBackup(ctx context.Context, m manifest.Manifest, name string) (BackupResult, error)
@@ -62,16 +64,6 @@ func hookFailureText(err error, when string) string {
 	return when + "-deploy command failed"
 }
 
-// backupAppDeployed reports whether the app of a backup has an applied release. A backup of an app that is not deployed has
-// no volume to read yet, as on the first deploy of an app, and is not part of the configuration.
-func (c *Controller) backupAppDeployed(ctx context.Context, app string) (bool, error) {
-	_, err := c.Store.Applied(ctx, app)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 // runBackupHook runs the backup of a `backup:` hook and waits for it. kind is "pre_hook" or "post_hook" and index is the
 // hook's 1-based position in its list. A backup that does not succeed is a failure that carries a diagnostic of kind
 // "backup" with the run's detail. A backup whose app is not deployed is skipped, and the step says so.
@@ -91,20 +83,66 @@ func (c *Controller) runBackupHook(ctx context.Context, opID string, p preparedP
 	if c.Backups == nil {
 		return fail("backups unavailable")
 	}
-	deployed, err := c.backupAppDeployed(ctx, b.App)
-	if err != nil {
-		return fail("state unavailable")
-	}
-	if !deployed {
+	release, err := c.Store.Applied(ctx, b.App)
+	if errors.Is(err, sql.ErrNoRows) {
 		step("backup " + name + " skipped: app " + b.App + " is not deployed")
 		return nil
 	}
+	if err != nil {
+		return fail("state unavailable")
+	}
+	var applied manifest.Manifest
+	if json.Unmarshal(release.Manifest, &applied) != nil {
+		return fail("applied manifest unavailable")
+	}
+	target, ok := applied.Apps[b.App]
+	if !ok {
+		return fail("applied app unavailable")
+	}
+	claims, err := c.Store.Claims(ctx)
+	if err != nil {
+		return fail("state unavailable")
+	}
+	owns := func(kind, name string) bool {
+		return slices.Contains(claims, state.Claim{Kind: kind, Name: name})
+	}
+	if target.Kind == "compose" {
+		project := applied.ComposeProject(c.Environment, b.App)
+		if !owns(state.ClaimComposeProject, project) {
+			return fail("backup target is not owned by this environment")
+		}
+		if len(b.Command) == 0 {
+			volumes, err := c.ComposeVolumeNames(ctx, project)
+			if err != nil || volumes[b.Volume] == "" || !owns(state.ClaimVolume, volumes[b.Volume]) {
+				return fail("backup target is not owned by this environment")
+			}
+		}
+	} else if target.Kind == "image" && len(b.Command) == 0 {
+		mounted := false
+		for _, role := range target.Roles {
+			for _, raw := range role.Volumes {
+				mount, err := manifest.ParseMount(raw)
+				if err == nil && mount.Source == b.Volume && owns(state.ClaimVolume, applied.VolumeName(c.Environment, mount.Source)) {
+					mounted = true
+				}
+			}
+		}
+		if !mounted {
+			return fail("backup target is not owned by this environment")
+		}
+	} else if target.Kind != "image" {
+		return fail("applied app unavailable")
+	}
+	backupManifest := p.Request.Manifest
+	backupManifest.Project = applied.Project
+	backupManifest.Apps = maps.Clone(p.Request.Manifest.Apps)
+	backupManifest.Apps[b.App] = target
 	if err = cancelledBy(ctx); err != nil {
 		return err
 	}
 	step("backup " + name + " started")
 	runCtx, stop := interruptible(ctx)
-	res, err := c.Backups.RunBackup(runCtx, p.Request.Manifest, name)
+	res, err := c.Backups.RunBackup(runCtx, backupManifest, name)
 	stop()
 	if cancel := cancelledBy(ctx); cancel != nil {
 		return cancel
