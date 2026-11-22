@@ -346,7 +346,7 @@ add_environment() {
 env_cmd() {
   local project=$1 env=$2 c=$3
   shift 3
-  (cd "$(env_dir "$project" "$env")" && { [ "$c" != deploy ] || record_deploy "$project" "$env" "$@"; } && "$BIN" "$c" -e "$env" --config "$RUN/admin.json" "$@")
+  (cd "$(env_dir "$project" "$env")" && { [ "$c" != deploy ] || record_deploy "$project" "$env" "$@"; } && "$BIN" "$c" -e "$env" --project "$project" --config "$RUN/admin.json" "$@")
 }
 
 # start_agent: starts the agent and waits until /healthz answers, which it does only once every hosted environment has started.
