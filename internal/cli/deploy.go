@@ -462,6 +462,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 	}
 	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: projectDir})
 	if err != nil {
+		if f.project == "" && (cmd == "deploy" || cmd == "apply" || (cmd == "ingress" && len(f.pos) > 0 && f.pos[0] == "apply")) {
+			if _, _, projectErr := manifest.ProjectName(projectDir); projectErr != nil {
+				if _, loadErr := manifest.Load(f.dir, f.env); loadErr != nil {
+					fmt.Fprintln(errout, loadErr)
+					return 1
+				}
+			}
+		}
 		fmt.Fprintln(errout, err)
 		return 1
 	}
