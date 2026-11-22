@@ -14,6 +14,11 @@ d build -t "$REG/e2e/web:v1" -f "$RUN/Dockerfile-v1" "$RUN" >/dev/null || exit 1
 d push "$REG/e2e/web:v1" >/dev/null || exit 1
 WEB_V1_DIGEST=$(d image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REG/e2e/web:v1" | sed -n "s#^$REG/e2e/web@##p" | head -n1)
 d rmi "$REG/e2e/web:v1" >/dev/null || exit 1
+if d image inspect "$REG/e2e/web@$WEB_V1_DIGEST" >/dev/null 2>&1; then
+  fail 'v1 starts absent from Docker' 'v1 is already present'
+else
+  pass 'v1 starts absent from Docker'
+fi
 # Give v3 a distinct digest, so neither current nor previous service spec holds v1.
 printf 'FROM %s/e2e/web@%s\nLABEL berthy-e2e-version=v3\nSTOPSIGNAL SIGTERM\n' "$REG" "$WEB_V2_DIGEST" > "$RUN/Dockerfile-v3"
 d build -t "$REG/e2e/web:v3" -f "$RUN/Dockerfile-v3" "$RUN" >/dev/null || exit 1
@@ -57,6 +62,19 @@ YML
     args=(); [ "$app" = web ] && args=(--version v1)
     out=$(env_cmd "$p" "$e" deploy "$app" "${args[@]}" 2>&1); code=$?
     expect_code "deploy $p/$e $app" 0 "$code" "$out"
+    if [ "$p/$e/$app" = "$PROJECT/$ENVN/web" ]; then
+      acquired=$(python3 - "$RUN/state/state.db" "$ENVN" "$REG/e2e/web@$WEB_V1_DIGEST" <<'PY'
+import sqlite3, sys
+with sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True) as db:
+    row = db.execute('SELECT image_id FROM acquired_images WHERE environment=? AND ref=?', sys.argv[2:]).fetchone()
+    print(row[0] if row else '')
+PY
+); code=$?
+      expect_code 'read first environment image provenance' 0 "$code" "$acquired"
+      image_id=$(d image inspect --format '{{.Id}}' "$REG/e2e/web@$WEB_V1_DIGEST" 2>&1); code=$?
+      expect_code 'v1 is present after first deploy' 0 "$code" "$image_id"
+      [ -n "$acquired" ] && expect_eq 'first environment recorded pulling v1' "$image_id" "$acquired" || fail 'first environment recorded pulling v1' 'no acquisition record'
+    fi
   done
 done
 # Workload names and storage are scoped to the pair.
@@ -165,8 +183,14 @@ for pair in "$P2 $ENVN" "$PROJECT $EB"; do
     out=$(env_cmd "$p" "$e" deploy web --version "$version" 2>&1); code=$?
     expect_code "deploy $p/$e $version" 0 "$code" "$out"
   done
-  spec=$(d service inspect --format '{{json .Spec}} {{json .PreviousSpec}}' "$p-$e-web-main")
-  expect_not_contains "service specs $p/$e do not hold v1" "$spec" "$WEB_V1_DIGEST"
+  for field in Spec PreviousSpec; do
+    spec_image=$(d service inspect --format "{{.${field}.TaskTemplate.ContainerSpec.Image}}" "$p-$e-web-main" 2>&1); code=$?
+    expect_code "read $field image $p/$e" 0 "$code" "$spec_image"
+    spec_id=$(d image inspect --format '{{.Id}}' "$spec_image" 2>&1); code=$?
+    expect_code "resolve $field image $p/$e" 0 "$code" "$spec_id"
+    expect_not_contains "$field image $p/$e is not v1" "$spec_image" "$WEB_V1_DIGEST"
+    if [ "$spec_id" != "$image_id" ]; then pass "$field image ID $p/$e is not v1"; else fail "$field image ID $p/$e is not v1" "$spec_image"; fi
+  done
 done
 # A running job in the surviving environment must outlive another environment's destroy.
 env_cmd "$PROJECT" "$EB" job run hold > "$RUN/hold-after.out" 2>&1 & jobpid=$!
@@ -187,7 +211,18 @@ for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
     case "$image" in *"$WEB_V1_DIGEST"*) d rm "$id" >/dev/null || fail 'remove stopped v1 task' "$id" ;; esac
   done
 done
-for id in $(d ps -q); do image=$(d inspect -f '{{.Config.Image}}' "$id"); expect_not_contains "container $id does not run v1" "$image" "$WEB_V1_DIGEST"; done
+v1_id=$(d image inspect --format '{{.Id}}' "$REG/e2e/web@$WEB_V1_DIGEST" 2>&1); code=$?
+expect_code 'inspect v1 image ID before destroy' 0 "$code" "$v1_id"
+[ -n "$v1_id" ] || fail 'v1 image ID is present' 'empty ID'
+all_ids=$(d ps -aq --no-trunc 2>&1); code=$?
+expect_code 'list all containers before destroy' 0 "$code" "$all_ids"
+if [ "$code" -eq 0 ]; then
+  for id in $all_ids; do
+    container_image=$(d inspect -f '{{.Image}}' "$id" 2>&1); code=$?
+    expect_code "inspect container image $id" 0 "$code" "$container_image"
+    if [ "$code" -eq 0 ] && [ "$container_image" = "$v1_id" ]; then fail "container $id does not hold v1" "$container_image"; fi
+  done
+fi
 out=$(env_cmd "$PROJECT" "$ENVN" destroy --confirm "$ENVN" 2>&1); expect_code 'destroy first environment' 0 "$?" "$out"
 d image inspect "$REG/e2e/web@$WEB_V1_DIGEST" >/dev/null 2>&1; expect_code 'retained v1 image remains' 0 "$?"
 history=$(env_cmd "$PROJECT" "$EB" history web --json 2>&1)
