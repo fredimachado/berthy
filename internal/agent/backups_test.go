@@ -651,10 +651,10 @@ func TestListAndRestoreStillWorkAfterTheAppsAreRemoved(t *testing.T) {
 func TestStartRemovesTheHelperContainersAKilledAgentLeft(t *testing.T) {
 	g := newBackupRig(t)
 	g.docker.inventory = []engine.InventoryContainer{
-		{ID: "left-archive", State: "running", Labels: map[string]string{"berthy.environment": "lab", "berthy.helper": "archive"}},
-		{ID: "left-restore", State: "exited", Labels: map[string]string{"berthy.environment": "lab", "berthy.helper": "restore"}},
-		{ID: "other-env", State: "running", Labels: map[string]string{"berthy.environment": "prod", "berthy.helper": "archive"}},
-		{ID: "probe", State: "running", Labels: map[string]string{"berthy.environment": "lab", "berthy.helper": "probe"}},
+		{ID: "left-archive", State: "running", Labels: map[string]string{"berthy.project": "demo", "berthy.environment": "lab", "berthy.helper": "archive"}},
+		{ID: "left-restore", State: "exited", Labels: map[string]string{"berthy.project": "demo", "berthy.environment": "lab", "berthy.helper": "restore"}},
+		{ID: "other-env", State: "running", Labels: map[string]string{"berthy.project": "demo", "berthy.environment": "prod", "berthy.helper": "archive"}},
+		{ID: "probe", State: "running", Labels: map[string]string{"berthy.project": "demo", "berthy.environment": "lab", "berthy.helper": "probe"}},
 	}
 	g.backups.Start(context.Background())
 	if len(g.docker.removedC) != 2 || g.docker.removedC[0] != "left-archive" || g.docker.removedC[1] != "left-restore" {
