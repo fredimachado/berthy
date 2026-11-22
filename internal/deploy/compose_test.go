@@ -1318,3 +1318,54 @@ func TestVolumeDriverOptionsNeedAdminOnDeploy(t *testing.T) {
 		t.Fatalf("ran up %d times", runner.upRuns())
 	}
 }
+
+type missingOldComposeNetwork struct{ *composeDocker }
+
+func (e missingOldComposeNetwork) InspectNetwork(ctx context.Context, name string) (engine.Network, error) {
+	if name == "old-overlay" {
+		return engine.Network{}, &engine.StatusError{Code: 404}
+	}
+	return e.composeDocker.InspectNetwork(ctx, name)
+}
+
+func TestComposeRollbackDoesNotRequireOldEnvironmentNetwork(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	ctx := context.Background()
+	admin := Actor{ID: "admin", Admin: true}
+	old, current := composeApp(false), composeApp(false)
+	old.Network, current.Network = "old-overlay", "new-overlay"
+	for _, tc := range []struct {
+		id, file string
+		m        manifest.Manifest
+	}{{"old", composeFileOne, old}, {"new", composeFileTwo, current}} {
+		op, _, err := admit(t, c, ctx, admin, composeReq(tc.id, tc.file, tc.m))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
+			t.Fatalf("%s: %+v", tc.id, got)
+		}
+	}
+	c.Engine = missingOldComposeNetwork{newComposeDocker()}
+	c.Foreign = func(context.Context) (Foreign, error) {
+		return Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimNetwork, Name: "old-overlay"}: true}}, nil
+	}
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		if slices.Contains(claims, state.Claim{Kind: state.ClaimNetwork, Name: "old-overlay"}) {
+			t.Error("rollback reserved old environment network")
+		}
+		return claims, nil
+	}
+	req := Request{RequestID: "rollback-old-network", App: "db", Kind: "rollback", Manifest: current}
+	if _, err := c.Plan(ctx, admin, req); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	op, _, err := admit(t, c, ctx, admin, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := waitComposeOperation(t, s, op.ID); got.State != "succeeded" {
+		t.Fatalf("rollback: %+v", got)
+	}
+}

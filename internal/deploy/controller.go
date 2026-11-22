@@ -73,6 +73,7 @@ type Request struct {
 	// rollback returns to, or of the applied release a keep_version deploy keeps. It is unexported, so a client cannot send
 	// it, and it is not in the request hash.
 	recordTag string
+	rollback  bool
 }
 type Actor struct {
 	ID, Name, Remote string
@@ -733,6 +734,7 @@ func (c *Controller) rollbackRequest(ctx context.Context, req Request) (Request,
 	req.recordTag = chosen.Tag
 	req.Commit = chosen.Commit
 	req.Modified = chosen.Modified
+	req.rollback = true
 	if composeRequest(req) {
 		// A Compose release has no image digest. Its deploy journaled the Compose file it ran.
 		file, err := c.composeSource(ctx, chosen.OperationID)
@@ -1098,7 +1100,10 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request, labels ...
 				labels[0][claim] = label
 			}
 		}
-		return append(claims, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}), nil
+		if !req.rollback {
+			claims = append(claims, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)})
+		}
+		return claims, nil
 	}
 	if app.Kind != "image" {
 		return nil, nil

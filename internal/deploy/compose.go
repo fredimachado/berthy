@@ -620,13 +620,15 @@ func firstDifference(p ComposePlan) string {
 func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor, req Request, adopt bool, reserve ...func([]state.Claim) error) (ComposePlan, error) {
 	project := req.Manifest.ComposeProject(c.Environment, req.App)
 	app := req.Manifest.Apps[req.App]
-	if c.Engine == nil {
-		return ComposePlan{}, errors.New("overlay network unavailable")
-	}
-	networkName := req.Manifest.NetworkName(c.Environment)
-	network, err := c.Engine.InspectNetwork(ctx, networkName)
-	if err != nil || network.Name != networkName || network.Driver != "overlay" || network.Scope != "swarm" || !network.Attachable {
-		return ComposePlan{}, errors.New("overlay network unavailable")
+	if !req.rollback {
+		if c.Engine == nil {
+			return ComposePlan{}, errors.New("overlay network unavailable")
+		}
+		networkName := req.Manifest.NetworkName(c.Environment)
+		network, err := c.Engine.InspectNetwork(ctx, networkName)
+		if err != nil || network.Name != networkName || network.Driver != "overlay" || network.Scope != "swarm" || !network.Attachable {
+			return ComposePlan{}, errors.New("overlay network unavailable")
+		}
 	}
 	// --no-env-resolution keeps env_file in the output; config --hash still resolves env files, so a missing one fails here.
 	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
@@ -645,7 +647,9 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 		return ComposePlan{}, err
 	}
 	if len(reserve) > 0 && reserve[0] != nil {
-		names = append(names, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)})
+		if !req.rollback {
+			names = append(names, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)})
+		}
 		if err := reserve[0](names); err != nil {
 			return ComposePlan{}, sanitizeComposeConflict(err, composeClaimLabels(project, cfg))
 		}
@@ -786,6 +790,7 @@ func composeDigest(file string) string {
 // runCompose deploys a Compose app, or with adoption records it when nothing would change. Nothing changes when the
 // plan has a blocker.
 func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome) {
+	req.rollback = rollback
 	if err := req.Manifest.Validate(); err != nil {
 		return failedWith(errComposeConfig)
 	}
