@@ -160,8 +160,8 @@ Main documentation and sources:
 
 ### Which one to choose
 
-- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.1.0.
-- **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram. It also needs a private network to reach the agent.
+- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.3.0.
+- **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram or an HTTP webhook. It also needs a private network to reach the agent.
 - **Choose Kamal when** you want deploys over plain SSH with nothing but Docker on the servers, builds in your own pipeline, and several hosts in one config file. It runs from your machine over SSH, with no agent of its own on the server.
 - **Choose Dokploy when** you want a web UI with builds on the server, managed databases with backups, templates, notifications, and Swarm or remote servers.
 - **Choose Coolify when** you want the broadest self-hosted PaaS: web UI, teams, 300+ one-click services, databases with scheduled backups, monitoring and many notification channels.
@@ -178,7 +178,7 @@ Main documentation and sources:
 
 ## Status
 
-The first release is [v0.1.0](https://github.com/fredimachado/berthy/releases/tag/v0.1.0). Built and released: the agent and CLI, image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`.
+The latest release is [v0.3.0](https://github.com/fredimachado/berthy/releases/tag/v0.3.0). Built and released: the agent and CLI, projects (one agent hosts any number of environments), image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`.
 
 Berthy's tests run against a real Docker Swarm, a real registry and fakes for the rest. On 2026-11-17 it was also run against a real Ubuntu server, real Cloudflare and GHCR. Telegram alerts, OpenTelemetry backends and S3 backups have not yet been run against the real services. The user guide lists the rest under "Not verified against real services". Expect to find edge cases, and try a non-production environment first.
 
