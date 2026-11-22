@@ -88,7 +88,7 @@ func isDeploymentCommand(s string) bool {
 
 // withRemoteFlags is the flags of a command that calls the agent, which all read -e, --config and --json, with extra.
 func withRemoteFlags(extra ...string) []string {
-	return append([]string{"-e", "--config", "--json"}, extra...)
+	return append([]string{"-e", "--project", "--config", "--json"}, extra...)
 }
 
 // changeFlags is the flags each change command reads, keyed by command, or by command and subcommand where the subcommands
@@ -144,9 +144,9 @@ var changeFlags = map[string][]string{
 }
 
 type commandFlags struct {
-	env, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, exec, scope, expires, run string
-	bytes, format, diff                                                                                                                     string
-	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                             bool
+	env, project, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, exec, scope, expires, run string
+	bytes, format, diff                                                                                                                              string
+	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                                      bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
 	pos, command, given, versions []string
@@ -192,7 +192,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.origin = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+		case "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -205,6 +205,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.format = v
 			case "-e":
 				f.env = v
+			case "--project":
+				f.project = v
 			case "--config":
 				f.config = v
 			case "--confirm":
@@ -367,6 +369,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
+	if f.project != "" && !scope.ValidProject(f.project) {
+		fmt.Fprintln(errout, "valid --project required")
+		return 2
+	}
 	if f.volumes && cmd != "remove" && cmd != "destroy" {
 		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
 		return 2
@@ -454,7 +460,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Environment: f.env, ManifestDir: projectDir})
+	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: projectDir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

@@ -48,7 +48,7 @@ func checkAliases(aliases map[string]string) error {
 			return fmt.Errorf("alias %s: its first word must be a command that talks to an agent", name)
 		}
 		for _, w := range words {
-			if w == "-e" || w == "--config" || w == "--environment" {
+			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
 				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line", name, w)
 			}
 		}
@@ -71,7 +71,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			break
 		}
 		switch a {
-		case "-e", "--config", "--manifest-dir":
+		case "-e", "--project", "--config", "--manifest-dir":
 			if i+1 == len(args) {
 				return nil, "", false, fmt.Errorf("missing value for %s", a)
 			}
@@ -80,7 +80,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			case "-e":
 				env = args[i]
 				flags = append(flags, a, args[i])
-			case "--config":
+			case "--config", "--project":
 				flags = append(flags, a, args[i])
 			case "--manifest-dir":
 				dir = args[i]

@@ -114,3 +114,42 @@ func TestAReadCommandRefusesAnInvalidEnvironmentLikeTheOthers(t *testing.T) {
 		t.Fatalf("a refused command sent requests")
 	}
 }
+
+func TestProjectFlagPicksTheAgentOfThatProject(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	t.Chdir(projectDirOf(t, "cardiotennis"))
+	for _, args := range [][]string{{"ps", "-e", "prod", "--project", "sliceup", "--config", cfg}, {"history", "api", "-e", "prod", "--project", "sliceup", "--config", cfg}} {
+		var out, errout bytes.Buffer
+		if code := Run(args, &out, &errout); code != 0 {
+			t.Errorf("%v: exit %d: %s", args, code, errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 2 {
+		t.Fatalf("requests: %d, %d", cardio.Load(), slice.Load())
+	}
+}
+
+func TestProjectFlagRejectsInvalidNames(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	for _, cmd := range []string{"ps", "history"} {
+		var out, errout bytes.Buffer
+		if code := Run([]string{cmd, "-e", "prod", "--project", "Bad_Name", "--config", cfg}, &out, &errout); code != 2 {
+			t.Errorf("%s: exit %d: %s", cmd, code, errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatal("sent request")
+	}
+}
+
+func TestAnAliasKeepsTheProjectFlag(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	dir := writeAliasDir(t, strings.Replace(aliasManifest, "project: demo", "project: cardiotennis", 1)+"  list: ps\n")
+	var out, errout bytes.Buffer
+	if code := Run([]string{"list", "-e", "prod", "--project", "sliceup", "--config", cfg, "--manifest-dir", dir}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	if cardio.Load() != 0 || slice.Load() != 1 {
+		t.Fatalf("requests: %d, %d", cardio.Load(), slice.Load())
+	}
+}

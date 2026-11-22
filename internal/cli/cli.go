@@ -109,14 +109,14 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 	if cmd == "agent" && len(args) > 0 && args[0] == "token" {
 		return runAgentToken(args[1:], out, errout)
 	}
-	var config, env string
+	var config, env, project string
 	var jsonOutput, watch bool
 	var since, tail, grep, role, replica string
 	var follow bool
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--config", "-e":
+		case "--config", "--project", "-e":
 			if i+1 == len(args) {
 				fmt.Fprintln(errout, "missing flag value")
 				return 2
@@ -124,6 +124,8 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			i++
 			if args[i-1] == "--config" {
 				config = args[i]
+			} else if args[i-1] == "--project" {
+				project = args[i]
 			} else {
 				env = args[i]
 			}
@@ -231,12 +233,16 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
+	if project != "" && !scope.ValidProject(project) {
+		fmt.Fprintln(errout, "valid --project required")
+		return 2
+	}
 	path, err := agentclient.ConfigPath(config)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: dir})
+	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
