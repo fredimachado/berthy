@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -23,6 +24,8 @@ import (
 	"berthy/internal/scope"
 	"berthy/internal/setup"
 )
+
+var probedNetwork = regexp.MustCompile(`docker network inspect -f '[^']*' '([^']+)'`)
 
 // setupServer is a Runner for a server that is already set up, or lacks Docker or the agent.
 type setupServer struct {
@@ -66,7 +69,11 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 		}
 		return setup.Result{Stdout: []byte(out)}, nil
 	case strings.Contains(script, "uname -s"):
-		return setup.Result{Stdout: []byte(s.nextProbe())}, nil
+		out := s.nextProbe()
+		if match := probedNetwork.FindStringSubmatch(script); len(match) == 2 {
+			out = strings.Replace(out, "network=overlay swarm true\n", "network=overlay swarm true "+match[1]+"\n", 1)
+		}
+		return setup.Result{Stdout: []byte(out)}, nil
 	case strings.Contains(script, "curl -fsS --max-time 30"):
 		return setup.Result{Stdout: []byte(`{"checks":[{"name":"agent","ok":true,"critical":true,"detail":"v0.0.1-test"}]}`)}, nil
 	case script == "cat /etc/berthy/agent.json":

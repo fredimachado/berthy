@@ -620,8 +620,8 @@ type deployJobLeaseEngine struct {
 	finishJob  chan struct{}
 }
 
-func (e *deployJobLeaseEngine) InspectNetwork(context.Context, string) (engine.Network, error) {
-	return engine.Network{ID: "net", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+func (e *deployJobLeaseEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{ID: "net", Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
 }
 func (e *deployJobLeaseEngine) InspectImage(_ context.Context, ref string) (engine.Image, error) {
 	if strings.Contains(ref, "example/api") {

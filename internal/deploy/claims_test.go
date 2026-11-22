@@ -1744,3 +1744,21 @@ func TestValidInterpolatedComposeCollisionNeverDisclosesSecret(t *testing.T) {
 		t.Fatalf("out=%+v record=%s logs=%v", out, body, log)
 	}
 }
+
+type composeModeIDLookup struct{ *composeDocker }
+
+func (e composeModeIDLookup) InspectNetwork(ctx context.Context, name string) (engine.Network, error) {
+	if name == "peerid" {
+		return engine.Network{ID: "peerid", Name: "peer-overlay", Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+	}
+	return e.composeDocker.InspectNetwork(ctx, name)
+}
+
+func TestComposeNetworkModeRejectsNetworkID(t *testing.T) {
+	runner := &fakeCompose{config: `{"services":{"database":{"image":"alpine","network_mode":"peerid"}}}`, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	c.Engine = composeModeIDLookup{newComposeDocker()}
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("mode-id", composeFileOne, composeApp(false))); err == nil {
+		t.Fatal("accepted network ID in network_mode")
+	}
+}

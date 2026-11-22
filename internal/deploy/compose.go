@@ -637,6 +637,9 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	if json.Unmarshal(out, &cfg) != nil || len(cfg.Services) == 0 {
 		return ComposePlan{}, errComposeConfig
 	}
+	if err := c.checkComposeNetworkModes(ctx, cfg); err != nil {
+		return ComposePlan{}, err
+	}
 	names, err := composeConfigNames(project, cfg, false)
 	if err != nil {
 		return ComposePlan{}, err
@@ -1149,10 +1152,35 @@ func (c *Controller) composeNamesAtWithLabels(ctx context.Context, dir, project 
 	if json.Unmarshal(out, &cfg) != nil {
 		return nil, nil, errComposeConfig
 	}
+	if !managedNetworksOnly {
+		if err := c.checkComposeNetworkModes(ctx, cfg); err != nil {
+			return nil, nil, err
+		}
+	}
 	claims, err := composeConfigNames(project, cfg, managedNetworksOnly)
 	return claims, composeClaimLabels(project, cfg), err
 }
 
+func namedComposeNetworkMode(mode string) bool {
+	return mode != "" && mode != "host" && mode != "none" && mode != "bridge" && !strings.HasPrefix(mode, "service:") && !strings.HasPrefix(mode, "container:")
+}
+
+func (c *Controller) checkComposeNetworkModes(ctx context.Context, cfg composeConfigFile) error {
+	for _, key := range sortedKeys(cfg.Services) {
+		mode := cfg.Services[key].NetworkMode
+		if !namedComposeNetworkMode(mode) {
+			continue
+		}
+		if !engine.ValidName(mode) || c.Engine == nil {
+			return errComposeConfig
+		}
+		network, err := c.Engine.InspectNetwork(ctx, mode)
+		if err != nil || network.Name != mode {
+			return errComposeConfig
+		}
+	}
+	return nil
+}
 func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
 	if !engine.ValidName(project) {
 		return nil, invalidComposeName("project", "")
@@ -1191,7 +1219,7 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 	if !managedNetworksOnly {
 		for _, key := range sortedKeys(cfg.Services) {
 			mode := cfg.Services[key].NetworkMode
-			if mode == "" || mode == "host" || mode == "none" || mode == "bridge" || strings.HasPrefix(mode, "service:") || strings.HasPrefix(mode, "container:") {
+			if !namedComposeNetworkMode(mode) {
 				continue
 			}
 			if !engine.ValidName(mode) {
