@@ -40,15 +40,16 @@ type RawContainer struct {
 	NetworkRXBytes, NetworkTXBytes, BlockReadBytes, BlockWriteBytes uint64
 }
 type Container struct {
-	ID              string   `json:"id"`
-	CPUPercent      *float64 `json:"cpu_percent"`
-	MemoryUsage     uint64   `json:"memory_usage"`
-	MemoryLimit     uint64   `json:"memory_limit"`
-	NetworkRXBytes  uint64   `json:"network_rx_bytes"`
-	NetworkTXBytes  uint64   `json:"network_tx_bytes"`
-	BlockReadBytes  uint64   `json:"block_read_bytes"`
-	BlockWriteBytes uint64   `json:"block_write_bytes"`
-	Error           string   `json:"error,omitempty"`
+	ID              string            `json:"id"`
+	CPUPercent      *float64          `json:"cpu_percent"`
+	MemoryUsage     uint64            `json:"memory_usage"`
+	MemoryLimit     uint64            `json:"memory_limit"`
+	NetworkRXBytes  uint64            `json:"network_rx_bytes"`
+	NetworkTXBytes  uint64            `json:"network_tx_bytes"`
+	BlockReadBytes  uint64            `json:"block_read_bytes"`
+	BlockWriteBytes uint64            `json:"block_write_bytes"`
+	Error           string            `json:"error,omitempty"`
+	Labels          map[string]string `json:"-"`
 }
 type Sample struct {
 	Time            time.Time   `json:"time"`
@@ -188,6 +189,22 @@ func clone(s Sample) Sample {
 	}
 	return s
 }
+// Only returns a copy of s whose containers are those keep accepts. A nil keep leaves every container. The host part is
+// unchanged.
+func (s Sample) Only(keep func(labels map[string]string) bool) Sample {
+	if keep == nil {
+		return s
+	}
+	kept := make([]Container, 0, len(s.Containers))
+	for _, c := range s.Containers {
+		if keep(c.Labels) {
+			kept = append(kept, c)
+		}
+	}
+	s.Containers = kept
+	return s
+}
+
 func (c *Collector) Latest() (Sample, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

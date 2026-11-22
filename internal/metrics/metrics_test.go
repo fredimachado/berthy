@@ -118,3 +118,27 @@ func (partialDocker) Containers(context.Context) ([]string, error) { return []st
 func (partialDocker) Stats(context.Context, string) (RawContainer, error) {
 	return RawContainer{}, errors.New("gone")
 }
+
+func TestOnlyKeepsTheHostAndTheMatchingContainers(t *testing.T) {
+	cpu := 12.5
+	total := uint64(1000)
+	s := Sample{
+		Host:            Host{CPUPercent: &cpu, MemoryTotal: &total, Load: []float64{1, 2, 3}},
+		Containers:      []Container{{ID: "keep-a", Labels: map[string]string{"app": "web"}}, {ID: "drop", Labels: map[string]string{"app": "db"}}, {ID: "keep-b", Labels: map[string]string{"app": "web"}}},
+		DockerError:     "docker busy",
+		ContainersFresh: true,
+	}
+	got := s.Only(func(labels map[string]string) bool { return labels["app"] == "web" })
+	if got.Host.CPUPercent == nil || *got.Host.CPUPercent != cpu || got.Host.MemoryTotal == nil || *got.Host.MemoryTotal != total || len(got.Host.Load) != 3 {
+		t.Fatalf("host changed: %+v", got.Host)
+	}
+	if got.DockerError != s.DockerError || !got.ContainersFresh {
+		t.Fatalf("sample flags changed: %+v", got)
+	}
+	if len(got.Containers) != 2 || got.Containers[0].ID != "keep-a" || got.Containers[1].ID != "keep-b" {
+		t.Fatalf("containers: %+v", got.Containers)
+	}
+	if len(s.Containers) != 3 {
+		t.Fatal("Only mutated the original sample")
+	}
+}
