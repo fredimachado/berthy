@@ -37,16 +37,11 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 		s.TokenEnv = tokenEnv
 		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} as projects.%s.environments.%s of the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`, url, tokenEnv, project, env), nil
 	}
-	c, err := agentclient.ReadConfig(path)
-	switch {
-	case errors.Is(err, agentclient.ErrEarlierLayout):
-		// The CLI's own text sends the person to setup, which is where they are.
-		return "", "", fmt.Errorf("the CLI configuration %s is in the layout of an earlier release: move it aside, or give --config with a new file, then run setup again", path)
-	case errors.Is(err, agentclient.ErrUnreadable):
+	c, err := ReadCLIConfig(path)
+	if err != nil {
 		return "", "", err
-	case err != nil:
-		return "", "", fmt.Errorf("the CLI configuration is not valid: %v", err)
 	}
+
 	have := c.Projects[project].Environments[env]
 	if have.TokenEnv != "" {
 		tokenEnv = have.TokenEnv
@@ -64,7 +59,6 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 		return StatusWouldChange, fmt.Sprintf("would write %s to %s", env, filepath.Base(path)), nil
 	}
 	if s.Opts.CLIConfig == "" {
-		// Without --config the file is the person's own location, so its directory is made private when it is missing.
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return "", "", fmt.Errorf("creating the CLI configuration directory: %w", err)
 		}
@@ -73,4 +67,19 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", fmt.Errorf("writing the CLI configuration: %w", err)
 	}
 	return StatusChanged, fmt.Sprintf("wrote %s at %s to %s (token in $%s)", env, url, filepath.Base(path), tokenEnv), nil
+}
+
+// ReadCLIConfig reports configuration errors as setup does.
+func ReadCLIConfig(path string) (agentclient.Config, error) {
+	c, err := agentclient.ReadConfig(path)
+	switch {
+	case errors.Is(err, agentclient.ErrEarlierLayout):
+		// The CLI's own text sends the person to setup, which is where they are.
+		return c, fmt.Errorf("the CLI configuration %s is in the layout of an earlier release: move it aside, or give --config with a new file, then run setup again", path)
+	case errors.Is(err, agentclient.ErrUnreadable):
+		return c, err
+	case err != nil:
+		return c, fmt.Errorf("the CLI configuration is not valid: %v", err)
+	}
+	return c, nil
 }

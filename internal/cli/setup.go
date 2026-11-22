@@ -108,10 +108,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	if err != nil {
 		return usage("%v", err)
 	}
-	if err := checkSetupTokenEnv(from.project, *env, *cliConfig); err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
-	}
+	preflightErr := checkSetupTokenEnv(from.project, *env, *cliConfig)
 	opts := setup.Options{
 		Env: *env, Project: from.project, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
 		Binary: *binary, KeyFile: *keyFile, NewToken: *newToken, CLIConfig: *cliConfig, Build: setupBuild(),
@@ -131,8 +128,9 @@ func runSetup(args []string, out, errout io.Writer) int {
 		}
 	}
 	var session *setup.Session
-	runner, err := newSetupRunner(*host, *local)
-	if err != nil {
+	if preflightErr != nil {
+		show(setup.StepResult{Step: "check", Status: setup.StatusFailed, Detail: terminalSafe(preflightErr.Error())})
+	} else if runner, err := newSetupRunner(*host, *local); err != nil {
 		show(setup.StepResult{Step: "connect", Status: setup.StatusFailed, Detail: terminalSafe(err.Error())})
 	} else {
 		report.Target = runner.Target()
@@ -190,7 +188,7 @@ func checkSetupTokenEnv(project, env, config string) error {
 	if err != nil {
 		return nil
 	}
-	c, err := agentclient.ReadConfig(path)
+	c, err := setup.ReadCLIConfig(path)
 	if err != nil {
 		return err
 	}

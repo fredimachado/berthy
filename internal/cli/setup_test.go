@@ -854,3 +854,25 @@ func TestSetupRefusesTokenVariableUsedByAnotherProjectBeforeChanges(t *testing.T
 		t.Fatal("CLI config changed")
 	}
 }
+
+func TestSetupPreflightFailuresAreReportedAsJSONWithoutRunner(t *testing.T) {
+	for _, tc := range []struct{ name, content, want string }{
+		{"collision", `{"projects":{"my-shop":{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"BERTHY_MY_SHOP_PROD_TOKEN"}}}}}`, "my-shop/prod"},
+		{"earlier layout", `{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"OLD"}}}`, "move it aside, or give --config with a new file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := freshServer(t, "ops@s1")
+			made := withSetupRunner(t, server)
+			cfg := filepath.Join(t.TempDir(), "cli.json")
+			if err := os.WriteFile(cfg, []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errout := runSetupCmd("-e", "prod", "--project", "my_shop", "--host", "ops@s1", "--manifest-dir", t.TempDir(), "--config", cfg, "--json")
+			var report setupReport
+			err := json.Unmarshal([]byte(out), &report)
+			if code != 1 || err != nil || report.OK || len(report.Steps) != 1 || report.Steps[0].Status != setup.StatusFailed || !strings.Contains(report.Steps[0].Detail, tc.want) || made[0] != nil || errout != "" {
+				t.Fatalf("code %d report %+v runner %v stdout %q stderr %q parse %v", code, report, made[0], out, errout, err)
+			}
+		})
+	}
+}
