@@ -1197,8 +1197,11 @@ func namedComposeNetworkMode(mode string) bool {
 func (c *Controller) checkComposeNetworkModes(ctx context.Context, cfg composeConfigFile) error {
 	for _, key := range sortedKeys(cfg.Networks) {
 		name := cfg.Networks[key].Name
-		if !engine.ValidName(name) || c.Engine == nil {
+		if !composeResourceKey.MatchString(key) || name == "" || c.Engine == nil {
 			return errComposeConfig
+		}
+		if !engine.ValidName(name) {
+			return invalidComposeName("networks", key)
 		}
 		network, err := c.Engine.InspectNetwork(ctx, name)
 		if err != nil && !statusIs(err, 404) || err == nil && network.Name != name {
