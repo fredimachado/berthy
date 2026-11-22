@@ -1452,3 +1452,45 @@ func TestAgentRefusesSharedComposeProjects(t *testing.T) {
 		t.Fatal("accepted unsafe message")
 	}
 }
+
+func TestComposeDeployRefusesProjectOfOtherAppliedApp(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	actor := Actor{ID: "admin", Admin: true}
+	app := manifest.App{Kind: "compose", File: "compose.yaml", ProjectName: "shared", Deploy: manifest.Deploy{DeployTimeout: "30s", DrainTimeout: "5s"}}
+	alpha := manifest.Manifest{Project: "shop", Network: "berthy", Apps: map[string]manifest.App{"alpha": app}}
+	first := Request{RequestID: "alpha", Kind: "deploy", App: "alpha", Manifest: alpha, ComposeFile: composeFileOne}
+	op, _, err := admit(t, c, ctx, actor, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Operation(ctx, op.ID)
+	if err != nil || done.State != "succeeded" {
+		t.Fatalf("alpha: %+v %v", done, err)
+	}
+	beta := manifest.Manifest{Project: "shop", Network: "berthy", Apps: map[string]manifest.App{"beta": app}}
+	req := Request{RequestID: "beta", Kind: "deploy", App: "beta", Manifest: beta, ComposeFile: composeFileOne, DryRun: true}
+	want := "Compose project shared is shared by apps alpha and beta"
+	if _, err = c.Plan(ctx, actor, req); err == nil || err.Error() != want {
+		t.Errorf("dry run: %v", err)
+	}
+	req.DryRun = false
+	if _, _, err = admit(t, c, ctx, actor, req); err == nil || err.Error() != want {
+		t.Errorf("admission: %v", err)
+	}
+	if err = c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runner.upRuns() != 1 {
+		t.Errorf("compose up ran %d times", runner.upRuns())
+	}
+	first.RequestID = "alpha-again"
+	first.DryRun = true
+	if _, err := c.Plan(ctx, actor, first); err != nil {
+		t.Errorf("redeploy of the same app: %v", err)
+	}
+}

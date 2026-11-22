@@ -45,7 +45,7 @@ func (c *Controller) ApplySettings(ctx context.Context, actor Actor, req ApplyRe
 	if err := c.refuseLocalChanges(ctx, Request{Manifest: req.Manifest, Modified: req.Modified}); err != nil {
 		return ApplyResult{}, err
 	}
-	if err := c.checkProject(Request{Manifest: req.Manifest}); err != nil {
+	if err := c.checkProject(ctx, Request{Manifest: req.Manifest}); err != nil {
 		return ApplyResult{}, err
 	}
 	namesReq := Request{Kind: "apply", Manifest: req.Manifest}

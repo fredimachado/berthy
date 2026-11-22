@@ -193,16 +193,49 @@ func checkRequestManifest(m manifest.Manifest) error {
 
 // checkProject refuses a deploy whose manifest names another project than the one the environment runs, before anything
 // changes. Only a deploy carries a manifest to apply: a rollback, an ingress apply and the other operations do not.
-func (c *Controller) checkProject(req Request) error {
+func (c *Controller) checkProject(ctx context.Context, req Request) error {
 	if req.Kind == "" || req.Kind == "deploy" {
 		if problems := req.Manifest.ComposeProjectProblems(c.Environment); len(problems) > 0 {
 			return Refusal(problems[0].Message)
 		}
 	}
-	if c.Project == "" || req.Kind != "" && req.Kind != "deploy" || req.Manifest.Project == c.Project {
+	if req.Kind != "" && req.Kind != "deploy" {
 		return nil
 	}
-	return Refusal(fmt.Sprintf("environment %s runs project %s; this manifest is for project %s", c.Environment, c.Project, req.Manifest.Project))
+	if c.Project != "" && req.Manifest.Project != c.Project {
+		return Refusal(fmt.Sprintf("environment %s runs project %s; this manifest is for project %s", c.Environment, c.Project, req.Manifest.Project))
+	}
+	app, ok := req.Manifest.Apps[req.App]
+	if !ok || app.Kind != "compose" || c.Store == nil {
+		return nil
+	}
+	applied, err := c.Store.AppliedApps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range applied {
+		if name == req.App {
+			continue
+		}
+		m, compose, err := c.appliedCompose(ctx, name)
+		if err != nil {
+			return err
+		}
+		if _, ok := m.Apps[name]; !ok {
+			return errors.New("applied app unavailable")
+		}
+		if !compose {
+			continue
+		}
+		pair := manifest.Manifest{Project: req.Manifest.Project, Apps: map[string]manifest.App{
+			req.App: app,
+			name:    {Kind: "compose", ProjectName: m.ComposeProject(c.Environment, name)},
+		}}
+		if problems := pair.ComposeProjectProblems(c.Environment); len(problems) > 0 {
+			return Refusal(problems[0].Message)
+		}
+	}
+	return nil
 }
 
 // Plan performs no durable or Docker mutations. It checks the manifest a client sent. A rollback's manifest is the stored
@@ -213,7 +246,7 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 			return Plan{}, err
 		}
 	}
-	if err := c.checkProject(req); err != nil {
+	if err := c.checkProject(ctx, req); err != nil {
 		return Plan{}, err
 	}
 	if err := c.checkNames(ctx, req); err != nil {
@@ -410,7 +443,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
-	if err := c.checkProject(req); err != nil {
+	if err := c.checkProject(ctx, req); err != nil {
 		return state.Operation{}, false, err
 	}
 	if err := c.checkNames(ctx, req); err != nil {
