@@ -2,7 +2,16 @@ package agent
 
 import (
 	"berthy/internal/api"
+	"berthy/internal/deploy"
+	"berthy/internal/engine"
 	"berthy/internal/state"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,4 +48,54 @@ func TestLogicalInventoryNeverBindsMismatchedServiceID(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("foreign inventory lost: %v", out)
 	}
+}
+
+func TestInventoryLeavesOutWhatOtherEnvironmentsHold(t *testing.T) {
+	e := inventoryDocker(t)
+	d := &deploy.Controller{Foreign: func(context.Context) (deploy.Foreign, error) {
+		return deploy.Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimService, Name: "foreign"}: true, {Kind: state.ClaimComposeProject, Name: "foreign-compose"}: true}}, nil
+	}}
+	apps, err := appInventory(context.Background(), e, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range apps {
+		if a.Ref.Name == "foreign" || a.Ref.Name == "foreign-compose" {
+			t.Fatalf("foreign app visible: %+v", apps)
+		}
+	}
+	if len(apps) != 2 {
+		t.Fatalf("unclaimed apps lost: %+v", apps)
+	}
+}
+
+func TestInventoryFailsWhenTheOtherClaimsCannotBeRead(t *testing.T) {
+	d := &deploy.Controller{Foreign: func(context.Context) (deploy.Foreign, error) { return deploy.Foreign{}, errors.New("unavailable") }}
+	if apps, err := appInventory(context.Background(), inventoryDocker(t), d); err == nil {
+		t.Fatalf("partial inventory: %+v", apps)
+	}
+}
+
+func inventoryDocker(t *testing.T) *engine.Engine {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "docker.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("unix socket: %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			fmt.Fprint(w, `[{"Id":"a","Labels":{"com.docker.compose.project":"foreign-compose","com.docker.compose.service":"db"}},{"Id":"b","Labels":{"com.docker.compose.project":"unclaimed-compose","com.docker.compose.service":"db"}}]`)
+		case strings.HasSuffix(r.URL.Path, "/services"):
+			fmt.Fprint(w, `[{"ID":"a","Spec":{"Name":"foreign"}},{"ID":"b","Spec":{"Name":"unclaimed"}}]`)
+		case strings.HasSuffix(r.URL.Path, "/tasks"):
+			fmt.Fprint(w, `[]`)
+		default:
+			w.WriteHeader(404)
+		}
+	})}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	return engine.New(sock)
 }

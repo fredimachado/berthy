@@ -95,6 +95,13 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 		for _, c := range claims {
 			f.Claims[c] = true
 		}
+		images, err := r.deployment.RetainedImages(ctx)
+		if err != nil {
+			return deploy.Foreign{}, err
+		}
+		for ref := range images {
+			f.Images[ref] = true
+		}
 	}
 	return f, nil
 }

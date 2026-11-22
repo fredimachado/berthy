@@ -296,3 +296,14 @@ func TestManagedLogSecretsIncludeRotatedContainerValues(t *testing.T) {
 		t.Fatal("mismatched managed identity accepted")
 	}
 }
+
+func TestLogsOfAnotherEnvironmentsServiceAre404(t *testing.T) {
+	d := &deploy.Controller{Foreign: func(context.Context) (deploy.Foreign, error) {
+		return deploy.Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimService, Name: "foreign"}: true}}, nil
+	}}
+	w := httptest.NewRecorder()
+	serveLogs(w, httptest.NewRequest("GET", "/logs", nil), inventoryDocker(t), "foreign", d, newLimits())
+	if w.Code != 404 {
+		t.Fatalf("logs: %d %s", w.Code, w.Body.String())
+	}
+}

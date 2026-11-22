@@ -54,6 +54,26 @@ func appInventory(ctx context.Context, e *engine.Engine, d *deploy.Controller) (
 	if err != nil {
 		return nil, err
 	}
+	if d != nil && d.Foreign != nil {
+		foreign, err := d.Foreign(ctx)
+		if err != nil {
+			return nil, err
+		}
+		visible := apps[:0]
+		for _, app := range apps {
+			kind := ""
+			switch app.Ref.Kind {
+			case "swarm":
+				kind = state.ClaimService
+			case "compose":
+				kind = state.ClaimComposeProject
+			}
+			if !foreign.Claims[state.Claim{Kind: kind, Name: app.Ref.Name}] {
+				visible = append(visible, app)
+			}
+		}
+		apps = visible
+	}
 	if d == nil || d.Store == nil {
 		return apps, nil
 	}

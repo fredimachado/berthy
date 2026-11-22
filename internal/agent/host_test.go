@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
@@ -917,5 +918,80 @@ func TestRepeatedRemoveReleasesClaimAfterLeaseEnds(t *testing.T) {
 	held, err = c.Store.Claims(ctx)
 	if err != nil || slices.Contains(held, claim) {
 		t.Fatalf("claim after repeated remove: %v %v", held, err)
+	}
+}
+
+func TestTheFirstInventoryReadOfTwoRuntimesIsScoped(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	sh.Engine = inventoryDocker(t)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	ctx := context.Background()
+	for i, name := range []string{"foreign", "unclaimed"} {
+		if err := h.order[i].deployment.Store.AddClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := make(chan []api.App, 2)
+	for _, r := range h.order {
+		r := r
+		var once sync.Once
+		r.monitoring.mon.Checks = func(ctx context.Context) []monitor.Check {
+			once.Do(func() {
+				apps, err := r.monitoring.inventory(ctx)
+				if err != nil {
+					t.Errorf("inventory: %v", err)
+				}
+				reads <- apps
+			})
+			return nil
+		}
+	}
+	if err := h.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		apps := <-reads
+		n := 0
+		for _, a := range apps {
+			if a.Ref.Kind == "swarm" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("first inventory: %+v", apps)
+		}
+	}
+}
+
+func TestForeignIncludesTheOtherRuntimesRetainedImages(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	ctx := context.Background()
+	s := h.runtimes[b].deployment.Store
+	for _, r := range []struct{ id, digest string }{{"one", "old"}, {"two", "current"}} {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: r.id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: r.digest, Manifest: []byte(`{"apps":{"app":{"deploy":{"retain":2}}}}`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	foreign, err := h.runtimes[a].deployment.Foreign(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !foreign.Images["old"] || !foreign.Images["current"] {
+		t.Fatalf("foreign images: %v", foreign.Images)
 	}
 }
