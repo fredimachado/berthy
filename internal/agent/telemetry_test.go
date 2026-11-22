@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -203,17 +202,15 @@ func findCheck(checks []api.Check, name string) (api.Check, bool) {
 	return api.Check{}, false
 }
 
-// otlpSink is an OTLP/HTTP metrics endpoint that records each accepted export.
+// otlpSink is an OTLP/HTTP metrics endpoint that signals each accepted export.
 type otlpSink struct {
 	srv *httptest.Server
-
-	mu       sync.Mutex
-	requests []*colmetricspb.ExportMetricsServiceRequest
+	got chan *colmetricspb.ExportMetricsServiceRequest
 }
 
 func newOTLPSink(t *testing.T) *otlpSink {
 	t.Helper()
-	s := &otlpSink{}
+	s := &otlpSink{got: make(chan *colmetricspb.ExportMetricsServiceRequest, 8)}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.srv.Close)
 	return s
@@ -245,38 +242,43 @@ func (s *otlpSink) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not OTLP protobuf", http.StatusBadRequest)
 		return
 	}
-	s.mu.Lock()
-	s.requests = append(s.requests, &req)
-	s.mu.Unlock()
+	select {
+	case s.got <- &req:
+	default:
+	}
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *otlpSink) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.requests)
+func (s *otlpSink) wait(t *testing.T, ctx context.Context) *colmetricspb.ExportMetricsServiceRequest {
+	t.Helper()
+	select {
+	case req := <-s.got:
+		return req
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for an export")
+	}
+	return nil
 }
 
-func (s *otlpSink) containerIDs() map[string]bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func containerIDsIn(req *colmetricspb.ExportMetricsServiceRequest) map[string]bool {
 	ids := map[string]bool{}
-	for _, req := range s.requests {
-		for _, rm := range req.GetResourceMetrics() {
-			for _, sm := range rm.GetScopeMetrics() {
-				for _, m := range sm.GetMetrics() {
-					var dps []*metricspb.NumberDataPoint
-					if g := m.GetGauge(); g != nil {
-						dps = g.GetDataPoints()
-					} else {
-						dps = m.GetSum().GetDataPoints()
-					}
-					for _, dp := range dps {
-						for _, kv := range dp.GetAttributes() {
-							if kv.GetKey() == "container.id" {
-								ids[kv.GetValue().GetStringValue()] = true
-							}
+	if req == nil {
+		return ids
+	}
+	for _, rm := range req.GetResourceMetrics() {
+		for _, sm := range rm.GetScopeMetrics() {
+			for _, m := range sm.GetMetrics() {
+				var dps []*metricspb.NumberDataPoint
+				if g := m.GetGauge(); g != nil {
+					dps = g.GetDataPoints()
+				} else {
+					dps = m.GetSum().GetDataPoints()
+				}
+				for _, dp := range dps {
+					for _, kv := range dp.GetAttributes() {
+						if kv.GetKey() == "container.id" {
+							ids[kv.GetValue().GetStringValue()] = true
 						}
 					}
 				}
@@ -300,18 +302,7 @@ func startExport(t *testing.T, exp *telemetry.Exporter) {
 	})
 }
 
-func waitForExport(t *testing.T, sink *otlpSink) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for sink.count() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for an export")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func testExporter(t *testing.T, col *metrics.Collector, keep func() func(map[string]string) bool) (*telemetry.Exporter, *otlpSink) {
+func testExporter(t *testing.T, col *metrics.Collector, keep func() func(map[string]string) bool) (*telemetry.Exporter, map[string]bool) {
 	t.Helper()
 	sink := newOTLPSink(t)
 	exp := NewTelemetry(Config{Project: "demo", Environment: "lab"}, col, &deploy.Controller{Store: openIngressStore(t), Environment: "lab"}, nil)
@@ -323,8 +314,10 @@ func testExporter(t *testing.T, col *metrics.Collector, keep func() func(map[str
 		return &telemetry.Config{Endpoint: sink.srv.URL}, nil
 	}
 	startExport(t, exp)
-	waitForExport(t, sink)
-	return exp, sink
+	if err := exp.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return exp, containerIDsIn(sink.wait(t, t.Context()))
 }
 
 func TestTheExportLeavesOutContainersOfOtherEnvironments(t *testing.T) {
@@ -333,8 +326,7 @@ func TestTheExportLeavesOutContainersOfOtherEnvironments(t *testing.T) {
 		{ID: "lab-web", Labels: lab.Labels()},
 		{ID: "prod-web", Labels: prod.Labels()},
 	})
-	_, sink := testExporter(t, col, func() func(map[string]string) bool { return lab.Owns })
-	ids := sink.containerIDs()
+	_, ids := testExporter(t, col, func() func(map[string]string) bool { return lab.Owns })
 	if !ids["lab-web"] {
 		t.Fatalf("own container missing: %v", ids)
 	}
@@ -355,8 +347,7 @@ func TestTheExportLeavesOutTheTasksOfAnAdoptedServiceOfAnotherEnvironment(t *tes
 		{ID: "lab-own", Labels: lab.Labels()},
 		{ID: "adopted-task", Labels: map[string]string{"com.docker.swarm.service.name": "legacy-web"}},
 	})
-	_, sink := testExporter(t, col, r.keep)
-	ids := sink.containerIDs()
+	_, ids := testExporter(t, col, r.keep)
 	if !ids["lab-own"] {
 		t.Fatalf("own container missing: %v", ids)
 	}

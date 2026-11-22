@@ -123,12 +123,12 @@ func sampledCollector(t *testing.T, host metrics.Host, refs []metrics.ContainerR
 	col := metrics.New(fixedHost{host}, labeledDocker{refs})
 	sampled, stop := col.Subscribe()
 	t.Cleanup(stop)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go col.Run(ctx)
 	select {
 	case <-sampled:
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("no sample")
 	}
 	return col

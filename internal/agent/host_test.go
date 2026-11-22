@@ -1083,8 +1083,10 @@ func TestTheFirstExportOfTwoRuntimesIsScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, id := range []scope.ID{lab, prod} {
-		waitForExport(t, sinks[i])
-		ids := sinks[i].containerIDs()
+		if err := h.order[i].exporter.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		ids := containerIDsIn(sinks[i].wait(t, t.Context()))
 		want := id.Environment + "-web"
 		other := "prod-web"
 		if id == prod {

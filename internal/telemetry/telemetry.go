@@ -61,6 +61,7 @@ type Exporter struct {
 
 	mu         sync.Mutex
 	live       *pipeline // the pipeline whose results Status reports; nil once it has begun to shut down
+	ready      chan struct{}
 	configured bool
 	target     string
 	lastErr    string
@@ -165,10 +166,44 @@ func (e *Exporter) start(ctx context.Context, cfg Config) (*pipeline, error) {
 	e.target = endpointTarget(metricsURL)
 	e.lastErr = ""
 	e.lastOK = time.Time{}
+	if e.ready != nil {
+		close(e.ready)
+		e.ready = nil
+	}
 	target := e.target
 	e.mu.Unlock()
 	e.log("telemetry: exporting metrics to " + target)
 	return p, nil
+}
+
+// Flush exports the current sample once. Tests use it so they wait for the export, not the interval.
+func (e *Exporter) Flush(ctx context.Context) error {
+	p, err := e.waitLive(ctx)
+	if err != nil {
+		return err
+	}
+	return p.provider.ForceFlush(ctx)
+}
+
+func (e *Exporter) waitLive(ctx context.Context) (*pipeline, error) {
+	for {
+		e.mu.Lock()
+		if e.live != nil {
+			p := e.live
+			e.mu.Unlock()
+			return p, nil
+		}
+		if e.ready == nil {
+			e.ready = make(chan struct{})
+		}
+		ch := e.ready
+		e.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ch:
+		}
+	}
 }
 
 // stop flushes a pipeline and shuts it down. It is cleared as the live one before the shutdown, so the results of its final
