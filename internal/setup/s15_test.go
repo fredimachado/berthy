@@ -221,3 +221,17 @@ func TestHostedPathsUseForwardSlashes(t *testing.T) {
 		t.Fatalf("paths: %q %q", state, key)
 	}
 }
+
+func TestSetupRefusesAnOverlongNetworkBeforeAnyChange(t *testing.T) {
+	f := s15Server(t, s15File(t, "other", "prod", "other-prod"))
+	s := agentSession(t, f, elfFile(t, emX86), false, func(o *Options) { o.Network = strings.Repeat("n", 64) })
+	got, ok := runSteps(s)
+	if ok || lastResult(got).Step != "check" || !strings.Contains(lastResult(got).Detail, "invalid network") {
+		t.Fatalf("result: %+v", got)
+	}
+	for _, c := range f.calls {
+		if agentChange(c.script) {
+			t.Fatalf("sent changing script: %s", c.script)
+		}
+	}
+}
