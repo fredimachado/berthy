@@ -754,6 +754,14 @@ func TestSetupNeedsAProjectWithoutAManifest(t *testing.T) {
 	}
 }
 
+func TestSetupProjectMustAgreeWithTheManifest(t *testing.T) {
+	made := withSetupRunner(t, &setupServer{})
+	code, _, errout := runSetupCmd("-e", "prod", "--project", "other", "--host", "ops@s1", "--manifest-dir", projectDir(t))
+	if code != 2 || !strings.Contains(errout, "--project other differs from the project shop") || made[0] != nil {
+		t.Fatalf("exit %d, runner %v, stderr %q", code, made[0], errout)
+	}
+}
+
 func TestSetupRefusesALongPairWithoutAManifestBeforeAnyServerStep(t *testing.T) {
 	made := withSetupRunner(t, &setupServer{})
 	code, _, errout := runSetupCmd("-e", strings.Repeat("e", 30), "--project", strings.Repeat("p", 30), "--host", "ops@s1", "--manifest-dir", t.TempDir())
