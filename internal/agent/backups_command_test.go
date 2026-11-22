@@ -59,7 +59,7 @@ func commandRig(t *testing.T) (*backupRig, *commandEngine) {
 func TestACommandBackupRunsListsAndRestoresIntoACommandThroughTheAPI(t *testing.T) {
 	g, e := commandRig(t)
 	run := g.run("dump")
-	if run.Status != "succeeded" || run.Volume != "" || run.Size == 0 || len(run.SHA256) != 64 || !strings.HasPrefix(run.Key, "files/command/dump/") || !strings.HasSuffix(run.Key, fmt.Sprintf("-%d.gz", run.ID)) {
+	if run.Status != "succeeded" || run.Volume != "" || run.Size == 0 || len(run.SHA256) != 64 || !strings.HasPrefix(run.Key, "demo/lab/files/command/dump/") || !strings.HasSuffix(run.Key, fmt.Sprintf("-%d.gz", run.ID)) {
 		t.Fatalf("run: %+v", run)
 	}
 	if len(e.ran) != 1 || e.ran[0] != "pg_dump -Fc" {
@@ -132,7 +132,7 @@ func TestACommandThatFailsLeavesNoBackupAndItsCheckShowsTheError(t *testing.T) {
 	if entries := g.list("?backup=dump"); len(entries) != 0 {
 		t.Fatalf("a failed command left a listed backup: %+v", entries)
 	}
-	objects, err := g.s3.List(context.Background(), "files/command/dump/")
+	objects, err := g.s3.List(context.Background(), "demo/lab/files/command/dump/")
 	if err != nil || len(objects) != 0 {
 		t.Fatalf("a failed command left objects: %+v %v", objects, err)
 	}

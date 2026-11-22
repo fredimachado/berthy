@@ -9,10 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"berthy/internal/objectstore"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -25,7 +25,9 @@ type RestoreOptions struct {
 	// Out is the directory to write into. It is created when missing, and must otherwise be empty.
 	Out string
 	// KeyFile is the saved key that opens the snapshot.
-	KeyFile              string
+	KeyFile string
+	// Project is the project the snapshot belongs to. It must match the sidecar.
+	Project              string
 	AccessKey, SecretKey string
 }
 
@@ -55,8 +57,6 @@ func (e *KeyMismatchError) Is(target error) bool { return target == state.ErrWro
 // ErrNoSnapshotFile is what a restore reports when the object is missing from the bucket.
 var ErrNoSnapshotFile = Refusal("snapshot not found")
 
-var environmentName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
-
 // Restore downloads a snapshot and its sidecar, checks the download against the sidecar, and opens the result with the key to
 // prove the key decrypts it. It works without the agent and its server. A failure removes what the restore wrote, so a retry
 // into the same directory is possible. The result is a state directory an agent can run with: set its state_dir to Out and
@@ -73,6 +73,9 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	sc, err := readRestoreSidecar(ctx, store, strings.TrimSuffix(o.Object, snapshotSuffix)+sidecarSuffix)
 	if err != nil {
 		return rep, err
+	}
+	if sc.Project != o.Project {
+		return rep, ErrInvalidSidecar
 	}
 	// The key is checked against the sidecar first, so a wrong key costs no download.
 	have, err := state.KeyIDOfFile(o.KeyFile)
@@ -140,7 +143,7 @@ func readRestoreSidecar(ctx context.Context, store objectstore.Store, key string
 		return Sidecar{}, err
 	}
 	var sc Sidecar
-	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || !environmentName.MatchString(sc.Environment) ||
+	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || !scope.ValidProject(sc.Project) || !scope.ValidEnvironment(sc.Environment) ||
 		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) || !keyIDHex.MatchString(sc.KeyID) {
 		return Sidecar{}, ErrInvalidSidecar
 	}

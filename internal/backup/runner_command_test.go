@@ -108,11 +108,11 @@ func gunzip(t *testing.T, b []byte) string {
 func TestACommandBackupStoresTheGzippedOutputWithItsDigestAndAFormatOfItsOwn(t *testing.T) {
 	g, cmds := commandRig(t)
 	res := g.run("main-db")
-	wantKey := "db/command/main-db/20261116T100100Z-1.gz"
+	wantKey := "demo/prod/db/command/main-db/20261116T100100Z-1.gz"
 	if res.Key != wantKey || res.Run.Status != "succeeded" || res.Run.Detail != "" {
 		t.Fatalf("result: %+v", res)
 	}
-	if got := g.objs.keys(); !slices.Equal(got, []string{wantKey, "db/command/main-db/20261116T100100Z-1.json"}) {
+	if got := g.objs.keys(); !slices.Equal(got, []string{wantKey, "demo/prod/db/command/main-db/20261116T100100Z-1.json"}) {
 		t.Fatalf("objects: %v", got)
 	}
 	stored := g.objs.objects[wantKey]
@@ -120,7 +120,7 @@ func TestACommandBackupStoresTheGzippedOutputWithItsDigestAndAFormatOfItsOwn(t *
 		t.Fatalf("stored output %q", got)
 	}
 	sc := g.sidecarOf(wantKey)
-	want := Sidecar{Format: CommandSidecarFormat, Environment: "prod", Backup: "main-db", App: "db", Size: int64(len(stored)), SHA256: sum(string(stored)),
+	want := Sidecar{Format: CommandSidecarFormat, Project: "demo", Environment: "prod", Backup: "main-db", App: "db", Size: int64(len(stored)), SHA256: sum(string(stored)),
 		Started: time.Date(2026, 11, 16, 10, 1, 0, 0, time.UTC), Finished: time.Date(2026, 11, 16, 10, 2, 0, 0, time.UTC), RunID: 1}
 	if sc != want {
 		t.Fatalf("sidecar\n got %+v\nwant %+v", sc, want)

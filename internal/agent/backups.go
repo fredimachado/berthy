@@ -86,7 +86,7 @@ func newBackups(env string, d *deploy.Controller, arch *backup.Archiver, holder 
 		},
 		Log: log,
 	}
-	b.State = &statebackup.Runner{Store: d.Store, Env: env, Dir: d.StateDir, Objects: b.stateObjects, Log: log}
+	b.State = &statebackup.Runner{Store: d.Store, Project: d.Project, Env: env, Dir: d.StateDir, Objects: b.stateObjects, Log: log}
 	b.StateScheduler = &statebackup.Scheduler{
 		Env:      env,
 		Store:    d.Store,

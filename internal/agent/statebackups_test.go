@@ -99,7 +99,7 @@ func TestStateBackupRunsOnDemandThroughTheAdminAPI(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if run.Status != "succeeded" || !strings.HasPrefix(run.Key, "state/lab/") || !strings.HasSuffix(run.Key, ".db") || run.Size == 0 || len(run.SHA256) != 64 || run.Trigger != "manual" {
+	if run.Status != "succeeded" || !strings.HasPrefix(run.Key, "demo/lab/state/lab/") || !strings.HasSuffix(run.Key, ".db") || run.Size == 0 || len(run.SHA256) != 64 || run.Trigger != "manual" {
 		t.Fatalf("run: %+v", run)
 	}
 	// The outcome is audited just after the run record is finished, so the audit log is read until it has both steps.

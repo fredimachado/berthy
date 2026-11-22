@@ -372,8 +372,8 @@ type Destination struct {
 }
 
 // StateBackup is the environment's backup of the agent's SQLite state. Destination names a destination of the manifest.
-// Prefix is the object prefix; empty means berthy-state/<environment>, which the agent resolves because it knows the
-// environment. Schedule is a UTC cron expression and Keep the number of snapshots that are retained.
+// Prefix is the object prefix under <project>/<environment>/; empty means berthy-state. Schedule is a UTC cron expression
+// and Keep the number of snapshots that are retained.
 type StateBackup struct {
 	Destination string `json:"destination" yaml:"destination"`
 	Prefix      string `json:"prefix,omitempty" yaml:"prefix,omitempty"`

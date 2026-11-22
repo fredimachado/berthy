@@ -51,7 +51,7 @@ func TestBackupListAndRestoreThroughTheRealObjectClient(t *testing.T) {
 	if err = g.runner.Restore(context.Background(), g.m, keys[2], "restored-1", "op-1"); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if got := g.docker.stdinSeen.String(); got != "third-archive" || !strings.Contains(keys[2], "files/uploads/uploads/") {
+	if got := g.docker.stdinSeen.String(); got != "third-archive" || !strings.Contains(keys[2], "demo/prod/files/uploads/uploads/") {
 		t.Fatalf("restored %q from %s", got, keys[2])
 	}
 }

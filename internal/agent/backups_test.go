@@ -214,8 +214,8 @@ func newBackupRig(t *testing.T) *backupRig {
 	g.docker.volumes["files_docs"] = "docs-payload"
 	recordAppRelease(t, s, "r-api", "api", backupManifest(srv.URL))
 	recordAppRelease(t, s, "r-files", "files", backupManifest(srv.URL))
-	g.ctrl = &deploy.Controller{Store: s, Environment: "lab", Compose: g.compose, StateDir: t.TempDir()}
-	arch := &backup.Archiver{Engine: g.docker, Image: func(context.Context) (string, error) { return "berthy-helper:aabbccddeeff", nil }, Env: "lab"}
+	g.ctrl = &deploy.Controller{Store: s, Project: "demo", Environment: "lab", Compose: g.compose, StateDir: t.TempDir()}
+	arch := &backup.Archiver{Engine: g.docker, Image: func(context.Context) (string, error) { return "berthy-helper:aabbccddeeff", nil }, Project: "demo", Env: "lab"}
 	g.backups = newBackups("lab", g.ctrl, arch, nil, func(string) {})
 	g.ctx, g.cancel = context.WithCancel(context.Background())
 	g.backups.Start(g.ctx)
@@ -312,7 +312,7 @@ func TestBackupOfAnImageAppVolumeRunsListsAndAudits(t *testing.T) {
 	if run.Status != "succeeded" || run.Trigger != "manual" || run.Size != int64(len("uploads-payload")) || len(run.SHA256) != 64 || run.Finished == nil {
 		t.Fatalf("run: %+v", run)
 	}
-	if !strings.HasPrefix(run.Key, "api/uploads/uploads/") || !strings.HasSuffix(run.Key, fmt.Sprintf("-%d.tar.gz", run.ID)) {
+	if !strings.HasPrefix(run.Key, "demo/lab/api/uploads/uploads/") || !strings.HasSuffix(run.Key, fmt.Sprintf("-%d.tar.gz", run.ID)) {
 		t.Fatalf("key %q", run.Key)
 	}
 	if len(g.docker.archived) != 1 || g.docker.archived[0] != "demo-lab_uploads" {
@@ -346,7 +346,7 @@ func TestBackupOfAnImageAppVolumeRunsListsAndAudits(t *testing.T) {
 func TestBackupOfAComposeVolumeResolvesTheProjectsDockerName(t *testing.T) {
 	g := newBackupRig(t)
 	run := g.run("docs")
-	if run.Status != "succeeded" || !strings.HasPrefix(run.Key, "docs/archive/docs/") {
+	if run.Status != "succeeded" || !strings.HasPrefix(run.Key, "demo/lab/docs/archive/docs/") {
 		t.Fatalf("run: %+v", run)
 	}
 	if len(g.docker.archived) != 1 || g.docker.archived[0] != "files_docs" {
@@ -496,7 +496,7 @@ func TestStoppingTheAgentRecordsTheRunAsStopped(t *testing.T) {
 func TestStartFailsRunsAPreviousProcessLeftRunning(t *testing.T) {
 	g := newBackupRig(t)
 	ctx := context.Background()
-	id, err := g.store.StartBackup(ctx, state.BackupRun{Backup: "uploads", App: "api", Volume: "uploads", Destination: "offsite", ObjectKey: "api/uploads/uploads/crashed.tar.gz", Trigger: "manual", Started: time.Now()})
+	id, err := g.store.StartBackup(ctx, state.BackupRun{Backup: "uploads", App: "api", Volume: "uploads", Destination: "offsite", ObjectKey: "demo/lab/api/uploads/uploads/crashed.tar.gz", Trigger: "manual", Started: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestRestoreThroughTheAPIFillsANewVolume(t *testing.T) {
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "target volume already exists") {
 		t.Fatalf("existing volume: %d %s", w.Code, w.Body.String())
 	}
-	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, `{"key":"api/uploads/uploads/20200101T000000Z-1.tar.gz","into":"restored-2"}`)
+	w = g.call("POST", "/v1/projects/demo/environments/lab/restore", adminToken, `{"key":"demo/lab/api/uploads/uploads/20200101T000000Z-1.tar.gz","into":"restored-2"}`)
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "backup not found") {
 		t.Fatalf("unknown key: %d %s", w.Code, w.Body.String())
 	}

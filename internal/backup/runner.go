@@ -174,6 +174,7 @@ type Runner struct {
 // has one is complete. Format says what the archive is. A command backup has no volume.
 type Sidecar struct {
 	Format       string    `json:"format"`
+	Project      string    `json:"project"`
 	Environment  string    `json:"environment"`
 	Backup       string    `json:"backup"`
 	App          string    `json:"app"`
@@ -211,9 +212,9 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
-// objectDir is the prefix of a backup's objects, without a trailing slash: the manifest's prefix or <app>/<volume>, then the
-// backup's name.
-func objectDir(name string, b manifest.Backup) (string, error) {
+// objectDir is the prefix of a backup's objects, without a trailing slash: <project>/<environment>/, then the manifest's
+// prefix or <app>/<volume>, then the backup's name.
+func objectDir(project, env, name string, b manifest.Backup) (string, error) {
 	base := strings.Trim(b.Prefix, "/")
 	if base == "" {
 		base = b.App + "/" + b.Volume
@@ -221,12 +222,13 @@ func objectDir(name string, b manifest.Backup) (string, error) {
 			base = b.App + "/command"
 		}
 	}
-	for _, seg := range strings.Split(base+"/"+name, "/") {
+	dir := project + "/" + env + "/" + base + "/" + name
+	for _, seg := range strings.Split(dir, "/") {
 		if seg == "." || seg == ".." || !dirSegment.MatchString(seg) {
 			return "", Refusal(fmt.Sprintf("backup %s: invalid prefix", name))
 		}
 	}
-	return base + "/" + name, nil
+	return dir, nil
 }
 
 func archiveKey(dir string, started time.Time, runID int64, suffix string) string {
@@ -341,7 +343,7 @@ func (r *Runner) begin(ctx context.Context, m manifest.Manifest, name, trigger s
 	if !ok {
 		return nil, ErrUnknownBackup
 	}
-	dir, err := objectDir(name, b)
+	dir, err := objectDir(r.Project, r.Env, name, b)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +466,7 @@ func (p *Pending) Execute(ctx context.Context) Result {
 		return fail(stage, err)
 	}
 	finished := p.r.now()
-	sidecar := Sidecar{Format: format, Environment: p.r.Env, Backup: run.Backup, App: run.App, Volume: run.Volume, DockerVolume: p.dockerVolume,
+	sidecar := Sidecar{Format: format, Project: p.r.Project, Environment: p.r.Env, Backup: run.Backup, App: run.App, Volume: run.Volume, DockerVolume: p.dockerVolume,
 		Size: size, SHA256: sum, Started: run.Started, Finished: finished, RunID: run.ID}
 	if err = p.writeSidecar(ctx, sidecar); err != nil {
 		p.discardArchive()
@@ -729,7 +731,7 @@ func (r *Runner) readSidecar(ctx context.Context, store objectstore.Store, key s
 		return Sidecar{}, err
 	}
 	var sc Sidecar
-	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || (sc.Format != SidecarFormat && sc.Format != CommandSidecarFormat) || sc.Environment != r.Env ||
+	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || (sc.Format != SidecarFormat && sc.Format != CommandSidecarFormat) || sc.Project != r.Project || sc.Environment != r.Env ||
 		sc.Backup == "" || sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) {
 		return Sidecar{}, ErrInvalidSidecar
 	}
@@ -779,7 +781,7 @@ func (r *Runner) List(ctx context.Context, m manifest.Manifest, name string) ([]
 			continue
 		}
 		b := m.Backups[n]
-		dir, err := objectDir(n, b)
+		dir, err := objectDir(r.Project, r.Env, n, b)
 		if err != nil {
 			return nil, err
 		}
@@ -858,7 +860,7 @@ func (r *Runner) locate(ctx context.Context, m manifest.Manifest, key string) (l
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
 		b := m.Backups[name]
-		dir, err := objectDir(name, b)
+		dir, err := objectDir(r.Project, r.Env, name, b)
 		if err != nil {
 			continue
 		}

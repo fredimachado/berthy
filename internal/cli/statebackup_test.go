@@ -128,7 +128,7 @@ func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
 		Destinations: map[string]manifest.Destination{"offsite": {Type: "s3", Endpoint: srv.URL, Bucket: "bkt", AccessKeySecret: "S3_ACCESS_KEY", SecretKeySecret: "S3_SECRET_KEY"}},
 		StateBackup:  &manifest.StateBackup{Destination: "offsite"},
 	}
-	r := &statebackup.Runner{Store: store, Env: "prod", Dir: dir,
+	r := &statebackup.Runner{Store: store, Project: "demo", Env: "prod", Dir: dir,
 		Objects: func(context.Context, manifest.Destination) (objectstore.Store, error) { return objects, nil }}
 	p, err := r.Begin(ctx, m, "manual", time.Time{})
 	if err != nil {

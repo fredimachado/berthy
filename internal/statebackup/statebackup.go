@@ -71,6 +71,7 @@ var (
 // it downloads the snapshot.
 type Sidecar struct {
 	Format        string    `json:"format"`
+	Project       string    `json:"project"`
 	Environment   string    `json:"environment"`
 	SchemaVersion int       `json:"schema_version"`
 	KeyID         string    `json:"key_id"`
@@ -95,12 +96,14 @@ func Keep(sb manifest.StateBackup) int {
 	return manifest.DefaultStateBackupKeep
 }
 
-// Prefix returns the object prefix of the snapshots, without a trailing slash. The default depends on the environment.
-func Prefix(sb manifest.StateBackup, environment string) string {
-	if p := strings.Trim(sb.Prefix, "/"); p != "" {
-		return p
+// Prefix returns the object prefix of the snapshots, without a trailing slash. Every key starts with
+// <project>/<environment>/, then the manifest's prefix or berthy-state.
+func Prefix(sb manifest.StateBackup, project, environment string) string {
+	base := strings.Trim(sb.Prefix, "/")
+	if base == "" {
+		base = "berthy-state"
 	}
-	return "berthy-state/" + environment
+	return project + "/" + environment + "/" + base
 }
 
 // Result is the outcome of a run that was recorded. The run's Status says whether it worked.
@@ -111,8 +114,8 @@ type Result struct {
 // Runner takes the snapshots of the state backup. Its fields are set before use.
 type Runner struct {
 	Store *state.Store
-	// Env is the environment the agent serves. The default prefix and the sidecars carry it.
-	Env string
+	// Project and Env are the hosted environment. Object keys and sidecars carry both.
+	Project, Env string
 	// Dir is a directory the agent owns, in which a snapshot is first written to a private directory of its own.
 	Dir string
 	// Objects builds the client of a destination. It returns ErrCredentials or ErrStorage, or any other error, which is reported
@@ -188,7 +191,7 @@ func (r *Runner) Begin(ctx context.Context, m manifest.Manifest, trigger string,
 }
 
 func (r *Runner) begin(ctx context.Context, m manifest.Manifest, sb manifest.StateBackup, trigger string, scheduled time.Time) (*Pending, error) {
-	prefix := Prefix(sb, r.Env)
+	prefix := Prefix(sb, r.Project, r.Env)
 	started := r.now().Truncate(time.Second)
 	dest, ok := m.Destinations[sb.Destination]
 	if !ok {
@@ -302,7 +305,7 @@ func (p *Pending) Execute(ctx context.Context) Result {
 		return fail(stage, err)
 	}
 	finished := p.r.now()
-	side := Sidecar{Format: SidecarFormat, Environment: p.r.Env, SchemaVersion: schema, KeyID: keyID, Size: size, SHA256: sum, Created: finished}
+	side := Sidecar{Format: SidecarFormat, Project: p.r.Project, Environment: p.r.Env, SchemaVersion: schema, KeyID: keyID, Size: size, SHA256: sum, Created: finished}
 	if err = p.writeSidecar(ctx, side); err != nil {
 		p.discardSnapshot()
 		return fail("sidecar failed", err)
@@ -429,7 +432,7 @@ func (r *Runner) readSidecar(ctx context.Context, store objectstore.Store, key s
 		return Sidecar{}, err
 	}
 	var sc Sidecar
-	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || sc.Environment != r.Env ||
+	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || sc.Project != r.Project || sc.Environment != r.Env ||
 		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) || !keyIDHex.MatchString(sc.KeyID) {
 		return Sidecar{}, ErrInvalidSidecar
 	}

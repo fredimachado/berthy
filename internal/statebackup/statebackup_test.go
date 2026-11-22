@@ -110,7 +110,7 @@ func newRig(t *testing.T, keep int) *rig {
 
 // newRunner returns a runner on store that writes to the rig's bucket through wrap, when given.
 func (g *rig) newRunner(store *state.Store, wrap ...func(objectstore.Store) objectstore.Store) *Runner {
-	return &Runner{Store: store, Env: "prod", Dir: g.stateDir, Now: g.clock.Now,
+	return &Runner{Store: store, Project: "demo", Env: "prod", Dir: g.stateDir, Now: g.clock.Now,
 		Objects: func(context.Context, manifest.Destination) (objectstore.Store, error) {
 			var s objectstore.Store = g.objects
 			for _, w := range wrap {
@@ -181,7 +181,7 @@ func (f faulty) Put(ctx context.Context, key string, r io.Reader, meta map[strin
 func TestASnapshotIsUploadedWithItsSidecarAndNoKeyOrPlaintext(t *testing.T) {
 	g := newRig(t, 14)
 	run := g.run("manual")
-	if run.Status != "succeeded" || run.Key != "berthy-state/prod/20261116T100030Z.db" {
+	if run.Status != "succeeded" || run.Key != "demo/prod/berthy-state/20261116T100030Z.db" {
 		t.Fatalf("run: %+v", run)
 	}
 	body := g.read(run.Key)
@@ -189,11 +189,11 @@ func TestASnapshotIsUploadedWithItsSidecarAndNoKeyOrPlaintext(t *testing.T) {
 		t.Fatal("the snapshot holds the key or a plaintext secret")
 	}
 	var sc Sidecar
-	if err := json.Unmarshal(g.read("berthy-state/prod/20261116T100030Z.json"), &sc); err != nil {
+	if err := json.Unmarshal(g.read("demo/prod/berthy-state/20261116T100030Z.json"), &sc); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(body)
-	if sc.Format != SidecarFormat || sc.Environment != "prod" || sc.SchemaVersion != 19 || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
+	if sc.Format != SidecarFormat || sc.Project != "demo" || sc.Environment != "prod" || sc.SchemaVersion != 19 || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sidecar %+v for %d bytes", sc, len(body))
 	}
 	if run.Size != sc.Size || run.SHA256 != sc.SHA256 {
@@ -214,7 +214,7 @@ func TestAFailedUploadLeavesNoSidecarAndNoRunSuccess(t *testing.T) {
 	if run.Status != "failed" || !strings.HasPrefix(run.Detail, "upload failed") {
 		t.Fatalf("failed upload recorded as %+v", run)
 	}
-	if keys := g.objectsUnder("berthy-state/prod/"); len(keys) != 0 {
+	if keys := g.objectsUnder("demo/prod/berthy-state/"); len(keys) != 0 {
 		t.Fatalf("objects after a failed upload: %v", keys)
 	}
 	h, err := g.store.StateBackupHistory(context.Background())
@@ -230,7 +230,7 @@ func TestAFailedSidecarRemovesItsSnapshot(t *testing.T) {
 	if run.Status != "failed" || !strings.HasPrefix(run.Detail, "sidecar failed") {
 		t.Fatalf("failed sidecar recorded as %+v", run)
 	}
-	if keys := g.objectsUnder("berthy-state/prod/"); len(keys) != 0 {
+	if keys := g.objectsUnder("demo/prod/berthy-state/"); len(keys) != 0 {
 		t.Fatalf("objects after a failed sidecar: %v", keys)
 	}
 }
@@ -238,7 +238,7 @@ func TestAFailedSidecarRemovesItsSnapshot(t *testing.T) {
 func TestRetentionKeepsTheNewestSnapshotsAndNeverTouchesForeignObjects(t *testing.T) {
 	g := newRig(t, 2)
 	ctx := context.Background()
-	for _, key := range []string{"berthy-state/prod/notes.txt", "berthy-state/prod/junk.json"} {
+	for _, key := range []string{"demo/prod/berthy-state/notes.txt", "demo/prod/berthy-state/junk.json"} {
 		if _, err := g.objects.Put(ctx, key, strings.NewReader("not a sidecar"), nil); err != nil {
 			t.Fatal(err)
 		}
@@ -252,10 +252,10 @@ func TestRetentionKeepsTheNewestSnapshotsAndNeverTouchesForeignObjects(t *testin
 		stamps = append(stamps, strings.TrimSuffix(run.Key, ".db"))
 		g.clock.Add(time.Minute)
 	}
-	want := []string{"berthy-state/prod/junk.json", "berthy-state/prod/notes.txt",
+	want := []string{"demo/prod/berthy-state/junk.json", "demo/prod/berthy-state/notes.txt",
 		stamps[1] + ".db", stamps[1] + ".json", stamps[2] + ".db", stamps[2] + ".json"}
 	slices.Sort(want)
-	if got := g.objectsUnder("berthy-state/prod/"); !slices.Equal(got, want) {
+	if got := g.objectsUnder("demo/prod/berthy-state/"); !slices.Equal(got, want) {
 		t.Fatalf("after retention keep 2:\n got %v\nwant %v", got, want)
 	}
 }
@@ -341,7 +341,7 @@ func TestAScheduledRunThatCannotUseItsStorageIsRecordedAsFailed(t *testing.T) {
 	if err != nil || h.Last == nil || h.Last.Status != "failed" || h.Last.Detail != ErrCredentials.Error() || h.Last.Trigger != "schedule" {
 		t.Fatalf("refused scheduled run: %+v %v", h.Last, err)
 	}
-	if keys := g.objectsUnder("berthy-state/prod/"); len(keys) != 0 {
+	if keys := g.objectsUnder("demo/prod/berthy-state/"); len(keys) != 0 {
 		t.Fatalf("objects written by a refused run: %v", keys)
 	}
 }
@@ -456,12 +456,98 @@ func TestRestoreNeedsTheSidecarAndADatabaseKey(t *testing.T) {
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Fatal("a restore without a sidecar created its directory")
 	}
-	if _, err := Restore(context.Background(), g.restoreOptions("berthy-state/prod/notes.txt", out, g.keyPath)); err == nil {
+	if _, err := Restore(context.Background(), g.restoreOptions("demo/prod/berthy-state/notes.txt", out, g.keyPath)); err == nil {
 		t.Fatal("an object that is not a snapshot was restored")
 	}
 }
 
 // restoreOptions points a restore at the rig's bucket with its credentials.
 func (g *rig) restoreOptions(object, out, keyPath string) RestoreOptions {
-	return RestoreOptions{Endpoint: g.srv.URL, Bucket: "bkt", Object: object, Out: out, KeyFile: keyPath, AccessKey: testAccess, SecretKey: testSecret}
+	return RestoreOptions{Endpoint: g.srv.URL, Bucket: "bkt", Object: object, Out: out, KeyFile: keyPath, Project: "demo", AccessKey: testAccess, SecretKey: testSecret}
+}
+
+func TestASnapshotOfAnotherProjectIsNeitherListedNorPruned(t *testing.T) {
+	g := newRig(t, 1)
+	run := g.run("manual")
+	if run.Status != "succeeded" {
+		t.Fatalf("run: %+v", run)
+	}
+	foreignKey := strings.TrimSuffix(run.Key, ".db") + "-foreign"
+	var sc Sidecar
+	if err := json.Unmarshal(g.read(strings.TrimSuffix(run.Key, ".db")+".json"), &sc); err != nil {
+		t.Fatal(err)
+	}
+	sc.Project = "other"
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err = g.objects.Put(ctx, foreignKey+".db", strings.NewReader("foreign-snapshot"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = g.objects.Put(ctx, foreignKey+".json", bytes.NewReader(body), nil); err != nil {
+		t.Fatal(err)
+	}
+	g.clock.Add(time.Minute)
+	second := g.run("manual")
+	if second.Status != "succeeded" {
+		t.Fatalf("second: %+v", second)
+	}
+	keys := g.objectsUnder("")
+	if !slices.Contains(keys, foreignKey+".db") || !slices.Contains(keys, foreignKey+".json") {
+		t.Fatalf("another project's snapshot was pruned: %v", keys)
+	}
+	if slices.Contains(keys, run.Key) || slices.Contains(keys, strings.TrimSuffix(run.Key, ".db")+".json") {
+		t.Fatalf("our own older snapshot was kept: %v", keys)
+	}
+}
+
+func TestTwoEnvironmentsWithOnePrefixNeverWriteOneSnapshotKey(t *testing.T) {
+	g := newRig(t, 14)
+	fixed := time.Date(2026, 11, 16, 10, 0, 30, 0, time.UTC)
+	g.m.StateBackup.Prefix = "shared"
+	a := g.newRunner(g.store)
+	a.Project, a.Env, a.Now = "alpha", "prod", func() time.Time { return fixed }
+	stageDir := filepath.Join(t.TempDir(), "state-stage")
+	if err := os.Mkdir(stageDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stageKey := filepath.Join(t.TempDir(), "key-stage")
+	if err := os.WriteFile(stageKey, g.key, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bStore, err := state.Open(stageDir, stageKey, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bStore.Close() })
+	b := g.newRunner(bStore)
+	b.Project, b.Env, b.Now = "alpha", "stage", func() time.Time { return fixed }
+	pa, err := a.Begin(context.Background(), g.m, "manual", time.Time{})
+	if err != nil {
+		t.Fatalf("begin a: %v", err)
+	}
+	ra := pa.Execute(context.Background()).Run
+	pb, err := b.Begin(context.Background(), g.m, "manual", time.Time{})
+	if err != nil {
+		t.Fatalf("begin b: %v", err)
+	}
+	rb := pb.Execute(context.Background()).Run
+	if ra.Status != "succeeded" || rb.Status != "succeeded" {
+		t.Fatalf("runs: %+v %+v", ra, rb)
+	}
+	if ra.Key == rb.Key {
+		t.Fatalf("both environments wrote the same key %q", ra.Key)
+	}
+	wantA, wantB := "alpha/prod/shared/20261116T100030Z.db", "alpha/stage/shared/20261116T100030Z.db"
+	if ra.Key != wantA || rb.Key != wantB {
+		t.Fatalf("keys\n got %q and %q\nwant %q and %q", ra.Key, rb.Key, wantA, wantB)
+	}
+	keys := g.objectsUnder("")
+	for _, want := range []string{wantA, wantB, strings.TrimSuffix(wantA, ".db") + ".json", strings.TrimSuffix(wantB, ".db") + ".json"} {
+		if !slices.Contains(keys, want) {
+			t.Fatalf("missing %s in %v", want, keys)
+		}
+	}
 }

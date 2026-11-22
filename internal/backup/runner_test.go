@@ -151,7 +151,9 @@ type rig struct {
 	logMu  sync.Mutex
 }
 
-func openState(t *testing.T) *state.Store {
+func openState(t *testing.T) *state.Store { return openStateEnv(t, "prod") }
+
+func openStateEnv(t *testing.T, env string) *state.Store {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -161,7 +163,7 @@ func openState(t *testing.T) *state.Store {
 	if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := state.Open(dir, key, "prod")
+	s, err := state.Open(dir, key, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,9 +197,10 @@ func newRig(t *testing.T) *rig {
 			}
 			return "", ErrNotMounted
 		},
-		Env: "prod",
-		Now: func() time.Time { g.clock = g.clock.Add(time.Minute); return g.clock },
-		Log: func(s string) { g.logMu.Lock(); g.logged = append(g.logged, s); g.logMu.Unlock() },
+		Project: "demo",
+		Env:     "prod",
+		Now:     func() time.Time { g.clock = g.clock.Add(time.Minute); return g.clock },
+		Log:     func(s string) { g.logMu.Lock(); g.logged = append(g.logged, s); g.logMu.Unlock() },
 	}
 	return g
 }
@@ -241,18 +244,18 @@ func TestRunUploadsTheArchiveThenItsSidecarAndRecordsTheRun(t *testing.T) {
 	g := newRig(t)
 	g.archive("the-archive-bytes")
 	res := g.run("uploads")
-	wantKey := "files/uploads/uploads/20261116T100100Z-1.tar.gz"
+	wantKey := "demo/prod/files/uploads/uploads/20261116T100100Z-1.tar.gz"
 	if res.Key != wantKey || res.Run.Status != "succeeded" || res.Run.ID != 1 {
 		t.Fatalf("result: %+v", res)
 	}
-	if got := g.objs.keys(); !slices.Equal(got, []string{"files/uploads/uploads/20261116T100100Z-1.json", wantKey}) {
+	if got := g.objs.keys(); !slices.Equal(got, []string{"demo/prod/files/uploads/uploads/20261116T100100Z-1.json", wantKey}) {
 		t.Fatalf("objects: %v", got)
 	}
 	if got := string(g.objs.objects[wantKey]); got != "the-archive-bytes" {
 		t.Fatalf("archive: %q", got)
 	}
 	sc := g.sidecarOf(wantKey)
-	want := Sidecar{Format: "berthy-volume-tar-gzip-1", Environment: "prod", Backup: "uploads", App: "files", Volume: "uploads", DockerVolume: "files_uploads",
+	want := Sidecar{Format: "berthy-volume-tar-gzip-1", Project: "demo", Environment: "prod", Backup: "uploads", App: "files", Volume: "uploads", DockerVolume: "files_uploads",
 		Size: int64(len("the-archive-bytes")), SHA256: sum("the-archive-bytes"), Started: time.Date(2026, 11, 16, 10, 1, 0, 0, time.UTC), Finished: time.Date(2026, 11, 16, 10, 2, 0, 0, time.UTC), RunID: 1}
 	if sc != want {
 		t.Fatalf("sidecar\n got %+v\nwant %+v", sc, want)
@@ -277,7 +280,7 @@ func TestRunUsesTheManifestsPrefix(t *testing.T) {
 	g.m.Backups["uploads"] = b
 	g.archive("x")
 	res := g.run("uploads")
-	if res.Key != "offsite/uploads/uploads/20261116T100100Z-1.tar.gz" {
+	if res.Key != "demo/prod/offsite/uploads/uploads/20261116T100100Z-1.tar.gz" {
 		t.Fatalf("key %q", res.Key)
 	}
 	b.Prefix = "../escape"
@@ -497,10 +500,10 @@ func TestRetentionKeepsTheNewestAndDeletesArchiveBeforeSidecar(t *testing.T) {
 	b.Retention = &manifest.Retention{Keep: float64(2)}
 	g.m.Backups["uploads"] = b
 	// Things retention must never touch: an archive without a sidecar, another backup's objects, and a stranger's file.
-	g.objs.put("files/uploads/uploads/20250101T000000Z-99.tar.gz", []byte("orphan"))
-	g.objs.put("files/uploads/uploads/notes.txt", []byte("mine"))
-	g.objs.put("files/uploads/other/20250101T000000Z-1.tar.gz", []byte("other"))
-	g.objs.put("files/uploads/other/20250101T000000Z-1.json", []byte(`{"format":"berthy-volume-tar-gzip-1"}`))
+	g.objs.put("demo/prod/files/uploads/uploads/20250101T000000Z-99.tar.gz", []byte("orphan"))
+	g.objs.put("demo/prod/files/uploads/uploads/notes.txt", []byte("mine"))
+	g.objs.put("demo/prod/files/uploads/other/20250101T000000Z-1.tar.gz", []byte("other"))
+	g.objs.put("demo/prod/files/uploads/other/20250101T000000Z-1.json", []byte(`{"format":"berthy-volume-tar-gzip-1"}`))
 	var keys []string
 	for _, body := range []string{"one", "two", "three"} {
 		g.archive(body)
@@ -512,7 +515,7 @@ func TestRetentionKeepsTheNewestAndDeletesArchiveBeforeSidecar(t *testing.T) {
 			t.Errorf("%s was kept", gone)
 		}
 	}
-	for _, kept := range []string{keys[1], sidecarKeyOf(keys[1]), keys[2], sidecarKeyOf(keys[2]), "files/uploads/uploads/20250101T000000Z-99.tar.gz", "files/uploads/uploads/notes.txt", "files/uploads/other/20250101T000000Z-1.tar.gz", "files/uploads/other/20250101T000000Z-1.json"} {
+	for _, kept := range []string{keys[1], sidecarKeyOf(keys[1]), keys[2], sidecarKeyOf(keys[2]), "demo/prod/files/uploads/uploads/20250101T000000Z-99.tar.gz", "demo/prod/files/uploads/uploads/notes.txt", "demo/prod/files/uploads/other/20250101T000000Z-1.tar.gz", "demo/prod/files/uploads/other/20250101T000000Z-1.json"} {
 		if !slices.Contains(got, kept) {
 			t.Errorf("%s was deleted", kept)
 		}
@@ -553,8 +556,8 @@ func TestListShowsOnlyBackupsWithASidecarNewestFirst(t *testing.T) {
 	second := g.run("uploads")
 	g.archive("docs-archive")
 	third := g.run("docs")
-	g.objs.put("files/uploads/uploads/20250101T000000Z-99.tar.gz", []byte("orphan"))
-	g.objs.put("files/uploads/uploads/20250101T000000Z-98.json", []byte("not json"))
+	g.objs.put("demo/prod/files/uploads/uploads/20250101T000000Z-99.tar.gz", []byte("orphan"))
+	g.objs.put("demo/prod/files/uploads/uploads/20250101T000000Z-98.json", []byte("not json"))
 	list, err := g.runner.List(context.Background(), g.m, "")
 	if err != nil || len(list) != 3 {
 		t.Fatalf("list: %+v %v", list, err)
@@ -582,10 +585,10 @@ func TestListSkipsSidecarsOfAnotherEnvironmentOrFormat(t *testing.T) {
 	other := g.sidecarOf(res.Key)
 	other.Environment = "staging"
 	b, _ := json.Marshal(other)
-	g.objs.put("files/uploads/uploads/20260101T000000Z-7.json", b)
+	g.objs.put("demo/prod/files/uploads/uploads/20260101T000000Z-7.json", b)
 	other.Environment, other.Format = "prod", "future-format"
 	b, _ = json.Marshal(other)
-	g.objs.put("files/uploads/uploads/20260101T000000Z-8.json", b)
+	g.objs.put("demo/prod/files/uploads/uploads/20260101T000000Z-8.json", b)
 	list, err := g.runner.List(context.Background(), g.m, "")
 	if err != nil || len(list) != 1 || list[0].Key != res.Key {
 		t.Fatalf("list: %+v %v", list, err)
@@ -620,10 +623,10 @@ func fresh(g *rig, _ string) *fakeDocker {
 
 func TestRestoredVolumeCarriesTheProjectLabel(t *testing.T) {
 	g := newRig(t)
+	g.runner.Project = "shop"
 	g.archive("the-archive-bytes")
 	res := g.run("uploads")
 	g.docker = fresh(g, "restore")
-	g.runner.Project = "shop"
 	if err := g.runner.Restore(context.Background(), g.m, res.Key, "restored-1", "op-1"); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -667,7 +670,7 @@ func TestRestoreRefusesAKeyWithoutASidecar(t *testing.T) {
 	if len(g.docker.calls) != 0 {
 		t.Fatalf("Docker was used for a refused restore: %v", g.docker.calls)
 	}
-	for _, key := range []string{"files/uploads/uploads/nothing.tar.gz", "elsewhere/20260101T000000Z-1.tar.gz", "files/uploads/uploads/20260101T000000Z-1.json", "files/uploads/uploads/../x.tar.gz"} {
+	for _, key := range []string{"demo/prod/files/uploads/uploads/nothing.tar.gz", "elsewhere/20260101T000000Z-1.tar.gz", "demo/prod/files/uploads/uploads/20260101T000000Z-1.json", "demo/prod/files/uploads/uploads/../x.tar.gz"} {
 		if err := g.runner.Restore(context.Background(), g.m, key, "restored-1", "op-1"); !errors.Is(err, ErrNotFound) {
 			t.Errorf("%s: %v", key, err)
 		}
@@ -724,7 +727,7 @@ func TestStorageErrorsReachCallersAsFixedRefusals(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	var refusal Refusal
-	if err := g.runner.Restore(context.Background(), g.m, "files/uploads/uploads/20260101T000000Z-1.tar.gz", "x", "op-1"); !errors.As(err, &refusal) {
+	if err := g.runner.Restore(context.Background(), g.m, "demo/prod/files/uploads/uploads/20260101T000000Z-1.tar.gz", "x", "op-1"); !errors.As(err, &refusal) {
 		t.Fatalf("restore: %v", err)
 	}
 	if !PublicRefusal(ErrNotFound.Error()) || PublicRefusal("backup lost: volume ghost is not mounted by app files") {
@@ -739,4 +742,69 @@ func (failingStore) List(context.Context, string) ([]objectstore.ObjectInfo, err
 }
 func (failingStore) Get(context.Context, string) (io.ReadCloser, objectstore.ObjectInfo, error) {
 	return nil, objectstore.ObjectInfo{}, errors.New("https://s3.example/bucket?X-Amz-Signature=secret")
+}
+
+func TestAnArchiveOfAnotherEnvironmentOfTheProjectIsNotPruned(t *testing.T) {
+	g := newRig(t)
+	b := g.m.Backups["uploads"]
+	b.Retention = &manifest.Retention{Keep: float64(1)}
+	g.m.Backups["uploads"] = b
+	g.archive("one")
+	first := g.run("uploads")
+	other := g.sidecarOf(first.Key)
+	other.Environment = "stage"
+	body, err := json.Marshal(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignArchive := strings.TrimSuffix(first.Key, ".tar.gz") + "-stage.tar.gz"
+	foreignSidecar := strings.TrimSuffix(foreignArchive, ".tar.gz") + ".json"
+	g.objs.put(foreignArchive, []byte("stage-archive"))
+	g.objs.put(foreignSidecar, body)
+	g.archive("two")
+	second := g.run("uploads")
+	if second.Run.Status != "succeeded" {
+		t.Fatalf("second: %+v", second.Run)
+	}
+	got := g.objs.keys()
+	if !slices.Contains(got, foreignArchive) || !slices.Contains(got, foreignSidecar) {
+		t.Fatalf("another environment's archive was pruned: %v", got)
+	}
+	if slices.Contains(got, first.Key) || slices.Contains(got, sidecarKeyOf(first.Key)) {
+		t.Fatalf("our older archive was kept: %v", got)
+	}
+}
+
+func TestTwoEnvironmentsWithOnePrefixNeverWriteOneArchiveKey(t *testing.T) {
+	g := newRig(t)
+	fixed := time.Date(2026, 11, 16, 10, 1, 0, 0, time.UTC)
+	b := g.m.Backups["uploads"]
+	b.Prefix = "shared"
+	g.m.Backups["uploads"] = b
+	g.archive("alpha-body")
+	a := *g.runner
+	a.Project, a.Env, a.Now = "demo", "prod", func() time.Time { return fixed }
+	g.runner = &a
+	first, err := g.runner.Run(context.Background(), g.m, "uploads", "manual")
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	stage := openStateEnv(t, "stage")
+	arch, _ := newArchiver(g.docker)
+	other := &Runner{
+		Store: stage, Archiver: arch, Objects: g.runner.Objects, Jobs: g.jobs, Resolve: g.runner.Resolve,
+		Project: "demo", Env: "stage", Now: func() time.Time { return fixed },
+	}
+	g.archive("stage-body")
+	second, err := other.Run(context.Background(), g.m, "uploads", "manual")
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if first.Key == second.Key {
+		t.Fatalf("both environments wrote the same key %q", first.Key)
+	}
+	wantA, wantB := "demo/prod/shared/uploads/20261116T100100Z-1.tar.gz", "demo/stage/shared/uploads/20261116T100100Z-1.tar.gz"
+	if first.Key != wantA || second.Key != wantB {
+		t.Fatalf("keys\n got %q and %q\nwant %q and %q", first.Key, second.Key, wantA, wantB)
+	}
 }
