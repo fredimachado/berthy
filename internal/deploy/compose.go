@@ -644,7 +644,7 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 	if len(reserve) > 0 && reserve[0] != nil {
 		names = append(names, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)})
 		if err := reserve[0](names); err != nil {
-			return ComposePlan{}, err
+			return ComposePlan{}, sanitizeComposeConflict(err, composeClaimLabels(project, cfg))
 		}
 	}
 	hashOut, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--hash", "*"}})
@@ -1112,18 +1112,18 @@ func (c *Controller) appliedCompose(ctx context.Context, app string) (manifest.M
 	return m, ok && a.Kind == "compose", nil
 }
 
-func (c *Controller) composeNames(ctx context.Context, req Request) ([]state.Claim, error) {
+func (c *Controller) composeNamesWithLabels(ctx context.Context, req Request) ([]state.Claim, map[state.Claim]string, error) {
 	if err := c.composeReady(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	dir, err := c.newComposeDir(".names-")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(dir)
 	auth, err := c.stageCompose(ctx, dir, req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if auth != "" {
 		defer os.RemoveAll(auth)
@@ -1131,20 +1131,26 @@ func (c *Controller) composeNames(ctx context.Context, req Request) ([]state.Cla
 	return c.composeNamesIn(ctx, dir, req)
 }
 
-func (c *Controller) composeNamesIn(ctx context.Context, dir string, req Request) ([]state.Claim, error) {
-	return c.composeNamesAt(ctx, dir, req.Manifest.ComposeProject(c.Environment, req.App), false)
+func (c *Controller) composeNamesIn(ctx context.Context, dir string, req Request) ([]state.Claim, map[state.Claim]string, error) {
+	return c.composeNamesAtWithLabels(ctx, dir, req.Manifest.ComposeProject(c.Environment, req.App), false)
 }
 
 func (c *Controller) composeNamesAt(ctx context.Context, dir, project string, managedNetworksOnly bool) ([]state.Claim, error) {
+	claims, _, err := c.composeNamesAtWithLabels(ctx, dir, project, managedNetworksOnly)
+	return claims, err
+}
+
+func (c *Controller) composeNamesAtWithLabels(ctx context.Context, dir, project string, managedNetworksOnly bool) ([]state.Claim, map[state.Claim]string, error) {
 	out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"config", "--format", "json", "--no-env-resolution"}})
 	if err != nil {
-		return nil, errComposeConfig
+		return nil, nil, errComposeConfig
 	}
 	var cfg composeConfigFile
 	if json.Unmarshal(out, &cfg) != nil {
-		return nil, errComposeConfig
+		return nil, nil, errComposeConfig
 	}
-	return composeConfigNames(project, cfg, managedNetworksOnly)
+	claims, err := composeConfigNames(project, cfg, managedNetworksOnly)
+	return claims, composeClaimLabels(project, cfg), err
 }
 
 func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOnly bool) ([]state.Claim, error) {
@@ -1153,6 +1159,9 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 	}
 	claims := []state.Claim{{Kind: state.ClaimComposeProject, Name: project}}
 	for _, k := range sortedKeys(cfg.Volumes) {
+		if !composeResourceKey.MatchString(k) {
+			return nil, errComposeConfig
+		}
 		if managedNetworksOnly && cfg.Volumes[k].external() {
 			continue
 		}
@@ -1165,6 +1174,9 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 		claims = append(claims, state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[k].Name})
 	}
 	for _, k := range sortedKeys(cfg.Networks) {
+		if !composeResourceKey.MatchString(k) {
+			return nil, errComposeConfig
+		}
 		if managedNetworksOnly && cfg.Networks[k].external() {
 			continue
 		}
@@ -1189,6 +1201,40 @@ func composeConfigNames(project string, cfg composeConfigFile, managedNetworksOn
 		}
 	}
 	return claims, nil
+}
+
+func composeClaimLabels(project string, cfg composeConfigFile) map[state.Claim]string {
+	labels := map[state.Claim]string{{Kind: state.ClaimComposeProject, Name: project}: "project"}
+	for _, key := range sortedKeys(cfg.Volumes) {
+		if composeResourceKey.MatchString(key) {
+			labels[state.Claim{Kind: state.ClaimVolume, Name: cfg.Volumes[key].Name}] = "volumes." + key
+		}
+	}
+	for _, key := range sortedKeys(cfg.Networks) {
+		if composeResourceKey.MatchString(key) {
+			labels[state.Claim{Kind: state.ClaimNetwork, Name: cfg.Networks[key].Name}] = "networks." + key
+		}
+	}
+	for _, key := range sortedKeys(cfg.Services) {
+		claim := state.Claim{Kind: state.ClaimNetwork, Name: cfg.Services[key].NetworkMode}
+		if _, ok := labels[claim]; !ok {
+			labels[claim] = "project"
+		}
+	}
+	return labels
+}
+
+func composeClaimConflict(label string) Refusal {
+	return Refusal("Compose " + label + " name is taken by another project or environment on this server")
+}
+
+func sanitizeComposeConflict(err error, labels map[state.Claim]string) error {
+	for claim, label := range labels {
+		if err.Error() == fmt.Sprintf("name %s is taken by another project or environment on this server", claim.Name) {
+			return composeClaimConflict(label)
+		}
+	}
+	return err
 }
 
 var composeResourceKey = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)

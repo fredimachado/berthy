@@ -56,10 +56,10 @@ func TestComposeDeployRefusesAProjectNameAnotherEnvironmentHolds(t *testing.T) {
 	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
 	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
 	req := composeReq("project", composeFileOne, m)
-	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "Compose project name is taken") {
 		t.Fatalf("plan: %v", err)
 	}
-	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "name shared is taken") {
+	if _, _, err := c.Admit(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil || !strings.Contains(err.Error(), "Compose project name is taken") {
 		t.Fatalf("admit: %v", err)
 	}
 	if runner.upRuns() != 0 {
@@ -75,7 +75,7 @@ func TestComposeDeployRefusesAVolumeNameTheFileSetsThatAnotherEnvironmentHolds(t
 			claim := state.Claim{Kind: state.ClaimVolume, Name: "pgdata"}
 			c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
 			_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("volume", composeFileOne, composeApp(false)))
-			if err == nil || !strings.Contains(err.Error(), "name pgdata is taken") {
+			if err == nil || !strings.Contains(err.Error(), "Compose volumes.pgdata name is taken") {
 				t.Fatalf("plan: %v", err)
 			}
 			if runner.upRuns() != 0 {
@@ -91,7 +91,7 @@ func TestComposeDeployRefusesANetworkAnotherEnvironmentHolds(t *testing.T) {
 	claim := state.Claim{Kind: state.ClaimNetwork, Name: "shared-net"}
 	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("network", composeFileOne, composeApp(false)))
-	if err == nil || !strings.Contains(err.Error(), "name shared-net is taken") {
+	if err == nil || !strings.Contains(err.Error(), "Compose networks.shared name is taken") {
 		t.Fatalf("plan: %v", err)
 	}
 	if runner.upRuns() != 0 {
@@ -1688,5 +1688,59 @@ func TestComposeRejectsEnvironmentNetworkID(t *testing.T) {
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, composeReq("id", composeFileOne, m))
 	if err == nil {
 		t.Fatal("accepted network ID")
+	}
+}
+
+func TestValidInterpolatedComposeCollisionNeverDisclosesSecret(t *testing.T) {
+	ctx := context.Background()
+	const secret = "private-valid-network"
+	runner := &fakeCompose{hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	c.Compose = &interpolatedNetworkRunner{runner}
+	if err := s.PutSecret(ctx, state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_URL"}, []byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+	m := composeApp(false)
+	app := m.Apps["db"]
+	app.Env = manifest.Env{Secret: []manifest.SecretVar{{Var: "DATABASE_URL", Secret: "DB_URL"}}}
+	m.Apps["db"] = app
+	req := composeReq("private-conflict", composeFileOne, m)
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: secret}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	var log []string
+	c.Log = func(s string) { log = append(log, s) }
+	want := "Compose networks.backend name is taken by another project or environment on this server"
+	for _, admit := range []bool{false, true} {
+		var err error
+		if admit {
+			_, _, err = c.Admit(ctx, Actor{ID: "admin", Admin: true}, req)
+		} else {
+			_, err = c.Plan(ctx, Actor{ID: "admin", Admin: true}, req)
+		}
+		if err == nil || err.Error() != want {
+			t.Fatalf("admit %v: %v", admit, err)
+		}
+	}
+	c.Reserve = func(context.Context, []state.Claim) ([]state.Claim, error) {
+		return nil, Refusal("name " + secret + " is taken by another project or environment on this server")
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "private-op", ActorID: "admin", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := c.runCompose(ctx, op, Actor{ID: "admin", Admin: true}, req, false)
+	if err := s.Finish(ctx, op.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := s.Operation(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Err != want || !PublicMessage(want) || PublicMessage(want+" extra") || strings.Contains(string(body), secret) || strings.Contains(strings.Join(log, "\n"), secret) {
+		t.Fatalf("out=%+v record=%s logs=%v", out, body, log)
 	}
 }

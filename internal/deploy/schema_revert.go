@@ -50,6 +50,8 @@ var networkNameMessage = regexp.MustCompile(`^network name [a-z0-9][a-z0-9_-]{0,
 
 var dockerNameMessage = regexp.MustCompile(`^name [A-Za-z0-9][A-Za-z0-9._-]{0,200} (is taken by another project or environment on this server|is longer than 63 characters; shorten the project, environment, app or role)$`)
 
+var composeClaimConflictMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}) name is taken by another project or environment on this server$`)
+
 var invalidComposeNameMessage = regexp.MustCompile(`^Compose (project|(networks|volumes)\.[A-Za-z0-9_.-]{1,128}) name is not a valid Docker name of at most 128 characters$`)
 
 var sharedComposeProjectMessage = regexp.MustCompile(`^Compose project [a-z0-9][a-z0-9_-]{0,200} is shared by apps [a-z0-9][a-z0-9_-]{0,62} and [a-z0-9][a-z0-9_-]{0,62}$`)
@@ -68,7 +70,7 @@ func PublicMessage(s string) bool {
 		errRestoreAdmin, errRestoreArgs, errRestoreUnavailable, errRestoreFailed, errRestoreChecksum, errRestoreJournal, errRestoreInterrupted, errRestoreCleaned, errRestoreCommandFailed, errRestoreExecInterrupted, errLocalChanges, "pre-deploy backup failed", "post-deploy backup failed":
 		return true
 	}
-	return dockerNameMessage.MatchString(s) || invalidComposeNameMessage.MatchString(s) || sharedComposeProjectMessage.MatchString(s) || networkNameMessage.MatchString(s) || s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
+	return composeClaimConflictMessage.MatchString(s) || dockerNameMessage.MatchString(s) || invalidComposeNameMessage.MatchString(s) || sharedComposeProjectMessage.MatchString(s) || networkNameMessage.MatchString(s) || s == errCancelled || backup.PublicRefusal(s) || runTimedOut.MatchString(s) || composeMessage.MatchString(s) || keepChangedMessage.MatchString(s) || secretMessage.MatchString(s)
 }
 
 var errRevertMismatch = errors.New("schema revert did not reach target")

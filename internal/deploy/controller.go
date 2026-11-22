@@ -1036,7 +1036,7 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 }
 
 // effectiveNames returns the Docker names an operation will take after resolving its inputs.
-func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.Claim, error) {
+func (c *Controller) effectiveNames(ctx context.Context, req Request, labels ...map[state.Claim]string) ([]state.Claim, error) {
 	if (req.Kind == "" || req.Kind == "deploy" || req.Kind == "ingress") && req.Manifest.Network != "" && !manifest.ValidNetwork(req.Manifest.Network) {
 		return nil, Refusal("invalid project or network")
 	}
@@ -1045,7 +1045,7 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 		if err != nil {
 			return nil, err
 		}
-		return c.effectiveNames(ctx, connector)
+		return c.effectiveNames(ctx, connector, labels...)
 	}
 	if req.Kind == "apply" {
 		return []state.Claim{{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}}, nil
@@ -1067,7 +1067,7 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 		}
 		req.RevertSchema = false
 		req.TargetRelease = sr.Image.ID
-		claims, err := c.effectiveNames(ctx, req)
+		claims, err := c.effectiveNames(ctx, req, labels...)
 		if err != nil {
 			return nil, err
 		}
@@ -1079,7 +1079,7 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 			return nil, err
 		}
 		resolved.Kind = "deploy"
-		return c.effectiveNames(ctx, resolved)
+		return c.effectiveNames(ctx, resolved, labels...)
 	}
 	if req.Kind != "" && req.Kind != "deploy" {
 		return nil, nil
@@ -1089,9 +1089,14 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 		return nil, nil
 	}
 	if app.Kind == "compose" {
-		claims, err := c.composeNames(ctx, req)
+		claims, resourceLabels, err := c.composeNamesWithLabels(ctx, req)
 		if err != nil {
 			return nil, err
+		}
+		if len(labels) > 0 {
+			for claim, label := range resourceLabels {
+				labels[0][claim] = label
+			}
 		}
 		return append(claims, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}), nil
 	}
@@ -1137,7 +1142,8 @@ func (c *Controller) checkNames(ctx context.Context, req Request) error {
 	if c.Foreign == nil {
 		return nil
 	}
-	claims, err := c.effectiveNames(ctx, req)
+	labels := map[state.Claim]string{}
+	claims, err := c.effectiveNames(ctx, req, labels)
 	if err != nil {
 		return err
 	}
@@ -1150,6 +1156,9 @@ func (c *Controller) checkNames(ctx context.Context, req Request) error {
 	}
 	for _, claim := range claims {
 		if foreign.Claims[claim] {
+			if label, ok := labels[claim]; ok {
+				return composeClaimConflict(label)
+			}
 			return Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", claim.Name))
 		}
 	}
