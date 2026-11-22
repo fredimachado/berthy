@@ -2,10 +2,12 @@ package tui
 
 import (
 	"image/color"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/logs"
 	"berthy/internal/metrics"
 
@@ -22,6 +24,15 @@ func TestAppsViewGolden(t *testing.T) {
 	for _, s := range sizes {
 		m := loadedModel(t, s.w, s.h)
 		golden(t, "apps-"+s.name, plain(m))
+	}
+}
+
+func TestTheStartupViewSaysToUpgradeAnOlderAgent(t *testing.T) {
+	m := newTestModel(t, 80, 24)
+	send(m, errMsg{src: "apps", text: agentclient.Message(http.StatusNotFound, []byte(`{"message":"`+agentclient.OlderAgentMessage+`"}`))})
+	out := plain(m)
+	if !strings.Contains(out, "berthy setup") {
+		t.Fatalf("startup view at 80x24 lacks berthy setup:\n%s", out)
 	}
 }
 

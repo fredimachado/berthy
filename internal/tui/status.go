@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/api"
 
 	"charm.land/bubbles/v2/spinner"
@@ -64,6 +65,16 @@ func (s *statusModel) firstError() string {
 	return s.errs[keys[0]]
 }
 
+// statusError is the refusal shown on the status line. The older-agent sentence is longer than the 60-cell clip, so a short
+// form keeps "berthy setup" on an 80-column startup view.
+func statusError(s string) string {
+	s = sanitize(s)
+	if strings.Contains(s, agentclient.OlderAgentMessage) {
+		return "older agent; upgrade it with berthy setup"
+	}
+	return s
+}
+
 // backupSummary is what the apps say about their backups.
 type backupSummary struct {
 	// oldest is the age of the oldest of the newest successful backups.
@@ -112,7 +123,7 @@ func (s *statusModel) view(st styles, now time.Time, w int, backups backupSummar
 		}
 		conn = st.err.Bold(true).Render(glyphFail + " agent unreachable — " + retry)
 	case s.firstError() != "":
-		conn = st.err.Render(glyphFail + " " + clip(sanitize(s.firstError()), 60))
+		conn = st.err.Render(glyphFail + " " + clip(statusError(s.firstError()), 60))
 	case s.busy():
 		conn = spinning + st.ok.Render(" connected")
 	case !s.lastOK.IsZero():
