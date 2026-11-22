@@ -65,8 +65,8 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
 
 Copy `scenarios/00-smoke.sh` to `scenarios/NN-name.sh` and keep its shape: source `../lib.sh`, drive `berthy` through
 `adm` (admin token) or `ci` (agent token), assert with `expect_eq`, `expect_contains`, `expect_not_contains` or
-`expect_code`, and end with `finish`. A Swarm service is named `<project>-<app>-<role>`, so the web role is
-`e2e-web-main`. `adm` and `ci` name only the environment, so they are right while one project has `$ENVN`; a scenario that adds a second project with the same environment name uses `env_cmd` from then on. To change the manifest, pipe a new one into `write_manifest`; `setup.sh` gives each scenario a fresh one.
+`expect_code`, and end with `finish`. A Swarm service is named `<project>-<environment>-<app>-<role>`, so the web role is
+`$PROJECT-$ENVN-web-main`. `adm` and `ci` name only the environment, so they are right while one project has `$ENVN`; a scenario that adds a second project with the same environment name uses `env_cmd` from then on. To change the manifest, pipe a new one into `write_manifest`; `setup.sh` gives each scenario a fresh one.
 
 ## What it never touches
 
