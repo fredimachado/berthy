@@ -368,15 +368,36 @@ The agent's configuration is plain JSON. Its keys are listed in the [reference](
 
 #### More than one project or environment on a server
 
-`berthy setup -e ENV` on a server that already runs an agent adds that hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Run it from the other project's repository, or pass `--project` and `--network` when there is no manifest.
+`berthy setup` on a server that already runs an agent adds another hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Setup rewrites `agent.json` and restarts the shared agent for everyone on the server. It prints a new admin token for the entry it just added.
 
-Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
+```bash
+# Another project on the same server (no berthy.yml in this directory):
+berthy setup -e prod --project shop --host ops@10.0.0.5
 
-There is no command that removes a hosted environment from a server. After `destroy`, remove its entry from `agent.json` and its directory under `/var/lib/berthy/environments/` by hand.
+# Or, from that project's repository (reads project and network from the manifest):
+berthy setup -e prod --host ops@10.0.0.5
+```
+
+`--listen` is only needed on the first run for that server. Later runs keep the agent's address.
+
+**Network.** With a manifest, the network comes from it (or from the environment's overlay). Without a manifest, `--network` is optional and defaults to `<project>-<environment>`. Two hosted environments cannot share one network name. The todo example sets `network: todo` for every environment of that project, so a second environment such as `stage` needs a different name in its overlay, for example:
+
+```yaml
+# berthy.stage.yml
+network: todo-stage
+```
+
+```bash
+berthy setup -e stage --host ops@10.0.0.5
+```
+
+Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`, once each has its own network. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
+
+There is no command that removes a hosted environment from a server. After `destroy`, stop the agent, remove that entry from `agent.json` and its directory under `/var/lib/berthy/environments/`, then start the agent again only if at least one hosted environment remains. An `agent.json` with no environments is refused.
 
 #### Alerts about the server
 
-Host checks (disk, memory, Docker, public ports, reboot) still run inside every hosted environment's monitor and alert on that environment's own channels. A full disk on a server with three hosted environments therefore sends three alerts, one on each environment's Telegram chat or webhook. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project in those messages, are planned: #55, #56.
+Host checks (disk, memory, Docker, public ports, reboot) still run inside every hosted environment's monitor. Each environment evaluates them independently and sends any resulting alerts to all of its configured channels (Telegram, webhook, or both). An environment with no channel configured sends none. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project in those messages, are planned: #55, #56.
 
 #### Another laptop
 
@@ -390,7 +411,11 @@ That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TO
 
 #### A server set up before projects
 
-An `agent.json` of a release before projects cannot be upgraded in place. Setup refuses it and prints the commands that move the old install aside. Run them yourself; they delete nothing:
+An `agent.json` of a release before projects cannot be upgraded in place. Setup refuses it and prints the commands that move the old install aside. A CLI configuration of that earlier layout is also refused before setup connects. Prepare the laptop first, while the old agent still answers:
+
+1. **Move the old CLI configuration aside**, or pass `--config` with a new path for the rest of this procedure. The default file is `~/.config/berthy/config.json` on Linux.
+2. **Optional:** remove the old apps with the old CLI's `destroy` while the old agent still answers.
+3. **On the server**, stop the agent and move the old install aside (these commands delete nothing):
 
 ```bash
 sudo systemctl stop berthy
@@ -399,7 +424,7 @@ sudo mv /var/lib/berthy /var/lib/berthy.pre-projects
 sudo chmod 0700 /var/lib/berthy.pre-projects
 ```
 
-Then run `berthy setup` again. The old apps keep running under their old names; remove them with the old CLI's `destroy` before, or by hand after. The old state and key stay in `/var/lib/berthy.pre-projects`.
+4. Run `berthy setup` again (with the new CLI configuration path if you chose one). The old state and key stay in `/var/lib/berthy.pre-projects`. If you skipped step 2, the old apps keep running under their old names; remove them by hand.
 
 #### Check that it works
 
@@ -1635,7 +1660,7 @@ What an app owns is not applied: its own `apps` entry, the `jobs` and `backups` 
 
 `apply` needs the `deploy` scope and is refused while the deploy lock is held. On a protected environment an agent token's `apply` is held for approval like any change.
 
-The project of a hosted environment is fixed when setup creates it. A manifest whose `project` differs is refused by `deploy` and by `apply`, before anything changes, with `environment prod runs project todo; this manifest is for project other`. An overlay cannot set `project`. To run another project, set up another hosted environment.
+The project of a hosted environment is fixed when setup creates it. With a conflicting `--project`, `deploy` and `apply` stop before they send anything, with `the manifest in <dir> is for project <have>, not <want>`. Without `--project`, the manifest selects the project. An overlay cannot set `project`. To run another project, set up another hosted environment.
 
 #### Restart and scale
 
@@ -1888,7 +1913,7 @@ berthy alerts test -e prod
 
 `alerts test` sends a test message to every configured channel and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
 
-Host checks (disk, memory, Docker, public ports, reboot) alert on this environment's channels, like every other check of the environment. On a server with several hosted environments, a host problem alerts once per environment. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project, are planned: #55, #56.
+Host checks (disk, memory, Docker, public ports, reboot) are evaluated by this environment's monitor like every other check. Any resulting alerts go to all of this environment's configured channels; with none configured, nothing is sent. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project, are planned: #55, #56.
 
 ##### The webhook
 
@@ -2690,8 +2715,8 @@ An app that you delete from the manifest keeps running. `doctor` lists it as `or
 #### Destroy an environment
 
 ```bash
-berthy destroy -e prod --confirm shop/prod --dry-run
-berthy destroy -e prod --confirm shop/prod
+berthy destroy --project todo -e prod --confirm todo/prod --dry-run
+berthy destroy --project todo -e prod --confirm todo/prod
 ```
 
 `destroy` removes everything Berthy created in the environment, as one operation under the lock (an `admin` token). `--confirm` must name the project and the environment, as `project/environment`, or the CLI refuses before it sends anything. In order: every app (as `remove` does, with the same `--volumes` and `--allow-recreate` rules; if any cannot be removed the whole destroy is refused up front and removes nothing); managed ingress (routes, DNS records, the connector); helper containers (not helper images: those belong to the agent); stopped one-off containers; and images this environment pulled that nothing else on the agent retains.
@@ -2767,7 +2792,7 @@ The order:
    berthy restore <key> --into todo-restore -e prod
    ```
 
-   Then follow the PostgreSQL recovery recipe, and run `berthy wait api --healthy` once the API is back.
+   Then follow the PostgreSQL recovery recipe, and run `berthy wait api --healthy -e prod` once the API is back.
 
 Volumes come back **separately** from the agent's state, with `berthy restore`. Check that the apps recovered, deploys work, alerts reach you, and the next scheduled backup runs.
 
@@ -3197,7 +3222,7 @@ See [step 12](#step-12-the-terminal-ui).
 | `/var/lib/berthy/environments/<project>/<environment>/key` | That environment's encryption key. `berthy:berthy`, mode `0600`. Never uploaded. |
 | `/var/lib/berthy/environments/<project>/<environment>/key.prev` | The key from before the last rotation, kept until the next state snapshot succeeds. `key.next` exists only while a rotation runs. |
 
-Besides these, Berthy creates Docker objects: Swarm services named `<project>-<environment>-<app>-<role>`, Compose projects named `<project>-<environment>-<app>`, role volumes named `<project>-<environment>_<volume>`, one attachable overlay network per hosted environment (default `<project>-<environment>`), a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `ingress` when managed ingress is on. Objects it created carry `berthy.project` and `berthy.environment` labels.
+Besides these, Berthy creates Docker objects: Swarm services named `<project>-<environment>-<app>-<role>`, Compose projects named `<project>-<environment>-<app>`, role volumes named `<project>-<environment>_<volume>`, one attachable overlay network per hosted environment (default `<project>-<environment>`), a probe helper container and image (`berthy-helper:<hash>`) when a service probe needs it, and the connector service `<project>-<environment>-ingress-connector` when managed ingress is on. Objects it created carry `berthy.project` and `berthy.environment` labels.
 
 ---
 
@@ -3205,7 +3230,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<e
 
 - **One agent per server, any number of hosted environments.** Image apps are Swarm services, so a three-server Swarm cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
 - **No upgrade in place from a release before projects.** Move the old configuration, state and key aside, then run setup again ([A server set up before projects](#a-server-set-up-before-projects)).
-- **No command that removes a hosted environment** from a server. After `destroy`, remove its entry and directory by hand.
+- **No command that removes a hosted environment** from a server. After `destroy`, stop the agent, remove its entry and directory by hand, and restart the agent only if at least one hosted environment remains.
 - **Host ports are shared** by everything on a server. Two hosted environments cannot both publish the same host port.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.
