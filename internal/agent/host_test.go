@@ -995,3 +995,32 @@ func TestForeignIncludesTheOtherRuntimesRetainedImages(t *testing.T) {
 		t.Fatalf("foreign images: %v", foreign.Images)
 	}
 }
+
+func TestReservationDoesNotReadPeerReleaseHistory(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	f.Environments[0].Network = "one-dev"
+	peer := f.Environments[1]
+	s, err := state.Open(peer.StateDir, peer.KeyFile, peer.Environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "bad", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "image", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err = h.reserve(a, []state.Claim{{Kind: state.ClaimService, Name: "one-dev-web"}}); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+}

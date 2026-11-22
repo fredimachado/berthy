@@ -83,17 +83,14 @@ func Open(sh Shared, f File) (*Host, error) {
 }
 
 func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error) {
-	f := deploy.Foreign{Claims: map[state.Claim]bool{}, Images: map[string]bool{}}
+	claims, err := h.foreignClaims(ctx, id)
+	if err != nil {
+		return deploy.Foreign{}, err
+	}
+	f := deploy.Foreign{Claims: claims, Images: map[string]bool{}}
 	for _, r := range h.order {
 		if r.Config.ID() == id {
 			continue
-		}
-		claims, err := r.deployment.Store.Claims(ctx)
-		if err != nil {
-			return deploy.Foreign{}, err
-		}
-		for _, c := range claims {
-			f.Claims[c] = true
 		}
 		images, err := r.deployment.RetainedImages(ctx)
 		if err != nil {
@@ -106,18 +103,35 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 	return f, nil
 }
 
+func (h *Host) foreignClaims(ctx context.Context, id scope.ID) (map[state.Claim]bool, error) {
+	claims := map[state.Claim]bool{}
+	for _, r := range h.order {
+		if r.Config.ID() == id {
+			continue
+		}
+		other, err := r.deployment.Store.Claims(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, claim := range other {
+			claims[claim] = true
+		}
+	}
+	return claims, nil
+}
+
 func (h *Host) reserve(id scope.ID, claims []state.Claim) ([]state.Claim, error) {
 	return h.reserveContext(context.Background(), id, claims)
 }
 func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.Claim) ([]state.Claim, error) {
 	h.claimsMu.Lock()
 	defer h.claimsMu.Unlock()
-	f, err := h.foreign(ctx, id)
+	foreign, err := h.foreignClaims(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	for _, c := range claims {
-		if f.Claims[c] {
+		if foreign[c] {
 			return nil, deploy.Refusal(fmt.Sprintf("name %s is taken by another project or environment on this server", c.Name))
 		}
 	}
