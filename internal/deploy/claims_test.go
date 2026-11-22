@@ -633,7 +633,7 @@ func TestAFailedFirstDeployKeepsItsNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := c.runDestroy(ctx, op, Actor{ID: "admin", Admin: true}, Request{Confirm: "test"})
+	result := c.runDestroy(ctx, op, Actor{ID: "admin", Admin: true}, Request{Confirm: c.id().String()})
 	if result.State != "succeeded" {
 		t.Fatalf("destroy: %+v", result)
 	}
@@ -1200,7 +1200,7 @@ func TestDestroySweepsAbsentClaimsButKeepsEnvironmentNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := Controller{Store: s, Engine: &missingNetworkDestroyEngine{&failedFirstDeployEngine{positiveEngine: &positiveEngine{}}}, Project: "shop", Environment: "test"}
-	out := c.runDestroy(ctx, op, Actor{ID: "admin", Admin: true}, Request{Confirm: "test"})
+	out := c.runDestroy(ctx, op, Actor{ID: "admin", Admin: true}, Request{Confirm: c.id().String()})
 	if out.State != "succeeded" {
 		t.Fatalf("destroy: %+v", out)
 	}

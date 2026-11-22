@@ -170,7 +170,7 @@ func TestDestroyRouteNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	deployToken := "bty.lab." + strings.Repeat("b", 64)
 	adminToken := "bty.lab." + strings.Repeat("c", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
-	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
+	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Project: "demo", Environment: "lab"})
 	call := func(method, token, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/v1/projects/demo/environments/lab/destroy", strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -178,7 +178,7 @@ func TestDestroyRouteNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w
 	}
-	body := `{"request_id":"r1","confirm":"lab"}`
+	body := `{"request_id":"r1","confirm":"demo/lab"}`
 	if w := call("POST", readToken, body); w.Code != http.StatusForbidden {
 		t.Fatalf("read scope: %d", w.Code)
 	}
@@ -188,10 +188,10 @@ func TestDestroyRouteNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	if w := call("GET", adminToken, ""); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET: %d", w.Code)
 	}
-	for _, b := range []string{`{"request_id":"r2"}`, `{"request_id":"r3","confirm":"prod"}`, `{"request_id":"r4","confirm":"lab","dry_run":true,"tunnel":true,"volumes":true}`} {
+	for _, b := range []string{`{"request_id":"r2"}`, `{"request_id":"r3","confirm":"prod"}`, `{"request_id":"r4","confirm":"lab"}`, `{"request_id":"r5","confirm":"demo/lab","dry_run":true,"tunnel":true,"volumes":true}`} {
 		w := call("POST", adminToken, b)
-		wantBad := !strings.Contains(b, `"confirm":"lab"`)
-		if wantBad && (w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "confirmation must name the environment")) {
+		wantBad := !strings.Contains(b, `"confirm":"demo/lab"`)
+		if wantBad && (w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "confirmation must name the project and the environment, as project/environment")) {
 			t.Fatalf("%s: %d %s", b, w.Code, w.Body.String())
 		}
 		if !wantBad && w.Code != http.StatusOK {

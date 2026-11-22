@@ -45,7 +45,7 @@ var changeCommands = []changeCommand{
 	{name: "run", pos: []string{"run", "api"}, tail: []string{"--", "true"}},
 	{name: "prune", pos: []string{"prune"}},
 	{name: "remove", pos: []string{"remove", "api"}},
-	{name: "destroy", pos: []string{"destroy"}, fixed: []string{"--confirm", "dev"}},
+	{name: "destroy", pos: []string{"destroy"}, fixed: []string{"--confirm", "demo/dev"}},
 	{name: "restore", pos: []string{"restore", "key"}},
 	{name: "wait", pos: []string{"wait", "api"}},
 	{name: "history", pos: []string{"history", "api"}},
@@ -83,7 +83,7 @@ var changeCommands = []changeCommand{
 var changeFlagArgs = [][]string{
 	{"--config", "cfg.json"}, {"--json"}, {"--dry-run"}, {"--adopt"}, {"--healthy"}, {"--replace-existing"},
 	{"--allow-recreate"}, {"--volumes"}, {"--tunnel"}, {"--all"}, {"--revert-schema"},
-	{"--confirm", "dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--exec", "db"}, {"--manifest-dir", "dir"},
+	{"--confirm", "demo/dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--exec", "db"}, {"--manifest-dir", "dir"},
 	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
 	{"--registry", "ghcr.io"}, {"-m", "reason"}, {"--message", "reason"}, {"--to", "2"}, {"--replicas", "2"},
 	{"--replace"}, {"--bytes", "32"}, {"--format", "hex"}, {"--origin"}, {"--diff", "2"}, {"--run", "3"},

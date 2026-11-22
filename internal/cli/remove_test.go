@@ -107,9 +107,10 @@ func TestDestroyNeedsTheEnvironmentNameBeforeAnyRequest(t *testing.T) {
 	for _, args := range [][]string{
 		{"destroy", "-e", "dev", "--config", cfg},
 		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "prod"},
+		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "dev"},
 		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "Dev"},
-		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "dev", "extra"},
-		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "dev", "--dry-run", "--confirm", "other"},
+		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "demo/dev", "extra"},
+		{"destroy", "-e", "dev", "--config", cfg, "--confirm", "demo/dev", "--dry-run", "--confirm", "other"},
 	} {
 		var out, errs bytes.Buffer
 		if code := Run(args, &out, &errs); code != 2 {
@@ -131,14 +132,14 @@ func TestDestroySendsTheFlagsAndShowsThePlan(t *testing.T) {
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
 	var out, errs bytes.Buffer
-	if code := Run([]string{"destroy", "-e", "dev", "--config", cfg, "--confirm", "dev", "--volumes", "--allow-recreate", "--tunnel", "--dry-run"}, &out, &errs); code != 0 {
+	if code := Run([]string{"destroy", "-e", "dev", "--config", cfg, "--confirm", "demo/dev", "--volumes", "--allow-recreate", "--tunnel", "--dry-run"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
 	var req map[string]any
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		t.Fatal(err)
 	}
-	if path != "/v1/projects/demo/environments/dev/destroy" || req["confirm"] != "dev" || req["volumes"] != true || req["allow_recreate"] != true || req["tunnel"] != true || req["dry_run"] != true || req["request_id"] == "" {
+	if path != "/v1/projects/demo/environments/dev/destroy" || req["confirm"] != "demo/dev" || req["volumes"] != true || req["allow_recreate"] != true || req["tunnel"] != true || req["dry_run"] != true || req["request_id"] == "" {
 		t.Fatalf("%s %s", path, body)
 	}
 	for _, want := range []string{"destroy dev", "api (image)", "demo-api-web", "db (compose)", "shop-db_data", "managed ingress", "connector", "berthy-helper-dev", "hook-1", "ghcr.io/acme/api@sha256:1", "tunnel demo-dev: keep", "a rule for foreign.example.com remains", "blockers", "removing stateful app db needs --allow-recreate"} {
@@ -163,7 +164,7 @@ func TestDestroyReportsWhatItDid(t *testing.T) {
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
 	var out, errs bytes.Buffer
-	if code := Run([]string{"destroy", "-e", "dev", "--config", cfg, "--confirm", "dev"}, &out, &errs); code != 0 {
+	if code := Run([]string{"destroy", "-e", "dev", "--config", cfg, "--confirm", "demo/dev"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
 	for _, want := range []string{"api: deleted service demo-api-web", "kept tunnel demo-dev"} {

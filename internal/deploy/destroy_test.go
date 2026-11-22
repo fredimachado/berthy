@@ -152,6 +152,7 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 	destroyTunnelWait = 200 * time.Millisecond
 	t.Cleanup(func() { removeVolumeWait, destroyTunnelWait = 20*time.Second, time.Minute })
 	f := newIngressFixture(t)
+	f.ctrl.Project = "demo"
 	vd := &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{"demo-test_data": ""}}
 	d := &destroyDocker{volumeDocker: vd, bound: f.bound}
 	runner := &fakeCompose{config: configOne, hashes: hashOne}
@@ -185,7 +186,7 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 		t.Fatal(err)
 	}
 	mine := func(extra map[string]string) map[string]string {
-		labels := map[string]string{"berthy.environment": ingressEnv}
+		labels := map[string]string{"berthy.project": "demo", "berthy.environment": ingressEnv}
 		for k, v := range extra {
 			labels[k] = v
 		}
@@ -215,7 +216,7 @@ func newDestroyFixture(t *testing.T, adoptRecord bool) *destroyFixture {
 
 func (f *destroyFixture) destroy(requestID string, mutate func(*Request)) state.Operation {
 	f.t.Helper()
-	req := Request{RequestID: requestID, Kind: "destroy", Confirm: ingressEnv, AllowRecreate: true}
+	req := Request{RequestID: requestID, Kind: "destroy", Confirm: f.ctrl.id().String(), AllowRecreate: true}
 	if mutate != nil {
 		mutate(&req)
 	}
@@ -224,7 +225,7 @@ func (f *destroyFixture) destroy(requestID string, mutate func(*Request)) state.
 
 func (f *destroyFixture) plan(mutate func(*Request)) *DestroyPlan {
 	f.t.Helper()
-	req := Request{Kind: "destroy", Confirm: ingressEnv, AllowRecreate: true, DryRun: true}
+	req := Request{Kind: "destroy", Confirm: f.ctrl.id().String(), AllowRecreate: true, DryRun: true}
 	if mutate != nil {
 		mutate(&req)
 	}
@@ -460,14 +461,15 @@ func TestDestroyDeletesVolumesOnlyWithTheFlag(t *testing.T) {
 func TestDestroyNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	f := newDestroyFixture(t, true)
 	ctx := context.Background()
-	req := Request{RequestID: "d", Kind: "destroy", Confirm: ingressEnv}
+	confirmOK := f.ctrl.id().String()
+	req := Request{RequestID: "d", Kind: "destroy", Confirm: confirmOK}
 	if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "ci"}, req); !errors.Is(err, errDestroyAdmin) {
 		t.Fatalf("admit as deploy: %v", err)
 	}
-	if _, err := f.ctrl.Plan(ctx, Actor{ID: "ci"}, Request{Kind: "destroy", Confirm: ingressEnv, DryRun: true}); !errors.Is(err, errDestroyAdmin) {
+	if _, err := f.ctrl.Plan(ctx, Actor{ID: "ci"}, Request{Kind: "destroy", Confirm: confirmOK, DryRun: true}); !errors.Is(err, errDestroyAdmin) {
 		t.Fatalf("plan as deploy: %v", err)
 	}
-	for _, confirm := range []string{"", "other", "TEST", ingressEnv + " "} {
+	for _, confirm := range []string{"", "other", "TEST", confirmOK + " "} {
 		req.Confirm = confirm
 		if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errDestroyConfirm) {
 			t.Fatalf("admit with %q: %v", confirm, err)
@@ -478,6 +480,25 @@ func TestDestroyNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	}
 	if got := f.allServices(); len(got) != 3 {
 		t.Fatalf("services %v", got)
+	}
+}
+
+// TestDestroyNeedsProjectAndEnvironmentToConfirm: the confirmation is project/environment; the environment alone is refused
+// and nothing is removed.
+func TestDestroyNeedsProjectAndEnvironmentToConfirm(t *testing.T) {
+	f := newDestroyFixture(t, true)
+	ctx := context.Background()
+	before := f.allServices()
+	containers, images := f.containerIDs(), f.imageIDs()
+	req := Request{RequestID: "d", Kind: "destroy", Confirm: ingressEnv, AllowRecreate: true}
+	if _, _, err := admit(t, f.ctrl, ctx, Actor{ID: "admin", Admin: true}, req); !errors.Is(err, errDestroyConfirm) {
+		t.Fatalf("admit with environment alone: %v", err)
+	}
+	if _, err := f.ctrl.Plan(ctx, Actor{ID: "admin", Admin: true}, Request{Kind: "destroy", Confirm: ingressEnv, AllowRecreate: true, DryRun: true}); !errors.Is(err, errDestroyConfirm) {
+		t.Fatalf("plan with environment alone: %v", err)
+	}
+	if !reflect.DeepEqual(f.allServices(), before) || !reflect.DeepEqual(f.containerIDs(), containers) || !reflect.DeepEqual(f.imageIDs(), images) {
+		t.Fatal("nothing must be removed when confirmation names only the environment")
 	}
 }
 
@@ -605,12 +626,14 @@ func TestDestroyKeepsATunnelThatIsNotClean(t *testing.T) {
 
 func TestDestroyTunnelWithoutManagedIngressReportsNoManagedTunnel(t *testing.T) {
 	f := newIngressFixture(t)
+	f.ctrl.Project = "demo"
 	f.ctrl.Engine = &destroyDocker{volumeDocker: &volumeDocker{loggedEngine: f.docker, volumes: map[string]string{}}, bound: f.bound}
-	p, err := f.ctrl.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "destroy", Confirm: ingressEnv, Tunnel: true, DryRun: true})
+	confirm := f.ctrl.id().String()
+	p, err := f.ctrl.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{Kind: "destroy", Confirm: confirm, Tunnel: true, DryRun: true})
 	if err != nil || p.Destroy == nil || p.Destroy.Tunnel == nil || p.Destroy.Tunnel.Delete || !reflect.DeepEqual(p.Destroy.Tunnel.Reasons, []string{"no managed tunnel"}) {
 		t.Fatalf("plan %+v %v", p.Destroy, err)
 	}
-	op := f.run(Request{RequestID: "d", Kind: "destroy", Confirm: ingressEnv, Tunnel: true})
+	op := f.run(Request{RequestID: "d", Kind: "destroy", Confirm: confirm, Tunnel: true})
 	if op.State != "succeeded" || !hasStep(steps(t, f.store, op.ID), "no managed tunnel") {
 		t.Fatalf("destroy %s: %s %v", op.State, op.Err, steps(t, f.store, op.ID))
 	}
@@ -734,8 +757,9 @@ func TestDestroyReadsForeignImagesBeforeRemovingAnything(t *testing.T) {
 	for _, afterPlan := range []bool{false, true} {
 		t.Run(fmt.Sprint(afterPlan), func(t *testing.T) {
 			base := newIngressFixture(t)
+			base.ctrl.Project = "demo"
 			d := &destroyDocker{volumeDocker: &volumeDocker{loggedEngine: base.docker, volumes: map[string]string{}}, bound: base.bound}
-			d.containers = []engine.InventoryContainer{{ID: "helper", Names: []string{"helper"}, ImageID: "image", State: "exited", Labels: map[string]string{"berthy.environment": ingressEnv, "berthy.helper": "probe"}}}
+			d.containers = []engine.InventoryContainer{{ID: "helper", Names: []string{"helper"}, ImageID: "image", State: "exited", Labels: map[string]string{"berthy.project": "demo", "berthy.environment": ingressEnv, "berthy.helper": "probe"}}}
 			base.ctrl.Engine = d
 			base.calls.reset()
 			reads := 0
@@ -746,7 +770,7 @@ func TestDestroyReadsForeignImagesBeforeRemovingAnything(t *testing.T) {
 				}
 				return Foreign{Images: map[string]bool{}}, nil
 			}
-			req := Request{RequestID: "destroy", Kind: "destroy", Confirm: ingressEnv}
+			req := Request{RequestID: "destroy", Kind: "destroy", Confirm: base.ctrl.id().String()}
 			if afterPlan {
 				if _, err := base.ctrl.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err != nil {
 					t.Fatal(err)

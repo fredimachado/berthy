@@ -396,8 +396,8 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, "--tunnel and --confirm apply to destroy only")
 		return 2
 	}
-	if cmd == "destroy" && (len(f.pos) != 0 || f.confirm != f.env) {
-		fmt.Fprintln(errout, "destroy takes no app, and --confirm must repeat the environment name")
+	if cmd == "destroy" && len(f.pos) != 0 {
+		fmt.Fprintln(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment")
 		return 2
 	}
 	if cmd == "key" && (len(f.pos) != 1 || f.pos[0] != "rotate") {
@@ -486,6 +486,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 	}
 	f.project = target.Project
 	u, token, prefix := target.Base, target.Token, target.Prefix
+	if cmd == "destroy" && f.confirm != (scope.ID{Project: f.project, Environment: f.env}).String() {
+		fmt.Fprintln(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment")
+		return 2
+	}
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
 	}

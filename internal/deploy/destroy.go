@@ -40,7 +40,7 @@ type DestroyPlan struct {
 
 const (
 	errDestroyAdmin       Refusal = "destroying an environment requires administrator access"
-	errDestroyConfirm     Refusal = "confirmation must name the environment"
+	errDestroyConfirm     Refusal = "confirmation must name the project and the environment, as project/environment"
 	errDestroyInterrupted Refusal = "destroy interrupted; run destroy again"
 	errDestroyPreflight   Refusal = "destroy preflight failed"
 	errDestroyContainers  Refusal = "container removal failed"
@@ -79,12 +79,12 @@ type destruction struct {
 }
 
 // destroyCheck is what a destroy decides before reading anything: the caller is an administrator and has named the
-// environment.
+// hosted environment as project/environment.
 func (c *Controller) destroyCheck(actor Actor, req Request) error {
 	switch {
 	case !actor.Admin:
 		return errDestroyAdmin
-	case c.Environment == "" || req.Confirm != c.Environment:
+	case req.Confirm != c.id().String():
 		return errDestroyConfirm
 	case c.Store == nil:
 		return errors.New("state unavailable")

@@ -837,7 +837,7 @@ func TestDestroySweepKeepsTheNetworkAndActiveLeases(t *testing.T) {
 	}
 	destroy := func(request string) {
 		t.Helper()
-		op, _, err := c.Admit(ctx, deploy.Actor{ID: "admin", Admin: true}, deploy.Request{RequestID: request, Kind: "destroy", Confirm: id.Environment})
+		op, _, err := c.Admit(ctx, deploy.Actor{ID: "admin", Admin: true}, deploy.Request{RequestID: request, Kind: "destroy", Confirm: id.String()})
 		if err != nil {
 			t.Fatal(err)
 		}
