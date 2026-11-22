@@ -33,4 +33,4 @@ volumes:
 networks:
   todo:
     external: true
-    name: ${BERTHY_NETWORK}
+    name: todo
