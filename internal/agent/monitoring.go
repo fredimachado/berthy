@@ -128,14 +128,14 @@ func (w *Monitoring) followEvents(ctx context.Context, events <-chan engine.Even
 }
 
 // eventPrefixes names the checks an event wakes, by the start of their names, or nil when the event wakes none. A container
-// that dies, is killed for memory or changes health concerns its restart and down checks. A service that is updated or removed
+// that starts, restarts, dies, is killed for memory or changes health concerns its restart and down checks. A service that is updated or removed
 // may also be a change made outside Berthy, which the drift check reports. The resync, sent when the feed returns after a
 // gap, wakes all of them.
 func eventPrefixes(ev engine.Event) []string {
 	switch {
 	case ev.Resync():
 		return []string{"restarts:", "down:", "drift:"}
-	case ev.Type == "container" && (ev.Action == "die" || ev.Action == "oom" || ev.Action == "health_status"):
+	case ev.Type == "container" && (ev.Action == "start" || ev.Action == "restart" || ev.Action == "die" || ev.Action == "oom" || ev.Action == "health_status"):
 		return []string{"restarts:", "down:"}
 	case ev.Type == "service" && (ev.Action == "update" || ev.Action == "remove"):
 		return []string{"restarts:", "down:", "drift:"}

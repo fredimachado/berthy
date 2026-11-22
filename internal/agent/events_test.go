@@ -50,7 +50,8 @@ func TestEventsMapToTheChecksTheyWake(t *testing.T) {
 		{"a service is updated", engine.Event{Type: "service", Action: "update"}, []string{"down:", "drift:", "restarts:"}},
 		{"a service is removed", engine.Event{Type: "service", Action: "remove"}, []string{"down:", "drift:", "restarts:"}},
 		{"the feed came back", engine.Event{Type: engine.ResyncType, Action: engine.ResyncAction}, []string{"down:", "drift:", "restarts:"}},
-		{"a container starts", engine.Event{Type: "container", Action: "start"}, nil},
+		{"a container starts", engine.Event{Type: "container", Action: "start"}, []string{"down:", "restarts:"}},
+		{"a container restarts", engine.Event{Type: "container", Action: "restart"}, []string{"down:", "restarts:"}},
 	}
 	for _, c := range cases {
 		got := eventPrefixes(c.ev)
