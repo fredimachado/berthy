@@ -537,6 +537,12 @@ func (c *Controller) finishTunnel(ctx context.Context, opID string, step func(st
 		}
 		return nil
 	}
+	if err = c.checkForeignTunnel(ctx, st.AccountID, st.TunnelID); err != nil {
+		if errors.Is(err, errTunnelForeign) {
+			return keep(string(errTunnelForeign))
+		}
+		return err
+	}
 	cf, err := c.cloudflareClient(ctx, st.APITokenSecret)
 	if err != nil {
 		return keep(string(errCloudflareSecret))

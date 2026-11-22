@@ -822,3 +822,44 @@ func TestKeptTunnelCannotBeTakenOrDeletedByPeer(t *testing.T) {
 		t.Fatalf("destroy deleted peer tunnel: %+v", op)
 	}
 }
+
+func TestKeptPeerTunnelDoesNotDiscloseHostnames(t *testing.T) {
+	f := newDestroyFixture(t, false)
+	if op := f.destroy("keep", nil); op.State != "succeeded" {
+		t.Fatalf("destroy: %+v", op)
+	}
+	if err := f.ctrl.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := f.store.KeptTunnel(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const peerHost = "private-peer.example.com"
+	raw, err := json.Marshal(rulesOf(rule(peerHost, "http://peer:80"), rule("", "http_status:404")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.cf.SetConfig(f.tunnelID, raw)
+	f.ctrl.Foreign = func(context.Context) (Foreign, error) { return Foreign{Ingress: []state.IngressState{kept}}, nil }
+	plan := f.plan(func(r *Request) { r.Tunnel = true })
+	planJSON, _ := json.Marshal(plan)
+	if strings.Contains(string(planJSON), peerHost) {
+		t.Fatalf("plan exposed peer hostname: %s", planJSON)
+	}
+	op := f.destroy("peer-tunnel", func(r *Request) { r.Tunnel = true })
+	if err := f.ctrl.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	events, err := f.store.EventsAfter(context.Background(), op.ID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventJSON, _ := json.Marshal(events)
+	if strings.Contains(string(eventJSON), peerHost) {
+		t.Fatalf("events exposed peer hostname: %s", eventJSON)
+	}
+	if f.tunnel() == nil {
+		t.Fatal("peer tunnel deleted")
+	}
+}
