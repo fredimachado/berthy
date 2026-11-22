@@ -660,6 +660,7 @@ func TestSetupJSONOfAFailure(t *testing.T) {
 }
 
 func TestSetupWithoutARunnerFailsTheConnectStep(t *testing.T) {
+	isolatedUserConfig(t)
 	saved := newSetupRunner
 	t.Cleanup(func() { newSetupRunner = saved })
 	newSetupRunner = func(string, bool) (setup.Runner, error) { return nil, errors.New("ssh was not found on PATH") }
