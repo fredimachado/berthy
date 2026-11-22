@@ -27,13 +27,15 @@ LOG=$E2E_ROOT/logs
 MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from
 # The environment, project, registry and listen addresses default to the values below. Two runs on the same daemon at once (a
 # checkout's own run and another's) set their own, with their own E2E_ROOT, so they never share a Swarm service, a registry
-# container or a port. For example: ENVN=e2e9 PROJECT=e2e9 REG=127.0.0.1:15031 REG_NAME=e2e9-registry AGENT_LISTEN=127.0.0.1:19511.
+# container or a port. For example: ENVN=e2e9 PROJECT=e2e9 REG=127.0.0.1:15031 REG_NAME=e2e9-registry AGENT_LISTEN=127.0.0.1:19511
+# AGENT2_LISTEN=127.0.0.1:19541.
 ENVN=${ENVN:-e2e}
 PROJECT=${PROJECT:-e2e}
 NETWORK=$PROJECT-$ENVN
 REG=${REG:-127.0.0.1:15021}          # throwaway unauthenticated registry
 REG_NAME=${REG_NAME:-e2e-registry}   # its container name
 AGENT_LISTEN=${AGENT_LISTEN:-127.0.0.1:19501}
+AGENT2_LISTEN=${AGENT2_LISTEN:-127.0.0.1:19502}   # second agent; per slot: 1954<SLOT> or similar
 TG_LISTEN=${TG_LISTEN:-127.0.0.1:18901}
 OTLP_LISTEN=${OTLP_LISTEN:-127.0.0.1:18902}
 HOOK_LISTEN=${HOOK_LISTEN:-127.0.0.1:18903}   # fake webhook for alerts and heartbeat; per slot: 1895<SLOT>
@@ -378,6 +380,46 @@ start_agent() {
 
 stop_agent() { stop_proc "$RUN/agent.pid" "$BIN"; }
 
+# start_agent2: starts a second agent on the same Docker daemon with one hosted environment
+# ($PROJECT, ${ENVN}c, state $RUN/state2, its own key, admin token and network). Writes $RUN/agent2.json
+# and $RUN/agent2.pid, and adds the environment to $RUN/admin.json at http://$AGENT2_LISTEN.
+start_agent2() {
+  local env=${ENVN}c var out token entry network i
+  var=$(env_var "$PROJECT" "$env")
+  network=$PROJECT-$env
+  out=$("$BIN" agent token --project "$PROJECT" -e "$env" --name admin --scope admin) || return 1
+  token=$(printf '%s\n' "$out" | sed -n 's/^token: //p')
+  entry=$(printf '%s\n' "$out" | sed -n '3p')
+  case $token in bty.$PROJECT.$env.*) ;; *) return 1 ;; esac
+  case $entry in \{*) ;; *) return 1 ;; esac
+  printf "export %s='%s'\n" "$var" "$token" >> "$RUN/env.sh" || return 1
+  export "$var=$token"
+  (umask 077 && mkdir -p "$RUN/state2" && head -c 32 /dev/urandom > "$RUN/state2.key" && chmod 600 "$RUN/state2.key") || return 1
+  create_environment_network "$network" || return 1
+  {
+    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"environments":[' \
+      "$AGENT2_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN"
+    printf '{"project":"%s","environment":"%s","state_dir":"%s","key_file":"%s","network":"%s","tokens":[%s]}' \
+      "$PROJECT" "$env" "$RUN/state2" "$RUN/state2.key" "$network" "$entry"
+    printf ']}\n'
+  } > "$RUN/agent2.json.new" && chmod 600 "$RUN/agent2.json.new" && mv -f "$RUN/agent2.json.new" "$RUN/agent2.json" || return 1
+  "$BIN" context add --project "$PROJECT" -e "$env" --url "http://$AGENT2_LISTEN" --token-env "$var" --config "$RUN/admin.json" >/dev/null || return 1
+  spawn "$RUN/agent2.pid" "$LOG/agent2.log" "$BIN" agent --config "$RUN/agent2.json"
+  for i in $(seq 1 120); do
+    if curl_local -f -o /dev/null "http://$AGENT2_LISTEN/healthz" 2>/dev/null; then
+      return 0
+    fi
+    if [ -s "$RUN/agent2.pid" ] && ! owned "$RUN/agent2.pid" "$BIN"; then
+      break
+    fi
+    sleep 0.25
+  done
+  echo "second agent did not answer (logs in $LOG/agent2.log)" >&2
+  return 1
+}
+
+stop_agent2() { stop_proc "$RUN/agent2.pid" "$BIN"; }
+
 # start_hook: starts the fake webhook and waits until it answers. It records to $RUN/hook-requests.jsonl.
 start_hook() {
   spawn "$RUN/hook.pid" "$LOG/webhook.log" "$HOOK_BIN" -listen "$HOOK_LISTEN" -requests "$RUN/hook-requests.jsonl" || return 1
@@ -457,13 +499,14 @@ apps:
 YML
 }
 
-# purge_fixture: stops the agent and the fakes, then removes what this harness made on the daemon: Swarm services,
+# purge_fixture: stops both agents and the fakes, then removes what this harness made on the daemon: Swarm services,
 # containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
 purge_fixture() {
   local i v f project env state kind name lock tmp owner listing labels escaped id network_name deadline status lookup_error failed=0
   local -a ids owners
   local volumes="" projects="" networks=""
   stop_agent
+  stop_agent2
   stop_fakes
   owners=("$PROJECT"$'\t'"$ENVN")
   for f in "$RUN"/environments.d/*.json; do
@@ -473,6 +516,14 @@ purge_fixture() {
       owners+=("$project"$'\t'"$env")
     fi
   done
+  if [ -f "$RUN/agent2.json" ]; then
+    while IFS=$'\t' read -r project env state; do
+      [ -n "$project" ] || continue
+      if [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ && $env =~ ^[a-z0-9][a-z0-9-]*$ && $state == "$RUN"/* ]]; then
+        owners+=("$project"$'\t'"$env")
+      fi
+    done < <(jq -r '.environments[]? | select((.project | type) == "string" and (.environment | type) == "string" and (.state_dir | type) == "string") | [.project, .environment, .state_dir] | @tsv' "$RUN/agent2.json" 2>/dev/null)
+  fi
   mkdir -p "$E2E_ROOT" || return 1
   exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
   flock -x "$lock" || return 1
