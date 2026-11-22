@@ -385,7 +385,7 @@ func pruneCandidates(owned []state.AcquiredImage, refs, ids map[string]bool) []s
 }
 
 // errPruneHistory is the failure to read what the state holds about releases and acquired images.
-var errPruneHistory = errors.New("release history unavailable")
+const errPruneHistory Refusal = "release history unavailable"
 
 // inventoryFailure names why an inventory could not be read: Docker itself, or the one inventory.
 func inventoryFailure(err error, what string) error {

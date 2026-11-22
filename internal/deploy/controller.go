@@ -1096,6 +1096,9 @@ func (c *Controller) checkNames(ctx context.Context, req Request) error {
 	if err != nil {
 		return err
 	}
+	if len(claims) == 0 {
+		return nil
+	}
 	foreign, err := c.Foreign(ctx)
 	if err != nil {
 		return err

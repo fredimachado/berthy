@@ -228,6 +228,9 @@ func (c *Controller) destroyFor(ctx context.Context, actor Actor, req Request) (
 		if _, ok := c.Engine.(inventoryEngine); ok {
 			candidates, err := c.prunePlanWithout(ctx, gone)
 			if err != nil {
+				if errors.Is(err, errPruneHistory) {
+					return nil, errPruneHistory
+				}
 				return nil, errors.New(pruneFailure(err))
 			}
 			for _, i := range candidates {

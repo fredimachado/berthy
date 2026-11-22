@@ -91,6 +91,8 @@ func inventoryDocker(t *testing.T) *engine.Engine {
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/images/json"):
+			fmt.Fprint(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
 			fmt.Fprint(w, `[{"Id":"a","Labels":{"com.docker.compose.project":"foreign-compose","com.docker.compose.service":"db"}},{"Id":"b","Labels":{"com.docker.compose.project":"unclaimed-compose","com.docker.compose.service":"db"}}]`)
 		case strings.HasSuffix(r.URL.Path, "/services"):

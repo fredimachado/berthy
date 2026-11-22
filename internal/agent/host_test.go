@@ -1024,3 +1024,37 @@ func TestReservationDoesNotReadPeerReleaseHistory(t *testing.T) {
 		t.Fatalf("reserve: %v", err)
 	}
 }
+
+func TestPruneAndDestroyReportUnreadableForeignHistory(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = inventoryDocker(t)
+	f.ctrl.Foreign = func(context.Context) (deploy.Foreign, error) {
+		return deploy.Foreign{}, errors.New("peer history broken")
+	}
+	for _, kind := range []string{"prune", "destroy"} {
+		t.Run(kind, func(t *testing.T) {
+			body := `{"dry_run":true,"confirm":"lab"}`
+			w := f.call("POST", "/"+kind, apAdminToken, body)
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "release history unavailable") {
+				t.Errorf("dry run: %d %s", w.Code, w.Body.String())
+			}
+			w = f.call("POST", "/"+kind, apAdminToken, `{"request_id":"`+kind+`","confirm":"lab"}`)
+			if w.Code != 202 {
+				t.Fatalf("admit: %d %s", w.Code, w.Body.String())
+			}
+			if err := f.ctrl.Drain(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var accepted struct {
+				OperationID string `json:"operation_id"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+				t.Fatal(err)
+			}
+			op, err := f.s.Operation(context.Background(), accepted.OperationID)
+			if err != nil || op.State != "failed" || op.Err != "release history unavailable" {
+				t.Fatalf("operation %+v %v", op, err)
+			}
+		})
+	}
+}
