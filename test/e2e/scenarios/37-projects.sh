@@ -179,6 +179,14 @@ done
 expect_code 'second hold job is ready' 0 "$ready" "$out"
 # Stop the last v1 workload without removing its release before checking Docker references.
 out=$(env_cmd "$PROJECT" "$ENVN" scale web --role main --replicas 0 2>&1); expect_code 'scale first web to zero' 0 "$?" "$out"
+# Stopped task containers also hold Docker image references. Remove only this fixture's old v1 tasks.
+for pair in "$PROJECT $ENVN" "$P2 $ENVN" "$PROJECT $EB"; do
+  read -r p e <<< "$pair"
+  for id in $(d ps -aq --filter "label=com.docker.swarm.service.name=$p-$e-web-main" --filter status=exited); do
+    image=$(d inspect -f '{{.Config.Image}}' "$id")
+    case "$image" in *"$WEB_V1_DIGEST"*) d rm "$id" >/dev/null || fail 'remove stopped v1 task' "$id" ;; esac
+  done
+done
 for id in $(d ps -q); do image=$(d inspect -f '{{.Config.Image}}' "$id"); expect_not_contains "container $id does not run v1" "$image" "$WEB_V1_DIGEST"; done
 out=$(env_cmd "$PROJECT" "$ENVN" destroy --confirm "$ENVN" 2>&1); expect_code 'destroy first environment' 0 "$?" "$out"
 d image inspect "$REG/e2e/web@$WEB_V1_DIGEST" >/dev/null 2>&1; expect_code 'retained v1 image remains' 0 "$?"
