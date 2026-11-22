@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"berthy/internal/agent"
@@ -146,6 +147,34 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// rootNeedsRepair leaves non-root-owned directories alone and checks the access berthy needs.
+func rootNeedsRepair(stat string, writable bool) bool {
+	if stat == "" {
+		return true
+	}
+	fields := strings.Fields(stat)
+	if len(fields) != 2 {
+		return false
+	}
+	owner, group, _ := strings.Cut(fields[0], ":")
+	if owner != "root" {
+		return false
+	}
+	mode, err := strconv.ParseUint(fields[1], 8, 32)
+	if err != nil {
+		return false
+	}
+	bits := mode & 7
+	if group == "berthy" {
+		bits = (mode >> 3) & 7
+	}
+	need := uint64(1)
+	if writable {
+		need = 3
+	}
+	return bits&need != need
+}
+
 // keyStep makes sure the encryption key and the directories of the agent's state are in place. It never replaces a key.
 func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	f, err := s.facts(ctx)
@@ -177,22 +206,31 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 
 	// The directories, and the owner and mode of what is there.
 	var fix, did []string
-	if f.DataDirStat != wantPrivateDir {
+	if rootNeedsRepair(f.DataDirStat, true) {
 		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+dataDir)
 		did = append(did, "prepared "+dataDir)
 	}
+	keyDir := path.Dir(keyPath)
 	for _, dir := range managedParents(stateDir, keyPath) {
-		if stat := pf.ParentStats[dir]; stat != "root:berthy 750" && stat != wantPrivateDir {
-			fix = append(fix, "install -d -o root -g berthy -m 0750 "+shellQuote(dir))
+		if dir == stateDir {
+			continue
+		}
+		writable := dir == keyDir
+		if rootNeedsRepair(pf.ParentStats[dir], writable) {
+			owner, mode := "root", "0750"
+			if writable {
+				owner, mode = "berthy", "0700"
+			}
+			fix = append(fix, "install -d -o "+owner+" -g berthy -m "+mode+" "+shellQuote(dir))
 			did = append(did, "prepared "+dir)
 		}
 	}
-	if pf.StateDirStat != wantPrivateDir {
+	if rootNeedsRepair(pf.StateDirStat, true) {
 		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+shellQuote(stateDir))
 		did = append(did, "prepared "+stateDir)
 	}
 	if pf.StateForeign {
-		fix = append(fix, "chown -R berthy:berthy "+shellQuote(stateDir))
+		fix = append(fix, "find "+shellQuote(stateDir)+" -type f -user root -exec chown berthy:berthy {} +")
 		did = append(did, "gave the state to berthy")
 	}
 	var stdin io.Reader
@@ -274,7 +312,7 @@ func firstField(b []byte) string {
 // keyGenerateScript makes the key on the server from its random source. The key never leaves the server.
 func keyGenerateScript(keyPath string) string {
 	dir := shellQuote(path.Dir(keyPath))
-	return "install -d -o berthy -g berthy -m 0700 " + dir + "\n" +
+	return "if [ ! -d " + dir + " ]; then install -d -o berthy -g berthy -m 0700 " + dir + "; fi\n" +
 		"tmp=$(mktemp " + shellQuote(path.Dir(keyPath)+"/.key.XXXXXX") + ")\n" +
 		"trap 'rm -f \"$tmp\"' EXIT\n" +
 		"head -c 32 /dev/urandom > \"$tmp\"\n" +
@@ -287,7 +325,7 @@ func keyGenerateScript(keyPath string) string {
 // keyUploadScript installs the key from standard input and prints its SHA-256.
 func keyUploadScript(keyPath string) string {
 	dir := shellQuote(path.Dir(keyPath))
-	return "install -d -o berthy -g berthy -m 0700 " + dir + "\n" +
+	return "if [ ! -d " + dir + " ]; then install -d -o berthy -g berthy -m 0700 " + dir + "; fi\n" +
 		"tmp=$(mktemp " + shellQuote(path.Dir(keyPath)+"/.key.XXXXXX") + ")\n" +
 		"trap 'rm -f \"$tmp\"' EXIT\n" +
 		"cat > \"$tmp\"\n" +

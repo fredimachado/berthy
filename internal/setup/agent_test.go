@@ -619,7 +619,7 @@ func TestKeyStep(t *testing.T) {
 		{"key-file of the wrong size", sameKey, []byte("short"), StatusFailed, "--key-file must hold exactly 32 bytes", "", false},
 		{"key on the server is not 32 bytes", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=16 "+wantPrivate) }, nil, StatusFailed, keyPath + " is not 32 bytes; setup does not replace a key", "", false},
 		{"owner of the key repaired", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=32 root:root 644") }, nil, StatusChanged, "", "chmod 0600 " + shellQuote(keyPath), false},
-		{"state owned by someone else", func(f *agentFake) { f.probe = with(f.probe, "state_foreign=yes") }, nil, StatusChanged, "", "chown -R berthy:berthy " + shellQuote(stateDir), false},
+		{"state owned by someone else", func(f *agentFake) { f.probe = with(f.probe, "state_foreign=yes") }, nil, StatusChanged, "", "find " + shellQuote(stateDir) + " -type f -user root -exec chown berthy:berthy", false},
 		{"state directory missing", func(f *agentFake) { f.probe = without(f.probe, "state_dir_stat=") }, nil, StatusChanged, "", "install -d -o berthy -g berthy -m 0700 " + shellQuote(stateDir), false},
 	}
 	for _, tc := range tests {

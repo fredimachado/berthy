@@ -266,9 +266,52 @@ func TestSetupMakesRestoredStateParentsTraversable(t *testing.T) {
 	if lastResult(got).Status != StatusChanged {
 		t.Fatalf("key step: %+v", got)
 	}
-	for _, p := range []string{"/var/lib/berthy/environments", "/var/lib/berthy/environments/shop", "/var/lib/berthy/environments/shop/p5"} {
+	for _, p := range []string{"/var/lib/berthy/environments", "/var/lib/berthy/environments/shop"} {
 		if !f.ran("install -d -o root -g berthy -m 0750 '" + p + "'") {
 			t.Errorf("missing traversal permission for %s: %v", p, f.scripts())
+		}
+	}
+	if !f.ran("install -d -o berthy -g berthy -m 0700 '/var/lib/berthy/environments/shop/p5'") {
+		t.Error("key directory is not writable by berthy")
+	}
+}
+
+func TestSetupRepairsRootRestoredDirectoriesForTheAgent(t *testing.T) {
+	exe := elfFile(t, emX86)
+	f := setUpAgent(t, exe)
+	f.probe = without(f.probe, "state_dir_stat=", "data_dir_stat=")
+	f.probe = with(f.probe, "data_dir_stat=root:root 700", "state_dir_stat=root:root 700", "state_foreign=yes", "parent_0=root:root 700", "parent_1=root:root 700", "parent_2=root:root 700")
+	s := agentSession(t, f, exe, false, nil)
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"key", keyStep}}, func(r StepResult) { got = append(got, r) })
+	if lastResult(got).Status != StatusChanged {
+		t.Fatalf("result: %+v", got)
+	}
+	c, ok := f.find("install -d -o root -g berthy -m 0750")
+	if !ok {
+		t.Fatal("directories not repaired")
+	}
+	for _, want := range []string{"install -d -o berthy -g berthy -m 0700 /var/lib/berthy", "install -d -o root -g berthy -m 0750 '/var/lib/berthy/environments'", "install -d -o root -g berthy -m 0750 '/var/lib/berthy/environments/shop'", "install -d -o berthy -g berthy -m 0700 '/var/lib/berthy/environments/shop/p5'", "install -d -o berthy -g berthy -m 0700 '" + stateDir + "'"} {
+		if !strings.Contains(c.script, want) {
+			t.Errorf("missing %q in %s", want, c.script)
+		}
+	}
+}
+
+func TestSetupPreservesBerthyOwnedKeyDirectory(t *testing.T) {
+	exe := elfFile(t, emX86)
+	f := setUpAgent(t, exe)
+	f.config = strings.Replace(f.config, `"key_file": "`+keyPath+`"`, `"key_file": "`+stateDir+`/keys/key"`, 1)
+	f.probe = with(f.probe, "parent_0=root:berthy 750", "parent_1=root:berthy 750", "parent_2=berthy:berthy 700", "parent_3=berthy:berthy 700", "parent_4=berthy:berthy 750")
+	s := agentSession(t, f, exe, false, nil)
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"key", keyStep}}, func(r StepResult) { got = append(got, r) })
+	if lastResult(got).Status != StatusOK {
+		t.Fatalf("existing berthy-owned directory changed: %+v", got)
+	}
+	for _, c := range f.calls {
+		if agentChange(c.script) {
+			t.Fatalf("changing script: %s", c.script)
 		}
 	}
 }
