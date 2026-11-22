@@ -2171,7 +2171,7 @@ backups:
 | `command`, `service`, `role`, `timeout` | A backup of a command's output instead of a volume: see [below](#back-up-the-output-of-a-command). | |
 | `destination` | A key of `destinations`. | required |
 | `schedule` | Five-field cron, read in the manifest's `timezone` (UTC by default). Leave it out to run only on demand or from a deploy hook. | on demand |
-| `prefix` | Where the backup's objects sit in the bucket. | `<app>/<volume>` |
+| `prefix` | Where the backup's objects sit in the bucket, under `<project>/<environment>/`. | `<app>/<volume>` |
 | `before` | A job (step 9) to run first. If it fails, the backup fails and nothing is uploaded. | none |
 | `retention.keep` | `all`, or a number: keep that many newest successful backups. | `all` |
 
@@ -2206,7 +2206,7 @@ There is no dump volume and no `before` job. The agent runs the command, compres
 - **Time limit.** `timeout` limits the command, from `1s` to `24h`, `1h` unless you set it. A command past it is stopped, and for an image app its container goes with it.
 - **Failure.** A command that exits non-zero, writes nothing, runs out of time, or whose upload fails ends the backup: the upload is aborted, no description file is written, and nothing of it is listed. The run keeps the last lines of the command's standard error, with every secret value in them replaced, so `backup run` and the `backup:<name>` check say why, for example `command failed: exited with code 3: pg_dump: error: ...`.
 - **The rest is the same.** Schedules, `retention`, the `backup:<name>` check with its overdue and size rules, `backup run` and the pre-deploy `backup:` hook work as for a volume. Backups of one command backup run one at a time. A command backup has no `before` job.
-- **Where the objects sit.** The key is `<prefix>/<backup>/<time>-<run id>.gz`, with `<prefix>` the backup's `prefix` or `<app>/command`. `backup list` shows `command` where a volume backup shows its volume.
+- **Where the objects sit.** The key is `<project>/<environment>/<prefix>/<backup>/<time>-<run id>.gz`, with `<prefix>` the backup's `prefix` or `<app>/command`. `backup list` shows `command` where a volume backup shows its volume.
 
 #### Run, list, watch
 
@@ -2220,7 +2220,7 @@ berthy backup list --backup main-db -e prod
 
 ```text
 BACKUP   APP       VOLUME    SIZE     FINISHED              SHA256    KEY
-main-db  postgres  db-dumps  38 MiB   2026-11-16T01:00:12Z  <hash>    postgres/todo/main-db/20261116T010000Z-7.tar.gz
+main-db  postgres  db-dumps  38 MiB   2026-11-16T01:00:12Z  <hash>    todo/prod/postgres/todo/main-db/20261116T010000Z-7.tar.gz
 ```
 
 The **key** is what `restore` takes. A backup is listed only when its description file (`<same name>.json`, with the checksum and size) exists. The agent writes it after the upload finishes, so a backup that is listed is complete. An interrupted upload leaves nothing that looks like a good backup.
@@ -2256,9 +2256,9 @@ Every backup of the deployed manifest has a check, `backup:<name>`, that runs ev
 #### Restore into a new volume
 
 ```bash
-berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
+berthy restore todo/prod/postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
   -e prod --dry-run
-berthy restore postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
+berthy restore todo/prod/postgres/todo/main-db/20261116T010000Z-7.tar.gz --into todo-restore \
   -e prod
 ```
 
@@ -2300,7 +2300,7 @@ The restored volume holds `latest.dump`. Load it into a **scratch** database fir
 `restore` has checked the archive against its description file and made the volume, but the dump has to reach the machine you run `berthy` on. Download the same archive from your bucket with your own tool, and take the dump out of it:
 
 ```bash
-aws s3 cp s3://acme-backups/postgres/todo/main-db/20261116T010000Z-7.tar.gz .
+aws s3 cp s3://acme-backups/todo/prod/postgres/todo/main-db/20261116T010000Z-7.tar.gz .
 tar -xzf 20261116T010000Z-7.tar.gz latest.dump
 ```
 
@@ -2347,7 +2347,7 @@ state_backup:
 | `schedule` | Cron, read in the `timezone`. | `17 3 * * *` |
 | `keep` | Snapshots to keep, 1 to 1000. | `14` |
 
-A snapshot is a consistent copy taken while the agent keeps running, stored as `<prefix>/<UTC time>.db` with a description file. The block belongs to the environment, so it stays in force whatever apps are deployed. A `state_backup` check alerts on a failed or overdue snapshot, and shows in `berthy checks`.
+A snapshot is a consistent copy taken while the agent keeps running, stored as `<project>/<environment>/<prefix>/<UTC time>.db` with a description file. The block belongs to the environment, so it stays in force whatever apps are deployed. A `state_backup` check alerts on a failed or overdue snapshot, and shows in `berthy checks`.
 
 Take one now (an `admin` token). It waits and exits 0 only on success:
 
@@ -2693,7 +2693,8 @@ The order:
 
    | Flag | Meaning |
    | --- | --- |
-   | `--project <name>` | The project the snapshot belongs to. |
+   | `--project <name>` | The project the snapshot belongs to. May be omitted when the manifest in `--manifest-dir` (default `.`) names it, or when only one project in the bucket has the snapshot's environment. |
+   | `--manifest-dir <dir>` | Directory of the manifest, used when `--project` is omitted. |
    | `--endpoint <url>` | The S3-compatible endpoint. |
    | `--bucket <name>` | The bucket. |
    | `--region <r>` | The bucket's region, when the storage needs one. |
@@ -2827,7 +2828,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | `config schema` | `--overlay` | Print a JSON Schema (draft-07) of the manifest, or with `--overlay` of an overlay, for an editor. Needs no `-e`. |
 | `docs` | an optional section name | Print the manifest reference, or one section of it, such as `docs backups`. |
 | `agent token` | `--project`, `-e`, `--agent`, `--name`, `--scope read\|deploy\|admin`, `--config` | Make a token offline and print it once, with its digest and the object for the `tokens` list of `agent.json`, and a `context add` line for another machine. No agent, no network. To make a token on a running agent, use `token create`. |
-| `state-restore` | `--endpoint`, `--bucket`, `--region`, `--object`, `--out`, `--key-file` | Rebuild the agent's state from a snapshot. Credentials from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. |
+| `state-restore` | `--project`, `--manifest-dir`, `--endpoint`, `--bucket`, `--region`, `--object`, `--out`, `--key-file` | Rebuild the agent's state from a snapshot. `--project` may be omitted when the manifest or the bucket names one project for the snapshot's environment. Credentials from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY`. |
 | `agent` | `--config <file>` | Run the agent (Linux only). `berthy.service` runs this. |
 | `ui` | `-e`, `--config` | The terminal UI. |
 | `mcp` | `-e`, `--config`, `--manifest-dir` | The MCP server on standard input and output. |
