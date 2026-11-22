@@ -260,7 +260,12 @@ func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenE
 		config += " --manifest-dir " + shellWord(manifestDir)
 	}
 	config = " --project " + shellWord(id.Project) + config
-	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: " + keyCopyCommand(read, id)}
+	posix, powershell := keyCopyForms(read, keyFile, target, id, local)
+	psLabel := " Windows PowerShell: "
+	if local {
+		psLabel = " Windows PowerShell (replace <user>@<server>): "
+	}
+	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: macOS/Linux: " + posix + psLabel + powershell}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
 	}
@@ -278,6 +283,41 @@ func keyFileName(id scope.ID) string { return id.Slug() + ".key" }
 func keyCopyCommand(read string, id scope.ID) string {
 	name := shellWord(keyFileName(id))
 	return "(umask 077; tmp=$(mktemp " + shellWord("./"+keyFileName(id)+".XXXXXX") + ") && { " + read + " > \"$tmp\" && [ \"$(wc -c < \"$tmp\")\" -eq 32 ] && mv -f \"$tmp\" " + name + "; status=$?; rm -f \"$tmp\"; exit \"$status\"; })"
+}
+
+// keyCopyForms gives both shells a byte-preserving copy that replaces a backup only after validation.
+func keyCopyForms(read, keyFile, target string, id scope.ID, local bool) (string, string) {
+	if local {
+		target = "<user>@<server>"
+	}
+	remote := "sudo cat " + shellWord(keyFile)
+	arg := target + " " + windowsArgument(remote)
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	ps := "& { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList " + quote(arg) + " -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination " + quote(keyFileName(id)) + " -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }"
+	return keyCopyCommand(read, id), ps
+}
+
+// windowsArgument quotes one argument for the Windows process command-line parser.
+func windowsArgument(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	slashes := 0
+	for _, r := range s {
+		if r == '\\' {
+			slashes++
+			continue
+		}
+		if r == '"' {
+			b.WriteString(strings.Repeat("\\", 2*slashes+1))
+		} else {
+			b.WriteString(strings.Repeat("\\", slashes))
+		}
+		b.WriteRune(r)
+		slashes = 0
+	}
+	b.WriteString(strings.Repeat("\\", 2*slashes))
+	b.WriteByte('"')
+	return b.String()
 }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in

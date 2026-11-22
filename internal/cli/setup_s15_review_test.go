@@ -13,11 +13,15 @@ import (
 func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("sh is not available: %v", err)
 	}
 	id := scope.ID{Project: "shop", Environment: "prod"}
 	step := setupNextSteps(id, "/srv/keys/my key", "", false, "ops@s1", "T", true, false, "")[0]
-	_, command, ok := strings.Cut(step, ": ")
+	_, command, ok := strings.Cut(step, "macOS/Linux: ")
+	if !ok {
+		t.Fatal(step)
+	}
+	command, _, ok = strings.Cut(command, " Windows PowerShell: ")
 	if !ok {
 		t.Fatal(step)
 	}
@@ -109,5 +113,42 @@ func TestRebuildExamplesUseTheHostedStateAndSavedKey(t *testing.T) {
 	s := string(spec)
 	if !strings.Contains(s, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key") {
 		t.Fatal("spec restore uses wrong state or key")
+	}
+}
+
+func TestKeyCopyShellTestSkipsWithoutSh(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure$", "-test.v")
+	cmd.Env = append(os.Environ(), "PATH="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- SKIP:") || !strings.Contains(string(out), "sh is not available") {
+		t.Fatalf("result %v: %s", err, out)
+	}
+}
+
+func TestSetupKeyCopyShowsBothShellForms(t *testing.T) {
+	for _, tc := range []struct {
+		key         string
+		remote      string
+		posixRemote string
+	}{
+		{"/srv/key", "sudo cat /srv/key", `'sudo cat /srv/key'`},
+		{"/srv/keys/my key", "sudo cat '/srv/keys/my key'", `'sudo cat '\''/srv/keys/my key'\'''`},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			id := scope.ID{Project: "shop", Environment: "prod"}
+			step := setupNextSteps(id, tc.key, "", false, "ops@s1", "T", false, false, "")[0]
+			posix := `(umask 077; tmp=$(mktemp ./shop.prod.key.XXXXXX) && { ssh 'ops@s1' ` + tc.posixRemote + ` > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" shop.prod.key; status=$?; rm -f "$tmp"; exit "$status"; })`
+			arg := "ops@s1 \"" + tc.remote + "\""
+			arg = "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+			powershell := "& { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList " + arg + " -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'shop.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }"
+			want := "keep a copy of the encryption key off the server, in a password manager or your provisioning vault: macOS/Linux: " + posix + " Windows PowerShell: " + powershell
+			if step != want {
+				t.Fatalf("got %q\nwant %q", step, want)
+			}
+		})
 	}
 }

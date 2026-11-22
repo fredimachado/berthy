@@ -94,3 +94,11 @@ func TestKeyNeedsRotate(t *testing.T) {
 		}
 	}
 }
+
+func TestKeyRotateShowsBothKeyCopyForms(t *testing.T) {
+	a := &rotateAgent{status: 200, body: `{"old_key_id":"old","new_key_id":"new","key_file":"/srv/keys/my key"}`}
+	code, out, errout := runKeyRotate(t, a)
+	if code != 0 || !strings.Contains(out, "macOS/Linux:") || !strings.Contains(out, "Windows PowerShell") || !strings.Contains(out, "<user>@<server>") {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+}

@@ -242,7 +242,7 @@ setup of todo/prod on ops@10.0.0.5: done
 admin token for todo/prod (shown once, store it now): <token>
 
 next steps:
-  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; })
+  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: macOS/Linux: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; }) Windows PowerShell: & { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList 'ops@10.0.0.5 "sudo cat /var/lib/berthy/environments/todo/prod/key"' -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'todo.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
   2. store the admin token above, and set it in $BERTHY_TODO_PROD_TOKEN when you run berthy
   3. set the secrets the manifest names: berthy secret set NAME -e prod --project todo --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --project todo --config /home/me/.config/berthy/config.json
@@ -2375,7 +2375,7 @@ berthy key rotate -e prod
 ```text
 rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33
 the previous key is kept on the server until the next state snapshot succeeds
-copy the new key off the server now: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { sudo cat /var/lib/berthy/environments/todo/prod/key > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; })
+copy the new key off the server now: macOS/Linux: (umask 077; tmp=$(mktemp ./todo.prod.key.XXXXXX) && { sudo cat /var/lib/berthy/environments/todo/prod/key > "$tmp" && [ "$(wc -c < "$tmp")" -eq 32 ] && mv -f "$tmp" todo.prod.key; status=$?; rm -f "$tmp"; exit "$status"; }) Windows PowerShell (replace <user>@<server>): & { $tmp = Join-Path (Get-Location) ('.' + [guid]::NewGuid().ToString('N') + '.tmp'); try { $p = Start-Process -FilePath 'ssh.exe' -ArgumentList '<user>@<server> "sudo cat /var/lib/berthy/environments/todo/prod/key"' -RedirectStandardOutput $tmp -Wait -PassThru -NoNewWindow; if ($p.ExitCode -ne 0 -or (Get-Item -LiteralPath $tmp).Length -ne 32) { throw 'Key copy failed' }; Move-Item -LiteralPath $tmp -Destination 'todo.prod.key' -Force } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
 ```
 
 The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Copy the new key off the server as the last line says, and replace your old copy.

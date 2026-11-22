@@ -459,7 +459,7 @@ func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) 
 		t.Fatalf("steps = %q", steps)
 	}
 	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", true, "this server", "X", false, false, "")
-	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/environments/shop/prod/key") {
+	if len(local) != 3 || !strings.Contains(local[0], "{ sudo cat /var/lib/berthy/environments/shop/prod/key") || !strings.Contains(local[0], "replace <user>@<server>") {
 		t.Fatalf("local steps = %q", local)
 	}
 }
