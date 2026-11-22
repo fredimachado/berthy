@@ -19,6 +19,7 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/scope"
+	"berthy/internal/setup"
 )
 
 // exitHeld is the exit code of a command whose change an AI agent's token asked for on a protected environment: the agent held
@@ -28,21 +29,22 @@ const exitHeld = 3
 // approvalsNow is the clock of the approvals table. Tests replace it.
 var approvalsNow = time.Now
 
-// runAgentToken runs "agent token -e ENV [--agent] [--name NAME] [--scope read|deploy|admin]": it makes a token, and prints it
-// once, with its digest and the object that goes into the agent's configuration.
+// runAgentToken runs "agent token --project P -e ENV [--agent] [--name NAME] [--scope read|deploy|admin] [--config FILE]": it
+// makes a token, prints it once with its digest and the object that goes into the agent's configuration, and a line that adds
+// the environment to another machine's CLI configuration. The line never holds the token.
 func runAgentToken(args []string, out, errout io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(errout, "usage: agent token -e ENV [--agent] [--name NAME] [--scope read|deploy|admin]")
+		fmt.Fprintln(errout, "usage: agent token --project PROJECT -e ENV [--agent] [--name NAME] [--scope read|deploy|admin] [--config FILE]")
 		return 2
 	}
-	var env, name string
+	var project, env, name, config string
 	tokenScope := "read"
 	isAgent := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--agent":
 			isAgent = true
-		case "-e", "--name", "--scope":
+		case "-e", "--project", "--name", "--scope", "--config":
 			if i+1 == len(args) {
 				return usage()
 			}
@@ -50,14 +52,22 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 			switch args[i-1] {
 			case "-e":
 				env = args[i]
+			case "--project":
+				project = args[i]
 			case "--name":
 				name = args[i]
+			case "--config":
+				config = args[i]
 			default:
 				tokenScope = args[i]
 			}
 		default:
 			return usage()
 		}
+	}
+	if !scope.ValidProject(project) {
+		fmt.Fprintln(errout, "invalid project")
+		return 2
 	}
 	if !scope.ValidEnvironment(env) {
 		fmt.Fprintln(errout, "invalid environment")
@@ -71,7 +81,16 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "invalid name: use letters, digits, dots, dashes and underscores")
 		return 2
 	}
-	token, digest, err := agent.NewToken(env)
+	urlHint := "http://ADDRESS:PORT"
+	if config != "" {
+		f, err := agent.LoadFile(config)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		urlHint = "http://" + f.Listen
+	}
+	token, digest, err := agent.NewToken(scope.ID{Project: project, Environment: env})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
@@ -81,7 +100,8 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\n", token, digest, entry)
+	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\non the machine that will use it: berthy context add --project %s -e %s --url %s --token-env %s\n",
+		token, digest, entry, project, env, urlHint, setup.DefaultTokenEnv(project, env))
 	return 0
 }
 

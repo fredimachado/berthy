@@ -7,12 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"berthy/internal/agent"
+	"berthy/internal/setup"
 )
 
 func TestAgentTokenPrintsTheTokenItsDigestAndAConfigObject(t *testing.T) {
@@ -21,9 +25,9 @@ func TestAgentTokenPrintsTheTokenItsDigestAndAConfigObject(t *testing.T) {
 		code := Run(append([]string{"agent", "token"}, args...), &out, &errout)
 		return code, out.String(), errout.String()
 	}
-	code, out, errout := run("-e", "lab")
+	code, out, errout := run("--project", "demo", "-e", "lab")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if code != 0 || len(lines) != 3 || !strings.HasPrefix(lines[0], "token: bty.lab.") || !strings.HasPrefix(lines[1], "sha256: ") {
+	if code != 0 || len(lines) != 4 || !strings.HasPrefix(lines[0], "token: bty.demo.lab.") || !strings.HasPrefix(lines[1], "sha256: ") {
 		t.Fatalf("default: %d %q %q", code, out, errout)
 	}
 	token := strings.TrimPrefix(lines[0], "token: ")
@@ -34,19 +38,55 @@ func TestAgentTokenPrintsTheTokenItsDigestAndAConfigObject(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[2]), &obj); err != nil || obj.Digest != agent.Digest(token) || obj.Scope != "read" || obj.Agent || obj.Name != "" {
 		t.Fatalf("object: %s %v", lines[2], err)
 	}
-	code, out, _ = run("-e", "lab", "--agent", "--name", "claude", "--scope", "deploy")
+	code, out, _ = run("--project", "demo", "-e", "lab", "--agent", "--name", "claude", "--scope", "deploy")
 	lines = strings.Split(strings.TrimSpace(out), "\n")
-	if code != 0 || len(lines) != 3 {
+	if code != 0 || len(lines) != 4 {
 		t.Fatalf("agent: %d %q", code, out)
 	}
 	token = strings.TrimPrefix(lines[0], "token: ")
 	if lines[2] != fmt.Sprintf(`{"name":"claude","digest":%q,"scope":"deploy","agent":true}`, agent.Digest(token)) {
 		t.Fatalf("object: %s", lines[2])
 	}
-	for _, bad := range [][]string{{}, {"-e", "Bad Env"}, {"-e", "lab", "--scope", "root"}, {"-e", "lab", "--name", "bad name"}, {"-e", "lab", "--name"}, {"-e", "lab", "extra"}, {"-e", "lab", "--bogus"}} {
+	for _, bad := range [][]string{{}, {"-e", "lab"}, {"--project", "demo"}, {"--project", "Bad", "-e", "lab"}, {"--project", "demo", "-e", "Bad Env"}, {"--project", "demo", "-e", "lab", "--scope", "root"}, {"--project", "demo", "-e", "lab", "--name", "bad name"}, {"--project", "demo", "-e", "lab", "--name"}, {"--project", "demo", "-e", "lab", "extra"}, {"--project", "demo", "-e", "lab", "--bogus"}} {
 		if code, out, _ := run(bad...); code != 2 || out != "" {
 			t.Errorf("%v: exit %d, output %q", bad, code, out)
 		}
+	}
+}
+
+func TestAgentTokenPrintsTheContextAddLineWithoutTheToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LoadFile checks Unix permission bits, which Windows does not report")
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "agent.json")
+	digest := strings.Repeat("a", 64)
+	body := fmt.Sprintf(`{"listen":"10.9.8.7:7710","docker_socket":"/var/run/docker.sock","environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
+		filepath.ToSlash(dir), filepath.ToSlash(dir), digest)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab", "--config", cfg}, &out, &errout)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	wantVar := setup.DefaultTokenEnv("demo", "lab")
+	wantLine := "on the machine that will use it: berthy context add --project demo -e lab --url http://10.9.8.7:7710 --token-env " + wantVar
+	if code != 0 || len(lines) != 4 || lines[3] != wantLine || errout.String() != "" {
+		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
+	}
+	token := strings.TrimPrefix(lines[0], "token: ")
+	if token == "" || strings.Contains(lines[3], token) || strings.Count(out.String(), token) != 1 {
+		t.Fatalf("token appears outside the first line: %q", out.String())
+	}
+}
+
+func TestAgentTokenWithoutAConfigLeavesTheURLToFillIn(t *testing.T) {
+	var out, errout bytes.Buffer
+	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab"}, &out, &errout)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	want := "on the machine that will use it: berthy context add --project demo -e lab --url http://ADDRESS:PORT --token-env " + setup.DefaultTokenEnv("demo", "lab")
+	if code != 0 || len(lines) != 4 || lines[3] != want || errout.String() != "" {
+		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
 	}
 }
 
