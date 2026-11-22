@@ -332,6 +332,7 @@ Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Onl
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
 | `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
 | `--manifest-dir <dir>` | Where to read the manifest from. Default: the current directory. |
+| `--project <name>` | The project, required when the directory has no manifest. |
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it. |
@@ -342,7 +343,7 @@ Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Onl
 | `--key-file <path>` | Install a saved encryption key (exactly 32 bytes) instead of generating one. Used when you [rebuild a server](#step-15-rebuild-a-server). It never replaces a different key that is already on the server. |
 | `--new-token` | Add another `admin` token, when the first one is lost. |
 
-If the directory has a manifest, setup reads `network` and `protected` from the merged manifest of the environment. A `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--network`, setup stops and asks for `--network NAME`.
+If the directory has a manifest, setup reads the project, `network` and `protected` from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
 
 #### What setup leaves on the server
 
