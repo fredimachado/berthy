@@ -171,6 +171,40 @@ out=$(cd "$E2E_ROOT" && "$BIN" ps -e "$ENVN" --config "$RUN/admin.json" 2>&1); c
 expect_code 'ambiguous environment refused' 1 "$code" "$out"
 expect_contains 'ambiguity names projects' "$out" 'exists in several projects'
 out=$(cd "$E2E_ROOT" && "$BIN" ps -e "$ENVN" --project "$P2" --config "$RUN/admin.json" 2>&1); expect_code 'explicit project resolves ambiguity' 0 "$?" "$out"
+tui_dir=$LOG/tui-p2
+rm -rf "$tui_dir"; mkdir -p "$tui_dir"
+cat > "$tui_dir/script.json" <<JSON
+[
+  {"wait_text": "$P2/$ENVN", "timeout": "20s"},
+  {"wait_text": "web", "timeout": "20s"},
+  {"snapshot": "first"},
+  {"keys": ["q"]}
+]
+JSON
+out=$("$TUI_BIN" --command "$BIN ui -e $ENVN --project $P2 --config $RUN/admin.json" --size 120x40 --script "$tui_dir/script.json" --out "$tui_dir/out" --timeout 60s --redact-env "$(env_var "$P2" "$ENVN")" 2>&1); code=$?
+expect_code "the terminal interface opens P2/E" 0 "$code" "$out"
+screen=$(cat "$tui_dir"/out/*first*.txt 2>/dev/null)
+expect_contains "the first screen names P2/E" "$screen" "$P2/$ENVN"
+expect_contains "the first screen lists web" "$screen" web
+expect_contains "the first screen lists db" "$screen" db
+expect_not_contains "the first screen excludes the first project's compose app" "$screen" "$PROJECT-$ENVN-db"
+expect_not_contains "the first screen excludes the other environment's compose app" "$screen" "$PROJECT-${EB}-db"
+mcp_dir=$LOG/mcp-p2
+rm -rf "$mcp_dir"; mkdir -p "$mcp_dir"
+cat > "$mcp_dir/calls.json" <<'JSON'
+[{"tool":"list_resources"}]
+JSON
+out=$("$MCP_BIN" --command "$BIN mcp -e $ENVN --project $P2 --config $RUN/admin.json --manifest-dir $(env_dir "$P2" "$ENVN")" --script "$mcp_dir/calls.json" --out "$mcp_dir/results.json" --timeout 60s 2>&1); code=$?
+expect_code "mcp list_resources of P2/E" 0 "$code" "$out"
+mcp_text=$(jq -r '.calls[0].text' "$mcp_dir/results.json" 2>&1); code=$?
+expect_code "read mcp list_resources text" 0 "$code" "$mcp_text"
+expect_contains "list_resources names web" "$mcp_text" web
+expect_contains "list_resources names db" "$mcp_text" db
+mcp_err=$(jq -r '.calls[0].is_error' "$mcp_dir/results.json")
+expect_eq "list_resources is not an error" false "$mcp_err"
+ps_names=$(env_cmd "$P2" "$ENVN" ps --json 2>&1 | jq -r '.[].ref.name' | sort)
+mcp_names=$(jq -r '.calls[0].structured.resources[].ref.name' "$mcp_dir/results.json" | sort)
+expect_eq "list_resources returns the same two as ps" "$ps_names" "$mcp_names"
 out=$(env_cmd "$PROJECT" "$ENVN" deploy web --version v1 --manifest-dir "$(env_dir "$P2" "$ENVN")" 2>&1); code=$?
 expect_code 'other manifest refused' 2 "$code" "$out"
 expect_contains 'mismatch names project' "$out" 'is for project'

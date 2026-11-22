@@ -20,6 +20,7 @@ OTLP_BIN=$E2E_ROOT/bin/fakeotlp
 HOOK_BIN=$E2E_ROOT/bin/fakewebhook
 S3_BIN=$E2E_ROOT/bin/fakes3
 TUI_BIN=$E2E_ROOT/bin/tuidriver
+MCP_BIN=$E2E_ROOT/bin/mcpdriver
 NAMES_BIN=$E2E_ROOT/bin/fixture-names
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
