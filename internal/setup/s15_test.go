@@ -315,3 +315,29 @@ func TestSetupPreservesBerthyOwnedKeyDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestRootRestoreWithSavedKeyRepairsWritableKeyDirectory(t *testing.T) {
+	exe := elfFile(t, emX86)
+	f := setUpAgent(t, exe)
+	f.probe = without(f.probe, "key_sha=", "key_stat=", "state_dir_stat=", "data_dir_stat=")
+	f.probe = with(f.probe, "data_dir_stat=root:root 700", "state_dir_stat=root:root 700", "state_db=yes", "state_foreign=yes", "parent_0=root:root 700", "parent_1=root:root 700", "parent_2=root:root 700")
+	key := keyBytes()
+	s := agentSession(t, f, exe, false, func(o *Options) { o.KeyFile = writeKey(t, key) })
+	var got []StepResult
+	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"key", keyStep}}, func(r StepResult) { got = append(got, r) })
+	if lastResult(got).Status != StatusChanged {
+		t.Fatalf("key step: %+v", got)
+	}
+	c, ok := f.find("cat > \"$tmp\"")
+	if !ok || !bytes.Equal(c.stdin, key) {
+		t.Fatal("saved key not uploaded")
+	}
+	if !strings.Contains(c.script, "if [ ! -d '/var/lib/berthy/environments/shop/p5' ]; then") {
+		t.Fatal("key upload would change an existing directory")
+	}
+	for _, want := range []string{"install -d -o berthy -g berthy -m 0700 /var/lib/berthy", "install -d -o root -g berthy -m 0750 '/var/lib/berthy/environments'", "install -d -o root -g berthy -m 0750 '/var/lib/berthy/environments/shop'", "install -d -o berthy -g berthy -m 0700 '/var/lib/berthy/environments/shop/p5'", "install -d -o berthy -g berthy -m 0700 '" + stateDir + "'"} {
+		if !strings.Contains(c.script, want) {
+			t.Errorf("missing %q in %s", want, c.script)
+		}
+	}
+}
