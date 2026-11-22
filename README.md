@@ -56,6 +56,7 @@ On any other machine, build a Linux binary for the server and pass it with `--bi
 git clone https://github.com/fredimachado/berthy.git
 cd berthy
 GOOS=linux GOARCH=amd64 go build -o berthy-linux-amd64 ./cmd/berthy
+BERTHY_BIN="$(pwd)/berthy-linux-amd64"   # absolute path; setup runs from the app checkout
 go build -o berthy ./cmd/berthy    # CLI for this machine
 sudo mv berthy /usr/local/bin/berthy   # or keep it on PATH another way
 berthy version
@@ -108,11 +109,11 @@ berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
 ```
 
-From any other machine, pass the Linux binary you built:
+From any other machine, pass the absolute path you saved (`$BERTHY_BIN`):
 
 ```bash
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary ./berthy-linux-amd64 --dry-run
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary ./berthy-linux-amd64
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary "$BERTHY_BIN" --dry-run
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --binary "$BERTHY_BIN"
 ```
 
 ```bash
