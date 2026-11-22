@@ -201,3 +201,71 @@ func TestDeployPostCommandBackupRunsNewRelease(t *testing.T) {
 		}
 	}
 }
+
+type crossAppJobBackup struct {
+	scheduler *jobs.Scheduler
+	manifest  manifest.Manifest
+}
+
+func (b *crossAppJobBackup) RunBackup(ctx context.Context, m manifest.Manifest, name string) (BackupResult, error) {
+	b.manifest = m
+	run, release, err := b.scheduler.RunHeld(ctx, m.Backups[name].Before)
+	if err != nil {
+		return BackupResult{}, err
+	}
+	defer release()
+	return BackupResult{Status: run.Status, Detail: run.Detail}, nil
+}
+
+func TestPostDeployBackupOfAnotherAppRunsNewBeforeJob(t *testing.T) {
+	ctx := context.Background()
+	old := runManifest("web")
+	old.Apps["db"] = manifest.App{Kind: "image", Roles: map[string]manifest.Role{"db": {Volumes: []string{"dbdata:/db"}}}}
+	c, base, s := runFixture(t, old)
+	dbManifest, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbOp, _, err := s.Admit(ctx, state.Admission{RequestID: "db-deployed", ActorID: "admin", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, dbOp.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: dbManifest}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddClaims(ctx, []state.Claim{{Kind: state.ClaimVolume, Name: "proj-test_dbdata"}}); err != nil {
+		t.Fatal(err)
+	}
+	f := &jobFake{runFake: base}
+	c.Engine = f
+	scheduler := &jobs.Scheduler{Env: "test", Store: s, Manifest: func(context.Context) (manifest.Manifest, error) { return old, nil }, Runner: jobs.RunnerFunc(c.RunJob)}
+	backup := &crossAppJobBackup{scheduler: scheduler}
+	c.Backups = backup
+	m := runManifest("web")
+	role := m.Apps["web"].Roles["web"]
+	role.Volumes = []string{"newdata:/data"}
+	m.Apps["web"].Roles["web"] = role
+	m.Apps["db"] = manifest.App{Kind: "image", Roles: map[string]manifest.Role{"db": {Volumes: []string{"other:/db"}}}}
+	m.Jobs = map[string]manifest.Job{"prepare": {App: "web", Role: "web", Command: []string{"prepare"}}}
+	m.Backups = map[string]manifest.Backup{"data": {App: "db", Volume: "dbdata", Before: "prepare", Destination: "offsite"}}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "cross-app", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded"}); err != nil {
+			t.Error(err)
+		}
+	})
+	image := "example/web@sha256:" + strings.Repeat("b", 64)
+	p := preparedPlan{Image: image, Request: Request{App: "web", Manifest: m}}
+	if err := c.runBackupHook(ctx, op.ID, p, "post_hook", 1, "data"); err != nil {
+		t.Fatalf("cross-app backup: %v", err)
+	}
+	if got := backup.manifest.Apps["db"].Roles["db"].Volumes; len(got) != 1 || got[0] != "dbdata:/db" {
+		t.Fatalf("backup did not use applied db mounts: %v", got)
+	}
+	if len(f.specs) != 1 || !strings.Contains(string(f.specs[0]), image) || !strings.Contains(string(f.specs[0]), "proj-test_newdata") {
+		t.Fatalf("before job did not use verified web release: %s", f.specs)
+	}
+}

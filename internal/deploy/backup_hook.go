@@ -146,7 +146,7 @@ func (c *Controller) runBackupHook(ctx context.Context, opID string, p preparedP
 	}
 	step("backup " + name + " started")
 	runCtx, stop := interruptible(ctx)
-	if kind == "post_hook" && b.App == p.Request.App {
+	if kind == "post_hook" {
 		runCtx = jobs.WithVerifiedRelease(runCtx, jobs.VerifiedRelease{App: p.Request.App, Image: p.Image, Tag: p.Identity.Version, Manifest: p.Request.Manifest})
 	}
 	res, err := c.Backups.RunBackup(runCtx, backupManifest, name)
