@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,7 +79,12 @@ func TestInventoryFailsWhenTheOtherClaimsCannotBeRead(t *testing.T) {
 
 func inventoryDocker(t *testing.T) *engine.Engine {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "docker.sock")
+	dir, err := os.MkdirTemp("", "bty-inventory-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "d.sock")
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Skipf("unix socket: %v", err)
