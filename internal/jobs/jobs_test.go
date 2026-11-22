@@ -676,3 +676,19 @@ func TestRunHeldGivesUpWhenItsContextEnds(t *testing.T) {
 		t.Fatalf("waiting for a held job: %v", err)
 	}
 }
+
+func TestVerifiedBeforeJobForAnotherAppUsesStoredJob(t *testing.T) {
+	stored := tickJob()
+	stored.Command = []string{"stored"}
+	r := newRig(t, map[string]manifest.Job{"prepare": stored})
+	incoming := testManifest(map[string]manifest.Job{"prepare": {App: "api", Role: "web", Command: []string{"incoming"}}})
+	ctx := WithVerifiedRelease(context.Background(), VerifiedRelease{App: "other", Manifest: incoming})
+	run, release, err := r.sched.RunHeld(ctx, "prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if run.Status != "succeeded" || len(r.exec.calls) != 1 || len(r.exec.calls[0]) != 1 || r.exec.calls[0][0] != "stored" {
+		t.Fatalf("run: %+v, commands: %v", run, r.exec.calls)
+	}
+}

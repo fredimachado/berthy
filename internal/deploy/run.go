@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"berthy/internal/engine"
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
@@ -44,8 +45,8 @@ type runEngine interface {
 	RemoveContainer(context.Context, string) error
 }
 
-// runTarget is what a run resolves from the request and the applied release: the release, the role it runs as and the time
-// limit. It reads state only, so Admit and the plan can refuse a request before anything is journaled.
+// runTarget is the release, role and time limit resolved for a run. A post-deploy backup can supply its verified release;
+// other runs use the applied release.
 type runTarget struct {
 	Release  state.Release
 	Manifest manifest.Manifest
@@ -66,16 +67,22 @@ func (c *Controller) runTarget(ctx context.Context, req Request) (runTarget, err
 	if c.Store == nil {
 		return runTarget{}, errors.New("state unavailable")
 	}
-	release, err := c.Store.Applied(ctx, req.App)
-	if errors.Is(err, sql.ErrNoRows) {
-		return runTarget{}, errRunNotDeployed
-	}
-	if err != nil {
-		return runTarget{}, errors.New("applied release unavailable")
-	}
-	t := runTarget{Release: release, Timeout: timeout}
-	if json.Unmarshal(release.Manifest, &t.Manifest) != nil {
-		return runTarget{}, errors.New("applied manifest unavailable")
+	t := runTarget{Timeout: timeout}
+	if verified, ok := jobs.VerifiedFromContext(ctx); ok && verified.App == req.App {
+		t.Release = state.Release{App: verified.App, Digest: verified.Image, Tag: verified.Tag}
+		t.Manifest = verified.Manifest
+	} else {
+		release, err := c.Store.Applied(ctx, req.App)
+		if errors.Is(err, sql.ErrNoRows) {
+			return runTarget{}, errRunNotDeployed
+		}
+		if err != nil {
+			return runTarget{}, errors.New("applied release unavailable")
+		}
+		t.Release = release
+		if json.Unmarshal(release.Manifest, &t.Manifest) != nil {
+			return runTarget{}, errors.New("applied manifest unavailable")
+		}
 	}
 	app, ok := t.Manifest.Apps[req.App]
 	if !ok {

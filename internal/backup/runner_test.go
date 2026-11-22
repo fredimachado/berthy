@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/objectstore"
 	"berthy/internal/state"
@@ -31,6 +32,31 @@ type memStore struct {
 	failPut string
 	// failDelete makes a Delete of a key with this suffix fail.
 	failDelete string
+}
+
+func TestVerifiedVolumeBackupRunsNewBeforeJob(t *testing.T) {
+	g := newRig(t)
+	g.archive("archive data")
+	old := g.m
+	g.m.Jobs = map[string]manifest.Job{"prepare": {App: "files", Command: []string{"prepare"}}}
+	b := g.m.Backups["uploads"]
+	b.Before = "prepare"
+	g.m.Backups["uploads"] = b
+	ran := false
+	g.runner.Jobs = &jobs.Scheduler{
+		Env: "prod", Store: g.st,
+		Manifest: func(context.Context) (manifest.Manifest, error) { return old, nil },
+		Runner: jobs.RunnerFunc(func(_ context.Context, m manifest.Manifest, name string, job manifest.Job, _ int64) (jobs.Outcome, error) {
+			ran = name == "prepare" && job.App == "files" && len(m.Jobs) == 1
+			exit := 0
+			return jobs.Outcome{Exit: &exit}, nil
+		}),
+	}
+	ctx := jobs.WithVerifiedRelease(context.Background(), jobs.VerifiedRelease{App: "files", Manifest: g.m})
+	result, err := g.runner.Run(ctx, g.m, "uploads", "hook")
+	if err != nil || result.Run.Status != "succeeded" || !ran || len(g.objs.keys()) != 2 {
+		t.Fatalf("backup: %+v, %v; job ran %v; objects %v", result.Run, err, ran, g.objs.keys())
+	}
 }
 
 func newMemStore() *memStore { return &memStore{objects: map[string][]byte{}} }

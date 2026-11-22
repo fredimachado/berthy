@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"berthy/internal/backup"
+	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
@@ -24,9 +25,8 @@ type BackupResult struct {
 	Detail string
 }
 
-// BackupRunner runs a volume backup for a `backup:` hook and waits for it. The agent supplies it. It runs the backup of the
-// manifest it is given, with the backup target taken from its applied release. Its errors are backup.Refusal values when the backup could not
-// start, and then no run was made.
+// BackupRunner runs a backup hook and waits for it. The manifest carries the applied or verified target app. Its errors are
+// backup.Refusal values when the backup could not start, and then no run was made.
 type BackupRunner interface {
 	RunBackup(ctx context.Context, m manifest.Manifest, name string) (BackupResult, error)
 }
@@ -146,6 +146,9 @@ func (c *Controller) runBackupHook(ctx context.Context, opID string, p preparedP
 	}
 	step("backup " + name + " started")
 	runCtx, stop := interruptible(ctx)
+	if kind == "post_hook" && b.App == p.Request.App {
+		runCtx = jobs.WithVerifiedRelease(runCtx, jobs.VerifiedRelease{App: p.Request.App, Image: p.Image, Tag: p.Identity.Version, Manifest: p.Request.Manifest})
+	}
 	res, err := c.Backups.RunBackup(runCtx, backupManifest, name)
 	stop()
 	if cancel := cancelledBy(ctx); cancel != nil {

@@ -53,7 +53,7 @@ func (c *Controller) RunCommand(ctx context.Context, m manifest.Manifest, kind, 
 	return c.runImageCommand(ctx, kind, name, id, job, st)
 }
 
-// runImageCommand runs the command in a new container of the app's applied release, with the role's environment, limits and named
+// runImageCommand runs the command in a new container of the selected release, with the role's environment, limits and named
 // volumes, on the shared network. The container is stopped when the run is over before the command is, and removed in every case,
 // once the last lines of a run that failed have been read. It needs no running replica.
 func (c *Controller) runImageCommand(ctx context.Context, kind, name, id string, job manifest.Job, st jobs.Streams) (jobs.Outcome, error) {

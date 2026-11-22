@@ -284,26 +284,46 @@ func (s *Scheduler) begin(ctx context.Context, name, trigger string) (manifest.M
 	if trigger != "manual" && trigger != "backup" {
 		return manifest.Manifest{}, manifest.Job{}, state.JobRun{}, errors.New("invalid trigger")
 	}
-	m, err := s.Manifest(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return m, manifest.Job{}, state.JobRun{}, ErrUnknownJob
+	var m manifest.Manifest
+	verified, hasVerified := VerifiedFromContext(ctx)
+	useVerified := false
+	if trigger == "backup" && hasVerified {
+		job, ok := verified.Manifest.Jobs[name]
+		if !ok {
+			return m, manifest.Job{}, state.JobRun{}, ErrUnknownJob
+		}
+		if job.App == verified.App {
+			m = verified.Manifest
+			useVerified = true
+		}
 	}
-	if err != nil {
-		return m, manifest.Job{}, state.JobRun{}, err
+	if !useVerified {
+		var err error
+		m, err = s.Manifest(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			return m, manifest.Job{}, state.JobRun{}, ErrUnknownJob
+		}
+		if err != nil {
+			return m, manifest.Job{}, state.JobRun{}, err
+		}
 	}
 	job, ok := m.Jobs[name]
 	if !ok {
+		return m, job, state.JobRun{}, ErrUnknownJob
+	}
+	if trigger == "backup" && hasVerified && !useVerified && job.App != verified.Manifest.Jobs[name].App {
 		return m, job, state.JobRun{}, ErrUnknownJob
 	}
 	if !s.claim(name) {
 		return m, job, state.JobRun{}, ErrJobRunning
 	}
 	run := state.JobRun{Job: name, App: job.App, Trigger: trigger, Started: s.now().UTC()}
-	run.ID, err = s.Store.StartJobRun(ctx, run)
+	id, err := s.Store.StartJobRun(ctx, run)
 	if err != nil {
 		s.release(name)
 		return m, job, state.JobRun{}, err
 	}
+	run.ID = id
 	return m, job, run, nil
 }
 
