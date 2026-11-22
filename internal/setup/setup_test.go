@@ -100,7 +100,7 @@ func setUpServer() []string {
 }
 
 func newSession(f *fakeServer, dry bool) *Session {
-	return &Session{R: f, DryRun: dry, Opts: Options{Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710}}
+	return &Session{R: f, DryRun: dry, Opts: Options{Project: "shop", Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710}}
 }
 
 func runAll(t *testing.T, f *fakeServer, dry bool) ([]StepResult, bool) {
@@ -315,7 +315,6 @@ func TestStepFailures(t *testing.T) {
 		{"bridge network", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=bridge local false")...), nil, "network", "network p5net exists but is not an attachable overlay"},
 		{"overlay not attachable", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm false")...), nil, "network", "network p5net exists but is not an attachable overlay"},
 		{"network error", with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network_error=Error response from daemon: multiple matches")...), nil, "network", "could not inspect network p5net: Error response from daemon: multiple matches"},
-		{"other environment", with(setUpServer(), "agent_env=staging"), nil, "check", "this server runs the agent of environment staging"},
 		{"listen address not assigned", setUpServer(), func(o *Options) { o.ListenIP = net.ParseIP("172.31.250.99") }, "check", "172.31.250.99 is not assigned to this server: --listen needs one of its addresses"},
 		{"not linux", with(setUpServer()[1:], "os=Darwin"), nil, "check", "this server runs Darwin, not Linux"},
 		{"no systemd", append([]string{"os=Linux", "arch=x86_64", "systemd=", "addr=" + listenIP}, dockerUp("29.9.3")...), nil, "check", "systemd is not running on this server"},
@@ -517,7 +516,7 @@ func TestParseFacts(t *testing.T) {
 		"swarm=active   true\nnetwork=overlay  swarm   true\nagent_env=p5\n=novalue\n")
 	want := &Facts{OS: "Linux", Arch: "x86_64", Systemd: true, Addrs: []string{"10.0.0.1", "fd00::1"}, Curl: true, Docker: true,
 		DockerVersion: "29.9.3", DockerActive: true, DockerEnabled: true, SwarmState: "active", SwarmManager: true,
-		NetworkFound: true, NetworkDriver: "overlay", NetworkScope: "swarm", NetworkAttachable: true, AgentEnv: "p5"}
+		NetworkFound: true, NetworkDriver: "overlay", NetworkScope: "swarm", NetworkAttachable: true}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("got %+v\nwant %+v", f, want)
 	}

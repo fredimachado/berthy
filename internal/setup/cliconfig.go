@@ -12,13 +12,13 @@ import (
 )
 
 // DefaultTokenEnv is the variable that holds the token of env unless the CLI configuration names another.
-func DefaultTokenEnv(env string) string {
+func DefaultTokenEnv(project, env string) string {
 	return "BERTHY_" + strings.ToUpper(strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
 			return r
 		}
 		return '_'
-	}, env)) + "_TOKEN"
+	}, project+"_"+env)) + "_TOKEN"
 }
 
 // agentURL is the address of the agent as the CLI configuration holds it.
@@ -26,16 +26,11 @@ func agentURL(listen string) string { return "http://" + listen }
 
 // cliConfigStep adds the environment to the CLI configuration, under its project: the agent's address and the variable that
 // holds its token. The file is the one --config names, or else the one the CLI finds without it (BERTHY_CONFIG, then the default
-// file). The file never holds a token, and the other environments and projects are kept as they are. Without a project, which
-// only a manifest names, the entry is for the person to add by hand.
+// file). The file never holds a token, and the other environments and projects are kept as they are.
 func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	project, env := s.Opts.Project, s.Opts.Env
 	url := agentURL(s.Opts.listen())
-	tokenEnv := DefaultTokenEnv(env)
-	if project == "" {
-		s.TokenEnv = tokenEnv
-		return StatusSkipped, fmt.Sprintf(`add {"url": %q, "token_env": %q} as projects.<project>.environments.%s of the CLI configuration: there is no berthy.yml to name the project`, url, tokenEnv, env), nil
-	}
+	tokenEnv := DefaultTokenEnv(project, env)
 	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
 	if err != nil {
 		// No location is known, so the entry is for the person to add by hand.

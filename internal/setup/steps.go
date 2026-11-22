@@ -117,7 +117,8 @@ type Session struct {
 	// it runs.
 	dockerStopped bool
 
-	existing    *agent.Config // the server's agent configuration, when there is one
+	existing    *agent.File // the server's agent configuration, when there is one
+	existingRaw []byte
 	configRead  bool
 	newToken    *agent.Token
 	staged      Staged // what this run staged for the service step
@@ -251,10 +252,10 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 	if arch == "" {
 		return "", "", fmt.Errorf("unsupported CPU architecture %s: Berthy supports x86_64 and aarch64", orUnknown(clean(f.Arch)))
 	}
-	if f.AgentEnv != "" && f.AgentEnv != s.Opts.Env {
-		return "", "", fmt.Errorf("this server runs the agent of environment %s", clean(f.AgentEnv))
-	}
 	if err := s.resolveListen(ctx, f); err != nil {
+		return "", "", err
+	}
+	if _, err := s.desiredFile(f); err != nil {
 		return "", "", err
 	}
 	assigned := false

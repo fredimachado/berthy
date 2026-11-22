@@ -60,7 +60,7 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	switch {
 	case script == "id -u; id -un":
 		return Result{Stdout: []byte("0\nroot\n")}, nil
-	case strings.Contains(script, "uname -s"):
+	case strings.Contains(script, "uname -s"), strings.Contains(script, "# hosted path probe"):
 		return Result{Stdout: []byte(strings.Join(f.probe, "\n") + "\n")}, nil
 	case script == "cat "+configPath:
 		return Result{Stdout: []byte(f.config)}, nil
@@ -72,7 +72,7 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 			sum = strings.Repeat("0", 64)
 		}
 		return Result{Stdout: []byte(sum + "  " + binPath + ".new\n")}, nil
-	case strings.Contains(script, "sha256sum "+keyPath):
+	case strings.Contains(script, "sha256sum ") && strings.Contains(script, keyPath):
 		return Result{Stdout: []byte(hash(in) + "  " + keyPath + "\n")}, nil
 	case strings.Contains(script, "mv -f "+binPath+".new "+binPath) || strings.Contains(script, "mv -f "+configPath+".new "+configPath):
 		var out string
@@ -149,8 +149,10 @@ func fileHash(t *testing.T, path string) string {
 }
 
 const (
-	emX86 = 62
-	emArm = 183
+	stateDir = "/var/lib/berthy/environments/shop/p5/state"
+	keyPath  = "/var/lib/berthy/environments/shop/p5/key"
+	emX86    = 62
+	emArm    = 183
 )
 
 var fixedNow = time.Date(2026, 11, 16, 12, 30, 45, 0, time.UTC)
@@ -173,7 +175,7 @@ func existingConfig(t *testing.T, mod func(*agent.Config)) (string, agent.Config
 	if mod != nil {
 		mod(&c)
 	}
-	b, err := marshalConfig(c)
+	b, err := marshalConfig(agent.File{Listen: c.Listen, DockerSocket: c.DockerSocket, CloudflareAPIURL: c.CloudflareAPIURL, TelegramAPIURL: c.TelegramAPIURL, ComposeCommand: c.ComposeCommand, ApprovalTTL: c.ApprovalTTL, Environments: []agent.Hosted{{Project: "shop", Environment: c.Environment, StateDir: c.StateDir, KeyFile: c.KeyFile, Network: c.Network, Protected: c.Protected, Tokens: c.Tokens}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,15 +325,16 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	}
 	// The key is made on the server, owned by berthy, and nothing of it travels.
 	if c, _ := f.find("head -c 32 /dev/urandom"); len(c.stdin) != 0 || !strings.Contains(c.script, "chown berthy:berthy") || !strings.Contains(c.script, "chmod 0600") ||
-		!strings.Contains(c.script, "install -d -o berthy -g berthy -m 0700 "+stateDir) {
+		!strings.Contains(c.script, "install -d -o berthy -g berthy -m 0700 "+shellQuote(stateDir)) {
 		t.Errorf("the key script is wrong: %q", c.script)
 	}
 	// The configuration arrives on stdin, with the digest and not the token.
 	c, _ := f.find("cat > " + configPath + ".new")
-	var cfg agent.Config
-	if err := json.Unmarshal(c.stdin, &cfg); err != nil {
+	file, err := agent.ParseFile(c.stdin)
+	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := file.Configs()[0]
 	if cfg.Environment != "p5" || cfg.Listen != listenIP+":7710" || cfg.Network != "p5net" || cfg.StateDir != stateDir || cfg.KeyFile != keyPath ||
 		cfg.DockerSocket != dockerSocket || cfg.Protected || len(cfg.Tokens) != 1 {
 		t.Errorf("config = %+v", cfg)
@@ -350,7 +353,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	}
 	// The CLI configuration was written, and holds no token.
 	data := mustRead(t, cli)
-	if bytes.Contains(data, []byte(s.Token)) || !bytes.Contains(data, []byte(`"token_env": "BERTHY_P5_TOKEN"`)) || !bytes.Contains(data, []byte(`"url": "http://`+listenIP+`:7710"`)) {
+	if bytes.Contains(data, []byte(s.Token)) || !bytes.Contains(data, []byte(`"token_env": "BERTHY_SHOP_P5_TOKEN"`)) || !bytes.Contains(data, []byte(`"url": "http://`+listenIP+`:7710"`)) {
 		t.Errorf("CLI config = %s", data)
 	}
 	if st, err := os.Stat(cli); err != nil || !modeIs(st, 0o600) {
@@ -437,10 +440,11 @@ func TestNewTokenAddsOneAdminTokenAndKeepsTheOthers(t *testing.T) {
 	}
 	assertNoToken(t, f, got, s.Token)
 	c, _ := f.find("cat > " + configPath + ".new")
-	var cfg agent.Config
-	if err := json.Unmarshal(c.stdin, &cfg); err != nil {
+	file, err := agent.ParseFile(c.stdin)
+	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := file.Configs()[0]
 	if len(cfg.Tokens) != 2 || cfg.Tokens[0].Digest != strings.Repeat("a", 64) || cfg.Tokens[0].Name != "admin" {
 		t.Fatalf("tokens = %+v", cfg.Tokens)
 	}
@@ -473,7 +477,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 		"user":       "would create the berthy user, add it to the docker group",
 		"binary":     "would install this CLI (v0.0.1-test)",
 		"token":      "would create an admin token",
-		"config":     "would create /etc/berthy/agent.json (listen " + listenIP + ":7710, 1 token)",
+		"config":     "would create /etc/berthy/agent.json (listen " + listenIP + ":7710, 1 environment)",
 		"service":    "would install, enable and start berthy.service",
 		"verify":     "would check the agent",
 		"cli_config": "would write p5 to cli.json",
@@ -486,7 +490,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 		t.Errorf("key detail = %q", d)
 	}
 	for _, sc := range f.scripts() {
-		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") {
+		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			t.Errorf("a dry run sent %q", sc)
 		}
 	}
@@ -601,16 +605,16 @@ func TestKeyStep(t *testing.T) {
 	}{
 		{"existing key kept", nil, nil, StatusOK, "", "", false},
 		{"generated when there is none", noKeyNoState, nil, StatusChanged, "", "head -c 32 /dev/urandom", false},
-		{"state without a key", noKeyWithState, nil, StatusFailed, "/var/lib/berthy/state has state but no key: pass --key-file with the saved key", "", false},
+		{"state without a key", noKeyWithState, nil, StatusFailed, stateDir + " has state but no key: pass --key-file with the saved key", "", false},
 		{"key-file same as the server's", sameKey, key, StatusOK, "", "", false},
 		{"key-file differs", otherKey, key, StatusFailed, "the server has a different encryption key; setup never replaces it", "", false},
 		{"key-file uploaded", noKeyNoState, key, StatusChanged, "", "cat > \"$tmp\"", true},
 		{"key-file with a restored state", noKeyWithState, key, StatusChanged, "", "cat > \"$tmp\"", true},
 		{"key-file of the wrong size", sameKey, []byte("short"), StatusFailed, "--key-file must hold exactly 32 bytes", "", false},
-		{"key on the server is not 32 bytes", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=16 "+wantPrivate) }, nil, StatusFailed, "/var/lib/berthy/key is not 32 bytes; setup does not replace a key", "", false},
-		{"owner of the key repaired", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=32 root:root 644") }, nil, StatusChanged, "", "chmod 0600 /var/lib/berthy/key", false},
-		{"state owned by someone else", func(f *agentFake) { f.probe = with(f.probe, "state_foreign=yes") }, nil, StatusChanged, "", "chown -R berthy:berthy /var/lib/berthy/state", false},
-		{"state directory missing", func(f *agentFake) { f.probe = without(f.probe, "state_dir_stat=") }, nil, StatusChanged, "", "install -d -o berthy -g berthy -m 0700 /var/lib/berthy/state", false},
+		{"key on the server is not 32 bytes", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=16 "+wantPrivate) }, nil, StatusFailed, keyPath + " is not 32 bytes; setup does not replace a key", "", false},
+		{"owner of the key repaired", func(f *agentFake) { f.probe = with(without(f.probe, "key_stat="), "key_stat=32 root:root 644") }, nil, StatusChanged, "", "chmod 0600 " + shellQuote(keyPath), false},
+		{"state owned by someone else", func(f *agentFake) { f.probe = with(f.probe, "state_foreign=yes") }, nil, StatusChanged, "", "chown -R berthy:berthy " + shellQuote(stateDir), false},
+		{"state directory missing", func(f *agentFake) { f.probe = without(f.probe, "state_dir_stat=") }, nil, StatusChanged, "", "install -d -o berthy -g berthy -m 0700 " + shellQuote(stateDir), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -691,18 +695,20 @@ func TestConfigMergeKeepsWhatSetupDoesNotOwn(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if st := stepOf(t, got, "config"); st.Status != StatusChanged || !strings.Contains(st.Detail, "updated /etc/berthy/agent.json") || !strings.Contains(st.Detail, "3 tokens") {
+	if st := stepOf(t, got, "config"); st.Status != StatusChanged || !strings.Contains(st.Detail, "updated /etc/berthy/agent.json") || !strings.Contains(st.Detail, "1 environment") {
 		t.Fatalf("config = %+v", st)
 	}
 	c, _ := f.find("cat > " + configPath + ".new")
-	var cfg agent.Config
-	if err := json.Unmarshal(c.stdin, &cfg); err != nil {
+	file, err := agent.ParseFile(c.stdin)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var old agent.Config
-	if err := json.Unmarshal([]byte(f.config), &old); err != nil {
+	cfg := file.Configs()[0]
+	oldFile, err := agent.ParseFile([]byte(f.config))
+	if err != nil {
 		t.Fatal(err)
 	}
+	old := oldFile.Configs()[0]
 	want := old
 	want.Network = "newnet"
 	wb, _ := json.Marshal(want)
@@ -740,7 +746,7 @@ func TestConfigIsWrittenOnlyOnChange(t *testing.T) {
 	exe := elfFile(t, emX86)
 	// The server's file is formatted differently but says the same: no write.
 	f := setUpAgent(t, exe)
-	var c agent.Config
+	var c agent.File
 	if err := json.Unmarshal([]byte(f.config), &c); err != nil {
 		t.Fatal(err)
 	}
@@ -834,8 +840,8 @@ func TestInvalidExistingConfigStopsWithoutPrintingIt(t *testing.T) {
 	exe := elfFile(t, emX86)
 	for name, content := range map[string]string{
 		"not json":      "not json at all SECRETVALUE",
-		"unknown field": `{"environment":"p5","wat":"SECRETVALUE"}`,
-		"invalid":       `{"environment":"p5","listen":"` + listenIP + `:7710","tokens":[{"digest":"SECRETVALUE","scope":"admin"}]}`,
+		"unknown field": `{"environments":[],"wat":"SECRETVALUE"}`,
+		"invalid":       `{"listen":"` + listenIP + `:7710","environments":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := setUpAgent(t, exe)
@@ -1263,7 +1269,7 @@ func TestCLIConfigStep(t *testing.T) {
 			t.Fatalf("cli_config = %+v", r)
 		}
 		c, err := agentclient.ParseConfig(mustRead(t, path))
-		if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+		if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_SHOP_P5_TOKEN"}) {
 			t.Fatalf("config = %+v %v", c, err)
 		}
 		if st, _ := os.Stat(path); !modeIs(st, 0o600) {
@@ -1319,7 +1325,7 @@ func TestCLIConfigStep(t *testing.T) {
 			t.Fatal(err)
 		}
 		c, err := agentclient.ParseConfig(mustRead(t, filepath.Join(dir, "berthy", "config.json")))
-		if r.Status != StatusChanged || err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+		if r.Status != StatusChanged || err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://" + listenIP + ":7710", TokenEnv: "BERTHY_SHOP_P5_TOKEN"}) {
 			t.Fatalf("cli_config = %+v, %v", r, err)
 		}
 	})
@@ -1332,7 +1338,7 @@ func TestCLIConfigStep(t *testing.T) {
 		var got []StepResult
 		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
 		r := stepOf(t, got, "cli_config")
-		if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} as projects.shop.environments.p5 of the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`; r.Status != StatusSkipped || r.Detail != want {
+		if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_SHOP_P5_TOKEN"} as projects.shop.environments.p5 of the CLI configuration: there is no default location, so give --config or set BERTHY_CONFIG`; r.Status != StatusSkipped || r.Detail != want {
 			t.Fatalf("cli_config = %+v", r)
 		}
 	})
@@ -1347,7 +1353,7 @@ func TestCLIConfigStepWritesTheEnvironmentUnderItsProject(t *testing.T) {
 	if r := stepOf(t, got, "cli_config"); r.Status != StatusChanged {
 		t.Fatalf("cli_config = %+v", r)
 	}
-	if want := `{"projects":{"shop":{"environments":{"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_P5_TOKEN"}}}}}`; compactJSON(t, mustRead(t, path)) != compactJSON(t, []byte(want)) {
+	if want := `{"projects":{"shop":{"environments":{"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_SHOP_P5_TOKEN"}}}}}`; compactJSON(t, mustRead(t, path)) != compactJSON(t, []byte(want)) {
 		t.Fatalf("the file is %s, want %s", mustRead(t, path), want)
 	}
 }
@@ -1365,28 +1371,10 @@ func TestCLIConfigStepKeepsOtherProjects(t *testing.T) {
 		t.Fatalf("cli_config = %+v", r)
 	}
 	want := `{"projects":{` +
-		`"shop":{"environments":{"dev":{"url":"http://10.2.2.2:7710","token_env":"SHOP_DEV"},"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_P5_TOKEN"}}},` +
+		`"shop":{"environments":{"dev":{"url":"http://10.2.2.2:7710","token_env":"SHOP_DEV"},"p5":{"url":"http://` + listenIP + `:7710","token_env":"BERTHY_SHOP_P5_TOKEN"}}},` +
 		`"sliceup":{"environments":{"p5":{"url":"http://10.1.1.1:7710","token_env":"SU_P5"},"prod":{"url":"http://10.1.1.1:7710","token_env":"SU_PROD"}}}}}`
 	if got := compactJSON(t, mustRead(t, path)); got != compactJSON(t, []byte(want)) {
 		t.Fatalf("the file is %s, want %s", got, want)
-	}
-}
-
-func TestCLIConfigStepWithoutAProjectSaysWhatToAdd(t *testing.T) {
-	exe := elfFile(t, emX86)
-	path := filepath.Join(t.TempDir(), "cli.json")
-	s := agentSession(t, setUpAgent(t, exe), exe, false, func(o *Options) { o.CLIConfig = path; o.Project = "" })
-	var got []StepResult
-	Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"cli_config", cliConfigStep}}, func(r StepResult) { got = append(got, r) })
-	r := stepOf(t, got, "cli_config")
-	if want := `add {"url": "http://` + listenIP + `:7710", "token_env": "BERTHY_P5_TOKEN"} as projects.<project>.environments.p5 of the CLI configuration: there is no berthy.yml to name the project`; r.Status != StatusSkipped || r.Detail != want {
-		t.Fatalf("cli_config = %+v", r)
-	}
-	if _, err := os.Stat(path); err == nil {
-		t.Errorf("the file was written")
-	}
-	if s.TokenEnv != "BERTHY_P5_TOKEN" {
-		t.Errorf("TokenEnv = %q: verify cannot find the token", s.TokenEnv)
 	}
 }
 
@@ -1442,8 +1430,8 @@ func compactJSON(t *testing.T, b []byte) string {
 }
 
 func TestDefaultTokenEnv(t *testing.T) {
-	for env, want := range map[string]string{"p5": "BERTHY_P5_TOKEN", "my-env": "BERTHY_MY_ENV_TOKEN", "prod": "BERTHY_PROD_TOKEN"} {
-		if got := DefaultTokenEnv(env); got != want {
+	for env, want := range map[string]string{"p5": "BERTHY_SHOP_P5_TOKEN", "my-env": "BERTHY_SHOP_MY_ENV_TOKEN", "prod": "BERTHY_SHOP_PROD_TOKEN"} {
+		if got := DefaultTokenEnv("shop", env); got != want {
 			t.Errorf("DefaultTokenEnv(%q) = %q, want %q", env, got, want)
 		}
 	}
@@ -1460,7 +1448,7 @@ func TestVerifyStep(t *testing.T) {
 	withToken := func(o *Options) {
 		o.CLIConfig = ""
 		o.Getenv = func(n string) string {
-			if n == "BERTHY_P5_TOKEN" {
+			if n == "BERTHY_SHOP_P5_TOKEN" {
 				return token
 			}
 			return ""
@@ -1633,13 +1621,17 @@ func TestParseFactsOfTheAgent(t *testing.T) {
 		"state_db=yes", "state_foreign=yes", "agent_config=yes", "agent_config_stat=berthy:berthy 600",
 	}, "\n"))
 	if f.BinSHA != "abc" || !f.UserExists || len(f.UserGroups) != 2 || f.UnitSHA != "def" || !f.ServiceActive || !f.ServiceEnabled ||
-		!f.KeyExists || f.KeySHA != "123" || f.KeyStat != "32 berthy:berthy 600" || f.DataDirStat != wantPrivateDir || f.StateDirStat != wantPrivateDir ||
-		!f.StateDB || !f.StateForeign || !f.AgentConfig || f.AgentConfigStat != wantPrivate {
+		f.DataDirStat != wantPrivateDir || !f.AgentConfig || f.AgentConfigStat != wantPrivate {
 		t.Fatalf("facts = %+v", f)
 	}
 	empty := ParseFacts("user=\nuser_groups=\nservice_active=inactive\nservice_enabled=disabled\n")
-	if empty.UserExists || empty.ServiceActive || empty.ServiceEnabled || empty.KeyExists || empty.StateDB {
+	if empty.UserExists || empty.ServiceActive || empty.ServiceEnabled {
 		t.Fatalf("empty = %+v", empty)
+	}
+	server := &agentFake{probe: []string{"key_sha=123", "key_stat=32 berthy:berthy 600", "state_dir_stat=berthy:berthy 700", "state_db=yes", "state_foreign=yes"}}
+	paths, err := probePaths(context.Background(), server, stateDir, keyPath)
+	if err != nil || !paths.KeyExists || paths.KeySHA != "123" || paths.KeyStat != "32 "+wantPrivate || paths.StateDirStat != wantPrivateDir || !paths.StateDB || !paths.StateForeign {
+		t.Fatalf("path facts = %+v, %v", paths, err)
 	}
 }
 
@@ -1648,7 +1640,10 @@ func TestProbeOfTheAgentOnlyReads(t *testing.T) {
 	if _, err := Probe(context.Background(), f, "n"); err != nil {
 		t.Fatal(err)
 	}
-	script := f.scripts[0]
+	if _, err := probePaths(context.Background(), f, stateDir, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	script := f.scripts[0] + f.scripts[1]
 	for _, bad := range []string{"mktemp", "chown", "chmod", "mv ", "rm ", "useradd", "cat /var/lib/berthy/key", "cat \"$k\"", "cat /etc/berthy"} {
 		if strings.Contains(script, bad) {
 			t.Errorf("the probe contains %q", bad)

@@ -100,7 +100,7 @@ func TestSetupDryRunVerboseListsWhatARealRunSends(t *testing.T) {
 	}
 
 	for _, sc := range dry.scripts {
-		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") {
+		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			t.Errorf("a dry run sent %q", sc)
 		}
 	}
@@ -157,7 +157,7 @@ func withoutFinalNewlines(scripts []string) []string {
 func withoutProbes(scripts []string) []string {
 	var out []string
 	for _, sc := range scripts {
-		if !strings.Contains(sc, "uname -s") {
+		if !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			out = append(out, sc)
 		}
 	}
@@ -329,7 +329,7 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 		for _, sc := range server.scripts {
 			assertAbsent(t, "a script", sc, append(keySecrets, token))
 		}
-		if !bytes.Contains(server.stdins[indexOfScript(t, server, "sha256sum /var/lib/berthy/key")], key) {
+		if !bytes.Contains(server.stdins[indexOfScript(t, server, "sha256sum '/var/lib/berthy/environments/shop/p5/key'")], key) {
 			t.Fatal("the key did not reach the server on stdin: the test proves nothing")
 		}
 	})
@@ -351,7 +351,7 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 	t.Run("dry run with a key file and a token in the environment", func(t *testing.T) {
 		server := freshNoDocker(t, "ops@s1")
 		withSetupRunner(t, server)
-		t.Setenv("BERTHY_P5_TOKEN", envToken)
+		t.Setenv("BERTHY_SHOP_P5_TOKEN", envToken)
 		code, out, errout := runSetupCmd(setupArgs(t, "--dry-run", "--verbose", "--key-file", keyFile)...)
 		if code != 0 {
 			t.Fatalf("exit %d: %s", code, errout)
@@ -369,7 +369,7 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 		setupDoctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 			return nil, setup.ErrUnreachable
 		}
-		t.Setenv("BERTHY_P5_TOKEN", envToken)
+		t.Setenv("BERTHY_SHOP_P5_TOKEN", envToken)
 		code, out, errout := runSetupCmd(setupArgs(t, "--verbose")...)
 		if code != 0 {
 			t.Fatalf("exit %d: %s", code, errout)

@@ -43,6 +43,7 @@ var setupDoctor setup.DoctorFunc
 
 // setupReport is the --json output of setup.
 type setupReport struct {
+	Project     string             `json:"project"`
 	Environment string             `json:"environment"`
 	Target      string             `json:"target"`
 	DryRun      bool               `json:"dry_run"`
@@ -114,7 +115,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	report := setupReport{Environment: *env, Target: *host, DryRun: *dry, Steps: []setup.StepResult{}}
+	report := setupReport{Project: from.project, Environment: *env, Target: *host, DryRun: *dry, Steps: []setup.StepResult{}}
 	if *local {
 		report.Target = "this server"
 	}
@@ -144,7 +145,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 		report.Token = session.Token
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
+		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -158,7 +159,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	} else {
 		fmt.Fprintln(out, setupSummary(report))
 		if report.Token != "" {
-			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(*env), report.Token)
+			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(from.project+"/"+*env), report.Token)
 		}
 		if len(report.NextSteps) > 0 {
 			fmt.Fprintln(out, "\nnext steps:")
@@ -219,9 +220,9 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
 // cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
 // without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
-func setupNextSteps(id scope.ID, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
 	env := id.Environment
-	read := "sudo cat /var/lib/berthy/key"
+	read := "sudo cat " + shellWord(keyFile)
 	if !local {
 		read = "ssh " + target + " " + read
 	}
@@ -276,7 +277,7 @@ func printSetupStep(out io.Writer, r setup.StepResult) {
 
 // setupSummary is the last line of the text output.
 func setupSummary(r setupReport) string {
-	prefix := fmt.Sprintf("setup of %s on %s: ", terminalSafe(r.Environment), terminalSafe(r.Target))
+	prefix := fmt.Sprintf("setup of %s on %s: ", terminalSafe(r.Project+"/"+r.Environment), terminalSafe(r.Target))
 	if !r.OK {
 		failed := "connect"
 		for _, s := range r.Steps {

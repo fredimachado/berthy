@@ -14,8 +14,6 @@ const (
 	configPath     = "/etc/berthy/agent.json"
 	unitPath       = "/etc/systemd/system/berthy.service"
 	dataDir        = "/var/lib/berthy"
-	stateDir       = "/var/lib/berthy/state"
-	keyPath        = "/var/lib/berthy/key"
 )
 
 const defaultHealthTimeout = 30 * time.Second

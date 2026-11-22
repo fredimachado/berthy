@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"slices"
-	"strconv"
 	"strings"
 
 	"berthy/internal/agent"
@@ -26,14 +26,12 @@ const (
 
 // decodeAgentConfig reads the agent's configuration the way the agent does: unknown fields and trailing data are refused, and
 // the result must validate. The errors never repeat a value of the file.
-func decodeAgentConfig(b []byte) (agent.Config, error) {
-	var c agent.Config
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&c); err != nil {
-		return c, fmt.Errorf("%s cannot be read as an agent configuration", configPath)
+func decodeAgentConfig(b []byte) (agent.File, error) {
+	c, err := agent.ParseFile(b)
+	if errors.Is(err, agent.ErrOldLayout) {
+		return c, errors.New("this server has the agent of an earlier Berthy release, which cannot be upgraded in place. Move it aside, do not delete it: sudo systemctl stop berthy && sudo mv /etc/berthy /etc/berthy.pre-projects && sudo mv /var/lib/berthy /var/lib/berthy.pre-projects && sudo chmod 0700 /var/lib/berthy.pre-projects, then run setup again. Its apps keep running and are yours to remove or adopt; its state and key stay in /var/lib/berthy.pre-projects.")
 	}
-	if err := d.Decode(&struct{}{}); err != io.EOF {
+	if err != nil {
 		return c, fmt.Errorf("%s cannot be read as an agent configuration", configPath)
 	}
 	if err := c.Validate(); err != nil {
@@ -44,7 +42,7 @@ func decodeAgentConfig(b []byte) (agent.Config, error) {
 
 // loadConfig reads the server's agent configuration once, into memory. It is never printed. The probe says whether there is
 // one.
-func (s *Session) loadConfig(ctx context.Context) (*agent.Config, error) {
+func (s *Session) loadConfig(ctx context.Context) (*agent.File, error) {
 	f, err := s.facts(ctx)
 	if err != nil {
 		return nil, err
@@ -66,7 +64,7 @@ func (s *Session) loadConfig(ctx context.Context) (*agent.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.existing, s.configRead = &c, true
+	s.existing, s.existingRaw, s.configRead = &c, bytes.Clone(res.Stdout), true
 	return s.existing, nil
 }
 
@@ -154,6 +152,11 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	stateDir, keyPath := s.paths()
+	pf, err := probePaths(ctx, s.R, stateDir, keyPath)
+	if err != nil {
+		return "", "", err
+	}
 	var local []byte
 	if s.Opts.KeyFile != "" {
 		if local, err = readKeyFile(s.Opts.KeyFile); err != nil {
@@ -161,14 +164,14 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 		defer clear(local)
 	}
-	if f.KeyExists {
-		if !strings.HasPrefix(f.KeyStat, "32 ") {
+	if pf.KeyExists {
+		if !strings.HasPrefix(pf.KeyStat, "32 ") {
 			return "", "", fmt.Errorf("%s is not 32 bytes; setup does not replace a key", keyPath)
 		}
-		if local != nil && sha256Hex(local) != f.KeySHA {
+		if local != nil && sha256Hex(local) != pf.KeySHA {
 			return "", "", errors.New("the server has a different encryption key; setup never replaces it")
 		}
-	} else if local == nil && f.StateDB {
+	} else if local == nil && pf.StateDB {
 		return "", "", fmt.Errorf("%s has state but no key: pass --key-file with the saved key", stateDir)
 	}
 
@@ -178,27 +181,27 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+dataDir)
 		did = append(did, "prepared "+dataDir)
 	}
-	if f.StateDirStat != wantPrivateDir {
-		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+stateDir)
+	if pf.StateDirStat != wantPrivateDir {
+		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+shellQuote(stateDir))
 		did = append(did, "prepared "+stateDir)
 	}
-	if f.StateForeign {
-		fix = append(fix, "chown -R berthy:berthy "+stateDir)
+	if pf.StateForeign {
+		fix = append(fix, "chown -R berthy:berthy "+shellQuote(stateDir))
 		did = append(did, "gave the state to berthy")
 	}
 	var stdin io.Reader
 	switch {
-	case f.KeyExists:
-		if !strings.HasSuffix(f.KeyStat, " "+wantPrivate) {
-			fix = append(fix, "chown berthy:berthy "+keyPath, "chmod 0600 "+keyPath)
+	case pf.KeyExists:
+		if !strings.HasSuffix(pf.KeyStat, " "+wantPrivate) {
+			fix = append(fix, "chown berthy:berthy "+shellQuote(keyPath), "chmod 0600 "+shellQuote(keyPath))
 			did = append(did, "fixed the owner and mode of the key")
 		}
 	case local != nil:
-		fix = append(fix, keyUploadScript())
+		fix = append(fix, keyUploadScript(keyPath))
 		did = append(did, "installed the key from --key-file")
 		stdin = bytes.NewReader(local)
 	default:
-		fix = append(fix, keyGenerateScript())
+		fix = append(fix, keyGenerateScript(keyPath))
 		did = append(did, "generated an encryption key on the server")
 	}
 	if len(did) == 0 {
@@ -216,7 +219,7 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	if res.Code != 0 {
 		return "", "", fmt.Errorf("preparing the key and the state directory: %s", failureText(res))
 	}
-	if local != nil && !f.KeyExists {
+	if local != nil && !pf.KeyExists {
 		if got := firstField(res.Stdout); got != sha256Hex(local) {
 			return "", "", errors.New("the key on the server does not match --key-file after the upload")
 		}
@@ -263,39 +266,39 @@ func firstField(b []byte) string {
 }
 
 // keyGenerateScript makes the key on the server from its random source. The key never leaves the server.
-func keyGenerateScript() string {
-	return "install -d -o berthy -g berthy -m 0700 " + dataDir + "\n" +
-		"tmp=$(mktemp " + dataDir + "/.key.XXXXXX)\n" +
+func keyGenerateScript(keyPath string) string {
+	dir := shellQuote(path.Dir(keyPath))
+	return "install -d -o berthy -g berthy -m 0700 " + dir + "\n" +
+		"tmp=$(mktemp " + shellQuote(path.Dir(keyPath)+"/.key.XXXXXX") + ")\n" +
 		"trap 'rm -f \"$tmp\"' EXIT\n" +
 		"head -c 32 /dev/urandom > \"$tmp\"\n" +
 		"[ \"$(wc -c < \"$tmp\")\" -eq 32 ]\n" +
 		"chown berthy:berthy \"$tmp\"\n" +
 		"chmod 0600 \"$tmp\"\n" +
-		"mv -f \"$tmp\" " + keyPath
+		"mv -f \"$tmp\" " + shellQuote(keyPath)
 }
 
-// keyUploadScript installs the key that arrives on the script's standard input, and prints its SHA-256. No key byte is in the
-// script, in an argument or in the output.
-func keyUploadScript() string {
-	return "install -d -o berthy -g berthy -m 0700 " + dataDir + "\n" +
-		"tmp=$(mktemp " + dataDir + "/.key.XXXXXX)\n" +
+// keyUploadScript installs the key from standard input and prints its SHA-256.
+func keyUploadScript(keyPath string) string {
+	dir := shellQuote(path.Dir(keyPath))
+	return "install -d -o berthy -g berthy -m 0700 " + dir + "\n" +
+		"tmp=$(mktemp " + shellQuote(path.Dir(keyPath)+"/.key.XXXXXX") + ")\n" +
 		"trap 'rm -f \"$tmp\"' EXIT\n" +
 		"cat > \"$tmp\"\n" +
 		"chown berthy:berthy \"$tmp\"\n" +
 		"chmod 0600 \"$tmp\"\n" +
-		"mv -f \"$tmp\" " + keyPath + "\n" +
-		"sha256sum " + keyPath
+		"mv -f \"$tmp\" " + shellQuote(keyPath) + "\n" +
+		"sha256sum " + shellQuote(keyPath)
 }
 
 // adminTokenName is the name of the first admin token.
 const adminTokenName = "admin"
 
 func tokenStep(ctx context.Context, s *Session) (string, string, error) {
-	f, err := s.facts(ctx)
-	if err != nil {
+	if _, err := s.loadConfig(ctx); err != nil {
 		return "", "", err
 	}
-	more := f.AgentConfig
+	more := s.hosted() != nil
 	if more && !s.Opts.NewToken {
 		return StatusOK, "the tokens of " + configPath + " are kept", nil
 	}
@@ -318,42 +321,93 @@ func tokenStep(ctx context.Context, s *Session) (string, string, error) {
 	return StatusChanged, fmt.Sprintf("created %s named %s; it is shown once, at the end", what, name), nil
 }
 
-// desiredConfig is the agent's configuration after this run: the server's own with what setup owns set, or a new one.
-func (s *Session) desiredConfig(f *Facts) (agent.Config, error) {
-	var cfg agent.Config
+// hostedPaths names the state and key of one hosted environment on the Linux server.
+func hostedPaths(project, env string) (string, string) {
+	base := dataDir + "/environments/" + project + "/" + env
+	return base + "/state", base + "/key"
+}
+
+// hosted returns the existing entry for this run, if there is one.
+func (s *Session) hosted() *agent.Hosted {
 	if s.existing != nil {
-		cfg = *s.existing
-		cfg.Tokens = slices.Clone(s.existing.Tokens)
-		cfg.ComposeCommand = slices.Clone(s.existing.ComposeCommand)
+		for i := range s.existing.Environments {
+			h := &s.existing.Environments[i]
+			if h.Project == s.Opts.Project && h.Environment == s.Opts.Env {
+				return h
+			}
+		}
 	}
-	cfg.Environment = s.Opts.Env
-	if cfg.Listen == "" {
-		cfg.Listen = s.Opts.listen()
+	return nil
+}
+
+func (s *Session) paths() (string, string) {
+	if h := s.hosted(); h != nil {
+		return h.StateDir, h.KeyFile
 	}
-	if cfg.DockerSocket == "" {
-		cfg.DockerSocket = dockerSocket
+	return hostedPaths(s.Opts.Project, s.Opts.Env)
+}
+
+// KeyFile is the selected environment's key on the server.
+func (s *Session) KeyFile() string { _, key := s.paths(); return key }
+
+// desiredFile keeps every other hosted environment and updates this one.
+func (s *Session) desiredFile(f *Facts) (agent.File, error) {
+	var file agent.File
+	if s.existing != nil {
+		file = *s.existing
+		file.Environments = slices.Clone(s.existing.Environments)
 	}
-	if cfg.StateDir == "" && cfg.KeyFile == "" {
-		cfg.StateDir, cfg.KeyFile = stateDir, keyPath
+	if file.Listen == "" {
+		file.Listen = s.Opts.listen()
 	}
-	cfg.Network = s.Opts.Network
-	cfg.Protected = cfg.Protected || s.Opts.Protected
+	if file.DockerSocket == "" {
+		file.DockerSocket = dockerSocket
+	}
+	idx := -1
+	for i, h := range file.Environments {
+		if h.Project == s.Opts.Project && h.Environment == s.Opts.Env {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		state, key := hostedPaths(s.Opts.Project, s.Opts.Env)
+		file.Environments = append(file.Environments, agent.Hosted{Project: s.Opts.Project, Environment: s.Opts.Env, StateDir: state, KeyFile: key})
+		idx = len(file.Environments) - 1
+	}
+	h := &file.Environments[idx]
+	h.Tokens = slices.Clone(h.Tokens)
+	h.Network = s.Opts.Network
+	h.Protected = h.Protected || s.Opts.Protected
 	if s.newToken != nil {
-		cfg.Tokens = append(cfg.Tokens, *s.newToken)
+		h.Tokens = append(h.Tokens, *s.newToken)
 	}
-	check := cfg
-	if len(check.Tokens) == 0 {
-		// A dry run makes no token. Only the rest is checked then.
-		check.Tokens = []agent.Token{{Digest: strings.Repeat("0", 64), Scope: "admin"}}
+	check := file
+	check.Environments = slices.Clone(file.Environments)
+	if len(check.Environments[idx].Tokens) == 0 {
+		// Validation precedes token generation. Pick a digest that no existing entry uses.
+		used := map[string]bool{}
+		for _, e := range check.Environments {
+			for _, token := range e.Tokens {
+				used[strings.ToLower(token.Digest)] = true
+			}
+		}
+		for n := 0; ; n++ {
+			digest := fmt.Sprintf("%064x", n)
+			if !used[digest] {
+				check.Environments[idx].Tokens = []agent.Token{{Digest: digest, Scope: "admin"}}
+				break
+			}
+		}
 	}
 	if err := check.Validate(); err != nil {
-		return cfg, fmt.Errorf("the agent configuration would not be valid: %v", err)
+		return file, fmt.Errorf("the agent configuration would not be valid: %v", err)
 	}
-	return cfg, nil
+	return file, nil
 }
 
 // marshalConfig is the file's content: indented JSON.
-func marshalConfig(c agent.Config) ([]byte, error) {
+func marshalConfig(c agent.File) ([]byte, error) {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return nil, err
@@ -361,11 +415,75 @@ func marshalConfig(c agent.Config) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-func tokenCount(n int) string {
-	if n == 1 {
-		return "1 token"
+// environmentRanges finds the original JSON object for each hosted environment.
+func environmentRanges(b []byte) ([][2]int, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	if _, err := d.Token(); err != nil {
+		return nil, err
 	}
-	return strconv.Itoa(n) + " tokens"
+	var ranges [][2]int
+	for d.More() {
+		name, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		if name != "environments" {
+			var value json.RawMessage
+			if err := d.Decode(&value); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if _, err := d.Token(); err != nil {
+			return nil, err
+		}
+		ranges = nil
+		for d.More() {
+			start := int(d.InputOffset())
+			for start < len(b) && (b[start] == ',' || b[start] == ' ' || b[start] == '\n' || b[start] == '\r' || b[start] == '\t') {
+				start++
+			}
+			var value json.RawMessage
+			if err := d.Decode(&value); err != nil {
+				return nil, err
+			}
+			ranges = append(ranges, [2]int{start, int(d.InputOffset())})
+		}
+		if _, err := d.Token(); err != nil {
+			return nil, err
+		}
+	}
+	return ranges, nil
+}
+
+// keepOtherEntries retains the original bytes of entries this run does not own.
+func (s *Session) keepOtherEntries(want []byte) ([]byte, error) {
+	if s.existing == nil {
+		return want, nil
+	}
+	oldRanges, err := environmentRanges(s.existingRaw)
+	if err != nil {
+		return nil, err
+	}
+	newRanges, err := environmentRanges(want)
+	if err != nil {
+		return nil, err
+	}
+	if len(oldRanges) != len(s.existing.Environments) || len(newRanges) < len(oldRanges) {
+		return nil, errors.New("cannot preserve hosted environment entries")
+	}
+	for i := len(oldRanges) - 1; i >= 0; i-- {
+		h := s.existing.Environments[i]
+		if h.Project == s.Opts.Project && h.Environment == s.Opts.Env {
+			continue
+		}
+		old, next := oldRanges[i], newRanges[i]
+		out := make([]byte, 0, len(want)-(next[1]-next[0])+(old[1]-old[0]))
+		out = append(out, want[:next[0]]...)
+		out = append(out, s.existingRaw[old[0]:old[1]]...)
+		want = append(out, want[next[1]:]...)
+	}
+	return want, nil
 }
 
 // configWriteScript writes the configuration that arrives on the script's standard input to agent.json.new: owned by berthy and
@@ -393,7 +511,7 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 	if _, err := s.loadConfig(ctx); err != nil {
 		return "", "", err
 	}
-	cfg, err := s.desiredConfig(f)
+	cfg, err := s.desiredFile(f)
 	if err != nil {
 		return "", "", err
 	}
@@ -401,19 +519,24 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	addsToken := s.newToken != nil || (s.DryRun && (!f.AgentConfig || s.Opts.NewToken))
-	tokens := len(cfg.Tokens)
-	if s.DryRun && addsToken {
-		tokens++ // the token a real run would make
+	want, err = s.keepOtherEntries(want)
+	if err != nil {
+		return "", "", fmt.Errorf("preserving %s: %w", configPath, err)
 	}
-	summary := fmt.Sprintf("%s (listen %s, %s)", configPath, cfg.Listen, tokenCount(tokens))
+	addsToken := s.newToken != nil || (s.DryRun && (s.hosted() == nil || s.Opts.NewToken))
+	tokens := len(cfg.Environments)
+	summary := fmt.Sprintf("%s (listen %s, %d %s)", configPath, cfg.Listen, tokens, plural(tokens, "environment", "environments"))
 	changed := s.existing == nil || addsToken
 	if !changed {
 		have, err := marshalConfig(*s.existing)
 		if err != nil {
 			return "", "", err
 		}
-		changed = !bytes.Equal(have, want)
+		canonicalWant, err := marshalConfig(cfg)
+		if err != nil {
+			return "", "", err
+		}
+		changed = !bytes.Equal(have, canonicalWant)
 	}
 	if !changed {
 		if f.AgentConfigStat == wantPrivate {

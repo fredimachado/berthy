@@ -58,7 +58,7 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	switch {
 	case script == "id -u; id -un":
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
-	case strings.Contains(script, "uname -s"):
+	case strings.Contains(script, "uname -s"), strings.Contains(script, "# hosted path probe"):
 		return setup.Result{Stdout: []byte(s.nextProbe())}, nil
 	case strings.Contains(script, "curl -fsS --max-time 30"):
 		return setup.Result{Stdout: []byte(`{"checks":[{"name":"agent","ok":true,"critical":true,"detail":"v0.0.1-test"}]}`)}, nil
@@ -67,7 +67,7 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	case strings.Contains(script, "cat > /usr/local/bin/berthy.new"):
 		sum := sha256.Sum256(in)
 		return setup.Result{Stdout: []byte(hex.EncodeToString(sum[:]) + "  /usr/local/bin/berthy.new\n")}, nil
-	case strings.Contains(script, "sha256sum /var/lib/berthy/key"):
+	case strings.Contains(script, "sha256sum ") && strings.Contains(script, "/key"):
 		sum := sha256.Sum256(in)
 		return setup.Result{Stdout: []byte(hex.EncodeToString(sum[:]) + "  /var/lib/berthy/key\n")}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
@@ -127,7 +127,7 @@ func withSetupBuild(t *testing.T, exe string) {
 	setupDoctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 		return []api.Check{{Name: "agent", OK: true, Critical: true, Detail: "v0.0.1-test"}}, nil
 	}
-	t.Setenv("BERTHY_P5_TOKEN", "")
+	t.Setenv("BERTHY_SHOP_P5_TOKEN", "")
 	t.Setenv("BERTHY_RELEASE_URL", "")
 }
 
@@ -140,9 +140,9 @@ func installedServer(t *testing.T, target string) *setupServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := json.MarshalIndent(agent.Config{
-		Environment: "p5", Listen: "172.31.250.10:7710", DockerSocket: "/var/run/docker.sock", StateDir: "/var/lib/berthy/state", KeyFile: "/var/lib/berthy/key",
-		Network: "p5net", Tokens: []agent.Token{{Name: "admin", Digest: strings.Repeat("a", 64), Scope: "admin"}},
+	cfg, err := json.MarshalIndent(agent.File{
+		Listen: "172.31.250.10:7710", DockerSocket: "/var/run/docker.sock",
+		Environments: []agent.Hosted{{Project: "shop", Environment: "p5", StateDir: "/var/lib/berthy/environments/shop/p5/state", KeyFile: "/var/lib/berthy/environments/shop/p5/key", Network: "p5net", Tokens: []agent.Token{{Name: "admin", Digest: strings.Repeat("a", 64), Scope: "admin"}}}},
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestSetupReadsTheNetworkFromTheManifest(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "demo")
 	server := installedServer(t, "ops@s1")
-	server.config = strings.ReplaceAll(server.config, "p5net", "demo")
+	server.config = strings.ReplaceAll(strings.ReplaceAll(server.config, "p5net", "demo"), `"project": "shop"`, `"project": "demo"`)
 	withSetupRunner(t, server)
 	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", dir, "--json")
 	if code != 0 {
@@ -297,13 +297,13 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"✓ binary      this CLI (v0.0.1-test) is installed\n" +
 		"✓ key         the key and the state directory are in place\n" +
 		"✓ token       the tokens of /etc/berthy/agent.json are kept\n" +
-		"✓ config      /etc/berthy/agent.json (listen 172.31.250.10:7710, 1 token)\n" +
+		"✓ config      /etc/berthy/agent.json (listen 172.31.250.10:7710, 1 environment)\n" +
 		"✓ service     berthy.service is running and enabled\n" +
-		"✓ cli_config  wrote p5 at http://172.31.250.10:7710 to config.json (token in $BERTHY_P5_TOKEN)\n" +
+		"✓ cli_config  wrote p5 at http://172.31.250.10:7710 to config.json (token in $BERTHY_SHOP_P5_TOKEN)\n" +
 		"✓ verify      the agent answers; run berthy doctor with an admin token to check it fully\n" +
-		"setup of p5 on ops@s1: done\n" +
+		"setup of shop/p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
-		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/key > shop.p5.key\n" +
+		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key\n" +
 		"  2. set the secrets the manifest names: berthy secret set NAME -e p5\n" +
 		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --version APP=REF (or one app: berthy deploy APP -e p5 --version REF)\n"
 	if out != want {
@@ -326,7 +326,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	}
 	var token string
 	for _, line := range strings.Split(out, "\n") {
-		if rest, ok := strings.CutPrefix(line, "admin token for p5 (shown once, store it now): "); ok {
+		if rest, ok := strings.CutPrefix(line, "admin token for shop/p5 (shown once, store it now): "); ok {
 			token = rest
 		}
 	}
@@ -334,8 +334,8 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 		t.Fatalf("token = %q, output:\n%s", token, out)
 	}
 	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin; it is shown once, at the end",
-		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_P5_TOKEN)",
-		"2. store the admin token above, and set it in $BERTHY_P5_TOKEN when you run berthy",
+		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_SHOP_P5_TOKEN)",
+		"2. store the admin token above, and set it in $BERTHY_SHOP_P5_TOKEN when you run berthy",
 		"3. set the secrets the manifest names: berthy secret set NAME -e p5 --config " + shellWord(cfgPath),
 		"4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config " + shellWord(cfgPath) + " --version APP=REF (or one app: berthy deploy APP -e p5 --config " + shellWord(cfgPath) + " --version REF)"} {
 		if !strings.Contains(out, want) {
@@ -349,7 +349,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 		}
 	}
 	data, err := os.ReadFile(cfgPath)
-	if err != nil || bytes.Contains(data, []byte(token)) || !bytes.Contains(data, []byte(`"token_env": "BERTHY_P5_TOKEN"`)) {
+	if err != nil || bytes.Contains(data, []byte(token)) || !bytes.Contains(data, []byte(`"token_env": "BERTHY_SHOP_P5_TOKEN"`)) {
 		t.Fatalf("CLI config %s: %v", data, err)
 	}
 	found := false
@@ -380,7 +380,7 @@ func TestSetupWritesTheDefaultConfigWhenNotTold(t *testing.T) {
 		t.Fatalf("the default CLI configuration was not written: %v\n%s", err, out)
 	}
 	c, err := agentclient.ParseConfig(data)
-	if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://172.31.250.10:7710", TokenEnv: "BERTHY_P5_TOKEN"}) {
+	if err != nil || c.Projects["shop"].Environments["p5"] != (agentclient.Environment{URL: "http://172.31.250.10:7710", TokenEnv: "BERTHY_SHOP_P5_TOKEN"}) {
 		t.Fatalf("configuration %s: %v", data, err)
 	}
 	if strings.Contains(out, "--config") {
@@ -422,7 +422,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if !got.OK || !strings.HasPrefix(got.Token, "bty.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 4 || len(got.Steps) != 13 {
 		t.Fatalf("report = %+v", got)
 	}
-	if !strings.Contains(got.NextSteps[0], "ssh ops@s1 sudo cat /var/lib/berthy/key > shop.p5.key") {
+	if !strings.Contains(got.NextSteps[0], "ssh ops@s1 sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key") {
 		t.Errorf("next step = %q", got.NextSteps[0])
 	}
 	steps := strings.Join(got.NextSteps, "\n")
@@ -447,18 +447,18 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 }
 
 func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
+	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
 	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod") || strings.Contains(steps[3], "--config") {
 		t.Fatalf("steps = %q", steps)
 	}
-	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "", true, "this server", "X", false, false)
-	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/key > shop.prod.key") {
+	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", true, "this server", "X", false, false)
+	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/environments/shop/prod/key > shop.prod.key") {
 		t.Fatalf("local steps = %q", local)
 	}
 }
 
 func TestSetupNextStepsNameTheConfigGivenToSetup(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false)
+	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false)
 	want := []string{
 		"berthy secret set NAME -e prod --config /etc/berthy/cli.json",
 		"berthy deploy APP -e prod --config /etc/berthy/cli.json",
@@ -485,7 +485,7 @@ func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
 	}
 	for cfg, want := range tests {
 		// The ingress step is among the steps: it takes the config too.
-		steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true)
+		steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true)
 		if len(steps) != 4 {
 			t.Fatalf("steps = %q", steps)
 		}
@@ -583,20 +583,20 @@ func TestSetupDryRunOfASetUpServer(t *testing.T) {
 	withSetupRunner(t, installedServer(t, "ops@s1"))
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--dry-run")
 	// The agent is set up, but this machine has no CLI configuration yet, so the local step would change.
-	if code != 0 || !strings.Contains(out, "· cli_config  would write p5 to config.json\n") || !strings.HasSuffix(out, "setup of p5 on ops@s1: dry run, 1 step would change\n") {
+	if code != 0 || !strings.Contains(out, "· cli_config  would write p5 to config.json\n") || !strings.HasSuffix(out, "setup of shop/p5 on ops@s1: dry run, 1 step would change\n") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
 
 func TestSetupFailureNamesTheStep(t *testing.T) {
 	server := installedServer(t, "ops@s1")
-	server.probe += "agent_env=staging\n"
+	server.probe = strings.Replace(server.probe, "systemd=yes", "systemd=", 1)
 	withSetupRunner(t, server)
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 1 {
 		t.Fatalf("exit %d", code)
 	}
-	want := "✓ connect     ops@s1\n✖ check       this server runs the agent of environment staging\nsetup of p5 on ops@s1: failed at check\n"
+	want := "✓ connect     ops@s1\n✖ check       systemd is not running on this server\nsetup of shop/p5 on ops@s1: failed at check\n"
 	if out != want {
 		t.Fatalf("output:\n%s", out)
 	}
@@ -607,7 +607,7 @@ func TestSetupAFailedFirstInstallStillShowsTheToken(t *testing.T) {
 	server.waits = []int{1}
 	withSetupRunner(t, server)
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
-	if code != 1 || !strings.Contains(out, "✖ service") || !strings.Contains(out, "failed at service") || !strings.Contains(out, "admin token for p5 (shown once, store it now): bty.p5.") || strings.Contains(out, "next steps") {
+	if code != 1 || !strings.Contains(out, "✖ service") || !strings.Contains(out, "failed at service") || !strings.Contains(out, "admin token for shop/p5 (shown once, store it now): bty.p5.") || strings.Contains(out, "next steps") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
@@ -663,7 +663,7 @@ func TestSetupWithoutARunnerFailsTheConnectStep(t *testing.T) {
 	t.Cleanup(func() { newSetupRunner = saved })
 	newSetupRunner = func(string, bool) (setup.Runner, error) { return nil, errors.New("ssh was not found on PATH") }
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
-	want := "✖ connect     ssh was not found on PATH\nsetup of p5 on ops@s1: failed at connect\n"
+	want := "✖ connect     ssh was not found on PATH\nsetup of shop/p5 on ops@s1: failed at connect\n"
 	if code != 1 || out != want {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
@@ -672,8 +672,8 @@ func TestSetupWithoutARunnerFailsTheConnectStep(t *testing.T) {
 func TestSetupLocalTargetsThisServer(t *testing.T) {
 	made := withSetupRunner(t, installedServer(t, "this server"))
 	code, out, _ := runSetupCmd("-e", "p5", "--local", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
-	if code != 0 || made[1] != true || !strings.Contains(out, "✓ connect     this server\n") || !strings.Contains(out, "setup of p5 on this server: done\n") ||
-		!strings.Contains(out, "sudo cat /var/lib/berthy/key > shop.p5.key") || strings.Contains(out, "ssh this server") {
+	if code != 0 || made[1] != true || !strings.Contains(out, "✓ connect     this server\n") || !strings.Contains(out, "setup of shop/p5 on this server: done\n") ||
+		!strings.Contains(out, "sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key") || strings.Contains(out, "ssh this server") {
 		t.Fatalf("exit %d, made %v:\n%s", code, made, out)
 	}
 }
@@ -776,5 +776,56 @@ func TestSetupWithoutAManifestDefaultsTheNetwork(t *testing.T) {
 	runSetupCmd("-e", "prod", "--project", "shop", "--host", "ops@s1", "--manifest-dir", t.TempDir())
 	if !server.ran("shop-prod") {
 		t.Fatalf("network not probed: %v", server.scripts)
+	}
+}
+
+func TestSetupNextStepsNameThisEnvironmentsKey(t *testing.T) {
+	id := scope.ID{Project: "shop", Environment: "prod"}
+	steps := setupNextSteps(id, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "X", true, false)
+	if !strings.Contains(steps[0], "sudo cat /var/lib/berthy/environments/shop/prod/key > shop.prod.key") {
+		t.Fatalf("step: %s", steps[0])
+	}
+}
+
+func TestTheKeyCopyNamesAFileNoOtherEnvironmentCanShare(t *testing.T) {
+	ids := []scope.ID{{Project: "cardiotennis", Environment: "prod"}, {Project: "sliceup", Environment: "prod"}, {Project: "shop", Environment: "prod-eu"}, {Project: "shop-prod", Environment: "eu"}}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		name := id.Slug() + ".key"
+		if seen[name] {
+			t.Fatalf("duplicate name %s", name)
+		}
+		seen[name] = true
+		if !strings.Contains(setupNextSteps(id, "/key", "", true, "this server", "X", true, false)[0], "> "+name) {
+			t.Errorf("setup name for %v", id)
+		}
+		var out, errout bytes.Buffer
+		if printKeyRotation(&out, &errout, []byte(`{"old_key_id":"old","new_key_id":"new","key_file":"/key"}`), id) != 0 || !strings.Contains(out.String(), "> "+name) {
+			t.Errorf("rotation for %v: %s %s", id, out.String(), errout.String())
+		}
+	}
+}
+
+func TestSetupReportNamesTheProject(t *testing.T) {
+	server := freshServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", projectDir(t))
+	if code != 0 || !strings.Contains(out, "setup of shop/p5 on ops@s1: done") || !strings.Contains(out, "admin token for shop/p5") {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	withSetupRunner(t, freshServer(t, "ops@s1"))
+	code, out, errout = runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", projectDir(t), "--json")
+	if code != 0 || !strings.Contains(out, `"project": "shop"`) {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+}
+
+func TestSetupNextStepsUseTheExistingEntryKeyPath(t *testing.T) {
+	server := installedServer(t, "ops@s1")
+	server.config = strings.Replace(server.config, "/var/lib/berthy/environments/shop/p5/key", "/srv/keys/my key", 1)
+	withSetupRunner(t, server)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--manifest-dir", projectDir(t))
+	if code != 0 || !strings.Contains(out, "sudo cat '/srv/keys/my key' > shop.p5.key") {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
 }

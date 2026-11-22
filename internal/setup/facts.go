@@ -29,8 +29,6 @@ type Facts struct {
 	NetworkAttachable bool
 	NetworkError      string // why the network could not be inspected, when it could not and is not simply missing
 
-	AgentEnv string // the environment of the agent already installed, when there is one
-
 	// What the agent needs on the server. Hashes are SHA-256 in hex; an empty one means the file is not there.
 	BinSHA          string // /usr/local/bin/berthy
 	UserExists      bool   // the berthy system user
@@ -38,13 +36,7 @@ type Facts struct {
 	UnitSHA         string // /etc/systemd/system/berthy.service
 	ServiceActive   bool
 	ServiceEnabled  bool
-	KeyExists       bool   // /var/lib/berthy/key
-	KeySHA          string // a hash of 32 random bytes reveals nothing; the key itself is never read
-	KeyStat         string // "SIZE OWNER:GROUP MODE"
 	DataDirStat     string // /var/lib/berthy: "OWNER:GROUP MODE"; empty when it does not exist
-	StateDirStat    string // /var/lib/berthy/state
-	StateDB         bool   // the state directory holds a database
-	StateForeign    bool   // a file of the state directory is not owned by berthy
 	AgentConfig     bool   // /etc/berthy/agent.json exists
 	AgentConfigStat string // "OWNER:GROUP MODE"
 }
@@ -89,7 +81,6 @@ if [ -f "$f" ]; then
   echo "agent_config=yes"
   echo "agent_config_stat=$(stat -c '%%U:%%G %%a' "$f" 2>/dev/null)"
 fi
-[ -r "$f" ] && echo "agent_env=$(sed -n 's/.*"environment"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" 2>/dev/null | head -n 1)"
 b=/usr/local/bin/berthy
 [ -f "$b" ] && echo "bin_sha=$(sha256sum "$b" 2>/dev/null | cut -d' ' -f1)"
 echo "user=$(id -u berthy 2>/dev/null)"
@@ -100,22 +91,6 @@ echo "service_active=$(systemctl is-active berthy 2>/dev/null)"
 echo "service_enabled=$(systemctl is-enabled berthy 2>/dev/null)"
 d=/var/lib/berthy
 [ -d "$d" ] && echo "data_dir_stat=$(stat -c '%%U:%%G %%a' "$d" 2>/dev/null)"
-[ -d "$d/state" ] && echo "state_dir_stat=$(stat -c '%%U:%%G %%a' "$d/state" 2>/dev/null)"
-[ -e "$d/state/state.db" ] && echo "state_db=yes"
-if [ -d "$d/state" ]; then
-  bu=$(id -u berthy 2>/dev/null)
-  if [ -z "$bu" ]; then
-    # Nobody can own a file yet: whatever is below the directory is to be given to the user setup creates.
-    [ -n "$(find "$d/state" -mindepth 1 2>/dev/null | head -n 1)" ] && echo "state_foreign=yes"
-  elif [ -n "$(find "$d/state" ! -uid "$bu" 2>/dev/null | head -n 1)" ]; then
-    echo "state_foreign=yes"
-  fi
-fi
-k=$d/key
-if [ -f "$k" ]; then
-  echo "key_sha=$(sha256sum "$k" 2>/dev/null | cut -d' ' -f1)"
-  echo "key_stat=$(stat -c '%%s %%U:%%G %%a' "$k" 2>/dev/null)"
-fi
 exit 0
 `
 
@@ -178,8 +153,6 @@ func ParseFacts(out string) *Facts {
 			}
 		case "network_error":
 			f.NetworkError = value
-		case "agent_env":
-			f.AgentEnv = value
 		case "bin_sha":
 			f.BinSHA = value
 		case "user":
@@ -192,20 +165,8 @@ func ParseFacts(out string) *Facts {
 			f.ServiceActive = value == "active"
 		case "service_enabled":
 			f.ServiceEnabled = value == "enabled"
-		case "key_sha":
-			f.KeyExists = true
-			f.KeySHA = value
-		case "key_stat":
-			f.KeyExists = true
-			f.KeyStat = value
 		case "data_dir_stat":
 			f.DataDirStat = value
-		case "state_dir_stat":
-			f.StateDirStat = value
-		case "state_db":
-			f.StateDB = value == "yes"
-		case "state_foreign":
-			f.StateForeign = value == "yes"
 		case "agent_config":
 			f.AgentConfig = value == "yes"
 		case "agent_config_stat":
@@ -213,4 +174,62 @@ func ParseFacts(out string) *Facts {
 		}
 	}
 	return f
+}
+
+// PathFacts describe one hosted environment's key and state directory.
+type PathFacts struct {
+	KeyExists                     bool
+	KeySHA, KeyStat, StateDirStat string
+	StateDB, StateForeign         bool
+}
+
+func probePaths(ctx context.Context, r Runner, stateDir, keyFile string) (PathFacts, error) {
+	script := `# hosted path probe
+s=%s
+k=%s
+[ -d "$s" ] && echo "state_dir_stat=$(stat -c '%%U:%%G %%a' "$s" 2>/dev/null)"
+[ -e "$s/state.db" ] && echo "state_db=yes"
+if [ -d "$s" ]; then
+  bu=$(id -u berthy 2>/dev/null)
+  if [ -z "$bu" ]; then
+    [ -n "$(find "$s" -mindepth 1 2>/dev/null | head -n 1)" ] && echo "state_foreign=yes"
+  elif [ -n "$(find "$s" ! -uid "$bu" 2>/dev/null | head -n 1)" ]; then
+    echo "state_foreign=yes"
+  fi
+fi
+if [ -f "$k" ]; then
+  echo "key_sha=$(sha256sum "$k" 2>/dev/null | cut -d' ' -f1)"
+  echo "key_stat=$(stat -c '%%s %%U:%%G %%a' "$k" 2>/dev/null)"
+fi
+exit 0
+`
+	res, err := r.Run(ctx, fmt.Sprintf(script, shellQuote(stateDir), shellQuote(keyFile)), nil)
+	if err != nil {
+		return PathFacts{}, fmt.Errorf("reading hosted environment paths: %w", err)
+	}
+	if res.Code != 0 {
+		return PathFacts{}, fmt.Errorf("reading hosted environment paths: %s", failureText(res))
+	}
+	var f PathFacts
+	for _, line := range strings.Split(string(res.Stdout), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "key_sha":
+			f.KeyExists = true
+			f.KeySHA = v
+		case "key_stat":
+			f.KeyExists = true
+			f.KeyStat = v
+		case "state_dir_stat":
+			f.StateDirStat = v
+		case "state_db":
+			f.StateDB = v == "yes"
+		case "state_foreign":
+			f.StateForeign = v == "yes"
+		}
+	}
+	return f, nil
 }
