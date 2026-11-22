@@ -49,7 +49,7 @@ func TestIngressApplyRefusesARecordManagedByAnotherProject(t *testing.T) {
 	if op.State != "failed" || op.Err != "ingress hostname conflict" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
 	}
-	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by other/prod"}) {
+	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by another hosted environment"}) {
 		t.Fatalf("conflicts %v", reasons)
 	}
 	records := f.cf.Records(f.zone)
@@ -72,7 +72,7 @@ func TestIngressReplaceRefusesARecordManagedByAnotherProject(t *testing.T) {
 	if op.State != "failed" || op.Err != "ingress hostname conflict" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
 	}
-	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by other/prod"}) {
+	if reasons := conflictReasons(t, f.store, op.ID); !reflect.DeepEqual(reasons, []string{"DNS name api.example.com is managed by another hosted environment"}) {
 		t.Fatalf("conflicts %v", reasons)
 	}
 	records := f.cf.Records(f.zone)

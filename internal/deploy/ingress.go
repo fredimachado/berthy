@@ -285,7 +285,7 @@ func foreignManagedConflict(hostname string, id scope.ID, records []cloudflare.D
 		if !ok || other == id {
 			continue
 		}
-		return "DNS name " + hostname + " is managed by " + other.String(), true
+		return "DNS name " + hostname + " is managed by another hosted environment", true
 	}
 	return "", false
 }
