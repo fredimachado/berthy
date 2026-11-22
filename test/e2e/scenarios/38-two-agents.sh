@@ -16,8 +16,11 @@ from_man() {
   (cd "$MAN" && { [ "$c" != deploy ] || record_deploy "$PROJECT" "$e" "$@"; } && "$BIN" "$c" -e "$e" --config "$RUN/admin.json" "$@")
 }
 
-# Stop the second agent on exit or signal; start_agent2 records its pid before waiting on /healthz.
-trap 'stop_agent2' EXIT INT TERM HUP
+# Stop the second agent on EXIT. INT/TERM exit through that trap so a signal before launch
+# never continues into start_agent2; start_agent2 records its pid in the parent at launch.
+trap 'stop_agent2' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 start_agent2 || exit 1
 
 # 1. agent-info of each environment answers with its own environment.
@@ -61,7 +64,7 @@ expect_not_contains "secret of $ENVN is absent from $EC" "$out" TWO_AGENTS_ONLY
 agent2_pid=
 [ -f "$RUN/agent2.pid" ] && agent2_pid=$(cat "$RUN/agent2.pid")
 stop_agent2
-trap - EXIT INT TERM HUP
+trap - EXIT INT TERM
 if [ -n "$agent2_pid" ] && [ -r "/proc/$agent2_pid/cmdline" ]; then
   fail "second agent process has exited" "pid $agent2_pid is still running"
 else

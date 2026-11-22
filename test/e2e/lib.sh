@@ -388,7 +388,7 @@ stop_agent() { stop_proc "$RUN/agent.pid" "$BIN"; }
 # ($PROJECT, ${ENVN}c, state $RUN/state2, its own key, admin token and network). Writes $RUN/agent2.json
 # and $RUN/agent2.pid, and adds the environment to $RUN/admin.json at http://$AGENT2_LISTEN.
 start_agent2() {
-  local env=${ENVN}c var out token entry network i
+  local env=${ENVN}c var out token entry network i child
   var=$(env_var "$PROJECT" "$env")
   network=$PROJECT-$env
   out=$("$BIN" agent token --project "$PROJECT" -e "$env" --name admin --scope admin) || return 1
@@ -408,14 +408,19 @@ start_agent2() {
     printf ']}\n'
   } > "$RUN/agent2.json.new" && chmod 600 "$RUN/agent2.json.new" && mv -f "$RUN/agent2.json.new" "$RUN/agent2.json" || return 1
   "$BIN" context add --project "$PROJECT" -e "$env" --url "http://$AGENT2_LISTEN" --token-env "$var" --config "$RUN/admin.json" >/dev/null || return 1
-  # Record the pid before waiting so an EXIT trap can stop the process if the wait is interrupted.
+  # Record the child's pid in the parent at launch so an EXIT trap can stop it even if the
+  # detached shell never manages to write the pid file itself.
   spawn "$RUN/agent2.pid" "$LOG/agent2.log" "$BIN" agent --config "$RUN/agent2.json"
-  for i in $(seq 1 40); do
-    [ -s "$RUN/agent2.pid" ] && break
-    sleep 0.05
-  done
+  child=$!
+  if ! printf '%s\n' "$child" >"$RUN/agent2.pid"; then
+    kill -TERM "$child" 2>/dev/null || :
+    wait "$child" 2>/dev/null || :
+    rm -f "$RUN/agent2.pid"
+    echo "could not record second agent pid" >&2
+    return 1
+  fi
   for i in $(seq 1 120); do
-    if curl_local -f -o /dev/null "http://$AGENT2_LISTEN/healthz" 2>/dev/null; then
+    if [ -s "$RUN/agent2.pid" ] && curl_local -f -o /dev/null "http://$AGENT2_LISTEN/healthz" 2>/dev/null; then
       return 0
     fi
     if [ -s "$RUN/agent2.pid" ] && ! owned "$RUN/agent2.pid" "$BIN"; then
