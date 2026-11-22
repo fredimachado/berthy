@@ -782,6 +782,9 @@ func TestFailedCompensationRecordsCategoryAndKeepsLock(t *testing.T) {
 		t.Fatalf("first: %+v", op)
 	}
 	c.Engine = failingRestoreEngine{f}
+	var logMu sync.Mutex
+	var logs []string
+	c.Log = func(message string) { logMu.Lock(); defer logMu.Unlock(); logs = append(logs, message) }
 	op := deployWeb(t, c, s, "second", "b", webManifest("1m", withStartAttempts(2)))
 	if op.State != "recovery_required" || op.Reason != "role web: task exited with code 1 (gave up after 2 failed starts)" {
 		t.Fatalf("operation: %+v", op)
@@ -791,8 +794,25 @@ func TestFailedCompensationRecordsCategoryAndKeepsLock(t *testing.T) {
 		t.Fatalf("lock: %+v, %v", lock, err)
 	}
 	const want = "compensation: restore update failed"
+	logMu.Lock()
+	logged := strings.Join(logs, "\n")
+	logMu.Unlock()
+	diagnostics := storedDiagnostics(t, s, op.ID)
+	public, err := json.Marshal(struct {
+		Operation   state.Operation
+		Diagnostics []Diagnostic
+	}{op, diagnostics})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logged, "private docker error") || strings.Contains(string(public), "private docker error") {
+		t.Fatalf("private Docker error leaked: log %q, public %s", logged, public)
+	}
+	if !strings.Contains(logged, want) {
+		t.Fatalf("missing compensation category in log: %q", logged)
+	}
 	found := false
-	for _, d := range storedDiagnostics(t, s, op.ID) {
+	for _, d := range diagnostics {
 		if d.Error == want {
 			found = true
 		}
