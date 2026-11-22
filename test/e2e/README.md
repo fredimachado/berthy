@@ -31,9 +31,10 @@ put the logic in a script file and run that file by path.
 - `runs/<scenario>/`: a copy of those logs, kept by `run.sh` after each scenario.
 - `docker-config/`: an empty Docker CLI config, so the Windows credential helper is never asked.
 
-Loopback ports: agent `127.0.0.1:19501`, fake Telegram `127.0.0.1:18901`, fake OTLP `127.0.0.1:18902`, fake webhook
-`127.0.0.1:18903`, fake S3 `127.0.0.1:18904`, and the throwaway registry `127.0.0.1:15021`. A run that shares the daemon with
-others sets its own: `AGENT_LISTEN=127.0.0.1:1951<SLOT>`, `TG_LISTEN=127.0.0.1:1891<SLOT>`, `OTLP_LISTEN=127.0.0.1:1892<SLOT>`,
+Loopback ports: agent `127.0.0.1:19501`, second agent `127.0.0.1:19502`, fake Telegram `127.0.0.1:18901`, fake OTLP
+`127.0.0.1:18902`, fake webhook `127.0.0.1:18903`, fake S3 `127.0.0.1:18904`, and the throwaway registry `127.0.0.1:15021`.
+A run that shares the daemon with others sets its own: `AGENT_LISTEN=127.0.0.1:1951<SLOT>`,
+`AGENT2_LISTEN=127.0.0.1:1954<SLOT>`, `TG_LISTEN=127.0.0.1:1891<SLOT>`, `OTLP_LISTEN=127.0.0.1:1892<SLOT>`,
 `HOOK_LISTEN=127.0.0.1:1895<SLOT>`, `S3_LISTEN=127.0.0.1:1897<SLOT>` and `REG=127.0.0.1:1503<SLOT>`.
 
 The fake webhook (`test/fakewebhook`) takes the agent's webhook alerts and heartbeat pings. It records each request's method,
@@ -56,8 +57,9 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
   `$E2E_ROOT` in place.
 - `run.sh`: builds (unless `--no-build`), then runs `setup.sh` and one scenario per name, each on a fresh fixture. It stops
   the fixture at the end unless `--keep`, prints a summary, and exits 1 when a scenario failed.
-- `lib.sh`: settings, the `adm` and `ci` wrappers for the CLI, process helpers, and the assertions. `write_agent_config` joins the fragments of `run/environments.d` into `agent.json`; `add_environment PROJECT ENV` adds a hosted environment (state, key, admin token, fragment, manifest directory `$MAN-PROJECT-ENV`, CLI entry) and restarts the agent; `env_cmd PROJECT ENV CMD [ARGS]` runs berthy as that environment's admin from its manifest directory. `start_agent` waits on `/healthz`, which answers once every hosted environment has started.
+- `lib.sh`: settings, the `adm` and `ci` wrappers for the CLI, process helpers, and the assertions. `write_agent_config` joins the fragments of `run/environments.d` into `agent.json`; `add_environment PROJECT ENV` adds a hosted environment (state, key, admin token, fragment, manifest directory `$MAN-PROJECT-ENV`, CLI entry) and restarts the agent; `env_cmd PROJECT ENV CMD [ARGS]` runs berthy as that environment's admin from its manifest directory. `start_agent` waits on `/healthz`, which answers once every hosted environment has started. `start_agent2` starts a second agent process on the same Docker daemon (`AGENT2_LISTEN`, `$RUN/agent2.json`, `$RUN/state2`) with one hosted environment (`$PROJECT`, `${ENVN}c`) and adds it to `admin.json`; `purge_fixture` stops it and removes its journaled network and workloads.
 - `scenarios/`: one script per scenario. `00-smoke.sh` deploys v1, runs `exec`, lists the history, deploys v2 and rolls back.
+  `38-two-agents.sh` starts a second agent and shows one project with an environment on each.
 
 ## Add a scenario
 
