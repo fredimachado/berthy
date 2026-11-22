@@ -110,7 +110,9 @@ type labeledDocker struct {
 	refs []metrics.ContainerRef
 }
 
-func (d labeledDocker) Containers(context.Context) ([]metrics.ContainerRef, error) { return d.refs, nil }
+func (d labeledDocker) Containers(context.Context) ([]metrics.ContainerRef, error) {
+	return d.refs, nil
+}
 func (labeledDocker) Stats(context.Context, string) (metrics.RawContainer, error) {
 	return metrics.RawContainer{MemoryUsage: 50, MemoryLimit: 100}, nil
 }

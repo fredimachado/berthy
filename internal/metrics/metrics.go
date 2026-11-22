@@ -198,6 +198,7 @@ func clone(s Sample) Sample {
 	}
 	return s
 }
+
 // Only returns a copy of s whose containers are those keep accepts. A nil keep leaves every container. The host part is
 // unchanged.
 func (s Sample) Only(keep func(labels map[string]string) bool) Sample {
