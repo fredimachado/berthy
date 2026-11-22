@@ -38,30 +38,17 @@ Berthy makes choices so that you do not have to. If you disagree with several of
 
 You need a Linux server with systemd (amd64 or arm64), a private address on it, and an account that is `root` or has passwordless `sudo`. Setup does not create the server, its firewall or your VPN. Read the [user guide](docs/user-guide.md#step-1-prepare-a-server-and-set-it-up) before you point it at a server you care about.
 
-**1. Install the CLI** from the [release](https://github.com/fredimachado/berthy/releases/tag/v0.1.0). The files are named `berthy-<os>-<arch>` for linux and darwin on amd64 and arm64, plus `berthy-windows-amd64.exe` and `checksums.txt`.
+This quick start needs a CLI that has **projects**: one agent hosts any number of (project, environment) pairs. Released builds through v0.2.0 do not. Use the next release once it ships, or build from this repository:
 
 ```bash
-VERSION=v0.1.0 OS=linux ARCH=amd64     # OS: linux or darwin. ARCH: amd64 or arm64.
-curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/berthy-$OS-$ARCH
-curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/checksums.txt
-sha256sum --ignore-missing -c checksums.txt    # on macOS, compare the hash with shasum -a 256
-chmod +x berthy-$OS-$ARCH && sudo mv berthy-$OS-$ARCH /usr/local/bin/berthy
+git clone https://github.com/fredimachado/berthy.git
+cd berthy
+go build -o berthy ./cmd/berthy
+sudo mv berthy /usr/local/bin/berthy
 berthy version
 ```
 
-With the GitHub CLI: `gh release download v0.1.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
-
-**2. Set up the server.** Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default.
-
-```bash
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
-export BERTHY_HELLO_PROD_TOKEN=<the admin token setup printed>
-```
-
-The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest below). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
-
-**3. Write a manifest** in your repository. `berthy.yml`:
+**1. Write a manifest** in your repository. `berthy.yml`:
 
 ```yaml
 project: hello
@@ -99,7 +86,17 @@ protected: true
 
 Check both without a server: `berthy config validate -e prod`.
 
-**4. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
+**2. Set up the server** from the directory that holds that manifest. Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default. With no `berthy.yml` in the directory, pass `--project hello` instead.
+
+```bash
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
+berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
+export BERTHY_HELLO_PROD_TOKEN=<the admin token setup printed>
+```
+
+The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
+
+**3. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
 
 ```bash
 berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
@@ -108,7 +105,7 @@ berthy secret set DATABASE_URL -e prod
 
 For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod`. To replace a token later, run the same `secret set` command again: Berthy keeps the registry, and running services get the new password without a restart.
 
-**5. Deploy.** `prod` is protected, so give the image digest that CI printed, not a tag.
+**4. Deploy.** `prod` is protected, so give the image digest that CI printed, not a tag.
 
 ```bash
 berthy deploy web -e prod --version sha256:<64 hex characters> --dry-run
