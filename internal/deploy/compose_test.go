@@ -1254,7 +1254,15 @@ func TestComposeDeployIgnoresUnrelatedImageDNSClashes(t *testing.T) {
 	for _, dry := range []bool{true, false} {
 		t.Run(fmt.Sprint(dry), func(t *testing.T) {
 			c, s := composeController(t, &fakeCompose{config: configOne, hashes: hashOne}, newComposeDocker())
-			seedDeployed(t, s, "web", state.Binding{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"})
+			ctx := context.Background()
+			seed, _, err := s.Admit(ctx, state.Admission{RequestID: "seed-web", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			release := &state.Release{App: "web", Digest: "digest-web", Manifest: json.RawMessage(`{"apps":{"web":{"kind":"image"}}}`), Bindings: []state.Binding{{App: "web", Role: "web", Name: "api-web", ServiceID: "adopted"}}}
+			if err := s.Finish(ctx, seed.ID, state.Outcome{State: "succeeded", Release: release}); err != nil {
+				t.Fatal(err)
+			}
 			m := composeApp(false)
 			image := manifest.App{Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}}}
 			m.Apps["api"] = image

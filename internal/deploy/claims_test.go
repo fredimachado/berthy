@@ -1494,3 +1494,40 @@ func TestComposeDeployRefusesProjectOfOtherAppliedApp(t *testing.T) {
 		t.Errorf("redeploy of the same app: %v", err)
 	}
 }
+
+func TestComposeRollbackRefusesProjectOfOtherAppliedApp(t *testing.T) {
+	ctx := context.Background()
+	actor := Actor{ID: "admin", Admin: true}
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, s := composeController(t, runner, newComposeDocker())
+	for _, tc := range []struct{ id, app, project, file string }{{"beta-old", "beta", "shared", composeFileOne}, {"beta-new", "beta", "beta-new", composeFileTwo}, {"alpha", "alpha", "shared", composeFileOne}} {
+		a := manifest.App{Kind: "compose", File: "compose.yaml", ProjectName: tc.project, Deploy: manifest.Deploy{DeployTimeout: "30s", DrainTimeout: "5s"}}
+		req := Request{RequestID: tc.id, Kind: "deploy", App: tc.app, Manifest: manifest.Manifest{Project: "shop", Network: "berthy", Apps: map[string]manifest.App{tc.app: a}}, ComposeFile: tc.file}
+		op, _, err := admit(t, c, ctx, actor, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		done, err := s.Operation(ctx, op.ID)
+		if err != nil || done.State != "succeeded" {
+			t.Fatalf("%s: %+v %v", tc.id, done, err)
+		}
+	}
+	want := "Compose project shared is shared by apps alpha and beta"
+	req := Request{RequestID: "back", Kind: "rollback", App: "beta", DryRun: true}
+	if _, err := c.Plan(ctx, actor, req); err == nil || err.Error() != want {
+		t.Errorf("dry run: %v", err)
+	}
+	req.DryRun = false
+	if _, _, err := admit(t, c, ctx, actor, req); err == nil || err.Error() != want {
+		t.Errorf("admission: %v", err)
+	}
+	if err := c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runner.upRuns() != 3 {
+		t.Errorf("compose up ran %d times", runner.upRuns())
+	}
+}
