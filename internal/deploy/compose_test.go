@@ -795,6 +795,8 @@ func TestBuildComposePlanBlockers(t *testing.T) {
 var hostAccessCases = []struct {
 	name, config, want string
 }{
+	{"volume driver", `{"services":{"web":{}},"volumes":{"data":{"name":"project_data","driver":"custom"}}}`, "volume data uses a host-access driver"},
+	{"volume driver options", `{"services":{"web":{}},"volumes":{"data":{"name":"project_data","driver":"local","driver_opts":{"type":"none","o":"bind","device":"/var/lib/berthy"}}}}`, "volume data uses a host-access driver"},
 	{"privileged", `{"services":{"web":{"privileged":true}}}`, "service web runs privileged"},
 	{"host network", `{"services":{"web":{"network_mode":"host"}}}`, "service web uses the host network namespace"},
 	{"host pid", `{"services":{"web":{"pid":"host"}}}`, "service web uses the host pid namespace"},
@@ -1284,5 +1286,35 @@ func TestComposeDeployIgnoresUnrelatedImageDNSClashes(t *testing.T) {
 				t.Fatalf("state %s: %s", got.State, got.Err)
 			}
 		})
+	}
+}
+
+func TestVolumeDriverOptionsNeedAdminOnDeploy(t *testing.T) {
+	config := `{"services":{"database":{"image":"alpine:3.20"}},"volumes":{"data":{"name":"project_data","driver_opts":{"type":"none","o":"bind","device":"/var/lib/berthy"}}}}`
+	runner := &fakeCompose{config: config, hashes: "database hash-0000000000000003\n"}
+	c, s := composeController(t, runner, newComposeDocker())
+	ctx := context.Background()
+	want := "volume data uses a host-access driver; deploy it with an admin token"
+	if !PublicMessage(want) {
+		t.Fatal("refusal is not public")
+	}
+	for _, tc := range []struct {
+		actor              Actor
+		id, state, message string
+	}{
+		{Actor{ID: "ci"}, "volume-ci", "failed", want},
+		{Actor{ID: "admin", Admin: true}, "volume-admin", "succeeded", ""},
+	} {
+		op, _, err := admit(t, c, ctx, tc.actor, composeReq(tc.id, composeFileOne, composeApp(false)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := waitComposeOperation(t, s, op.ID)
+		if got.State != tc.state || got.Err != tc.message {
+			t.Fatalf("%s: %s %q", tc.id, got.State, got.Err)
+		}
+	}
+	if runner.upRuns() != 1 {
+		t.Fatalf("ran up %d times", runner.upRuns())
 	}
 }

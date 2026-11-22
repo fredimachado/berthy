@@ -90,7 +90,7 @@ const (
 
 // composeMessage matches the refusals a Compose plan, an adoption or an exec can name a service, port or app in. Only these
 // dynamic texts are public besides the fixed Refusal values.
-var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (exited with code -?[0-9]{1,3}|is unhealthy|not ready after [0-9]{1,6}s|publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
+var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (exited with code -?[0-9]{1,3}|is unhealthy|not ready after [0-9]{1,6}s|publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|volume [A-Za-z0-9][A-Za-z0-9._-]{0,127} uses a host-access driver; deploy it with an admin token|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
 
 // composeHash matches one config hash printed by `compose config --hash`.
 var composeHash = regexp.MustCompile(`^[A-Za-z0-9:._-]{8,256}$`)
@@ -317,8 +317,10 @@ type composeTopFile struct {
 
 // composeConfigVolume is a named volume in `compose config --format json`.
 type composeConfigVolume struct {
-	Name     string          `json:"name"`
-	External json.RawMessage `json:"external,omitempty"`
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver,omitempty"`
+	DriverOpts map[string]string `json:"driver_opts,omitempty"`
+	External   json.RawMessage   `json:"external,omitempty"`
 }
 
 // composeConfigFile is the part of `compose config --format json` the plan reads.
@@ -474,6 +476,12 @@ func buildComposePlan(in composeInputs) ComposePlan {
 	}
 	// Settings that reach the host need an administrator's token, for a deploy and for an adoption alike.
 	if !in.Admin {
+		for _, key := range sortedKeys(in.Config.Volumes) {
+			v := in.Config.Volumes[key]
+			if (v.Driver != "" && v.Driver != "local") || len(v.DriverOpts) > 0 {
+				blockers = append(blockers, fmt.Sprintf("volume %s uses a host-access driver%s", key, hostAccessSuffix))
+			}
+		}
 		for _, name := range sortedKeys(in.Config.Services) {
 			blockers = append(blockers, hostAccessBlockers(name, in.Config.Services[name], in.Config)...)
 		}
