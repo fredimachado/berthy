@@ -411,7 +411,11 @@ func pruneFailure(err error) string {
 // service uses and no retained release needs. It returns the references of the images it removed, and a public failure
 // text, which is empty on success.
 func (c *Controller) pruneNow(ctx context.Context) (removed []string, failure string) {
-	candidates, err := c.prunePlan(ctx)
+	return c.pruneNowWithForeign(ctx, nil)
+}
+
+func (c *Controller) pruneNowWithForeign(ctx context.Context, foreignImages map[string]bool) (removed []string, failure string) {
+	candidates, err := c.prunePlanWithForeign(ctx, pruneExclusions{}, foreignImages)
 	if err != nil {
 		return nil, pruneFailure(err)
 	}
@@ -467,6 +471,24 @@ func (c *Controller) prunePlan(ctx context.Context) ([]state.AcquiredImage, erro
 }
 
 func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions) ([]state.AcquiredImage, error) {
+	return c.prunePlanWithForeign(ctx, gone, nil)
+}
+
+func (c *Controller) foreignImages(ctx context.Context) (map[string]bool, error) {
+	images := map[string]bool{}
+	if c.Foreign != nil {
+		foreign, err := c.Foreign(ctx)
+		if err != nil {
+			return nil, errPruneHistory
+		}
+		for ref := range foreign.Images {
+			images[ref] = true
+		}
+	}
+	return images, nil
+}
+
+func (c *Controller) prunePlanWithForeign(ctx context.Context, gone pruneExclusions, foreignImages map[string]bool) ([]state.AcquiredImage, error) {
 	e, ok := c.Engine.(inventoryEngine)
 	if !ok || c.Store == nil {
 		return nil, errors.New("image inventory unavailable")
@@ -491,14 +513,14 @@ func (c *Controller) prunePlanWithout(ctx context.Context, gone pruneExclusions)
 	if err != nil {
 		return nil, err
 	}
-	if c.Foreign != nil {
-		foreign, err := c.Foreign(ctx)
+	if foreignImages == nil {
+		foreignImages, err = c.foreignImages(ctx)
 		if err != nil {
-			return nil, errPruneHistory
+			return nil, err
 		}
-		for ref := range foreign.Images {
-			refs[ref] = true
-		}
+	}
+	for ref := range foreignImages {
+		refs[ref] = true
 	}
 	ids := map[string]bool{}
 	aliases := map[string]string{}

@@ -70,11 +70,12 @@ type destroyApp struct {
 
 // destruction is everything a destroy needs to know, read once.
 type destruction struct {
-	plan       DestroyPlan
-	apps       []destroyApp
-	containers []engine.InventoryContainer // helper and one-off containers that go
-	services   []string                    // Swarm services the destroy deletes, whose task containers Docker removes a moment later
-	tunnel     *state.IngressState         // the tunnel of managed ingress, if there is one, or one left behind
+	plan          DestroyPlan
+	apps          []destroyApp
+	containers    []engine.InventoryContainer // helper and one-off containers that go
+	services      []string                    // Swarm services the destroy deletes, whose task containers Docker removes a moment later
+	tunnel        *state.IngressState         // the tunnel of managed ingress, if there is one, or one left behind
+	foreignImages map[string]bool
 }
 
 // destroyCheck is what a destroy decides before reading anything: the caller is an administrator and has named the
@@ -226,7 +227,11 @@ func (c *Controller) destroyFor(ctx context.Context, actor Actor, req Request) (
 			}
 		}
 		if _, ok := c.Engine.(inventoryEngine); ok {
-			candidates, err := c.prunePlanWithout(ctx, gone)
+			d.foreignImages, err = c.foreignImages(ctx)
+			if err != nil {
+				return nil, err
+			}
+			candidates, err := c.prunePlanWithForeign(ctx, gone, d.foreignImages)
 			if err != nil {
 				if errors.Is(err, errPruneHistory) {
 					return nil, errPruneHistory
@@ -465,7 +470,7 @@ func (c *Controller) removeContainersAndImages(ctx context.Context, d *destructi
 		}
 	}
 	if _, ok := c.Engine.(inventoryEngine); ok {
-		removed, failure := c.pruneNow(ctx)
+		removed, failure := c.pruneNowWithForeign(ctx, d.foreignImages)
 		for _, ref := range removed {
 			step("removed image " + ref)
 		}

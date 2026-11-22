@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -726,5 +727,39 @@ func TestDestroyKeepsAnImageAnotherEnvironmentRetains(t *testing.T) {
 	}
 	if !slices.Contains(f.imageIDs(), "id-acquired") {
 		t.Fatalf("retained image removed: %v", f.imageIDs())
+	}
+}
+
+func TestDestroyReadsForeignImagesBeforeRemovingAnything(t *testing.T) {
+	for _, afterPlan := range []bool{false, true} {
+		t.Run(fmt.Sprint(afterPlan), func(t *testing.T) {
+			base := newIngressFixture(t)
+			d := &destroyDocker{volumeDocker: &volumeDocker{loggedEngine: base.docker, volumes: map[string]string{}}, bound: base.bound}
+			d.containers = []engine.InventoryContainer{{ID: "helper", Names: []string{"helper"}, ImageID: "image", State: "exited", Labels: map[string]string{"berthy.environment": ingressEnv, "berthy.helper": "probe"}}}
+			base.ctrl.Engine = d
+			base.calls.reset()
+			reads := 0
+			base.ctrl.Foreign = func(context.Context) (Foreign, error) {
+				reads++
+				if reads > 1 {
+					return Foreign{}, errors.New("peer unavailable")
+				}
+				return Foreign{Images: map[string]bool{}}, nil
+			}
+			req := Request{RequestID: "destroy", Kind: "destroy", Confirm: ingressEnv}
+			if afterPlan {
+				if _, err := base.ctrl.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			op := base.run(req)
+			if afterPlan {
+				if op.State != "failed" || op.Err != "release history unavailable" || base.calls.count("container remove") != 0 {
+					t.Fatalf("outcome %+v, calls %v", op, base.calls.all())
+				}
+			} else if op.State != "succeeded" || reads != 1 || base.calls.count("container remove") != 1 {
+				t.Fatalf("outcome %+v reads %d calls %v", op, reads, base.calls.all())
+			}
+		})
 	}
 }
