@@ -744,6 +744,86 @@ func (failingStore) Get(context.Context, string) (io.ReadCloser, objectstore.Obj
 	return nil, objectstore.ObjectInfo{}, errors.New("https://s3.example/bucket?X-Amz-Signature=secret")
 }
 
+func TestReadSidecarRejectsAMissingProjectEvenWhenTheRunnerHasNone(t *testing.T) {
+	g := newRig(t)
+	g.archive("one")
+	res := g.run("uploads")
+	sc := g.sidecarOf(res.Key)
+	sc.Project = ""
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := sidecarKeyOf(res.Key)
+	g.objs.put(key, body)
+	g.runner.Project = ""
+	if _, err := g.runner.readSidecar(context.Background(), g.objs, key); !errors.Is(err, ErrInvalidSidecar) {
+		t.Fatalf("empty project sidecar: %v", err)
+	}
+}
+
+func TestAnArchiveWithoutProjectIsNotPruned(t *testing.T) {
+	g := newRig(t)
+	b := g.m.Backups["uploads"]
+	b.Retention = &manifest.Retention{Keep: float64(1)}
+	g.m.Backups["uploads"] = b
+	g.archive("one")
+	first := g.run("uploads")
+	other := g.sidecarOf(first.Key)
+	other.Project = ""
+	body, err := json.Marshal(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanArchive := strings.TrimSuffix(first.Key, ".tar.gz") + "-orphan.tar.gz"
+	orphanSidecar := strings.TrimSuffix(orphanArchive, ".tar.gz") + ".json"
+	g.objs.put(orphanArchive, []byte("orphan-archive"))
+	g.objs.put(orphanSidecar, body)
+	g.archive("two")
+	second := g.run("uploads")
+	if second.Run.Status != "succeeded" {
+		t.Fatalf("second: %+v", second.Run)
+	}
+	got := g.objs.keys()
+	if !slices.Contains(got, orphanArchive) || !slices.Contains(got, orphanSidecar) {
+		t.Fatalf("a sidecar without project was pruned: %v", got)
+	}
+	if slices.Contains(got, first.Key) || slices.Contains(got, sidecarKeyOf(first.Key)) {
+		t.Fatalf("our older archive was kept: %v", got)
+	}
+}
+
+func TestAnArchiveOfAnotherProjectIsNotPruned(t *testing.T) {
+	g := newRig(t)
+	b := g.m.Backups["uploads"]
+	b.Retention = &manifest.Retention{Keep: float64(1)}
+	g.m.Backups["uploads"] = b
+	g.archive("one")
+	first := g.run("uploads")
+	other := g.sidecarOf(first.Key)
+	other.Project = "other"
+	body, err := json.Marshal(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignArchive := strings.TrimSuffix(first.Key, ".tar.gz") + "-other.tar.gz"
+	foreignSidecar := strings.TrimSuffix(foreignArchive, ".tar.gz") + ".json"
+	g.objs.put(foreignArchive, []byte("other-archive"))
+	g.objs.put(foreignSidecar, body)
+	g.archive("two")
+	second := g.run("uploads")
+	if second.Run.Status != "succeeded" {
+		t.Fatalf("second: %+v", second.Run)
+	}
+	got := g.objs.keys()
+	if !slices.Contains(got, foreignArchive) || !slices.Contains(got, foreignSidecar) {
+		t.Fatalf("another project's archive was pruned: %v", got)
+	}
+	if slices.Contains(got, first.Key) || slices.Contains(got, sidecarKeyOf(first.Key)) {
+		t.Fatalf("our older archive was kept: %v", got)
+	}
+}
+
 func TestAnArchiveOfAnotherEnvironmentOfTheProjectIsNotPruned(t *testing.T) {
 	g := newRig(t)
 	b := g.m.Backups["uploads"]

@@ -731,7 +731,7 @@ func (r *Runner) readSidecar(ctx context.Context, store objectstore.Store, key s
 		return Sidecar{}, err
 	}
 	var sc Sidecar
-	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || (sc.Format != SidecarFormat && sc.Format != CommandSidecarFormat) || sc.Project != r.Project || sc.Environment != r.Env ||
+	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || (sc.Format != SidecarFormat && sc.Format != CommandSidecarFormat) || r.Project == "" || sc.Project != r.Project || sc.Environment != r.Env ||
 		sc.Backup == "" || sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) {
 		return Sidecar{}, ErrInvalidSidecar
 	}

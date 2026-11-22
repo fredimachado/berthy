@@ -177,7 +177,7 @@ func (p *Pending) ID() int64 { return p.run.ID }
 // settings for a scheduled run is recorded as a failed run, so the check shows it. The caller must call Execute, or the runner
 // stays busy.
 func (r *Runner) Begin(ctx context.Context, m manifest.Manifest, trigger string, scheduled time.Time) (*Pending, error) {
-	if m.StateBackup == nil {
+	if m.StateBackup == nil || r.Project == "" {
 		return nil, ErrNotConfigured
 	}
 	if !r.claim() {
@@ -432,7 +432,7 @@ func (r *Runner) readSidecar(ctx context.Context, store objectstore.Store, key s
 		return Sidecar{}, err
 	}
 	var sc Sidecar
-	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || sc.Project != r.Project || sc.Environment != r.Env ||
+	if len(data) > maxSidecar || json.Unmarshal(data, &sc) != nil || sc.Format != SidecarFormat || r.Project == "" || sc.Project != r.Project || sc.Environment != r.Env ||
 		sc.Size < 0 || !sha256Hex.MatchString(sc.SHA256) || !keyIDHex.MatchString(sc.KeyID) {
 		return Sidecar{}, ErrInvalidSidecar
 	}

@@ -500,6 +500,77 @@ func (g *rig) restoreOptions(object, out, keyPath string) RestoreOptions {
 	return RestoreOptions{Endpoint: g.srv.URL, Bucket: "bkt", Object: object, Out: out, KeyFile: keyPath, Project: "demo", Environment: "prod", AccessKey: testAccess, SecretKey: testSecret}
 }
 
+func TestBeginRefusesAnEmptyProjectBeforeItWrites(t *testing.T) {
+	g := newRig(t, 14)
+	g.runner.Project = ""
+	before := g.objectsUnder("")
+	if _, err := g.runner.Begin(context.Background(), g.m, "manual", time.Time{}); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("empty project: %v", err)
+	}
+	if got := g.objectsUnder(""); !slices.Equal(got, before) {
+		t.Fatalf("unscoped begin wrote objects: %v", got)
+	}
+}
+
+func TestReadSidecarRejectsAMissingProjectEvenWhenTheRunnerHasNone(t *testing.T) {
+	g := newRig(t, 14)
+	run := g.run("manual")
+	key := strings.TrimSuffix(run.Key, ".db") + ".json"
+	var sc Sidecar
+	if err := json.Unmarshal(g.read(key), &sc); err != nil {
+		t.Fatal(err)
+	}
+	sc.Project = ""
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = g.objects.Put(context.Background(), key, bytes.NewReader(body), nil); err != nil {
+		t.Fatal(err)
+	}
+	g.runner.Project = ""
+	if _, err := g.runner.readSidecar(context.Background(), g.objects, key); !errors.Is(err, ErrInvalidSidecar) {
+		t.Fatalf("empty project sidecar: %v", err)
+	}
+}
+
+func TestASidecarWithoutProjectIsNeitherListedNorPruned(t *testing.T) {
+	g := newRig(t, 1)
+	run := g.run("manual")
+	if run.Status != "succeeded" {
+		t.Fatalf("run: %+v", run)
+	}
+	orphanKey := strings.TrimSuffix(run.Key, ".db") + "-orphan"
+	var sc Sidecar
+	if err := json.Unmarshal(g.read(strings.TrimSuffix(run.Key, ".db")+".json"), &sc); err != nil {
+		t.Fatal(err)
+	}
+	sc.Project = ""
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err = g.objects.Put(ctx, orphanKey+".db", strings.NewReader("orphan-snapshot"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = g.objects.Put(ctx, orphanKey+".json", bytes.NewReader(body), nil); err != nil {
+		t.Fatal(err)
+	}
+	g.clock.Add(time.Minute)
+	second := g.run("manual")
+	if second.Status != "succeeded" {
+		t.Fatalf("second: %+v", second)
+	}
+	keys := g.objectsUnder("")
+	if !slices.Contains(keys, orphanKey+".db") || !slices.Contains(keys, orphanKey+".json") {
+		t.Fatalf("a sidecar without project was pruned: %v", keys)
+	}
+	if slices.Contains(keys, run.Key) || slices.Contains(keys, strings.TrimSuffix(run.Key, ".db")+".json") {
+		t.Fatalf("our own older snapshot was kept: %v", keys)
+	}
+}
+
 func TestASnapshotOfAnotherProjectIsNeitherListedNorPruned(t *testing.T) {
 	g := newRig(t, 1)
 	run := g.run("manual")
