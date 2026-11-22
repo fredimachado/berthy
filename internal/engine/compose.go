@@ -215,7 +215,7 @@ func (e *Engine) VolumeLabels(ctx context.Context, name string) (map[string]stri
 	return nil, false, err
 }
 
-// VolumeExists reports whether Docker holds a volume with this name. Docker answers 404 for a volume it does not hold.
+// InspectVolume returns the driver and options of a named volume.
 func (e *Engine) InspectVolume(ctx context.Context, name string) (string, map[string]string, error) {
 	p, err := pathID(name)
 	if err != nil {
@@ -229,6 +229,7 @@ func (e *Engine) InspectVolume(ctx context.Context, name string) (string, map[st
 	return v.Driver, v.Options, err
 }
 
+// VolumeExists reports whether Docker holds a volume with this name. Docker answers 404 for a volume it does not hold.
 func (e *Engine) VolumeExists(ctx context.Context, name string) (bool, error) {
 	p, err := pathID(name)
 	if err != nil {
