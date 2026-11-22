@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 
 	"berthy/internal/state"
@@ -68,11 +69,24 @@ func LoadFile(path string) (File, error) {
 	if st.Mode().Perm()&0077 != 0 {
 		return f, fmt.Errorf("agent config must not be accessible by group or others")
 	}
+	return parseAgentFile(path)
+}
+
+// LoadFileForCLI reads agent.json for an offline CLI command such as berthy agent token --config. On Windows the
+// permission bits are not meaningful, so the private-file check of LoadFile is skipped. Elsewhere it is LoadFile.
+func LoadFileForCLI(path string) (File, error) {
+	if runtime.GOOS == "windows" {
+		return parseAgentFile(path)
+	}
+	return LoadFile(path)
+}
+
+func parseAgentFile(path string) (File, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return f, err
+		return File{}, err
 	}
-	f, err = ParseFile(b)
+	f, err := ParseFile(b)
 	if err != nil {
 		return File{}, err
 	}

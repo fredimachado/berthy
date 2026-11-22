@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -55,9 +54,6 @@ func TestAgentTokenPrintsTheTokenItsDigestAndAConfigObject(t *testing.T) {
 }
 
 func TestAgentTokenPrintsTheContextAddLineWithoutTheToken(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("LoadFile checks Unix permission bits, which Windows does not report")
-	}
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "agent.json")
 	digest := strings.Repeat("a", 64)
@@ -86,6 +82,34 @@ func TestAgentTokenWithoutAConfigLeavesTheURLToFillIn(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	want := "on the machine that will use it: berthy context add --project demo -e lab --url http://ADDRESS:PORT --token-env " + setup.DefaultTokenEnv("demo", "lab")
 	if code != 0 || len(lines) != 4 || lines[3] != want || errout.String() != "" {
+		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
+	}
+}
+
+func TestAgentTokenQuotesAnIPv6ListenURL(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "agent.json")
+	digest := strings.Repeat("a", 64)
+	body := fmt.Sprintf(`{"listen":"[fd00::1]:7710","docker_socket":"/var/run/docker.sock","environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
+		filepath.ToSlash(dir), filepath.ToSlash(dir), digest)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab", "--config", cfg}, &out, &errout)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	want := "on the machine that will use it: berthy context add --project demo -e lab --url 'http://[fd00::1]:7710' --token-env " + setup.DefaultTokenEnv("demo", "lab")
+	if code != 0 || len(lines) != 4 || lines[3] != want || errout.String() != "" {
+		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
+	}
+}
+
+func TestAgentTokenRefusesAProjectAndEnvironmentThatAreTooLongTogether(t *testing.T) {
+	project := strings.Repeat("a", 58)
+	var out, errout bytes.Buffer
+	code := Run([]string{"agent", "token", "--project", project, "-e", "prod"}, &out, &errout)
+	want := "<project>-<environment> is longer than 59 characters; shorten the project or environment"
+	if code != 2 || out.String() != "" || !strings.Contains(errout.String(), want) {
 		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
 	}
 }

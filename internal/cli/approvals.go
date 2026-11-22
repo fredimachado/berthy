@@ -73,6 +73,11 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "invalid environment")
 		return 2
 	}
+	id := scope.ID{Project: project, Environment: env}
+	if err := id.CheckLength(); err != nil {
+		fmt.Fprintln(errout, err)
+		return 2
+	}
 	if tokenScope != "read" && tokenScope != "deploy" && tokenScope != "admin" {
 		fmt.Fprintln(errout, "invalid scope: use read, deploy or admin")
 		return 2
@@ -83,14 +88,14 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 	}
 	urlHint := "http://ADDRESS:PORT"
 	if config != "" {
-		f, err := agent.LoadFile(config)
+		f, err := agent.LoadFileForCLI(config)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
 		urlHint = "http://" + f.Listen
 	}
-	token, digest, err := agent.NewToken(scope.ID{Project: project, Environment: env})
+	token, digest, err := agent.NewToken(id)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
@@ -101,7 +106,7 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\non the machine that will use it: berthy context add --project %s -e %s --url %s --token-env %s\n",
-		token, digest, entry, project, env, urlHint, setup.DefaultTokenEnv(project, env))
+		token, digest, entry, project, env, shellWord(urlHint), setup.DefaultTokenEnv(project, env))
 	return 0
 }
 
