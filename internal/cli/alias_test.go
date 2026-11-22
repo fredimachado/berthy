@@ -295,3 +295,17 @@ func TestAliasPassesProjectFlagAfterCommandSeparator(t *testing.T) {
 		t.Fatalf("command %q", body.Command)
 	}
 }
+
+func TestAliasCannotHideProjectFlagBehindFlagValue(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	dir := writeAliasDir(t, strings.Replace(aliasManifest, "project: demo", "project: cardiotennis", 1)+"  acquire: lock acquire --message -- --project sliceup\n")
+	t.Chdir(dir)
+	var out, errs bytes.Buffer
+	code := Run([]string{"acquire", "-e", "prod", "--project", "cardiotennis", "--config", cfg}, &out, &errs)
+	if code == 0 || !strings.Contains(errs.String(), "--project is not allowed") {
+		t.Errorf("exit %d, stderr %q", code, errs.String())
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatalf("sent %d and %d requests", cardio.Load(), slice.Load())
+	}
+}

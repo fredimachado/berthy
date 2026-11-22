@@ -192,7 +192,14 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			f.origin = true
 		case "--revert-schema":
 			f.revert = true
-		case "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+		default:
+			if !deploymentFlagTakesValue(a) {
+				if strings.HasPrefix(a, "-") {
+					return f, fmt.Errorf("unknown flag %s", a)
+				}
+				f.pos = append(f.pos, a)
+				continue
+			}
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("missing value for %s", a)
 			}
@@ -248,14 +255,18 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			case "--run":
 				f.run = v
 			}
-		default:
-			if strings.HasPrefix(a, "-") {
-				return f, fmt.Errorf("unknown flag %s", a)
-			}
-			f.pos = append(f.pos, a)
 		}
 	}
 	return f, nil
+}
+
+// deploymentFlagTakesValue is shared by parsing and alias validation.
+func deploymentFlagTakesValue(flag string) bool {
+	switch flag {
+	case "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+		return true
+	}
+	return false
 }
 
 // canonicalFlag is the name changeFlags lists a flag under: -m is --message, and -i is --interactive.

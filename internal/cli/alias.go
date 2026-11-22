@@ -47,12 +47,16 @@ func checkAliases(aliases map[string]string) error {
 		if !slices.Contains(agentCommands, words[0]) {
 			return fmt.Errorf("alias %s: its first word must be a command that talks to an agent", name)
 		}
-		for _, w := range words {
+		for i := 1; i < len(words); i++ {
+			w := words[i]
 			if w == "--" {
 				break
 			}
 			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
 				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line", name, w)
+			}
+			if deploymentFlagTakesValue(w) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, w) {
+				i++
 			}
 		}
 	}
