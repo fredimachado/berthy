@@ -27,7 +27,7 @@ func TestDoctorReportsIncompatibleReachableDocker(t *testing.T) {
 	})}
 	go server.Serve(l)
 	defer server.Close()
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	h := Handler(Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, engine.New(sock))
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/doctor", nil)
 	r.Header.Set("Authorization", "Bearer "+token)

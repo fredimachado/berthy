@@ -304,7 +304,7 @@ func TestSessionWithoutATerminalKeepsStdoutAndStderrApart(t *testing.T) {
 
 func TestSessionNeedsAnAdministratorToken(t *testing.T) {
 	f := newSessionFixture(t, false)
-	for _, token := range []string{apReadToken, apDeployToken, apAgentDeploy, "bty.lab." + strings.Repeat("9", 64)} {
+	for _, token := range []string{apReadToken, apDeployToken, apAgentDeploy, "bty.demo.lab." + strings.Repeat("9", 64)} {
 		_, _, resp := f.open(token, nil, sessionBody)
 		if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("token %s...: %d", token[:12], resp.StatusCode)

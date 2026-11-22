@@ -64,9 +64,9 @@ func ingressTestRequest(t *testing.T, replace bool) []byte {
 
 func TestIngressRoutesEnforceScopeAndAdministratorForReplace(t *testing.T) {
 	s := openIngressStore(t)
-	readToken := "bty.lab." + strings.Repeat("a", 64)
-	deployToken := "bty.lab." + strings.Repeat("b", 64)
-	adminToken := "bty.lab." + strings.Repeat("c", 64)
+	readToken := "bty.demo.lab." + strings.Repeat("a", 64)
+	deployToken := "bty.demo.lab." + strings.Repeat("b", 64)
+	adminToken := "bty.demo.lab." + strings.Repeat("c", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	call := func(method, path, token string, body []byte) *httptest.ResponseRecorder {
@@ -114,7 +114,7 @@ func TestIngressAdminDryRunReturnsThePlanWithoutWriting(t *testing.T) {
 	zone := fake.AddZone("example.com")
 	srv := httptest.NewServer(fake.Handler())
 	t.Cleanup(srv.Close)
-	adminToken := "bty.lab." + strings.Repeat("c", 64)
+	adminToken := "bty.demo.lab." + strings.Repeat("c", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(adminToken), Scope: "admin"}}}
 	ctrl := &deploy.Controller{Engine: planEngine{}, Store: s, Environment: "lab", CloudflareURL: srv.URL + "/client/v4"}
 	h := NewDeploymentHandler(cfg, nil, nil, ctrl)
@@ -154,7 +154,7 @@ func TestDoctorReportsTunnelHealthWhenIngressIsConfigured(t *testing.T) {
 	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab", CloudflareURL: srv.URL + "/client/v4"})
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/doctor", nil)
@@ -167,7 +167,7 @@ func TestDoctorReportsTunnelHealthWhenIngressIsConfigured(t *testing.T) {
 }
 
 func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
-	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	for raw, ok := range map[string]bool{
 		"https://api.cloudflare.com/client/v4": true,
 		"http://127.0.0.1:9999":                true,
@@ -190,7 +190,7 @@ func TestCloudflareURLMustBeHTTPSOrLoopback(t *testing.T) {
 
 func TestLoadFileRejectsPlainHTTPCloudflareURL(t *testing.T) {
 	// The URL rule lives in Validate, which LoadFile calls, so the allow and deny cases run on every platform.
-	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	base := Config{Project: "demo", Environment: "lab", Listen: "127.0.0.1:9999", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	for raw, ok := range map[string]bool{"http://example.com": false, "http://127.0.0.1:9999": true} {
 		c := base
 		c.CloudflareAPIURL = raw
@@ -206,7 +206,7 @@ func TestLoadFileRejectsPlainHTTPCloudflareURL(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agent.json")
 		body := func(url string) []byte {
-			return []byte(`{"listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","environments":[{"project":"demo","environment":"lab","state_dir":"/s","key_file":"/k","tokens":[{"digest":"` + Digest("bty.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}]}`)
+			return []byte(`{"listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","environments":[{"project":"demo","environment":"lab","state_dir":"/s","key_file":"/k","tokens":[{"digest":"` + Digest("bty.demo.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}]}`)
 		}
 		if err := os.WriteFile(path, body("http://example.com"), 0600); err != nil {
 			t.Fatal(err)

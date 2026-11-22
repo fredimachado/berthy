@@ -70,7 +70,7 @@ func runToken(t *testing.T, a *tokenAgent, args ...string) (int, string, string)
 func TestTokenCreateSendsTheRequestAndShowsTheTokenOnce(t *testing.T) {
 	tokensNow = func() time.Time { return time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { tokensNow = time.Now })
-	value := "bty.dev." + strings.Repeat("a", 64)
+	value := "bty.demo.dev." + strings.Repeat("a", 64)
 	a := &tokenAgent{answer: `{"name":"ci","scope":"deploy","agent":false,"expires":"2027-02-16T00:00:00Z","token":"` + value + `"}`}
 	code, out, errout := runToken(t, a, "create", "ci", "--scope", "deploy", "--expires", "2027-02-16")
 	if code != 0 || errout != "" {
@@ -89,9 +89,9 @@ func TestTokenCreateSendsTheRequestAndShowsTheTokenOnce(t *testing.T) {
 }
 
 func TestTokenCreateDefaultsToReadAndSaysAgent(t *testing.T) {
-	a := &tokenAgent{answer: `{"name":"claude","scope":"read","agent":true,"token":"bty.dev.x"}`}
+	a := &tokenAgent{answer: `{"name":"claude","scope":"read","agent":true,"token":"bty.demo.dev.x"}`}
 	code, out, _ := runToken(t, a, "create", "claude", "--agent")
-	if code != 0 || out != "token claude (read, agent), shown once, store it now: bty.dev.x\n" {
+	if code != 0 || out != "token claude (read, agent), shown once, store it now: bty.demo.dev.x\n" {
 		t.Fatalf("exit %d: %q", code, out)
 	}
 	var sent map[string]any

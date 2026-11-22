@@ -131,9 +131,9 @@ func TestDoctorListsDeployedAppsTheManifestNoLongerNames(t *testing.T) {
 
 func TestRemoveRouteNeedsAnAdministratorAndReachesTheController(t *testing.T) {
 	s := openIngressStore(t)
-	readToken := "bty.lab." + strings.Repeat("a", 64)
-	deployToken := "bty.lab." + strings.Repeat("b", 64)
-	adminToken := "bty.lab." + strings.Repeat("c", 64)
+	readToken := "bty.demo.lab." + strings.Repeat("a", 64)
+	deployToken := "bty.demo.lab." + strings.Repeat("b", 64)
+	adminToken := "bty.demo.lab." + strings.Repeat("c", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	call := func(method, token, body string) *httptest.ResponseRecorder {
@@ -150,7 +150,7 @@ func TestRemoveRouteNeedsAnAdministratorAndReachesTheController(t *testing.T) {
 	if w := call("POST", deployToken, body); w.Code != http.StatusForbidden {
 		t.Fatalf("deploy scope: %d", w.Code)
 	}
-	if w := call("POST", "bty.lab."+strings.Repeat("d", 64), body); w.Code != http.StatusUnauthorized {
+	if w := call("POST", "bty.demo.lab."+strings.Repeat("d", 64), body); w.Code != http.StatusUnauthorized {
 		t.Fatalf("unknown token: %d", w.Code)
 	}
 	if w := call("GET", adminToken, ""); w.Code != http.StatusMethodNotAllowed {
@@ -166,9 +166,9 @@ func TestRemoveRouteNeedsAnAdministratorAndReachesTheController(t *testing.T) {
 
 func TestDestroyRouteNeedsAnAdministratorAndTheEnvironmentName(t *testing.T) {
 	s := openIngressStore(t)
-	readToken := "bty.lab." + strings.Repeat("a", 64)
-	deployToken := "bty.lab." + strings.Repeat("b", 64)
-	adminToken := "bty.lab." + strings.Repeat("c", 64)
+	readToken := "bty.demo.lab." + strings.Repeat("a", 64)
+	deployToken := "bty.demo.lab." + strings.Repeat("b", 64)
+	adminToken := "bty.demo.lab." + strings.Repeat("c", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(readToken), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}, {Digest: Digest(adminToken), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Project: "demo", Environment: "lab"})
 	call := func(method, token, body string) *httptest.ResponseRecorder {

@@ -20,9 +20,9 @@ import (
 )
 
 func TestLogsValidationBeforeDocker(t *testing.T) {
-	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/apps/demo/logs?grep=%5B", nil)
-	r.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	r.Header.Set("Authorization", "Bearer bty.demo.lab."+strings.Repeat("a", 64))
 	w := httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, r)
 	if w.Code != 400 {
@@ -30,9 +30,9 @@ func TestLogsValidationBeforeDocker(t *testing.T) {
 	}
 }
 func TestStatsBeforeFirstSample(t *testing.T) {
-	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/stats", nil)
-	r.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	r.Header.Set("Authorization", "Bearer bty.demo.lab."+strings.Repeat("a", 64))
 	w := httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, r)
 	if w.Code != 503 || !strings.Contains(w.Body.String(), "sample_not_ready") {

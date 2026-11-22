@@ -340,7 +340,7 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 			token = rest
 		}
 	}
-	if !strings.HasPrefix(token, "bty.p5.") || len(token) != len("bty.p5.")+64 || strings.Count(out, token) != 1 {
+	if !strings.HasPrefix(token, "bty.shop.p5.") || len(token) != len("bty.shop.p5.")+64 || strings.Count(out, token) != 1 {
 		t.Fatalf("token = %q, output:\n%s", token, out)
 	}
 	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin; it is shown once, at the end",
@@ -429,7 +429,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if !got.OK || !strings.HasPrefix(got.Token, "bty.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 13 {
+	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 13 {
 		t.Fatalf("report = %+v", got)
 	}
 	if !strings.Contains(got.NextSteps[1], "ssh 'ops@s1' 'sudo cat /var/lib/berthy/environments/shop/p5/key'") {
@@ -617,7 +617,7 @@ func TestSetupAFailedFirstInstallStillShowsTheToken(t *testing.T) {
 	server.waits = []int{1}
 	withSetupRunner(t, server)
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
-	if code != 1 || !strings.Contains(out, "✖ service") || !strings.Contains(out, "failed at service") || !strings.Contains(out, "admin token for shop/p5 (shown once, store it now): bty.p5.") || strings.Contains(out, "next steps") {
+	if code != 1 || !strings.Contains(out, "✖ service") || !strings.Contains(out, "failed at service") || !strings.Contains(out, "admin token for shop/p5 (shown once, store it now): bty.shop.p5.") || strings.Contains(out, "next steps") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }

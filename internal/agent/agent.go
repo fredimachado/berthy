@@ -99,21 +99,21 @@ func dockerHost(socket string) string {
 	return "unix://" + socket
 }
 
-// tokenPattern matches a bearer token issued for env: bty.<env>.<64 hex>.
-func tokenPattern(env string) *regexp.Regexp {
-	return regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(env) + `\.[0-9a-f]{64}$`)
+// tokenPattern matches a bearer token issued for id: bty.<project>.<environment>.<64 hex>.
+func tokenPattern(id scope.ID) *regexp.Regexp {
+	return regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(id.Project) + `\.` + regexp.QuoteMeta(id.Environment) + `\.[0-9a-f]{64}$`)
 }
 
 func Digest(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
 
-// NewToken makes a bearer token for env, bty.<env>.<64 hex>, from 32 random bytes, and returns it with its digest. The agent's
-// configuration holds only the digest.
-func NewToken(env string) (token, digest string, err error) {
+// NewToken makes a bearer token for id, bty.<project>.<environment>.<64 hex>, from 32 random bytes, and returns it with its
+// digest. The agent's configuration holds only the digest.
+func NewToken(id scope.ID) (token, digest string, err error) {
 	b := make([]byte, 32)
 	if _, err = rand.Read(b); err != nil {
 		return "", "", err
 	}
-	token = "bty." + env + "." + hex.EncodeToString(b)
+	token = "bty." + id.Project + "." + id.Environment + "." + hex.EncodeToString(b)
 	return token, Digest(token), nil
 }
 

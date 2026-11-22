@@ -30,7 +30,7 @@ import (
 // hostToken is the admin token of the hosted environment id. The digit makes it differ between environments of one file,
 // which refuses a token digest it has twice.
 func hostToken(id scope.ID, digit string) string {
-	return "bty." + id.Environment + "." + strings.Repeat(digit, 64)
+	return "bty." + id.Project + "." + id.Environment + "." + strings.Repeat(digit, 64)
 }
 
 // hostedFile is an agent.json of the given environments, each with its own temporary state and key and one admin token, and

@@ -21,7 +21,7 @@ func TestListenValidation(t *testing.T) {
 	}
 }
 func TestOutageKeepsDoctorAndDiskAvailable(t *testing.T) {
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	h := Handler(Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, nil)
 	for _, x := range []struct {
 		path string

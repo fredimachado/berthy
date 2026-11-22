@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"berthy/internal/agent"
+	"berthy/internal/scope"
 )
 
 // agentWants are the owner and mode the agent insists on, as the probe's stat prints them.
@@ -356,7 +357,7 @@ func tokenStep(ctx context.Context, s *Session) (string, string, error) {
 		s.dryToken = true
 		return StatusWouldChange, "would create " + what, nil
 	}
-	token, digest, err := agent.NewToken(s.Opts.Env)
+	token, digest, err := agent.NewToken(scope.ID{Project: s.Opts.Project, Environment: s.Opts.Env})
 	if err != nil {
 		return "", "", fmt.Errorf("creating the token: %w", err)
 	}

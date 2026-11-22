@@ -53,8 +53,8 @@ func newDiagnosticsFixture(t *testing.T) diagnosticsFixture {
 	if err = s.Finish(ctx, clean.ID, state.Outcome{State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
-	read := "bty.lab." + strings.Repeat("a", 64)
-	deployer := "bty.lab." + strings.Repeat("b", 64)
+	read := "bty.demo.lab." + strings.Repeat("a", 64)
+	deployer := "bty.demo.lab." + strings.Repeat("b", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployer), Scope: "deploy"}}}
 	return diagnosticsFixture{h: NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s}), store: s, read: read, deployer: deployer, failed: failed.ID, clean: clean.ID}
 }

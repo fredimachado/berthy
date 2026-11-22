@@ -19,7 +19,7 @@ import (
 )
 
 func TestMalformedResponseDoesNotRevealToken(t *testing.T) {
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	t.Setenv("BERTHY_TEST_SECRET", token)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -158,7 +158,7 @@ func TestLogsPrintsLogLinesUnlessJSON(t *testing.T) {
 		fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
-	t.Setenv("BERTHY_TEST_LOGS_TOKEN", "bty.lab."+strings.Repeat("a", 64))
+	t.Setenv("BERTHY_TEST_LOGS_TOKEN", "bty.demo.lab."+strings.Repeat("a", 64))
 	path := filepath.Join(t.TempDir(), "config.json")
 	os.WriteFile(path, []byte(fmt.Sprintf(`{"projects":{"demo":{"environments":{"lab":{"url":%q,"token_env":"BERTHY_TEST_LOGS_TOKEN"}}}}}`, srv.URL)), 0600)
 	var out, errout bytes.Buffer

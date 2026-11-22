@@ -29,7 +29,7 @@ func TestTunnelTokenSecretIsReservedForIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	admin := "bty.lab." + strings.Repeat("d", 64)
+	admin := "bty.demo.lab." + strings.Repeat("d", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(admin), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	call := func(method, path, body string) *httptest.ResponseRecorder {

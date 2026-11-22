@@ -290,7 +290,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	if statuses(got) != want {
 		t.Fatalf("statuses = %s\nwant       %s", statuses(got), want)
 	}
-	if s.Token == "" || !s.TokenLive || !strings.HasPrefix(s.Token, "bty.p5.") || len(s.Token) != len("bty.p5.")+64 {
+	if s.Token == "" || !s.TokenLive || !strings.HasPrefix(s.Token, "bty.shop.p5.") || len(s.Token) != len("bty.shop.p5.")+64 {
 		t.Fatalf("token = %q live=%v", s.Token, s.TokenLive)
 	}
 	assertNoToken(t, f, got, s.Token)
@@ -395,7 +395,7 @@ func TestSetUpServerChangesNothingAndMakesNoToken(t *testing.T) {
 		o.CLIConfig = cli
 		o.Getenv = func(n string) string {
 			asked = n
-			return "bty.p5." + strings.Repeat("c", 64)
+			return "bty.shop.p5." + strings.Repeat("c", 64)
 		}
 	})
 	got, ok := runSteps(s)
@@ -1450,7 +1450,7 @@ func doctorBody(checks []api.Check) string {
 
 func TestVerifyStep(t *testing.T) {
 	exe := elfFile(t, emX86)
-	token := "bty.p5." + strings.Repeat("c", 64)
+	token := "bty.shop.p5." + strings.Repeat("c", 64)
 	withToken := func(o *Options) {
 		o.CLIConfig = ""
 		o.Getenv = func(n string) string {

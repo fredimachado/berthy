@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -55,7 +56,7 @@ func (f *approvalFixture) listTokens(token string) map[string]tokenView {
 func TestATokenMadeThroughTheAPIWorksAtOnceAndOnlyItsDigestIsStored(t *testing.T) {
 	f := newApprovalFixture(t, false, nil)
 	got := f.makeToken(`{"name":"deployer","scope":"deploy"}`)
-	if !tokenPattern("lab").MatchString(got.Token) || got.Name != "deployer" || got.Scope != "deploy" || got.Agent || got.Expires != nil {
+	if !tokenPattern(scope.ID{Project: "demo", Environment: "lab"}).MatchString(got.Token) || got.Name != "deployer" || got.Scope != "deploy" || got.Agent || got.Expires != nil {
 		t.Fatalf("answer: %+v", got)
 	}
 	if w := f.call("GET", "/audit", got.Token, ""); w.Code != http.StatusOK {
@@ -255,7 +256,7 @@ func TestTheLastAdminTokenCannotBeRevoked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	boss, second := "bty.lab."+strings.Repeat("8", 64), "bty.lab."+strings.Repeat("9", 64)
+	boss, second := "bty.demo.lab."+strings.Repeat("8", 64), "bty.demo.lab."+strings.Repeat("9", 64)
 	admin("boss", Digest(boss), nil)
 	// The agent admin tokens of the file do not count: they cannot manage tokens.
 	if w := f.call("DELETE", "/tokens/boss", boss, `{}`); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "last admin token") {
@@ -266,7 +267,7 @@ func TestTheLastAdminTokenCannotBeRevoked(t *testing.T) {
 	}
 	// An expired admin token does not count either.
 	past := f.now.Add(-time.Hour)
-	admin("old", Digest("bty.lab."+strings.Repeat("7", 64)), &past)
+	admin("old", Digest("bty.demo.lab."+strings.Repeat("7", 64)), &past)
 	if w := f.call("DELETE", "/tokens/boss", boss, `{}`); w.Code != http.StatusConflict {
 		t.Fatalf("an expired admin counted: %d", w.Code)
 	}

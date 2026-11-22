@@ -13,8 +13,8 @@ import (
 )
 
 func TestWriteAuthorizationBeforeDecode(t *testing.T) {
-	read := "bty.lab." + strings.Repeat("a", 64)
-	deployToken := "bty.lab." + strings.Repeat("b", 64)
+	read := "bty.demo.lab." + strings.Repeat("a", 64)
+	deployToken := "bty.demo.lab." + strings.Repeat("b", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(deployToken), Scope: "deploy"}}}
 	h := HandlerWithRuntime(cfg, nil, nil, nil)
 	for _, tc := range []struct {
@@ -51,7 +51,7 @@ func TestOperationProjectionAndEventReplay(t *testing.T) {
 	if err = s.Finish(context.Background(), op.ID, state.Outcome{State: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	for _, path := range []string{"/operations/" + op.ID, "/operations/" + op.ID + "/events"} {
@@ -85,7 +85,7 @@ func TestHistoryDoesNotExposeManifest(t *testing.T) {
 	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{"private":"canary"}`)}}); err != nil {
 		t.Fatal(err)
 	}
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -96,7 +96,7 @@ func TestHistoryDoesNotExposeManifest(t *testing.T) {
 	}
 }
 func TestTokenIdentityDoesNotRevealVerifier(t *testing.T) {
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/audit", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -137,7 +137,7 @@ func TestWaitRejectsUnboundedTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/wait/app?timeout=24h", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -168,8 +168,8 @@ func TestExecOutputIsAdminOnly(t *testing.T) {
 	if err = s.MarkStep(ctx, op.ID, 30000, "finished", []byte(`{"output":"safe","exit_code":3}`)); err != nil {
 		t.Fatal(err)
 	}
-	read := "bty.lab." + strings.Repeat("a", 64)
-	admin := "bty.lab." + strings.Repeat("b", 64)
+	read := "bty.demo.lab." + strings.Repeat("a", 64)
+	admin := "bty.demo.lab." + strings.Repeat("b", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(read), Scope: "read"}, {Digest: Digest(admin), Scope: "admin"}}}
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s})
 	for _, tc := range []struct {
@@ -206,7 +206,7 @@ func TestHistoryIncludesFailuresWithoutPrivateErrors(t *testing.T) {
 	if err = s.Finish(ctx, op.ID, state.Outcome{State: "failed", Err: "private-canary"}); err != nil {
 		t.Fatal(err)
 	}
-	token := "bty.lab." + strings.Repeat("a", 64)
+	token := "bty.demo.lab." + strings.Repeat("a", 64)
 	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}
 	r := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/history/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)

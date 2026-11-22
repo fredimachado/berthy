@@ -17,6 +17,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -115,7 +116,7 @@ func (t *tokenSource) entries(ctx context.Context) ([]tokenEntry, error) {
 func (t *tokenSource) identify(r *http.Request) (tokenEntry, int) {
 	header := r.Header.Get("Authorization")
 	raw := strings.TrimPrefix(header, "Bearer ")
-	if !strings.HasPrefix(header, "Bearer ") || !tokenPattern(t.cfg.Environment).MatchString(raw) {
+	if !strings.HasPrefix(header, "Bearer ") || !tokenPattern(scope.ID{Project: t.cfg.Project, Environment: t.cfg.Environment}).MatchString(raw) {
 		return tokenEntry{}, http.StatusUnauthorized
 	}
 	sum := sha256.Sum256([]byte(raw))
@@ -263,7 +264,7 @@ func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.
 		_ = json.NewEncoder(w).Encode(answer)
 		return
 	}
-	value, digest, err := NewToken(c.Environment)
+	value, digest, err := NewToken(scope.ID{Project: c.Project, Environment: c.Environment})
 	if err != nil {
 		writeError(w, 503, "unavailable", "operation unavailable")
 		return

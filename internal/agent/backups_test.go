@@ -157,7 +157,7 @@ func (c *configCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []b
 	return []byte(c.out), nil, nil
 }
 
-func backupToken(fill string) string { return "bty.lab." + strings.Repeat(fill, 64) }
+func backupToken(fill string) string { return "bty.demo.lab." + strings.Repeat(fill, 64) }
 
 func backupConfig() Config {
 	return Config{Project: "demo", Environment: "lab", Tokens: []Token{

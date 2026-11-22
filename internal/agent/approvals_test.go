@@ -21,13 +21,13 @@ import (
 
 // The tokens of the approval tests, by role.
 var (
-	apReadToken      = "bty.lab." + strings.Repeat("1", 64)
-	apDeployToken    = "bty.lab." + strings.Repeat("2", 64)
-	apAdminToken     = "bty.lab." + strings.Repeat("3", 64)
-	apAgentRead      = "bty.lab." + strings.Repeat("4", 64)
-	apAgentDeploy    = "bty.lab." + strings.Repeat("5", 64)
-	apAgentAdmin     = "bty.lab." + strings.Repeat("6", 64)
-	apAgentAdminTwo  = "bty.lab." + strings.Repeat("7", 64)
+	apReadToken      = "bty.demo.lab." + strings.Repeat("1", 64)
+	apDeployToken    = "bty.demo.lab." + strings.Repeat("2", 64)
+	apAdminToken     = "bty.demo.lab." + strings.Repeat("3", 64)
+	apAgentRead      = "bty.demo.lab." + strings.Repeat("4", 64)
+	apAgentDeploy    = "bty.demo.lab." + strings.Repeat("5", 64)
+	apAgentAdmin     = "bty.demo.lab." + strings.Repeat("6", 64)
+	apAgentAdminTwo  = "bty.demo.lab." + strings.Repeat("7", 64)
 	apStartTime      = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	apDigest         = "sha256:" + strings.Repeat("a", 64)
 	apManifestSource = `{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}`

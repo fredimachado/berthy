@@ -18,11 +18,11 @@ import (
 )
 
 func TestGuardRejectsWrongEnvironmentBeforeDocker(t *testing.T) {
-	h := Handler(Config{Project: "demo", Environment: "prod", Tokens: []Token{{Digest: Digest("bty.prod." + strings.Repeat("a", 64)), Scope: "read"}}}, nil)
+	h := Handler(Config{Project: "demo", Environment: "prod", Tokens: []Token{{Digest: Digest("bty.demo.prod." + strings.Repeat("a", 64)), Scope: "read"}}}, nil)
 	for _, tc := range []struct {
 		path, token string
 		want        int
-	}{{"/v1/projects/demo/environments/dev/apps", "bty.prod." + strings.Repeat("a", 64), 401}, {"/v1/projects/demo/environments/prod/apps", "bad", 401}, {"/v1/projects/demo/environments/prod/agent", "bty.prod." + strings.Repeat("a", 64), 200}} {
+	}{{"/v1/projects/demo/environments/dev/apps", "bty.demo.prod." + strings.Repeat("a", 64), 401}, {"/v1/projects/demo/environments/prod/apps", "bad", 401}, {"/v1/projects/demo/environments/prod/agent", "bty.demo.prod." + strings.Repeat("a", 64), 200}} {
 		r := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		w := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestGuardRejectsWrongEnvironmentBeforeDocker(t *testing.T) {
 }
 
 func TestAgentInfoSaysWhetherTheEnvironmentIsProtected(t *testing.T) {
-	token := "bty.prod." + strings.Repeat("a", 64)
+	token := "bty.demo.prod." + strings.Repeat("a", 64)
 	for _, protected := range []bool{true, false} {
 		h := Handler(Config{Project: "demo", Environment: "prod", Protected: protected, Tokens: []Token{{Digest: Digest(token), Scope: "read"}}}, nil)
 		r := httptest.NewRequest(http.MethodGet, "/v1/projects/demo/environments/prod/agent", nil)
@@ -52,7 +52,7 @@ func TestAgentInfoSaysWhetherTheEnvironmentIsProtected(t *testing.T) {
 }
 
 func TestStatsRouteRequiresAuthentication(t *testing.T) {
-	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	req := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/stats", nil)
 	w := httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, req)
@@ -60,7 +60,7 @@ func TestStatsRouteRequiresAuthentication(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 	req = httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/stats", nil)
-	req.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	req.Header.Set("Authorization", "Bearer bty.demo.lab."+strings.Repeat("a", 64))
 	w = httptest.NewRecorder()
 	Handler(c, nil).ServeHTTP(w, req)
 	if w.Code != 503 {
@@ -82,9 +82,9 @@ func TestStatsWatchStreamsInitialSample(t *testing.T) {
 		}
 		runtime.Gosched()
 	}
-	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest("bty.demo.lab." + strings.Repeat("a", 64)), Scope: "read"}}}
 	req := httptest.NewRequest("GET", "/v1/projects/demo/environments/lab/stats?watch=1", nil).WithContext(ctx)
-	req.Header.Set("Authorization", "Bearer bty.lab."+strings.Repeat("a", 64))
+	req.Header.Set("Authorization", "Bearer bty.demo.lab."+strings.Repeat("a", 64))
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() { HandlerWithMetrics(cfg, nil, c).ServeHTTP(w, req); close(done) }()

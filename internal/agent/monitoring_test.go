@@ -24,7 +24,7 @@ import (
 )
 
 // monitoringToken returns a bearer token of the test environment with the given fill byte.
-func monitoringToken(fill string) string { return "bty.lab." + strings.Repeat(fill, 64) }
+func monitoringToken(fill string) string { return "bty.demo.lab." + strings.Repeat(fill, 64) }
 
 // monitoringConfig is the test environment: read, deploy and admin tokens, and a Compose command that cannot run, so
 // the doctor's Compose check fails quickly.

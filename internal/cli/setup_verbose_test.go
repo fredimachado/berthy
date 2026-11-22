@@ -186,7 +186,7 @@ func TestSetupVerboseKeepsStdoutAndWritesTheLogToStderr(t *testing.T) {
 	if code != 0 || verboseErr == "" {
 		t.Fatalf("verbose run: exit %d, stderr %q", code, verboseErr)
 	}
-	mask := regexp.MustCompile(`bty\.p5\.\S+`)
+	mask := regexp.MustCompile(`bty\.shop\.p5\.\S+`)
 	if mask.ReplaceAllString(verbose, "<token>") != mask.ReplaceAllString(plain, "<token>") {
 		t.Fatalf("stdout changed with --verbose:\n%s\nwant:\n%s", verbose, plain)
 	}
@@ -312,7 +312,7 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	keySecrets := keyForms(key)
-	const envToken = "bty.p5.never-in-verbose-output-7f3a9c"
+	const envToken = "bty.shop.p5.never-in-verbose-output-7f3a9c"
 
 	t.Run("install with a key file", func(t *testing.T) {
 		server := freshNoDocker(t, "ops@s1")
