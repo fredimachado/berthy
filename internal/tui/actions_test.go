@@ -168,7 +168,7 @@ func actionModel(t *testing.T, w, h int) (*Model, *fakeAgent) {
 	base, _ := url.Parse(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	target := &agentclient.Target{Env: "prod", Base: base, Prefix: prefix, Token: actionToken}
+	target := &agentclient.Target{Project: "demo", Env: "prod", Base: base, Prefix: prefix, Token: actionToken}
 	m := NewModel(newClient(ctx, target), "prod", func() time.Time { return testNow })
 	m.noAnim = true
 	send(m, tea.WindowSizeMsg{Width: w, Height: h}, infoMsg{Environment: "prod", Hostname: "lab-1", Protected: true},

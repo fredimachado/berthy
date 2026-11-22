@@ -8,6 +8,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/metrics"
+	"berthy/internal/scope"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -56,10 +57,11 @@ type overlay interface {
 
 // Model is the whole interface: the tabs, the status line and the help.
 type Model struct {
-	c      *client
-	env    string
-	host   string
-	secure bool // the environment is protected
+	c       *client
+	project string
+	env     string
+	host    string
+	secure  bool // the environment is protected
 
 	width, height int
 	bodyH         int
@@ -86,7 +88,7 @@ type Model struct {
 // NewModel makes the interface for an agent. now is the clock, which the tests fix.
 func NewModel(c *client, env string, now func() time.Time) *Model {
 	st := newStyles(newPalette(true))
-	m := &Model{c: c, env: env, st: st, keys: newKeyMap(), help: help.New(), now: now, width: 120, height: 40}
+	m := &Model{c: c, project: c.target.Project, env: env, st: st, keys: newKeyMap(), help: help.New(), now: now, width: 120, height: 40}
 	m.help.Styles = st.helpStyles()
 	m.apps = newAppsModel(st)
 	m.logs = newLogsModel(st)
@@ -866,7 +868,7 @@ func (m *Model) keyApprovals(msg tea.KeyPressMsg) tea.Cmd {
 func (m *Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
-	v.WindowTitle = "berthy · " + sanitize(m.env)
+	v.WindowTitle = "berthy · " + m.hosted()
 	return v
 }
 
@@ -899,10 +901,15 @@ func (m *Model) footer() string {
 	return strings.Repeat("\n", lipgloss.Height(m.helpView())-1)
 }
 
+// hosted is the project/environment this interface is open on.
+func (m *Model) hosted() string {
+	return sanitize(scope.ID{Project: m.project, Environment: m.env}.String())
+}
+
 func (m *Model) viewHeader() string {
 	st := m.st
 	sp := st.header.Render(" ")
-	left := sp + st.brand.Render("berthy") + sp + sp + st.pillOn(sanitize(m.env), st.p.accent, st.p.surface)
+	left := sp + st.brand.Render("berthy") + sp + sp + st.pillOn(m.hosted(), st.p.accent, st.p.surface)
 	if m.secure {
 		left += sp + st.pillOn("protected", st.p.warn, st.p.surface)
 	}

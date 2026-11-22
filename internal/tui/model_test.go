@@ -25,6 +25,17 @@ func TestAppsViewGolden(t *testing.T) {
 	}
 }
 
+func TestTheHeaderNamesProjectAndEnvironment(t *testing.T) {
+	m := loadedModel(t, 120, 40)
+	if got := m.View().WindowTitle; got != "berthy · demo/prod" {
+		t.Fatalf("title %q", got)
+	}
+	out := plain(m)
+	if !strings.Contains(out, "demo/prod") {
+		t.Fatalf("header lacks demo/prod:\n%s", out)
+	}
+}
+
 func TestAppsFilter(t *testing.T) {
 	m := loadedModel(t, 120, 40)
 	keys(m, "/", "w", "o")

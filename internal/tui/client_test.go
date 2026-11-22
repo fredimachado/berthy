@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +41,7 @@ func agentServer(t *testing.T, routes map[string]http.HandlerFunc) (*client, *ht
 	base, _ := url.Parse(srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	target := &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: testToken}
+	target := &agentclient.Target{Project: "demo", Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: testToken}
 	return newClient(ctx, target), srv
 }
 
@@ -326,4 +329,95 @@ func TestModelFollowsLogsThroughTheStream(t *testing.T) {
 		t.Fatal("the stream is not marked live")
 	}
 	m.shutdown()
+}
+
+// twoProjectUIConfig writes a CLI configuration that points prod of cardiotennis and sliceup at two agents, and returns the
+// path and a counter for each agent's requests.
+func twoProjectUIConfig(t *testing.T) (cfg string, cardio, slice *atomic.Int32) {
+	t.Helper()
+	serve := func(n *atomic.Int32) *httptest.Server {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n.Add(1)
+			fmt.Fprint(w, `[]`)
+		}))
+		t.Cleanup(s.Close)
+		return s
+	}
+	cardio, slice = new(atomic.Int32), new(atomic.Int32)
+	a, b := serve(cardio), serve(slice)
+	t.Setenv("BERTHY_TEST_UI_CT", testToken)
+	t.Setenv("BERTHY_TEST_UI_SU", testToken)
+	cfg = filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"cardiotennis":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_TEST_UI_CT"}}},"sliceup":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_TEST_UI_SU"}}}}}`, a.URL, b.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, cardio, slice
+}
+
+func TestTheUIReachesTheProjectOfTheFlag(t *testing.T) {
+	cfg, cardio, slice := twoProjectUIConfig(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: cardiotennis\nnetwork: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	var out, errs strings.Builder
+	code := Run([]string{"-e", "prod", "--project", "sliceup", "--config", cfg}, strings.NewReader(""), &out, &errs)
+	if code != 1 || !strings.Contains(errs.String(), "berthy ui needs a terminal") {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatalf("Run reached the agent before the terminal check: cardio %d slice %d", cardio.Load(), slice.Load())
+	}
+	if code := Run([]string{"-e", "prod", "--project", "Bad_Name", "--config", cfg}, strings.NewReader(""), &out, &errs); code != 2 || !strings.Contains(errs.String(), "valid --project required") {
+		t.Fatalf("invalid project: exit %d, stderr %q", code, errs.String())
+	}
+
+	target, err := agentclient.Resolve(cfg, agentclient.Selector{Project: "sliceup", Environment: "prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newClient(t.Context(), target)
+	msg := c.fetchApps()()
+	if e, ok := msg.(errMsg); ok {
+		t.Fatalf("fetch: %#v", e)
+	}
+	if cardio.Load() != 0 || slice.Load() != 1 {
+		t.Fatalf("requests: cardio %d slice %d", cardio.Load(), slice.Load())
+	}
+	if !strings.HasPrefix(target.Prefix, "/v1/projects/sliceup/environments/prod/") {
+		t.Fatalf("prefix %q", target.Prefix)
+	}
+}
+
+func TestTheUISaysToUpgradeAnAgentWithoutProjects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/prod/agent" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	base, _ := url.Parse(srv.URL)
+	c := newClient(t.Context(), &agentclient.Target{Project: "demo", Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: testToken})
+
+	e, ok := c.fetchApps()().(errMsg)
+	if !ok || !strings.Contains(e.text, agentclient.OlderAgentMessage) {
+		t.Fatalf("get: %#v", e)
+	}
+
+	reason := c.readStream(t.Context(), "apps/api/logs", "", func(string, string) error { return nil })
+	if !strings.Contains(reason, agentclient.OlderAgentMessage) {
+		t.Fatalf("stream: %q", reason)
+	}
+
+	data, status, _, err := c.post("restart", map[string]any{"app": "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.refusal(status, data); !strings.Contains(got, agentclient.OlderAgentMessage) {
+		t.Fatalf("post: status %d %q", status, got)
+	}
 }

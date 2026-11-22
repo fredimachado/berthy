@@ -19,24 +19,29 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
-const usage = "usage: ui -e ENV [--config CONFIG]"
+const usage = "usage: ui -e ENV [--project NAME] [--config CONFIG]"
 
-// Run is "berthy ui -e ENV [--config CONFIG]": it opens the interface on the terminal and returns when the person quits. It
-// refuses to run when the standard input or output is not a terminal, and it reads the configuration first, so a missing file
-// is named even then. No line it prints holds the token.
+// Run is "berthy ui -e ENV [--project NAME] [--config CONFIG]": it opens the interface on the terminal and returns when the
+// person quits. It refuses to run when the standard input or output is not a terminal, and it reads the configuration first, so
+// a missing file is named even then. No line it prints holds the token.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var env, config string
+	var env, config, project string
+	var projectGiven bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "-e", "--config":
+		case "-e", "--config", "--project":
 			if i+1 == len(args) {
 				fmt.Fprintf(stderr, "missing value for %s\n%s\n", args[i], usage)
 				return 2
 			}
 			i++
-			if args[i-1] == "-e" {
+			switch args[i-1] {
+			case "-e":
 				env = args[i]
-			} else {
+			case "--project":
+				project = args[i]
+				projectGiven = true
+			default:
 				config = args[i]
 			}
 		default:
@@ -48,12 +53,16 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
+	if projectGiven && !scope.ValidProject(project) {
+		fmt.Fprintln(stderr, "valid --project required")
+		return 2
+	}
 	path, err := agentclient.ConfigPath(config)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: "."})
+	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: "."})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

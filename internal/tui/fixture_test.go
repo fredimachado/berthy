@@ -115,7 +115,7 @@ func fixtureDF() dfInfo {
 func newTestModel(t *testing.T, w, h int) *Model {
 	t.Helper()
 	base, _ := url.Parse("http://127.0.0.1:1")
-	target := &agentclient.Target{Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: "secret-token-value"}
+	target := &agentclient.Target{Project: "demo", Env: "prod", Base: base, Prefix: "/v1/projects/demo/environments/prod/", Token: "secret-token-value"}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	m := NewModel(newClient(ctx, target), "prod", func() time.Time { return testNow })

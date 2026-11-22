@@ -1,4 +1,4 @@
- berthy  ▐ prod ▌ ▐ protected ▌                                                                                   lab-1 
+ berthy  ▐ demo/prod ▌ ▐ protected ▌                                                                              lab-1 
    1 Apps   2 Logs   3 Server ▐ 4 Approvals ▌ 1                                                                  ? help 
 ╭─ Approvals → a1b2c3d4 ───────────────────────────────────────────────────────────────────────────────────────── 100% ╮
 │ deploy api → sha256:abc123456789                                                                         ▐ pending ▌ │
