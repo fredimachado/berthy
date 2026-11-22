@@ -5,8 +5,7 @@ uses. They describe a small todo app as one project with two environments.
 Both can live on the same agent. Each environment has its own overlay network
 (`todo-dev`, `todo-prod`).
 
-This example needs a Berthy that supports projects: the next release, or a
-build from `main`. v0.2.0 does not.
+This example needs Berthy v0.3.0 or later.
 
 | App | Kind | What it is |
 | --- | --- | --- |
