@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,9 +90,14 @@ func TestStateBackupExitsNonZeroWhenTheSnapshotFails(t *testing.T) {
 	}
 }
 
-// snapshotInBucket takes a state backup of a state with one secret into a fake bucket, with the Runner the agent uses. It
-// returns the endpoint, the key of the snapshot and the saved key file.
+// snapshotInBucket takes a state backup of project demo into a fake bucket.
 func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
+	return snapshotInBucketFor(t, "demo")
+}
+
+// snapshotInBucketFor takes a state backup of project into a fake bucket, with the Runner the agent uses. It returns the
+// endpoint, the key of the snapshot and the saved key file.
+func snapshotInBucketFor(t *testing.T, project string) (endpoint, object, keyPath string) {
 	t.Helper()
 	ctx := context.Background()
 	key := make([]byte, 32)
@@ -111,7 +117,7 @@ func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	if err = store.Claim(ctx, "demo"); err != nil {
+	if err = store.Claim(ctx, project); err != nil {
 		t.Fatal(err)
 	}
 	if err = store.PutSecret(ctx, state.Actor{ID: "ops", Name: "ops"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("cli-secret-value")); err != nil {
@@ -131,7 +137,7 @@ func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
 		Destinations: map[string]manifest.Destination{"offsite": {Type: "s3", Endpoint: srv.URL, Bucket: "bkt", AccessKeySecret: "S3_ACCESS_KEY", SecretKeySecret: "S3_SECRET_KEY"}},
 		StateBackup:  &manifest.StateBackup{Destination: "offsite"},
 	}
-	r := &statebackup.Runner{Store: store, Project: "demo", Env: "prod", Dir: dir,
+	r := &statebackup.Runner{Store: store, Project: project, Env: "prod", Dir: dir,
 		Objects: func(context.Context, manifest.Destination) (objectstore.Store, error) { return objects, nil }}
 	p, err := r.Begin(ctx, m, "manual", time.Time{})
 	if err != nil {
@@ -214,5 +220,83 @@ func TestStateRestoreWithAWrongKeyExitsNonZero(t *testing.T) {
 	}
 	if want := "the snapshot needs key " + need + "; " + other + " is key " + have; code == 0 || strings.TrimSpace(stderr.String()) != want {
 		t.Fatalf("wrong key: exit %d, %q, want %q", code, stderr.String(), want)
+	}
+}
+
+func TestStateRestoreUsesTheManifestProjectWithoutTheFlag(t *testing.T) {
+	endpoint, object, keyPath := snapshotInBucket(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	out := filepath.Join(t.TempDir(), "restored")
+	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
+	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
+	args := []string{"state-restore", "--endpoint", endpoint, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	var stdout, stderr bytes.Buffer
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, err %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "environment: prod") {
+		t.Fatalf("output: %s", stdout.String())
+	}
+}
+
+func TestStateRestoreRefusesAnAmbiguousEnvironment(t *testing.T) {
+	endpoint, object, keyPath := snapshotInBucket(t)
+	objects, err := objectstore.New(objectstore.Config{Endpoint: endpoint, Bucket: "bkt", AccessKey: "AKIATESTACCESS", SecretKey: "test-secret-key-0123456789"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, _, err := objects.Get(context.Background(), object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := "other/prod/berthy-state/foreign.db"
+	if _, err = objects.Put(context.Background(), foreign, bytes.NewReader(data), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = objects.Put(context.Background(), strings.TrimSuffix(foreign, ".db")+".json", bytes.NewReader([]byte(`{}`)), nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	out := filepath.Join(t.TempDir(), "restored")
+	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
+	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
+	args := []string{"state-restore", "--endpoint", endpoint, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	var stdout, stderr bytes.Buffer
+	code := Run(args, &stdout, &stderr)
+	want := "environment prod exists in several projects (demo, other): give --project, or run the command in the project's directory"
+	if code == 0 || strings.TrimSpace(stderr.String()) != want {
+		t.Fatalf("exit %d, err %q, want %q", code, stderr.String(), want)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("ambiguous restore wrote the output directory")
+	}
+}
+
+func TestStateRestoreProjectFlagWinsOverTheManifest(t *testing.T) {
+	endpoint, object, keyPath := snapshotInBucketFor(t, "other")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	out := filepath.Join(t.TempDir(), "restored")
+	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
+	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
+	args := []string{"state-restore", "--project", "other", "--endpoint", endpoint, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	var stdout, stderr bytes.Buffer
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, err %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "environment: prod") {
+		t.Fatalf("output: %s", stdout.String())
 	}
 }

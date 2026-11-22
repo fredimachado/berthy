@@ -11,11 +11,15 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/manifest"
+	"berthy/internal/objectstore"
 	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/statebackup"
@@ -27,7 +31,8 @@ import (
 func runStateRestore(args []string, out, errout io.Writer) int {
 	fs := flag.NewFlagSet("state-restore", flag.ContinueOnError)
 	fs.SetOutput(errout)
-	project := fs.String("project", "", "project the snapshot belongs to")
+	projectFlag := fs.String("project", "", "project the snapshot belongs to")
+	manifestDir := fs.String("manifest-dir", ".", "directory of the manifest, used when --project is omitted")
 	endpoint := fs.String("endpoint", "", "S3-compatible endpoint URL")
 	region := fs.String("region", "", "bucket region, when the storage needs one")
 	bucket := fs.String("bucket", "", "bucket name")
@@ -37,8 +42,12 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 || *project == "" || !scope.ValidProject(*project) || *endpoint == "" || *bucket == "" || *object == "" || *dir == "" || *keyFile == "" {
-		fmt.Fprintln(errout, "usage: berthy state-restore --project PROJECT --endpoint URL --bucket NAME [--region R] --object KEY --out DIR --key-file PATH")
+	if fs.NArg() != 0 || *endpoint == "" || *bucket == "" || *object == "" || *dir == "" || *keyFile == "" {
+		fmt.Fprintln(errout, "usage: berthy state-restore [--project PROJECT] [--manifest-dir DIR] --endpoint URL --bucket NAME [--region R] --object KEY --out DIR --key-file PATH")
+		return 2
+	}
+	if *projectFlag != "" && !scope.ValidProject(*projectFlag) {
+		fmt.Fprintln(errout, "valid --project required")
 		return 2
 	}
 	access, secret := os.Getenv("BERTHY_S3_ACCESS_KEY"), os.Getenv("BERTHY_S3_SECRET_KEY")
@@ -47,14 +56,28 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		return 2
 	}
 	parts := strings.Split(*object, "/")
-	if len(parts) < 3 || parts[0] != *project || !scope.ValidEnvironment(parts[1]) {
+	if len(parts) < 3 || !scope.ValidEnvironment(parts[1]) {
 		fmt.Fprintln(errout, "object key must start with PROJECT/ENVIRONMENT/")
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	store, err := objectstore.New(objectstore.Config{Endpoint: *endpoint, Region: *region, Bucket: *bucket, AccessKey: access, SecretKey: secret})
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	project, err := resolveStateRestoreProject(ctx, *projectFlag, *manifestDir, parts[1], store)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 2
+	}
+	if parts[0] != project {
+		fmt.Fprintln(errout, "object key must start with PROJECT/ENVIRONMENT/")
+		return 2
+	}
 	rep, err := statebackup.Restore(ctx, statebackup.RestoreOptions{Endpoint: *endpoint, Region: *region, Bucket: *bucket, Object: *object,
-		Out: *dir, KeyFile: *keyFile, Project: *project, Environment: parts[1], AccessKey: access, SecretKey: secret})
+		Out: *dir, KeyFile: *keyFile, Project: project, Environment: parts[1], AccessKey: access, SecretKey: secret})
 	var mismatch *statebackup.KeyMismatchError
 	switch {
 	case errors.As(err, &mismatch):
@@ -74,6 +97,54 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		fmt.Fprintf(out, "  %s\n", terminalSafe(name))
 	}
 	return 0
+}
+
+// resolveStateRestoreProject chooses the project for an offline restore: the flag, else the manifest in dir, else the only
+// project that has environment among the bucket's scoped object keys.
+func resolveStateRestoreProject(ctx context.Context, project, dir, environment string, store objectstore.Store) (string, error) {
+	if project != "" {
+		return project, nil
+	}
+	if name, ok, err := manifest.ProjectName(dir); err != nil {
+		return "", fmt.Errorf("cannot read the project of %s: give --project", filepath.Join(dir, "berthy.yml"))
+	} else if ok {
+		return name, nil
+	}
+	have, err := projectsWithEnvironment(ctx, store, environment)
+	if err != nil {
+		return "", err
+	}
+	switch len(have) {
+	case 0:
+		return "", fmt.Errorf("no project has environment %s in the bucket: give --project", environment)
+	case 1:
+		return have[0], nil
+	default:
+		return "", fmt.Errorf("environment %s exists in several projects (%s): give --project, or run the command in the project's directory", environment, strings.Join(have, ", "))
+	}
+}
+
+// projectsWithEnvironment lists the distinct projects that have at least one object under project/environment/ in store.
+func projectsWithEnvironment(ctx context.Context, store objectstore.Store, environment string) ([]string, error) {
+	list, err := store.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	var have []string
+	for _, o := range list {
+		parts := strings.Split(o.Key, "/")
+		if len(parts) < 3 || parts[1] != environment || !scope.ValidProject(parts[0]) {
+			continue
+		}
+		if _, ok := seen[parts[0]]; ok {
+			continue
+		}
+		seen[parts[0]] = struct{}{}
+		have = append(have, parts[0])
+	}
+	slices.Sort(have)
+	return have, nil
 }
 
 // runStateBackupCommand runs "state-backup": it asks the agent for a state snapshot now, waits for the run to finish, and prints
