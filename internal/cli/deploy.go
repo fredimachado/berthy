@@ -593,6 +593,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 			return runInteractive(ctx, target, session.Request{Kind: cmd, App: req.App, Role: req.Role, Service: req.Service, Command: req.Command, Timeout: req.Timeout}, os.Stdin, out, errout)
 		}
 		if cmd == "deploy" {
+			m, e := manifest.Load(f.dir, f.env)
+			if e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
+				return 2
+			}
 			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
 			if e != nil {
 				switch {

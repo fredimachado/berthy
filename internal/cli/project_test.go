@@ -253,3 +253,16 @@ func TestMalformedManifestWithoutProjectFlagReportsLoadError(t *testing.T) {
 		t.Fatal("sent request")
 	}
 }
+
+func TestDeployRefusesWrongProjectBeforeReadingComposeFile(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	dir := writeAliasDir(t, "project: cardiotennis\napps:\n  db:\n    kind: compose\n    file: missing.yml\n")
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "db", "-e", "prod", "--project", "sliceup", "--config", cfg, "--manifest-dir", dir}, &out, &errs)
+	if code != 2 || !strings.Contains(errs.String(), "is for project cardiotennis, not sliceup") {
+		t.Errorf("exit %d, stderr %q", code, errs.String())
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatal("sent request")
+	}
+}
