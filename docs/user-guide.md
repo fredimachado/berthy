@@ -208,13 +208,13 @@ The steps run in this order. Each one checks first and only acts when something 
 | Step | What it does |
 | --- | --- |
 | `connect` | Connects over SSH, or locally, and finds out whether it is root or can `sudo`. |
-| `check` | Linux with systemd, a supported CPU, and `--listen` is an address assigned to this server. A server that already runs an agent for a different environment stops the run. |
+| `check` | Linux with systemd, a supported CPU, and `--listen` is an address assigned to this server. The desired configuration must not conflict with another hosted environment. |
 | `docker` | Confirms Docker Engine is installed (version 25 or newer), enabled at boot and running. Installs it with Docker's official script when it is missing (unless `--no-install-docker`), and starts it when it is stopped. A Docker you did not install is never upgraded or reconfigured. |
 | `swarm` | Turns on Swarm with your private address as the advertise address, with the management port on that address only. A server that already is a manager keeps its Swarm. A worker in another Swarm stops the run. |
 | `network` | Creates the shared attachable overlay network named in the manifest (`todo`), unless it exists. An existing network that is not an attachable overlay stops the run. |
 | `user` | Creates the `berthy` system user and adds it to the `docker` group. |
 | `binary` | Installs the Berthy binary as `/usr/local/bin/berthy` (see "Where the binary comes from"). |
-| `key` | Prepares `/var/lib/berthy` and `/var/lib/berthy/state` and makes the encryption key `/var/lib/berthy/key`. It never replaces an existing key. |
+| `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and makes the encryption key `/var/lib/berthy/environments/todo/prod/key`. It never replaces an existing key. |
 | `token` | Creates the first `admin` token. It is shown once, at the end. The agent keeps only its digest. |
 | `config` | Writes `/etc/berthy/agent.json`. It sets the environment, the listen address, `docker_socket` (`/var/run/docker.sock`), the state directory and key file, `protected` and `network`, and the tokens. |
 | `service` | Installs, enables and starts `berthy.service`, and waits until the agent answers. |
@@ -231,19 +231,19 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/state, generated an encryption key on the server
+✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
 ✓ token       created an admin token named admin; it is shown once, at the end
-✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 token)
+✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
-✓ cli_config  wrote prod at http://10.0.0.5:7710 to config.json (token in $BERTHY_PROD_TOKEN)
+✓ cli_config  wrote prod at http://10.0.0.5:7710 to config.json (token in $BERTHY_TODO_PROD_TOKEN)
 ✓ verify      agent v0.1.0-me, 9 of 9 checks ok
-setup of prod on ops@10.0.0.5: done
+setup of todo/prod on ops@10.0.0.5: done
 
-admin token for prod (shown once, store it now): <token>
+admin token for todo/prod (shown once, store it now): <token>
 
 next steps:
-  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > todo.prod.key
-  2. store the admin token above, and set it in $BERTHY_PROD_TOKEN when you run berthy
+  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@10.0.0.5 sudo cat /var/lib/berthy/environments/todo/prod/key > todo.prod.key
+  2. store the admin token above, and set it in $BERTHY_TODO_PROD_TOKEN when you run berthy
   3. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
   5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
@@ -262,7 +262,7 @@ A **second run** shows every line with `✓` and wording such as "kept", "in pla
 If you want a machine-readable result, add `--json`. It prints one object and nothing else. The token is in it as `"token"`, and the next steps as `"next_steps"`:
 
 ```json
-{"environment": "prod", "target": "ops@10.0.0.5", "dry_run": false, "ok": true,
+{"project": "todo", "environment": "prod", "target": "ops@10.0.0.5", "dry_run": false, "ok": true,
  "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}],
  "token": "<token>", "next_steps": ["..."]}
 ```
@@ -281,22 +281,22 @@ A development build on macOS or Windows has no release to download, so give it `
 
 #### The `verify` step
 
-`verify` asks the new agent for its `doctor`. It sends the request **from your machine**, with the token this run made, or else the token in the variable the CLI configuration names (`BERTHY_PROD_TOKEN`). If your machine cannot reach the private address, setup says so and runs the same check **on the server**. With no token at all, it only checks that the agent answers on `/healthz`, and tells you to run `berthy doctor` yourself. Any critical check that fails fails the step.
+`verify` asks the new agent for its `doctor`. It sends the request **from your machine**, with the token this run made, or else the token in the variable the CLI configuration names (`BERTHY_TODO_PROD_TOKEN`). If your machine cannot reach the private address, setup says so and runs the same check **on the server**. With no token at all, it only checks that the agent answers on `/healthz`, and tells you to run `berthy doctor` yourself. Any critical check that fails fails the step.
 
 #### Save three things
 
 1. **The first admin token.** It is printed once, after the step lines. Put it in a password manager and into your shell:
 
    ```bash
-   export BERTHY_PROD_TOKEN=<token>
+   export BERTHY_TODO_PROD_TOKEN=<token>
    ```
 
-   Setup writes this token into `/etc/berthy/agent.json`. Every other token you make through the agent (step 6). Lost it? Run setup again with `--new-token`. It adds another `admin` token to the file and leaves the others alone.
+   Setup writes the token's digest into `/etc/berthy/agent.json`. Every other token you make through the agent (step 6). Lost it? Run setup again with `--new-token`. It adds another `admin` token to the file and leaves the others alone.
 
-2. **The encryption key.** It lives on the server at `/var/lib/berthy/key` (32 bytes). It seals every secret in the agent's state. The agent never uploads it. If the server dies and you do not have it, the secrets are gone. Copy it somewhere off the server, as the next steps say:
+2. **The encryption key.** It lives on the server at `/var/lib/berthy/environments/todo/prod/key` (32 bytes). It seals every secret in the agent's state. The agent never uploads it. If the server dies and you do not have it, the secrets are gone. Copy it somewhere off the server, as the next steps say:
 
    ```bash
-   ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > todo.prod.key
+   ssh ops@10.0.0.5 sudo cat /var/lib/berthy/environments/todo/prod/key > todo.prod.key
    chmod 600 todo.prod.key
    ```
 
@@ -309,12 +309,12 @@ A development build on macOS or Windows has no release to download, so give it `
    ```json
    {
      "environments": {
-       "prod": { "url": "http://10.0.0.5:7710", "token_env": "BERTHY_PROD_TOKEN" }
+       "prod": { "url": "http://10.0.0.5:7710", "token_env": "BERTHY_TODO_PROD_TOKEN" }
      }
    }
    ```
 
-   The default variable name is `BERTHY_<ENVIRONMENT>_TOKEN`. An environment that already has a `token_env` keeps it, and other environments in the file are kept as they are. You can edit this file by hand: unknown keys are refused. The commands find this file on their own, so `--config` is only needed for another file.
+   The default variable name is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN`. An environment that already has a `token_env` keeps it, and other environments in the file are kept as they are. You can edit this file by hand: unknown keys are refused. The commands find this file on their own, so `--config` is only needed for another file.
 
 #### Setup is safe to run again
 
@@ -2373,12 +2373,12 @@ berthy key rotate -e prod
 ```text
 rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33
 the previous key is kept on the server until the next state snapshot succeeds
-copy the new key off the server now: sudo cat /var/lib/berthy/key > todo.prod.key
+copy the new key off the server now: sudo cat /var/lib/berthy/environments/todo/prod/key > todo.prod.key
 ```
 
 The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Copy the new key off the server as the last line says, and replace your old copy.
 
-The old key stays on the server as `/var/lib/berthy/key.prev` until the next state snapshot succeeds with the new key. Then the agent deletes it. Until then `berthy doctor` shows a `state_key` check. Without a `state_backup` block no snapshot runs, so the previous key stays; delete it yourself when you no longer need it.
+The old key stays on the server as `/var/lib/berthy/environments/todo/prod/key.prev` until the next state snapshot succeeds with the new key. Then the agent deletes it. Until then `berthy doctor` shows a `state_key` check. Without a `state_backup` block no snapshot runs, so the previous key stays; delete it yourself when you no longer need it.
 
 The rotation is refused with a conflict while an operation runs or the deploy lock is held. `--dry-run` checks the same and says how many values would be sealed again, and changes nothing. A crash in the middle leaves a state that one of the two keys opens completely, and the agent settles the key files when it starts again. `berthy setup --key-file` never replaces the key of a server: rotate through the agent.
 
@@ -2424,7 +2424,7 @@ Not held: reads; `--dry-run` (it changes nothing, so an agent gets the plan at o
 What an agent token's CLI sees:
 
 ```bash
-BERTHY_PROD_TOKEN=<claude's token> \
+BERTHY_TODO_PROD_TOKEN=<claude's token> \
   berthy deploy api -e prod --version sha256:<digest>
 ```
 
@@ -2482,7 +2482,7 @@ Put this in the client's `.mcp.json` (adjust the paths):
     "berthy": {
       "command": "berthy",
       "args": ["mcp", "-e", "prod", "--manifest-dir", "/home/me/todo"],
-      "env": { "BERTHY_PROD_TOKEN": "${BERTHY_PROD_TOKEN}" }
+      "env": { "BERTHY_TODO_PROD_TOKEN": "${BERTHY_TODO_PROD_TOKEN}" }
     }
   }
 }
