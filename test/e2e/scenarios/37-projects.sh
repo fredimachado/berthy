@@ -185,10 +185,17 @@ out=$("$TUI_BIN" --command "$BIN ui -e $ENVN --project $P2 --config $RUN/admin.j
 expect_code "the terminal interface opens P2/E" 0 "$code" "$out"
 screen=$(cat "$tui_dir"/out/*first*.txt 2>/dev/null)
 expect_contains "the first screen names P2/E" "$screen" "$P2/$ENVN"
-expect_contains "the first screen lists web" "$screen" web
-expect_contains "the first screen lists db" "$screen" db
-expect_not_contains "the first screen excludes the first project's compose app" "$screen" "$PROJECT-$ENVN-db"
-expect_not_contains "the first screen excludes the other environment's compose app" "$screen" "$PROJECT-${EB}-db"
+want=$(printf '%s\n' web "$P2-$ENVN-db" | sort)
+tui_names=$(printf '%s\n' "$screen" | python3 -c '
+import re, sys
+names = []
+for line in sys.stdin:
+    m = re.search(r"│ [▌ ]  (\S+)\s+(image|compose)\b", line)
+    if m:
+        names.append(m.group(1))
+print("\n".join(sorted(names)))
+')
+expect_eq "the first screen lists exactly web and the db compose app" "$want" "$tui_names"
 mcp_dir=$LOG/mcp-p2
 rm -rf "$mcp_dir"; mkdir -p "$mcp_dir"
 cat > "$mcp_dir/calls.json" <<'JSON'
@@ -196,15 +203,10 @@ cat > "$mcp_dir/calls.json" <<'JSON'
 JSON
 out=$("$MCP_BIN" --command "$BIN mcp -e $ENVN --project $P2 --config $RUN/admin.json --manifest-dir $(env_dir "$P2" "$ENVN")" --script "$mcp_dir/calls.json" --out "$mcp_dir/results.json" --timeout 60s 2>&1); code=$?
 expect_code "mcp list_resources of P2/E" 0 "$code" "$out"
-mcp_text=$(jq -r '.calls[0].text' "$mcp_dir/results.json" 2>&1); code=$?
-expect_code "read mcp list_resources text" 0 "$code" "$mcp_text"
-expect_contains "list_resources names web" "$mcp_text" web
-expect_contains "list_resources names db" "$mcp_text" db
 mcp_err=$(jq -r '.calls[0].is_error' "$mcp_dir/results.json")
 expect_eq "list_resources is not an error" false "$mcp_err"
-ps_names=$(env_cmd "$P2" "$ENVN" ps --json 2>&1 | jq -r '.[].ref.name' | sort)
 mcp_names=$(jq -r '.calls[0].structured.resources[].ref.name' "$mcp_dir/results.json" | sort)
-expect_eq "list_resources returns the same two as ps" "$ps_names" "$mcp_names"
+expect_eq "list_resources names exactly web and the db compose app" "$want" "$mcp_names"
 out=$(env_cmd "$PROJECT" "$ENVN" deploy web --version v1 --manifest-dir "$(env_dir "$P2" "$ENVN")" 2>&1); code=$?
 expect_code 'other manifest refused' 2 "$code" "$out"
 expect_contains 'mismatch names project' "$out" 'is for project'
