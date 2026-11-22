@@ -144,7 +144,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 		report.Token = session.Token
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(*env, *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
+		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -219,7 +219,8 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
 // cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
 // without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
-func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+func setupNextSteps(id scope.ID, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+	env := id.Environment
 	read := "sudo cat /var/lib/berthy/key"
 	if !local {
 		read = "ssh " + target + " " + read
@@ -228,7 +229,7 @@ func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeTo
 	if cfg != "" {
 		config = " --config " + shellWord(cfg)
 	}
-	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: " + keyCopyCommand(read, env)}
+	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: " + keyCopyCommand(read, id)}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
 	}
@@ -241,7 +242,9 @@ func setupNextSteps(env, cfg string, local bool, target, tokenEnv string, madeTo
 
 // keyCopyCommand is the shell command that copies the key off the server: read prints the key, and its output goes to a file
 // named for the environment. Setup and `key rotate` both print it, and neither prints the key.
-func keyCopyCommand(read, env string) string { return read + " > " + env + ".key" }
+func keyFileName(id scope.ID) string { return id.Slug() + ".key" }
+
+func keyCopyCommand(read string, id scope.ID) string { return read + " > " + keyFileName(id) }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in
 // single quotes otherwise, with each single quote written as '\”.

@@ -949,7 +949,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		return printAlertsTest(out, errout, data, f.json)
 	}
 	if cmd == "key" && !f.json {
-		return printKeyRotation(out, errout, data, f.env)
+		return printKeyRotation(out, errout, data, scope.ID{Project: f.project, Environment: f.env})
 	}
 	if cmd == "apply" && !f.json {
 		return printApply(out, errout, data, f.dry)

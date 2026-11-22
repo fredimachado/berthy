@@ -242,7 +242,7 @@ setup of prod on ops@10.0.0.5: done
 admin token for prod (shown once, store it now): <token>
 
 next steps:
-  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > prod.key
+  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > todo.prod.key
   2. store the admin token above, and set it in $BERTHY_PROD_TOKEN when you run berthy
   3. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
@@ -296,11 +296,11 @@ A development build on macOS or Windows has no release to download, so give it `
 2. **The encryption key.** It lives on the server at `/var/lib/berthy/key` (32 bytes). It seals every secret in the agent's state. The agent never uploads it. If the server dies and you do not have it, the secrets are gone. Copy it somewhere off the server, as the next steps say:
 
    ```bash
-   ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > prod.key
-   chmod 600 prod.key
+   ssh ops@10.0.0.5 sudo cat /var/lib/berthy/key > todo.prod.key
+   chmod 600 todo.prod.key
    ```
 
-   Keep `prod.key` in a password manager or your provisioning tool's vault.
+   Keep `todo.prod.key` in a password manager or your provisioning tool's vault.
 
    If the copy leaks, or someone who had it leaves, replace the key with [`berthy key rotate`](#rotate-the-encryption-key).
 
@@ -2372,7 +2372,7 @@ berthy key rotate -e prod
 ```text
 rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33
 the previous key is kept on the server until the next state snapshot succeeds
-copy the new key off the server now: sudo cat /var/lib/berthy/key > prod.key
+copy the new key off the server now: sudo cat /var/lib/berthy/key > todo.prod.key
 ```
 
 The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Copy the new key off the server as the last line says, and replace your old copy.
@@ -2678,7 +2678,7 @@ The order:
 
    ```bash
    install -d -m 0700 /var/lib/berthy
-   chmod 600 prod.key
+   chmod 600 todo.prod.key
    BERTHY_S3_ACCESS_KEY=<access key> BERTHY_S3_SECRET_KEY=<secret key> \
      berthy state-restore \
        --endpoint https://s3.example.com --bucket acme-todo-backups --region eu-central-1 \
