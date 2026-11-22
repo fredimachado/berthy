@@ -200,7 +200,7 @@ func TestVisibleFailsClosedWhenForeignClaimsCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &Runtime{
-		Config: Config{Project: "demo", Environment: "lab"},
+		Config:     Config{Project: "demo", Environment: "lab"},
 		deployment: &deploy.Controller{Store: s},
 		peerClaims: func(context.Context) (map[state.Claim]bool, error) {
 			return nil, errors.New("unavailable")
