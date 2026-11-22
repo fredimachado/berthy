@@ -153,3 +153,23 @@ func TestAnAliasKeepsTheProjectFlag(t *testing.T) {
 		t.Fatalf("requests: %d, %d", cardio.Load(), slice.Load())
 	}
 }
+
+func TestDeployRefusesAManifestOfAnotherProjectThanTheFlag(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	dir := projectDirOf(t, "cardiotennis")
+	for _, args := range [][]string{
+		{"deploy", "api", "--version", "v1"},
+		{"deploy"},
+		{"apply"},
+		{"ingress", "apply"},
+	} {
+		args = append(args, "-e", "prod", "--project", "sliceup", "--config", cfg, "--manifest-dir", dir)
+		var out, errout bytes.Buffer
+		if code := Run(args, &out, &errout); code != 2 || !strings.Contains(errout.String(), "is for project cardiotennis, not sliceup") {
+			t.Errorf("%v: exit %d: %s", args, code, errout.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatalf("sent %d and %d requests", cardio.Load(), slice.Load())
+	}
+}

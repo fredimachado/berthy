@@ -465,6 +465,13 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	if cmd == "deploy" || cmd == "apply" || (cmd == "ingress" && len(f.pos) > 0 && f.pos[0] == "apply") {
+		name, ok, _ := manifest.ProjectName(f.dir)
+		if ok && name != target.Project {
+			fmt.Fprintf(errout, "the manifest in %s is for project %s, not %s\n", f.dir, name, target.Project)
+			return 2
+		}
+	}
 	u, token, prefix := target.Base, target.Token, target.Prefix
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
