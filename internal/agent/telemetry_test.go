@@ -338,7 +338,7 @@ func TestTheExportLeavesOutContainersOfOtherEnvironments(t *testing.T) {
 func TestTheExportLeavesOutTheTasksOfAnAdoptedServiceOfAnotherEnvironment(t *testing.T) {
 	lab := scope.ID{Project: "demo", Environment: "lab"}
 	r := &Runtime{
-		Config:     Config{Project: lab.Project, Environment: lab.Environment},
+		Config: Config{Project: lab.Project, Environment: lab.Environment},
 		peerClaims: func(context.Context) (map[state.Claim]bool, error) {
 			return map[state.Claim]bool{{Kind: state.ClaimService, Name: "legacy-web"}: true}, nil
 		},
