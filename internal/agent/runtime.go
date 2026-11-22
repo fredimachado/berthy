@@ -39,6 +39,9 @@ type Runtime struct {
 	// hosted is every hosted environment of this agent, set at Open. visible uses it to hide containers whose labels name
 	// another one.
 	hosted []scope.ID
+	// peerClaims is the claims-only view of the other hosted environments, set at Open. Stats, the stats stream and export
+	// read it once per sample. Nil, or an error from it, is fail-closed.
+	peerClaims func(context.Context) (map[state.Claim]bool, error)
 
 	// Set by Start. Close waits for each worker that was started.
 	cancel                                                       context.CancelFunc
@@ -65,14 +68,27 @@ func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
 	r.scheduler = NewJobs(c, sh.Engine, d, sh.Log)
 	r.backups = NewBackups(c, sh.Engine, d, r.scheduler, r.monitoring.HelperImage, sh.Log)
 	r.exporter = NewTelemetry(c, sh.Collector, d, sh.Log)
-	r.Handler = newDeploymentHandler(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups, newLimits(), r.visible)
+	r.Handler = newDeploymentHandler(c, sh.Engine, sh.Collector, d, r.exporter, r.scheduler, r.backups, newLimits(), r.keep)
 	return r, nil
 }
 
-// visible reports whether a container belongs in this environment's stats and export.
-func (r *Runtime) visible(labels map[string]string) bool {
+// keep returns a filter over one claims snapshot, for one stats response, stream emission or export.
+func (r *Runtime) keep() func(map[string]string) bool {
 	own := r.ownClaims()
 	foreign, ok := r.foreignClaims()
+	return func(labels map[string]string) bool {
+		return r.shown(labels, own, foreign, ok)
+	}
+}
+
+// visible reports whether a container belongs in this environment's stats and export. Tests call it once per container;
+// stats, the stream and export call keep so they read claims once per sample.
+func (r *Runtime) visible(labels map[string]string) bool {
+	return r.keep()(labels)
+}
+
+// shown is the filter for one claims snapshot.
+func (r *Runtime) shown(labels map[string]string, own, foreign map[state.Claim]bool, ok bool) bool {
 	if !ok {
 		return r.ownContainer(labels, own)
 	}
@@ -116,14 +132,14 @@ func (r *Runtime) ownClaims() map[state.Claim]bool {
 }
 
 func (r *Runtime) foreignClaims() (map[state.Claim]bool, bool) {
-	if r.deployment == nil || r.deployment.Foreign == nil {
+	if r.peerClaims == nil {
 		return nil, false
 	}
-	f, err := r.deployment.Foreign(context.Background())
+	f, err := r.peerClaims(context.Background())
 	if err != nil {
 		return nil, false
 	}
-	return f.Claims, true
+	return f, true
 }
 
 func (r *Runtime) ownContainer(labels map[string]string, own map[state.Claim]bool) bool {

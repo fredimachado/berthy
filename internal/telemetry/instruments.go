@@ -108,7 +108,11 @@ func (e *Exporter) register(meter metric.Meter) error {
 func (e *Exporter) observe(ctx context.Context, o metric.Observer, in *instruments) {
 	if e.Collector != nil {
 		if s, ok := e.Collector.Latest(); ok {
-			s = s.Only(e.Keep)
+			var keep func(map[string]string) bool
+			if e.Keep != nil {
+				keep = e.Keep()
+			}
+			s = s.Only(keep)
 			observeHost(o, in, s.Host)
 			observeContainers(o, in, s.Containers)
 		}

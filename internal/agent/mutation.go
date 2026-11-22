@@ -68,7 +68,7 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 }
 
 // newDeploymentHandler is NewDeploymentHandlerWithBackups with the stream limits of the hosted environment the handler serves.
-func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits, keep func(map[string]string) bool) http.Handler {
+func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits, keep func() func(map[string]string) bool) http.Handler {
 	tokens := newTokenSource(c, storeOf(d))
 	legacy := handlerWithTokens(c, e, col, d, tel, tokens, lim, keep)
 	gate := &approvalGate{c: c, d: d, tokens: tokens}

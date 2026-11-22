@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -200,11 +201,9 @@ func TestVisibleFailsClosedWhenForeignClaimsCannotBeRead(t *testing.T) {
 	}
 	r := &Runtime{
 		Config: Config{Project: "demo", Environment: "lab"},
-		deployment: &deploy.Controller{
-			Store: s,
-			Foreign: func(context.Context) (deploy.Foreign, error) {
-				return deploy.Foreign{}, errors.New("unavailable")
-			},
+		deployment: &deploy.Controller{Store: s},
+		peerClaims: func(context.Context) (map[state.Claim]bool, error) {
+			return nil, errors.New("unavailable")
 		},
 	}
 	if !r.visible(scope.ID{Project: "demo", Environment: "lab"}.Labels()) {
@@ -232,5 +231,57 @@ func TestVisibleFailsClosedWhenForeignClaimsCannotBeRead(t *testing.T) {
 	stolen["com.docker.compose.project"] = "shop-prod"
 	if r.visible(stolen) {
 		t.Fatal("lab-labelled compose container of a project this environment does not hold listed when foreign claims cannot be read")
+	}
+}
+
+func TestStatsShowUnclaimedContainersWhenPeerReleaseHistoryCannotBeRead(t *testing.T) {
+	lab, prod := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, lab, prod)
+	sh.Collector = sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "lab-web", Labels: lab.Labels()},
+		{ID: "unclaimed", Labels: nil},
+	})
+	peer := f.Environments[1]
+	s, err := state.Open(peer.StateDir, peer.KeyFile, peer.Environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "bad", ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: "image", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	h := openHost(t, sh, f)
+	ids := statsContainerIDs(statsSample(t, h, lab.APIPath()+"stats", adminOf(f, 0)))
+	if len(ids) != 2 || ids[0] != "lab-web" || ids[1] != "unclaimed" {
+		t.Fatalf("stats %v, want [lab-web unclaimed]", ids)
+	}
+}
+
+func TestStatsReadsPeerClaimsOncePerResponse(t *testing.T) {
+	lab, prod := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "shop", Environment: "prod"}
+	sh, f := hostedFile(t, lab, prod)
+	sh.Collector = sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "a", Labels: lab.Labels()},
+		{ID: "b", Labels: prod.Labels()},
+		{ID: "c", Labels: nil},
+	})
+	h := openHost(t, sh, f)
+	var n atomic.Int32
+	orig := h.runtimes[lab].peerClaims
+	if orig == nil {
+		t.Fatal("peer claims path not wired")
+	}
+	h.runtimes[lab].peerClaims = func(ctx context.Context) (map[state.Claim]bool, error) {
+		n.Add(1)
+		return orig(ctx)
+	}
+	statsSample(t, h, lab.APIPath()+"stats", adminOf(f, 0))
+	if got := n.Load(); got != 1 {
+		t.Fatalf("peer claims read %d times, want 1", got)
 	}
 }

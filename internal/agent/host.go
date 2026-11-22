@@ -77,8 +77,13 @@ func Open(sh Shared, f File) (*Host, error) {
 			defer h.claimsMu.Unlock()
 			return h.foreign(ctx, id)
 		}
+		r.peerClaims = func(ctx context.Context) (map[state.Claim]bool, error) {
+			h.claimsMu.Lock()
+			defer h.claimsMu.Unlock()
+			return h.foreignClaims(ctx, id)
+		}
 		if r.exporter != nil {
-			r.exporter.Keep = r.visible
+			r.exporter.Keep = r.keep
 		}
 		if r.Config.Network != "" {
 			if _, err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {

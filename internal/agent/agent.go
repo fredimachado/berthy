@@ -232,6 +232,14 @@ func handlerWithState(c Config, e *engine.Engine, collector *metrics.Collector, 
 	return handlerWithTokens(c, e, collector, deployment, tel, newTokenSource(c, storeOf(deployment)), newLimits(), nil)
 }
 
+// snapshotKeep is one claims snapshot for a stats response or stream emission. A nil keep leaves every container.
+func snapshotKeep(keep func() func(map[string]string) bool) func(map[string]string) bool {
+	if keep == nil {
+		return nil
+	}
+	return keep()
+}
+
 // storeOf is the state of a controller, or nil for an agent without state.
 func storeOf(d *deploy.Controller) *state.Store {
 	if d == nil {
@@ -242,7 +250,7 @@ func storeOf(d *deploy.Controller) *state.Store {
 
 // handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
 // The handler sees the path after the environment, as mount gives it.
-func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits, keep func(map[string]string) bool) http.Handler {
+func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits, keep func() func(map[string]string) bool) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
 		if r.Method != "GET" {
@@ -272,8 +280,9 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					return
 				}
 				samples := collector.Since(d)
+				filter := snapshotKeep(keep)
 				for i := range samples {
-					samples[i] = samples[i].Only(keep)
+					samples[i] = samples[i].Only(filter)
 				}
 				result = samples
 			} else {
@@ -284,7 +293,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 					writeError(w, 503, "sample_not_ready", "sample not ready")
 					return
 				}
-				result = sample.Only(keep)
+				result = sample.Only(snapshotKeep(keep))
 			}
 		case len(rest) == 1 && rest[0] == "agent":
 			host, _ := os.Hostname()
@@ -510,7 +519,7 @@ func compareVersion(a, b string) int {
 	return an - bn
 }
 
-func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, lim *limits, keep func(map[string]string) bool) {
+func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, lim *limits, keep func() func(map[string]string) bool) {
 	select {
 	case lim.followers <- struct{}{}:
 		defer func() { <-lim.followers }()
@@ -535,7 +544,7 @@ func streamStats(w http.ResponseWriter, r *http.Request, c *metrics.Collector, l
 		if !ok || !shouldEmitSample(s.Time, last) {
 			return true
 		}
-		b, err := json.Marshal(s.Only(keep))
+		b, err := json.Marshal(s.Only(snapshotKeep(keep)))
 		if err != nil {
 			return false
 		}

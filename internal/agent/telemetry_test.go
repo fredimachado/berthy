@@ -311,7 +311,7 @@ func waitForExport(t *testing.T, sink *otlpSink) {
 	}
 }
 
-func testExporter(t *testing.T, col *metrics.Collector, keep func(map[string]string) bool) (*telemetry.Exporter, *otlpSink) {
+func testExporter(t *testing.T, col *metrics.Collector, keep func() func(map[string]string) bool) (*telemetry.Exporter, *otlpSink) {
 	t.Helper()
 	sink := newOTLPSink(t)
 	exp := NewTelemetry(Config{Project: "demo", Environment: "lab"}, col, &deploy.Controller{Store: openIngressStore(t), Environment: "lab"}, nil)
@@ -333,7 +333,7 @@ func TestTheExportLeavesOutContainersOfOtherEnvironments(t *testing.T) {
 		{ID: "lab-web", Labels: lab.Labels()},
 		{ID: "prod-web", Labels: prod.Labels()},
 	})
-	_, sink := testExporter(t, col, lab.Owns)
+	_, sink := testExporter(t, col, func() func(map[string]string) bool { return lab.Owns })
 	ids := sink.containerIDs()
 	if !ids["lab-web"] {
 		t.Fatalf("own container missing: %v", ids)
@@ -347,17 +347,15 @@ func TestTheExportLeavesOutTheTasksOfAnAdoptedServiceOfAnotherEnvironment(t *tes
 	lab := scope.ID{Project: "demo", Environment: "lab"}
 	r := &Runtime{
 		Config: Config{Project: lab.Project, Environment: lab.Environment},
-		deployment: &deploy.Controller{
-			Foreign: func(context.Context) (deploy.Foreign, error) {
-				return deploy.Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimService, Name: "legacy-web"}: true}}, nil
-			},
+		peerClaims: func(context.Context) (map[state.Claim]bool, error) {
+			return map[state.Claim]bool{{Kind: state.ClaimService, Name: "legacy-web"}: true}, nil
 		},
 	}
 	col := sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
 		{ID: "lab-own", Labels: lab.Labels()},
 		{ID: "adopted-task", Labels: map[string]string{"com.docker.swarm.service.name": "legacy-web"}},
 	})
-	_, sink := testExporter(t, col, r.visible)
+	_, sink := testExporter(t, col, r.keep)
 	ids := sink.containerIDs()
 	if !ids["lab-own"] {
 		t.Fatalf("own container missing: %v", ids)
