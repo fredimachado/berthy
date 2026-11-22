@@ -1299,3 +1299,16 @@ func TestRemoveConnectorReleasesClaimAfterConfirmedAbsence(t *testing.T) {
 		})
 	}
 }
+
+func TestIngressRefusesPeerTunnel(t *testing.T) {
+	f := newIngressFixture(t)
+	id := f.cf.AddTunnel(ingressTunnel, true)
+	f.ctrl.Foreign = func(context.Context) (Foreign, error) {
+		return Foreign{Ingress: []state.IngressState{{AccountID: ingressAccount, TunnelID: id}}}, nil
+	}
+	m := ingressManifest(t, "")
+	_, err := f.ctrl.ingressTargetFor(context.Background(), m)
+	if err == nil || err.Error() != "tunnel is managed by another hosted environment" {
+		t.Fatalf("peer tunnel: %v", err)
+	}
+}

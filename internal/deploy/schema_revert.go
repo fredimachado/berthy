@@ -33,6 +33,7 @@ const (
 	errCloudflareSecret      Refusal = "Cloudflare API token secret unavailable"
 	errCloudflareToken       Refusal = "Cloudflare token check failed"
 	errCloudflareUnavailable Refusal = "Cloudflare unavailable"
+	errTunnelForeign         Refusal = "tunnel is managed by another hosted environment"
 	errTunnelNotRemote       Refusal = "tunnel is not remotely managed"
 	errIngressConflict       Refusal = "ingress hostname conflict"
 	errIngressPublish        Refusal = "ingress publish failed"
@@ -57,7 +58,7 @@ var sharedComposeProjectMessage = regexp.MustCompile(`^Compose project [a-z0-9][
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
 	case compensationIntents, compensationChanged, compensationUpdate, compensationHealth, compensationRemove, compensationFailed, "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
-		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
+		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errTunnelForeign, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,
 		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,

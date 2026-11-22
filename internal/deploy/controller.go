@@ -132,8 +132,9 @@ type Engine interface {
 	InspectContainerHealth(context.Context, string) (string, error)
 }
 type Foreign struct {
-	Claims map[state.Claim]bool
-	Images map[string]bool
+	Claims  map[state.Claim]bool
+	Images  map[string]bool
+	Ingress []state.IngressState
 }
 
 type Controller struct {

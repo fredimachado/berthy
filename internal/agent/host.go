@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -104,6 +106,13 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 	for _, r := range h.order {
 		if r.Config.ID() == id {
 			continue
+		}
+		ingress, err := r.deployment.Store.Ingress(ctx)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return deploy.Foreign{}, err
+		}
+		if err == nil {
+			f.Ingress = append(f.Ingress, ingress)
 		}
 		images, err := r.deployment.RetainedImages(ctx)
 		if err != nil {

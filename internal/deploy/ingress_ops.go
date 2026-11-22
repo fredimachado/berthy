@@ -79,8 +79,29 @@ func (c *Controller) ingressTargetFor(ctx context.Context, m manifest.Manifest) 
 	if tunnel != nil && !tunnel.RemoteConfig {
 		return t, errTunnelNotRemote
 	}
+	if tunnel != nil {
+		if err := c.checkForeignTunnel(ctx, t.account, tunnel.ID); err != nil {
+			return t, err
+		}
+	}
 	t.tunnel = tunnel
 	return t, nil
+}
+
+func (c *Controller) checkForeignTunnel(ctx context.Context, account, id string) error {
+	if c.Foreign == nil {
+		return nil
+	}
+	foreign, err := c.Foreign(ctx)
+	if err != nil {
+		return err
+	}
+	for _, peer := range foreign.Ingress {
+		if peer.AccountID == account && peer.TunnelID == id {
+			return errTunnelForeign
+		}
+	}
+	return nil
 }
 
 // newIngressSync returns the sync engine for an ingress run. tunnelID is empty while the tunnel does not exist.
@@ -505,6 +526,9 @@ func (c *Controller) runIngress(ctx context.Context, op state.Operation, actor A
 			return fail(errIngressPublish)
 		}
 		tunnel = &created
+	}
+	if err := c.checkForeignTunnel(ctx, t.account, tunnel.ID); err != nil {
+		return fail(err)
 	}
 	st := state.IngressState{AccountID: t.account, APITokenSecret: t.secret, TunnelID: tunnel.ID, TunnelName: t.tunnelName, DNS: t.dns}
 	if err = c.Store.SetIngress(ctx, op.ID, st); err != nil {

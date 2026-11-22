@@ -1149,3 +1149,32 @@ func TestClosingTheHostDoesNotRaceAnInFlightExport(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+func TestForeignIncludesPeerIngress(t *testing.T) {
+	ids := []scope.ID{{Project: "one", Environment: "prod"}, {Project: "two", Environment: "prod"}}
+	sh, file := hostedFile(t, ids...)
+	h, err := Open(sh, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	ctx := context.Background()
+	peer := h.runtimes[ids[1]].deployment.Store
+	op, _, err := peer.Admit(ctx, state.Admission{RequestID: "ingress", ActorID: "admin", Kind: "ingress", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SetIngress(ctx, op.ID, state.IngressState{AccountID: "acct", APITokenSecret: "TOKEN", TunnelID: "tunnel", TunnelName: "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := h.foreign(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Ingress) != 1 || f.Ingress[0].AccountID != "acct" || f.Ingress[0].TunnelID != "tunnel" {
+		t.Fatalf("peer ingress missing: %+v", f)
+	}
+	if err := peer.Finish(ctx, op.ID, state.Outcome{State: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+}
