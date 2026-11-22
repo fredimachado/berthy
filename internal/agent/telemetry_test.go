@@ -1,16 +1,26 @@
 package agent
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	"google.golang.org/protobuf/proto"
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/metrics"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 )
@@ -191,4 +201,168 @@ func findCheck(checks []api.Check, name string) (api.Check, bool) {
 		}
 	}
 	return api.Check{}, false
+}
+
+// otlpSink is an OTLP/HTTP metrics endpoint that records each accepted export.
+type otlpSink struct {
+	srv *httptest.Server
+
+	mu       sync.Mutex
+	requests []*colmetricspb.ExportMetricsServiceRequest
+}
+
+func newOTLPSink(t *testing.T) *otlpSink {
+	t.Helper()
+	s := &otlpSink{}
+	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *otlpSink) serve(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "unreadable body", http.StatusBadRequest)
+		return
+	}
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, "bad gzip", http.StatusBadRequest)
+			return
+		}
+		if body, err = io.ReadAll(zr); err != nil {
+			http.Error(w, "bad gzip", http.StatusBadRequest)
+			return
+		}
+	}
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/metrics" {
+		http.NotFound(w, r)
+		return
+	}
+	var req colmetricspb.ExportMetricsServiceRequest
+	if err := proto.Unmarshal(body, &req); err != nil {
+		http.Error(w, "not OTLP protobuf", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	s.requests = append(s.requests, &req)
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *otlpSink) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.requests)
+}
+
+func (s *otlpSink) containerIDs() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := map[string]bool{}
+	for _, req := range s.requests {
+		for _, rm := range req.GetResourceMetrics() {
+			for _, sm := range rm.GetScopeMetrics() {
+				for _, m := range sm.GetMetrics() {
+					var dps []*metricspb.NumberDataPoint
+					if g := m.GetGauge(); g != nil {
+						dps = g.GetDataPoints()
+					} else {
+						dps = m.GetSum().GetDataPoints()
+					}
+					for _, dp := range dps {
+						for _, kv := range dp.GetAttributes() {
+							if kv.GetKey() == "container.id" {
+								ids[kv.GetValue().GetStringValue()] = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return ids
+}
+
+func startExport(t *testing.T, exp *telemetry.Exporter) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		exp.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+func waitForExport(t *testing.T, sink *otlpSink) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for sink.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for an export")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func testExporter(t *testing.T, col *metrics.Collector, keep func(map[string]string) bool) (*telemetry.Exporter, *otlpSink) {
+	t.Helper()
+	sink := newOTLPSink(t)
+	exp := NewTelemetry(Config{Project: "demo", Environment: "lab"}, col, &deploy.Controller{Store: openIngressStore(t), Environment: "lab"}, nil)
+	if exp == nil {
+		t.Fatal("no exporter")
+	}
+	exp.Keep = keep
+	exp.Config = func(context.Context) (*telemetry.Config, error) {
+		return &telemetry.Config{Endpoint: sink.srv.URL}, nil
+	}
+	startExport(t, exp)
+	waitForExport(t, sink)
+	return exp, sink
+}
+
+func TestTheExportLeavesOutContainersOfOtherEnvironments(t *testing.T) {
+	lab, prod := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "shop", Environment: "prod"}
+	col := sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "lab-web", Labels: lab.Labels()},
+		{ID: "prod-web", Labels: prod.Labels()},
+	})
+	_, sink := testExporter(t, col, lab.Owns)
+	ids := sink.containerIDs()
+	if !ids["lab-web"] {
+		t.Fatalf("own container missing: %v", ids)
+	}
+	if ids["prod-web"] {
+		t.Fatalf("other environment's container exported: %v", ids)
+	}
+}
+
+func TestTheExportLeavesOutTheTasksOfAnAdoptedServiceOfAnotherEnvironment(t *testing.T) {
+	lab := scope.ID{Project: "demo", Environment: "lab"}
+	r := &Runtime{
+		Config: Config{Project: lab.Project, Environment: lab.Environment},
+		deployment: &deploy.Controller{
+			Foreign: func(context.Context) (deploy.Foreign, error) {
+				return deploy.Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimService, Name: "legacy-web"}: true}}, nil
+			},
+		},
+	}
+	col := sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "lab-own", Labels: lab.Labels()},
+		{ID: "adopted-task", Labels: map[string]string{"com.docker.swarm.service.name": "legacy-web"}},
+	})
+	_, sink := testExporter(t, col, r.visible)
+	ids := sink.containerIDs()
+	if !ids["lab-own"] {
+		t.Fatalf("own container missing: %v", ids)
+	}
+	if ids["adopted-task"] {
+		t.Fatalf("adopted task of another environment exported: %v", ids)
+	}
 }

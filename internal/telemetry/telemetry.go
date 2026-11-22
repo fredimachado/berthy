@@ -51,6 +51,9 @@ type Exporter struct {
 	Config func(ctx context.Context) (*Config, error)
 	// Log receives operational messages. They never contain a header value. Nil discards them.
 	Log func(string)
+	// Keep reports whether a container belongs in this export. Nil keeps every container. Set before Run so the first
+	// export is already scoped.
+	Keep func(labels map[string]string) bool
 
 	// exportEvery and configEvery override the export and configuration intervals in tests. Zero means the defaults.
 	exportEvery time.Duration

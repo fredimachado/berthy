@@ -77,6 +77,9 @@ func Open(sh Shared, f File) (*Host, error) {
 			defer h.claimsMu.Unlock()
 			return h.foreign(ctx, id)
 		}
+		if r.exporter != nil {
+			r.exporter.Keep = r.visible
+		}
 		if r.Config.Network != "" {
 			if _, err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {
 				h.Close()

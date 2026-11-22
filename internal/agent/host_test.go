@@ -24,6 +24,7 @@ import (
 	"berthy/internal/monitor"
 	"berthy/internal/scope"
 	"berthy/internal/state"
+	"berthy/internal/telemetry"
 )
 
 // hostToken is the admin token of the hosted environment id. The digit makes it differ between environments of one file,
@@ -1056,5 +1057,44 @@ func TestPruneAndDestroyReportUnreadableForeignHistory(t *testing.T) {
 				t.Fatalf("operation %+v %v", op, err)
 			}
 		})
+	}
+}
+
+func TestTheFirstExportOfTwoRuntimesIsScoped(t *testing.T) {
+	lab, prod := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "shop", Environment: "prod"}
+	sh, f := hostedFile(t, lab, prod)
+	sh.Collector = sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "lab-web", Labels: lab.Labels()},
+		{ID: "prod-web", Labels: prod.Labels()},
+	})
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	sinks := []*otlpSink{newOTLPSink(t), newOTLPSink(t)}
+	for i, r := range h.order {
+		endpoint := sinks[i].srv.URL
+		r.exporter.Config = func(context.Context) (*telemetry.Config, error) {
+			return &telemetry.Config{Endpoint: endpoint}, nil
+		}
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []scope.ID{lab, prod} {
+		waitForExport(t, sinks[i])
+		ids := sinks[i].containerIDs()
+		want := id.Environment + "-web"
+		other := "prod-web"
+		if id == prod {
+			other = "lab-web"
+		}
+		if !ids[want] {
+			t.Errorf("%s first export missing own container: %v", id, ids)
+		}
+		if ids[other] {
+			t.Errorf("%s first export included the other environment: %v", id, ids)
+		}
 	}
 }
