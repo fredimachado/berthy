@@ -223,6 +223,59 @@ func TestStateRestoreWithAWrongKeyExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestStateRestoreDiscoversProjectWithoutReadingUnrelatedObjects(t *testing.T) {
+	endpoint, object, keyPath := snapshotInBucket(t)
+	objects, err := objectstore.New(objectstore.Config{Endpoint: endpoint, Bucket: "bkt", AccessKey: "AKIATESTACCESS", SecretKey: "test-secret-key-0123456789"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated key under another project/environment: listing it must not require a Stat, and it must not make prod ambiguous.
+	if _, err = objects.Put(context.Background(), "other/stage/secret.db", strings.NewReader("nope"), nil); err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/other/") {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)
+			return
+		}
+		u := *r.URL
+		u.Scheme = "http"
+		u.Host = strings.TrimPrefix(endpoint, "http://")
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, u.String(), r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = r.Header.Clone()
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		for k, vs := range res.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(res.StatusCode)
+		io.Copy(w, res.Body)
+	}))
+	t.Cleanup(proxy.Close)
+	t.Chdir(t.TempDir())
+	out := filepath.Join(t.TempDir(), "restored")
+	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
+	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
+	args := []string{"state-restore", "--endpoint", proxy.URL, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	var stdout, stderr bytes.Buffer
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, err %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "environment: prod") {
+		t.Fatalf("output: %s", stdout.String())
+	}
+}
+
 func TestStateRestoreUsesTheManifestProjectWithoutTheFlag(t *testing.T) {
 	endpoint, object, keyPath := snapshotInBucket(t)
 	dir := t.TempDir()
@@ -241,6 +294,30 @@ func TestStateRestoreUsesTheManifestProjectWithoutTheFlag(t *testing.T) {
 	if !strings.Contains(stdout.String(), "environment: prod") {
 		t.Fatalf("output: %s", stdout.String())
 	}
+}
+
+func TestStateRestoreListingFailureIsAStorageError(t *testing.T) {
+	endpoint, object, keyPath := snapshotInBucket(t)
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)
+	}))
+	t.Cleanup(denied.Close)
+	t.Chdir(t.TempDir())
+	out := filepath.Join(t.TempDir(), "restored")
+	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
+	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
+	args := []string{"state-restore", "--endpoint", denied.URL, "--bucket", "bkt", "--object", object, "--out", out, "--key-file", keyPath}
+	var stdout, stderr bytes.Buffer
+	code := Run(args, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1 (storage), err %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "pass --project to skip discovery") {
+		t.Fatalf("err %q", stderr.String())
+	}
+	_ = endpoint
 }
 
 func TestStateRestoreRefusesAnAmbiguousEnvironment(t *testing.T) {

@@ -42,9 +42,10 @@ type Store interface {
 	// object that was already at key before it started; keys are expected to be unique per upload.
 	Put(ctx context.Context, key string, r io.Reader, meta map[string]string) (int64, error)
 	Get(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error)
-	Stat(ctx context.Context, key string) (ObjectInfo, error)      // ErrNotFound when absent
-	List(ctx context.Context, prefix string) ([]ObjectInfo, error) // recursive, sorted by key, Meta filled for each object
-	Delete(ctx context.Context, key string) error                  // deleting a missing key is not an error
+	Stat(ctx context.Context, key string) (ObjectInfo, error) // ErrNotFound when absent
+	// List is recursive and sorted by key. It uses the listing response only: no per-object Stat. Meta is empty; call Stat for metadata.
+	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
+	Delete(ctx context.Context, key string) error // deleting a missing key is not an error
 }
 
 var ErrNotFound = errors.New("object not found")
@@ -199,25 +200,14 @@ func (s *s3Store) Stat(ctx context.Context, key string) (ObjectInfo, error) {
 func (s *s3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var keys []string
+	var out []ObjectInfo
 	for o := range s.client.ListObjects(listCtx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
 		if o.Err != nil {
 			return nil, s.failure(ctx, o.Err)
 		}
-		keys = append(keys, o.Key)
+		out = append(out, ObjectInfo{Key: o.Key, Size: o.Size, Modified: o.LastModified})
 	}
-	sort.Strings(keys)
-	out := make([]ObjectInfo, 0, len(keys))
-	for _, key := range keys {
-		info, err := s.Stat(ctx, key)
-		if errors.Is(err, ErrNotFound) {
-			continue // removed after the listing
-		}
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, info)
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
 }
 

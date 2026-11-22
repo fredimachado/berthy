@@ -70,6 +70,10 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	project, err := resolveStateRestoreProject(ctx, *projectFlag, *manifestDir, parts[1], store)
 	if err != nil {
 		fmt.Fprintln(errout, err)
+		var disc *projectDiscoveryError
+		if errors.As(err, &disc) {
+			return 1
+		}
 		return 2
 	}
 	if parts[0] != project {
@@ -99,6 +103,15 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	return 0
 }
 
+// projectDiscoveryError is a storage failure while finding the project from object keys. Passing --project skips that listing.
+type projectDiscoveryError struct{ err error }
+
+func (e *projectDiscoveryError) Error() string {
+	return "cannot list the bucket to find the project; pass --project to skip discovery: " + e.err.Error()
+}
+
+func (e *projectDiscoveryError) Unwrap() error { return e.err }
+
 // resolveStateRestoreProject chooses the project for an offline restore: the flag, else the manifest in dir, else the only
 // project that has environment among the bucket's scoped object keys.
 func resolveStateRestoreProject(ctx context.Context, project, dir, environment string, store objectstore.Store) (string, error) {
@@ -112,7 +125,7 @@ func resolveStateRestoreProject(ctx context.Context, project, dir, environment s
 	}
 	have, err := projectsWithEnvironment(ctx, store, environment)
 	if err != nil {
-		return "", err
+		return "", &projectDiscoveryError{err: err}
 	}
 	switch len(have) {
 	case 0:
@@ -124,7 +137,8 @@ func resolveStateRestoreProject(ctx context.Context, project, dir, environment s
 	}
 }
 
-// projectsWithEnvironment lists the distinct projects that have at least one object under project/environment/ in store.
+// projectsWithEnvironment lists the distinct projects that have at least one object under project/environment/ in store,
+// using listed key names only.
 func projectsWithEnvironment(ctx context.Context, store objectstore.Store, environment string) ([]string, error) {
 	list, err := store.List(ctx, "")
 	if err != nil {

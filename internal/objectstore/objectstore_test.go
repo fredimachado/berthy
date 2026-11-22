@@ -297,9 +297,51 @@ func TestListIsSortedRecursiveAndCarriesMetadata(t *testing.T) {
 		t.Fatalf("list: %+v", list)
 	}
 	for i, o := range list {
-		if o.Key != want[i] || o.Meta["kind"] != want[i] || o.Size != int64(len(want[i])) {
+		if o.Key != want[i] || o.Size != int64(len(want[i])) {
 			t.Fatalf("entry %d: %+v", i, o)
 		}
+		stat, err := s.Stat(ctx, o.Key)
+		if err != nil || stat.Meta["kind"] != want[i] {
+			t.Fatalf("stat metadata %d: %+v %v", i, stat, err)
+		}
+	}
+}
+
+func TestListDoesNotStatObjects(t *testing.T) {
+	backend := s3mem.New()
+	if err := backend.CreateBucket(testBucket); err != nil {
+		t.Fatal(err)
+	}
+	inner := gofakes3.New(backend).Server()
+	var denyHead atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// After seeding, HeadObject under other/ is denied; listing remains allowed.
+		if denyHead.Load() && r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/other/") {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	s := newStore(t, srv.URL)
+	ctx := context.Background()
+	for _, key := range []string{"demo/prod/a.db", "other/prod/secret.db"} {
+		if _, err := s.Put(ctx, key, strings.NewReader(key), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	denyHead.Store(true)
+	if _, err := s.Stat(ctx, "other/prod/secret.db"); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("stat other: %v", err)
+	}
+	list, err := s.List(ctx, "")
+	if err != nil {
+		t.Fatalf("list stated a denied object: %v", err)
+	}
+	if len(list) != 2 || list[0].Key != "demo/prod/a.db" || list[1].Key != "other/prod/secret.db" {
+		t.Fatalf("list: %+v", list)
 	}
 }
 
