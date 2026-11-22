@@ -782,9 +782,7 @@ func TestTwoEnvironmentsWithOnePrefixNeverWriteOneArchiveKey(t *testing.T) {
 	b.Prefix = "shared"
 	g.m.Backups["uploads"] = b
 	g.archive("alpha-body")
-	a := *g.runner
-	a.Project, a.Env, a.Now = "demo", "prod", func() time.Time { return fixed }
-	g.runner = &a
+	g.runner.Now = func() time.Time { return fixed }
 	first, err := g.runner.Run(context.Background(), g.m, "uploads", "manual")
 	if err != nil {
 		t.Fatalf("first: %v", err)
