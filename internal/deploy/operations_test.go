@@ -685,9 +685,24 @@ func TestExecPlanNamesTheCommandSoAPersonCanReviewIt(t *testing.T) {
 
 func TestPruneKeepsAnImageAnotherEnvironmentRetains(t *testing.T) {
 	s, op := pruneFixture(t)
+	other := openStore(t)
+	ctx := context.Background()
+	for _, release := range []struct{ id, digest string }{{"v1", "alias"}, {"v2", "new"}} {
+		deploy, _, err := other.Admit(ctx, state.Admission{RequestID: release.id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = other.Finish(ctx, deploy.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: release.digest, Manifest: []byte(`{"apps":{"app":{"deploy":{"retain":2}}}}`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	otherController := Controller{Store: other}
 	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{{ID: "id-old", RepoDigests: []string{"old", "alias"}}, {ID: "id-prev", RepoDigests: []string{"prev"}}, {ID: "id-current", RepoDigests: []string{"current"}}}}
-	c := Controller{Store: s, Engine: f, Foreign: func(context.Context) (Foreign, error) { return Foreign{Images: map[string]bool{"alias": true}}, nil }}
-	out := c.runOperation(context.Background(), op, Actor{Admin: true}, Request{Kind: "prune"})
+	c := Controller{Store: s, Engine: f, Foreign: func(ctx context.Context) (Foreign, error) {
+		images, err := otherController.RetainedImages(ctx)
+		return Foreign{Images: images}, err
+	}}
+	out := c.runOperation(ctx, op, Actor{Admin: true}, Request{Kind: "prune"})
 	if out.State != "succeeded" || len(f.removed) != 2 || f.removed[0] == "old" || f.removed[1] == "old" {
 		t.Fatalf("outcome %+v removed %v", out, f.removed)
 	}
