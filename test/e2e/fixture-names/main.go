@@ -41,6 +41,7 @@ func names(dir, project, environment, selected string) ([]string, error) {
 		}
 		sort.Strings(roles)
 		for _, role := range roles {
+			out = append(out, "service\t"+m.ServiceName(environment, name, role))
 			for _, raw := range app.Roles[role].Volumes {
 				mount, err := manifest.ParseMount(raw)
 				if err != nil {

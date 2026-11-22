@@ -33,12 +33,12 @@ apps:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"compose\tshop-prod-db", "compose\tlegacy-db", "volume\tshop-prod_data", "volume\tshop-prod_cache"}
+	want := []string{"compose\tshop-prod-db", "compose\tlegacy-db", "service\tshop-prod-web-main", "volume\tshop-prod_data", "volume\tshop-prod_cache"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	got, err = names(dir, "shop", "prod", "web")
-	if err != nil || !reflect.DeepEqual(got, []string{"volume\tshop-prod_data", "volume\tshop-prod_cache"}) {
+	if err != nil || !reflect.DeepEqual(got, []string{"service\tshop-prod-web-main", "volume\tshop-prod_data", "volume\tshop-prod_cache"}) {
 		t.Fatalf("web names %v: %v", got, err)
 	}
 	if _, err := names(dir, "other", "prod", ""); err == nil {

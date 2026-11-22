@@ -98,6 +98,10 @@ record_deploy() (
         existing=$(d volume ls --format '{{.Name}}') || { rm -f "$tmp"; return 1; }
         if printf '%s\n' "$existing" | grep -Fxq -- "$name"; then existing=yes; else existing=; fi
         ;;
+      service)
+        existing=$(d service ls --format '{{.Name}}') || { rm -f "$tmp"; return 1; }
+        if printf '%s\n' "$existing" | grep -Fxq -- "$name"; then existing=yes; else existing=; fi
+        ;;
       compose)
         existing=$(d ps -aq --filter "label=com.docker.compose.project=$name") || { rm -f "$tmp"; return 1; }
         existing+=$(d network ls -q --filter "label=com.docker.compose.project=$name") || { rm -f "$tmp"; return 1; }
@@ -404,7 +408,12 @@ start_agent2() {
     printf ']}\n'
   } > "$RUN/agent2.json.new" && chmod 600 "$RUN/agent2.json.new" && mv -f "$RUN/agent2.json.new" "$RUN/agent2.json" || return 1
   "$BIN" context add --project "$PROJECT" -e "$env" --url "http://$AGENT2_LISTEN" --token-env "$var" --config "$RUN/admin.json" >/dev/null || return 1
+  # Record the pid before waiting so an EXIT trap can stop the process if the wait is interrupted.
   spawn "$RUN/agent2.pid" "$LOG/agent2.log" "$BIN" agent --config "$RUN/agent2.json"
+  for i in $(seq 1 40); do
+    [ -s "$RUN/agent2.pid" ] && break
+    sleep 0.05
+  done
   for i in $(seq 1 120); do
     if curl_local -f -o /dev/null "http://$AGENT2_LISTEN/healthz" 2>/dev/null; then
       return 0
@@ -499,12 +508,14 @@ apps:
 YML
 }
 
-# purge_fixture: stops both agents and the fakes, then removes what this harness made on the daemon: Swarm services,
-# containers owned by the hosted environments, the $REG_NAME container, and objects recorded in the fixture's ledger.
+# purge_fixture: stops both agents and the fakes, then removes what this harness made on the daemon: Swarm services
+# and containers of the first agent's hosted environments, the $REG_NAME container, and objects recorded in the
+# fixture's ledger (including the second agent's services, journaled by name so a leftover agent2.json cannot
+# delete another fixture's workloads in the same project/environment scope).
 purge_fixture() {
   local i v f project env state kind name lock tmp owner listing labels escaped id network_name deadline status lookup_error failed=0
   local -a ids owners
-  local volumes="" projects="" networks=""
+  local volumes="" projects="" networks="" services=""
   stop_agent
   stop_agent2
   stop_fakes
@@ -516,14 +527,6 @@ purge_fixture() {
       owners+=("$project"$'\t'"$env")
     fi
   done
-  if [ -f "$RUN/agent2.json" ]; then
-    while IFS=$'\t' read -r project env state; do
-      [ -n "$project" ] || continue
-      if [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ && $env =~ ^[a-z0-9][a-z0-9-]*$ && $state == "$RUN"/* ]]; then
-        owners+=("$project"$'\t'"$env")
-      fi
-    done < <(jq -r '.environments[]? | select((.project | type) == "string" and (.environment | type) == "string" and (.state_dir | type) == "string") | [.project, .environment, .state_dir] | @tsv' "$RUN/agent2.json" 2>/dev/null)
-  fi
   mkdir -p "$E2E_ROOT" || return 1
   exec {lock}>>"$E2E_ROOT/fixture-objects.lock" || return 1
   flock -x "$lock" || return 1
@@ -533,10 +536,26 @@ purge_fixture() {
         volume) volumes+=$'\n'"$name" ;;
         compose) projects+=$'\n'"$name" ;;
         network) networks+=$'\n'"$name" ;;
+        service) services+=$'\n'"$name" ;;
         *) failed=1 ;;
       esac
     done < "$E2E_ROOT/fixture-objects"
   fi
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if d service inspect "$name" >/dev/null 2>&1; then
+      d service rm "$name" >/dev/null || failed=1
+    fi
+    for i in $(seq 1 60); do
+      if ! d service inspect "$name" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+    if d service inspect "$name" >/dev/null 2>&1; then
+      failed=1
+    fi
+  done <<< "$services"
   for owner in "${owners[@]}"; do
     IFS=$'\t' read -r project env <<< "$owner"
     listing=$(d service ls -q --filter "label=berthy.project=$project" --filter "label=berthy.environment=$env") || { failed=1; continue; }

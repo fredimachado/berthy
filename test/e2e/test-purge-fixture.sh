@@ -16,12 +16,42 @@ printf 'network\t%s\n' shop-prod shop-stage shop-foreign >> "$E2E_ROOT/fixture-o
 EVENT_FIFO=$E2E_ROOT/network-events
 mkfifo "$EVENT_FIFO"
 stop_agent() { :; }
+stop_agent2() { :; }
 stop_fakes() { :; }
 sleep() { :; }
 start_network_events() { d events --since fake > "$2" & events_pid=$!; }
 d() {
   case "$1 $2" in
-    'service ls'|'images --no-trunc') ;;
+    'images --no-trunc') ;;
+    'service ls')
+      if [[ $* == *'--format'* ]]; then
+        [ -f "$E2E_ROOT/alive-services" ] && cat "$E2E_ROOT/alive-services"
+        return 0
+      fi
+      if [[ $* == *'label=berthy.project=shop'* && $* == *'label=berthy.environment=prodc'* ]]; then
+        # A foreign fixture that reused the second agent's scope after our ledger was cleared.
+        if [ -e "$E2E_ROOT/foreign-prodc" ]; then echo foreign-prodc-id; fi
+      fi
+      return 0 ;;
+    'service inspect')
+      local name=${*: -1}
+      if [ -f "$E2E_ROOT/alive-services" ] && grep -Fxq -- "$name" "$E2E_ROOT/alive-services"; then
+        echo '{}'
+        return 0
+      fi
+      return 1 ;;
+    'service rm')
+      shift 2
+      local id
+      for id in "$@"; do
+        printf '%s\n' "$id" >> "$E2E_ROOT/removed-services"
+        if [ -f "$E2E_ROOT/alive-services" ]; then
+          grep -Fxv -- "$id" "$E2E_ROOT/alive-services" > "$E2E_ROOT/alive-services.new" || :
+          mv -f "$E2E_ROOT/alive-services.new" "$E2E_ROOT/alive-services"
+        fi
+        if [ "$id" = foreign-prodc-id ]; then rm -f "$E2E_ROOT/foreign-prodc"; fi
+      done
+      return 0 ;;
     'network ls')
       if [[ $* == *'--no-trunc'* ]]; then
         local network
@@ -305,4 +335,33 @@ set -e
 if [ "$status" -eq 124 ]; then echo 'network inspection exceeded the cleanup bound' >&2; exit 1; fi
 if [ "$status" -eq 0 ] || ! grep -q 'network inspection stalled' "$E2E_ROOT/inspect-output"; then echo "the stalled inspection did not report its error: $(cat "$E2E_ROOT/inspect-output")" >&2; exit 1; fi
 unset STALL_ACTION
+# A successful purge can leave agent2.json behind. Labels read from that file must not delete a
+# foreign fixture that later reused the same project and environment with an empty ledger.
+mkdir -p "$RUN"
+printf '{"environments":[{"project":"shop","environment":"prodc","state_dir":"%s"}]}\n' "$RUN/state2" > "$RUN/agent2.json"
+rm -f "$E2E_ROOT/fixture-objects"
+touch "$E2E_ROOT/foreign-prodc"
+: > "$E2E_ROOT/removed-services"
+purge_fixture || { echo 'purge with a leftover agent2.json and empty ledger failed' >&2; exit 1; }
+if grep -qx foreign-prodc-id "$E2E_ROOT/removed-services"; then
+  echo 'purge removed a foreign service in the second agent scope after the ledger was cleared' >&2
+  exit 1
+fi
+if [ ! -e "$E2E_ROOT/foreign-prodc" ]; then
+  echo 'purge cleared the foreign-prodc marker' >&2
+  exit 1
+fi
+# Journaled second-agent services are still removed by exact name.
+printf 'service\tshop-prodc-web-main\n' > "$E2E_ROOT/fixture-objects"
+printf '%s\n' shop-prodc-web-main > "$E2E_ROOT/alive-services"
+: > "$E2E_ROOT/removed-services"
+purge_fixture || { echo 'cleanup of a journaled second-agent service failed' >&2; exit 1; }
+if ! grep -qx shop-prodc-web-main "$E2E_ROOT/removed-services"; then
+  echo 'cleanup missed the journaled second-agent service' >&2
+  exit 1
+fi
+if [ -e "$E2E_ROOT/fixture-objects" ]; then
+  echo 'successful second-agent cleanup did not clear the ledger' >&2
+  exit 1
+fi
 echo 'PASS purge_fixture keeps other projects and removes owned environment volumes'
