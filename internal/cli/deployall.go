@@ -111,6 +111,9 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
+		return 2
+	}
 	versions, err := parseAllVersions(m, f.versions)
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -134,6 +137,9 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if e != nil {
 			fmt.Fprintf(errout, "app %s: %v (nothing was deployed)\n", app, e)
 			return 1
+		}
+		if !manifestMatchesTarget(errout, f.dir, req.Manifest.Project, target.Project) {
+			return 2
 		}
 		// Every app reads the same base manifest and overlay, so the checkout is one: the files any of the apps reads.
 		co.InWorkTree, co.Head = checkout.InWorkTree, checkout.Head

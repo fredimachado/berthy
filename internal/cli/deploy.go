@@ -465,13 +465,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	if cmd == "deploy" || cmd == "apply" || (cmd == "ingress" && len(f.pos) > 0 && f.pos[0] == "apply") {
-		name, ok, _ := manifest.ProjectName(f.dir)
-		if ok && name != target.Project {
-			fmt.Fprintf(errout, "the manifest in %s is for project %s, not %s\n", f.dir, name, target.Project)
-			return 2
-		}
-	}
 	u, token, prefix := target.Base, target.Token, target.Prefix
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
 		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
@@ -593,6 +586,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 				fmt.Fprintln(errout, e)
 				return 1
 			}
+			if !manifestMatchesTarget(errout, f.dir, req.Manifest.Project, target.Project) {
+				return 2
+			}
 			warnCheckout(errout, f.commit, co)
 			if e := refuseLocalChanges(ctx, client, target, req.Manifest.Protected, co); e != nil {
 				fmt.Fprintln(errout, e)
@@ -618,6 +614,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		if e != nil {
 			fmt.Fprintln(errout, e)
 			return 1
+		}
+		if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
+			return 2
 		}
 		if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
 			fmt.Fprintln(errout, e)
@@ -737,6 +736,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
+			}
+			if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
+				return 2
 			}
 			if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
 				fmt.Fprintln(errout, e)
@@ -1168,4 +1170,12 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			return 1
 		}
 	}
+}
+
+func manifestMatchesTarget(errout io.Writer, dir, project, target string) bool {
+	if project == target {
+		return true
+	}
+	fmt.Fprintf(errout, "the manifest in %s is for project %s, not %s\n", dir, project, target)
+	return false
 }

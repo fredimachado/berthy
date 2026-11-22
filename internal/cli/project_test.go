@@ -224,3 +224,19 @@ func TestAnEmptyProjectFlagIsInvalid(t *testing.T) {
 		t.Fatal("sent request")
 	}
 }
+
+func TestMalformedManifestReportsLoadErrorInsteadOfProjectMismatch(t *testing.T) {
+	cfg, cardio, slice := twoProjectsServers(t)
+	dir := writeAliasDir(t, "project: [\n")
+	for _, args := range [][]string{{"deploy", "api", "--version", "v1"}, {"deploy"}, {"apply"}, {"ingress", "apply"}} {
+		args = append(args, "-e", "prod", "--project", "sliceup", "--config", cfg, "--manifest-dir", dir)
+		var out, errs bytes.Buffer
+		code := Run(args, &out, &errs)
+		if code != 1 || !strings.Contains(errs.String(), "yaml:") || strings.Contains(errs.String(), "is for project") {
+			t.Errorf("%v: exit %d, stderr %q", args, code, errs.String())
+		}
+	}
+	if cardio.Load() != 0 || slice.Load() != 0 {
+		t.Fatal("sent request for malformed manifest")
+	}
+}
