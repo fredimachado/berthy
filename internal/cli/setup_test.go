@@ -829,3 +829,26 @@ func TestSetupNextStepsUseTheExistingEntryKeyPath(t *testing.T) {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
 }
+
+func TestSetupRefusesTokenVariableUsedByAnotherProjectBeforeChanges(t *testing.T) {
+	server := freshServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	cfg := filepath.Join(t.TempDir(), "cli.json")
+	original := `{"projects":{"my-shop":{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"BERTHY_MY_SHOP_PROD_TOKEN"}}}}}`
+	if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errout := runSetupCmd("-e", "prod", "--project", "my_shop", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", t.TempDir(), "--config", cfg)
+	if code == 0 || !strings.Contains(out+errout, "my-shop/prod") || !strings.Contains(out+errout, "my_shop/prod") || !strings.Contains(out+errout, "--token-env") {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	for _, script := range server.scripts {
+		if strings.Contains(script, "install -d") || strings.Contains(script, "useradd") || strings.Contains(script, "cat >") || strings.Contains(script, "network create") {
+			t.Fatalf("server changed: %s", script)
+		}
+	}
+	b, _ := os.ReadFile(cfg)
+	if string(b) != original {
+		t.Fatal("CLI config changed")
+	}
+}

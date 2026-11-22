@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
@@ -107,6 +108,10 @@ func runSetup(args []string, out, errout io.Writer) int {
 	if err != nil {
 		return usage("%v", err)
 	}
+	if err := checkSetupTokenEnv(from.project, *env, *cliConfig); err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
 	opts := setup.Options{
 		Env: *env, Project: from.project, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
 		Binary: *binary, KeyFile: *keyFile, NewToken: *newToken, CLIConfig: *cliConfig, Build: setupBuild(),
@@ -172,6 +177,23 @@ func runSetup(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func checkSetupTokenEnv(project, env, config string) error {
+	path, err := agentclient.ConfigPath(config)
+	if err != nil {
+		return nil
+	}
+	c, err := agentclient.ReadConfig(path)
+	if err != nil {
+		return err
+	}
+	tokenEnv := c.Projects[project].Environments[env].TokenEnv
+	if tokenEnv == "" {
+		tokenEnv = setup.DefaultTokenEnv(project, env)
+	}
+	_, err = c.Put(project, env, agentclient.Environment{URL: "http://127.0.0.1:1", TokenEnv: tokenEnv})
+	return err
 }
 
 // setupFrom is what setup takes from the manifest, or from the flags when the directory has none.

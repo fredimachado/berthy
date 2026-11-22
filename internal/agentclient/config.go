@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"berthy/internal/scope"
 )
@@ -57,6 +58,13 @@ func (c *Config) Put(project, env string, e Environment) (changed bool, err erro
 	}
 	if !ValidTokenEnv(e.TokenEnv) {
 		return false, errors.New("invalid token environment variable")
+	}
+	for otherProject, p := range c.Projects {
+		for otherEnv, other := range p.Environments {
+			if (otherProject != project || otherEnv != env) && strings.EqualFold(other.TokenEnv, e.TokenEnv) {
+				return false, fmt.Errorf("token environment variable %s is shared by %s/%s and %s/%s; use context add --token-env to choose a distinct variable for one entry", e.TokenEnv, project, env, otherProject, otherEnv)
+			}
+		}
 	}
 	if c.Projects == nil {
 		c.Projects = map[string]Project{}

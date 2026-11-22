@@ -225,3 +225,19 @@ func TestContextListOfAMissingFilePrintsNothing(t *testing.T) {
 		t.Fatalf("missing json: exit %d stdout %q stderr %q", code, out, errs)
 	}
 }
+
+func TestContextAddRefusesAnothersTokenVariable(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "cli.json")
+	original := `{"projects":{"my-shop":{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"SHARED_TOKEN"}}}}}`
+	if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := runCLI("context", "add", "--project", "my_shop", "-e", "prod", "--url", "http://127.0.0.1:7711", "--token-env", "SHARED_TOKEN", "--config", cfg)
+	if code == 0 || !strings.Contains(out+errs, "my-shop/prod") || !strings.Contains(out+errs, "my_shop/prod") || !strings.Contains(out+errs, "--token-env") {
+		t.Fatalf("exit %d: %s %s", code, out, errs)
+	}
+	b, _ := os.ReadFile(cfg)
+	if string(b) != original {
+		t.Fatal("config changed")
+	}
+}
