@@ -175,13 +175,14 @@ func sorted(s []string) []string {
 func TestSetupVerboseKeepsStdoutAndWritesTheLogToStderr(t *testing.T) {
 	plainServer := freshNoDocker(t, "ops@s1")
 	withSetupRunner(t, plainServer)
-	code, plain, plainErr := runSetupCmd(setupArgs(t)...)
+	args := setupArgs(t)
+	code, plain, plainErr := runSetupCmd(args...)
 	if code != 0 || plainErr != "" {
 		t.Fatalf("plain run: exit %d, stderr %q", code, plainErr)
 	}
 	verboseServer := freshNoDocker(t, "ops@s1")
 	withSetupRunner(t, verboseServer)
-	code, verbose, verboseErr := runSetupCmd(setupArgs(t, "--verbose")...)
+	code, verbose, verboseErr := runSetupCmd(append(args, "--verbose")...)
 	if code != 0 || verboseErr == "" {
 		t.Fatalf("verbose run: exit %d, stderr %q", code, verboseErr)
 	}

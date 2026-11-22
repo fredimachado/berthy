@@ -48,7 +48,7 @@ func TestKeyRotatePrintsTheNewKeyIDAndHowToCopyTheKeyButNeverTheKey(t *testing.T
 	for _, want := range []string{
 		"rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33",
 		"the previous key is kept on the server until the next state snapshot succeeds",
-		"copy the new key off the server now: sudo cat /var/lib/berthy/key > demo.dev.key",
+		`mv -f "$tmp" demo.dev.key`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)

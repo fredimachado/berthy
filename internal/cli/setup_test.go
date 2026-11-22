@@ -281,7 +281,8 @@ func TestSetupRefusesAnInvalidManifest(t *testing.T) {
 func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 	server := installedServer(t, "ops@s1")
 	made := withSetupRunner(t, server)
-	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
+	dir := projectDir(t)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", dir)
 	if code != 0 || errout != "" {
 		t.Fatalf("exit %d: %s", code, errout)
 	}
@@ -303,9 +304,9 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"✓ verify      the agent answers; run berthy doctor with an admin token to check it fully\n" +
 		"setup of shop/p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
-		"  1. keep a copy of the encryption key off the server, in a password manager or your provisioning vault: ssh ops@s1 sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key\n" +
-		"  2. set the secrets the manifest names: berthy secret set NAME -e p5\n" +
-		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --version APP=REF (or one app: berthy deploy APP -e p5 --version REF)\n"
+		"  1. " + setupNextSteps(scope.ID{Project: "shop", Environment: "p5"}, "/var/lib/berthy/environments/shop/p5/key", "", false, "ops@s1", "BERTHY_SHOP_P5_TOKEN", false, false, dir)[0] + "\n" +
+		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --manifest-dir " + shellWord(dir) + "\n" +
+		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version REF)\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -336,8 +337,8 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin; it is shown once, at the end",
 		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_SHOP_P5_TOKEN)",
 		"2. store the admin token above, and set it in $BERTHY_SHOP_P5_TOKEN when you run berthy",
-		"3. set the secrets the manifest names: berthy secret set NAME -e p5 --config " + shellWord(cfgPath),
-		"4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config " + shellWord(cfgPath) + " --version APP=REF (or one app: berthy deploy APP -e p5 --config " + shellWord(cfgPath) + " --version REF)"} {
+		"3. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --config " + shellWord(cfgPath),
+		"4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --config " + shellWord(cfgPath)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -422,11 +423,11 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if !got.OK || !strings.HasPrefix(got.Token, "bty.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 4 || len(got.Steps) != 13 {
 		t.Fatalf("report = %+v", got)
 	}
-	if !strings.Contains(got.NextSteps[0], "ssh ops@s1 sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key") {
+	if !strings.Contains(got.NextSteps[0], "ssh 'ops@s1' 'sudo cat /var/lib/berthy/environments/shop/p5/key'") {
 		t.Errorf("next step = %q", got.NextSteps[0])
 	}
 	steps := strings.Join(got.NextSteps, "\n")
-	if !strings.Contains(steps, "berthy secret set NAME -e p5") || !strings.Contains(steps, "berthy deploy APP -e p5 --version REF") {
+	if !strings.Contains(steps, "berthy secret set NAME -e p5") || !strings.Contains(steps, "berthy deploy APP -e p5 --project shop") {
 		t.Errorf("next steps = %q", got.NextSteps)
 	}
 	if strings.Contains(steps, "--config") {
@@ -447,21 +448,21 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 }
 
 func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true)
+	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true, "")
 	if len(steps) != 5 || !strings.Contains(steps[3], "berthy ingress apply -e prod") || strings.Contains(steps[3], "--config") {
 		t.Fatalf("steps = %q", steps)
 	}
-	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", true, "this server", "X", false, false)
-	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/environments/shop/prod/key > shop.prod.key") {
+	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", true, "this server", "X", false, false, "")
+	if len(local) != 3 || strings.Contains(local[0], "ssh") || !strings.Contains(local[0], "sudo cat /var/lib/berthy/environments/shop/prod/key") {
 		t.Fatalf("local steps = %q", local)
 	}
 }
 
 func TestSetupNextStepsNameTheConfigGivenToSetup(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false)
+	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false, "")
 	want := []string{
-		"berthy secret set NAME -e prod --config /etc/berthy/cli.json",
-		"berthy deploy APP -e prod --config /etc/berthy/cli.json",
+		"berthy secret set NAME -e prod --project shop --config /etc/berthy/cli.json",
+		"berthy deploy APP -e prod --project shop --config /etc/berthy/cli.json",
 	}
 	if len(steps) != 3 || !strings.Contains(steps[1], want[0]) || !strings.Contains(steps[2], want[1]) {
 		t.Fatalf("steps = %q", steps)
@@ -485,7 +486,7 @@ func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
 	}
 	for cfg, want := range tests {
 		// The ingress step is among the steps: it takes the config too.
-		steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true)
+		steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true, "")
 		if len(steps) != 4 {
 			t.Fatalf("steps = %q", steps)
 		}
@@ -673,7 +674,7 @@ func TestSetupLocalTargetsThisServer(t *testing.T) {
 	made := withSetupRunner(t, installedServer(t, "this server"))
 	code, out, _ := runSetupCmd("-e", "p5", "--local", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t))
 	if code != 0 || made[1] != true || !strings.Contains(out, "✓ connect     this server\n") || !strings.Contains(out, "setup of shop/p5 on this server: done\n") ||
-		!strings.Contains(out, "sudo cat /var/lib/berthy/environments/shop/p5/key > shop.p5.key") || strings.Contains(out, "ssh this server") {
+		!strings.Contains(out, "sudo cat /var/lib/berthy/environments/shop/p5/key") || strings.Contains(out, "ssh this server") {
 		t.Fatalf("exit %d, made %v:\n%s", code, made, out)
 	}
 }
@@ -696,7 +697,7 @@ func TestSetupUsageNamesTheNewFlags(t *testing.T) {
 func TestSetupJSONKeepsShellRedirectionsReadable(t *testing.T) {
 	withSetupRunner(t, installedServer(t, "ops@s1"))
 	_, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t), "--json")
-	if !strings.Contains(out, "> shop.p5.key") || strings.Contains(out, "\x5cu003e") {
+	if !strings.Contains(out, "> ") || !strings.Contains(out, "shop.p5.key") || strings.Contains(out, "\x5cu003e") {
 		t.Fatalf("output:\n%s", out)
 	}
 }
@@ -781,8 +782,8 @@ func TestSetupWithoutAManifestDefaultsTheNetwork(t *testing.T) {
 
 func TestSetupNextStepsNameThisEnvironmentsKey(t *testing.T) {
 	id := scope.ID{Project: "shop", Environment: "prod"}
-	steps := setupNextSteps(id, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "X", true, false)
-	if !strings.Contains(steps[0], "sudo cat /var/lib/berthy/environments/shop/prod/key > shop.prod.key") {
+	steps := setupNextSteps(id, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "X", true, false, "")
+	if !strings.Contains(steps[0], "sudo cat /var/lib/berthy/environments/shop/prod/key") {
 		t.Fatalf("step: %s", steps[0])
 	}
 }
@@ -796,11 +797,11 @@ func TestTheKeyCopyNamesAFileNoOtherEnvironmentCanShare(t *testing.T) {
 			t.Fatalf("duplicate name %s", name)
 		}
 		seen[name] = true
-		if !strings.Contains(setupNextSteps(id, "/key", "", true, "this server", "X", true, false)[0], "> "+name) {
+		if !strings.Contains(setupNextSteps(id, "/key", "", true, "this server", "X", true, false, "")[0], `mv -f "$tmp" `+name) {
 			t.Errorf("setup name for %v", id)
 		}
 		var out, errout bytes.Buffer
-		if printKeyRotation(&out, &errout, []byte(`{"old_key_id":"old","new_key_id":"new","key_file":"/key"}`), id) != 0 || !strings.Contains(out.String(), "> "+name) {
+		if printKeyRotation(&out, &errout, []byte(`{"old_key_id":"old","new_key_id":"new","key_file":"/key"}`), id) != 0 || !strings.Contains(out.String(), `mv -f "$tmp" `+name) {
 			t.Errorf("rotation for %v: %s %s", id, out.String(), errout.String())
 		}
 	}
@@ -825,7 +826,7 @@ func TestSetupNextStepsUseTheExistingEntryKeyPath(t *testing.T) {
 	server.config = strings.Replace(server.config, "/var/lib/berthy/environments/shop/p5/key", "/srv/keys/my key", 1)
 	withSetupRunner(t, server)
 	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--manifest-dir", projectDir(t))
-	if code != 0 || !strings.Contains(out, "sudo cat '/srv/keys/my key' > shop.p5.key") {
+	if code != 0 || !strings.Contains(out, shellWord("sudo cat "+shellWord("/srv/keys/my key"))) {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
 }

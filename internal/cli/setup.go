@@ -150,7 +150,13 @@ func runSetup(args []string, out, errout io.Writer) int {
 		report.Token = session.Token
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress)
+		manifestDir := ""
+		fset.Visit(func(f *flag.Flag) {
+			if f.Name == "manifest-dir" {
+				manifestDir = *dir
+			}
+		})
+		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress, manifestDir)
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -242,16 +248,20 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
 // cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
 // without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
-func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool) []string {
+func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool, manifestDir string) []string {
 	env := id.Environment
 	read := "sudo cat " + shellWord(keyFile)
 	if !local {
-		read = "ssh " + target + " " + read
+		read = "ssh " + shellWord(target) + " " + shellWord(read)
 	}
 	config := ""
 	if cfg != "" {
 		config = " --config " + shellWord(cfg)
 	}
+	if manifestDir != "" {
+		config += " --manifest-dir " + shellWord(manifestDir)
+	}
+	config = " --project " + shellWord(id.Project) + config
 	steps := []string{"keep a copy of the encryption key off the server, in a password manager or your provisioning vault: " + keyCopyCommand(read, id)}
 	if madeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
@@ -267,7 +277,10 @@ func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenE
 // named for the environment. Setup and `key rotate` both print it, and neither prints the key.
 func keyFileName(id scope.ID) string { return id.Slug() + ".key" }
 
-func keyCopyCommand(read string, id scope.ID) string { return read + " > " + keyFileName(id) }
+func keyCopyCommand(read string, id scope.ID) string {
+	name := shellWord(keyFileName(id))
+	return "(umask 077; tmp=$(mktemp " + shellWord("./"+keyFileName(id)+".XXXXXX") + ") && { " + read + " > \"$tmp\" && [ \"$(wc -c < \"$tmp\")\" -eq 32 ] && mv -f \"$tmp\" " + name + "; status=$?; rm -f \"$tmp\"; exit \"$status\"; })"
+}
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in
 // single quotes otherwise, with each single quote written as '\”.
