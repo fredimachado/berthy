@@ -46,12 +46,12 @@ expect_eq "https add leaves the file unchanged" "$sum" "$(sha256sum "$RUN/ctx.js
 token_out=$("$BIN" agent token --project "$PROJECT" -e "$ENVN" --config "$RUN/agent.json" 2>&1); code=$?
 expect_code "agent token with the fixture agent.json" 0 "$code" "$token_out"
 add_line=$(printf '%s\n' "$token_out" | sed -n 's/^on the machine that will use it: //p')
-expect_contains "agent token prints a context add line" "$add_line" "berthy context add --project $PROJECT -e $ENVN --url http://$AGENT_LISTEN"
+expect_contains "agent token prints a context add line" "$add_line" "berthy context add --project $PROJECT -e $ENVN --url \"http://$AGENT_LISTEN\""
 token_value=$(printf '%s\n' "$token_out" | sed -n 's/^token: //p')
 expect_not_contains "the context add line does not hold the token" "$add_line" "$token_value"
-# The printed line starts with "berthy "; run it with the fixture binary and write a fresh file.
-# shellcheck disable=SC2086
-out=$("$BIN" ${add_line#berthy } --config "$RUN/ctx2.json" 2>&1); code=$?
+# The printed line starts with "berthy " and quotes the URL for a paste into a shell. Eval it as a shell
+# would, with the fixture binary in place of berthy, so the quotes are not literal characters.
+out=$(eval "$(printf '%q' "$BIN") ${add_line#berthy } --config $(printf '%q' "$RUN/ctx2.json")" 2>&1); code=$?
 expect_code "running the printed context add line" 0 "$code" "$out"
 out=$("$BIN" context list --config "$RUN/ctx2.json" 2>&1); code=$?
 expect_code "context list of the file the printed line wrote" 0 "$code" "$out"
