@@ -121,7 +121,7 @@ A few decisions shape everything else:
 
 ## 3. The todo app
 
-The todo app has three parts. They run in one project, `todo`, on one shared Docker network, `todo`.
+The todo app has three parts. They run in one project, `todo`. Each environment has its own overlay network (`todo-dev`, `todo-prod` by default).
 
 | App | Kind | What it is |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ The todo app has three parts. They run in one project, `todo`, on one shared Doc
 
 Replace `acme` with your own registry user or organisation wherever you see it.
 
-The API finds the database at the name `todo-db` and the cache at `todo-redis`. Those are **network aliases**: each Compose file gives its service an alias on the shared network. Swarm and Compose containers on that network can reach each other by name.
+The API finds the database at the name `todo-db` and the cache at `todo-redis`. Those are **network aliases**: each Compose file gives its service an alias on the environment's network. Swarm and Compose containers on that network can reach each other by name.
 
 ### The repository
 
@@ -215,7 +215,7 @@ The steps run in this order. Each one checks first and only acts when something 
 | `check` | Linux with systemd, a supported CPU, and `--listen` is an address assigned to this server. The desired configuration must not conflict with another hosted environment. |
 | `docker` | Confirms Docker Engine is installed (version 25 or newer), enabled at boot and running. Installs it with Docker's official script when it is missing (unless `--no-install-docker`), and starts it when it is stopped. A Docker you did not install is never upgraded or reconfigured. |
 | `swarm` | Turns on Swarm with your private address as the advertise address, with the management port on that address only. A server that already is a manager keeps its Swarm. A worker in another Swarm stops the run. |
-| `network` | Creates the shared attachable overlay network named in the manifest (`todo`), unless it exists. An existing network that is not an attachable overlay stops the run. |
+| `network` | Creates the attachable overlay network for this hosted environment (`todo-prod` by default, or the name in the manifest), unless it exists. An existing network that is not an attachable overlay stops the run. |
 | `user` | Creates the `berthy` system user and adds it to the `docker` group. |
 | `binary` | Installs the Berthy binary as `/usr/local/bin/berthy` (see "Where the binary comes from"). |
 | `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and makes the encryption key `/var/lib/berthy/environments/todo/prod/key`. It never replaces an existing key. |
@@ -225,14 +225,14 @@ The steps run in this order. Each one checks first and only acts when something 
 | `cli_config` | Adds the environment to the CLI configuration file: the one `--config` names, or else the one the CLI finds (see [How to read the commands](#how-to-read-the-commands)). Without any location it is skipped, with a hint of the entry to add yourself. |
 | `verify` | Runs `doctor` on the new agent (see below). |
 
-Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo`), and the details are what setup prints:
+Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo-prod`), and the details are what setup prints:
 
 ```text
 ✓ connect     ops@10.0.0.5 (sudo)
 ✓ check       linux amd64, systemd, 10.0.0.5 assigned
 ✓ docker      installed 29.10.0 with the official script
 ✓ swarm       turned on Swarm advertising 10.0.0.5
-✓ network     created network todo
+✓ network     created network todo-prod
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
 ✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
@@ -380,18 +380,11 @@ berthy setup -e prod --host ops@10.0.0.5
 
 `--listen` is only needed on the first run for that server. Later runs keep the agent's address.
 
-**Network.** With a manifest, the network comes from it (or from the environment's overlay). Without a manifest, `--network` is optional and defaults to `<project>-<environment>`. Two hosted environments cannot share one network name. The todo example sets `network: todo` for every environment of that project, so a second environment such as `stage` needs a different name in its overlay, for example:
-
-```yaml
-# berthy.stage.yml
-network: todo-stage
-```
+**Network.** With a manifest, the network comes from it when set, otherwise from the environment's default `<project>-<environment>`. Without a manifest, `--network` is optional and defaults the same way. Two hosted environments cannot share one network name. The todo example leaves `network` unset, so `todo/dev` uses `todo-dev` and `todo/prod` uses `todo-prod`. A Compose app joins that network with `name: ${BERTHY_NETWORK}`; Berthy writes the value into the Compose project's `.env`. To add another environment such as `stage` on the same agent:
 
 ```bash
 berthy setup -e stage --host ops@10.0.0.5
 ```
-
-The checked-in Compose files in `examples/todo/deploy/` still say `name: todo`, so a released CLI can run them. On a projects build, before you deploy `todo/stage` beside `todo/prod` on the same agent, change both Compose files in your own checkout to `name: ${BERTHY_NETWORK}`. Prod already holds the network name `todo`; stage must join `todo-stage` instead, and Berthy sets `BERTHY_NETWORK` in the Compose project's `.env` for that.
 
 Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`, once each has its own network. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
 
@@ -490,7 +483,6 @@ The agent never reads your repository. Instead, the CLI **reads the files from t
 
 ```yaml
 project: todo
-network: todo
 
 registries:
   ghcr.io:
@@ -501,7 +493,7 @@ registries:
 | Key | Meaning |
 | --- | --- |
 | `project` | The project name. It prefixes Swarm service names and Compose project names. |
-| `network` | The shared overlay network every app joins. Setup creates it. If you adopt a server that already has a network, use its name. |
+| `network` | Override the environment network to adopt an existing overlay network. Default `<project>-<environment>`. Setup creates it when it does not exist. |
 | `protected` | `true` for a protected environment. Usually set in an overlay. Default `false`. |
 | `registries.<host>` | A credential for a private registry. `username` is the user, `password_secret` names the secret that holds the token. A registry with no entry is pulled from anonymously. |
 | `aliases` | Short names for command lines, for people at a terminal. See [Aliases](#aliases). |
