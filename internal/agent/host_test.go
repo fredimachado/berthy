@@ -1100,3 +1100,52 @@ func TestTheFirstExportOfTwoRuntimesIsScoped(t *testing.T) {
 		}
 	}
 }
+
+func TestClosingTheHostDoesNotRaceAnInFlightExport(t *testing.T) {
+	lab, prod := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "shop", Environment: "prod"}
+	sh, f := hostedFile(t, lab, prod)
+	sh.Collector = sampledCollector(t, metrics.Host{}, []metrics.ContainerRef{
+		{ID: "lab-web", Labels: lab.Labels()},
+		{ID: "prod-web", Labels: prod.Labels()},
+	})
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sinks := []*otlpSink{newOTLPSink(t), newOTLPSink(t)}
+	for i, r := range h.order {
+		endpoint := sinks[i].srv.URL
+		r.exporter.Config = func(context.Context) (*telemetry.Config, error) {
+			return &telemetry.Config{Endpoint: endpoint}, nil
+		}
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{}, len(h.order))
+	var wg sync.WaitGroup
+	for _, r := range h.order {
+		wg.Add(1)
+		go func(exp *telemetry.Exporter) {
+			defer wg.Done()
+			if err := exp.Flush(ctx); err != nil && ctx.Err() == nil {
+				t.Errorf("flush: %v", err)
+			}
+			started <- struct{}{}
+			for ctx.Err() == nil {
+				_ = exp.Flush(ctx)
+			}
+		}(r.exporter)
+	}
+	for range h.order {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("export never started")
+		}
+	}
+	h.Close()
+	cancel()
+	wg.Wait()
+}

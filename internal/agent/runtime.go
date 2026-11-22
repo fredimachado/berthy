@@ -46,6 +46,7 @@ type Runtime struct {
 	// Set by Start. Close waits for each worker that was started.
 	cancel                                                       context.CancelFunc
 	reportsDone, recoveryDone, monitorDone, jobsDone, exportDone chan struct{}
+	opsEnded                                                     bool
 }
 
 // OpenRuntime opens the environment's state and builds its controller, its workers and its handler. It starts nothing: no
@@ -212,9 +213,18 @@ func (r *Runtime) CloseSessions(ctx context.Context) { r.deployment.CloseSession
 // Close stops what Start started and then closes the state, last started first. It may follow a failed Start, and an
 // OpenRuntime without Start.
 func (r *Runtime) Close() {
+	r.stop()
+	r.wait()
+	r.closeStore()
+}
+
+func (r *Runtime) stop() {
 	if r.cancel != nil {
 		r.cancel()
 	}
+}
+
+func (r *Runtime) wait() {
 	// The workers stop before the store closes. The last export is flushed after the monitor's stop, and the runs of the
 	// scheduler and the backups end and are recorded.
 	awaitWorker(r.exportDone)
@@ -224,19 +234,29 @@ func (r *Runtime) Close() {
 	awaitWorker(r.recoveryDone)
 	// A running operation records its outcome and the reports hear of it. The agent no longer takes requests by now, so no
 	// operation starts after this wait.
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), operationGrace)
-	operationsEnded := r.deployment.Drain(waitCtx) == nil
-	cancelWait()
+	if r.deployment != nil {
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), operationGrace)
+		r.opsEnded = r.deployment.Drain(waitCtx) == nil
+		cancelWait()
+	}
 	// The queued records and messages are sent before the store closes.
 	awaitWorker(r.reportsDone)
-	r.reports.Wait()
+	if r.reports != nil {
+		r.reports.Wait()
+	}
+}
+
+func (r *Runtime) closeStore() {
+	if r.deployment == nil || r.deployment.Store == nil {
+		return
+	}
 	// The store is closed only when no operation is left running: one that is would write to a closed store. It is left open
 	// otherwise, as it is when the agent is killed, and the next start recovers the operation.
-	if operationsEnded {
+	if r.opsEnded {
 		r.deployment.Store.Close()
-	} else {
-		r.logf("operations still running at exit: they are recovered at the next start")
+		return
 	}
+	r.logf("operations still running at exit: they are recovered at the next start")
 }
 
 // awaitWorker waits for a worker that Start started; done is nil for one that was not.

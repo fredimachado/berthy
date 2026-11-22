@@ -234,9 +234,17 @@ func (h *Host) CloseSessions(ctx context.Context) {
 	}
 }
 
-// Close closes the environments in reverse order. It may follow a failed Open or Start.
+// Close closes the environments in reverse order. It may follow a failed Open or Start. Every exporter (and every other
+// reader of peer claims) is stopped and drained before any store closes, so one runtime's final export cannot read a
+// store another runtime has already closed.
 func (h *Host) Close() {
 	for i := len(h.order) - 1; i >= 0; i-- {
-		h.order[i].Close()
+		h.order[i].stop()
+	}
+	for i := len(h.order) - 1; i >= 0; i-- {
+		h.order[i].wait()
+	}
+	for i := len(h.order) - 1; i >= 0; i-- {
+		h.order[i].closeStore()
 	}
 }
