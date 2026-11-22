@@ -1,8 +1,10 @@
 #!/bin/bash
 set -uo pipefail
-E2E_ROOT=$(mktemp -d)
+test_root=$(mktemp -d) || exit 1
+readonly test_root
+trap 'rm -rf -- "$test_root"' EXIT
+E2E_ROOT=$test_root
 export E2E_ROOT
-trap 'rm -rf "$E2E_ROOT"' EXIT
 . "$(dirname "$0")/../lib.sh"
 fixture='[{"Id":"running","ImageID":"sha256:one"},{"Id":"stopped","ImageID":"sha256:two"}]'
 curl() { printf 'x' >> "$E2E_ROOT/calls"; printf '%s' "$fixture"; }
