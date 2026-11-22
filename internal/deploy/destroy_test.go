@@ -801,7 +801,7 @@ func TestKeptTunnelCannotBeTakenOrDeletedByPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := *f.ctrl
+	peer := &Controller{Store: f.store, Environment: f.ctrl.Environment, Project: f.ctrl.Project, CloudflareURL: f.ctrl.CloudflareURL}
 	peer.Foreign = func(context.Context) (Foreign, error) { return Foreign{Ingress: []state.IngressState{kept}}, nil }
 	if _, err := peer.ingressTargetFor(context.Background(), ingressManifest(t, "")); err == nil || err.Error() != string(errTunnelForeign) {
 		t.Fatalf("peer ingress: %v", err)
