@@ -1183,6 +1183,8 @@ func (c *Controller) absentClaims(ctx context.Context, claims []state.Claim) []s
 		return nil
 	}
 	var gone []state.Claim
+	var projects map[string]bool
+	projectsRead := false
 	for _, claim := range claims {
 		absent := false
 		switch claim.Kind {
@@ -1202,7 +1204,13 @@ func (c *Controller) absentClaims(ctx context.Context, claims []state.Claim) []s
 		case state.ClaimComposeProject:
 			if e, ok := c.Engine.(composeEngine); ok {
 				containers, err := e.ComposeContainers(ctx, claim.Name)
-				absent = err == nil && len(containers) == 0
+				if err == nil && len(containers) == 0 {
+					if !projectsRead {
+						projectsRead = true
+						projects, _ = c.appliedComposeProjects(ctx)
+					}
+					absent = projects != nil && !projects[claim.Name]
+				}
 			}
 		}
 		if absent {
@@ -1210,6 +1218,31 @@ func (c *Controller) absentClaims(ctx context.Context, claims []state.Claim) []s
 		}
 	}
 	return gone
+}
+
+func (c *Controller) appliedComposeProjects(ctx context.Context) (map[string]bool, error) {
+	if c.Store == nil {
+		return nil, errors.New("state unavailable")
+	}
+	apps, err := c.Store.AppliedApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projects := map[string]bool{}
+	for _, app := range apps {
+		m, compose, err := c.appliedCompose(ctx, app)
+		if err != nil {
+			return nil, err
+		}
+		a, ok := m.Apps[app]
+		if !ok || (a.Kind != "image" && a.Kind != "compose") {
+			return nil, errors.New("applied app unavailable")
+		}
+		if compose {
+			projects[m.ComposeProject(c.Environment, app)] = true
+		}
+	}
+	return projects, nil
 }
 
 // AbsentClaims confirms which names no longer exist in Docker.

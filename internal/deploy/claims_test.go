@@ -1531,3 +1531,106 @@ func TestComposeRollbackRefusesProjectOfOtherAppliedApp(t *testing.T) {
 		t.Errorf("compose up ran %d times", runner.upRuns())
 	}
 }
+
+func TestRetriedRemoveKeepsComposeClaimOfAppliedApp(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	docker := newComposeDocker(engine.ComposeContainer{ID: "alpha", Service: "database", State: "running"})
+	runner.onDown = func(engine.ComposeRun) { docker.containers = nil }
+	c, s := composeController(t, runner, docker)
+	c.Reserve = s.AddClaimsNew
+	actor := Actor{ID: "admin", Admin: true}
+	deploy := func(name string) {
+		t.Helper()
+		app := manifest.App{Kind: "compose", File: "compose.yaml", ProjectName: "shared", Deploy: manifest.Deploy{DeployTimeout: "30s", DrainTimeout: "5s"}}
+		req := Request{RequestID: "deploy-" + name, Kind: "deploy", App: name, Manifest: manifest.Manifest{Project: "shop", Network: "berthy", Apps: map[string]manifest.App{name: app}}, ComposeFile: composeFileOne}
+		op, _, err := admit(t, c, ctx, actor, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		done, err := s.Operation(ctx, op.ID)
+		if err != nil || done.State != "succeeded" {
+			t.Fatalf("deploy %s: %+v %v", name, done, err)
+		}
+	}
+	remove := func(id string) {
+		t.Helper()
+		req := Request{RequestID: id, Kind: "remove", App: "alpha"}
+		op, _, err := admit(t, c, ctx, actor, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		done, err := s.Operation(ctx, op.ID)
+		if err != nil || done.State != "succeeded" {
+			t.Fatalf("remove: %+v %v", done, err)
+		}
+	}
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	deploy("alpha")
+	remove("remove-alpha")
+	docker.containers = []engine.ComposeContainer{{ID: "beta", Service: "database", State: "running"}}
+	deploy("beta")
+	claims, err := s.Claims(ctx)
+	if err != nil || !slices.Contains(claims, claim) {
+		t.Fatalf("after beta: %v %v", claims, err)
+	}
+	docker.containers = nil
+	remove("retry-alpha")
+	claims, err = s.Claims(ctx)
+	if err != nil || !slices.Contains(claims, claim) {
+		t.Fatalf("retry released beta's claim: %v %v", claims, err)
+	}
+}
+
+func TestDestroySweepKeepsComposeClaimOfAppliedApp(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "beta", ActorID: "admin", Kind: "deploy", App: "beta", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := &state.Release{App: "beta", Digest: "digest", Manifest: []byte(`{"project":"shop","apps":{"beta":{"kind":"compose","project_name":"shared"}}}`)}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: rel}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: newComposeDocker(), Environment: "test"}
+	if err = c.sweepClaims(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.Claims(ctx)
+	if err != nil || !slices.Contains(held, claim) {
+		t.Fatalf("sweep released applied project: %v %v", held, err)
+	}
+}
+
+func TestComposeClaimIsKeptWhenAppliedReleaseCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	claim := state.Claim{Kind: state.ClaimComposeProject, Name: "shared"}
+	if err := s.AddClaims(ctx, []state.Claim{claim}); err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "unreadable", ActorID: "admin", Kind: "deploy", App: "beta", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "beta", Digest: "digest", Manifest: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s, Engine: newComposeDocker(), Environment: "test"}
+	c.settle(ctx, []state.Claim{claim})
+	held, err := s.Claims(ctx)
+	if err != nil || !slices.Contains(held, claim) {
+		t.Fatalf("claim after unreadable release: %v %v", held, err)
+	}
+}
