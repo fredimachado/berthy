@@ -40,10 +40,9 @@ openssl rand -hex 16 > "$RUN/tg-token" || die "cannot write the Telegram token"
 printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP authorization"
 
 # Agent configuration: agent.json lists the hosted environments, and each is a fragment in $RUN/environments.d (see
-# write_agent_config in lib.sh). This is the first one, with the state and the key of the fixture. The admin entry is kept for
-# scenario 07, which writes the configuration of an older agent. Keys match agent.File; the agent rejects unknown keys. The
-# Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is not on the harness PATH.
-printf '%s\n' "$admin_entry" > "$RUN/admin-entry.json" || die "cannot write the admin entry"
+# write_agent_config in lib.sh). This is the first one, with the state and the key of the fixture. Keys match agent.File;
+# the agent rejects unknown keys. The Compose CLI is the standalone Compose v2 binary of the fixture: the docker CLI is
+# not on the harness PATH.
 create_environment_network "$NETWORK" || die "cannot create the environment network"
 write_fragment "$PROJECT" "$ENVN" "$RUN/state" "$RUN/state.key" "$admin_entry" || die "cannot write the environment's fragment"
 write_agent_config || die "cannot write agent.json"
