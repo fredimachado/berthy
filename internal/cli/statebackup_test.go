@@ -111,6 +111,9 @@ func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
+	if err = store.Claim(ctx, "demo"); err != nil {
+		t.Fatal(err)
+	}
 	if err = store.PutSecret(ctx, state.Actor{ID: "ops", Name: "ops"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("cli-secret-value")); err != nil {
 		t.Fatal(err)
 	}

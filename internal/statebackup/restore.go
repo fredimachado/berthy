@@ -26,8 +26,8 @@ type RestoreOptions struct {
 	Out string
 	// KeyFile is the saved key that opens the snapshot.
 	KeyFile string
-	// Project is the project the snapshot belongs to. It must match the sidecar.
-	Project              string
+	// Project and Environment are the hosted environment the snapshot belongs to. They must match the object key, the sidecar, and the restored state's owner.
+	Project, Environment string
 	AccessKey, SecretKey string
 }
 
@@ -66,6 +66,10 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	if !strings.HasSuffix(o.Object, snapshotSuffix) {
 		return rep, ErrNotSnapshot
 	}
+	keyProject, keyEnv, ok := scopeFromObjectKey(o.Object)
+	if !ok || o.Project == "" || o.Environment == "" || keyProject != o.Project || keyEnv != o.Environment {
+		return rep, ErrInvalidSidecar
+	}
 	store, err := objectstore.New(objectstore.Config{Endpoint: o.Endpoint, Region: o.Region, Bucket: o.Bucket, AccessKey: o.AccessKey, SecretKey: o.SecretKey})
 	if err != nil {
 		return rep, err
@@ -74,7 +78,7 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	if err != nil {
 		return rep, err
 	}
-	if sc.Project != o.Project {
+	if sc.Project != o.Project || sc.Environment != o.Environment {
 		return rep, ErrInvalidSidecar
 	}
 	// The key is checked against the sidecar first, so a wrong key costs no download.
@@ -97,11 +101,15 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	if err = download(ctx, store, o.Object, rep.Path, sc); err != nil {
 		return fail(err)
 	}
-	st, err := state.Open(o.Out, o.KeyFile, sc.Environment)
+	st, err := state.Open(o.Out, o.KeyFile, o.Environment)
 	if err != nil {
 		return fail(err)
 	}
-	rep.Environment, rep.Size, rep.SHA256 = sc.Environment, sc.Size, sc.SHA256
+	if err = st.Claim(ctx, o.Project); err != nil {
+		st.Close()
+		return fail(err)
+	}
+	rep.Environment, rep.Size, rep.SHA256 = o.Environment, sc.Size, sc.SHA256
 	rep.SchemaVersion, rep.Secrets, err = describe(ctx, st)
 	// The store closes before a failure removes its files, which Windows would refuse while it is open.
 	st.Close()
@@ -109,6 +117,15 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 		return fail(err)
 	}
 	return rep, nil
+}
+
+// scopeFromObjectKey reads the hosted environment from a snapshot key <project>/<environment>/….
+func scopeFromObjectKey(object string) (project, environment string, ok bool) {
+	parts := strings.Split(object, "/")
+	if len(parts) < 3 || !scope.ValidProject(parts[0]) || !scope.ValidEnvironment(parts[1]) {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // describe reads what a restored state holds: its schema version and the names of its secrets.

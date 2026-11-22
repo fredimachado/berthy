@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"berthy/internal/agentclient"
@@ -45,10 +46,15 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "set BERTHY_S3_ACCESS_KEY and BERTHY_S3_SECRET_KEY")
 		return 2
 	}
+	parts := strings.Split(*object, "/")
+	if len(parts) < 3 || parts[0] != *project || !scope.ValidEnvironment(parts[1]) {
+		fmt.Fprintln(errout, "object key must start with PROJECT/ENVIRONMENT/")
+		return 2
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	rep, err := statebackup.Restore(ctx, statebackup.RestoreOptions{Endpoint: *endpoint, Region: *region, Bucket: *bucket, Object: *object,
-		Out: *dir, KeyFile: *keyFile, Project: *project, AccessKey: access, SecretKey: secret})
+		Out: *dir, KeyFile: *keyFile, Project: *project, Environment: parts[1], AccessKey: access, SecretKey: secret})
 	var mismatch *statebackup.KeyMismatchError
 	switch {
 	case errors.As(err, &mismatch):

@@ -85,6 +85,9 @@ func newRig(t *testing.T, keep int) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
+	if err = store.Claim(ctx, "demo"); err != nil {
+		t.Fatal(err)
+	}
 	if err = store.PutSecret(ctx, state.Actor{ID: "ops", Name: "ops"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte(testValue)); err != nil {
 		t.Fatal(err)
 	}
@@ -389,8 +392,39 @@ func TestRestoreRebuildsTheStateFromStorageWithTheKey(t *testing.T) {
 		t.Fatalf("the restored state does not open: %v", err)
 	}
 	defer restored.Close()
+	if err := restored.Claim(ctx, "demo"); err != nil {
+		t.Fatalf("restored owner: %v", err)
+	}
 	if _, value, err := restored.Secret(ctx, "DB_PASSWORD"); err != nil || string(value) != testValue {
 		t.Fatalf("restored secret: %q %v", value, err)
+	}
+}
+
+func TestRestoreRefusesAProjectMismatchAndLeavesNothing(t *testing.T) {
+	g := newRig(t, 14)
+	run := g.run("manual")
+	out := filepath.Join(t.TempDir(), "restored")
+	opts := g.restoreOptions(run.Key, out, g.keyPath)
+	opts.Project = "other"
+	if _, err := Restore(context.Background(), opts); !errors.Is(err, ErrInvalidSidecar) {
+		t.Fatalf("project mismatch: %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("output survived a project mismatch: %v", err)
+	}
+}
+
+func TestRestoreRefusesAnEnvironmentMismatchAndLeavesNothing(t *testing.T) {
+	g := newRig(t, 14)
+	run := g.run("manual")
+	out := filepath.Join(t.TempDir(), "restored")
+	opts := g.restoreOptions(run.Key, out, g.keyPath)
+	opts.Environment = "stage"
+	if _, err := Restore(context.Background(), opts); !errors.Is(err, ErrInvalidSidecar) {
+		t.Fatalf("environment mismatch: %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("output survived an environment mismatch: %v", err)
 	}
 }
 
@@ -463,7 +497,7 @@ func TestRestoreNeedsTheSidecarAndADatabaseKey(t *testing.T) {
 
 // restoreOptions points a restore at the rig's bucket with its credentials.
 func (g *rig) restoreOptions(object, out, keyPath string) RestoreOptions {
-	return RestoreOptions{Endpoint: g.srv.URL, Bucket: "bkt", Object: object, Out: out, KeyFile: keyPath, Project: "demo", AccessKey: testAccess, SecretKey: testSecret}
+	return RestoreOptions{Endpoint: g.srv.URL, Bucket: "bkt", Object: object, Out: out, KeyFile: keyPath, Project: "demo", Environment: "prod", AccessKey: testAccess, SecretKey: testSecret}
 }
 
 func TestASnapshotOfAnotherProjectIsNeitherListedNorPruned(t *testing.T) {
