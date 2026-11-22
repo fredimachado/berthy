@@ -106,7 +106,7 @@ func runAgentToken(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(out, "token: %s\nsha256: %s\n%s\non the machine that will use it: berthy context add --project %s -e %s --url %s --token-env %s\n",
-		token, digest, entry, project, env, shellWord(urlHint), setup.DefaultTokenEnv(project, env))
+		token, digest, entry, project, env, shellDoubleQuote(urlHint), setup.DefaultTokenEnv(project, env))
 	return 0
 }
 

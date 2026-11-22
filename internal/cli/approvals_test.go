@@ -66,7 +66,7 @@ func TestAgentTokenPrintsTheContextAddLineWithoutTheToken(t *testing.T) {
 	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab", "--config", cfg}, &out, &errout)
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	wantVar := setup.DefaultTokenEnv("demo", "lab")
-	wantLine := "on the machine that will use it: berthy context add --project demo -e lab --url http://10.9.8.7:7710 --token-env " + wantVar
+	wantLine := `on the machine that will use it: berthy context add --project demo -e lab --url "http://10.9.8.7:7710" --token-env ` + wantVar
 	if code != 0 || len(lines) != 4 || lines[3] != wantLine || errout.String() != "" {
 		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
 	}
@@ -80,7 +80,7 @@ func TestAgentTokenWithoutAConfigLeavesTheURLToFillIn(t *testing.T) {
 	var out, errout bytes.Buffer
 	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab"}, &out, &errout)
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	want := "on the machine that will use it: berthy context add --project demo -e lab --url http://ADDRESS:PORT --token-env " + setup.DefaultTokenEnv("demo", "lab")
+	want := `on the machine that will use it: berthy context add --project demo -e lab --url "http://ADDRESS:PORT" --token-env ` + setup.DefaultTokenEnv("demo", "lab")
 	if code != 0 || len(lines) != 4 || lines[3] != want || errout.String() != "" {
 		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
 	}
@@ -98,7 +98,7 @@ func TestAgentTokenQuotesAnIPv6ListenURL(t *testing.T) {
 	var out, errout bytes.Buffer
 	code := Run([]string{"agent", "token", "--project", "demo", "-e", "lab", "--config", cfg}, &out, &errout)
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	want := "on the machine that will use it: berthy context add --project demo -e lab --url 'http://[fd00::1]:7710' --token-env " + setup.DefaultTokenEnv("demo", "lab")
+	want := `on the machine that will use it: berthy context add --project demo -e lab --url "http://[fd00::1]:7710" --token-env ` + setup.DefaultTokenEnv("demo", "lab")
 	if code != 0 || len(lines) != 4 || lines[3] != want || errout.String() != "" {
 		t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
 	}

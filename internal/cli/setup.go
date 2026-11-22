@@ -302,6 +302,12 @@ func shellWord(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// shellDoubleQuote is s as one double-quoted word for a command the person pastes into cmd.exe, PowerShell or a POSIX
+// shell. It escapes ", $ and backtick.
+func shellDoubleQuote(s string) string {
+	return `"` + strings.NewReplacer(`"`, `\"`, `$`, `\$`, "`", "\\`").Replace(s) + `"`
+}
+
 var setupGlyphs = map[string]string{
 	setup.StatusOK:          "✓",
 	setup.StatusChanged:     "✓",
