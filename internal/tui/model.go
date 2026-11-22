@@ -909,16 +909,44 @@ func (m *Model) hosted() string {
 func (m *Model) viewHeader() string {
 	st := m.st
 	sp := st.header.Render(" ")
-	left := sp + st.brand.Render("berthy") + sp + sp + st.pillOn(m.hosted(), st.p.accent, st.p.surface)
+	brand := sp + st.brand.Render("berthy") + sp + sp
+	protected := ""
 	if m.secure {
-		left += sp + st.pillOn("protected", st.p.warn, st.p.surface)
+		protected = sp + st.pillOn("protected", st.p.warn, st.p.surface)
 	}
-	right := ""
-	if m.host != "" {
-		right = st.hostInfo.Render(clip(sanitize(m.host), 30)) + sp
+	targetFor := func(text string) string {
+		if text == "" {
+			return ""
+		}
+		return st.pillOn(text, st.p.accent, st.p.surface)
 	}
-	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 0)
-	return left + st.header.Render(strings.Repeat(" ", gap)) + right
+	hostFor := func(text string) string {
+		if text == "" {
+			return ""
+		}
+		return st.hostInfo.Render(text) + sp
+	}
+	name := m.hosted()
+	target := targetFor(name)
+	hostName := sanitize(m.host)
+	host := hostFor(clip(hostName, 30))
+	used := func(target, host string) int {
+		return lipgloss.Width(brand) + lipgloss.Width(target) + lipgloss.Width(protected) + lipgloss.Width(host)
+	}
+	// The hostname is shortened, then dropped, before the target or the protection status.
+	for n := min(lipgloss.Width(hostName), 30); used(target, host) > m.width && n > 0; n-- {
+		host = hostFor(clip(hostName, n))
+	}
+	if used(target, host) > m.width {
+		host = ""
+	}
+	for n := lipgloss.Width(name); used(target, host) > m.width && n > 1; n-- {
+		name = clip(m.hosted(), n)
+		target = targetFor(name)
+	}
+	left := brand + target + protected
+	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(host), 0)
+	return left + st.header.Render(strings.Repeat(" ", gap)) + host
 }
 
 func (m *Model) viewTabs() string {

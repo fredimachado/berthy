@@ -47,6 +47,26 @@ func TestTheHeaderNamesProjectAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestTheHeaderFitsALongTargetAndKeepsProtected(t *testing.T) {
+	project, env := strings.Repeat("a", 40), strings.Repeat("b", 18)
+	m := newTestModel(t, 80, 24)
+	m.project, m.env = project, env
+	send(m, infoMsg{Hostname: "lab-1", Protected: true})
+	header := strings.Split(plain(m), "\n")[0]
+	if w := lipgloss.Width(header); w != 80 {
+		t.Fatalf("header width %d:\n%s", w, header)
+	}
+	if !strings.Contains(header, "protected") {
+		t.Fatalf("protected cut:\n%s", header)
+	}
+	if strings.Contains(header, "lab-1") {
+		t.Fatalf("hostname kept while the target and protection needed the room:\n%s", header)
+	}
+	if got := m.View().WindowTitle; got != "berthy · "+project+"/"+env {
+		t.Fatalf("title %q", got)
+	}
+}
+
 func TestAppsFilter(t *testing.T) {
 	m := loadedModel(t, 120, 40)
 	keys(m, "/", "w", "o")
