@@ -1088,7 +1088,11 @@ func (c *Controller) effectiveNames(ctx context.Context, req Request) ([]state.C
 		return nil, nil
 	}
 	if app.Kind == "compose" {
-		return c.composeNames(ctx, req)
+		claims, err := c.composeNames(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return append(claims, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)}), nil
 	}
 	if app.Kind != "image" {
 		return nil, nil

@@ -1652,3 +1652,23 @@ func TestComposeNetworkModeReservesExistingNetwork(t *testing.T) {
 	}
 	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
 }
+
+func TestComposeDeployReservesEnvironmentNetwork(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne}
+	c, _ := composeController(t, runner, newComposeDocker())
+	claim := state.Claim{Kind: state.ClaimNetwork, Name: "peer-overlay"}
+	c.Foreign = func(context.Context) (Foreign, error) { return Foreign{Claims: map[state.Claim]bool{claim: true}}, nil }
+	m := composeApp(false)
+	m.Network = claim.Name
+	req := composeReq("env-network", composeFileOne, m)
+	if _, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req); err == nil {
+		t.Fatal("peer environment network accepted")
+	}
+	c.Reserve = func(_ context.Context, claims []state.Claim) ([]state.Claim, error) {
+		if !slices.Contains(claims, claim) {
+			t.Fatal("environment network was not reserved")
+		}
+		return claims, nil
+	}
+	c.runCompose(context.Background(), state.Operation{}, Actor{ID: "admin", Admin: true}, req, false)
+}

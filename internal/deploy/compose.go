@@ -634,6 +634,7 @@ func (c *Controller) composePlanIn(ctx context.Context, dir string, actor Actor,
 		return ComposePlan{}, err
 	}
 	if len(reserve) > 0 && reserve[0] != nil {
+		names = append(names, state.Claim{Kind: state.ClaimNetwork, Name: req.Manifest.NetworkName(c.Environment)})
 		if err := reserve[0](names); err != nil {
 			return ComposePlan{}, err
 		}
