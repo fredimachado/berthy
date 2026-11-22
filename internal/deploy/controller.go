@@ -206,7 +206,7 @@ func (c *Controller) checkProject(ctx context.Context, req Request) error {
 			return Refusal(problems[0].Message)
 		}
 	}
-	if req.Kind != "" && req.Kind != "deploy" {
+	if req.Kind != "" && req.Kind != "deploy" && req.Kind != "ingress" {
 		return nil
 	}
 	if c.Project != "" && req.Manifest.Project != c.Project {

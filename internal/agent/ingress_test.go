@@ -230,3 +230,30 @@ func TestIngressFailureMessagesReachOperators(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressRejectsAnotherProjectsManifest(t *testing.T) {
+	s := openIngressStore(t)
+	token := "bty.demo.lab." + strings.Repeat("c", 64)
+	cfg := Config{Project: "demo", Environment: "lab", Tokens: []Token{{Digest: Digest(token), Scope: "admin"}}}
+	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab", Project: "demo"})
+	var req deploy.Request
+	if err := json.Unmarshal(ingressTestRequest(t, false), &req); err != nil {
+		t.Fatal(err)
+	}
+	req.Manifest.Project = "other"
+	req.Manifest.Ingress = nil
+	for _, dry := range []bool{true, false} {
+		req.DryRun = dry
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/ingress/apply", strings.NewReader(string(body)))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "this manifest is for project other") {
+			t.Fatalf("dry run %v: %d %s", dry, w.Code, w.Body.String())
+		}
+	}
+}
