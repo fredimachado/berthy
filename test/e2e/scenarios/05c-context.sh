@@ -42,21 +42,26 @@ out=$("$BIN" context add --project "$PROJECT" -e "$ENVN" --url https://example.c
 expect_code "add with https is refused with exit 2" 2 "$code" "$out"
 expect_eq "https add leaves the file unchanged" "$sum" "$(sha256sum "$RUN/ctx.json" | awk '{print $1}')"
 
-# berthy agent token prints a context add line that another machine can run.
-token_out=$("$BIN" agent token --project "$PROJECT" -e "$ENVN" --config "$RUN/agent.json" 2>&1); code=$?
-expect_code "agent token with the fixture agent.json" 0 "$code" "$token_out"
-add_line=$(printf '%s\n' "$token_out" | sed -n 's/^on the machine that will use it: //p')
-expect_contains "agent token prints a context add line" "$add_line" "berthy context add --project $PROJECT -e $ENVN --url \"http://$AGENT_LISTEN\""
+# berthy agent token prints a context add line that another machine can run. Stdout must carry exactly
+# one full expected line before anything is evaluated.
+tok_env=$(printf 'BERTHY_%s_TOKEN' "$(printf '%s_%s' "$PROJECT" "$ENVN" | sed 's/[^a-zA-Z0-9]/_/g' | tr 'a-z' 'A-Z')")
+want_add="berthy context add --project $PROJECT -e $ENVN --url \"http://$AGENT_LISTEN\" --token-env $tok_env"
+token_out=$("$BIN" agent token --project "$PROJECT" -e "$ENVN" --config "$RUN/agent.json" 2>"$RUN/agent-token.err"); code=$?
+expect_code "agent token with the fixture agent.json" 0 "$code" "$(cat "$RUN/agent-token.err")$token_out"
+add_matches=$(printf '%s\n' "$token_out" | grep -cFx "on the machine that will use it: $want_add" || true)
+expect_eq "agent token prints exactly one context add line" 1 "$add_matches"
 token_value=$(printf '%s\n' "$token_out" | sed -n 's/^token: //p')
-expect_not_contains "the context add line does not hold the token" "$add_line" "$token_value"
-# The printed line starts with "berthy " and quotes the URL for a paste into a shell. Eval it as a shell
-# would, with the fixture binary in place of berthy, so the quotes are not literal characters.
-out=$(eval "$(printf '%q' "$BIN") ${add_line#berthy } --config $(printf '%q' "$RUN/ctx2.json")" 2>&1); code=$?
-expect_code "running the printed context add line" 0 "$code" "$out"
-out=$("$BIN" context list --config "$RUN/ctx2.json" 2>&1); code=$?
-expect_code "context list of the file the printed line wrote" 0 "$code" "$out"
-expect_contains "list shows the project from the printed line" "$out" "$PROJECT"
-expect_contains "list shows the environment from the printed line" "$out" "$ENVN"
-expect_contains "list shows the agent URL from the printed line" "$out" "http://$AGENT_LISTEN"
+expect_not_contains "the context add line does not hold the token" "$want_add" "$token_value"
+if [ "$code" -eq 0 ] && [ "$add_matches" = 1 ]; then
+  # The printed line quotes the URL for a paste into a shell. Eval it as a shell would, with the
+  # fixture binary in place of berthy, so the quotes are not literal characters.
+  out=$(eval "$(printf '%q' "$BIN") ${want_add#berthy } --config $(printf '%q' "$RUN/ctx2.json")" 2>&1); code=$?
+  expect_code "running the printed context add line" 0 "$code" "$out"
+  out=$("$BIN" context list --config "$RUN/ctx2.json" 2>&1); code=$?
+  expect_code "context list of the file the printed line wrote" 0 "$code" "$out"
+  expect_contains "list shows the project from the printed line" "$out" "$PROJECT"
+  expect_contains "list shows the environment from the printed line" "$out" "$ENVN"
+  expect_contains "list shows the agent URL from the printed line" "$out" "http://$AGENT_LISTEN"
+fi
 
 finish
