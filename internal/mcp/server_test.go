@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -595,6 +598,95 @@ func TestDoctorSummaryNamesFailingChecks(t *testing.T) {
 	res := okResult(t, call(t, connect(t, testConfig(u, t.TempDir())), "doctor", nil))
 	if out := text(t, res); !strings.Contains(out, "1 of 2 checks failing") || !strings.Contains(out, "disk") {
 		t.Fatalf("summary %q", out)
+	}
+}
+
+func TestTheMCPServerTakesTheProjectFlag(t *testing.T) {
+	t.Setenv("BERTHY_MCP_CT", testToken)
+	t.Setenv("BERTHY_MCP_SU", testToken)
+	cardioN, sliceN := new(atomic.Int32), new(atomic.Int32)
+	serve := func(project string, n *atomic.Int32) *url.URL {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n.Add(1)
+			if r.URL.Path != "/v1/projects/"+project+"/environments/prod/apps" {
+				t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"ref":{"kind":"image","name":"api"}}]`)
+		}))
+		t.Cleanup(srv.Close)
+		u, err := url.Parse(srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	cardio, slice := serve("cardiotennis", cardioN), serve("sliceup", sliceN)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"cardiotennis":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_MCP_CT"}}},"sliceup":{"environments":{"prod":{"url":%q,"token_env":"BERTHY_MCP_SU"}}}}}`, cardio.String(), slice.String())
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: cardiotennis\nnetwork: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	var stderr lockedBuffer
+	done := make(chan int, 1)
+	go func() {
+		code := Run([]string{"-e", "prod", "--project", "sliceup", "--config", cfg, "--manifest-dir", dir}, inR, outW, &stderr)
+		outW.Close()
+		done <- code
+	}()
+	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "v1"}, nil)
+	cs, err := client.Connect(context.Background(), &sdk.IOTransport{Reader: io.NopCloser(outR), Writer: inW}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v\nstderr: %s", err, stderr.String())
+	}
+	res := call(t, cs, "list_resources", nil)
+	if res.IsError || !strings.Contains(text(t, res), "api") {
+		t.Fatalf("list_resources: %v %q", res.IsError, text(t, res))
+	}
+	cs.Close()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if cardioN.Load() != 0 || sliceN.Load() != 1 {
+		t.Fatalf("requests: cardio %d slice %d", cardioN.Load(), sliceN.Load())
+	}
+
+	var out, errs bytes.Buffer
+	if code := Run([]string{"-e", "prod", "--project", "Bad_Name", "--config", cfg}, strings.NewReader(""), &out, &errs); code != 2 || !strings.Contains(errs.String(), "valid --project required") || out.Len() != 0 {
+		t.Fatalf("invalid project: exit %d, stderr %q", code, errs.String())
+	}
+}
+
+func TestAToolAgainstAnAgentWithoutProjectsSaysToUpgrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/environments/dev/agent" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, testConfig(u, t.TempDir()))
+	res := call(t, cs, "list_resources", nil)
+	if !res.IsError || !strings.Contains(text(t, res), agentclient.OlderAgentMessage) {
+		t.Fatalf("list_resources: %v %q", res.IsError, text(t, res))
+	}
+	res = call(t, cs, "execute_resource_command", map[string]any{"resource_name": "api", "command": "restart"})
+	if !res.IsError || !strings.Contains(text(t, res), agentclient.OlderAgentMessage) {
+		t.Fatalf("execute: %v %q", res.IsError, text(t, res))
 	}
 }
 

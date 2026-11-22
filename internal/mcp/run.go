@@ -23,14 +23,16 @@ type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
 
-// Run is "berthy mcp -e ENV [--config CONFIG] [--manifest-dir DIR]": it serves MCP over stdin and stdout until stdin ends or the
-// process is stopped. Nothing but protocol messages goes to stdout; every other line goes to stderr, and none holds the token.
+// Run is "berthy mcp -e ENV [--project NAME] [--config CONFIG] [--manifest-dir DIR]": it serves MCP over stdin and stdout until
+// stdin ends or the process is stopped. Nothing but protocol messages goes to stdout; every other line goes to stderr, and none
+// holds the token.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var env, config string
+	var env, config, project string
+	var projectGiven bool
 	dir := "."
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "-e", "--config", "--manifest-dir":
+		case "-e", "--config", "--manifest-dir", "--project":
 			if i+1 == len(args) {
 				fmt.Fprintf(stderr, "missing value for %s\n", args[i])
 				return 2
@@ -41,11 +43,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				env = args[i]
 			case "--config":
 				config = args[i]
+			case "--project":
+				project = args[i]
+				projectGiven = true
 			default:
 				dir = args[i]
 			}
 		default:
-			fmt.Fprintf(stderr, "unknown argument %s\nusage: mcp -e ENV [--config CONFIG] [--manifest-dir DIR]\n", args[i])
+			fmt.Fprintf(stderr, "unknown argument %s\nusage: mcp -e ENV [--project NAME] [--config CONFIG] [--manifest-dir DIR]\n", args[i])
 			return 2
 		}
 	}
@@ -53,12 +58,16 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}
+	if projectGiven && !scope.ValidProject(project) {
+		fmt.Fprintln(stderr, "valid --project required")
+		return 2
+	}
 	path, err := agentclient.ConfigPath(config)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Environment: env, ManifestDir: dir})
+	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
