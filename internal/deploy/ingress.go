@@ -237,10 +237,10 @@ func (s *ingressSync) dnsFor(ctx context.Context, w RouteWant, prev *state.Ingre
 		return dnsStep{Want: w}, "", errCloudflareUnavailable
 	}
 	step := dnsStep{Want: w, Zone: zone}
-	env := s.c.Environment
+	id := s.c.id()
 	if prev != nil && prev.DNSRecordID != "" {
 		for i := range records {
-			if records[i].ID == prev.DNSRecordID && cloudflare.IsManaged(records[i], env) {
+			if records[i].ID == prev.DNSRecordID && cloudflare.IsManaged(records[i], id) {
 				step.Record = &records[i]
 				step.Action = "change"
 				if pointsAt(records[i], target) {
@@ -256,10 +256,10 @@ func (s *ingressSync) dnsFor(ctx context.Context, w RouteWant, prev *state.Ingre
 	case len(records) == 1 && pointsAt(records[0], target):
 		step.Record = &records[0]
 		step.Action = "adopt"
-		if cloudflare.IsManaged(records[0], env) {
+		if cloudflare.IsManaged(records[0], id) {
 			step.Action = "keep"
 		}
-	case len(records) == 1 && records[0].Type == "CNAME" && cloudflare.IsManaged(records[0], env):
+	case len(records) == 1 && records[0].Type == "CNAME" && cloudflare.IsManaged(records[0], id):
 		step.Record = &records[0]
 		step.Action = "change"
 	case !replace:
@@ -290,7 +290,7 @@ func (s *ingressSync) dnsRemoval(ctx context.Context, row state.IngressRoute) (d
 		return step, errCloudflareUnavailable
 	}
 	for i := range records {
-		if records[i].ID == row.DNSRecordID && cloudflare.IsManaged(records[i], s.c.Environment) {
+		if records[i].ID == row.DNSRecordID && cloudflare.IsManaged(records[i], s.c.id()) {
 			step.Action = "remove"
 			if !row.DNSCreated {
 				step.Action, step.prior = "release", row.DNSPriorComment
@@ -431,7 +431,7 @@ func ownership(before state.IngressRoute, route string, st dnsStep) (routeCreate
 
 // record is the DNS record Berthy writes for a hostname: a proxied CNAME to the tunnel, marked as Berthy's.
 func (s *ingressSync) record(hostname, target string) cloudflare.DNSRecord {
-	return cloudflare.DNSRecord{Type: "CNAME", Name: hostname, Content: target, Proxied: true, TTL: 1, Comment: cloudflare.RecordComment(s.c.Environment)}
+	return cloudflare.DNSRecord{Type: "CNAME", Name: hostname, Content: target, Proxied: true, TTL: 1, Comment: cloudflare.RecordComment(s.c.id())}
 }
 
 // routeWants lists the routes of the given image apps from their current bindings. An app that was never deployed has

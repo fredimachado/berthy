@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"berthy/internal/scope"
 )
 
 // DefaultBaseURL is the production Cloudflare API.
 const DefaultBaseURL = "https://api.cloudflare.com/client/v4"
 
-// ManagedComment marks the DNS records Berthy creates. RecordComment adds the environment to it.
+// ManagedComment marks the DNS records Berthy creates. RecordComment adds the hosted environment to it.
 const ManagedComment = "managed by berthy"
 
 // ErrZoneNotFound means no zone in the account holds the hostname.
@@ -208,14 +210,14 @@ func TunnelTarget(tunnelID string) string {
 	return tunnelID + ".cfargotunnel.com"
 }
 
-// RecordComment is the comment on a DNS record Berthy created for environment env.
-func RecordComment(env string) string {
-	return ManagedComment + " (" + env + ")"
+// RecordComment is the comment on a DNS record Berthy created for the hosted environment id.
+func RecordComment(id scope.ID) string {
+	return ManagedComment + " (" + id.String() + ")"
 }
 
-// IsManaged reports whether r was created by Berthy for environment env.
-func IsManaged(r DNSRecord, env string) bool {
-	return r.Comment == RecordComment(env)
+// IsManaged reports whether r was created by Berthy for the hosted environment id.
+func IsManaged(r DNSRecord, id scope.ID) bool {
+	return r.Comment == RecordComment(id)
 }
 
 // TokenStatus is what Cloudflare says about the API token a client carries.

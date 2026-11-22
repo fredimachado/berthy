@@ -760,7 +760,7 @@ func (c *Controller) recordState(ctx context.Context, cf *cloudflare.Client, r s
 		return ""
 	}
 	for _, rec := range records {
-		if rec.ID == r.DNSRecordID && cloudflare.IsManaged(rec, c.Environment) {
+		if rec.ID == r.DNSRecordID && cloudflare.IsManaged(rec, c.id()) {
 			return "managed"
 		}
 	}

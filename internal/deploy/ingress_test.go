@@ -21,6 +21,7 @@ import (
 	"berthy/internal/cloudflare/cftest"
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -33,6 +34,8 @@ const (
 	ingressTunnel  = "demo-test"
 	apiTarget      = "http://demo-test-api-web:8080"
 )
+
+var ingressID = scope.ID{Project: "demo", Environment: ingressEnv}
 
 // updatableFake is boundFake whose service updates store the new spec, as Docker does.
 type updatableFake struct{ *boundFake }
@@ -168,7 +171,7 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 	t.Cleanup(srv.Close)
 	bound := &boundFake{}
 	docker := &loggedEngine{updatableFake: updatableFake{bound}, calls: calls}
-	ctrl := &Controller{Engine: docker, Store: s, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4"}
+	ctrl := &Controller{Engine: docker, Store: s, Project: ingressID.Project, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4"}
 	// The hostnames of the fixture's apps lead nowhere, and a test must not ask the real network for them.
 	ctrl.Outside = &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("no network in tests")
@@ -461,7 +464,7 @@ func TestDNSPlanningDecidesEachRecord(t *testing.T) {
 	const host = "api.example.com"
 	wantAPI := []RouteWant{{Hostname: host, App: "api", Role: "web", Service: apiTarget}}
 	managed := func(f *ingressFixture, content string, proxied bool) string {
-		return f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: host, Content: content, Proxied: proxied, Comment: cloudflare.RecordComment(ingressEnv)})
+		return f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: host, Content: content, Proxied: proxied, Comment: cloudflare.RecordComment(ingressID)})
 	}
 	foreignCNAME := func(f *ingressFixture, content string) string {
 		return f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: host, Content: content, Proxied: true})
@@ -651,7 +654,7 @@ func TestIngressApplyCreatesTunnelConnectorRouteAndRecord(t *testing.T) {
 		t.Fatalf("tunnel rules %v", got)
 	}
 	records := f.cf.Records(f.zone)
-	if len(records) != 1 || records[0].Type != "CNAME" || records[0].Name != "api.example.com" || records[0].Content != cloudflare.TunnelTarget(tunnel.ID) || !records[0].Proxied || records[0].Comment != cloudflare.RecordComment(ingressEnv) {
+	if len(records) != 1 || records[0].Type != "CNAME" || records[0].Name != "api.example.com" || records[0].Content != cloudflare.TunnelTarget(tunnel.ID) || !records[0].Proxied || records[0].Comment != cloudflare.RecordComment(ingressID) {
 		t.Fatalf("records %+v", records)
 	}
 	routes, err := f.store.IngressRoutes(ctx, "")
@@ -1134,7 +1137,7 @@ func TestIngressRemovalRemovesOnlyBerthyState(t *testing.T) {
 		t.Fatalf("rules after removal %v", got)
 	}
 	for _, r := range f.cf.Records(f.zone) {
-		if cloudflare.IsManaged(r, ingressEnv) {
+		if cloudflare.IsManaged(r, ingressID) {
 			t.Fatalf("managed record left behind: %+v", r)
 		}
 	}

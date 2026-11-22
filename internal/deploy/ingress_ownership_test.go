@@ -61,7 +61,7 @@ func TestDeployRecordsAdoptedRuleAndRecordAsNotCreated(t *testing.T) {
 	}
 	// Berthy marks the adopted record, so it can tell it from a record it never touched.
 	records := f.cf.Records(f.zone)
-	if len(records) != 1 || records[0].Comment != cloudflare.RecordComment(ingressEnv) {
+	if len(records) != 1 || records[0].Comment != cloudflare.RecordComment(ingressID) {
 		t.Fatalf("records %+v", records)
 	}
 }

@@ -115,7 +115,7 @@ func TestDeployPublishesRouteRecordAndStateAfterTheServiceStarts(t *testing.T) {
 		t.Fatalf("tunnel rules %v", got)
 	}
 	records := f.cf.Records(f.zone)
-	if len(records) != 1 || records[0].Type != "CNAME" || records[0].Name != "api.example.com" || records[0].Content != cloudflare.TunnelTarget(tunnelID) || !records[0].Proxied || records[0].Comment != cloudflare.RecordComment(ingressEnv) {
+	if len(records) != 1 || records[0].Type != "CNAME" || records[0].Name != "api.example.com" || records[0].Content != cloudflare.TunnelTarget(tunnelID) || !records[0].Proxied || records[0].Comment != cloudflare.RecordComment(ingressID) {
 		t.Fatalf("records %+v", records)
 	}
 	routes, err := f.store.IngressRoutes(ctx, "api")
@@ -565,7 +565,7 @@ func TestRemovalStillPublishesWithoutAConnector(t *testing.T) {
 	ctx := context.Background()
 	failedConnectorApply(t, f)
 	tunnelID := f.tunnel().ID
-	record := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: cloudflare.TunnelTarget(tunnelID), Proxied: true, Comment: cloudflare.RecordComment(ingressEnv)})
+	record := f.cf.AddRecord(f.zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: cloudflare.TunnelTarget(tunnelID), Proxied: true, Comment: cloudflare.RecordComment(ingressID)})
 	f.cf.SetConfig(tunnelID, json.RawMessage(`{"ingress":[{"hostname":"api.example.com","service":"`+apiTarget+`"},{"service":"http_status:404"}]}`))
 	seedOwnedRoute(t, f, state.IngressRoute{Hostname: "api.example.com", App: "api", Role: "web", Service: apiTarget, ZoneID: f.zone, DNSRecordID: record, RouteCreated: true, DNSCreated: true})
 

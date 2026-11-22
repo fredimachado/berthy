@@ -16,6 +16,7 @@ import (
 
 	"berthy/internal/cloudflare"
 	"berthy/internal/cloudflare/cftest"
+	"berthy/internal/scope"
 )
 
 // token is a test value, not a credential.
@@ -106,8 +107,9 @@ func TestClientMethodsAgainstFake(t *testing.T) {
 	if records, err := c.DNSRecords(ctx, zone, "api.example.com"); err != nil || len(records) != 0 {
 		t.Fatalf("records before create: %+v %v", records, err)
 	}
-	made, err := c.CreateDNSRecord(ctx, zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: target, Proxied: true, TTL: 1, Comment: cloudflare.RecordComment("prod")})
-	if err != nil || made.ID == "" || made.Content != target || !cloudflare.IsManaged(made, "prod") {
+	prod := scope.ID{Project: "shop", Environment: "prod"}
+	made, err := c.CreateDNSRecord(ctx, zone, cloudflare.DNSRecord{Type: "CNAME", Name: "api.example.com", Content: target, Proxied: true, TTL: 1, Comment: cloudflare.RecordComment(prod)})
+	if err != nil || made.ID == "" || made.Content != target || !cloudflare.IsManaged(made, prod) {
 		t.Fatalf("create record %+v %v", made, err)
 	}
 	if _, err = c.CreateDNSRecord(ctx, zone, cloudflare.DNSRecord{Type: "A", Name: "api.example.com", Content: "203.0.113.5"}); err == nil {
@@ -347,12 +349,25 @@ func TestTunnelTokenHelpers(t *testing.T) {
 	if got := cloudflare.TunnelTarget("abc"); got != "abc.cfargotunnel.com" {
 		t.Fatalf("target %q", got)
 	}
-	if got := cloudflare.RecordComment("prod"); got != "managed by berthy (prod)" {
+}
+
+func TestTheRecordCommentNamesProjectAndEnvironment(t *testing.T) {
+	id := scope.ID{Project: "shop", Environment: "prod"}
+	if got := cloudflare.RecordComment(id); got != "managed by berthy (shop/prod)" {
 		t.Fatalf("comment %q", got)
 	}
-	managed := cloudflare.DNSRecord{Comment: cloudflare.RecordComment("prod")}
-	if !cloudflare.IsManaged(managed, "prod") || cloudflare.IsManaged(managed, "stage") || cloudflare.IsManaged(cloudflare.DNSRecord{}, "prod") {
-		t.Fatal("ownership marks do not match the environment")
+	managed := cloudflare.DNSRecord{Comment: cloudflare.RecordComment(id)}
+	if !cloudflare.IsManaged(managed, id) || cloudflare.IsManaged(managed, scope.ID{Project: "shop", Environment: "stage"}) || cloudflare.IsManaged(cloudflare.DNSRecord{}, id) {
+		t.Fatal("ownership marks do not match the hosted environment")
+	}
+}
+
+func TestARecordOfAnotherProjectIsNotManaged(t *testing.T) {
+	ours := scope.ID{Project: "shop", Environment: "prod"}
+	theirs := scope.ID{Project: "other", Environment: "prod"}
+	managed := cloudflare.DNSRecord{Comment: cloudflare.RecordComment(theirs)}
+	if cloudflare.IsManaged(managed, ours) {
+		t.Fatal("a record of another project was treated as managed")
 	}
 }
 
