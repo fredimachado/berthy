@@ -797,6 +797,9 @@ func TestKeptTunnelCannotBeTakenOrDeletedByPeer(t *testing.T) {
 	if op := f.destroy("keep-tunnel", nil); op.State != "succeeded" {
 		t.Fatalf("destroy: %+v", op)
 	}
+	if err := f.ctrl.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	kept, err := f.store.KeptTunnel(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -812,6 +815,9 @@ func TestKeptTunnelCannotBeTakenOrDeletedByPeer(t *testing.T) {
 		t.Fatalf("destroy plan: %+v", plan.Tunnel)
 	}
 	op := f.destroy("refuse-peer-tunnel", func(r *Request) { r.Tunnel = true })
+	if err := f.ctrl.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if f.tunnel() == nil {
 		t.Fatalf("destroy deleted peer tunnel: %+v", op)
 	}
