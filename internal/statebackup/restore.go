@@ -105,7 +105,7 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreReport, error) {
 	if err != nil {
 		return fail(err)
 	}
-	if err = st.Claim(ctx, o.Project); err != nil {
+	if err = st.CheckOwner(ctx, o.Project); err != nil {
 		st.Close()
 		return fail(err)
 	}

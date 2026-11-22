@@ -66,6 +66,16 @@ type rig struct {
 }
 
 func newRig(t *testing.T, keep int) *rig {
+	return newRigOwned(t, keep, "demo")
+}
+
+// newRigWithoutClaim is a state that was never Claimed, so a restore can prove it refuses a snapshot with no owner.
+func newRigWithoutClaim(t *testing.T, keep int) *rig {
+	return newRigOwned(t, keep, "")
+}
+
+// newRigOwned builds a rig whose state is Claimed as owner when owner is not empty. The runner's Project stays "demo".
+func newRigOwned(t *testing.T, keep int, owner string) *rig {
 	t.Helper()
 	ctx := context.Background()
 	key := make([]byte, 32)
@@ -85,8 +95,10 @@ func newRig(t *testing.T, keep int) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	if err = store.Claim(ctx, "demo"); err != nil {
-		t.Fatal(err)
+	if owner != "" {
+		if err = store.Claim(ctx, owner); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err = store.PutSecret(ctx, state.Actor{ID: "ops", Name: "ops"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte(testValue)); err != nil {
 		t.Fatal(err)
@@ -397,6 +409,57 @@ func TestRestoreRebuildsTheStateFromStorageWithTheKey(t *testing.T) {
 	}
 	if _, value, err := restored.Secret(ctx, "DB_PASSWORD"); err != nil || string(value) != testValue {
 		t.Fatalf("restored secret: %q %v", value, err)
+	}
+}
+
+func TestRestoreRefusesASidecarThatDisagreesWithItsKey(t *testing.T) {
+	g := newRig(t, 14)
+	run := g.run("manual")
+	sidecarKey := strings.TrimSuffix(run.Key, ".db") + ".json"
+	var sc Sidecar
+	if err := json.Unmarshal(g.read(sidecarKey), &sc); err != nil {
+		t.Fatal(err)
+	}
+	sc.Environment = "stage"
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = g.objects.Put(context.Background(), sidecarKey, bytes.NewReader(body), nil); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "restored")
+	opts := g.restoreOptions(run.Key, out, g.keyPath) // requested scope equals the key
+	if _, err := Restore(context.Background(), opts); !errors.Is(err, ErrInvalidSidecar) {
+		t.Fatalf("sidecar disagreeing with its key: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "state.db")); !os.IsNotExist(err) {
+		t.Fatalf("output survived a disagreeing sidecar: %v", err)
+	}
+}
+
+func TestRestoreRefusesADatabaseWhoseOwnerDisagrees(t *testing.T) {
+	g := newRigOwned(t, 14, "other") // key and sidecar stay demo/prod; the database belongs to other/prod
+	run := g.run("manual")
+	out := filepath.Join(t.TempDir(), "restored")
+	var oe *state.OwnerError
+	if _, err := Restore(context.Background(), g.restoreOptions(run.Key, out, g.keyPath)); !errors.As(err, &oe) {
+		t.Fatalf("owner mismatch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "state.db")); !os.IsNotExist(err) {
+		t.Fatalf("output survived an owner mismatch: %v", err)
+	}
+}
+
+func TestRestoreRefusesADatabaseWithNoOwner(t *testing.T) {
+	g := newRigWithoutClaim(t, 14)
+	run := g.run("manual")
+	out := filepath.Join(t.TempDir(), "restored")
+	if _, err := Restore(context.Background(), g.restoreOptions(run.Key, out, g.keyPath)); !errors.Is(err, state.ErrNoOwner) {
+		t.Fatalf("missing owner: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "state.db")); !os.IsNotExist(err) {
+		t.Fatalf("output survived a missing owner: %v", err)
 	}
 }
 

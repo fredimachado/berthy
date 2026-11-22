@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestCheckOwnerNeverWritesAndRefusesAMissingOwner(t *testing.T) {
+	s, _, _ := testStoreEnv(t, "dev")
+	ctx := context.Background()
+	if err := s.CheckOwner(ctx, "alpha"); !errors.Is(err, ErrNoOwner) {
+		t.Fatalf("missing owner: %v", err)
+	}
+	if err := s.Claim(ctx, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckOwner(ctx, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	var oe *OwnerError
+	if err := s.CheckOwner(ctx, "beta"); !errors.As(err, &oe) || err.Error() != "state belongs to alpha/dev, not beta/dev" {
+		t.Fatalf("another project: %v", err)
+	}
+}
+
 func TestClaimIsKeptAndRefusesAnotherProject(t *testing.T) {
 	s, dir, key := testStoreEnv(t, "dev")
 	ctx := context.Background()
