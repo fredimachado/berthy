@@ -16,6 +16,8 @@ from_man() {
   (cd "$MAN" && { [ "$c" != deploy ] || record_deploy "$PROJECT" "$e" "$@"; } && "$BIN" "$c" -e "$e" --config "$RUN/admin.json" "$@")
 }
 
+# Stop the second agent on exit or signal; start_agent2 records its pid before waiting on /healthz.
+trap 'stop_agent2' EXIT INT TERM HUP
 start_agent2 || exit 1
 
 # 1. agent-info of each environment answers with its own environment.
@@ -56,7 +58,20 @@ expect_code "secret list on $EC" 0 "$code" "$out"
 expect_not_contains "secret of $ENVN is absent from $EC" "$out" TWO_AGENTS_ONLY
 
 # 5. Stopping the second agent leaves ps of the first environment working.
+agent2_pid=
+[ -f "$RUN/agent2.pid" ] && agent2_pid=$(cat "$RUN/agent2.pid")
 stop_agent2
+trap - EXIT INT TERM HUP
+if [ -n "$agent2_pid" ] && [ -r "/proc/$agent2_pid/cmdline" ]; then
+  fail "second agent process has exited" "pid $agent2_pid is still running"
+else
+  pass "second agent process has exited"
+fi
+if curl_local -f -o /dev/null "http://$AGENT2_LISTEN/healthz" 2>/dev/null; then
+  fail "second agent listen refused" "healthz still answers"
+else
+  pass "second agent listen refused"
+fi
 out=$(from_man "$ENVN" ps 2>&1); code=$?
 expect_code "ps of $ENVN after stop_agent2" 0 "$code" "$out"
 expect_contains "ps of $ENVN still lists web" "$out" "web"
