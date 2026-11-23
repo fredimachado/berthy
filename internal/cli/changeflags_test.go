@@ -62,6 +62,7 @@ var changeCommands = []changeCommand{
 	{name: "alerts test", pos: []string{"alerts", "test"}},
 	{name: "secret list", pos: []string{"secret", "list"}},
 	{name: "secret import", pos: []string{"secret", "import"}},
+	{name: "secret set missing", pos: []string{"secret", "set"}},
 	{name: "secret set", pos: []string{"secret", "set", "DB_URL"}},
 	{name: "secret generate", pos: []string{"secret", "generate", "GEN_PASS"}},
 	{name: "secret generate declared", pos: []string{"secret", "generate"}},

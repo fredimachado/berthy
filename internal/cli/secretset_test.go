@@ -35,6 +35,23 @@ func fakeTerminal(t *testing.T, line string) *atomic.Int32 {
 	return &reads
 }
 
+func fakeTerminalLines(t *testing.T, lines ...string) *atomic.Int32 {
+	t.Helper()
+	var reads atomic.Int32
+	old := hiddenInput
+	hiddenInput = func() (func() ([]byte, error), bool) {
+		return func() ([]byte, error) {
+			i := int(reads.Add(1)) - 1
+			if i >= len(lines) {
+				return nil, io.EOF
+			}
+			return []byte(lines[i]), nil
+		}, true
+	}
+	t.Cleanup(func() { hiddenInput = old })
+	return &reads
+}
+
 // secretManifestDir returns a directory whose berthy.yml is manifestText.
 func secretManifestDir(t *testing.T, manifestText string) string {
 	t.Helper()

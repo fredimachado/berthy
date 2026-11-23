@@ -896,6 +896,8 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 #### Set the secrets the first deploy needs
 
+Run `berthy secret set -e prod` at a terminal to generate the declared secrets and enter each remaining value in turn. Enter skips a value; the command exits 1 while anything remains unmet. Add `--manifest-dir DIR` to choose the manifest.
+
 `berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input, with one trailing newline stripped, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
 
 ```bash
@@ -996,11 +998,13 @@ berthy secret list -e prod --manifest-dir ./deploy/prod
 # missing: DATABASE_URL (needed by app api)
 ```
 
-Each `missing:` line is a secret the manifest needs that is not stored, with what needs it. With `--json` the output is one object, with the stored secrets under `secrets` and the missing ones under `missing`.
+Each `missing:` line identifies a secret the manifest needs that is absent or stored with the wrong registry association. Registry mismatches name the stored and needed registries. A `conflict:` line names registries that share a password secret, or a registry and plain readers that share a name; give them separate secret names. With `--json` the output is one object, with the stored secrets under `secrets` and the missing ones under `missing`.
 
 #### What Berthy does at a terminal
 
-When standard input is a terminal, `berthy secret set` does the steps below in this order. A piped value skips all of them: it makes one request, with no guide, no prompt and no check, and the agent keeps the stored registry.
+With no name, `berthy secret set -e prod` first generates declared secrets, then asks for each unmet secret with `Value of NAME (hidden, Enter skips):`. It checks registry passwords and Cloudflare tokens before storing them. A refused value is asked for again; an empty line prints `skipped NAME`. A held request stops the guide. A password stored for the wrong registry is replaced in one set; a registry password needed as a plain secret must first be removed.
+
+When given a name and standard input is a terminal, `berthy secret set` does the steps below in this order. A piped value skips all of them: it makes one request, with no guide, no prompt and no check, and the agent keeps the stored registry.
 
 - **Agent.** First, Berthy asks the agent which secrets it holds. If the agent cannot be reached (`agent connection failed`) or refuses the agent token (for example `agent returned HTTP 401: unauthorized`), the command stops with exit code `1` before the prompt, so you never type a value for nothing.
 - **Replaces.** If NAME is already stored, Berthy says so before the guide. For a registry password it prints `NAME is stored as the password for ghcr.io. The new value replaces it.` For any other secret it prints `NAME is already stored. The new value replaces it.` When `--registry` is omitted, Berthy uses the stored registry for the guide and the check.

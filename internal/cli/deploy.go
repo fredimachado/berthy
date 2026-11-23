@@ -124,6 +124,7 @@ var changeFlags = map[string][]string{
 	"alerts test":              withRemoteFlags(),
 	"secret list":              withRemoteFlags("--manifest-dir"),
 	"secret import":            withRemoteFlags("--dry-run"),
+	"secret set missing":       {"-e", "--project", "--config", "--manifest-dir"},
 	"secret set":               withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
 	"secret generate":          withRemoteFlags("--dry-run", "--replace", "--bytes", "--format", "--manifest-dir"),
 	"secret generate declared": withRemoteFlags("--dry-run", "--manifest-dir"),
@@ -344,6 +345,9 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		if len(pos) == 1 && sub == "import" {
 			return "secret import", true
 		}
+		if len(pos) == 1 && sub == "set" {
+			return "secret set missing", true
+		}
 		if len(pos) == 2 && sub == "set" {
 			return "secret set", true
 		}
@@ -429,7 +433,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		fmt.Fprintf(errout, "%s is not a flag of %s\n", flag, key)
 		return 2
 	}
-	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" && len(f.command) > 0 {
+	if cmd == "secret" && len(f.pos) == 1 && (f.pos[0] == "generate" || f.pos[0] == "set") && len(f.command) > 0 {
 		fmt.Fprintln(errout, "this command accepts no arguments after --")
 		return 2
 	}
@@ -535,6 +539,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "list" && slices.Contains(f.given, "--manifest-dir") {
 		return runSecretList(f, u, prefix, token, out, errout)
+	}
+	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "set" {
+		return runSecretSetMissing(f, target, projectDir, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" {
 		return runSecretGenerateDeclared(f, target, projectDir, out, errout)

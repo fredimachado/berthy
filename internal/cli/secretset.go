@@ -364,6 +364,7 @@ func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token s
 // secretSetReply is the agent's answer to a secret set. A registry password the agent stored names the registry, the running
 // services that pull from it and what happened to each; services_error says why they could not be looked at.
 type secretSetReply struct {
+	Ok            bool            `json:"ok"`
 	Registry      string          `json:"registry"`
 	Services      []secretService `json:"services"`
 	ServicesError string          `json:"services_error"`
@@ -445,6 +446,11 @@ func printSecretSet(out io.Writer, data []byte) bool {
 	if json.Unmarshal(data, &reply) != nil || reply.Registry == "" {
 		return false
 	}
+	printRegistrySet(out, reply)
+	return true
+}
+
+func printRegistrySet(out io.Writer, reply secretSetReply) {
 	registry := terminalSafe(reply.Registry)
 	fmt.Fprintln(out, "ok: true")
 	retry := false
@@ -466,5 +472,4 @@ func printSecretSet(out io.Writer, data []byte) bool {
 	if retry {
 		fmt.Fprintln(out, "Run the command again to retry the services that were not updated.")
 	}
-	return true
 }

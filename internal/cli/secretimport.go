@@ -157,6 +157,8 @@ func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout
 			} else {
 				fmt.Fprintf(out, "missing: %s (stored for registry %s; needed by registry %s)\n", name, terminalSafe(n.Stored), terminalSafe(n.Registry))
 			}
+		case unmetMixed:
+			fmt.Fprintf(out, "conflict: %s is needed by %s: give them separate secret names\n", name, mixedReaders(n))
 		case unmetNotPlain:
 			fmt.Fprintf(out, "missing: %s (stored as the password of %s; needed by %s)\n", name, terminalSafe(n.Stored), terminalSafe(strings.Join(n.NeededBy, ", ")))
 		case unmetShared:
@@ -175,6 +177,7 @@ const (
 	unmetRegistry
 	unmetNotPlain
 	unmetShared
+	unmetMixed
 )
 
 type unmetNeed struct {
@@ -202,6 +205,16 @@ func safeRegistryList(regs []string) string {
 	}
 	return strings.Join(safe, " and ")
 }
+func mixedReaders(n unmetNeed) string {
+	parts := []string{"registry " + terminalSafe(n.Registry)}
+	for _, who := range n.NeededBy {
+		if !strings.HasPrefix(who, "registry ") {
+			parts = append(parts, terminalSafe(who))
+		}
+	}
+	return strings.Join(parts, " and ")
+}
+
 func unmetSecrets(m *manifest.Manifest, held []storedSecret) []unmetNeed {
 	stored := make(map[string]storedSecret, len(held))
 	for _, s := range held {
@@ -216,6 +229,9 @@ func unmetSecrets(m *manifest.Manifest, held []storedSecret) []unmetNeed {
 		case len(regs) > 1:
 			u.Kind = unmetShared
 			u.Registries = regs
+		case len(regs) == 1 && len(n.NeededBy) > 1:
+			u.Kind = unmetMixed
+			u.Registry = regs[0]
 		case !ok:
 			u.Kind = unmetMissing
 			if len(regs) == 1 {
