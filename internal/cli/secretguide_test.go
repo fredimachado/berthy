@@ -184,7 +184,7 @@ func TestGuideStopsWhenAStoreIsHeld(t *testing.T) {
 	dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  api:\n    kind: image\n    image: example.com/api\n    env:\n      secret: [API_KEY, SECOND]\n    roles:\n      web:\n        port: 8080\n")
 	var out, errout bytes.Buffer
 	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
-	if code != exitHeld || reads.Load() != 1 || len(paths) != 2 {
+	if code != exitHeld || reads.Load() != 1 || len(paths) != 2 || !strings.Contains(out.String(), "exists: false") || !strings.Contains(out.String(), "held for approval: ap1") {
 		t.Fatalf("exit %d reads %d paths %v stdout %q stderr %q", code, reads.Load(), paths, out.String(), errout.String())
 	}
 	assertNotPrinted(t, "private", out.String(), errout.String())
@@ -211,7 +211,7 @@ func TestGuideRejectsInvalidStoreResponses(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"case variant null registry", 200, `{"ok":true,"Registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`},
+		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"case variant null registry", 200, `{"ok":true,"Registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`}, {"held empty plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{}}`}, {"held missing registry", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","exists":false}}`}, {"held missing exists", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":""}}`}, {"held wrong name", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"OTHER","registry":"","exists":false}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := fakeTerminal(t, "secret-value")
@@ -388,7 +388,7 @@ func TestGuideRedactsReflectedValueInAgentReplies(t *testing.T) {
 		want     string
 	}{
 		{"refusal", 400, `{"message":"rejected private-value"}`, 1, "rejected"},
-		{"held", 202, `{"approval_id":"private-value","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":"private-value","extra":"private-value"}}`, 3, "held for approval"},
+		{"held", 202, `{"approval_id":"private-value","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":"","exists":false,"extra":"private-value"}}`, 3, "held for approval"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeTerminal(t, "private-value")
@@ -536,5 +536,40 @@ func TestGuideRejectsDeclaredHeldWithTrailingJSON(t *testing.T) {
 	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", declaredManifestDir(t)}, &out, &errout)
 	if code != 1 || reads.Load() != 0 || len(bodies) != 1 || !strings.Contains(errout.String(), "invalid agent response") || strings.Contains(out.String(), "held for approval") {
 		t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(bodies), out.String(), errout.String())
+	}
+}
+
+func TestGuideRejectsDeclaredHeldWithRepeatedInvalidExpiry(t *testing.T) {
+	reads := fakeTerminal(t, "unused")
+	var bodies []string
+	server := replyingAgent(&bodies, 202, `{"approval_id":"ap1","expires":"bad","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret generate declared","secrets":[]}}`)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", declaredManifestDir(t)}, &out, &errout)
+	if code != 1 || reads.Load() != 0 || len(bodies) != 1 || !strings.Contains(errout.String(), "invalid agent response") || strings.Contains(out.String(), "held for approval") {
+		t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(bodies), out.String(), errout.String())
+	}
+}
+
+func TestGuidePreservesOptionalStorePlanFields(t *testing.T) {
+	fakeTerminal(t, "private")
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodies = append(bodies, r.Method)
+		if r.Method == "GET" {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":"","exists":false,"services":[],"services_error":""}}`)
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  api:\n    kind: image\n    image: example.com/api\n    env:\n      secret: [API_KEY]\n    roles:\n      web:\n        port: 8080\n")
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != exitHeld || len(bodies) != 2 || !strings.Contains(out.String(), "exists: false") || !strings.Contains(out.String(), "registry: \n") || !strings.Contains(out.String(), "services: ") || !strings.Contains(out.String(), "services_error: ") {
+		t.Fatalf("exit %d requests %d stdout %q stderr %q", code, len(bodies), out.String(), errout.String())
 	}
 }

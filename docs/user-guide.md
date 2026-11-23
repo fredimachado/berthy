@@ -965,7 +965,7 @@ Check what is stored (names only):
 berthy secret list -e prod
 ```
 
-Remove one with `berthy secret rm <NAME> -e prod` (`delete` also works). Add `--dry-run` to any `secret set` or `secret rm` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
+Remove one with `berthy secret rm <NAME> -e prod` (`delete` also works). Add `--dry-run` to `secret set NAME` or `secret rm NAME` to see the plan without changing anything. For a registry password, the plan also shows the registry that is kept and the running services that would get the new password ([rotating a secret](#rotating-a-secret)).
 
 #### Set many secrets at once
 

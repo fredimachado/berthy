@@ -150,7 +150,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				return remaining, guideFailed
 			}
 			if status == http.StatusAccepted {
-				if reportGuideHeld(data, value, out) {
+				if reportGuideHeld(data, value, n.Name, n.Registry, out) {
 					return remaining, guideHeld
 				}
 				fmt.Fprintln(errout, "invalid agent response")
@@ -219,66 +219,84 @@ func safeJSONValue(v any, value string) any {
 	}
 }
 
-// safeHeldJSON scopes terminal escaping to the guide's declared-generation output.
-func safeHeldJSON(data []byte) []byte {
-	if !json.Valid(data) {
-		return data
-	}
-	var v any
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.UseNumber()
-	if dec.Decode(&v) != nil {
-		return data
-	}
-	b, err := json.Marshal(safeJSONValue(v, ""))
-	if err != nil {
-		return data
-	}
-	return b
-}
-
-// reportGuideHeld validates and prints only the fields of a secret set plan.
-func reportGuideHeld(data []byte, value string, out io.Writer) bool {
+// decodeGuideHeld validates the original envelope before any display transformation.
+func decodeGuideHeld(data []byte) (heldApproval, bool) {
 	var h heldApproval
 	if json.Unmarshal(data, &h) != nil || h.ID == "" || h.Expires.IsZero() {
+		return h, false
+	}
+	plan := strings.TrimSpace(string(h.Plan))
+	return h, len(plan) > 0 && plan[0] == '{'
+}
+
+func printGuideHeld(out io.Writer, h heldApproval, plan []byte, value string) {
+	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, value), safeSecretText(h.Expires.UTC().Format(time.RFC3339), value))
+	printPlan(out, plan)
+}
+
+func reportGuideDeclaredHeld(data []byte, out io.Writer) bool {
+	h, ok := decodeGuideHeld(data)
+	if !ok {
 		return false
 	}
-	var plan map[string]json.RawMessage
-	if json.Unmarshal(h.Plan, &plan) != nil || plan == nil {
+	var plan any
+	dec := json.NewDecoder(strings.NewReader(string(h.Plan)))
+	dec.UseNumber()
+	if dec.Decode(&plan) != nil {
 		return false
 	}
-	safe := map[string]any{}
-	for _, key := range []string{"action", "name", "registry", "services_error"} {
-		if raw, ok := plan[key]; ok {
-			var v string
-			if json.Unmarshal(raw, &v) != nil || string(raw) == "null" {
-				return false
-			}
-			safe[key] = safeSecretText(v, value)
-		}
+	encoded, err := json.Marshal(safeJSONValue(plan, ""))
+	if err != nil {
+		return false
 	}
-	if raw, ok := plan["exists"]; ok {
-		var v bool
-		if json.Unmarshal(raw, &v) != nil || string(raw) == "null" {
+	printGuideHeld(out, h, encoded, "")
+	return true
+}
+
+// reportGuideHeld validates the store plan against the request before displaying it.
+func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) bool {
+	h, ok := decodeGuideHeld(data)
+	if !ok {
+		return false
+	}
+	var plan struct {
+		Action        *string         `json:"action"`
+		Name          *string         `json:"name"`
+		Registry      *string         `json:"registry"`
+		Exists        *bool           `json:"exists"`
+		Services      json.RawMessage `json:"services"`
+		ServicesError json.RawMessage `json:"services_error"`
+	}
+	if json.Unmarshal(h.Plan, &plan) != nil || plan.Action == nil || *plan.Action != "secret set" || plan.Name == nil || *plan.Name != name || plan.Registry == nil || *plan.Registry != registry || plan.Exists == nil {
+		return false
+	}
+	safe := map[string]any{
+		"action":   safeSecretText(*plan.Action, value),
+		"name":     safeSecretText(*plan.Name, value),
+		"registry": safeSecretText(*plan.Registry, value),
+		"exists":   *plan.Exists,
+	}
+	if len(plan.ServicesError) != 0 {
+		var message string
+		if string(plan.ServicesError) == "null" || json.Unmarshal(plan.ServicesError, &message) != nil {
 			return false
 		}
-		safe["exists"] = v
+		safe["services_error"] = safeSecretText(message, value)
 	}
-	if raw, ok := plan["services"]; ok {
-		var v []string
-		if json.Unmarshal(raw, &v) != nil || v == nil {
+	if len(plan.Services) != 0 {
+		var services []string
+		if json.Unmarshal(plan.Services, &services) != nil || services == nil {
 			return false
 		}
-		for i := range v {
-			v[i] = safeSecretText(v[i], value)
+		for i := range services {
+			services[i] = safeSecretText(services[i], value)
 		}
-		safe["services"] = v
+		safe["services"] = services
 	}
 	encoded, err := json.Marshal(safe)
 	if err != nil {
 		return false
 	}
-	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, value), safeSecretText(h.Expires.UTC().Format(time.RFC3339), value))
-	printPlan(out, encoded)
+	printGuideHeld(out, h, encoded, value)
 	return true
 }

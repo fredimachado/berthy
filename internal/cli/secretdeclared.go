@@ -100,7 +100,11 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 	}
 	if status == http.StatusAccepted {
 		if guide {
-			data = safeHeldJSON(data)
+			if reportGuideDeclaredHeld(data, out) {
+				return res, declaredHeld
+			}
+			fmt.Fprintln(errout, "invalid agent response")
+			return res, declaredFailed
 		}
 		if code, held := reportHeld(data, out, errout, asJSON); held {
 			if code != exitHeld {
