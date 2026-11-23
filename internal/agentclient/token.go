@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"berthy/internal/credstore"
+	"berthy/internal/scope"
 )
 
 type TokenSource string
@@ -30,6 +31,11 @@ func Tokens(ctx context.Context) credstore.Store {
 // StoreKey identifies the token for one configuration entry.
 func StoreKey(project, env string, e Environment) credstore.Key {
 	return credstore.Key{URL: e.URL, Project: project, Environment: env, Variable: e.TokenEnv}
+}
+
+// StoreUsable reports whether an entry can address an unambiguous store key.
+func StoreUsable(project, env string, e Environment) bool {
+	return scope.ValidProject(project) && scope.ValidEnvironment(env) && ValidTokenEnv(e.TokenEnv)
 }
 
 // FindToken reads the variable first, then the store when provided.

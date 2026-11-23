@@ -3,6 +3,7 @@ package agentclient
 import (
 	"berthy/internal/credstore"
 	"berthy/internal/credstore/credtest"
+	"fmt"
 	"testing"
 )
 
@@ -78,7 +79,42 @@ func TestResolveRefusesAmbiguousTokenVariableBeforeStore(t *testing.T) {
 	t.Cleanup(func() { TokenStore = old })
 	calls := s.Calls()
 	_, err := Resolve(writeConfig(t, `{"projects":{"demo":{"environments":{"dev":{"url":"http://host","token_env":"X#Y"}}}}}`), Selector{Environment: "dev"})
-	if err == nil || err.Error() != "unknown environment or missing token_env" || s.Calls() != calls {
+	if err == nil || err.Error() != "no token for demo/dev: its token variable is empty (berthy context list names it)" || s.Calls() != calls {
 		t.Fatalf("error %v, store calls %d", err, s.Calls()-calls)
+	}
+}
+
+func TestResolveRejectsInvalidScopeBeforeStore(t *testing.T) {
+	for _, tc := range []struct{ project, env string }{{"bad@name", "dev"}, {"bad/name", "dev"}, {"demo", "bad@env"}, {"demo", "bad/env"}} {
+		t.Run(tc.project+"_"+tc.env, func(t *testing.T) {
+			s := credtest.NewMemory()
+			old := TokenStore
+			TokenStore = s
+			t.Cleanup(func() { TokenStore = old })
+			t.Setenv("SCOPE_TOKEN", "")
+			cfg := writeConfig(t, fmt.Sprintf(`{"projects":{%q:{"environments":{%q:{"url":"http://host","token_env":"SCOPE_TOKEN"}}}}}`, tc.project, tc.env))
+			_, err := Resolve(cfg, Selector{Project: tc.project, Environment: tc.env})
+			if err == nil || err.Error() != "unknown environment or missing token_env" || s.Calls() != 0 {
+				t.Fatalf("error %v, calls %d", err, s.Calls())
+			}
+		})
+	}
+}
+func TestResolveAllowsUnusualVariableWithoutStore(t *testing.T) {
+	s := credtest.NewMemory()
+	old := TokenStore
+	TokenStore = s
+	t.Cleanup(func() { TokenStore = old })
+	cfg := writeConfig(t, `{"projects":{"demo":{"environments":{"dev":{"url":"http://host","token_env":"BERTHY.TOKEN"}}}}}`)
+	t.Setenv("BERTHY.TOKEN", "from-variable")
+	target, err := Resolve(cfg, Selector{Environment: "dev"})
+	if err != nil || target.Token != "from-variable" || s.Calls() != 0 {
+		t.Fatalf("target %+v error %v calls %d", target, err, s.Calls())
+	}
+	t.Setenv("BERTHY.TOKEN", "")
+	_, err = Resolve(cfg, Selector{Environment: "dev"})
+	want := "no token for demo/dev: its token variable is empty (berthy context list names it)"
+	if err == nil || err.Error() != want || s.Calls() != 0 {
+		t.Fatalf("error %v calls %d", err, s.Calls())
 	}
 }

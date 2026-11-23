@@ -149,19 +149,19 @@ func runContextList(args []string, out, errout io.Writer) int {
 		slices.Sort(envs)
 		for _, env := range envs {
 			e := c.Projects[project].Environments[env]
-			if !agentclient.ValidTokenEnv(e.TokenEnv) {
-				fmt.Fprintln(errout, "unknown environment or missing token_env")
-				return 1
-			}
-			_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
 			status := "unknown"
-			if storeErr == nil {
-				status = "stored"
-			} else if errors.Is(storeErr, credstore.ErrNotFound) {
-				status = "not stored"
+			stored := false
+			if agentclient.StoreUsable(project, env, e) {
+				_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
+				if storeErr == nil {
+					status = "stored"
+					stored = true
+				} else if errors.Is(storeErr, credstore.ErrNotFound) {
+					status = "not stored"
+				}
 			}
 			rows = append(rows, row{
-				TokenStored: storeErr == nil, storedStatus: status,
+				TokenStored: stored, storedStatus: status,
 				Project: project, Environment: env, URL: e.URL, TokenEnv: e.TokenEnv,
 				TokenSet: os.Getenv(e.TokenEnv) != "",
 			})
@@ -229,7 +229,7 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if *deleteToken {
-		if !agentclient.ValidTokenEnv(entry.TokenEnv) {
+		if !agentclient.StoreUsable(*project, *env, entry) {
 			fmt.Fprintln(errout, "unknown environment or missing token_env")
 			return 1
 		}

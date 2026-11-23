@@ -381,7 +381,7 @@ func TestContextRemoveDeleteTokenThatFailsKeepsTheEntry(t *testing.T) {
 }
 
 func TestContextCommandsRefuseAmbiguousTokenVariableBeforeStore(t *testing.T) {
-	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"remove", "--project", "demo", "-e", "dev", "--delete-token"}} {
+	for _, args := range [][]string{{"remove", "--project", "demo", "-e", "dev", "--delete-token"}} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			s, cfg, _, _ := tokenFixture(t)
 			good := agentclient.Environment{URL: "http://host#X", TokenEnv: "Y"}
@@ -422,4 +422,56 @@ func TestContextRemoveDeleteTokenGivenUpKeepsTheEntry(t *testing.T) {
 
 func TestBlockedTokenFixtureCanCleanUpWithoutAStoreCall(t *testing.T) {
 	t.Run("no lookup", func(t *testing.T) { _, _ = blockedTokenFixture(t) })
+}
+
+func TestContextListSkipsUnsafeStoreKeys(t *testing.T) {
+	for _, badProject := range []string{"bad@name", "bad/name", "invalid-var"} {
+		t.Run(badProject, func(t *testing.T) {
+			badVar := "CTX_STORE_TOKEN"
+			if badProject == "invalid-var" {
+				badVar = "X#Y"
+			}
+			s, cfg, _, _ := tokenFixture(t)
+			body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":"http://host","token_env":"CTX_STORE_TOKEN"}}},%q:{"environments":{"dev":{"url":"http://host","token_env":%q}}}}}`, badProject, badVar)
+			if err := os.WriteFile(cfg, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			calls := s.Calls()
+			code, out, err := runCLI("context", "list", "--config", cfg)
+			if code != 0 || err != "" || !strings.Contains(out, badProject) || !strings.Contains(out, "demo") || !strings.Contains(out, "unknown") || s.Calls() != calls+1 {
+				t.Fatalf("exit %d out %q err %q calls %d", code, out, err, s.Calls()-calls)
+			}
+			calls = s.Calls()
+			code, out, err = runCLI("context", "list", "--config", cfg, "--json")
+			var rows []struct {
+				Project string `json:"project"`
+				Stored  bool   `json:"token_stored"`
+			}
+			if code != 0 || err != "" || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 2 || s.Calls() != calls+1 {
+				t.Fatalf("exit %d out %q err %q calls %d", code, out, err, s.Calls()-calls)
+			}
+			for _, r := range rows {
+				if r.Project == badProject && r.Stored {
+					t.Fatalf("unsafe entry marked stored: %q", out)
+				}
+			}
+		})
+	}
+}
+func TestContextRemoveRejectsInvalidScopeBeforeStore(t *testing.T) {
+	for _, project := range []string{"bad@name", "bad/name"} {
+		t.Run(project, func(t *testing.T) {
+			s, cfg, _, _ := tokenFixture(t)
+			body := fmt.Sprintf(`{"projects":{%q:{"environments":{"dev":{"url":"http://host","token_env":"CTX_STORE_TOKEN"}}}}}`, project)
+			if err := os.WriteFile(cfg, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			calls := s.Calls()
+			code, out, err := runCLI("context", "remove", "--project", project, "-e", "dev", "--delete-token", "--config", cfg)
+			after, _ := os.ReadFile(cfg)
+			if code != 1 || out != "" || err != "unknown environment or missing token_env\n" || s.Calls() != calls || string(after) != body {
+				t.Fatalf("exit %d out %q err %q calls %d", code, out, err, s.Calls()-calls)
+			}
+		})
+	}
 }
