@@ -35,6 +35,7 @@ func (m *Manifest) Check() Problems {
 		p.add("apps", "at least one app is required")
 	}
 	m.checkRegistries(&p)
+	m.checkSecrets(&p)
 	hostnames := map[string]bool{}
 	dependsOK := true
 	for _, name := range sortedKeys(m.Apps) {

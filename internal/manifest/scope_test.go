@@ -146,6 +146,31 @@ func TestSettingsChangesNamesEachDifference(t *testing.T) {
 	}
 }
 
+func TestSettingsChangesNamesDeclaredSecrets(t *testing.T) {
+	prev := decodeScoped(t, scopedManifest)
+	next := decodeScoped(t, scopedManifest)
+	n := 32
+	next.Secrets = map[string]DeclaredSecret{
+		"GEN": {Generate: &GenerateRule{Format: "hex", Bytes: &n}},
+	}
+	got := SettingsChanges(prev, next, "test")
+	if !slices.Contains(got, "secrets: + GEN") {
+		t.Fatalf("added secret not named: %v", got)
+	}
+	back := SettingsChanges(next, prev, "test")
+	if !slices.Contains(back, "secrets: - GEN") {
+		t.Fatalf("removed secret not named: %v", back)
+	}
+	changed := decodeScoped(t, scopedManifest)
+	changed.Secrets = map[string]DeclaredSecret{
+		"GEN": {Generate: &GenerateRule{Format: "base64", Bytes: &n}},
+	}
+	mid := SettingsChanges(next, changed, "test")
+	if !slices.Contains(mid, "secrets: ~ GEN") {
+		t.Fatalf("changed secret not named: %v", mid)
+	}
+}
+
 func TestSettingsChangesNeverShowsSecretValues(t *testing.T) {
 	prev := decodeScoped(t, scopedManifest)
 	next := decodeScoped(t, scopedManifest)

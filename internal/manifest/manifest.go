@@ -42,21 +42,22 @@ const ConnectorMetricsPort = 20241
 
 // Manifest is the complete desired configuration sent to an agent.
 type Manifest struct {
-	Project      string                 `json:"project" yaml:"project"`
-	Network      string                 `json:"network" yaml:"network"`
-	Protected    bool                   `json:"protected" yaml:"protected"`
-	Registries   map[string]Registry    `json:"registries,omitempty" yaml:"registries,omitempty"`
-	Apps         map[string]App         `json:"apps" yaml:"apps"`
-	Jobs         map[string]Job         `json:"jobs,omitempty" yaml:"jobs,omitempty"`
-	Backups      map[string]Backup      `json:"backups,omitempty" yaml:"backups,omitempty"`
-	Destinations map[string]Destination `json:"destinations,omitempty" yaml:"destinations,omitempty"`
-	StateBackup  *StateBackup           `json:"state_backup,omitempty" yaml:"state_backup,omitempty"`
-	Telemetry    *Telemetry             `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
-	Probes       map[string]Probe       `json:"probes,omitempty" yaml:"probes,omitempty"`
-	Peers        map[string]string      `json:"peers,omitempty" yaml:"peers,omitempty"`
-	Alerts       *Alerts                `json:"alerts,omitempty" yaml:"alerts,omitempty"`
-	Ingress      *Ingress               `json:"ingress,omitempty" yaml:"ingress,omitempty"`
-	Aliases      map[string]string      `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	Project      string                    `json:"project" yaml:"project"`
+	Network      string                    `json:"network" yaml:"network"`
+	Protected    bool                      `json:"protected" yaml:"protected"`
+	Registries   map[string]Registry       `json:"registries,omitempty" yaml:"registries,omitempty"`
+	Secrets      map[string]DeclaredSecret `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	Apps         map[string]App            `json:"apps" yaml:"apps"`
+	Jobs         map[string]Job            `json:"jobs,omitempty" yaml:"jobs,omitempty"`
+	Backups      map[string]Backup         `json:"backups,omitempty" yaml:"backups,omitempty"`
+	Destinations map[string]Destination    `json:"destinations,omitempty" yaml:"destinations,omitempty"`
+	StateBackup  *StateBackup              `json:"state_backup,omitempty" yaml:"state_backup,omitempty"`
+	Telemetry    *Telemetry                `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Probes       map[string]Probe          `json:"probes,omitempty" yaml:"probes,omitempty"`
+	Peers        map[string]string         `json:"peers,omitempty" yaml:"peers,omitempty"`
+	Alerts       *Alerts                   `json:"alerts,omitempty" yaml:"alerts,omitempty"`
+	Ingress      *Ingress                  `json:"ingress,omitempty" yaml:"ingress,omitempty"`
+	Aliases      map[string]string         `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 
 	// MinVersion is the oldest Berthy release this manifest works with, such as "0.9.0". The CLI and the agent refuse a manifest
 	// that needs a newer release before they send or change anything.

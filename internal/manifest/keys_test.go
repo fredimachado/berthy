@@ -216,6 +216,11 @@ apps:
     file: deploy/db.yml
     project_name: demo-db
     stateful: true
+secrets:
+  API_KEY:
+    generate:
+      format: hex
+      bytes: 32
 jobs:
   cleanup:
     app: web
@@ -434,6 +439,8 @@ var companions = map[string][]string{
 	"jobs":                          {"backups.<name>.before"},
 	"ingress":                       {"apps.<name>.roles.<role>.hostnames"},
 	"apps.<name>.roles.<role>.port": {"apps.<name>.roles.<role>.hostnames"},
+	"apps.<name>.env":               {"secrets"},
+	"apps.<name>.env.secret":        {"secrets"},
 }
 
 // TestRequiredKeysAgreeWithValidate removes each key from the full manifest. A manifest without a required key is refused,
@@ -483,6 +490,23 @@ apps:
 	},
 	"apps.<name>.deploy.order": func(v string) string {
 		return strings.Replace(bareManifest, "    hooks:\n", "    deploy:\n      order: "+v+"\n    hooks:\n", 1)
+	},
+	"secrets.<SECRET>.generate.format": func(v string) string {
+		return fmt.Sprintf(`project: demo
+network: demo
+apps:
+  app:
+    kind: image
+    image: alpine
+    roles:
+      main: {}
+    env:
+      secret: [GEN]
+secrets:
+  GEN:
+    generate:
+      format: %s
+`, v)
 	},
 }
 

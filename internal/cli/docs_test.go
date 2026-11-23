@@ -46,6 +46,21 @@ func TestDocsPrintsOneSection(t *testing.T) {
 	}
 }
 
+func TestDocsPrintsTheSecretsSection(t *testing.T) {
+	code, out, errs := runCLI("docs", "secrets")
+	if code != 0 || errs != "" {
+		t.Fatalf("exit %d, stderr %q", code, errs)
+	}
+	if !strings.Contains(out, "generate.format") || !strings.Contains(out, "generate.bytes") {
+		t.Errorf("berthy docs secrets lacks the generate keys:\n%s", out)
+	}
+	for _, other := range []string{"retention.keep", "deploy_timeout", "bot_token_secret"} {
+		if strings.Contains(out, other) {
+			t.Errorf("berthy docs secrets prints %s, a key of another section", other)
+		}
+	}
+}
+
 func TestDocsRefusesAnUnknownSectionAndListsTheSections(t *testing.T) {
 	code, out, errs := runCLI("docs", "nope")
 	if code != 2 || out != "" {

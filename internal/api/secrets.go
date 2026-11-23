@@ -47,18 +47,16 @@ type SecretImportResult struct {
 	Replaced []string `json:"replaced"`
 }
 
-// The length and the formats of a generated secret. Bytes is the number of random bytes for hex and base64, and the number of
-// characters for alnum.
+// The length and the formats of a generated secret live in manifest; the API keeps the names callers already use.
 const (
-	GenerateDefaultBytes  = 32
-	GenerateMinBytes      = 16
-	GenerateMaxBytes      = 256
-	GenerateDefaultFormat = "hex"
+	GenerateDefaultBytes  = manifest.GenerateDefaultBytes
+	GenerateMinBytes      = manifest.GenerateMinBytes
+	GenerateMaxBytes      = manifest.GenerateMaxBytes
+	GenerateDefaultFormat = manifest.GenerateDefaultFormat
 )
 
-// GenerateFormats are the formats a generated secret may take: hex and URL-safe base64 without padding, which are safe inside a
-// URL, and letters and digits.
-var GenerateFormats = []string{"hex", "base64", "alnum"}
+// GenerateFormats are the formats a generated secret may take.
+var GenerateFormats = manifest.GenerateFormats
 
 // SecretGenerate is the body of POST secrets/generate. Bytes and Format may be left out, and then take their defaults. The agent
 // makes the value and the request never carries one.

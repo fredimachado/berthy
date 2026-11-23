@@ -215,6 +215,33 @@ func TestOverlayListThatKeepsEveryBaseEntryDoesNotWarn(t *testing.T) {
 	}
 }
 
+func TestOverlayRemovesADeclaredSecretWithNull(t *testing.T) {
+	base := overlayBase + `secrets:
+  JWT_SIGNING_KEY:
+    generate:
+      format: hex
+      bytes: 32
+`
+	dir := writeFiles(t, map[string]string{
+		"berthy.yml":      base,
+		"berthy.prod.yml": "secrets:\n  JWT_SIGNING_KEY: null\n",
+	})
+	m, err := Load(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Secrets) != 0 {
+		t.Fatalf("secret not removed: %+v", m.Secrets)
+	}
+	dev, err := Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := dev.Secrets["JWT_SIGNING_KEY"]; !ok {
+		t.Fatal("dev lost a declared secret that only prod removes")
+	}
+}
+
 func TestNullInTheBaseStillRefusesTheWholeFile(t *testing.T) {
 	dir := writeFiles(t, map[string]string{"berthy.yml": overlayBase + "telemetry: null\n"})
 	_, err := Load(dir, "prod")
