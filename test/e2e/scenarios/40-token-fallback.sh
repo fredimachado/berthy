@@ -15,12 +15,13 @@ expect_code "invalid store setting" 2 "$code" "$out"
 expect_contains "invalid store setting is explained" "$out" 'BERTHY_TOKEN_STORE must be "none" or unset'
 
 # With BERTHY_TOKEN_STORE=none the harness has no store: --save-token keeps the entry and says so.
+# A dummy marker is enough: this branch never authenticates, and a failure must not reprint a live token.
+marker='save-token-dummy-marker-must-not-appear'
 save_cfg="$RUN/save-token.json"
-printf '%s\n' "$BERTHY_ADMIN_TOKEN" | "$BIN" context add --project "$PROJECT" -e "$ENVN" --url "http://$AGENT_LISTEN" --token-env BERTHY_SAVE_TOKEN --config "$save_cfg" --save-token >"$RUN/save-token.out" 2>"$RUN/save-token.err"
-code=$?
-out=$(cat "$RUN/save-token.out" "$RUN/save-token.err")
+out=$(printf '%s\n' "$marker" | "$BIN" context add --project "$PROJECT" -e "$ENVN" --url "http://$AGENT_LISTEN" --token-env BERTHY_SAVE_TOKEN --config "$save_cfg" --save-token 2>&1); code=$?
 expect_code "context add --save-token without a store" 1 "$code" "$out"
-expect_contains "save-token keeps the entry" "$out" "added $PROJECT/$ENVN"
 expect_contains "save-token says not saved" "$out" "not saved: no credential store on this machine; set \$BERTHY_SAVE_TOKEN instead"
-expect_not_contains "save-token never prints the token" "$out" "$BERTHY_ADMIN_TOKEN"
+expect_not_contains "save-token never prints the token" "$out" "$marker"
+got=$(jq -r --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e] | "\(.url)|\(.token_env)"' "$save_cfg")
+expect_eq "save-token keeps the entry" "http://$AGENT_LISTEN|BERTHY_SAVE_TOKEN" "$got"
 finish
