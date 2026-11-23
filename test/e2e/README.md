@@ -69,6 +69,7 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
 - `scenarios/`: one script per scenario. `00-smoke.sh` deploys v1, runs `exec`, lists the history, deploys v2 and rolls back.
   `38-two-agents.sh` starts a second agent and shows one project with an environment on each.
   `41-secret-generate-declared.sh` drives nameless `secret generate` for declared secrets, the deployed-reader and external-volume guards, and the named `--replace` escape hatch.
+  `42-secret-guide.sh` drives the terminal secret guide, registry association replacement, and deploy.
 
 ## Add a scenario
 
