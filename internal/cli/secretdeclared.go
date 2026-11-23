@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 
 	"berthy/internal/agentclient"
@@ -82,23 +83,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		fmt.Fprintln(errout, e)
 		return res, declaredFailed
 	}
-	files := map[string]string{}
-	for _, name := range sortedSecretNames(m) {
-		for _, app := range m.SecretReaders(name) {
-			a := m.Apps[app]
-			if a.Kind != "compose" {
-				continue
-			}
-			if _, ok := files[app]; ok {
-				continue
-			}
-			file, err := agentclient.ReadComposeFile(dir, a.File)
-			if err != nil {
-				continue
-			}
-			files[app] = file
-		}
-	}
+	files := declaredComposeFiles(m, dir)
 	body := api.SecretsGenerateDeclared{Manifest: *m, ComposeFiles: files, DryRun: dry}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -131,11 +116,61 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return res, declaredFailed
 	}
-	if json.Unmarshal(data, &res) != nil || res.Action != "secret generate declared" || res.Secrets == nil {
+	if json.Unmarshal(data, &res) != nil || !validDeclaredAnswer(res) {
 		fmt.Fprintln(errout, "invalid agent response")
 		return res, declaredFailed
 	}
 	return res, declaredAnswered
+}
+
+// declaredComposeFiles reads each Compose app's file once when that app reads any declared secret. A missing or unreadable
+// file is omitted, as the named form does, so the agent can still decide from its own state.
+func declaredComposeFiles(m *manifest.Manifest, dir string) map[string]string {
+	files := map[string]string{}
+	for _, app := range sortedAppNames(m) {
+		a := m.Apps[app]
+		if a.Kind != "compose" {
+			continue
+		}
+		reads := false
+		for _, name := range a.Env.SecretNames() {
+			if _, ok := m.Secrets[name]; ok {
+				reads = true
+				break
+			}
+		}
+		if !reads {
+			continue
+		}
+		file, err := agentclient.ReadComposeFile(dir, a.File)
+		if err != nil {
+			continue
+		}
+		files[app] = file
+	}
+	return files
+}
+
+// validDeclaredAnswer reports whether res is a usable secrets/generate-declared answer: known action, known outcomes, and
+// protocol formats and lengths. A bad row is refused before any of it is printed.
+func validDeclaredAnswer(res api.SecretsDeclared) bool {
+	if res.Action != "secret generate declared" || res.Secrets == nil {
+		return false
+	}
+	for _, s := range res.Secrets {
+		if s.Name == "" || s.Bytes < api.GenerateMinBytes || s.Bytes > api.GenerateMaxBytes {
+			return false
+		}
+		if !slices.Contains(api.GenerateFormats, s.Format) {
+			return false
+		}
+		switch s.Outcome {
+		case api.DeclaredGenerate, api.DeclaredKeep, api.DeclaredRefuse:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // printDeclared prints one line per declared secret.
@@ -170,10 +205,10 @@ func printDeclared(out io.Writer, res api.SecretsDeclared, dry bool) {
 	}
 }
 
-// sortedSecretNames returns the declared secret names of m in sorted order.
-func sortedSecretNames(m *manifest.Manifest) []string {
-	names := make([]string, 0, len(m.Secrets))
-	for name := range m.Secrets {
+// sortedAppNames returns the app names of m in sorted order.
+func sortedAppNames(m *manifest.Manifest) []string {
+	names := make([]string, 0, len(m.Apps))
+	for name := range m.Apps {
 		names = append(names, name)
 	}
 	sort.Strings(names)

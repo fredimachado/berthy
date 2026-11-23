@@ -6,9 +6,17 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-# Fixture-owned external volume name; removed at the end even when a step fails.
+# Fixture-owned external volume: refuse a pre-existing same name, label what this run creates, remove only that.
 EXT_VOL="${PROJECT}_${ENVN}_cache_ext"
-cleanup_ext() { d volume rm -f "$EXT_VOL" >/dev/null 2>&1 || true; }
+created_ext=
+cleanup_ext() {
+  if [ -n "$created_ext" ]; then
+    label=$(d volume inspect -f '{{index .Labels "berthy.e2e.fixture"}}' "$created_ext" 2>/dev/null) || label=
+    if [ "$label" = "$FIXTURE_ID" ]; then
+      d volume rm "$created_ext" >/dev/null 2>&1 || true
+    fi
+  fi
+}
 trap cleanup_ext EXIT
 
 # gen_value SPEC: the value of GEN_PASS in a Swarm service spec, or nothing when absent.
@@ -229,7 +237,13 @@ volumes:
     external: true
     name: $EXT_VOL
 YML
-d volume create "$EXT_VOL" >/dev/null
+if d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
+  fail "the fixture volume name is free before create" "$EXT_VOL exists"
+else
+  pass "the fixture volume name is free before create"
+fi
+d volume create --label "berthy.e2e.fixture=$FIXTURE_ID" "$EXT_VOL" >/dev/null
+created_ext=$EXT_VOL
 out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "nameless with existing external volume exits 1" 1 "$code" "$out"
 expect_contains "nameless names the external volume" "$out" "not generated CACHE_PASS: the volume $EXT_VOL of app cache exists"
@@ -251,7 +265,8 @@ YML
 out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "interpolated volume name exits 1" 1 "$code" "$out"
 expect_contains "interpolated name cannot be established" "$out" "the state of app cache cannot be established"
-cleanup_ext
+d volume rm "$EXT_VOL" >/dev/null
+created_ext=
 cat > "$MAN/cache.yml" <<YML
 services:
   cache:
@@ -345,17 +360,26 @@ out=$(adm secret generate DB_PASS --replace --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "named generate --replace exits 0" 0 "$code" "$out"
 expect_contains "replaced or generated DB_PASS" "$out" "DB_PASS"
 
-# 11. Audit has one secret_generate row per generated secret; no known value in agent logs.
+# 11. Audit has one succeeded secret_generate row per generated secret (DB_PASS twice with --replace); no known value in logs or audit.
 out=$(adm audit 2>&1); code=$?
 expect_code "audit answers" 0 "$code" "$out"
-expect_contains "audit has secret_generate for GEN_PASS" "$out" "secret_generate:GEN_PASS"
-expect_contains "audit has secret_generate for DB_PASS" "$out" "secret_generate:DB_PASS"
-expect_contains "audit has secret_generate for CACHE_PASS" "$out" "secret_generate:CACHE_PASS"
-expect_contains "audit has secret_generate for LATE_PASS" "$out" "secret_generate:LATE_PASS"
+expect_eq "audit has one succeeded secret_generate for GEN_PASS" "1" \
+  "$(printf '%s\n' "$out" | awk 'BEGIN { RS = "" } /action: secret_generate:GEN_PASS/ && /outcome: succeeded/ { n++ } END { print n + 0 }')"
+expect_eq "audit has two succeeded secret_generate rows for DB_PASS" "2" \
+  "$(printf '%s\n' "$out" | awk 'BEGIN { RS = "" } /action: secret_generate:DB_PASS/ && /outcome: succeeded/ { n++ } END { print n + 0 }')"
+expect_eq "audit has one succeeded secret_generate for CACHE_PASS" "1" \
+  "$(printf '%s\n' "$out" | awk 'BEGIN { RS = "" } /action: secret_generate:CACHE_PASS/ && /outcome: succeeded/ { n++ } END { print n + 0 }')"
+expect_eq "audit has one succeeded secret_generate for LATE_PASS" "1" \
+  "$(printf '%s\n' "$out" | awk 'BEGIN { RS = "" } /action: secret_generate:LATE_PASS/ && /outcome: succeeded/ { n++ } END { print n + 0 }')"
 found=0
-if [ -n "$gen" ] && grep -rqF -- "$gen" "$LOG"; then
-  found=1
+if [ -n "$gen" ]; then
+  if grep -rqF -- "$gen" "$LOG"; then
+    found=1
+  fi
+  if grep -qF -- "$gen" <<<"$out"; then
+    found=1
+  fi
 fi
-expect_eq "no GEN_PASS value is in the agent's logs" "0" "$found"
+expect_eq "no GEN_PASS value is in the agent's logs or audit" "0" "$found"
 
 finish

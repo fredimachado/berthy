@@ -928,7 +928,6 @@ The agent makes the value from a cryptographic random source and stores it. It i
 Declare secrets the manifest may generate under `secrets`, and set `min_version` to the release that ships that key so an older agent is refused before the request:
 
 ```yaml
-min_version: 0.9.0   # the release that first knows secrets.generate
 secrets:
   POSTGRES_PASSWORD:
     generate:

@@ -198,6 +198,24 @@ func TestSecretGenerateWithoutANameAndNothingDeclaredSendsNothing(t *testing.T) 
 	}
 }
 
+func TestSecretGenerateWithoutANameRejectsAnUnrecognizedFormat(t *testing.T) {
+	// A format outside GenerateFormats must not reach generatedSize: that would print the raw bytes, including a terminal escape.
+	reply := "{\"action\":\"secret generate declared\",\"secrets\":[{\"name\":\"GEN_PASS\",\"outcome\":\"generate\",\"bytes\":32,\"format\":\"bad\\u001b[0m\"}]}"
+	var bodies []string
+	server := answeringAgent(&bodies, `[]`, reply)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := declaredManifestDir(t)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 1 || out.Len() != 0 || strings.TrimSpace(errout.String()) != "invalid agent response" {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+	if bytes.Contains(out.Bytes(), []byte{0x1b}) || bytes.Contains(errout.Bytes(), []byte{0x1b}) {
+		t.Fatal("emitted a terminal control byte")
+	}
+}
+
 func TestSecretGenerateWithoutANameJSONExitsOneWhenOneIsRefused(t *testing.T) {
 	reply := `{"action":"secret generate declared","secrets":[{"name":"DB_PASS","outcome":"refuse","bytes":32,"format":"hex","app":"db"},{"name":"GEN_PASS","outcome":"generate","bytes":32,"format":"hex"}]}`
 	var bodies []string
