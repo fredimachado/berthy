@@ -87,6 +87,9 @@ type Target struct {
 // ConfigEnv is the environment variable that names the CLI configuration file when --config is not given.
 const ConfigEnv = "BERTHY_CONFIG"
 
+// EnvironmentEnv names the variable that gives -e its value when the flag is not given.
+const EnvironmentEnv = "BERTHY_ENV"
+
 // ConfigPath is the CLI configuration file to use: the flag when it is not empty, else $BERTHY_CONFIG, else berthy/config.json in
 // the user's configuration directory. It fails only when none of them can be found.
 func ConfigPath(flag string) (string, error) {
@@ -101,6 +104,19 @@ func ConfigPath(flag string) (string, error) {
 		return "", errors.New("no CLI configuration: give --config or set BERTHY_CONFIG")
 	}
 	return filepath.Join(dir, "berthy", "config.json"), nil
+}
+
+// EnvironmentName is the environment a command means. given says whether -e was on the command line: when it was, flag is
+// the answer, an empty one included, so -e "$EMPTY" never falls through to the variable. When it was not, the answer is
+// $BERTHY_ENV, and fromVariable reports that the variable gave it.
+func EnvironmentName(flag string, given bool) (name string, fromVariable bool) {
+	if given {
+		return flag, false
+	}
+	if v := os.Getenv(EnvironmentEnv); v != "" {
+		return v, true
+	}
+	return "", false
 }
 
 // Selector says which environment a command means.
