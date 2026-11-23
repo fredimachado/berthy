@@ -384,6 +384,10 @@ func printSecretGenerate(out, errout io.Writer, data []byte, dry, replace bool) 
 		}
 		name, size := terminalSafe(plan.Name), generatedSize(plan.Bytes, plan.Format)
 		switch {
+		case plan.App != "" && !replace && plan.Volume != "":
+			fmt.Fprintf(out, "%s is not stored, but the volume %s of app %s exists: a real run is refused unless --replace is given\n", name, terminalSafe(plan.Volume), terminalSafe(plan.App))
+		case plan.App != "" && !replace:
+			fmt.Fprintf(out, "%s is not stored, but app %s was deployed here: a real run is refused unless --replace is given\n", name, terminalSafe(plan.App))
 		case plan.Exists && !replace:
 			fmt.Fprintf(out, "%s exists: a real run is refused unless --replace is given\n", name)
 		case plan.Exists:

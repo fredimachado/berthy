@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,5 +138,50 @@ func TestSecretGenerateRefusedByTheAgentShowsItsMessage(t *testing.T) {
 	code := Run([]string{"secret", "generate", "GEN_PASS", "-e", "dev", "--config", cfg}, &out, &errout)
 	if code != 1 || !strings.Contains(errout.String(), "secret GEN_PASS exists; --replace replaces it") || out.Len() != 0 {
 		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestSecretGenerateByNameDryRunPrintsTheFinding(t *testing.T) {
+	var out, errout bytes.Buffer
+	data := []byte(`{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"hex","app":"db","volume":"shared"}`)
+	if code := printSecretGenerate(&out, &errout, data, true, false); code != 0 || out.String() != "GEN_PASS is not stored, but the volume shared of app db exists: a real run is refused unless --replace is given\n" {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestSecretGenerateByNameSendsTheManifestWhenItHasAReader(t *testing.T) {
+	var bodies []string
+	server := replyingAgent(&bodies, http.StatusOK, `{"name":"GEN_PASS","bytes":32,"format":"hex","replaced":false}`)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := t.TempDir()
+	content := "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: compose.yml\n    env:\n      secret: [GEN_PASS]\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "GEN_PASS", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 0 || len(bodies) != 1 || !strings.Contains(bodies[0], `"manifest":`) || !strings.Contains(bodies[0], `"compose_files":{"db":`) {
+		t.Fatalf("exit %d requests %v stderr %s", code, bodies, errout.String())
+	}
+}
+
+func TestSecretGenerateByNameRefusesAMissingComposeFile(t *testing.T) {
+	var calls atomic.Int32
+	server := countingAgent(&calls)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := t.TempDir()
+	content := "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: missing.yml\n    env:\n      secret: [GEN_PASS]\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "GEN_PASS", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 1 || calls.Load() != 0 {
+		t.Fatalf("exit %d calls %d stderr %q", code, calls.Load(), errout.String())
 	}
 }

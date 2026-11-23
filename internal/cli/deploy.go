@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,7 +125,7 @@ var changeFlags = map[string][]string{
 	"secret list":      withRemoteFlags("--manifest-dir"),
 	"secret import":    withRemoteFlags("--dry-run"),
 	"secret set":       withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
-	"secret generate":  withRemoteFlags("--dry-run", "--replace", "--bytes", "--format"),
+	"secret generate":  withRemoteFlags("--dry-run", "--replace", "--bytes", "--format", "--manifest-dir"),
 	"secret delete":    withRemoteFlags("--dry-run"),
 	"secret rm":        withRemoteFlags("--dry-run"),
 	"job run":          withRemoteFlags(),
@@ -863,6 +864,28 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			req, code := secretGenerateRequest(f, errout)
 			if code != 0 {
 				return code
+			}
+			m, loadErr := manifest.Load(projectDir, f.env)
+			if loadErr != nil {
+				if _, statErr := os.Stat(filepath.Join(projectDir, "berthy.yml")); statErr == nil {
+					fmt.Fprintf(errout, "manifest not loaded: %v\n", loadErr)
+				}
+			} else if m.Project == target.Project && len(m.SecretReaders(req.Name)) > 0 {
+				req.Manifest = m
+				for _, app := range m.SecretReaders(req.Name) {
+					if m.Apps[app].Kind != "compose" {
+						continue
+					}
+					file, err := agentclient.ReadComposeFile(projectDir, m.Apps[app].File)
+					if err != nil {
+						fmt.Fprintln(errout, err)
+						return 1
+					}
+					if req.ComposeFiles == nil {
+						req.ComposeFiles = map[string]string{}
+					}
+					req.ComposeFiles[app] = file
+				}
 			}
 			endpoint = "secrets/generate"
 			method = "POST"
