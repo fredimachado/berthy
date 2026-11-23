@@ -928,6 +928,7 @@ The agent makes the value from a cryptographic random source and stores it. It i
 - `--bytes N` sets the length, from 16 to 256. The default is 32.
 - `--format` sets the characters. `hex` is the default and is safe inside a URL. `base64` is URL-safe, without padding. `alnum` is letters and digits, and for `alnum` `--bytes` counts characters.
 - A secret that is already stored is **refused**, because replacing a password that is in use breaks the app. Pass `--replace` to replace it on purpose. Then read [rotating a secret](#rotating-a-secret) first: a database keeps its old password until you change it there too.
+- An unstored secret is also refused if an app that reads it was deployed here, or if a volume it may use already exists. Set the original value with `secret set`, or use `--replace` to generate a new one deliberately. From the manifest directory, the command checks its readers and Compose files as well as recorded releases; use `--manifest-dir` to choose that directory.
 - A registry password cannot be generated. Set it with `secret set --registry`.
 - `--dry-run` shows what would happen, and says when a real run would be refused without `--replace`.
 
@@ -2857,7 +2858,7 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
 | `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. Setting a registry password again keeps its registry and updates the running services. |
-| `secret generate <NAME>` | admin | `--dry-run`, `--replace`, `--bytes` (16 to 256, default 32), `--format` (`hex`, `base64` or `alnum`) | Make a random secret on the server and store it. The value is never shown. A stored name is refused unless `--replace`. A registry password is refused. |
+| `secret generate <NAME>` | admin | `--dry-run`, `--replace`, `--bytes` (16 to 256, default 32), `--format` (`hex`, `base64` or `alnum`), `--manifest-dir` | Make a random secret on the server and store it. The value is never shown. A stored name is refused unless `--replace`. A registry password is refused. |
 | `secret import` | admin | `--dry-run`; standard input is `NAME=value` lines | Store every line of standard input as a secret, all or nothing. A registry password name is refused. |
 | `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that have no value. |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
