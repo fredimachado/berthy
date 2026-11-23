@@ -28,8 +28,12 @@
 
 ## Tests
 
-- A test never touches the user's real Berthy config. Pass `--config` or set
-  `BERTHY_CONFIG` to a temp file.
+- A test never touches the user's real Berthy config or the real OS credential
+  store. Pass `--config` or set `BERTHY_CONFIG` to a temp file.
+  `agentclient.TokenStore` defaults to `credstore.None()`, the e2e harness
+  exports `BERTHY_TOKEN_STORE=none`, and the one test that uses the real store
+  runs only with `BERTHY_TEST_OS_STORE=1`, under a random service name it
+  deletes.
 - A test that starts an operation waits for it before closing the store. A
   goroutine that outlives a request belongs to the controller, which drains it
   on shutdown.
@@ -37,6 +41,13 @@
 - A test never races the real clock or a tight deadline: no schedule that
   fires every minute, no deadline of a few seconds for work a loaded CI runner
   does, no sleep. Wait for the event itself.
+- Code that gives up after a timeout is tested inside `testing/synctest`: the
+  timer is fake, and `synctest.Wait()` replaces waiting long enough. A 1 ms
+  timer is still the real clock.
+- A fixture's cleanup never waits for an event the code under test might skip.
+  Release it unconditionally and assert the event in the test body; otherwise
+  a regression hangs the package until the 10-minute `go test` timeout instead
+  of failing.
 - A flaky test is a bug until shown otherwise. Find the cause instead of
   rerunning it or adding a sleep; several flakes here were real bugs. Run the
   tests with `-race` in WSL, because some races only show there.
@@ -58,6 +69,9 @@
 - The CLI runs on Windows, macOS and Linux, and the agent runs on Linux.
   Anything passed between them, such as a manifest path, must mean the same on
   every OS: relative, forward slashes, no drive letter, no `..`.
+- PowerShell ends a string it pipes to a native program with CRLF. Input read
+  from standard input, such as a token or a secret, accepts one trailing LF or
+  CRLF and refuses any other line break.
 - A plan must come out byte-identical when it is re-planned at approval time.
   Name services and image digests, never container ids.
 - Each manifest key is defined once, in `internal/manifest/keys.go`. The guide
@@ -90,6 +104,11 @@
 - Released CLIs and agents refuse unknown manifest keys. A new key can't
   appear in berthy-examples or in instructions for released versions until a
   release ships it.
+- A token the CLI finds in the OS credential store is the person's admin
+  token. It is filed under the configuration entry's own `token_env`, and
+  `berthy mcp` never reads it: the agent's approval gate holds only tokens
+  marked `agent`, so an MCP server or a script's entry that fell back to it
+  would bypass approvals.
 
 ## Docs
 
