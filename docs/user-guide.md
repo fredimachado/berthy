@@ -44,7 +44,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 - `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
-- On a terminal, a command that changes something prints one line to stderr before it does anything: `berthy: todo/prod at http://10.0.0.5:7710` for a remote command, or `berthy: todo/prod on ops@10.0.0.5` (or `on this server` with `--local`) for `setup`. When `BERTHY_ENV` chose the environment, the line ends with ` (environment from BERTHY_ENV)`. With stderr redirected, or under `--json` on stdout, nothing is added.
+- On a terminal, a changing remote command or `setup` prints one line to stderr before it does anything, dry runs included: `berthy: todo/prod at http://10.0.0.5:7710` for a remote command, or `berthy: todo/prod on ops@10.0.0.5` (or `on this server` with `--local`) for `setup`. When `BERTHY_ENV` chose the environment, the line ends with ` (environment from BERTHY_ENV)`. With stderr redirected, or under `--json` on stdout, nothing is added.
 
 ---
 

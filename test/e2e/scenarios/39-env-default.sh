@@ -39,7 +39,7 @@ expect_code "lock acquire banner on a terminal" 0 "$code" "$out"
 # Outside a terminal, --json keeps stdout as one object and stderr has no banner.
 out=$("$BIN" lock release -e "$ENVN" --config "$RUN/admin.json" --json 2>"$RUN/banner.err"); code=$?
 expect_code "lock release --json outside a terminal" 0 "$code" "$out"
-expect_eq "redirected stderr has no banner" "" "$(cat "$RUN/banner.err")"
-if jq -e 'type == "object"' <<<"$out" >/dev/null; then pass "lock release --json is one object"; else fail "lock release --json is one object" "$out"; fi
+expect_eq "redirected stderr has no banner" "0" "$(wc -c <"$RUN/banner.err" | tr -d ' ')"
+if jq --slurp -e 'length == 1 and (.[0] | type == "object")' <<<"$out" >/dev/null; then pass "lock release --json is one object"; else fail "lock release --json is one object" "$out"; fi
 
 finish

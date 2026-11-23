@@ -16,6 +16,26 @@ import (
 	"berthy/internal/agentclient"
 )
 
+// expectedReadOnlyCommands is the approved set that must print no banner. It is independent of production's
+// readOnlyCommands so a mistaken edit there cannot hide a gap.
+var expectedReadOnlyCommands = []string{
+	"wait", "history", "diagnostics", "audit", "lock status", "ingress status", "secret list",
+	"job logs", "backup list", "approvals", "token list", "config show", "config validate",
+}
+
+// bannerTokenCommands are the token subcommands, which changeCommands does not list. token list is read-only; create and
+// revoke change things.
+var bannerTokenCommands = []changeCommand{
+	{name: "token list", pos: []string{"token", "list"}},
+	{name: "token create", pos: []string{"token", "create", "ci"}, fixed: []string{"--scope", "deploy"}},
+	{name: "token revoke", pos: []string{"token", "revoke", "ci"}},
+}
+
+// bannerCoverageCommands is every change command the banner tests exercise, including the token ones.
+func bannerCoverageCommands() []changeCommand {
+	return append(slices.Clone(changeCommands), bannerTokenCommands...)
+}
+
 // forceStderrTerminal makes stderrTerminal report yes or no for the rest of the test.
 func forceStderrTerminal(t *testing.T, yes bool) {
 	t.Helper()
@@ -24,12 +44,17 @@ func forceStderrTerminal(t *testing.T, yes bool) {
 	stderrTerminal = func(io.Writer) bool { return yes }
 }
 
-// TestBannerNamesProjectEnvironmentAndAgentBeforeAChange: a mutating command prints the banner naming the resolved
-// project, environment and agent URL before any request reaches the agent.
+// TestBannerNamesProjectEnvironmentAndAgentBeforeAChange: a mutating dry-run prints the banner before any request, then
+// exits 0 with exactly one lock/acquire call.
 func TestBannerNamesProjectEnvironmentAndAgentBeforeAChange(t *testing.T) {
 	var calls atomic.Int32
 	var askedAtBanner int32 = -1
-	server := countingAgent(&calls)
+	var route string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		route = r.Method + " " + r.URL.Path
+		fmt.Fprint(w, `{"action":"lock acquire","message":"banner","currently_locked":false}`)
+	}))
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
 	forceStderrTerminal(t, true)
@@ -39,8 +64,9 @@ func TestBannerNamesProjectEnvironmentAndAgentBeforeAChange(t *testing.T) {
 			askedAtBanner = calls.Load()
 		}
 	}}
-	if code := Run([]string{"lock", "acquire", "-m", "banner", "-e", "dev", "--config", cfg}, &out, w); code != 0 && calls.Load() == 0 {
-		t.Fatalf("exit %d with no agent call: %s", code, errout.String())
+	code := Run([]string{"lock", "acquire", "-m", "banner", "--dry-run", "-e", "dev", "--config", cfg}, &out, w)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 	want := "berthy: demo/dev at " + server.URL
 	if !strings.HasPrefix(errout.String(), want+"\n") {
@@ -48,6 +74,9 @@ func TestBannerNamesProjectEnvironmentAndAgentBeforeAChange(t *testing.T) {
 	}
 	if askedAtBanner != 0 {
 		t.Fatalf("agent was already called %d times when the banner printed", askedAtBanner)
+	}
+	if n := calls.Load(); n != 1 || route != "POST /v1/projects/demo/environments/dev/lock/acquire" {
+		t.Fatalf("after the run: %d calls, route %q", n, route)
 	}
 }
 
@@ -105,7 +134,7 @@ func TestNoBannerWhenStderrIsNotATerminal(t *testing.T) {
 	}
 }
 
-// TestReadOnlyCommandsPrintNoBanner: every command in readOnlyCommands that changeCommands covers prints no banner.
+// TestReadOnlyCommandsPrintNoBanner: every approved read-only command prints no banner.
 func TestReadOnlyCommandsPrintNoBanner(t *testing.T) {
 	var calls atomic.Int32
 	server := countingAgent(&calls)
@@ -114,9 +143,14 @@ func TestReadOnlyCommandsPrintNoBanner(t *testing.T) {
 	dir := projectDirOf(t, "demo")
 	forceStderrTerminal(t, true)
 	withStdin(t, "postgres://db\n")
-	for _, cc := range changeCommands {
-		if !slices.Contains(readOnlyCommands, cc.name) {
-			continue
+	byName := map[string]changeCommand{}
+	for _, cc := range bannerCoverageCommands() {
+		byName[cc.name] = cc
+	}
+	for _, name := range expectedReadOnlyCommands {
+		cc, ok := byName[name]
+		if !ok {
+			t.Fatalf("%s is expected read-only but has no banner coverage command", name)
 		}
 		var out, errout bytes.Buffer
 		args := cc.argv(cfg)
@@ -125,12 +159,12 @@ func TestReadOnlyCommandsPrintNoBanner(t *testing.T) {
 		}
 		Run(args, &out, &errout)
 		if strings.Contains(errout.String(), "berthy:") {
-			t.Errorf("%s printed a banner: %q", cc.name, errout.String())
+			t.Errorf("%s printed a banner: %q", name, errout.String())
 		}
 	}
 }
 
-// TestEveryOtherChangeCommandPrintsOne: every changeCommands entry outside readOnlyCommands prints exactly one banner line.
+// TestEveryOtherChangeCommandPrintsOne: every covered change command outside the approved read-only set prints one banner.
 func TestEveryOtherChangeCommandPrintsOne(t *testing.T) {
 	var calls atomic.Int32
 	server := countingAgent(&calls)
@@ -139,8 +173,8 @@ func TestEveryOtherChangeCommandPrintsOne(t *testing.T) {
 	forceStderrTerminal(t, true)
 	withStdin(t, "postgres://db\n")
 	wantPrefix := "berthy: demo/dev at " + server.URL
-	for _, cc := range changeCommands {
-		if slices.Contains(readOnlyCommands, cc.name) {
+	for _, cc := range bannerCoverageCommands() {
+		if slices.Contains(expectedReadOnlyCommands, cc.name) {
 			continue
 		}
 		var out, errout bytes.Buffer
@@ -161,12 +195,16 @@ func TestEveryOtherChangeCommandPrintsOne(t *testing.T) {
 	}
 }
 
-// TestEveryReadOnlyCommandIsAKeyOfChangeFlags keeps readOnlyCommands in step with changeFlags.
+// TestEveryReadOnlyCommandIsAKeyOfChangeFlags keeps the approved read-only set in step with changeFlags, and pins
+// production's list to the same expectation.
 func TestEveryReadOnlyCommandIsAKeyOfChangeFlags(t *testing.T) {
-	for _, name := range readOnlyCommands {
+	for _, name := range expectedReadOnlyCommands {
 		if _, ok := changeFlags[name]; !ok {
-			t.Errorf("%q is in readOnlyCommands but not a key of changeFlags", name)
+			t.Errorf("%q is expected read-only but not a key of changeFlags", name)
 		}
+	}
+	if !slices.Equal(readOnlyCommands, expectedReadOnlyCommands) {
+		t.Errorf("production readOnlyCommands %v, want %v", readOnlyCommands, expectedReadOnlyCommands)
 	}
 }
 

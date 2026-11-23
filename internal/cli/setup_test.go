@@ -575,32 +575,68 @@ func TestSetupPassesItsFlagsToTheSteps(t *testing.T) {
 	}
 }
 
-// TestSetupPrintsTheBannerBeforeTheFirstStep: on a terminal, setup prints the banner before connect, and the runner has
-// run no script yet when that line appears.
+// TestSetupPrintsTheBannerBeforeTheFirstStep: on a terminal, setup prints the banner on stderr before connect on stdout,
+// and the runner has run no script yet when that line appears. Under --json the banner is alone on stderr and stdout is
+// one report with no extra bytes.
 func TestSetupPrintsTheBannerBeforeTheFirstStep(t *testing.T) {
 	server := installedServer(t, "ops@s1")
 	withSetupRunner(t, server)
 	forceStderrTerminal(t, true)
-	var combined bytes.Buffer
+	var out, errout bytes.Buffer
+	var order []string
 	scriptsAtBanner := -1
-	w := writeCatch{Writer: &combined, onWrite: func(p []byte) {
+	outW := writeCatch{Writer: &out, onWrite: func(p []byte) {
+		if strings.Contains(string(p), "connect") {
+			order = append(order, "connect")
+		}
+	}}
+	errW := writeCatch{Writer: &errout, onWrite: func(p []byte) {
 		if strings.Contains(string(p), "berthy: shop/p5 on ops@s1") {
+			order = append(order, "banner")
 			scriptsAtBanner = len(server.scripts)
 		}
 	}}
 	code := Run([]string{"setup", "-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net",
-		"--manifest-dir", projectDir(t), "--dry-run"}, w, w)
+		"--manifest-dir", projectDir(t), "--dry-run"}, outW, errW)
 	if code != 0 {
-		t.Fatalf("exit %d: %s", code, combined.String())
+		t.Fatalf("exit %d: out=%q err=%q", code, out.String(), errout.String())
 	}
-	text := combined.String()
-	banner := strings.Index(text, "berthy: shop/p5 on ops@s1\n")
-	connect := strings.Index(text, "connect")
-	if banner < 0 || connect < 0 || banner >= connect {
-		t.Fatalf("banner must come before connect:\n%s", text)
+	if errout.String() != "berthy: shop/p5 on ops@s1\n" {
+		t.Fatalf("stderr %q", errout.String())
+	}
+	if !strings.Contains(out.String(), "connect") {
+		t.Fatalf("stdout lacks connect:\n%s", out.String())
+	}
+	if len(order) < 2 || order[0] != "banner" || order[1] != "connect" {
+		t.Fatalf("write order %v, want banner then connect", order)
 	}
 	if scriptsAtBanner != 0 {
 		t.Fatalf("runner had run %d scripts when the banner printed", scriptsAtBanner)
+	}
+
+	server = installedServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	forceStderrTerminal(t, true)
+	out.Reset()
+	errout.Reset()
+	code = Run([]string{"setup", "-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net",
+		"--manifest-dir", projectDir(t), "--dry-run", "--json"}, &out, &errout)
+	if code != 0 {
+		t.Fatalf("json exit %d: %s", code, errout.String())
+	}
+	if errout.String() != "berthy: shop/p5 on ops@s1\n" {
+		t.Fatalf("json stderr %q", errout.String())
+	}
+	dec := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	var got setupReport
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("stdout JSON: %v (%q)", err, out.String())
+	}
+	if trailing := bytes.TrimSpace(out.Bytes()[dec.InputOffset():]); len(trailing) != 0 {
+		t.Fatalf("extra bytes after JSON report: %q", trailing)
+	}
+	if !got.OK || !got.DryRun || got.Project != "shop" || got.Environment != "p5" || got.Target != "ops@s1" {
+		t.Fatalf("report = %+v", got)
 	}
 }
 
