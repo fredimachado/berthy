@@ -58,8 +58,8 @@ func TestResolveUsesTheStoredToken(t *testing.T) {
 	}
 }
 func TestTheDefaultTokenStoreIsNone(t *testing.T) {
-	if _, err := TokenStore.Get(credstore.Key{}); err != credstore.ErrUnavailable {
-		t.Fatalf("%v", err)
+	if TokenStore != credstore.None() {
+		t.Fatalf("default token store is %T, want the disabled store", TokenStore)
 	}
 }
 

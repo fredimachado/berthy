@@ -317,29 +317,27 @@ func TestContextListSaysWhetherATokenIsStored(t *testing.T) {
 		t.Fatalf("%d %q %q", code, out, err)
 	}
 }
-func blockedTokenFixture(t *testing.T) string {
+func blockedTokenFixture(t *testing.T) (*credtest.Memory, string) {
 	t.Helper()
 	s, cfg, _, _ := tokenFixture(t)
 	ch := make(chan struct{})
-	started := make(chan struct{})
-	s.OnCall = func() { close(started) }
 	s.Block = ch
 	old := agentclient.StoreWait
 	agentclient.StoreWait = time.Millisecond
-	t.Cleanup(func() { <-started; close(ch); s.Wait(); agentclient.StoreWait = old })
-	return cfg
+	t.Cleanup(func() { close(ch); s.Wait(); agentclient.StoreWait = old })
+	return s, cfg
 }
 func TestContextListDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
-	cfg := blockedTokenFixture(t)
+	s, cfg := blockedTokenFixture(t)
 	code, out, err := runCLI("context", "list", "--config", cfg)
-	if code != 0 || !strings.Contains(out, "unknown") {
+	if code != 0 || !strings.Contains(out, "unknown") || s.Calls() <= 1 {
 		t.Fatalf("%d %q %q", code, out, err)
 	}
 }
 func TestARemoteCommandDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
-	cfg := blockedTokenFixture(t)
+	s, cfg := blockedTokenFixture(t)
 	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
-	if code != 1 || !strings.Contains(err, "this machine has no credential store") {
+	if code != 1 || !strings.Contains(err, "this machine has no credential store") || s.Calls() <= 1 {
 		t.Fatalf("%d %q", code, err)
 	}
 }
@@ -409,7 +407,7 @@ func TestContextCommandsRefuseAmbiguousTokenVariableBeforeStore(t *testing.T) {
 }
 
 func TestContextRemoveDeleteTokenGivenUpKeepsTheEntry(t *testing.T) {
-	cfg := blockedTokenFixture(t)
+	s, cfg := blockedTokenFixture(t)
 	before, readErr := os.ReadFile(cfg)
 	if readErr != nil {
 		t.Fatal(readErr)
@@ -417,7 +415,11 @@ func TestContextRemoveDeleteTokenGivenUpKeepsTheEntry(t *testing.T) {
 	code, out, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
 	after, readErr := os.ReadFile(cfg)
 	want := "the stored token could not be confirmed deleted (no credential store on this machine: the store did not answer): the entry is kept, so the command can be run again\n"
-	if code != 1 || out != "" || err != want || readErr != nil || string(before) != string(after) {
+	if code != 1 || out != "" || err != want || readErr != nil || string(before) != string(after) || s.Calls() <= 1 {
 		t.Fatalf("exit %d stdout %q stderr %q file error %v", code, out, err, readErr)
 	}
+}
+
+func TestBlockedTokenFixtureCanCleanUpWithoutAStoreCall(t *testing.T) {
+	t.Run("no lookup", func(t *testing.T) { _, _ = blockedTokenFixture(t) })
 }
