@@ -429,6 +429,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		fmt.Fprintf(errout, "%s is not a flag of %s\n", flag, key)
 		return 2
 	}
+	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" && len(f.command) > 0 {
+		fmt.Fprintln(errout, "this command accepts no arguments after --")
+		return 2
+	}
 	configGiven := slices.Contains(f.given, "--config")
 	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, f.dirSet); code != 0 {
 		return code

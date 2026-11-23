@@ -953,7 +953,7 @@ A second run keeps what is already stored (`kept NAME: it is already stored`). G
 - A secret that is already stored is **refused** by the named form, because replacing a password that is in use breaks the app. Pass `--replace` to replace it on purpose. Then read [rotating a secret](#rotating-a-secret) first: a database keeps its old password until you change it there too.
 - An unstored secret is also refused if an app that reads it was deployed here, or if a volume it may use already exists. Set the original value with `secret set`, or use `--replace` on the named form to generate a new one deliberately. From the manifest directory, the command checks its readers and Compose files as well as recorded releases; use `--manifest-dir` to choose that directory.
 - A registry password cannot be generated. Set it with `secret set --registry`.
-- `--dry-run` shows what would happen, and says when a real run would be refused without `--replace`.
+- `--dry-run` shows what would happen. For a named generate, it also says when a real run would be refused without `--replace`.
 
 On a protected environment an AI agent's generate is held for approval, as a `secret set` is. Its plan names the secret and no value.
 
@@ -2900,9 +2900,9 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate <NAME>`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
-`--dry-run` prints the plan and changes nothing. It is available only where the table lists it. `backup run`, `job run`, `job cancel`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
+`--dry-run` prints the plan and changes nothing. It is available only where the table lists it. For `secret generate <NAME>`, a dry run also says when a real run would be refused without `--replace`. `backup run`, `job run`, `job cancel`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
 #### Local (no agent)
 

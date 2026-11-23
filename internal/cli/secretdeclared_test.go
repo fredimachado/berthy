@@ -57,6 +57,19 @@ func declaredManifestDir(t *testing.T) string {
 	return dir
 }
 
+func TestSecretGenerateWithoutANameRefusesANonemptyTail(t *testing.T) {
+	var calls atomic.Int32
+	server := countingAgent(&calls)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := declaredManifestDir(t)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--", "DB_PASS"}, &out, &errout)
+	if code != 2 || out.Len() != 0 || strings.TrimSpace(errout.String()) != "this command accepts no arguments after --" || calls.Load() != 0 {
+		t.Fatalf("exit %d stdout %q stderr %q calls %d", code, out.String(), errout.String(), calls.Load())
+	}
+}
+
 func TestSecretGenerateWithoutANameSendsTheManifestAndTheComposeFiles(t *testing.T) {
 	var bodies []string
 	server := answeringAgent(&bodies, `[]`, declaredReply)
@@ -77,6 +90,42 @@ func TestSecretGenerateWithoutANameSendsTheManifestAndTheComposeFiles(t *testing
 	}
 	if !strings.Contains(changes[0], `"manifest":`) || !strings.Contains(changes[0], `"GEN_PASS"`) {
 		t.Fatalf("body missing manifest: %s", changes[0])
+	}
+}
+
+func TestSecretGenerateWithoutANameRefusesAProjectMismatch(t *testing.T) {
+	var calls atomic.Int32
+	server := countingAgent(&calls)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := secretManifestDir(t, "project: other\nnetwork: overlay\napps:\n  web:\n    kind: image\n    image: example.com/web\n    roles:\n      main:\n        health:\n          test: [\"CMD\", \"true\"]\n    env:\n      secret: [GEN_PASS]\nsecrets:\n  GEN_PASS:\n    generate:\n      format: hex\n")
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "-e", "dev", "--project", "demo", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 2 || calls.Load() != 0 || !strings.Contains(errout.String(), "is for project other, not demo") {
+		t.Fatalf("exit %d stderr %q calls %d", code, errout.String(), calls.Load())
+	}
+}
+
+func TestSecretGenerateWithoutANameOmitsAMissingComposeFile(t *testing.T) {
+	var bodies []string
+	server := answeringAgent(&bodies, `[]`, declaredReply)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: missing.yml\n    env:\n      secret: [DB_PASS]\n  cache:\n    kind: compose\n    file: compose.yml\n    env:\n      secret: [GEN_PASS]\nsecrets:\n  DB_PASS:\n    generate:\n      format: hex\n  GEN_PASS:\n    generate:\n      format: hex\n")
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {c: {image: x}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	changes := secretChanges(bodies)
+	if len(changes) != 1 || !strings.Contains(changes[0], "/secrets/generate-declared ") {
+		t.Fatalf("requests %q", bodies)
+	}
+	if !strings.Contains(changes[0], `"compose_files":{"cache":"services: {c: {image: x}}\n"}`) || !strings.Contains(changes[0], `"manifest":`) {
+		t.Fatalf("body must send the manifest and only the readable Compose reader: %s", changes[0])
 	}
 }
 
