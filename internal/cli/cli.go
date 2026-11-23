@@ -110,7 +110,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		return runAgentToken(args[1:], out, errout)
 	}
 	var config, env, project string
-	var jsonOutput, watch, projectGiven bool
+	var jsonOutput, watch, projectGiven, envGiven bool
 	var since, tail, grep, role, replica string
 	var follow bool
 	var positional []string
@@ -129,6 +129,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 				projectGiven = true
 			} else {
 				env = args[i]
+				envGiven = true
 			}
 		case "--follow", "-f":
 			follow = true
@@ -226,11 +227,16 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		<-shutdown
 		return 0
 	}
+	env, envFromVariable := agentclient.EnvironmentName(env, envGiven)
 	if env == "" {
 		fmt.Fprintln(errout, "remote commands require -e")
 		return 2
 	}
 	if !scope.ValidEnvironment(env) {
+		if envFromVariable {
+			fmt.Fprintln(errout, "BERTHY_ENV is not a valid environment")
+			return 2
+		}
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}

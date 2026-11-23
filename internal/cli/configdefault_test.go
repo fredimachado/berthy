@@ -116,6 +116,7 @@ func TestRemoteCommandNamesTheDefaultFileWhenItIsMissing(t *testing.T) {
 
 func TestRemoteCommandsStillRequireAnEnvironment(t *testing.T) {
 	isolatedUserConfig(t)
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Setenv(agentclient.ConfigEnv, ingressCLIConfig(t, "http://127.0.0.1:1"))
 	var out, errs bytes.Buffer
 	if code := Run([]string{"ps"}, &out, &errs); code != 2 || !strings.Contains(errs.String(), "remote commands require -e") {

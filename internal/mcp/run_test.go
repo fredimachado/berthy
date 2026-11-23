@@ -47,6 +47,7 @@ func writeConfig(t *testing.T, url string) string {
 }
 
 func TestRunRefusesBadArguments(t *testing.T) {
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
 	good := writeConfig(t, "http://127.0.0.1:1")
 	for _, tc := range []struct {
@@ -71,6 +72,16 @@ func TestRunRefusesBadArguments(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := Run([]string{"-e", "dev", "--config", good}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "no token for demo/dev: its token variable is empty") {
 		t.Errorf("empty token: exit %d %q", code, errs.String())
+	}
+}
+
+func TestRunIgnoresBerthyEnv(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", testToken)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	good := writeConfig(t, "http://127.0.0.1:1")
+	var out, errs bytes.Buffer
+	if code := Run([]string{"--config", good}, strings.NewReader(""), &out, &errs); code != 2 || !strings.Contains(errs.String(), "valid -e environment required") || out.Len() != 0 {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errs.String())
 	}
 }
 

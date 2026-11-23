@@ -149,6 +149,7 @@ type commandFlags struct {
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                                      bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated              bool
+	envFromVariable               bool
 	pos, command, given, versions []string
 }
 
@@ -376,7 +377,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, err)
 		return 2
 	}
+	f.env, f.envFromVariable = agentclient.EnvironmentName(f.env, slices.Contains(f.given, "-e"))
 	if !scope.ValidEnvironment(f.env) {
+		if f.envFromVariable {
+			fmt.Fprintln(errout, "BERTHY_ENV is not a valid environment")
+			return 2
+		}
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}

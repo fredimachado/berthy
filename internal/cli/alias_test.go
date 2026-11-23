@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"berthy/internal/agentclient"
 )
 
 // aliasManifest is a manifest of one image app with the three aliases the guide shows.
@@ -120,6 +122,7 @@ func TestExpandAliasPlacesTheEnvironmentAfterTheFirstWord(t *testing.T) {
 }
 
 func TestExpandAliasRefusesWhatItCannotExpand(t *testing.T) {
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	dir := writeAliasDir(t, aliasManifest)
 	empty := t.TempDir()
 	broken := writeAliasDir(t, "apps: [\n")

@@ -26,7 +26,7 @@ const usage = "usage: ui -e ENV [--project NAME] [--config CONFIG]"
 // a missing file is named even then. No line it prints holds the token.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var env, config, project string
-	var projectGiven bool
+	var projectGiven, envGiven bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-e", "--config", "--project":
@@ -38,6 +38,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			switch args[i-1] {
 			case "-e":
 				env = args[i]
+				envGiven = true
 			case "--project":
 				project = args[i]
 				projectGiven = true
@@ -49,7 +50,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	env, envFromVariable := agentclient.EnvironmentName(env, envGiven)
 	if !scope.ValidEnvironment(env) {
+		if envFromVariable {
+			fmt.Fprintln(stderr, "BERTHY_ENV is not a valid environment")
+			return 2
+		}
 		fmt.Fprintln(stderr, "valid -e environment required")
 		return 2
 	}

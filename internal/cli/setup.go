@@ -91,6 +91,14 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
+	envGiven := false
+	fset.Visit(func(f *flag.Flag) {
+		if f.Name == "e" {
+			envGiven = true
+		}
+	})
+	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
+	*env = resolvedEnv
 	usage := func(format string, a ...any) int {
 		fmt.Fprintf(errout, format+"\n", a...)
 		fmt.Fprintln(errout, setupUsage)
@@ -99,7 +107,12 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	switch {
 	case fset.NArg() != 0:
 		return usage("setup takes no arguments")
-	case *env == "" || !scope.ValidEnvironment(*env):
+	case *env == "":
+		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
+	case !scope.ValidEnvironment(*env):
+		if envFromVariable {
+			return usage("BERTHY_ENV is not a valid environment")
+		}
 		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
 	case *host != "" && *local, *host == "" && !*local:
 		return usage("use exactly one of --host and --local")

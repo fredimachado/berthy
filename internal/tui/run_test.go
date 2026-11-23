@@ -27,6 +27,7 @@ func isolatedUserConfig(t *testing.T) string {
 }
 
 func TestRunRefusesBadArguments(t *testing.T) {
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	for name, args := range map[string][]string{
 		"no env":        {"--config", "x"},
 		"unknown flag":  {"-e", "prod", "--config", "x", "--json"},
@@ -37,6 +38,20 @@ func TestRunRefusesBadArguments(t *testing.T) {
 		if code := Run(args, strings.NewReader(""), &out, &errs); code != 2 {
 			t.Errorf("%s: code %d, stderr %q", name, code, errs.String())
 		}
+	}
+}
+
+func TestRunTakesTheEnvironmentFromBerthyEnv(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "cli.json")
+	t.Setenv("BERTHY_TEST_UI_TOKEN", "bty.prod.secretsecretsecret")
+	t.Setenv(agentclient.EnvironmentEnv, "prod")
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"prod":{"url":"http://127.0.0.1:1","token_env":"BERTHY_TEST_UI_TOKEN"}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Run([]string{"--config", cfg}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "berthy ui needs a terminal") {
+		t.Fatalf("code %d, stderr %q", code, errs.String())
 	}
 }
 

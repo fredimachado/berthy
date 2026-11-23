@@ -197,6 +197,7 @@ func runSetupCmd(args ...string) (int, string, string) {
 }
 
 func TestSetupUsageErrors(t *testing.T) {
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	made := withSetupRunner(t, &setupServer{})
 	empty := t.TempDir()
 	tests := map[string][]string{

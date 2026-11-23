@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 )
 
 // deploymentCommands are the commands runDeployment serves: they call the agent and read their own flags.
@@ -70,6 +72,7 @@ func checkAliases(aliases map[string]string) error {
 // --manifest-dir, and the command still has to find its project in that directory, not in the one it runs in.
 func expandAlias(cmd string, args []string) (expanded []string, dir string, ok bool, err error) {
 	dir, env := ".", ""
+	var envGiven bool
 	var flags, manifestDir, rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -86,6 +89,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			switch a {
 			case "-e":
 				env = args[i]
+				envGiven = true
 				flags = append(flags, a, args[i])
 			case "--config", "--project":
 				flags = append(flags, a, args[i])
@@ -97,6 +101,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			rest = append(rest, a)
 		}
 	}
+	env, fromVariable := agentclient.EnvironmentName(env, envGiven)
 	unknown := fmt.Errorf("unknown command %s", cmd)
 	if env == "" {
 		// Aliases live in the manifest, and an overlay is per environment, so -e is needed to read them. Without -e the CLI cannot
@@ -105,6 +110,9 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			return nil, "", false, fmt.Errorf("unknown command %s (an alias of the manifest needs -e)", cmd)
 		}
 		return nil, "", false, unknown
+	}
+	if fromVariable && !scope.ValidEnvironment(env) {
+		return nil, "", false, fmt.Errorf("BERTHY_ENV is not a valid environment")
 	}
 	m, err := manifest.Load(dir, env)
 	if errors.Is(err, fs.ErrNotExist) {
