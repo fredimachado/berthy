@@ -522,10 +522,10 @@ aliases:
   weblogs: logs api --role web --follow
 ```
 
-`berthy console -e prod` runs `berthy exec api --role web -e prod -- bin/console`. The CLI expands the alias before it checks any flag, so the agent gets an ordinary request, and the scope, the approval and the audit log are those of the command it stands for. Anything else you type after the name is added at the end: `berthy console -e prod ls` runs `bin/console ls`. The aliases are read for the environment you name with `-e`, so an overlay such as `berthy.prod.yml` can hold them. The `-e`, `--config` and `--manifest-dir` given with an alias are used to find it, and `--manifest-dir` is passed on only to commands that take it.
+`berthy console -e prod` runs `berthy exec api --role web -e prod -- bin/console`. The CLI expands the alias before it checks any flag, so the agent gets an ordinary request, and the scope, the approval and the audit log are those of the command it stands for. Anything else you type after the name is added at the end: `berthy console -e prod ls` runs `bin/console ls`. The aliases are read for the environment you name with `-e`, or else `$BERTHY_ENV` when `-e` is omitted, so an overlay such as `berthy.prod.yml` can hold them. A given `-e` wins. The `-e`, `--config` and `--manifest-dir` given with an alias are used to find it, and `--manifest-dir` is passed on only to commands that take it.
 
 - The words are separated by spaces. Quotes are not interpreted, so a value with a quote is refused.
-- `-e` and `--config` cannot be in an alias. You give the environment on the command line.
+- `-e` and `--config` cannot be in an alias. You give the environment on the command line or with `$BERTHY_ENV`.
 - An alias cannot take the name of a built-in command, such as `deploy` or `ps`. Its first word must be a command that talks to the agent, not another alias, `mcp`, `ui` or `setup`.
 - `berthy config validate` checks the aliases and names the one that is wrong. A manifest holds at most 64.
 - An overlay's alias replaces the base alias of the same name.
@@ -2801,9 +2801,9 @@ Practise this on a test server before you need it.
 
 ### Commands
 
-Every command that talks to an agent needs `-e <env>`. It picks the project with `--project`, else from the manifest directory, else the only project that has that environment. It reads the CLI configuration file that [How to read the commands](#how-to-read-the-commands) describes; `--config <file>` names another. The tables list only the other flags. Most commands take `--json`.
+Every command that talks to an agent needs `-e <env>`, or else `$BERTHY_ENV` when `-e` is not given. A given `-e` wins. It picks the project with `--project`, else from the manifest directory, else the only project that has that environment. It reads the CLI configuration file that [How to read the commands](#how-to-read-the-commands) describes; `--config <file>` names another. The tables list only the other flags. Most commands take `--json`.
 
-A name from the manifest's `aliases` runs the command line it stands for; see [Aliases](#aliases). It is expanded before any flag is checked. Quotes are not interpreted, `-e` and `--config` are not allowed in it, the arguments you give after the name are appended, and the MCP server does not offer it.
+A name from the manifest's `aliases` runs the command line it stands for; see [Aliases](#aliases). It is expanded before any flag is checked. Quotes are not interpreted, `-e` and `--config` are not allowed in it, the environment comes from `-e` or `$BERTHY_ENV` as for other agent commands, the arguments you give after the name are appended, and the MCP server does not offer it.
 
 Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 
