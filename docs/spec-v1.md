@@ -309,7 +309,7 @@ It works in one of two ways.
 7. **First token and CLI configuration.** For a new hosted environment, create one `admin` token (`token`). Save it locally or show it (`cli_token`). When the entry already exists, keep its tokens unless `--new-token` adds another. Add the environment to the CLI's configuration with the agent's address (`cli_config`): the file `--config` names, else the one `BERTHY_CONFIG` names, else the default file.
 8. **Verify.** Call the new agent's `doctor` (`verify`). If this machine cannot reach the private address, setup says so and sends the same request on the server instead.
 
-It ends by printing the next steps: store a copy of the encryption key off the server (the command that copies it, never the key), set the token in the environment variable the CLI configuration names, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
+It ends by printing the next steps: store a copy of the encryption key off the server (the command that copies it, never the key), set the token in the environment variable the CLI configuration names when a token is shown and was not saved, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
 
 ### Rules
 

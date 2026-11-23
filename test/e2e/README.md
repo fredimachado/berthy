@@ -19,6 +19,14 @@ With no scenario names, every `scenarios/*.sh` runs in name order. `--no-build` 
 is 0 when every scenario passes and 1 otherwise. From Git Bash, never inline a `$` expansion in `wsl -- bash -c '...'`:
 put the logic in a script file and run that file by path.
 
+The `27-setup-token` scenario runs setup over SSH against the disposable systemd server in `test/fakeserver` and checks
+that an unavailable credential store causes setup to show the token. Build the fakeserver image first with
+`bash test/fakeserver/fakeserver.sh build`. It needs the fixture's isolated Docker daemon with privileged containers and
+cgroup v2, network access for Docker's install script and images, and the SSH tools described in `test/fakeserver/README.md`.
+Keep `$E2E_ROOT` on WSL's native filesystem so private file permissions and FIFOs work.
+The normal harness also needs its configured Go and Docker binaries, `rsync`, `jq`, `curl`, `openssl`, and the
+`127.0.0.1:15001/berthy-phase2/web:v1` and `:v2` source images on the isolated daemon.
+
 ## Layout
 
 `$E2E_ROOT` is `~/berthy-e2e/harness` in WSL, unless `E2E_ROOT` is set.

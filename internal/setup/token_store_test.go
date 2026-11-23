@@ -52,6 +52,10 @@ func TestAdminTokenOrder(t *testing.T) {
 		t.Fatal("variable not preferred")
 	}
 	value = ""
+	if s.AdminToken() != "variable" {
+		t.Fatal("the run changed its credential observation")
+	}
+	s = &Session{Opts: s.Opts, TokenEnv: "CUSTOM", cliEntry: e, cliConfigKnown: true}
 	if s.AdminToken() != "stored" {
 		t.Fatal("stored token not found")
 	}

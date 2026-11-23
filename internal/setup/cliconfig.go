@@ -30,6 +30,7 @@ func agentURL(listen string) string { return "http://" + listen }
 // file). The file never holds a token, and the other environments and projects are kept as they are.
 func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	project, env := s.Opts.Project, s.Opts.Env
+	s.credentialRead = false
 	url := s.AgentURL()
 	tokenEnv := DefaultTokenEnv(project, env)
 	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
@@ -103,18 +104,11 @@ func tokenStoreStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 		return StatusSkipped, fmt.Sprintf("no credential store on this machine: the token is shown below; set it in $%s", s.TokenEnv), nil
 	}
-	if !usable {
-		store = nil
-	}
-	e := s.cliEntry
-	if e.TokenEnv == "" {
-		e.TokenEnv = s.TokenEnv
-	}
-	_, source, err := agentclient.FindToken(s.Opts.getenv, store, s.Opts.Project, s.Opts.Env, e)
-	if err == nil && source == agentclient.TokenFromEnv {
+	_, source := s.existingCredential()
+	if source == agentclient.TokenFromEnv {
 		return StatusOK, fmt.Sprintf("the admin token is in $%s", s.TokenEnv), nil
 	}
-	if err == nil && source == agentclient.TokenFromStore {
+	if source == agentclient.TokenFromStore {
 		return StatusOK, fmt.Sprintf("the admin token is in the %s", store.Name()), nil
 	}
 	return StatusSkipped, fmt.Sprintf("no admin token on this machine: set $%s, or run setup with --new-token", s.TokenEnv), nil

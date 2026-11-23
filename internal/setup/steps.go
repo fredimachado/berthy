@@ -110,9 +110,12 @@ type Session struct {
 	// TokenStored is true once this run saved its token and the store confirmed it.
 	TokenStored bool
 	// TokenEnv is the environment variable the CLI configuration names for the token, once the cli_config step knows it.
-	TokenEnv       string
-	cliEntry       agentclient.Environment
-	cliConfigKnown bool
+	TokenEnv         string
+	cliEntry         agentclient.Environment
+	cliConfigKnown   bool
+	credentialRead   bool
+	credential       string
+	credentialSource agentclient.TokenSource
 
 	// Log records what the run sends, for --verbose. Nil when the run is not verbose.
 	Log *CommandLog

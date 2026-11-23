@@ -55,6 +55,14 @@ func (s *Session) AdminToken() string {
 	if s.Token != "" && s.TokenLive {
 		return s.Token
 	}
+	token, _ := s.existingCredential()
+	return token
+}
+
+func (s *Session) existingCredential() (string, agentclient.TokenSource) {
+	if s.credentialRead {
+		return s.credential, s.credentialSource
+	}
 	store := s.Opts.Tokens
 	if !s.cliConfigKnown || !agentclient.StoreUsable(s.Opts.Project, s.Opts.Env, s.cliEntry) {
 		store = nil
@@ -63,8 +71,9 @@ func (s *Session) AdminToken() string {
 	if e.TokenEnv == "" {
 		e.TokenEnv = s.TokenEnv
 	}
-	token, _, _ := agentclient.FindToken(s.Opts.getenv, store, s.Opts.Project, s.Opts.Env, e)
-	return token
+	s.credential, s.credentialSource, _ = agentclient.FindToken(s.Opts.getenv, store, s.Opts.Project, s.Opts.Env, e)
+	s.credentialRead = true
+	return s.credential, s.credentialSource
 }
 
 // summarize turns the checks into the step's result: every critical check must be ok.

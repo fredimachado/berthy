@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/api"
 	"berthy/internal/credstore/credtest"
 )
 
@@ -52,17 +55,32 @@ func TestSetupSecondRunFindsTheStoredToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	withSetupRunner(t, installedServer(t, "ops@s1"))
+	var verified string
+	setupDoctor = func(_ context.Context, _, _, _, token string) ([]api.Check, error) {
+		verified = token
+		return []api.Check{{Name: "agent", OK: true, Critical: true}}, nil
+	}
+	beforeCalls := store.Calls()
 	code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t), "--config", cfg)
+	lookupCalls := store.Calls() - beforeCalls
+	if lookupCalls != 1 {
+		t.Errorf("repeat setup made %d store calls, want one lookup", lookupCalls)
+	}
 	after, err := store.Get(key)
-	if code != 0 || err != nil || before != after || store.Len() != 1 || !strings.Contains(out, "the admin token is in the test store") || strings.Contains(out, before) {
+	if code != 0 || err != nil || before != after || verified != before || store.Len() != 1 || !strings.Contains(out, "the admin token is in the test store") || strings.Contains(out, before) {
 		t.Fatal("second setup did not retain the stored token")
+	}
+	beforeCalls = store.Calls()
+	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--network", "p5net", "--manifest-dir", projectDir(t), "--config", cfg, "--dry-run")
+	if code != 0 || store.Calls()-beforeCalls != 1 || !strings.Contains(out, "the admin token is in the test store") {
+		t.Fatal("dry run did not reuse the stored-token lookup")
 	}
 }
 
 func TestSetupASaveThatCompletesLateStillShowsTheToken(t *testing.T) {
-	var authorization string
+	authorization := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization = r.Header.Get("Authorization")
+		authorization <- r.Header.Get("Authorization")
 		fmt.Fprint(w, `[]`)
 	}))
 	defer server.Close()
@@ -89,20 +107,29 @@ func TestSetupASaveThatCompletesLateStillShowsTheToken(t *testing.T) {
 			}
 		}
 		defer func() { close(block); store.Wait() }()
-		code, out, _ := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", listen, "--network", "p5net", "--manifest-dir", dir, "--config", cfg, "--json")
+		var out, errout bytes.Buffer
+		code := runSetupWithContext(context.Background(), []string{"-e", "p5", "--host", "ops@s1", "--listen", listen, "--network", "p5net", "--manifest-dir", dir, "--config", cfg, "--json"}, &out, &errout)
 		select {
 		case <-started:
 		default:
 			t.Fatal("store call did not start")
 		}
-		if code != 0 || json.Unmarshal([]byte(out), &report) != nil || report.Token == "" || report.TokenStored || !strings.Contains(out, "could not confirm the save in the test store") {
+		if code != 0 || json.Unmarshal(out.Bytes(), &report) != nil || report.Token == "" || report.TokenStored || !strings.Contains(out.String(), "could not confirm the save in the test store") {
 			t.Fatal("unconfirmed save did not show the token")
 		}
 	})
 	store.Block, store.OnCall = nil, nil
 	code, _, _ := runCLI("ps", "-e", "p5", "--project", "shop", "--config", cfg)
-	if code != 0 || authorization != "Bearer "+report.Token {
-		t.Fatal("later command did not authenticate with the saved token")
+	if code != 0 {
+		t.Fatal("later command failed")
+	}
+	select {
+	case got := <-authorization:
+		if got != "Bearer "+report.Token {
+			t.Fatal("later command did not authenticate with the saved token")
+		}
+	default:
+		t.Fatal("later command did not reach the server")
 	}
 }
 
