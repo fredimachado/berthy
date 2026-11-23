@@ -717,6 +717,9 @@ func (e *failingSecretInventory) ProjectVolumes(ctx context.Context, project str
 	if e.fail == "projects" {
 		return nil, errors.New(inventoryDiagnostic)
 	}
+	if e.fail == "project warning" {
+		return nil, errors.New("volume inventory unavailable")
+	}
 	return e.generateComposeEngine.ProjectVolumes(ctx, project)
 }
 func (e *failingSecretInventory) VolumeExists(ctx context.Context, volume string) (bool, error) {
@@ -744,6 +747,7 @@ func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 		{name: "bare interpolation", file: "volumes: {data: {name: '$STACK'}}"},
 		{name: "container lookup", file: "services: {}", fail: "containers"},
 		{name: "project volume lookup", file: "services: {}", fail: "projects"},
+		{name: "project volume driver warning", file: "services: {}", fail: "project warning"},
 		{name: "fixed volume lookup", file: "volumes: {data: {name: shared}}", fail: "volumes"},
 		{name: "service lookup", image: true, fail: "service"},
 		{name: "unreadable release", file: "services: {}", release: true},
@@ -937,6 +941,100 @@ func TestProtectedGenerationAcceptsNullDryRun(t *testing.T) {
 			w := f.call("POST", "/secrets/"+tc.route, apAgentAdmin, tc.body)
 			if w.Code != 202 || w.Header().Get("Berthy-Approval") != "pending" {
 				t.Fatalf("status %d response %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGenerationRefusesHistoricalIngressReader(t *testing.T) {
+	for _, route := range []string{"generate", "generate-declared"} {
+		t.Run(route, func(t *testing.T) {
+			f := newApprovalFixture(t, false, nil)
+			f.ctrl.Engine = generateEngine{}
+			recordAppRelease(t, f.s, "ingress-release", "ingress", `{"project":"demo","network":"overlay","apps":{"ingress":{"kind":"image","image":"ghcr.io/acme/edge","roles":{"web":{}},"env":{"secret":["OLD_PASS"]}}}}`)
+			body := `{"name":"OLD_PASS"}`
+			if route == "generate-declared" {
+				body = `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["OLD_PASS"]}}},"secrets":{"OLD_PASS":{"generate":{"format":"hex"}}}}}`
+			}
+			w := f.call("POST", "/secrets/"+route, apAdminToken, body)
+			if route == "generate" {
+				if w.Code != 409 || !strings.Contains(w.Body.String(), "app ingress was deployed here") {
+					t.Fatalf("named response: %d %s", w.Code, w.Body.String())
+				}
+			} else {
+				if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"refuse"`) || !strings.Contains(w.Body.String(), `"app":"ingress"`) {
+					t.Fatalf("declared response: %d %s", w.Code, w.Body.String())
+				}
+			}
+			if _, ok := storedValue(t, f, "OLD_PASS"); ok {
+				t.Fatal("historical reader secret was generated")
+			}
+		})
+	}
+}
+
+func TestConnectorHistoryAllowsUnrelatedGeneration(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = generateEngine{}
+	connector := `{"project":"demo","network":"demo","apps":{"ingress":{"kind":"image","image":"docker.io/cloudflare/cloudflared","roles":{"connector":{"replicas":1}},"env":{"secret":["TUNNEL_TOKEN"]}}}}`
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "connector", ActorID: "admin", Kind: "deploy", App: "ingress", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "ingress", Manifest: []byte(connector)}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ route, body, name string }{
+		{"generate", `{"name":"OTHER_PASS"}`, "OTHER_PASS"},
+		{"generate-declared", `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["NEW_PASS"]}}},"secrets":{"NEW_PASS":{"generate":{"format":"hex"}}}}}`, "NEW_PASS"},
+	} {
+		w := f.call("POST", "/secrets/"+tc.route, apAdminToken, tc.body)
+		if w.Code != 200 || tc.route == "generate-declared" && !strings.Contains(w.Body.String(), `"outcome":"generate"`) {
+			t.Fatalf("%s status %d", tc.route, w.Code)
+		}
+		if _, ok := storedValue(t, f, tc.name); !ok {
+			t.Fatalf("%s not generated", tc.name)
+		}
+	}
+}
+
+type generationServiceEngine struct {
+	generateEngine
+	calls    []string
+	existing string
+}
+
+func (e *generationServiceEngine) InspectService(_ context.Context, name string) (engine.ServiceSnapshot, error) {
+	e.calls = append(e.calls, name)
+	if name == e.existing {
+		return engine.ServiceSnapshot{ID: "service"}, nil
+	}
+	return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+}
+func TestGenerationSeesGeneratedServiceWithDifferentAdoptionName(t *testing.T) {
+	for _, route := range []string{"generate", "generate-declared"} {
+		t.Run(route, func(t *testing.T) {
+			f := newApprovalFixture(t, false, nil)
+			docker := &generationServiceEngine{existing: "demo-lab-api-web"}
+			f.ctrl.Engine = docker
+			m := `{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"service":"adopted-service"}},"env":{"secret":["API_PASS"]}}},"secrets":{"API_PASS":{"generate":{"format":"hex"}}}}`
+			body := `{"name":"API_PASS","manifest":` + m + `}`
+			if route == "generate-declared" {
+				body = `{"manifest":` + m + `}`
+			}
+			w := f.call("POST", "/secrets/"+route, apAdminToken, body)
+			if route == "generate" {
+				if w.Code != 409 || !strings.Contains(w.Body.String(), "app api was deployed here") {
+					t.Fatalf("named status %d", w.Code)
+				}
+			} else if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"refuse"`) || !strings.Contains(w.Body.String(), `"app":"api"`) {
+				t.Fatalf("declared status %d", w.Code)
+			}
+			if _, ok := storedValue(t, f, "API_PASS"); ok {
+				t.Fatal("secret was generated")
+			}
+			if !reflect.DeepEqual(docker.calls, []string{"demo-lab-api-web"}) {
+				t.Fatalf("inspected services %v", docker.calls)
 			}
 		})
 	}

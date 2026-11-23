@@ -29,10 +29,7 @@ func (c *Controller) GuardSecret(ctx context.Context, name string, sub *Submitte
 	deployed := map[string]bool{}
 	readers := map[string]bool{}
 	for _, release := range releases {
-		if release.App == manifest.ConnectorAppName {
-			continue
-		}
-		m, err := manifest.DecodeRelease(release.Manifest, false)
+		m, err := manifest.DecodeRelease(release.Manifest, release.App == manifest.ConnectorAppName)
 		if err != nil {
 			return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
 		}
@@ -114,16 +111,19 @@ func (c *Controller) GuardSecret(ctx context.Context, name string, sub *Submitte
 			}
 		} else {
 			for _, role := range sortedKeys(a.Roles) {
-				service := a.Roles[role].Service
-				if service == "" {
-					service = sub.Manifest.ServiceName(c.Environment, app, role)
+				generated := sub.Manifest.ServiceName(c.Environment, app, role)
+				services := []string{generated}
+				if explicit := a.Roles[role].Service; explicit != "" && explicit != generated {
+					services = append(services, explicit)
 				}
-				_, err := c.Engine.InspectService(ctx, service)
-				if err == nil {
-					return &GuardFinding{App: app}, nil
-				}
-				if !statusIs(err, 404) {
-					return fail()
+				for _, service := range services {
+					_, err := c.Engine.InspectService(ctx, service)
+					if err == nil {
+						return &GuardFinding{App: app}, nil
+					}
+					if !statusIs(err, 404) {
+						return fail()
+					}
 				}
 			}
 			names = declaredVolumes(a, func(volume string) string { return sub.Manifest.VolumeName(c.Environment, volume) })

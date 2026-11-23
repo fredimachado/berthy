@@ -177,9 +177,14 @@ func TestGuardSeesImageReaderVolumeWithoutDeployment(t *testing.T) {
 }
 
 func TestGuardInspectsImageRoleServiceName(t *testing.T) {
-	for _, tc := range []struct{ name, override, want string }{
-		{"default", "", "shop-test-db-web"},
-		{"explicit", "existing-service", "existing-service"},
+	for _, tc := range []struct {
+		name, override, want string
+		inspected            []string
+	}{
+		{"default", "", "shop-test-db-web", []string{"shop-test-db-web"}},
+		{"explicit", "existing-service", "existing-service", []string{"shop-test-db-web", "existing-service"}},
+		{"generated with explicit", "existing-service", "shop-test-db-web", []string{"shop-test-db-web"}},
+		{"same name", "shop-test-db-web", "shop-test-db-web", []string{"shop-test-db-web"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			docker := &boundFake{}
@@ -187,8 +192,43 @@ func TestGuardInspectsImageRoleServiceName(t *testing.T) {
 			c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
 			m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"db": {Kind: "image", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}}, Roles: map[string]manifest.Role{"web": {Service: tc.override}}}}}
 			finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
-			if err != nil || finding == nil || finding.App != "db" || finding.Volume != "" || !reflect.DeepEqual(docker.inspected, []string{tc.want}) {
+			if err != nil || finding == nil || finding.App != "db" || finding.Volume != "" || !reflect.DeepEqual(docker.inspected, tc.inspected) {
 				t.Fatalf("finding %+v, inspected %v, error %v", finding, docker.inspected, err)
+			}
+		})
+	}
+}
+
+func TestGuardChecksBothImageServiceNamesWhenAbsentOrUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failures map[string]error
+		wantErr  bool
+	}{
+		{"neither exists", nil, false},
+		{"generated lookup fails", map[string]error{"shop-test-db-web": &engine.StatusError{Code: 500}}, true},
+		{"adoption lookup fails", map[string]error{"existing-service": &engine.StatusError{Code: 500}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			docker := &boundFake{failures: tc.failures}
+			c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
+			m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"db": {Kind: "image", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}}, Roles: map[string]manifest.Role{"web": {Service: "existing-service"}}}}}
+			finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
+			if finding != nil || (err != nil) != tc.wantErr {
+				t.Fatalf("finding %+v, error %v", finding, err)
+			}
+			if tc.wantErr {
+				var refusal Refusal
+				if !errors.As(err, &refusal) {
+					t.Fatalf("error is not a refusal: %v", err)
+				}
+			}
+			want := []string{"shop-test-db-web", "existing-service"}
+			if tc.name == "generated lookup fails" {
+				want = want[:1]
+			}
+			if !reflect.DeepEqual(docker.inspected, want) {
+				t.Fatalf("inspected %v, want %v", docker.inspected, want)
 			}
 		})
 	}
