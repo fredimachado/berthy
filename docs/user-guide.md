@@ -403,10 +403,10 @@ Host checks (disk, memory, Docker, public ports, reboot) still run inside every 
 `berthy setup` writes the CLI configuration on the machine that runs it. On a second laptop, add the same hosted environment without SSH:
 
 ```bash
-berthy context add --project todo -e prod --url "http://10.0.0.5:7710" --token-env BERTHY_TODO_PROD_TOKEN
+berthy context add --project todo -e prod --url "http://10.0.0.5:7710" --token-env BERTHY_TODO_PROD_TOKEN --save-token
 ```
 
-That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. On another laptop set the variable to a token you saved privately. The first machine's credential store is local to it; use `--show-token` when making a new token if you also need a copy. `berthy context list` shows each context, whether its variable is set (`yes` or `no`), and whether a token is `stored`, `not stored`, or `unknown` if the store is unavailable. It never shows the token. `berthy context remove --project todo -e prod` removes the entry and keeps any stored token. Add `--delete-token` to delete the stored token first. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
+That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)` and, with `--save-token`, reads the token (hidden at a terminal, or from a pipe) and prints `saved the token of todo/prod in the …`. Without `--save-token`, set the variable to a token you saved privately. The first machine's credential store is local to it; use `--show-token` when making a new token if you also need a copy. `berthy context list` shows each context, whether its variable is set (`yes` or `no`), and whether a token is `stored`, `not stored`, or `unknown` if the store is unavailable. It never shows the token. `berthy context remove --project todo -e prod` removes the entry and keeps any stored token. Add `--delete-token` to delete the stored token first. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
 
 #### A server set up before projects
 
@@ -2883,7 +2883,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | Command | Flags | What it does |
 | --- | --- | --- |
 | `setup` | `-e`, `--project`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
-| `context add` | `--project`, `-e`, `--url`, `--token-env`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. Needs no agent. |
+| `context add` | `--project`, `-e`, `--url`, `--token-env`, `--save-token`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. With `--save-token`, reads the token and saves it in the credential store. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. An empty or missing file prints nothing. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
 | `version` | `--json` | The CLI's version and platform. |

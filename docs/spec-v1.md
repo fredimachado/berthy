@@ -882,7 +882,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `job logs <name> [--run <id>]` | The output kept of a failed or timed-out run of a job, redacted (`deploy` scope) | No |
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
-| `context add --project <project> -e <env> --url URL --token-env VAR` | Write one project's environment into the CLI configuration; needs no agent | Yes |
+| `context add --project <project> -e <env> --url URL --token-env VAR [--save-token]` | Write one project's environment into the CLI configuration; with `--save-token`, also save the token in the local credential store; needs no agent | Yes |
 | `context list` | List the CLI configuration's contexts: project, environment, URL, token variable, whether the variable is set, and whether a token is stored, not stored, or unknown; never a token | No |
 | `context remove --project <project> -e <env> [--delete-token]` | Remove one context from the CLI configuration; `--delete-token` deletes its stored token first | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
