@@ -211,7 +211,7 @@ func TestGuideRejectsInvalidStoreResponses(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"case variant null registry", 200, `{"ok":true,"Registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`}, {"held empty plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{}}`}, {"held missing registry", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","exists":false}}`}, {"held missing exists", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":""}}`}, {"held wrong name", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"OTHER","registry":"","exists":false}}`},
+		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"case variant null registry", 200, `{"ok":true,"Registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`}, {"held empty plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{}}`}, {"redacted held without expiry", 202, `{"approval_id":"ap1","plan":{"name":"[redacted]"}}`}, {"redacted held without id", 202, `{"expires":"2030-01-01T00:00:00Z","plan":{"name":"[redacted]"}}`}, {"held missing registry", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","exists":false}}`}, {"held missing exists", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":""}}`}, {"held wrong name", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"OTHER","registry":"","exists":false}}`}, {"redacted optional does not excuse wrong name", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"OTHER","registry":"","exists":false,"services_error":"[redacted]"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := fakeTerminal(t, "secret-value")
@@ -571,5 +571,35 @@ func TestGuidePreservesOptionalStorePlanFields(t *testing.T) {
 	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
 	if code != exitHeld || len(bodies) != 2 || !strings.Contains(out.String(), "exists: false") || !strings.Contains(out.String(), "registry: \n") || !strings.Contains(out.String(), "services: ") || !strings.Contains(out.String(), "services_error: ") {
 		t.Fatalf("exit %d requests %d stdout %q stderr %q", code, len(bodies), out.String(), errout.String())
+	}
+}
+
+func TestGuideReportsHeldApprovalWithRedactedPlan(t *testing.T) {
+	for _, tc := range []struct{ name, plan string }{
+		{"masked display name", `{"action":"secret set","name":"[redacted]","registry":"","exists":false}`},
+		{"masked key", `{"action":"secret set","na[redacted]":"API_KEY","registry":"","exists":false}`},
+		{"redacted ordinary plan", `{"action":"secret [redacted]","name":"API_KEY","registry":"","exists":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := fakeTerminal(t, "private-value")
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.Method+" "+r.URL.Path)
+				if r.Method == "GET" {
+					fmt.Fprint(w, `[]`)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				fmt.Fprintf(w, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":%s}`, tc.plan)
+			}))
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  api:\n    kind: image\n    image: example.com/api\n    env:\n      secret: [API_KEY, SECOND]\n    roles:\n      web:\n        port: 8080\n")
+			var out, errout bytes.Buffer
+			code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+			if code != exitHeld || reads.Load() != 1 || len(paths) != 2 || !strings.Contains(out.String(), "held for approval: ap1") || !strings.Contains(out.String(), "plan details were redacted") || strings.Contains(out.String(), "plan:") || strings.Contains(out.String(), "API_KEY") || strings.Contains(out.String(), "private-value") {
+				t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(paths), out.String(), errout.String())
+			}
+		})
 	}
 }

@@ -229,8 +229,12 @@ func decodeGuideHeld(data []byte) (heldApproval, bool) {
 	return h, len(plan) > 0 && plan[0] == '{'
 }
 
-func printGuideHeld(out io.Writer, h heldApproval, plan []byte, value string) {
+func printGuideHeldHeading(out io.Writer, h heldApproval, value string) {
 	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, value), safeSecretText(h.Expires.UTC().Format(time.RFC3339), value))
+}
+
+func printGuideHeld(out io.Writer, h heldApproval, plan []byte, value string) {
+	printGuideHeldHeading(out, h, value)
 	printPlan(out, plan)
 }
 
@@ -258,6 +262,30 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 	h, ok := decodeGuideHeld(data)
 	if !ok {
 		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(h.Plan, &fields) != nil || len(fields) == 0 {
+		return false
+	}
+	const marker = "[redacted]"
+	redacted := false
+	for key, raw := range fields {
+		if strings.Contains(key, marker) {
+			redacted = true
+			break
+		}
+		if strings.EqualFold(key, "action") || strings.EqualFold(key, "name") || strings.EqualFold(key, "registry") {
+			var field string
+			if json.Unmarshal(raw, &field) == nil && strings.Contains(field, marker) {
+				redacted = true
+				break
+			}
+		}
+	}
+	if redacted {
+		printGuideHeldHeading(out, h, value)
+		fmt.Fprintln(out, "plan details were redacted")
+		return true
 	}
 	var plan struct {
 		Action        *string         `json:"action"`
