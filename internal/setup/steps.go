@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"berthy/internal/agent"
+	"berthy/internal/agentclient"
+	"berthy/internal/credstore"
 )
 
 // Statuses of a step.
@@ -58,6 +60,8 @@ type Options struct {
 	Getenv func(string) string
 	// Doctor asks the agent for its doctor from this machine. Nil means an HTTP request.
 	Doctor DoctorFunc
+	// Tokens is the credential store of this machine, already bounded by the run's context. Nil means none.
+	Tokens credstore.Store
 }
 
 func (o Options) now() time.Time {
@@ -103,8 +107,12 @@ type Session struct {
 	// TokenLive is true once the agent's configuration with its digest is in place on the server.
 	Token     string
 	TokenLive bool
+	// TokenStored is true once this run saved its token and the store confirmed it.
+	TokenStored bool
 	// TokenEnv is the environment variable the CLI configuration names for the token, once the cli_config step knows it.
-	TokenEnv string
+	TokenEnv       string
+	cliEntry       agentclient.Environment
+	cliConfigKnown bool
 
 	// Log records what the run sends, for --verbose. Nil when the run is not verbose.
 	Log *CommandLog
@@ -159,6 +167,7 @@ func Steps() []Step {
 		{"config", configStep},
 		{"service", serviceStep},
 		{"cli_config", cliConfigStep},
+		{"cli_token", tokenStoreStep},
 		{"verify", verifyStep},
 	}
 }

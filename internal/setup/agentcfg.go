@@ -363,7 +363,7 @@ func tokenStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	s.Token = token
 	s.newToken = &agent.Token{Name: name, Digest: digest, Scope: "admin"}
-	return StatusChanged, fmt.Sprintf("created %s named %s; it is shown once, at the end", what, name), nil
+	return StatusChanged, fmt.Sprintf("created %s named %s", what, name), nil
 }
 
 // hostedPaths names the state and key of one hosted environment on the Linux server.

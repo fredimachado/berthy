@@ -23,7 +23,7 @@ import (
 )
 
 const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
-	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--config PATH]\n" +
+	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
 	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]"
 
 // newSetupRunner makes the runner that reaches the server: ssh to host, or this server for local. Tests replace it.
@@ -53,9 +53,10 @@ type setupReport struct {
 	DryRun      bool               `json:"dry_run"`
 	Steps       []setup.StepResult `json:"steps"`
 	OK          bool               `json:"ok"`
-	// Token is the admin token this run made. It is shown once, here and in the text output, and nowhere else.
-	Token     string   `json:"token,omitempty"`
-	NextSteps []string `json:"next_steps,omitempty"`
+	// Token is the admin token this run made when the output rule requires it.
+	Token       string   `json:"token,omitempty"`
+	TokenStored bool     `json:"token_stored,omitempty"`
+	NextSteps   []string `json:"next_steps,omitempty"`
 }
 
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
@@ -75,6 +76,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 	binary := fset.String("binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
 	keyFile := fset.String("key-file", "", "a saved encryption key to install, when rebuilding a server")
 	newToken := fset.Bool("new-token", false, "add another admin token")
+	showToken := fset.Bool("show-token", false, "print the admin token as well as saving it")
 	cliConfig := fset.String("config", "", "the CLI configuration to add the environment to (by default the one the CLI finds)")
 	noInstall := fset.Bool("no-install-docker", false, "stop when Docker is missing instead of installing it")
 	dry := fset.Bool("dry-run", false, "check and report what would change, without changing anything")
@@ -120,6 +122,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	opts.Tokens = agentclient.Tokens(ctx)
 	report := setupReport{Project: from.project, Environment: *env, Target: *host, DryRun: *dry, Steps: []setup.StepResult{}}
 	if *local {
 		report.Target = "this server"
@@ -145,10 +148,12 @@ func runSetup(args []string, out, errout io.Writer) int {
 		}
 		report.OK = setup.Run(ctx, session, setup.Steps(), show)
 	}
-	// The token is shown once, as soon as the configuration holding its digest is live on the server, even if a later step
-	// failed: a second run keeps that configuration and would not make another.
-	if session != nil && session.Token != "" && session.TokenLive {
+	// A live token must be shown when it was not confirmed saved, even if a later step failed.
+	if session != nil && session.Token != "" && session.TokenLive && (!session.TokenStored || *showToken) {
 		report.Token = session.Token
+	}
+	if session != nil {
+		report.TokenStored = session.TokenStored
 	}
 	if report.OK && !*dry {
 		manifestDir := ""
@@ -157,7 +162,7 @@ func runSetup(args []string, out, errout io.Writer) int {
 				manifestDir = *dir
 			}
 		})
-		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "", from.ingress, manifestDir)
+		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "" && !session.TokenStored, from.ingress, manifestDir)
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.

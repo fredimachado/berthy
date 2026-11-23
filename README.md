@@ -91,15 +91,14 @@ protected: true
 
 Check both without a server: `berthy config validate -e prod`.
 
-**3. Set up the server** from the directory that holds that manifest. Look first with `--dry-run`, which changes nothing, then run it for real. It prints the first admin token once, so store it. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default. With no `berthy.yml` in the directory, pass `--project hello` instead.
+**3. Set up the server** from the directory that holds that manifest. Look first with `--dry-run`, which changes nothing, then run it for real. It saves the first admin token in your credential store, or prints it if saving is unavailable or unconfirmed. Use `--show-token` to print it as well. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default. With no `berthy.yml` in the directory, pass `--project hello` instead.
 
 ```bash
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
-export BERTHY_HELLO_PROD_TOKEN=<the admin token setup printed>
 ```
 
-The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
+If setup prints the token because it could not confirm a save, keep it privately and set it in the named variable. The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
 
 **4. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
 

@@ -128,8 +128,8 @@ func TestSetupDryRunVerboseListsWhatARealRunSends(t *testing.T) {
 			t.Errorf("%s: the dry run lists\n%q\nthe real run sends\n%q", step, dryLog.byStep[step], realLog.byStep[step])
 		}
 	}
-	if changing != 10 {
-		t.Fatalf("%d steps would change, want 10:\n%s", changing, dryOut)
+	if changing != 11 {
+		t.Fatalf("%d steps would change, want 11:\n%s", changing, dryOut)
 	}
 }
 
@@ -234,7 +234,7 @@ func TestSetupVerboseJSONHasTheCommandsOfEachStep(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if len(got.Steps) != 13 {
+	if len(got.Steps) != 14 {
 		t.Fatalf("%d steps", len(got.Steps))
 	}
 	log := parseVerboseLog(t, errout)

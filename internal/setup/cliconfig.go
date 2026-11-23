@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/credstore"
 )
 
 // DefaultTokenEnv is the variable that holds the token of env unless the CLI configuration names another.
@@ -29,7 +30,7 @@ func agentURL(listen string) string { return "http://" + listen }
 // file). The file never holds a token, and the other environments and projects are kept as they are.
 func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	project, env := s.Opts.Project, s.Opts.Env
-	url := agentURL(s.Opts.listen())
+	url := s.AgentURL()
 	tokenEnv := DefaultTokenEnv(project, env)
 	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
 	if err != nil {
@@ -48,6 +49,8 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	s.TokenEnv = tokenEnv
 	want := agentclient.Environment{URL: url, TokenEnv: tokenEnv}
+	s.cliEntry = want
+	s.cliConfigKnown = true
 	changed, err := c.Put(project, env, want)
 	if err != nil {
 		return "", "", err
@@ -67,6 +70,54 @@ func cliConfigStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", fmt.Errorf("writing the CLI configuration: %w", err)
 	}
 	return StatusChanged, fmt.Sprintf("wrote %s at %s to %s (token in $%s)", env, url, filepath.Base(path), tokenEnv), nil
+}
+
+// AgentURL is the agent's URL as the CLI configuration holds it.
+func (s *Session) AgentURL() string {
+	if s.Opts.listen() == "" {
+		return ""
+	}
+	return agentURL(s.Opts.listen())
+}
+
+// tokenStoreStep saves a newly live token when the CLI entry can find it.
+func tokenStoreStep(ctx context.Context, s *Session) (string, string, error) {
+	if s.DryRun && s.dryToken {
+		return StatusWouldChange, "would save the admin token on this machine, or show it when there is no credential store", nil
+	}
+	store := s.Opts.Tokens
+	usable := s.cliConfigKnown && agentclient.StoreUsable(s.Opts.Project, s.Opts.Env, s.cliEntry)
+	if s.Token != "" && s.TokenLive {
+		if !s.cliConfigKnown {
+			return StatusSkipped, "not saved: there is no CLI configuration to find it from; the token is shown below", nil
+		}
+		if store != nil && usable {
+			err := store.Set(agentclient.StoreKey(s.Opts.Project, s.Opts.Env, s.cliEntry), s.Token)
+			if err == nil {
+				s.TokenStored = true
+				return StatusChanged, fmt.Sprintf("saved the admin token in the %s", store.Name()), nil
+			}
+			if errors.Is(err, credstore.ErrGivenUp) {
+				return StatusSkipped, fmt.Sprintf("could not confirm the save in the %s: the token is shown below; set it in $%s", store.Name(), s.TokenEnv), nil
+			}
+		}
+		return StatusSkipped, fmt.Sprintf("no credential store on this machine: the token is shown below; set it in $%s", s.TokenEnv), nil
+	}
+	if !usable {
+		store = nil
+	}
+	e := s.cliEntry
+	if e.TokenEnv == "" {
+		e.TokenEnv = s.TokenEnv
+	}
+	_, source, err := agentclient.FindToken(s.Opts.getenv, store, s.Opts.Project, s.Opts.Env, e)
+	if err == nil && source == agentclient.TokenFromEnv {
+		return StatusOK, fmt.Sprintf("the admin token is in $%s", s.TokenEnv), nil
+	}
+	if err == nil && source == agentclient.TokenFromStore {
+		return StatusOK, fmt.Sprintf("the admin token is in the %s", store.Name()), nil
+	}
+	return StatusSkipped, fmt.Sprintf("no admin token on this machine: set $%s, or run setup with --new-token", s.TokenEnv), nil
 }
 
 // ReadCLIConfig reports configuration errors as setup does.

@@ -33,8 +33,7 @@ Both print `manifest valid`.
 ## Setup and deploy
 
 Work from `examples/todo` so the manifest supplies the project. Setup writes
-the CLI configuration and prints the admin token once. Set it in
-`BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). The key copy
+the CLI configuration and saves the admin token in the local credential store. If it cannot confirm a save, it prints the token; keep it privately and set it in `BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). Use `--show-token` to print it as well. The key copy
 setup asks for is named `todo.dev.key` (or `todo.prod.key`).
 
 ```bash
@@ -43,7 +42,6 @@ mkdir -p ~/.config/berthy
 berthy setup -e dev --host ops@10.0.0.5 --listen 10.0.0.5:7710 \
   --config ~/.config/berthy/config.json
 export CFG=~/.config/berthy/config.json
-export BERTHY_TODO_DEV_TOKEN=<the admin token setup printed>
 ```
 
 Add prod on the same server with another setup run. It keeps the agent's
@@ -51,7 +49,6 @@ listen address and creates a second hosted environment with its own network:
 
 ```bash
 berthy setup -e prod --host ops@10.0.0.5 --config $CFG
-export BERTHY_TODO_PROD_TOKEN=<the admin token that run printed>
 ```
 
 Set the secrets the guide lists, then deploy. Without an app name, deploy

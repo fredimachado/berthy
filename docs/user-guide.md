@@ -219,10 +219,11 @@ The steps run in this order. Each one checks first and only acts when something 
 | `user` | Creates the `berthy` system user and adds it to the `docker` group. |
 | `binary` | Installs the Berthy binary as `/usr/local/bin/berthy` (see "Where the binary comes from"). |
 | `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and makes the encryption key `/var/lib/berthy/environments/todo/prod/key`. It never replaces an existing key. |
-| `token` | Creates the first `admin` token. It is shown once, at the end. The agent keeps only its digest. |
+| `token` | Creates the first `admin` token. The agent keeps only its digest. |
 | `config` | Writes `/etc/berthy/agent.json`. It sets the environment, the listen address, `docker_socket` (`/var/run/docker.sock`), the state directory and key file, `protected` and `network`, and the tokens. |
 | `service` | Installs, enables and starts `berthy.service`, and waits until the agent answers. |
 | `cli_config` | Adds the environment to the CLI configuration file: the one `--config` names, or else the one the CLI finds (see [How to read the commands](#how-to-read-the-commands)). Without any location it is skipped, with a hint of the entry to add yourself. |
+| `cli_token` | Saves the new admin token in this machine's credential store, or shows it when the save is unavailable or unconfirmed. |
 | `verify` | Runs `doctor` on the new agent (see below). |
 
 Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo-prod`), and the details are what setup prints:
@@ -236,10 +237,11 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
 ✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
-✓ token       created an admin token named admin; it is shown once, at the end
+✓ token       created an admin token named admin
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
 ✓ cli_config  wrote prod at http://10.0.0.5:7710 to config.json (token in $BERTHY_TODO_PROD_TOKEN)
+– cli_token   no credential store on this machine: the token is shown below; set it in $BERTHY_TODO_PROD_TOKEN
 ✓ verify      agent v0.1.0-me, 9 of 9 checks ok
 setup of todo/prod on ops@10.0.0.5: done
 
@@ -254,17 +256,18 @@ next steps:
   6. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --project todo --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --project todo --config /home/me/.config/berthy/config.json --version REF)
 ```
 
-The token comes **after** the step lines, once. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
+This sample has no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
 
-A **second run** shows every line with `✓` and wording such as "kept", "in place" or "running", and no token:
+A **second run** keeps the existing token and shows no new token. With a stored token it reports:
 
 ```text
 ✓ binary      this CLI (v0.1.0-me) is installed
 ✓ token       the tokens of /etc/berthy/agent.json are kept
+✓ cli_token   the admin token is in the Secret Service
 ✓ verify      agent v0.1.0-me, 9 of 9 checks ok
 ```
 
-If you want a machine-readable result, add `--json`. It prints one object and nothing else. The token is in it as `"token"`, and the next steps as `"next_steps"`:
+If you want a machine-readable result, add `--json`. It prints one object and nothing else. An unstored token is in it as `"token"`, and the next steps as `"next_steps"`. A confirmed save adds `"token_stored": true` and omits `token` unless `--show-token` was given:
 
 ```json
 {"project": "todo", "environment": "prod", "target": "ops@10.0.0.5", "dry_run": false, "ok": true,
@@ -272,7 +275,7 @@ If you want a machine-readable result, add `--json`. It prints one object and no
  "token": "<token>", "next_steps": ["..."]}
 ```
 
-Exit codes: `0` all steps fine, `1` a step failed (the output names it), `2` the command line is wrong. If a later step fails after the configuration holding the token went live, the token is still printed, because a second run keeps that configuration and would not make another.
+Exit codes: `0` all steps fine, `1` a step failed (the output names it), `2` the command line is wrong. If a later step fails after the configuration holding the token went live, setup prints the token if the save was not confirmed or `--show-token` was given.
 
 #### Where the binary comes from
 
@@ -286,11 +289,11 @@ A development build on macOS or Windows has no release to download, so give it `
 
 #### The `verify` step
 
-`verify` asks the new agent for its `doctor`. It sends the request **from your machine**, with the token this run made, or else the token in the variable the CLI configuration names (`BERTHY_TODO_PROD_TOKEN`). If your machine cannot reach the private address, setup says so and runs the same check **on the server**. With no token at all, it only checks that the agent answers on `/healthz`, and tells you to run `berthy doctor` yourself. Any critical check that fails fails the step.
+`verify` asks the new agent for its `doctor`. It sends the request **from your machine**, with the token this run made, or else the token in the variable the CLI configuration names (`BERTHY_TODO_PROD_TOKEN`), or the token saved for that entry in the credential store. If your machine cannot reach the private address, setup says so and runs the same check **on the server**. With no token at all, it only checks that the agent answers on `/healthz`, and tells you to run `berthy doctor` yourself. Any critical check that fails fails the step.
 
 #### Save three things
 
-1. **The first admin token.** It is printed once, after the step lines. Put it in a password manager and into your shell:
+1. **The first admin token.** Setup saves it in this machine's credential store when available. Pass `--show-token` to print it as well. If the save is unavailable or unconfirmed, setup prints it after the step lines. Save it privately and set it in your shell:
 
    ```bash
    export BERTHY_TODO_PROD_TOKEN=<token>
@@ -349,6 +352,7 @@ Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Onl
 | `--binary <path>` | Install this Linux build of Berthy instead of this CLI or the release. |
 | `--key-file <path>` | Install a saved encryption key (exactly 32 bytes) instead of generating one. Used when you [rebuild a server](#step-15-rebuild-a-server). It never replaces a different key that is already on the server. |
 | `--new-token` | Add another `admin` token, when the first one is lost. |
+| `--show-token` | Print the newly created admin token as well as saving it. |
 
 If the directory has a manifest, setup reads the project, `network` and `protected` from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
 
@@ -368,7 +372,7 @@ The agent's configuration is plain JSON. Its keys are listed in the [reference](
 
 #### More than one project or environment on a server
 
-`berthy setup` on a server that already runs an agent adds another hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Setup rewrites `agent.json` and restarts the shared agent for everyone on the server. It prints a new admin token for the entry it just added.
+`berthy setup` on a server that already runs an agent adds another hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Setup rewrites `agent.json` and restarts the shared agent for everyone on the server. It saves the new admin token for the entry, or prints it if the save is unavailable or unconfirmed.
 
 ```bash
 # Another project on the same server (no berthy.yml in this directory):
@@ -402,7 +406,7 @@ Host checks (disk, memory, Docker, public ports, reboot) still run inside every 
 berthy context add --project todo -e prod --url "http://10.0.0.5:7710" --token-env BERTHY_TODO_PROD_TOKEN
 ```
 
-That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. Set the variable to the token you already keep, then the other commands work. `berthy context list` shows each context, whether its variable is set (`yes` or `no`), and whether a token is `stored`, `not stored`, or `unknown` if the store is unavailable. It never shows the token. `berthy context remove --project todo -e prod` removes the entry and keeps any stored token. Add `--delete-token` to delete the stored token first. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
+That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. On another laptop set the variable to a token you saved privately. The first machine's credential store is local to it; use `--show-token` when making a new token if you also need a copy. `berthy context list` shows each context, whether its variable is set (`yes` or `no`), and whether a token is `stored`, `not stored`, or `unknown` if the store is unavailable. It never shows the token. `berthy context remove --project todo -e prod` removes the entry and keeps any stored token. Add `--delete-token` to delete the stored token first. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
 
 #### A server set up before projects
 
@@ -2878,7 +2882,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--project`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
+| `setup` | `-e`, `--project`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. An empty or missing file prints nothing. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |

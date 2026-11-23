@@ -286,7 +286,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	if !ok {
 		t.Fatalf("setup failed: %+v", got)
 	}
-	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=changed binary=changed key=changed token=changed config=changed service=changed cli_config=changed verify=ok"
+	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=changed binary=changed key=changed token=changed config=changed service=changed cli_config=changed cli_token=skipped verify=ok"
 	if statuses(got) != want {
 		t.Fatalf("statuses = %s\nwant       %s", statuses(got), want)
 	}
@@ -402,7 +402,7 @@ func TestSetUpServerChangesNothingAndMakesNoToken(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=ok swarm=ok network=ok user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=ok verify=ok"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=ok swarm=ok network=ok user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=ok cli_token=ok verify=ok"; statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
 	for _, sc := range f.scripts() {
@@ -475,7 +475,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=would_change binary=would_change key=would_change token=would_change config=would_change service=would_change cli_config=would_change verify=skipped"
+	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=would_change binary=would_change key=would_change token=would_change config=would_change service=would_change cli_config=would_change cli_token=would_change verify=skipped"
 	if statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
@@ -513,7 +513,7 @@ func TestDryRunOfSetUpServerOnlyReads(t *testing.T) {
 	f := setUpAgent(t, exe)
 	s := agentSession(t, f, exe, true, nil)
 	got, ok := runSteps(s)
-	if !ok || !strings.Contains(statuses(got), "user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=would_change verify=skipped") {
+	if !ok || !strings.Contains(statuses(got), "user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=would_change cli_token=skipped verify=skipped") {
 		t.Fatalf("got %s ok=%v", statuses(got), ok)
 	}
 	for _, sc := range f.scripts() {

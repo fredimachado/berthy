@@ -50,16 +50,21 @@ func parseChecks(body []byte) ([]api.Check, error) {
 	return d.Checks, nil
 }
 
-// token is the admin token to verify with: the one this run made, or the one in the environment variable the CLI configuration
-// names.
-func (s *Session) verifyToken() string {
+// AdminToken is the live token this run made, or the token found for the CLI entry.
+func (s *Session) AdminToken() string {
 	if s.Token != "" && s.TokenLive {
 		return s.Token
 	}
-	if s.TokenEnv != "" {
-		return s.Opts.getenv(s.TokenEnv)
+	store := s.Opts.Tokens
+	if !s.cliConfigKnown || !agentclient.StoreUsable(s.Opts.Project, s.Opts.Env, s.cliEntry) {
+		store = nil
 	}
-	return ""
+	e := s.cliEntry
+	if e.TokenEnv == "" {
+		e.TokenEnv = s.TokenEnv
+	}
+	token, _, _ := agentclient.FindToken(s.Opts.getenv, store, s.Opts.Project, s.Opts.Env, e)
+	return token
 }
 
 // summarize turns the checks into the step's result: every critical check must be ok.
@@ -118,7 +123,7 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	listen := s.Opts.listen()
 	base := agentURL(listen)
-	token := s.verifyToken()
+	token := s.AdminToken()
 	if token == "" {
 		if !s.healthy(ctx) {
 			return "", "", fmt.Errorf("the agent does not answer on %s", base)
@@ -154,10 +159,9 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 // healthScript asks the server whether the agent answers on listen, for five seconds.
 func healthScript(listen string) string { return waitScript(healthURL(listen), 5) }
 
-// dryHasToken says whether a real run would have an admin token to verify with: the one it would make, or the one the environment
-// names.
+// dryHasToken says whether a real run would have an admin token to verify with.
 func (s *Session) dryHasToken() bool {
-	return s.dryToken || s.TokenEnv != "" && s.Opts.getenv(s.TokenEnv) != ""
+	return s.dryToken || s.AdminToken() != ""
 }
 
 // healthy reports whether the agent answers /healthz, asked from the server.

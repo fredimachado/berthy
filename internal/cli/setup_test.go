@@ -316,6 +316,7 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"✓ config      /etc/berthy/agent.json (listen 172.31.250.10:7710, 1 environment)\n" +
 		"✓ service     berthy.service is running and enabled\n" +
 		"✓ cli_config  wrote p5 at http://172.31.250.10:7710 to config.json (token in $BERTHY_SHOP_P5_TOKEN)\n" +
+		"– cli_token   no admin token on this machine: set $BERTHY_SHOP_P5_TOKEN, or run setup with --new-token\n" +
 		"✓ verify      the agent answers; run berthy doctor with an admin token to check it fully\n" +
 		"setup of shop/p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
@@ -333,7 +334,7 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 	}
 }
 
-func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
+func TestSetupWithoutAStorePrintsTheTokenAsBefore(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
 	cfgPath := filepath.Join(t.TempDir(), "cli.json")
@@ -350,8 +351,9 @@ func TestSetupOfAFreshServerPrintsTheTokenOnceAndNeverSendsIt(t *testing.T) {
 	if !strings.HasPrefix(token, "bty.shop.p5.") || len(token) != len("bty.shop.p5.")+64 || strings.Count(out, token) != 1 {
 		t.Fatalf("token = %q, output:\n%s", token, out)
 	}
-	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin; it is shown once, at the end",
+	for _, want := range []string{"✓ user        created the berthy user, added it to the docker group", "✓ token       created an admin token named admin",
 		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_SHOP_P5_TOKEN)",
+		"– cli_token   no credential store on this machine: the token is shown below; set it in $BERTHY_SHOP_P5_TOKEN",
 		"3. store the admin token above, and set it in $BERTHY_SHOP_P5_TOKEN when you run berthy",
 		"4. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --config " + shellWord(cfgPath),
 		"5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --config " + shellWord(cfgPath)} {
@@ -436,7 +438,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 13 {
+	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 14 {
 		t.Fatalf("report = %+v", got)
 	}
 	if !strings.Contains(got.NextSteps[1], "ssh 'ops@s1' 'sudo cat /var/lib/berthy/environments/shop/p5/key'") {
@@ -586,7 +588,7 @@ func TestSetupDryRunOutput(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "dry run, 10 steps would change\n") || strings.Contains(out, "next steps") || strings.Contains(out, "bty.") {
+	if !strings.Contains(out, "dry run, 11 steps would change\n") || strings.Contains(out, "next steps") || strings.Contains(out, "bty.") {
 		t.Errorf("output:\n%s", out)
 	}
 	for _, s := range server.scripts {
@@ -652,13 +654,13 @@ func TestSetupJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if got.Environment != "p5" || got.Target != "ops@s1" || !got.DryRun || !got.OK || len(got.Steps) != 13 || got.Token != "" {
+	if got.Environment != "p5" || got.Target != "ops@s1" || !got.DryRun || !got.OK || len(got.Steps) != 14 || got.Token != "" {
 		t.Fatalf("report = %+v", got)
 	}
 	if s := got.Steps[2]; s.Step != "docker" || s.Status != "would_change" || s.Detail == "" {
 		t.Fatalf("docker step = %+v", s)
 	}
-	if s := got.Steps[12]; s.Step != "verify" || s.Status != "skipped" {
+	if s := got.Steps[13]; s.Step != "verify" || s.Status != "skipped" {
 		t.Fatalf("verify step = %+v", s)
 	}
 }

@@ -243,7 +243,7 @@ func TestDryRunListsWhatARealRunSendsInEachStep(t *testing.T) {
 				r := realByStep[d.Step]
 				if d.Status == StatusWouldChange {
 					changes++
-					if r.Status != StatusChanged {
+					if r.Status != StatusChanged && !(d.Step == "cli_token" && r.Status == StatusSkipped) {
 						t.Errorf("%s: the dry run says would_change, the real run says %s", d.Step, r.Status)
 					}
 				}
