@@ -25,4 +25,23 @@ expect_code "lock acquire from BERTHY_ENV" 0 "$code" "$out"
 out=$(BERTHY_ENV=$ENVN "$BIN" lock release --config "$RUN/admin.json" 2>&1); code=$?
 expect_code "lock release from BERTHY_ENV" 0 "$code" "$out"
 
+# On a terminal, a mutating command prints the target banner before it changes anything.
+out=$(drive banner "BERTHY_ENV=$ENVN $BIN lock acquire -m banner -e $ENVN --config $RUN/admin.json" <<JSON
+[
+  {"wait_text": "berthy: $PROJECT/$ENVN at http://$AGENT_LISTEN", "timeout": "20s"},
+  {"snapshot": "banner"},
+  {"expect_exit": 0}
+]
+JSON
+); code=$?
+expect_code "lock acquire banner on a terminal" 0 "$code" "$out"
+out=$(BERTHY_ENV=$ENVN "$BIN" lock release --config "$RUN/admin.json" 2>&1); code=$?
+expect_code "release after banner acquire" 0 "$code" "$out"
+
+# Outside a terminal, --json keeps stdout as one object and stderr has no banner.
+out=$("$BIN" lock release -e "$ENVN" --config "$RUN/admin.json" --json 2>"$RUN/banner.err"); code=$?
+expect_code "lock release --json outside a terminal" 0 "$code" "$out"
+expect_eq "redirected stderr has no banner" "" "$(cat "$RUN/banner.err")"
+if jq -e 'type == "object"' <<<"$out" >/dev/null; then pass "lock release --json is one object"; else fail "lock release --json is one object" "$out"; fi
+
 finish

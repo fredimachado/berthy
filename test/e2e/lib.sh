@@ -710,6 +710,16 @@ purge_fixture() {
   [ "$failed" -eq 0 ]
 }
 
+# drive NAME COMMAND: runs COMMAND in a pseudo-terminal of 120 columns by 40 rows and plays the steps on stdin. The snapshots and
+# the result of each step stay under $LOG/tui-NAME, which run.sh keeps with the logs of the scenario.
+drive() {
+  local name=$1 dir=$LOG/tui-$1
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cat > "$dir/script.json"
+  "$TUI_BIN" --command "$2" --size 120x40 --script "$dir/script.json" --out "$dir/out" --timeout 90s --redact-env BERTHY_ADMIN_TOKEN 2>&1
+}
+
 # Assertions. Each prints "  ok   NAME" or "  FAIL NAME: DETAIL" and counts the failures in E2E_FAILS.
 E2E_FAILS=0
 

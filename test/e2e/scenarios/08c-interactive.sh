@@ -34,16 +34,6 @@ expect_code "deploy v1" 0 "$code" "$out"
 out=$(adm deploy db --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy the Compose app" 0 "$code" "$out"
 
-# drive NAME COMMAND: runs COMMAND in a pseudo-terminal of 120 columns by 40 rows and plays the steps on stdin. The snapshots and
-# the result of each step stay under $LOG/tui-NAME, which run.sh keeps with the logs of the scenario.
-drive() {
-  local name=$1 dir=$LOG/tui-$1
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  cat > "$dir/script.json"
-  "$TUI_BIN" --command "$2" --size 120x40 --script "$dir/script.json" --out "$dir/out" --timeout 90s --redact-env BERTHY_ADMIN_TOKEN 2>&1
-}
-
 # session_containers: the ids of the containers of run sessions on the daemon, one per line.
 session_containers() { d ps -aq --filter label=berthy.environment=$ENVN --filter label=berthy.session; }
 
