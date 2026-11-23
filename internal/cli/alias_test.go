@@ -237,6 +237,7 @@ func TestConfigValidateRefusesABadAlias(t *testing.T) {
 
 func TestUnknownCommandSaysSo(t *testing.T) {
 	isolatedUserConfig(t)
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Chdir(t.TempDir())
 	for _, args := range [][]string{{"nosuch"}, {"nosuch", "-e", "dev"}} {
 		var out, errs bytes.Buffer
@@ -255,6 +256,7 @@ var probeOnlyCommands = []string{"probe-helper", "volume-archive", "volume-extra
 // and reaches the agent, which refuses the connection.
 func TestBuiltinCommandsAllDispatch(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Setenv("BERTHY_CONFIG", ingressCLIConfig(t, "http://127.0.0.1:1"))
 	for _, name := range builtinCommands {
 		if slices.Contains(probeOnlyCommands, name) {
@@ -310,5 +312,71 @@ func TestAliasCannotHideProjectFlagBehindFlagValue(t *testing.T) {
 	}
 	if cardio.Load() != 0 || slice.Load() != 0 {
 		t.Fatalf("sent %d and %d requests", cardio.Load(), slice.Load())
+	}
+}
+
+// writeDevOnlyHoldAlias writes a base manifest and a berthy.dev.yml that defines hold, with no hold in prod.
+func writeDevOnlyHoldAlias(t *testing.T, holdLine string) string {
+	t.Helper()
+	dir := writeAliasDir(t, aliasManifest)
+	overlay := "aliases:\n  hold: " + holdLine + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte(overlay), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// twoEnvAliasConfig points demo/dev and demo/prod at separate agents and sets the shared token variable.
+func twoEnvAliasConfig(t *testing.T, devURL, prodURL string) string {
+	t.Helper()
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"},"prod":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, devURL, prodURL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	return cfg
+}
+
+func TestAliasLookupSeesFlagValuesSoDashDashDoesNotHideTheEnvironment(t *testing.T) {
+	dev, devReqs := aliasAgent(t)
+	prod, prodReqs := aliasAgent(t)
+	cfg := twoEnvAliasConfig(t, dev.URL, prod.URL)
+	dir := writeDevOnlyHoldAlias(t, "lock acquire")
+	t.Chdir(dir)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	var out, errs bytes.Buffer
+	code := Run([]string{"hold", "-m", "--", "-e", "prod", "--config", cfg}, &out, &errs)
+	if code != 2 || !strings.Contains(errs.String(), "unknown command hold") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+	if len(devReqs()) != 0 || len(prodReqs()) != 0 {
+		t.Fatalf("requests reached an agent: dev %v prod %v", devReqs(), prodReqs())
+	}
+}
+
+func TestAliasRefusesWhenTheExpandedCommandTargetsAnotherEnvironment(t *testing.T) {
+	dev, devReqs := aliasAgent(t)
+	prod, prodReqs := aliasAgent(t)
+	cfg := twoEnvAliasConfig(t, dev.URL, prod.URL)
+	dir := writeDevOnlyHoldAlias(t, "lock acquire -m")
+	t.Chdir(dir)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	var out, errs bytes.Buffer
+	code := Run([]string{"hold", "--", "-e", "prod", "--config", cfg}, &out, &errs)
+	if code != 1 || !strings.Contains(errs.String(), "targets environment prod") || !strings.Contains(errs.String(), "loaded for environment dev") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+	if len(devReqs()) != 0 || len(prodReqs()) != 0 {
+		t.Fatalf("requests reached an agent: dev %v prod %v", devReqs(), prodReqs())
+	}
+}
+
+func TestAliasStillTreatsBareDashDashAsTheEndOfOptions(t *testing.T) {
+	t.Setenv(agentclient.EnvironmentEnv, "")
+	t.Chdir(writeAliasDir(t, aliasManifest))
+	_, _, ok, err := expandAlias("console", []string{"--", "-e", "dev"})
+	if ok || err == nil || !strings.Contains(err.Error(), "an alias of the manifest needs -e") {
+		t.Fatalf("ok %v err %v, want a missing -e refusal", ok, err)
 	}
 }

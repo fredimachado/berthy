@@ -33,7 +33,7 @@ var builtinCommands = slices.Concat(localCommands, agentCommands)
 
 // checkAliases reports the first alias, in name order, that the CLI cannot run. An alias may not take the name of a built-in
 // command. Its first word must be a command that talks to an agent, not another alias. It may not set -e, --config or
-// --environment, because the environment is always given on the command line. Each error names the alias.
+// --environment, because the environment comes from the command line or BERTHY_ENV. Each error names the alias.
 func checkAliases(aliases map[string]string) error {
 	for _, name := range slices.Sorted(maps.Keys(aliases)) {
 		words := strings.Fields(aliases[name])
@@ -55,14 +55,20 @@ func checkAliases(aliases map[string]string) error {
 				break
 			}
 			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
-				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line", name, w)
+				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line or by BERTHY_ENV", name, w)
 			}
-			if deploymentFlagTakesValue(w) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, w) {
+			if aliasArgTakesValue(w) {
 				i++
 			}
 		}
 	}
 	return nil
+}
+
+// aliasArgTakesValue reports whether a flag on an alias invocation takes a value. It matches checkAliases and
+// parseDeploymentArgs, so a value of "--" is not mistaken for the end of options.
+func aliasArgTakesValue(flag string) bool {
+	return deploymentFlagTakesValue(flag) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, flag)
 }
 
 // expandAlias returns the command line the alias cmd of the manifest stands for. The person's -e, --config and --manifest-dir
@@ -99,6 +105,13 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 			}
 		default:
 			rest = append(rest, a)
+			if aliasArgTakesValue(a) {
+				if i+1 == len(args) {
+					break
+				}
+				i++
+				rest = append(rest, args[i])
+			}
 		}
 	}
 	env, fromVariable := agentclient.EnvironmentName(env, envGiven)
@@ -135,10 +148,42 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 		return append(out, rest...)
 	}
 	// --manifest-dir is read for the lookup above. It goes on to the expanded line only when that command takes it.
+	expanded = line(flags)
 	if withDir := line(append(slices.Clone(flags), manifestDir...)); len(manifestDir) > 0 && acceptsFlag(withDir, "--manifest-dir") {
-		return withDir, dir, true, nil
+		expanded = withDir
 	}
-	return line(flags), dir, true, nil
+	if target := lineEnvironment(expanded); target != env {
+		return nil, "", true, fmt.Errorf("alias %s targets environment %s but was loaded for environment %s", cmd, target, env)
+	}
+	return expanded, dir, true, nil
+}
+
+// lineEnvironment is the environment the expanded command will resolve, with the same -e, value-flag and "--" rules as
+// deployment parsing and EnvironmentName.
+func lineEnvironment(argv []string) string {
+	var env string
+	var given bool
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		if a == "--" {
+			break
+		}
+		if a == "-e" {
+			given = true
+			if i+1 < len(argv) {
+				i++
+				env = argv[i]
+			} else {
+				env = ""
+			}
+			continue
+		}
+		if aliasArgTakesValue(a) && i+1 < len(argv) {
+			i++
+		}
+	}
+	name, _ := agentclient.EnvironmentName(env, given)
+	return name
 }
 
 // acceptsFlag reports whether the command line takes flag. It asks the list that already refuses the flags a change command does

@@ -104,8 +104,10 @@ func TestAnExplicitEmptyEnvironmentIsRefusedEvenWithBerthyEnv(t *testing.T) {
 		}
 	}
 	made := withSetupRunner(t, &setupServer{})
-	code, out, errout := runSetupCmd("-e", "", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "n", "--manifest-dir", t.TempDir())
-	if code != 2 || out != "" || errout == "" {
+	dir := projectDir(t)
+	setupCfg := filepath.Join(t.TempDir(), "setup-cli.json")
+	code, out, errout := runSetupCmd("-e", "", "--project", "shop", "--host", "ops@s1", "--listen", "10.0.0.1:7710", "--network", "n", "--manifest-dir", dir, "--config", setupCfg)
+	if code != 2 || out != "" || !strings.Contains(errout, "setup needs -e ENV: lowercase letters, digits and dashes") {
 		t.Fatalf("setup: exit %d, stdout %q, stderr %q", code, out, errout)
 	}
 	if made[0] != nil {
