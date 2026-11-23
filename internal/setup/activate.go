@@ -225,9 +225,6 @@ func journalTail(ctx context.Context, r Runner) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading the agent's log: %w", err)
 	}
-	if res.Code != 0 {
-		return "", fmt.Errorf("reading the agent's log: %s", failureText(res))
-	}
 	return lastLines(res, 20), nil
 }
 

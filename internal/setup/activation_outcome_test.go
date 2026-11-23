@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -15,6 +16,50 @@ type outcomeRunner struct {
 	stage    string
 	calls    []string
 	restarts int
+}
+
+type journalExitRunner struct {
+	*outcomeRunner
+	journalCode, rollbackCode int
+}
+
+func (r *journalExitRunner) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
+	if strings.HasPrefix(script, "journalctl") {
+		r.calls = append(r.calls, script)
+		return Result{Code: r.journalCode}, nil
+	}
+	if r.rollbackCode != 0 && strings.Contains(script, "mv -f "+configPath+".prev "+configPath) {
+		r.calls = append(r.calls, script)
+		return Result{Code: r.rollbackCode}, nil
+	}
+	return r.outcomeRunner.Run(ctx, script, stdin)
+}
+
+func TestJournalExitDoesNotPreventRollback(t *testing.T) {
+	for _, tc := range []struct {
+		journal, rollback int
+		want              ConfigOutcome
+	}{
+		{1, 0, ConfigPrevious}, {255, 0, ConfigPrevious}, {255, 255, ConfigUnconfirmed},
+	} {
+		t.Run(fmt.Sprintf("journal_%d_rollback_%d", tc.journal, tc.rollback), func(t *testing.T) {
+			r := &journalExitRunner{outcomeRunner: &outcomeRunner{}, journalCode: tc.journal, rollbackCode: tc.rollback}
+			err := Activate(context.Background(), r, "127.0.0.1:7710", Staged{Config: true}, time.Second)
+			found := false
+			for _, script := range r.calls {
+				if strings.Contains(script, "mv -f "+configPath+".prev "+configPath) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("journal exit prevented rollback")
+			}
+			var ae *ActivateError
+			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.want {
+				t.Fatal("the configuration outcome did not reflect rollback")
+			}
+		})
+	}
 }
 
 type uncertainSetupRunner struct {
@@ -97,7 +142,7 @@ func TestActivationReportsConfigurationOutcome(t *testing.T) {
 	for _, tc := range []struct{ stage, want string }{
 		{"already cancelled", "previous"}, {"swap cancelled", "unconfirmed"}, {"swap 255", "unconfirmed"},
 		{"rollback 255", "unconfirmed"}, {"rollback error", "unconfirmed"},
-		{"after rollback", "previous"}, {"restart error", "retained"}, {"journal error", "retained"}, {"journal 255", "retained"}, {"stop error", "retained"}, {"stop 255", "retained"}, {"binary rollback error", "retained"},
+		{"after rollback", "previous"}, {"restart error", "retained"}, {"journal error", "retained"}, {"journal 255", "previous"}, {"stop error", "retained"}, {"stop 255", "retained"}, {"binary rollback error", "retained"},
 	} {
 		t.Run(tc.stage, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
