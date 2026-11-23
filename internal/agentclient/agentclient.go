@@ -166,11 +166,11 @@ func resolve(path string, sel Selector, store credstore.Store) (*Target, error) 
 			return nil, fmt.Errorf("environment %s exists in several projects (%s): give --project, or run the command in the project's directory", env, strings.Join(have, ", "))
 		}
 	}
-	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
-		return nil, err
-	}
 	if !scope.ValidProject(project) || !scope.ValidEnvironment(env) || entry.TokenEnv == "" {
 		return nil, errors.New("unknown environment or missing token_env")
+	}
+	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
+		return nil, err
 	}
 	if !StoreUsable(project, env, entry) {
 		store = nil

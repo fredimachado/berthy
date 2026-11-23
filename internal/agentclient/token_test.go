@@ -4,6 +4,7 @@ import (
 	"berthy/internal/credstore"
 	"berthy/internal/credstore/credtest"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -85,7 +86,7 @@ func TestResolveRefusesAmbiguousTokenVariableBeforeStore(t *testing.T) {
 }
 
 func TestResolveRejectsInvalidScopeBeforeStore(t *testing.T) {
-	for _, tc := range []struct{ project, env string }{{"bad@name", "dev"}, {"bad/name", "dev"}, {"demo", "bad@env"}, {"demo", "bad/env"}} {
+	for _, tc := range []struct{ project, env string }{{"bad@name", "dev"}, {"bad/name", "dev"}, {"demo", "bad@env"}, {"demo", "bad/env"}, {strings.Repeat("a", 64), "dev"}} {
 		t.Run(tc.project+"_"+tc.env, func(t *testing.T) {
 			s := credtest.NewMemory()
 			old := TokenStore
