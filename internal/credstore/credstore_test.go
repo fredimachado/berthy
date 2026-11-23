@@ -13,13 +13,13 @@ func TestKeyAccountNamesTheEnvironmentTheAgentAndTheVariable(t *testing.T) {
 		Variable:    "BERTHY_TODO_DEV_TOKEN",
 	}
 	want := "todo/dev@http://10.0.0.5:7710#BERTHY_TODO_DEV_TOKEN"
-	if got := base.account(); got != want {
-		t.Fatalf("account = %q, want %q", got, want)
+	if got := base.Account(); got != want {
+		t.Fatalf("Account = %q, want %q", got, want)
 	}
 	other := base
 	other.Variable = "BERTHY_TODO_DEV_SCRIPT_TOKEN"
-	if other.account() == base.account() {
-		t.Fatalf("keys that differ only in Variable share account %q", base.account())
+	if other.Account() == base.Account() {
+		t.Fatalf("keys that differ only in Variable share Account %q", base.Account())
 	}
 }
 

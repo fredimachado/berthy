@@ -30,7 +30,7 @@ func (o *osStore) Get(k Key) (string, error) {
 	if !sessionBus() {
 		return "", ErrUnavailable
 	}
-	v, err := keyring.Get(o.service, k.account())
+	v, err := keyring.Get(o.service, k.Account())
 	if errors.Is(err, keyring.ErrNotFound) {
 		return "", ErrNotFound
 	}
@@ -44,7 +44,7 @@ func (o *osStore) Set(k Key, secret string) error {
 	if !sessionBus() {
 		return ErrUnavailable
 	}
-	err := keyring.Set(o.service, k.account(), secret)
+	err := keyring.Set(o.service, k.Account(), secret)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -55,7 +55,7 @@ func (o *osStore) Delete(k Key) (bool, error) {
 	if !sessionBus() {
 		return false, ErrUnavailable
 	}
-	err := keyring.Delete(o.service, k.account())
+	err := keyring.Delete(o.service, k.Account())
 	if errors.Is(err, keyring.ErrNotFound) {
 		return false, nil
 	}

@@ -16,9 +16,10 @@ type Key struct {
 	Variable    string // the entry's token_env
 }
 
-// account is the name the store files the token under: "todo/dev@http://10.0.0.5:7710#BERTHY_TODO_DEV_TOKEN".
-// A trailing slash of URL is dropped.
-func (k Key) account() string {
+// Account is the name the store files the token under: "todo/dev@http://10.0.0.5:7710#BERTHY_TODO_DEV_TOKEN".
+// A trailing slash of URL is dropped. Memory and the OS store both use this, so a token saved with a trailing slash
+// is found under the URL without one.
+func (k Key) Account() string {
 	return fmt.Sprintf("%s/%s@%s#%s", k.Project, k.Environment, strings.TrimRight(k.URL, "/"), k.Variable)
 }
 

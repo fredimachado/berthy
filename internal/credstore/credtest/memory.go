@@ -16,14 +16,14 @@ type Memory struct {
 
 	mu       sync.Mutex
 	cond     *sync.Cond
-	vals     map[credstore.Key]string
+	vals     map[string]string
 	calls    int
 	inflight int
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	m := &Memory{vals: map[credstore.Key]string{}}
+	m := &Memory{vals: map[string]string{}}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -84,14 +84,14 @@ func (m *Memory) Get(k credstore.Key) (string, error) {
 	defer m.end()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v, ok := m.vals[k]
+	v, ok := m.vals[k.Account()]
 	if !ok {
 		return "", credstore.ErrNotFound
 	}
 	return v, nil
 }
 
-// Set stores a token.
+// Set stores a token under Key.Account, the same name the OS store uses.
 func (m *Memory) Set(k credstore.Key, secret string) error {
 	m.begin()
 	defer m.end()
@@ -100,7 +100,7 @@ func (m *Memory) Set(k credstore.Key, secret string) error {
 	if m.SetErr != nil {
 		return m.SetErr
 	}
-	m.vals[k] = secret
+	m.vals[k.Account()] = secret
 	return nil
 }
 
@@ -113,9 +113,10 @@ func (m *Memory) Delete(k credstore.Key) (bool, error) {
 	if m.DeleteErr != nil {
 		return false, m.DeleteErr
 	}
-	if _, ok := m.vals[k]; !ok {
+	account := k.Account()
+	if _, ok := m.vals[account]; !ok {
 		return false, nil
 	}
-	delete(m.vals, k)
+	delete(m.vals, account)
 	return true, nil
 }
