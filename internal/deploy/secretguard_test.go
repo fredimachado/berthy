@@ -162,3 +162,14 @@ func TestGuardRefusesFailedInventories(t *testing.T) {
 		})
 	}
 }
+
+func TestGuardSeesImageReaderVolumeWithoutDeployment(t *testing.T) {
+	docker := newComposeDocker()
+	docker.volumes = map[string]bool{"shop-test_data": true}
+	c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
+	m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"db": {Kind: "image", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}}, Roles: map[string]manifest.Role{"web": {Volumes: []string{"data:/data"}}}}}}
+	finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
+	if err != nil || finding == nil || finding.App != "db" || finding.Volume != "shop-test_data" {
+		t.Fatalf("finding: %+v, %v", finding, err)
+	}
+}

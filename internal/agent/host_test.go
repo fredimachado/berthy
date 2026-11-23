@@ -1204,3 +1204,57 @@ func TestForeignIncludesPeerKeptTunnel(t *testing.T) {
 		t.Fatalf("foreign: %+v, %v", foreign, err)
 	}
 }
+
+type hostedSecretInventory struct {
+	generateEngine
+	calls atomic.Int32
+}
+
+func (e *hostedSecretInventory) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {
+	e.calls.Add(1)
+	return []engine.ComposeContainer{{State: "exited"}}, nil
+}
+func (e *hostedSecretInventory) ProjectVolumes(context.Context, string) ([]string, error) {
+	e.calls.Add(1)
+	return []string{"private-volume"}, nil
+}
+func (e *hostedSecretInventory) VolumeExists(context.Context, string) (bool, error) {
+	e.calls.Add(1)
+	return true, nil
+}
+func (e *hostedSecretInventory) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	e.calls.Add(1)
+	return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+}
+
+func TestGenerateDeclaredAcrossTwoEnvironments(t *testing.T) {
+	owner, requester := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
+	sh, f := hostedFile(t, owner, requester)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	inventory := &hostedSecretInventory{}
+	h.runtimes[requester].deployment.Engine = inventory
+	if err := h.runtimes[owner].deployment.Store.AddClaims(t.Context(), []state.Claim{{Kind: state.ClaimComposeProject, Name: "shared"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"manifest":{"project":"two","network":"overlay","apps":{"db":{"kind":"compose","file":"compose.yml","project_name":"shared","env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}},"compose_files":{"db":"volumes: {data: {name: private-volume}}"}}`
+	w := serve(h, "POST", requester.APIPath()+"secrets/generate-declared", adminOf(f, 1), body)
+	refused := strings.Contains(w.Body.String(), "Compose project name is taken by another project or environment on this server")
+	volumeExposed := strings.Contains(w.Body.String(), "private-volume")
+	if w.Code != 400 || !refused || volumeExposed {
+		t.Fatalf("status %d, expected refusal %t, volume exposed %t", w.Code, refused, volumeExposed)
+	}
+	if n := inventory.calls.Load(); n != 0 {
+		t.Fatalf("foreign inventory calls: %d", n)
+	}
+	secrets, err := h.runtimes[requester].deployment.Store.Secrets(t.Context())
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("secrets: %v %v", secrets, err)
+	}
+}

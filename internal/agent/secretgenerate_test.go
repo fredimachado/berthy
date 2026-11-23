@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/state"
@@ -628,5 +631,173 @@ func TestGenerateDeclaredRefusesForeignComposeProject(t *testing.T) {
 	}
 	if _, ok := storedValue(t, f, "DB_PASS"); ok {
 		t.Fatal("foreign refusal stored secret")
+	}
+}
+
+func TestGenerateDeclaredMixedReadersAndRepeat(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = generateEngine{}
+	recorded := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+	recordAppRelease(t, f.s, "db-record", "db", recorded)
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}},"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["API_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}},"API_PASS":{"generate":{"format":"hex"}}}}}`
+	previous := secretRandom
+	t.Cleanup(func() { secretRandom = previous })
+	secretRandom = bytes.NewReader(bytes.Repeat([]byte{0xab}, 32))
+	read := func(raw string, want api.DeclaredOutcome) string {
+		t.Helper()
+		w := f.call("POST", "/secrets/generate-declared", apAdminToken, raw)
+		var answer api.SecretsDeclared
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &answer) != nil || answer.Action != "secret generate declared" || len(answer.Secrets) != 2 {
+			t.Fatalf("unexpected response status or shape: %d", w.Code)
+		}
+		expected := []api.DeclaredSecretOutcome{
+			{Name: "API_PASS", Outcome: want, Bytes: 32, Format: "hex"},
+			{Name: "DB_PASS", Outcome: api.DeclaredRefuse, Bytes: 32, Format: "hex", App: "db"},
+		}
+		if !reflect.DeepEqual(answer.Secrets, expected) {
+			t.Fatalf("unexpected outcomes: %+v", answer.Secrets)
+		}
+		return w.Body.String()
+	}
+	dry := read(strings.TrimSuffix(body, "}")+`,"dry_run":true}`, api.DeclaredGenerate)
+	for _, name := range []string{"API_PASS", "DB_PASS"} {
+		if _, ok := storedValue(t, f, name); ok {
+			t.Fatalf("dry run stored %s", name)
+		}
+	}
+	first := read(body, api.DeclaredGenerate)
+	value, ok := storedValue(t, f, "API_PASS")
+	if !ok || value == "" {
+		t.Fatal("fresh value missing")
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("deployed reader secret stored")
+	}
+	again := read(body, api.DeclaredKeep)
+	value2, ok := storedValue(t, f, "API_PASS")
+	if !ok || value2 != value {
+		t.Fatal("repeat changed stored value")
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("repeat stored the deployed reader's secret")
+	}
+	rows, err := f.s.AuditLog(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := json.Marshal(rows)
+	count := 0
+	for _, row := range rows {
+		if row.Action == "secret_generate:API_PASS" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("generation audit count %d", count)
+	}
+	if strings.Contains(dry, value) || strings.Contains(first, value) || strings.Contains(again, value) || bytes.Contains(audit, []byte(value)) {
+		t.Fatal("value leaked into a plan, answer or audit")
+	}
+}
+
+type failingSecretInventory struct {
+	*generateComposeEngine
+	fail string
+}
+
+const inventoryDiagnostic = "private-docker-diagnostic"
+
+func (e *failingSecretInventory) ComposeContainers(ctx context.Context, project string) ([]engine.ComposeContainer, error) {
+	if e.fail == "containers" {
+		return nil, errors.New(inventoryDiagnostic)
+	}
+	return e.generateComposeEngine.ComposeContainers(ctx, project)
+}
+func (e *failingSecretInventory) ProjectVolumes(ctx context.Context, project string) ([]string, error) {
+	if e.fail == "projects" {
+		return nil, errors.New(inventoryDiagnostic)
+	}
+	return e.generateComposeEngine.ProjectVolumes(ctx, project)
+}
+func (e *failingSecretInventory) VolumeExists(ctx context.Context, volume string) (bool, error) {
+	if e.fail == "volumes" {
+		return false, errors.New(inventoryDiagnostic)
+	}
+	return e.generateComposeEngine.VolumeExists(ctx, volume)
+}
+func (e *failingSecretInventory) InspectService(ctx context.Context, service string) (engine.ServiceSnapshot, error) {
+	if e.fail == "service" {
+		return engine.ServiceSnapshot{}, &engine.StatusError{Code: 500}
+	}
+	return e.generateEngine.InspectService(ctx, service)
+}
+
+func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, fail              string
+		omit, image, release, foreign bool
+	}{
+		{name: "omitted file", omit: true},
+		{name: "malformed yaml", file: "volumes: ["},
+		{name: "include", file: "include: [other.yml]"},
+		{name: "braced interpolation", file: "volumes: {data: {name: '${STACK}_data'}}"},
+		{name: "bare interpolation", file: "volumes: {data: {name: '$STACK'}}"},
+		{name: "container lookup", file: "services: {}", fail: "containers"},
+		{name: "project volume lookup", file: "services: {}", fail: "projects"},
+		{name: "fixed volume lookup", file: "volumes: {data: {name: shared}}", fail: "volumes"},
+		{name: "service lookup", image: true, fail: "service"},
+		{name: "unreadable release", file: "services: {}", release: true},
+		{name: "foreign lookup", file: "services: {}", foreign: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, route := range []string{"generate", "generate-declared"} {
+				t.Run(route, func(t *testing.T) {
+					f := newApprovalFixture(t, false, nil)
+					f.ctrl.Engine = &failingSecretInventory{generateComposeEngine: &generateComposeEngine{}, fail: tc.fail}
+					if tc.foreign {
+						f.ctrl.Foreign = func(context.Context) (deploy.Foreign, error) {
+							return deploy.Foreign{}, errors.New(inventoryDiagnostic)
+						}
+					}
+					if tc.release {
+						op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "bad-release", ActorID: "a", Kind: "deploy", App: "old", PublicRequest: []byte(`{}`)})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "old", Manifest: []byte(`{}`)}}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					app := map[string]any{"kind": "compose", "file": "compose.yml", "env": map[string]any{"secret": []string{"DB_PASS"}}}
+					if tc.image {
+						app = map[string]any{"kind": "image", "image": "ghcr.io/acme/db", "roles": map[string]any{"web": map[string]any{}}, "env": map[string]any{"secret": []string{"DB_PASS"}}}
+					}
+					m := map[string]any{"project": "demo", "network": "overlay", "apps": map[string]any{"db": app}, "secrets": map[string]any{"DB_PASS": map[string]any{"generate": map[string]any{"format": "hex"}}}}
+					files := map[string]string{}
+					if !tc.omit && !tc.image {
+						files["db"] = tc.file
+					}
+					body := map[string]any{"manifest": m, "compose_files": files}
+					if route == "generate" {
+						body["name"] = "DB_PASS"
+					}
+					encoded, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					w := f.call("POST", "/secrets/"+route, apAdminToken, string(encoded))
+					message := "the state of app db cannot be established, so nothing is generated"
+					if tc.release {
+						message = "the recorded releases cannot be read, so nothing is generated"
+					}
+					if w.Code != 400 || !strings.Contains(w.Body.String(), message) || strings.Contains(w.Body.String(), inventoryDiagnostic) {
+						t.Fatalf("%s: status %d, expected refusal %t, diagnostic exposed %t", route, w.Code, strings.Contains(w.Body.String(), message), strings.Contains(w.Body.String(), inventoryDiagnostic))
+					}
+					if _, ok := storedValue(t, f, "DB_PASS"); ok {
+						t.Fatalf("%s stored secret", route)
+					}
+				})
+			}
+		})
 	}
 }
