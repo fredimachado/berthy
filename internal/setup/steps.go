@@ -128,13 +128,14 @@ type Session struct {
 	// it runs.
 	dockerStopped bool
 
-	existing    *agent.File // the server's agent configuration, when there is one
-	existingRaw []byte
-	configRead  bool
-	newToken    *agent.Token
-	staged      Staged // what this run staged for the service step
-	unitChanged bool
-	serverVer   *string // the version the agent binary on the server reports; "" when it says none
+	existing        *agent.File // the server's agent configuration, when there is one
+	existingRaw     []byte
+	configRead      bool
+	newToken        *agent.Token
+	staged          Staged // what this run staged for the service step
+	stagedConfigSHA string // digest of the exact configuration staged by this run
+	unitChanged     bool
+	serverVer       *string // the version the agent binary on the server reports; "" when it says none
 }
 
 // StepResult is what a step reported.

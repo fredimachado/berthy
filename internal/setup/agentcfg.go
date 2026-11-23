@@ -615,5 +615,6 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", fmt.Errorf("writing %s: %s", configPath, failureText(res))
 	}
 	s.staged.Config = true
+	s.stagedConfigSHA = sha256Hex(want)
 	return StatusChanged, verb + "d " + summary, nil
 }

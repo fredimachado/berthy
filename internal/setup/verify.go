@@ -153,17 +153,19 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 		prefix = fmt.Sprintf("this machine cannot reach %s; checked on the server: ", base)
 		if checks, err = s.doctorOnServer(ctx, base, token); err != nil {
-			return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %v", base, err)
+			return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %s", base, redactDoctor(err.Error(), token))
 		}
 	default:
-		return "", "", err
+		return "", "", errors.New(redactDoctor(err.Error(), token))
 	}
 	detail, err := summarize(checks)
 	if err != nil {
-		return "", "", err
+		return "", "", errors.New(redactDoctor(err.Error(), token))
 	}
-	return StatusOK, prefix + detail, nil
+	return StatusOK, redactDoctor(prefix+detail, token), nil
 }
+
+func redactDoctor(s, token string) string { return strings.ReplaceAll(s, token, "<token>") }
 
 // healthScript asks the server whether the agent answers on listen, for five seconds.
 func healthScript(listen string) string { return waitScript(healthURL(listen), 5) }

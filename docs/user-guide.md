@@ -2777,7 +2777,7 @@ The order:
 
    Setup makes the managed parent directories traversable by the `berthy` user, installs your key instead of making one, gives the restored state to that user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.
 
-   **The tokens you made with `berthy token create` are part of the state.** The snapshot holds their digests, so your CI and AI agent tokens work again as soon as the restored agent starts, with the values you already gave them. Only the first `admin` token lives in the agent's configuration, so setup makes a new one: it is printed once, as on the first run. A token whose expiry has passed is still refused.
+   **The tokens you made with `berthy token create` are part of the state.** The snapshot holds their digests, so your CI and AI agent tokens work again as soon as the restored agent starts, with the values you already gave them. Only the first `admin` token lives in the agent's configuration, so setup makes a new one. A confirmed credential-store save suppresses it by default. If the save is unavailable or unconfirmed, setup prints it; `--show-token` prints it as well. A token whose expiry has passed is still refused.
 
 4. **Check:** `berthy doctor -e prod`.
 

@@ -20,7 +20,13 @@ import (
 	"berthy/internal/credstore/credtest"
 )
 
-func setupWithStore(t *testing.T, flags ...string) (setupReport, string, *credtest.Memory, string) {
+type setupTokenWire struct {
+	Token       string   `json:"token"`
+	TokenStored bool     `json:"token_stored"`
+	NextSteps   []string `json:"next_steps"`
+}
+
+func setupWithStore(t *testing.T, flags ...string) (setupTokenWire, string, *credtest.Memory, string) {
 	t.Helper()
 	store := credtest.NewMemory()
 	old := agentclient.TokenStore
@@ -40,7 +46,7 @@ func setupWithStore(t *testing.T, flags ...string) (setupReport, string, *credte
 	if code != 0 {
 		t.Fatalf("setup exit %d", code)
 	}
-	var report setupReport
+	var report setupTokenWire
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatal(err)
 	}

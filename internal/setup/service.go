@@ -3,8 +3,11 @@ package setup
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"berthy/deploy/systemd"
 )
@@ -103,6 +106,19 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 			}
 			return "", "", err
 		default:
+			if s.Token != "" && s.newToken != nil && s.staged.Config && s.stagedConfigSHA != "" {
+				checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				res, checkErr := s.R.Run(checkCtx, "sha256sum "+configPath, nil)
+				cancel()
+				observed := firstField(res.Stdout)
+				decoded, parseErr := hex.DecodeString(observed)
+				if checkErr != nil || res.Code != 0 || parseErr != nil || len(decoded) != 32 {
+					return "", "", fmt.Errorf("%w; could not confirm which agent configuration remains on the server", err)
+				}
+				if observed == s.stagedConfigSHA {
+					s.tokenLive()
+				}
+			}
 			return "", "", err
 		}
 	}
