@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"berthy/internal/agentclient"
@@ -67,9 +68,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
+	target, err := agentclient.ResolveEnvOnly(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
+		if strings.HasPrefix(err.Error(), "no token for ") {
+			fmt.Fprintln(stderr, "berthy mcp reads the token variable only: give it an agent token made with berthy token create --agent")
+		}
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

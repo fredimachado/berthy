@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"berthy/internal/credstore"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 )
@@ -109,10 +110,19 @@ type Selector struct {
 	ManifestDir string // where berthy.yml is looked for when Project is empty; empty means do not look
 }
 
-// Resolve reads the configuration file and returns the target the selector means, with the token from the variable the file
-// names. The project is the selector's, else the one of the berthy.yml in ManifestDir, else the only project that has the
+// Resolve reads the configuration file and returns the target the selector means, with its token from the named
+// variable or the credential store. The project is the selector's, else the one of the berthy.yml in ManifestDir, else the only project that has the
 // environment. The errors name projects and environments and never repeat any other value of the file.
 func Resolve(path string, sel Selector) (*Target, error) {
+	return resolve(path, sel, Tokens(context.Background()))
+}
+
+// ResolveEnvOnly resolves a target using only its token variable.
+func ResolveEnvOnly(path string, sel Selector) (*Target, error) {
+	return resolve(path, sel, nil)
+}
+
+func resolve(path string, sel Selector, store credstore.Store) (*Target, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config %s", path)
@@ -162,9 +172,9 @@ func Resolve(path string, sel Selector) (*Target, error) {
 	if entry.TokenEnv == "" {
 		return nil, errors.New("unknown environment or missing token_env")
 	}
-	token := os.Getenv(entry.TokenEnv)
-	if token == "" {
-		return nil, errors.New("token environment variable is empty")
+	token, _, err := FindToken(os.Getenv, store, project, env, entry)
+	if err != nil {
+		return nil, err
 	}
 	u, err := parseAgentURL(entry.URL)
 	if err != nil {

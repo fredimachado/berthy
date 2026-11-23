@@ -92,7 +92,7 @@ func TestResolveRefusesWithoutEchoingValues(t *testing.T) {
 	for _, tc := range []struct{ name, body, env, want string }{
 		{"unknown env", good, "prod", "unknown environment or missing token_env"},
 		{"no token_env", one(`{"url":"http://127.0.0.1:9000"}`), "dev", "unknown environment or missing token_env"},
-		{"empty token", one(`{"url":"http://127.0.0.1:9000","token_env":"BERTHY_EMPTY_TOKEN"}`), "dev", "token environment variable is empty"},
+		{"empty token", one(`{"url":"http://127.0.0.1:9000","token_env":"BERTHY_EMPTY_TOKEN"}`), "dev", "no token for demo/dev: its token variable is empty"},
 		{"https", one(`{"url":"https://127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}`), "dev", "invalid agent URL"},
 		{"credentials in URL", one(`{"url":"http://user:pw@127.0.0.1:9000","token_env":"BERTHY_TEST_TOKEN"}`), "dev", "invalid agent URL"},
 		{"unknown field", `{"projects":{},"extra":1}`, "dev", "invalid config"},

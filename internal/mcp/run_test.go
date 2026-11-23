@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/credstore/credtest"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -68,7 +69,7 @@ func TestRunRefusesBadArguments(t *testing.T) {
 	}
 	t.Setenv("BERTHY_MCP_TEST_TOKEN", "")
 	var out, errs bytes.Buffer
-	if code := Run([]string{"-e", "dev", "--config", good}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "token environment variable is empty") {
+	if code := Run([]string{"-e", "dev", "--config", good}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "no token for demo/dev: its token variable is empty") {
 		t.Errorf("empty token: exit %d %q", code, errs.String())
 	}
 }
@@ -174,5 +175,21 @@ func TestRunLooksForTheProjectInTheManifestDirectory(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := Run([]string{"-e", "dev", "--config", good, "--manifest-dir", dir}, strings.NewReader(""), &out, &errs); code != 1 || !strings.Contains(errs.String(), "no environment dev for project other in the CLI configuration") || out.Len() != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+}
+
+func TestRunNeverUsesTheStoredToken(t *testing.T) {
+	t.Setenv("BERTHY_MCP_TEST_TOKEN", "")
+	s := credtest.NewMemory()
+	_ = s.Set(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:1", TokenEnv: "BERTHY_MCP_TEST_TOKEN"}), "admin")
+	before := s.Calls()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	var out, errs bytes.Buffer
+	code := Run([]string{"-e", "dev", "--config", writeConfig(t, "http://127.0.0.1:1")}, strings.NewReader(""), &out, &errs)
+	want := "no token for demo/dev: its token variable is empty (berthy context list names it)\nberthy mcp reads the token variable only: give it an agent token made with berthy token create --agent\n"
+	if code != 1 || errs.String() != want || s.Calls() != before {
+		t.Fatalf("exit %d stderr %q store calls %d", code, errs.String(), s.Calls()-before)
 	}
 }
