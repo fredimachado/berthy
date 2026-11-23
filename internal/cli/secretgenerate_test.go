@@ -185,3 +185,20 @@ func TestSecretGenerateByNameRefusesAMissingComposeFile(t *testing.T) {
 		t.Fatalf("exit %d calls %d stderr %q", code, calls.Load(), errout.String())
 	}
 }
+
+func TestSecretGenerateReplaceSkipsMissingComposeFile(t *testing.T) {
+	var bodies []string
+	server := replyingAgent(&bodies, http.StatusOK, `{"name":"GEN_PASS","bytes":32,"format":"hex","replaced":true}`)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := t.TempDir()
+	content := "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: missing.yml\n    env:\n      secret: [GEN_PASS]\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "GEN_PASS", "--replace", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 0 || len(bodies) != 1 || !strings.HasSuffix(bodies[0], `{"name":"GEN_PASS","replace":true}`) {
+		t.Fatalf("exit %d requests %v stderr %q", code, bodies, errout.String())
+	}
+}

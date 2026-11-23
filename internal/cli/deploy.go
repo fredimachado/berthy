@@ -865,26 +865,28 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			if code != 0 {
 				return code
 			}
-			m, loadErr := manifest.Load(projectDir, f.env)
-			if loadErr != nil {
-				if _, statErr := os.Stat(filepath.Join(projectDir, "berthy.yml")); statErr == nil {
-					fmt.Fprintf(errout, "manifest not loaded: %v\n", loadErr)
-				}
-			} else if m.Project == target.Project && len(m.SecretReaders(req.Name)) > 0 {
-				req.Manifest = m
-				for _, app := range m.SecretReaders(req.Name) {
-					if m.Apps[app].Kind != "compose" {
-						continue
+			if !req.Replace {
+				m, loadErr := manifest.Load(projectDir, f.env)
+				if loadErr != nil {
+					if _, statErr := os.Stat(filepath.Join(projectDir, "berthy.yml")); statErr == nil {
+						fmt.Fprintf(errout, "manifest not loaded: %v\n", loadErr)
 					}
-					file, err := agentclient.ReadComposeFile(projectDir, m.Apps[app].File)
-					if err != nil {
-						fmt.Fprintln(errout, err)
-						return 1
+				} else if m.Project == target.Project && len(m.SecretReaders(req.Name)) > 0 {
+					req.Manifest = m
+					for _, app := range m.SecretReaders(req.Name) {
+						if m.Apps[app].Kind != "compose" {
+							continue
+						}
+						file, err := agentclient.ReadComposeFile(projectDir, m.Apps[app].File)
+						if err != nil {
+							fmt.Fprintln(errout, err)
+							return 1
+						}
+						if req.ComposeFiles == nil {
+							req.ComposeFiles = map[string]string{}
+						}
+						req.ComposeFiles[app] = file
 					}
-					if req.ComposeFiles == nil {
-						req.ComposeFiles = map[string]string{}
-					}
-					req.ComposeFiles[app] = file
 				}
 			}
 			endpoint = "secrets/generate"
