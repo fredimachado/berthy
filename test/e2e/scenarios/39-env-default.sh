@@ -26,7 +26,7 @@ out=$(BERTHY_ENV=$ENVN "$BIN" lock release --config "$RUN/admin.json" 2>&1); cod
 expect_code "lock release from BERTHY_ENV" 0 "$code" "$out"
 
 # On a terminal, a mutating command prints the target banner before it changes anything.
-out=$(drive banner "BERTHY_ENV=$ENVN $BIN lock acquire -m banner -e $ENVN --config $RUN/admin.json" <<JSON
+out=$(drive banner "$BIN lock acquire -m banner -e $ENVN --config $RUN/admin.json" <<JSON
 [
   {"wait_text": "berthy: $PROJECT/$ENVN at http://$AGENT_LISTEN", "timeout": "20s"},
   {"snapshot": "banner"},
@@ -35,8 +35,6 @@ out=$(drive banner "BERTHY_ENV=$ENVN $BIN lock acquire -m banner -e $ENVN --conf
 JSON
 ); code=$?
 expect_code "lock acquire banner on a terminal" 0 "$code" "$out"
-out=$(BERTHY_ENV=$ENVN "$BIN" lock release --config "$RUN/admin.json" 2>&1); code=$?
-expect_code "release after banner acquire" 0 "$code" "$out"
 
 # Outside a terminal, --json keeps stdout as one object and stderr has no banner.
 out=$("$BIN" lock release -e "$ENVN" --config "$RUN/admin.json" --json 2>"$RUN/banner.err"); code=$?
