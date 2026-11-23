@@ -45,18 +45,21 @@ func runSecretGenerateDeclared(f commandFlags, target *agentclient.Target, dir s
 	case declaredFailed:
 		return 1
 	}
+	if len(m.Secrets) == 0 && !f.json {
+		fmt.Fprintln(out, "the manifest declares no generated secret")
+		return 0
+	}
 	if f.json {
 		b, err := json.Marshal(res)
 		if err != nil {
 			return 1
 		}
-		return printResponse(out, errout, b, true)
+		if code := printResponse(out, errout, b, true); code != 0 {
+			return code
+		}
+	} else {
+		printDeclared(out, res, f.dry)
 	}
-	if len(m.Secrets) == 0 {
-		fmt.Fprintln(out, "the manifest declares no generated secret")
-		return 0
-	}
-	printDeclared(out, res, f.dry)
 	if !f.dry {
 		for _, s := range res.Secrets {
 			if s.Outcome == api.DeclaredRefuse {

@@ -198,6 +198,28 @@ func TestSecretGenerateWithoutANameAndNothingDeclaredSendsNothing(t *testing.T) 
 	}
 }
 
+func TestSecretGenerateWithoutANameJSONExitsOneWhenOneIsRefused(t *testing.T) {
+	reply := `{"action":"secret generate declared","secrets":[{"name":"DB_PASS","outcome":"refuse","bytes":32,"format":"hex","app":"db"},{"name":"GEN_PASS","outcome":"generate","bytes":32,"format":"hex"}]}`
+	var bodies []string
+	server := answeringAgent(&bodies, `[]`, reply)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := declaredManifestDir(t)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "generate", "--json", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: stderr %q", code, errout.String())
+	}
+	var v struct {
+		Secrets []struct {
+			Name, Outcome string
+		} `json:"secrets"`
+	}
+	if json.Unmarshal(out.Bytes(), &v) != nil || len(v.Secrets) != 2 {
+		t.Fatalf("stdout %q", out.String())
+	}
+}
+
 func TestSecretGenerateWithoutANameAndNothingDeclaredPrintsJSON(t *testing.T) {
 	var calls atomic.Int32
 	server := countingAgent(&calls)
