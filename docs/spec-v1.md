@@ -882,8 +882,8 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `ingress apply` | Create or repair the tunnel and connector, and sync every route and DNS record | Yes |
 | `setup` | Prepare a server and install or upgrade the agent, over SSH or locally | Yes |
 | `context add --project <project> -e <env> --url URL --token-env VAR` | Write one project's environment into the CLI configuration; needs no agent | Yes |
-| `context list` | List the CLI configuration's contexts: project, environment, URL, token variable, and whether the variable is set; never a token | No |
-| `context remove --project <project> -e <env>` | Remove one context from the CLI configuration | Yes |
+| `context list` | List the CLI configuration's contexts: project, environment, URL, token variable, whether the variable is set, and whether a token is stored, not stored, or unknown; never a token | No |
+| `context remove --project <project> -e <env> [--delete-token]` | Remove one context from the CLI configuration; `--delete-token` deletes its stored token first | Yes |
 | `deploy <app> --version <tag>` | Deploy an image app; a Compose app takes no `--version`. On a protected environment `--version` is a digest, never a tag | Yes |
 | `deploy [--version <app>=<tag>]…` | Deploy every app in `depends_on` order and stop at the first failure; an image app given no version keeps the one it runs, and a plain `--version` is for a manifest with one image app (see Deploying every app) | Yes |
 | `apply` | Apply the environment settings of the manifest, such as probes, peers, alerts, destinations and telemetry, without deploying an app; `--dry-run` lists the changes | Yes |

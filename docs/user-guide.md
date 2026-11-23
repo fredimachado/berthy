@@ -2880,8 +2880,8 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | --- | --- | --- |
 | `setup` | `-e`, `--project`, `--host`, `--local`, `--listen` (first run), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. Needs no agent. |
-| `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, and `yes` or `no` for whether the variable is set. Never a token. An empty or missing file prints nothing. |
-| `context remove` | `--project`, `-e`, `--config` | Remove one context from the CLI configuration. |
+| `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. An empty or missing file prints nothing. |
+| `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
 | `version` | `--json` | The CLI's version and platform. |
 | `config validate` | `-e`, `--manifest-dir` | Check the merged manifest. Prints `manifest valid`. |
 | `config show` | `-e`, `--manifest-dir`, `--json`, `--origin` | Print the merged manifest. With `--origin`, one line per value with the file and line that set it, or `default`. |
