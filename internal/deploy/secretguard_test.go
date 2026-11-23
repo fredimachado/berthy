@@ -63,3 +63,17 @@ func TestGuardRefusesAForeignComposeProject(t *testing.T) {
 		t.Fatalf("foreign project: %v", err)
 	}
 }
+
+func TestGuardAllowsAReaderWithNoExistingFixedVolume(t *testing.T) {
+	docker := newComposeDocker()
+	docker.volumes = map[string]bool{}
+	c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
+	m := composeApp(false)
+	a := m.Apps["db"]
+	a.Env.Secret = []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}
+	m.Apps["db"] = a
+	finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m, ComposeFiles: map[string]string{"db": "volumes: {data: {name: absent}}"}})
+	if err != nil || finding != nil {
+		t.Fatalf("finding: %+v, %v", finding, err)
+	}
+}

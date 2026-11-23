@@ -323,7 +323,9 @@ func declaredVolumes(app manifest.App, name func(string) string) []string {
 
 // existingVolumes keeps the named volumes Docker holds. An engine that cannot say keeps them all.
 func (c *Controller) existingVolumes(ctx context.Context, names []string) ([]string, error) {
-	ve, ok := c.Engine.(volumeEngine)
+	ve, ok := c.Engine.(interface {
+		VolumeExists(context.Context, string) (bool, error)
+	})
 	if !ok {
 		return names, nil
 	}
