@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -312,5 +314,29 @@ func TestSecretGenerateWithoutANameAndNothingDeclaredPrintsJSON(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "the manifest declares no generated secret") {
 		t.Fatalf("json printed the sentence: %q", out.String())
+	}
+}
+
+func TestSecretGuideRedactsBearerFromOldAgentVersion(t *testing.T) {
+	stampCLI(t, "v0.9.0")
+	const bearer = "bty.demo.dev.disposable"
+	reads := fakeTerminal(t, "unused")
+	var requests atomic.Int32
+	var unexpected atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/agent") || r.Header.Get("Authorization") != "Bearer "+bearer {
+			unexpected.Store(true)
+		}
+		fmt.Fprintf(w, `{"version":%q}`, "v0.1.0-"+bearer)
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	t.Setenv("BERTHY_TEST_TOKEN", bearer)
+	dir := secretManifestDir(t, "min_version: 0.9.0\n"+declaredManifest)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 1 || requests.Load() != 1 || unexpected.Load() || reads.Load() != 0 || !strings.Contains(errout.String(), "agent of dev runs v0.1.0-") || !strings.Contains(errout.String(), "upgrade it with berthy setup") || strings.Contains(out.String()+errout.String(), bearer) {
+		t.Fatalf("exit %d requests %d unexpected %t reads %d retained version %t retained hint %t bearer leaked %t", code, requests.Load(), unexpected.Load(), reads.Load(), strings.Contains(errout.String(), "agent of dev runs v0.1.0-"), strings.Contains(errout.String(), "upgrade it with berthy setup"), strings.Contains(out.String()+errout.String(), bearer))
 	}
 }
