@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -210,7 +211,7 @@ func TestGuideRejectsInvalidStoreResponses(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`},
+		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"case variant null registry", 200, `{"ok":true,"Registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := fakeTerminal(t, "secret-value")
@@ -371,7 +372,7 @@ func TestGuideChecksRegistryAcknowledgementAndShowsRefreshWarnings(t *testing.T)
 			if code != tc.code || reads.Load() != 1 || len(bodies) != 2 || !strings.Contains(out.String()+errout.String(), tc.want) {
 				t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(bodies), out.String(), errout.String())
 			}
-			if code == 0 && !strings.Contains(out.String(), "secret set REGISTRY_TOKEN --registry "+strconv.Quote(host)) {
+			if code == 0 && !strings.Contains(out.String(), "berthy secret set NAME --registry HOST") {
 				t.Fatalf("missing retry advice: %q", out.String())
 			}
 		})
@@ -501,7 +502,39 @@ func TestGuideRedactsRegistryServicesErrorAndShowsTarget(t *testing.T) {
 	dir := secretManifestDir(t, registryManifest(host, host+"/acme/api"))
 	var out, errout bytes.Buffer
 	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
-	if code != 0 || strings.Contains(out.String()+errout.String(), "right") || !strings.Contains(out.String(), "services not updated: [redacted] unavailable") || !strings.Contains(out.String(), "--project demo") || !strings.Contains(out.String(), "--config "+strconv.Quote(cfg)) || !strings.Contains(out.String(), "--manifest-dir "+strconv.Quote(dir)) {
+	if code != 0 || strings.Contains(out.String()+errout.String(), "right") || !strings.Contains(out.String(), "services not updated: [redacted] unavailable") || !strings.Contains(out.String(), "berthy secret set NAME --registry HOST") || !strings.Contains(out.String(), "same targeting flags") {
 		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestGuideRetryUsesTemplateWithShellMetacharactersInConfig(t *testing.T) {
+	host, _ := fakeRegistry(t)
+	fakeTerminal(t, "right")
+	var bodies []string
+	server := answeringAgent(&bodies, `[]`, fmt.Sprintf(`{"ok":true,"registry":%q,"services_error":"unavailable"}`, host))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	special := filepath.Join(filepath.Dir(cfg), "cfg-$INERT.json")
+	if err := os.Rename(cfg, special); err != nil {
+		t.Fatal(err)
+	}
+	dir := secretManifestDir(t, registryManifest(host, host+"/acme/api"))
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", special, "--manifest-dir", dir}, &out, &errout)
+	if code != 0 || !strings.Contains(out.String(), "berthy secret set NAME --registry HOST") || !strings.Contains(out.String(), "same targeting flags") || strings.Contains(out.String(), "$INERT") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestGuideRejectsDeclaredHeldWithTrailingJSON(t *testing.T) {
+	reads := fakeTerminal(t, "unused")
+	var bodies []string
+	server := replyingAgent(&bodies, 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{}} {}`)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", declaredManifestDir(t)}, &out, &errout)
+	if code != 1 || reads.Load() != 0 || len(bodies) != 1 || !strings.Contains(errout.String(), "invalid agent response") || strings.Contains(out.String(), "held for approval") {
+		t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(bodies), out.String(), errout.String())
 	}
 }

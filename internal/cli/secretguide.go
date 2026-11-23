@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +40,7 @@ func runSecretSetMissing(f commandFlags, target *agentclient.Target, dir string,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	unmet, result := guideSecretsWithFlags(ctx, agentclient.NewHTTPClient(), target, m, dir, f.env, f, read, out, errout)
+	unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, m, dir, f.env, read, out, errout)
 	if result == guideHeld {
 		return exitHeld
 	}
@@ -52,10 +51,6 @@ func runSecretSetMissing(f commandFlags, target *agentclient.Target, dir string,
 }
 
 func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, dir, env string, read func() ([]byte, error), out, errout io.Writer) ([]unmetNeed, guideResult) {
-	return guideSecretsWithFlags(ctx, client, target, m, dir, env, commandFlags{}, read, out, errout)
-}
-
-func guideSecretsWithFlags(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, dir, env string, f commandFlags, read func() ([]byte, error), out, errout io.Writer) ([]unmetNeed, guideResult) {
 	declared, call := generateDeclared(ctx, client, target, m, dir, false, out, errout, false, true)
 	if call == declaredHeld {
 		return nil, guideHeld
@@ -165,12 +160,18 @@ func guideSecretsWithFlags(ctx context.Context, client *http.Client, target *age
 				fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), value))
 				return remaining, guideFailed
 			}
-			var reply secretSetReply
-			var fields map[string]json.RawMessage
-			if json.Unmarshal(data, &reply) != nil || json.Unmarshal(data, &fields) != nil || !reply.Ok || reply.Registry != n.Registry || string(fields["registry"]) == "null" {
+			var ack struct {
+				Ok            bool            `json:"ok"`
+				Registry      json.RawMessage `json:"registry"`
+				Services      []secretService `json:"services"`
+				ServicesError string          `json:"services_error"`
+			}
+			var registry string
+			if json.Unmarshal(data, &ack) != nil || !ack.Ok || (len(ack.Registry) != 0 && (string(ack.Registry) == "null" || json.Unmarshal(ack.Registry, &registry) != nil)) || registry != n.Registry {
 				fmt.Fprintln(errout, "invalid agent response")
 				return remaining, guideFailed
 			}
+			reply := secretSetReply{Ok: ack.Ok, Registry: registry, Services: ack.Services, ServicesError: ack.ServicesError}
 			if n.Registry != "" {
 				reply.Registry = safeSecretText(reply.Registry, value)
 				reply.ServicesError = safeSecretText(reply.ServicesError, value)
@@ -179,14 +180,7 @@ func guideSecretsWithFlags(ctx context.Context, client *http.Client, target *age
 					reply.Services[i].Error = safeSecretText(reply.Services[i].Error, value)
 				}
 				if printRegistrySet(out, reply) {
-					retry := "berthy secret set " + safeSecretText(n.Name, value) + " --registry " + strconv.Quote(safeSecretText(n.Registry, value)) + " -e " + safeSecretText(env, value) + " --project " + safeSecretText(target.Project, value)
-					if f.config != "" {
-						retry += " --config " + strconv.Quote(safeSecretText(f.config, value))
-					}
-					if f.dirSet {
-						retry += " --manifest-dir " + strconv.Quote(safeSecretText(dir, value))
-					}
-					fmt.Fprintln(out, "Run "+retry+" to retry the services that were not updated.")
+					fmt.Fprintln(out, "Run berthy secret set NAME --registry HOST with the same targeting flags to retry the services that were not updated.")
 				}
 			} else {
 				fmt.Fprintf(out, "stored %s\n", name)
@@ -227,6 +221,9 @@ func safeJSONValue(v any, value string) any {
 
 // safeHeldJSON scopes terminal escaping to the guide's declared-generation output.
 func safeHeldJSON(data []byte) []byte {
+	if !json.Valid(data) {
+		return data
+	}
 	var v any
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.UseNumber()
