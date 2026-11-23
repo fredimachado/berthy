@@ -381,3 +381,29 @@ func TestContextRemoveDeleteTokenThatFailsKeepsTheEntry(t *testing.T) {
 		t.Fatalf("%d %q", code, err)
 	}
 }
+
+func TestContextCommandsRefuseAmbiguousTokenVariableBeforeStore(t *testing.T) {
+	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"remove", "--project", "demo", "-e", "dev", "--delete-token"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			s, cfg, _, _ := tokenFixture(t)
+			good := agentclient.Environment{URL: "http://host#X", TokenEnv: "Y"}
+			bad := agentclient.Environment{URL: "http://host", TokenEnv: "X#Y"}
+			if agentclient.StoreKey("demo", "dev", good).Account() != agentclient.StoreKey("demo", "dev", bad).Account() {
+				t.Fatal("fixture keys do not collide")
+			}
+			if err := s.Set(agentclient.StoreKey("demo", "dev", good), "admin"); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://host","token_env":"X#Y"}}}}}`)
+			if err := os.WriteFile(cfg, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			calls := s.Calls()
+			code, out, err := runCLI(append(append([]string{"context"}, args...), "--config", cfg)...)
+			after, readErr := os.ReadFile(cfg)
+			if code != 1 || out != "" || err != "unknown environment or missing token_env\n" || s.Calls() != calls || readErr != nil || string(after) != string(original) {
+				t.Fatalf("exit %d stdout %q stderr %q store calls %d file error %v", code, out, err, s.Calls()-calls, readErr)
+			}
+		})
+	}
+}

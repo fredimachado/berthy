@@ -149,6 +149,10 @@ func runContextList(args []string, out, errout io.Writer) int {
 		slices.Sort(envs)
 		for _, env := range envs {
 			e := c.Projects[project].Environments[env]
+			if !agentclient.ValidTokenEnv(e.TokenEnv) {
+				fmt.Fprintln(errout, "unknown environment or missing token_env")
+				return 1
+			}
 			_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
 			status := "unknown"
 			if storeErr == nil {
@@ -225,6 +229,10 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if *deleteToken {
+		if !agentclient.ValidTokenEnv(entry.TokenEnv) {
+			fmt.Fprintln(errout, "unknown environment or missing token_env")
+			return 1
+		}
 		store := agentclient.Tokens(context.Background())
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
 		if err != nil {

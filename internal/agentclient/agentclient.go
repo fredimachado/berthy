@@ -169,7 +169,7 @@ func resolve(path string, sel Selector, store credstore.Store) (*Target, error) 
 	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
 		return nil, err
 	}
-	if entry.TokenEnv == "" {
+	if !ValidTokenEnv(entry.TokenEnv) {
 		return nil, errors.New("unknown environment or missing token_env")
 	}
 	token, _, err := FindToken(os.Getenv, store, project, env, entry)

@@ -62,3 +62,23 @@ func TestTheDefaultTokenStoreIsNone(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestResolveRefusesAmbiguousTokenVariableBeforeStore(t *testing.T) {
+	s := credtest.NewMemory()
+	good := Environment{URL: "http://host#X", TokenEnv: "Y"}
+	bad := Environment{URL: "http://host", TokenEnv: "X#Y"}
+	if StoreKey("demo", "dev", good).Account() != StoreKey("demo", "dev", bad).Account() {
+		t.Fatal("fixture keys do not collide")
+	}
+	if err := s.Set(StoreKey("demo", "dev", good), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	old := TokenStore
+	TokenStore = s
+	t.Cleanup(func() { TokenStore = old })
+	calls := s.Calls()
+	_, err := Resolve(writeConfig(t, `{"projects":{"demo":{"environments":{"dev":{"url":"http://host","token_env":"X#Y"}}}}}`), Selector{Environment: "dev"})
+	if err == nil || err.Error() != "unknown environment or missing token_env" || s.Calls() != calls {
+		t.Fatalf("error %v, store calls %d", err, s.Calls()-calls)
+	}
+}
