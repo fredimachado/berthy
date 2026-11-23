@@ -16,7 +16,7 @@ cd "$WORK" || exit 1
 # --- docs: local, with no agent, no manifest and no -e.
 out=$("$BIN" docs 2>&1); code=$?
 expect_code "docs prints the reference" 0 "$code" "$out"
-for key in project network protected apps.\<name\> retention.keep deploys min_version; do
+for key in project network protected apps.\<name\> retention.keep deploys min_version secrets; do
   expect_contains "docs mentions $key" "$out" "$key"
 done
 
@@ -25,6 +25,12 @@ expect_code "docs apps prints the apps section" 0 "$code" "$out"
 expect_contains "docs apps lists deploy.retain" "$out" "deploy.retain"
 expect_contains "docs apps lists env.secret" "$out" "env.secret"
 expect_not_contains "docs apps does not list a backups key" "$out" "retention.keep"
+
+out=$("$BIN" docs secrets 2>&1); code=$?
+expect_code "docs secrets prints the secrets section" 0 "$code" "$out"
+expect_contains "docs secrets lists generate.format" "$out" "generate.format"
+expect_contains "docs secrets lists generate.bytes" "$out" "generate.bytes"
+expect_not_contains "docs secrets does not list an apps key" "$out" "deploy.retain"
 
 out=$("$BIN" docs backups 2>&1); code=$?
 expect_code "docs backups prints the backups section" 0 "$code" "$out"
@@ -148,6 +154,11 @@ apps:
     env:
       secret:
         - DB_PASSWORD
+secrets:
+  API_KEY:
+    generate:
+      format: hex
+      bytes: 32
 jobs:
   cleanup:
     app: web
