@@ -486,3 +486,166 @@ func TestContextRemoveRejectsInvalidScopeBeforeStore(t *testing.T) {
 		})
 	}
 }
+
+func TestParseToken(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      string
+		want    string
+		wantErr string
+	}{
+		{name: "plain", in: "token", want: "token"},
+		{name: "trailing LF", in: "token\n", want: "token"},
+		{name: "trailing CRLF", in: "token\r\n", want: "token"},
+		{name: "CR in the middle", in: "tok\ren", wantErr: "the token must be one line"},
+		{name: "two lines", in: "one\ntwo\n", wantErr: "the token must be one line"},
+		{name: "empty", in: "", wantErr: "no token entered"},
+		{name: "only LF", in: "\n", wantErr: "no token entered"},
+		{name: "only CRLF", in: "\r\n", wantErr: "no token entered"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseToken([]byte(tc.in))
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr || got != "" {
+					t.Fatalf("got %q %v", got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q %v", got, err)
+			}
+		})
+	}
+}
+
+func TestContextAddSaveTokenStoresThePipedToken(t *testing.T) {
+	isolatedUserConfig(t)
+	s := credtest.NewMemory()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_SAVE_TOKEN", "")
+	withStdin(t, "piped-secret\n")
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_SAVE_TOKEN", "--config", cfg, "--save-token")
+	if code != 0 || !strings.Contains(out, "added demo/dev") || !strings.Contains(out, "saved the token of demo/dev in the test store") || strings.Contains(errs, "is not set") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+	got, err := s.Get(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_SAVE_TOKEN"}))
+	if err != nil || got != "piped-secret" {
+		t.Fatalf("store: %q %v", got, err)
+	}
+	// An entry that already matches is left as written; --save-token still stores under its key.
+	withStdin(t, "replacement\n")
+	code, out, errs = runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_SAVE_TOKEN", "--config", cfg, "--save-token")
+	if code != 0 || !strings.Contains(out, "already at") || !strings.Contains(out, "saved the token of demo/dev in the test store") {
+		t.Fatalf("already: exit %d stdout %q stderr %q", code, out, errs)
+	}
+	got, err = s.Get(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_SAVE_TOKEN"}))
+	if err != nil || got != "replacement" {
+		t.Fatalf("replacement: %q %v", got, err)
+	}
+}
+
+func TestContextAddSaveTokenFromPowerShellAuthenticates(t *testing.T) {
+	isolatedUserConfig(t)
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(server.Close)
+	s := credtest.NewMemory()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_PS_TOKEN", "")
+	withStdin(t, "token\r\n")
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", server.URL, "--token-env", "CTX_PS_TOKEN", "--config", cfg, "--save-token")
+	if code != 0 || !strings.Contains(out, "saved the token of demo/dev in the test store") {
+		t.Fatalf("add: exit %d stdout %q stderr %q", code, out, errs)
+	}
+	code, _, errs = runCLI("ps", "-e", "dev", "--config", cfg)
+	if code != 0 || auth != "Bearer token" {
+		t.Fatalf("ps: exit %d stderr %q auth %q", code, errs, auth)
+	}
+}
+
+func TestContextAddSaveTokenAsksAtATerminal(t *testing.T) {
+	isolatedUserConfig(t)
+	s := credtest.NewMemory()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_TERM_TOKEN", "")
+	reads := fakeTerminal(t, "typed-secret")
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_TERM_TOKEN", "--config", cfg, "--save-token")
+	if code != 0 || reads.Load() != 1 || !strings.Contains(errs, "Token of demo/dev (hidden):") || !strings.Contains(out, "saved the token of demo/dev in the test store") {
+		t.Fatalf("exit %d reads %d stdout %q stderr %q", code, reads.Load(), out, errs)
+	}
+	got, err := s.Get(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_TERM_TOKEN"}))
+	if err != nil || got != "typed-secret" {
+		t.Fatalf("store: %q %v", got, err)
+	}
+}
+
+func TestContextAddSaveTokenWithoutAStoreSaysSo(t *testing.T) {
+	isolatedUserConfig(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_NONE_TOKEN", "")
+	withStdin(t, "secret\n")
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_NONE_TOKEN", "--config", cfg, "--save-token")
+	if code != 1 || !strings.Contains(out, "added demo/dev") || errs != "not saved: no credential store on this machine; set $CTX_NONE_TOKEN instead\n" {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+	got, err := agentclient.ReadConfig(cfg)
+	if err != nil || got.Projects["demo"].Environments["dev"].TokenEnv != "CTX_NONE_TOKEN" {
+		t.Fatalf("entry: %+v %v", got, err)
+	}
+}
+
+func TestContextAddSaveTokenDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
+	isolatedUserConfig(t)
+	s := credtest.NewMemory()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_HANG_TOKEN", "")
+	synctest.Test(t, func(t *testing.T) {
+		blockTokenStore(t, s)
+		withStdin(t, "secret\n")
+		code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_HANG_TOKEN", "--config", cfg, "--save-token")
+		synctest.Wait()
+		want := "could not confirm the save in the test store; set $CTX_HANG_TOKEN instead\n"
+		if code != 1 || !strings.Contains(out, "added demo/dev") || errs != want || s.Calls() != 1 {
+			t.Fatalf("exit %d stdout %q stderr %q calls %d", code, out, errs, s.Calls())
+		}
+		got, err := agentclient.ReadConfig(cfg)
+		if err != nil || got.Projects["demo"].Environments["dev"].TokenEnv != "CTX_HANG_TOKEN" {
+			t.Fatalf("entry: %+v %v", got, err)
+		}
+	})
+}
+
+func TestContextAddSaveTokenNeverPrintsTheToken(t *testing.T) {
+	isolatedUserConfig(t)
+	const marker = "marker-save-token-value-that-must-not-appear"
+	s := credtest.NewMemory()
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CTX_MARK_TOKEN", "")
+	withStdin(t, marker+"\n")
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_MARK_TOKEN", "--config", cfg, "--save-token")
+	if code != 0 || strings.Contains(out, marker) || strings.Contains(errs, marker) {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+	got, err := s.Get(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_MARK_TOKEN"}))
+	if err != nil || got != marker {
+		t.Fatalf("store: %q %v", got, err)
+	}
+}

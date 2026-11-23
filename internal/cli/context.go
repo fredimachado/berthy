@@ -16,7 +16,7 @@ import (
 	"berthy/internal/credstore"
 )
 
-const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--config FILE]\n" +
+const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--save-token] [--config FILE]\n" +
 	"       berthy context list [--config FILE] [--json]\n" +
 	"       berthy context remove --project PROJECT -e ENV [--config FILE] [--delete-token]"
 
@@ -48,6 +48,7 @@ func runContextAdd(args []string, out, errout io.Writer) int {
 	env := fset.String("e", "", "environment")
 	rawURL := fset.String("url", "", "agent URL")
 	tokenEnv := fset.String("token-env", "", "environment variable that holds the token")
+	saveToken := fset.Bool("save-token", false, "save the token in the credential store")
 	cliConfig := fset.String("config", "", "CLI configuration file")
 	if err := fset.Parse(args); err != nil {
 		return 2
@@ -70,8 +71,9 @@ func runContextAdd(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	entry := agentclient.Environment{URL: *rawURL, TokenEnv: *tokenEnv}
 	_, existed := c.Projects[*project].Environments[*env]
-	changed, err := c.Put(*project, *env, agentclient.Environment{URL: *rawURL, TokenEnv: *tokenEnv})
+	changed, err := c.Put(*project, *env, entry)
 	if err != nil {
 		return usage("%v", err)
 	}
@@ -95,9 +97,71 @@ func runContextAdd(args []string, out, errout io.Writer) int {
 		}
 		fmt.Fprintf(out, "%s %s/%s at %s to %s (token in $%s)\n", verb, *project, *env, *rawURL, path, *tokenEnv)
 	}
-	if os.Getenv(*tokenEnv) == "" {
+	stored := false
+	if *saveToken {
+		if code := saveContextToken(*project, *env, entry, out, errout); code != 0 {
+			return code
+		}
+		stored = true
+	}
+	if !stored && os.Getenv(*tokenEnv) == "" {
 		fmt.Fprintf(errout, "$%s is not set in this shell\n", *tokenEnv)
 	}
+	return 0
+}
+
+// parseToken returns the token of what was typed or piped: one line. One trailing LF or CRLF is dropped (PowerShell ends
+// a piped string with CRLF). Anything else that holds a CR or LF, and an empty token, is refused.
+func parseToken(data []byte) (string, error) {
+	switch {
+	case len(data) >= 2 && data[len(data)-2] == '\r' && data[len(data)-1] == '\n':
+		data = data[:len(data)-2]
+	case len(data) >= 1 && data[len(data)-1] == '\n':
+		data = data[:len(data)-1]
+	}
+	if len(data) == 0 {
+		return "", errors.New("no token entered")
+	}
+	for _, b := range data {
+		if b == '\n' || b == '\r' {
+			return "", errors.New("the token must be one line")
+		}
+	}
+	return string(data), nil
+}
+
+// saveContextToken reads a token from the terminal or standard input and stores it under the entry's key. The configuration
+// entry is already written; a refusal or store failure leaves it and returns a non-zero exit.
+func saveContextToken(project, env string, entry agentclient.Environment, out, errout io.Writer) int {
+	read, interactive := hiddenInput()
+	var data []byte
+	var err error
+	if interactive {
+		fmt.Fprintf(errout, "Token of %s/%s (hidden): ", project, env)
+		data, err = read()
+		fmt.Fprintln(errout)
+	} else {
+		data, err = io.ReadAll(os.Stdin)
+	}
+	if err != nil {
+		fmt.Fprintln(errout, "no token entered")
+		return 1
+	}
+	token, err := parseToken(data)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	store := agentclient.Tokens(context.Background())
+	if err := store.Set(agentclient.StoreKey(project, env, entry), token); err != nil {
+		if errors.Is(err, credstore.ErrGivenUp) {
+			fmt.Fprintf(errout, "could not confirm the save in the %s; set $%s instead\n", store.Name(), entry.TokenEnv)
+		} else {
+			fmt.Fprintf(errout, "not saved: no credential store on this machine; set $%s instead\n", entry.TokenEnv)
+		}
+		return 1
+	}
+	fmt.Fprintf(out, "saved the token of %s/%s in the %s\n", project, env, store.Name())
 	return 0
 }
 
