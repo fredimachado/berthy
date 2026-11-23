@@ -36,8 +36,12 @@ func (c *Controller) GuardSecret(ctx context.Context, name string, sub *Submitte
 		if err != nil {
 			return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
 		}
+		app, ok := m.Apps[release.App]
+		if !ok {
+			return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
+		}
 		deployed[release.App] = true
-		if slices.Contains(m.Apps[release.App].Env.SecretNames(), name) {
+		if slices.Contains(app.Env.SecretNames(), name) {
 			readers[release.App] = true
 		}
 	}

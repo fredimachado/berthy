@@ -153,6 +153,47 @@ func withDryRun(body []byte) []byte {
 	return out
 }
 
+// generationBodyUnambiguous prevents the map rewrite from changing how repeated fields decode.
+func generationBodyUnambiguous(rest []string, method string, body []byte) bool {
+	if method != http.MethodPost || len(rest) != 2 || rest[0] != "secrets" || (rest[1] != "generate" && rest[1] != "generate-declared") {
+		return true
+	}
+	if !json.Valid(body) {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	token, err := dec.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := key.(string)
+		if !ok {
+			return false
+		}
+		for _, field := range []string{"name", "bytes", "format", "replace", "dry_run", "manifest", "compose_files"} {
+			if strings.EqualFold(name, field) {
+				if seen[field] {
+					return false
+				}
+				seen[field] = true
+				break
+			}
+		}
+		var value json.RawMessage
+		if dec.Decode(&value) != nil {
+			return false
+		}
+	}
+	_, err = dec.Token()
+	return err == nil
+}
+
 // canonicalJSON returns b with its keys in a fixed order and no white space, so two plans compare by what they say.
 func canonicalJSON(b []byte) (json.RawMessage, error) {
 	var v any
@@ -166,6 +207,11 @@ func canonicalJSON(b []byte) (json.RawMessage, error) {
 // run a short description of the action. When the route refuses the request, or cannot plan it, the refusal is returned as the
 // captured answer and no plan.
 func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, method, path string, body []byte) (json.RawMessage, *capture) {
+	if !generationBodyUnambiguous(rest, method, body) {
+		failure := newCapture()
+		writeError(failure, 400, "bad_request", "invalid request")
+		return nil, failure
+	}
 	if !supportsDryRun(rest) {
 		b, _ := json.Marshal(describe(rest, method))
 		return b, nil
@@ -244,6 +290,10 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 	}
 	body, err := readBody(w, r)
 	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return true
+	}
+	if !generationBodyUnambiguous(rest, r.Method, body) {
 		writeError(w, 400, "bad_request", "invalid request")
 		return true
 	}

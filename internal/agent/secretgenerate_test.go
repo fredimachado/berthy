@@ -492,8 +492,8 @@ func TestHeldGenerateDeclaredPlanIsTheDryRun(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("approval: %d %s", w.Code, w.Body.String())
 	}
-	if _, ok := storedValue(t, f, "A_PASS"); !ok {
-		t.Fatal("approval did not generate")
+	if value, ok := storedValue(t, f, "A_PASS"); !ok || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(value) {
+		t.Fatal("approval did not generate a value matching its plan")
 	}
 }
 
@@ -734,8 +734,8 @@ func (e *failingSecretInventory) InspectService(ctx context.Context, service str
 
 func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 	for _, tc := range []struct {
-		name, file, fail              string
-		omit, image, release, foreign bool
+		name, file, fail                            string
+		omit, image, release, inconsistent, foreign bool
 	}{
 		{name: "omitted file", omit: true},
 		{name: "malformed yaml", file: "volumes: ["},
@@ -747,6 +747,7 @@ func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 		{name: "fixed volume lookup", file: "volumes: {data: {name: shared}}", fail: "volumes"},
 		{name: "service lookup", image: true, fail: "service"},
 		{name: "unreadable release", file: "services: {}", release: true},
+		{name: "release missing its app", file: "services: {}", inconsistent: true},
 		{name: "foreign lookup", file: "services: {}", foreign: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -759,12 +760,16 @@ func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 							return deploy.Foreign{}, errors.New(inventoryDiagnostic)
 						}
 					}
-					if tc.release {
+					if tc.release || tc.inconsistent {
 						op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "bad-release", ActorID: "a", Kind: "deploy", App: "old", PublicRequest: []byte(`{}`)})
 						if err != nil {
 							t.Fatal(err)
 						}
-						if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "old", Manifest: []byte(`{}`)}}); err != nil {
+						stored := `{}`
+						if tc.inconsistent {
+							stored = apManifestSource
+						}
+						if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "old", Manifest: []byte(stored)}}); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -787,7 +792,7 @@ func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 					}
 					w := f.call("POST", "/secrets/"+route, apAdminToken, string(encoded))
 					message := "the state of app db cannot be established, so nothing is generated"
-					if tc.release {
+					if tc.release || tc.inconsistent {
 						message = "the recorded releases cannot be read, so nothing is generated"
 					}
 					if w.Code != 400 || !strings.Contains(w.Body.String(), message) || strings.Contains(w.Body.String(), inventoryDiagnostic) {
@@ -799,5 +804,102 @@ func TestGenerateRoutesRefuseUnestablishedReaderState(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestGenerateApprovalsRejectRepeatedTopLevelFields(t *testing.T) {
+	for _, tc := range []struct{ name, route, body string }{
+		{"same key", "generate", `{"name":"GEN_PASS","name":"GEN_PASS"}`},
+		{"case variant", "generate", `{"name":"GEN_PASS","NAME":"GEN_PASS"}`},
+		{"dry run", "generate", `{"name":"GEN_PASS","dry_run":true,"DRY_RUN":true}`},
+		{"declared", "generate-declared", `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}},"dry_run":false,"DRY_RUN":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApprovalFixture(t, true, nil)
+			w := f.call("POST", "/secrets/"+tc.route, apAgentAdmin, tc.body)
+			if w.Code != 400 || !sameJSON(t, w.Body.Bytes(), []byte(`{"code":"bad_request","message":"invalid request"}`)) {
+				t.Fatalf("status %d, response %s", w.Code, w.Body.String())
+			}
+			if w.Header().Get("Berthy-Approval") != "" {
+				t.Fatal("ambiguous request was held")
+			}
+			list := f.call("GET", "/approvals", apAdminToken, "")
+			if strings.TrimSpace(list.Body.String()) != "[]" {
+				t.Fatal("ambiguous request created an approval")
+			}
+		})
+	}
+}
+
+func TestGenerateApprovalReplanningRejectsRepeatedFields(t *testing.T) {
+	manifest := `{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}`
+	for _, tc := range []struct{ name, route, valid, repeated string }{
+		{"named", "generate", `{"name":"GEN_PASS"}`, `{"name":"GEN_PASS","NAME":"GEN_PASS"}`},
+		{"declared", "generate-declared", `{"manifest":` + manifest + `}`, `{"manifest":` + manifest + `,"dry_run":false,"DRY_RUN":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApprovalFixture(t, true, nil)
+			held := f.hold("POST", "/secrets/"+tc.route, apAgentAdmin, tc.valid)
+			prior, err := f.s.Approval(t.Context(), held.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := f.s.CreateApproval(t.Context(), prior, []byte(tc.repeated))
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := f.call("POST", "/approvals/"+a.ID+"/approve", apAdminToken, "")
+			if w.Code != 409 || !strings.Contains(w.Body.String(), "the plan can no longer be computed") || f.status(a.ID) != "failed" {
+				t.Fatalf("status %d, response %s, approval %s", w.Code, w.Body.String(), f.status(a.ID))
+			}
+			if secrets, err := f.s.Secrets(t.Context()); err != nil || len(secrets) != 0 {
+				t.Fatalf("ambiguous approval stored secrets: %v", err)
+			}
+		})
+	}
+}
+
+func TestNamedGenerateUsesStoredAndRecordedStateBeforeMissingComposeFile(t *testing.T) {
+	for _, kind := range []string{"stored", "recorded"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newApprovalFixture(t, false, nil)
+			if kind == "stored" {
+				if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASS"}, []byte("existing")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				recorded := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+				recordAppRelease(t, f.s, "db-release", "db", recorded)
+			}
+			body := `{"name":"DB_PASS","manifest":{"project":"demo","network":"overlay","apps":{"db":{"kind":"compose","file":"missing.yml","env":{"secret":["DB_PASS"]}}}}}`
+			w := f.call("POST", "/secrets/generate", apAdminToken, body)
+			want := "secret DB_PASS exists; --replace replaces it"
+			if kind == "recorded" {
+				want = "app db was deployed here"
+			}
+			if w.Code != 409 || !strings.Contains(w.Body.String(), want) {
+				t.Fatalf("status %d, expected prior-state refusal %t", w.Code, strings.Contains(w.Body.String(), want))
+			}
+			_, ok := storedValue(t, f, "DB_PASS")
+			if ok != (kind == "stored") {
+				t.Fatal("unexpected stored state")
+			}
+		})
+	}
+}
+
+func TestHeldGenerateAcceptsSingleCaseVariantDryRun(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	h := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS","DRY_RUN":false}`)
+	if !sameJSON(t, h.Plan, []byte(`{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"hex"}`)) {
+		t.Fatalf("unexpected plan %s", h.Plan)
+	}
+	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != 200 {
+		t.Fatalf("approval status %d", w.Code)
+	}
+	value, ok := storedValue(t, f, "GEN_PASS")
+	if !ok || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(value) {
+		t.Fatal("stored value does not match approved plan")
 	}
 }
