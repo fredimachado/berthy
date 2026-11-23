@@ -741,3 +741,135 @@ func TestAnApprovalStoresThePathRelativeToItsEnvironment(t *testing.T) {
 		t.Fatalf("stored path %q, want the path after the environment", rows[0].Path)
 	}
 }
+
+func TestGenerationPlanRedactionPreservesDecisions(t *testing.T) {
+	mask := func(string) string { return "[redacted]" }
+	var keep, generate json.RawMessage
+	for _, tc := range []struct{ name, route, plan, want string }{
+		{"declared keep", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"secret-name","outcome":"keep","bytes":32,"format":"hex","app":"reader","volume":"volume"}]}`, `{"action":"secret generate declared","secrets":[{"name":"[redacted]","outcome":"keep","bytes":32,"format":"hex","app":"[redacted]","volume":"[redacted]"}]}`},
+		{"declared generate", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"secret-name","outcome":"generate","bytes":32,"format":"hex","app":"reader","volume":"volume"}]}`, `{"action":"secret generate declared","secrets":[{"name":"[redacted]","outcome":"generate","bytes":32,"format":"hex","app":"[redacted]","volume":"[redacted]"}]}`},
+		{"declared refuse", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"secret-name","outcome":"refuse","bytes":32,"format":"hex","app":"reader","volume":"volume"}]}`, `{"action":"secret generate declared","secrets":[{"name":"[redacted]","outcome":"refuse","bytes":32,"format":"hex","app":"[redacted]","volume":"[redacted]"}]}`},
+		{"named", "generate", `{"action":"secret generate","name":"secret-name","exists":false,"bytes":20,"format":"alnum","app":"reader","volume":"volume"}`, `{"action":"secret generate","name":"[redacted]","exists":false,"bytes":20,"format":"alnum","app":"[redacted]","volume":"[redacted]"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := redactApprovalPlan([]string{"secrets", tc.route}, "POST", []byte(tc.plan), mask)
+			if err != nil || !sameJSON(t, got, []byte(tc.want)) {
+				t.Fatalf("redacted plan %s, error %v", got, err)
+			}
+			canonical, err := canonicalJSON(got)
+			if err != nil || !bytes.Equal(got, canonical) {
+				t.Fatal("plan is not canonical")
+			}
+			switch tc.name {
+			case "declared keep":
+				keep = got
+			case "declared generate":
+				generate = got
+			}
+		})
+	}
+	if bytes.Equal(keep, generate) {
+		t.Fatal("keep and generate plans became indistinguishable")
+	}
+}
+
+func TestGenerationPlanRedactionRejectsUnknownProtocolStrings(t *testing.T) {
+	for _, tc := range []struct{ name, route, plan string }{
+		{"named action", "generate", `{"action":"other","name":"X","exists":false,"bytes":32,"format":"hex"}`},
+		{"named format", "generate", `{"action":"secret generate","name":"X","exists":false,"bytes":32,"format":"custom"}`},
+		{"declared action", "generate-declared", `{"action":"other","secrets":[]}`},
+		{"declared outcome", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"X","outcome":"other","bytes":32,"format":"hex"}]}`},
+		{"declared format", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"X","outcome":"keep","bytes":32,"format":"custom"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := redactApprovalPlan([]string{"secrets", tc.route}, "POST", []byte(tc.plan), func(s string) string { return s }); err == nil {
+				t.Fatal("unknown protocol value accepted")
+			}
+		})
+	}
+}
+
+func TestDeclaredApprovalListRedactsMetadataButKeepsOutcome(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	f.ctrl.Engine = generateEngine{}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["A_PASS"]}}},"secrets":{"A_PASS":{"generate":{"format":"hex"}}}}}`
+	h := f.hold("POST", "/secrets/generate-declared", apAgentAdmin, body)
+	if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "MASK"}, []byte("A_PASS")); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("GET", "/approvals", apAdminToken, "")
+	var list []struct {
+		ID   string `json:"id"`
+		Plan struct {
+			Action  string                                   `json:"action"`
+			Secrets []struct{ Name, Outcome, Format string } `json:"secrets"`
+		} `json:"plan"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &list) != nil || len(list) != 1 || list[0].ID != h.ID || list[0].Plan.Action != "secret generate declared" || len(list[0].Plan.Secrets) != 1 || list[0].Plan.Secrets[0].Name != "[redacted]" || list[0].Plan.Secrets[0].Outcome != "generate" || list[0].Plan.Secrets[0].Format != "hex" {
+		t.Fatalf("unexpected list status or plan: %d %+v", w.Code, list)
+	}
+}
+
+func TestHeldDeclaredGenerateRejectsChangedState(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	f.ctrl.Engine = generateEngine{}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["A_PASS"]}}},"secrets":{"A_PASS":{"generate":{"format":"hex"}}}}}`
+	h := f.hold("POST", "/secrets/generate-declared", apAgentAdmin, body)
+	if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "A_PASS"}, []byte("existing-value")); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "the plan changed") || f.status(h.ID) != "failed" {
+		t.Fatalf("approval status %d", w.Code)
+	}
+	value, ok := storedValue(t, f, "A_PASS")
+	if !ok || value != "existing-value" {
+		t.Fatal("approval changed the stored value")
+	}
+	for _, row := range f.audit() {
+		if strings.Contains(row, "secret_generate:") {
+			t.Fatal("approval generated a secret after the plan changed")
+		}
+	}
+}
+
+func TestInvalidStoredGenerationPlanIsHiddenAndRefused(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	held := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS"}`)
+	old, err := f.s.Approval(t.Context(), held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Plan = []byte(`{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"not-a-format"}`)
+	invalid, err := f.s.CreateApproval(t.Context(), old, []byte(`{"name":"GEN_PASS"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("GET", "/approvals", apAdminToken, "")
+	var entries []struct {
+		ID   string          `json:"id"`
+		Plan json.RawMessage `json:"plan"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &entries) != nil {
+		t.Fatalf("list status %d", w.Code)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.ID == invalid.ID {
+			found = true
+			if len(entry.Plan) != 0 {
+				t.Fatal("invalid plan was listed")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("approval absent from list")
+	}
+	w = f.call("POST", "/approvals/"+invalid.ID+"/approve", apAdminToken, "")
+	if w.Code != 409 || f.status(invalid.ID) != "failed" {
+		t.Fatalf("approval status %d", w.Code)
+	}
+	if _, ok := storedValue(t, f, "GEN_PASS"); ok {
+		t.Fatal("invalid plan stored a secret")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -236,13 +237,65 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 		writeError(failure, 503, "unavailable", "plan unavailable")
 		return nil, failure
 	}
-	plan, err := redactPlan(rec.body.Bytes(), redact)
+	plan, err := redactApprovalPlan(rest, method, rec.body.Bytes(), redact)
 	if err != nil {
 		failure := newCapture()
 		writeError(failure, 503, "unavailable", "plan unavailable")
 		return nil, failure
 	}
 	return plan, nil
+}
+
+// redactApprovalPlan preserves validated generation decisions while hiding dynamic metadata.
+func redactApprovalPlan(rest []string, method string, plan []byte, redact func(string) string) (json.RawMessage, error) {
+	kind := routeKind(rest, method)
+	if kind != "secret generate" && kind != "secret generate declared" {
+		return redactPlan(plan, redact)
+	}
+	dec := json.NewDecoder(bytes.NewReader(plan))
+	dec.DisallowUnknownFields()
+	var value any
+	if kind == "secret generate" {
+		var p api.SecretGeneratePlan
+		if err := dec.Decode(&p); err != nil || p.Action != "secret generate" || !slices.Contains(api.GenerateFormats, p.Format) {
+			return nil, errors.New("invalid generation plan")
+		}
+		p.Name = redact(p.Name)
+		if p.App != "" {
+			p.App = redact(p.App)
+		}
+		if p.Volume != "" {
+			p.Volume = redact(p.Volume)
+		}
+		value = p
+	} else {
+		var p api.SecretsDeclared
+		if err := dec.Decode(&p); err != nil || p.Action != "secret generate declared" || p.Secrets == nil {
+			return nil, errors.New("invalid generation plan")
+		}
+		for i := range p.Secrets {
+			s := &p.Secrets[i]
+			if (s.Outcome != api.DeclaredGenerate && s.Outcome != api.DeclaredKeep && s.Outcome != api.DeclaredRefuse) || !slices.Contains(api.GenerateFormats, s.Format) {
+				return nil, errors.New("invalid generation plan")
+			}
+			s.Name = redact(s.Name)
+			if s.App != "" {
+				s.App = redact(s.App)
+			}
+			if s.Volume != "" {
+				s.Volume = redact(s.Volume)
+			}
+		}
+		value = p
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("invalid generation plan")
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalJSON(b)
 }
 
 // redactPlan returns the canonical form of a JSON plan with redact applied to every string in it, keys included.
@@ -392,7 +445,7 @@ func (g *approvalGate) serveApprovals(w http.ResponseWriter, r *http.Request, ac
 			v.Plan = nil
 			if seesPlan {
 				// A secret set after the request is hidden too.
-				if plan, err := redactPlan(a.Plan, redact); err == nil {
+				if plan, err := redactApprovalPlan(restOf(a.Path), a.Method, a.Plan, redact); err == nil {
 					v.Plan = plan
 				}
 			}
@@ -549,7 +602,11 @@ func (g *approvalGate) approve(w http.ResponseWriter, r *http.Request, decider s
 		fail("the plan can no longer be computed ("+safeApprovalText(refused.message())+"); ask for a new request", "the plan can no longer be computed")
 		return
 	}
-	if stored, err := canonicalJSON(a.Plan); err != nil || !bytes.Equal(stored, plan) {
+	stored, err := canonicalJSON(a.Plan)
+	if kind := routeKind(rest, a.Method); kind == "secret generate" || kind == "secret generate declared" {
+		stored, err = redactApprovalPlan(rest, a.Method, a.Plan, func(s string) string { return s })
+	}
+	if err != nil || !bytes.Equal(stored, plan) {
 		fail("the plan changed since it was requested; ask for a new request", "the plan changed since it was requested")
 		return
 	}
