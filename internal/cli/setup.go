@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -177,14 +178,39 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if session != nil {
 		report.TokenStored = session.TokenStored
 	}
+	manifestDir := ""
 	if report.OK && !*dry {
-		manifestDir := ""
 		fset.Visit(func(f *flag.Flag) {
 			if f.Name == "manifest-dir" {
 				manifestDir = *dir
 			}
 		})
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir})
+	}
+	var secretStep secretsStep
+	if from.manifest != nil {
+		secretStep.declared = len(from.manifest.Secrets) > 0
+	}
+	if !*asJSON {
+		fmt.Fprintln(out, setupSummary(report))
+		if report.Token != "" {
+			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(from.project+"/"+*env), report.Token)
+		}
+		if report.OK && !*dry && from.manifest != nil && session.AdminToken() != "" {
+			if read, ok := hiddenInput(); ok {
+				id := scope.ID{Project: from.project, Environment: *env}
+				base, _ := url.Parse(session.AgentURL())
+				target := &agentclient.Target{Project: id.Project, Env: id.Environment, Base: base, Prefix: id.APIPath(), Token: session.AdminToken()}
+				fmt.Fprintln(out, "\nsecrets:")
+				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, read, out, errout)
+				secretStep.guided = result == guideDone
+				for _, need := range unmet {
+					secretStep.unmet = append(secretStep.unmet, need.Name)
+				}
+			}
+		}
+	}
+	if report.OK && !*dry {
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep})
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -196,10 +222,6 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 			return 1
 		}
 	} else {
-		fmt.Fprintln(out, setupSummary(report))
-		if report.Token != "" {
-			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(from.project+"/"+*env), report.Token)
-		}
 		if len(report.NextSteps) > 0 {
 			fmt.Fprintln(out, "\nnext steps:")
 			for i, step := range report.NextSteps {
@@ -232,6 +254,7 @@ func checkSetupTokenEnv(project, env, config string) error {
 
 // setupFrom is what setup takes from the manifest, or from the flags when the directory has none.
 type setupFrom struct {
+	manifest  *manifest.Manifest
 	project   string // empty when the directory has no manifest
 	network   string
 	protected bool
@@ -254,7 +277,7 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 		if network != "" && network != name {
 			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, name, env)
 		}
-		return setupFrom{project: m.Project, network: name, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
+		return setupFrom{manifest: m, project: m.Project, network: name, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		if project == "" {
 			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --project NAME", dir)
@@ -273,10 +296,16 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 	return setupFrom{}, fmt.Errorf("manifest of %s: %v", env, err)
 }
 
-// setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
-// cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
-// without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
+// secretsStep describes the secrets still needing attention after setup.
+type secretsStep struct {
+	guided   bool
+	unmet    []string
+	declared bool
+}
+
+// nextSteps is what setup needs to describe what follows a successful run.
 type nextSteps struct {
+	secrets     secretsStep
 	id          scope.ID
 	keyFile     string
 	config      string
@@ -288,6 +317,7 @@ type nextSteps struct {
 	ingress     bool
 }
 
+// setupNextSteps prints the command that copies the key, never the key itself.
 func setupNextSteps(n nextSteps) []string {
 	env := n.id.Environment
 	read := "sudo cat " + shellWord(n.keyFile)
@@ -309,7 +339,14 @@ func setupNextSteps(n nextSteps) []string {
 	if n.storeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", n.tokenEnv))
 	}
-	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s%s", env, config))
+	if !n.secrets.guided {
+		if n.secrets.declared {
+			steps = append(steps, fmt.Sprintf("generate the secrets the manifest declares: berthy secret generate -e %s%s", env, config))
+		}
+		steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s%s", env, config))
+	} else if len(n.secrets.unmet) > 0 {
+		steps = append(steps, fmt.Sprintf("set the secrets still missing (%s): berthy secret set -e %s%s", strings.Join(n.secrets.unmet, ", "), env, config))
+	}
 	if n.ingress {
 		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s%s", env, config))
 	}

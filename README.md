@@ -100,7 +100,7 @@ berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
 
 If setup prints the token because it could not confirm a save, keep it privately and set it in the named variable. The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Also copy the encryption key off the server, as the setup output says. Without it, a lost server means lost secrets. Run one `berthy setup` at a time against a server.
 
-**4. Set the secrets.** Berthy asks for each value and does not show it, so it stays off your screen and out of your shell history.
+**4. Set the secrets.** At a terminal, setup generates declared secrets and asks for the remaining values without showing them. Run the guide again with `berthy secret set -e prod`, or set a value by name:
 
 ```bash
 berthy secret set GHCR_TOKEN --registry ghcr.io -e prod

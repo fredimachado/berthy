@@ -257,7 +257,9 @@ next steps:
   6. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --project todo --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --project todo --config /home/me/.config/berthy/config.json --version REF)
 ```
 
-This sample has no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
+This sample is a non-terminal run with no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
+
+At a terminal, after the summary and any token, setup runs the secrets guide before printing next steps. It generates declared secrets and asks for the remaining values without echoing them; Enter skips a value. When the guide finishes, next steps name any secrets still missing. If it cannot finish, setup keeps the manual secret commands. A pipe or `--json` skips the guide and prints those commands. The guide does not change the setup exit status.
 
 A **second run** keeps the existing token and shows no new token. With a stored token it reports:
 
@@ -896,7 +898,7 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 #### Set the secrets the first deploy needs
 
-Run `berthy secret set -e prod` at a terminal to generate the declared secrets and enter each remaining value in turn. Enter skips a value; the command exits 1 while anything remains unmet. Add `--manifest-dir DIR` to choose the manifest.
+Setup runs this guide at a terminal when it has an admin token. Run `berthy secret set -e prod` at a terminal to generate the declared secrets and enter each remaining value in turn. Enter skips a value; the command exits 1 while anything remains unmet. Add `--manifest-dir DIR` to choose the manifest.
 
 `berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input, with one trailing newline stripped, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
 

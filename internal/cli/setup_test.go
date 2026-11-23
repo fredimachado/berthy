@@ -8,12 +8,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,8 +185,9 @@ func withSetupRunner(t *testing.T, server *setupServer) *[2]any {
 	t.Helper()
 	// Setup writes the CLI configuration when it is not told where, so each test gets a user configuration directory of its own.
 	isolatedUserConfig(t)
-	saved := newSetupRunner
-	t.Cleanup(func() { newSetupRunner = saved })
+	saved, savedHidden := newSetupRunner, hiddenInput
+	hiddenInput = func() (func() ([]byte, error), bool) { return nil, false }
+	t.Cleanup(func() { newSetupRunner, hiddenInput = saved, savedHidden })
 	made := &[2]any{}
 	newSetupRunner = func(host string, local bool) (setup.Runner, error) {
 		made[0], made[1] = host, local
@@ -972,5 +978,139 @@ func TestSetupPreflightFailuresAreReportedAsJSONWithoutRunner(t *testing.T) {
 				t.Fatalf("code %d report %+v runner %v stdout %q stderr %q parse %v", code, report, made[0], out, errout, err)
 			}
 		})
+	}
+}
+
+type setupTokenOutput struct {
+	bytes.Buffer
+	seen atomic.Bool
+}
+
+func (w *setupTokenOutput) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("admin token for ")) {
+		w.seen.Store(true)
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestSetupAtATerminalRunsTheSecretsGuide(t *testing.T) {
+	server := freshServer(t, "ops@s1")
+	server.probe = strings.ReplaceAll(server.probe, "172.31.250.10", "127.0.0.1")
+	withSetupRunner(t, server)
+	reads := fakeTerminal(t, "private")
+	var paths []string
+	var output setupTokenOutput
+	var requestBeforeToken atomic.Bool
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !output.seen.Load() {
+			requestBeforeToken.Store(true)
+		}
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/secrets/generate-declared"):
+			fmt.Fprint(w, declaredReply)
+		case r.Method == "GET":
+			fmt.Fprint(w, `[{"name":"DB_PASS"},{"name":"GEN_PASS"}]`)
+		default:
+			fmt.Fprint(w, `{"ok":true}`)
+		}
+	}))
+	defer agent.Close()
+	dir := declaredManifestDir(t)
+	b, err := os.ReadFile(filepath.Join(dir, "berthy.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = bytes.ReplaceAll(b, []byte("project: demo"), []byte("project: shop"))
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code := Run([]string{"setup", "-e", "p5", "--host", "ops@s1", "--listen", strings.TrimPrefix(agent.URL, "http://"), "--manifest-dir", dir, "--config", filepath.Join(t.TempDir(), "config.json")}, &output, &output)
+	text := output.String()
+	token, guide, prompt := strings.Index(text, "admin token for"), strings.Index(text, "secrets:"), strings.Index(text, "Value of OTHER")
+	if code != 0 || reads.Load() != 1 || len(paths) != 3 || requestBeforeToken.Load() || token < 0 || guide <= token || prompt <= guide || !strings.Contains(text, "generated GEN_PASS") || !strings.Contains(text, "stored OTHER") || strings.Contains(text, "set the secrets the manifest names") {
+		t.Fatalf("exit %d reads %d paths %v output %q", code, reads.Load(), paths, text)
+	}
+}
+
+func TestSetupGuideOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		terminal, json    bool
+		status            int
+		body, input, want string
+		reads, calls      int
+	}{
+		{"skipped", true, false, 200, "", "", "set the secrets still missing (OTHER):", 1, 2},
+		{"failed", true, false, 400, `{"message":"refused"}`, "", "generate the secrets the manifest declares:", 0, 1},
+		{"held", true, false, 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret generate declared"}}`, "", "generate the secrets the manifest declares:", 0, 1},
+		{"no terminal", false, false, 200, "", "", "generate the secrets the manifest declares:", 0, 0},
+		{"json", true, true, 200, "", "", "generate the secrets the manifest declares:", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := freshServer(t, "ops@s1")
+			server.probe = strings.ReplaceAll(server.probe, "172.31.250.10", "127.0.0.1")
+			withSetupRunner(t, server)
+			reads := fakeTerminal(t, tc.input)
+			if !tc.terminal {
+				hiddenInput = func() (func() ([]byte, error), bool) { return nil, false }
+			}
+			calls := 0
+			agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if tc.status != 200 {
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+					return
+				}
+				if r.Method == "GET" {
+					fmt.Fprint(w, `[{"name":"DB_PASS"},{"name":"GEN_PASS"}]`)
+				} else {
+					fmt.Fprint(w, declaredReply)
+				}
+			}))
+			defer agent.Close()
+			dir := declaredManifestDir(t)
+			path := filepath.Join(dir, "berthy.yml")
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, bytes.ReplaceAll(b, []byte("project: demo"), []byte("project: shop")), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-e", "p5", "--host", "ops@s1", "--listen", strings.TrimPrefix(agent.URL, "http://"), "--manifest-dir", dir, "--config", filepath.Join(t.TempDir(), "config.json")}
+			if tc.json {
+				args = append(args, "--json")
+			}
+			code, out, stderr := runSetupCmd(args...)
+			if code != 0 || reads.Load() != int32(tc.reads) || calls != tc.calls || !strings.Contains(out, tc.want) {
+				t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), calls, out, stderr)
+			}
+			if tc.name == "failed" || tc.name == "held" {
+				if !strings.Contains(out, "set the secrets the manifest names:") {
+					t.Fatal(out)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupThatCannotReachTheAgentKeepsTheOldNextSteps(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server := freshServer(t, "ops@s1")
+	server.probe = strings.ReplaceAll(server.probe, "172.31.250.10", "127.0.0.1")
+	withSetupRunner(t, server)
+	reads := fakeTerminal(t, "unused")
+	code, out, stderr := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", addr, "--manifest-dir", projectDir(t), "--config", filepath.Join(t.TempDir(), "config.json"))
+	if code != 0 || reads.Load() != 0 || strings.Count(stderr, "agent connection failed") != 1 || !strings.Contains(out, "set the secrets the manifest names:") {
+		t.Fatalf("exit %d reads %d stderr %q", code, reads.Load(), stderr)
 	}
 }
