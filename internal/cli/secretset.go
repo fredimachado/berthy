@@ -291,23 +291,42 @@ func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret
 		}
 	}
 	g := guideFor(m, f.env, name, registry)
+	value, result := askSecret(g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout)
+	if result == askEmpty {
+		fmt.Fprintln(errout, "no value entered")
+	}
+	if result != askGot {
+		return "", "", 1
+	}
+	return value, registry, 0
+}
+
+type askResult int
+
+const (
+	askGot askResult = iota
+	askEmpty
+	askRefused
+	askFailed
+)
+
+// askSecret prints the guide, reads a hidden value and checks it.
+func askSecret(g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer) (string, askResult) {
 	for _, line := range g.intro {
 		fmt.Fprintln(errout, line)
 	}
-	fmt.Fprintf(errout, "Value of %s (hidden): ", name)
+	fmt.Fprint(errout, prompt)
 	line, err := read()
 	fmt.Fprintln(errout)
 	if err != nil || len(line) > api.MaxSecretValue {
 		fmt.Fprintln(errout, "secret input unavailable or too large")
-		return "", "", 1
+		return "", askFailed
 	}
 	if len(line) == 0 {
-		fmt.Fprintln(errout, "no value entered")
-		return "", "", 1
+		return "", askEmpty
 	}
-	value = string(line)
+	value := string(line)
 	if g.check != nil {
-		// Ctrl-C is not caught here: it ends the process before anything is stored, so an interrupted check stores nothing.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		res := g.check(ctx, value)
@@ -316,10 +335,10 @@ func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret
 		}
 		if res.refusal != "" {
 			fmt.Fprintln(errout, "not stored: "+res.refusal)
-			return "", "", 1
+			return "", askRefused
 		}
 	}
-	return value, registry, 0
+	return value, askGot
 }
 
 // storedSecrets asks the agent which secrets it holds, at u. ok is false when the agent did not answer with the list, and the
