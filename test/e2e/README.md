@@ -70,6 +70,7 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
   `38-two-agents.sh` starts a second agent and shows one project with an environment on each.
   `41-secret-generate-declared.sh` drives nameless `secret generate` for declared secrets, the deployed-reader and external-volume guards, and the named `--replace` escape hatch.
   `42-secret-guide.sh` drives the terminal secret guide, registry association replacement, and deploy.
+  `43-guided-setup.sh` drives fresh and repeat setup over a disposable Debian SSH fixture; its first terminal snapshots are kept in a private temporary tmpfs directory and removed on exit.
 
 ## Add a scenario
 
