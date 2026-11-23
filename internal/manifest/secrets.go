@@ -83,17 +83,14 @@ func (m *Manifest) checkSecrets(p *Problems) {
 			continue
 		}
 		who := neededBy[name]
-		hasApp, refused := false, false
 		for _, w := range who {
 			if strings.HasPrefix(w, "app ") {
-				hasApp = true
 				continue
 			}
 			p.add(gpath, "secrets.%s.generate: %s is needed by %s and cannot be generated", name, name, w)
-			refused = true
 			break
 		}
-		if !refused && !hasApp {
+		if len(who) == 0 {
 			p.add(path, "secrets.%s: no app reads %s", name, name)
 		}
 	}
