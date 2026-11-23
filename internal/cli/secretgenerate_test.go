@@ -169,20 +169,23 @@ func TestSecretGenerateByNameSendsTheManifestWhenItHasAReader(t *testing.T) {
 	}
 }
 
-func TestSecretGenerateByNameRefusesAMissingComposeFile(t *testing.T) {
-	var calls atomic.Int32
-	server := countingAgent(&calls)
+func TestSecretGenerateByNameSendsManifestWithMissingComposeFile(t *testing.T) {
+	var bodies []string
+	server := replyingAgent(&bodies, http.StatusConflict, `{"code":"conflict","message":"refused"}`)
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
 	dir := t.TempDir()
-	content := "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: missing.yml\n    env:\n      secret: [GEN_PASS]\n"
+	content := "project: demo\nnetwork: overlay\napps:\n  db:\n    kind: compose\n    file: missing.yml\n    env:\n      secret: [GEN_PASS]\n  cache:\n    kind: compose\n    file: compose.yml\n    env:\n      secret: [GEN_PASS]\n"
 	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errout bytes.Buffer
 	code := Run([]string{"secret", "generate", "GEN_PASS", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
-	if code != 1 || calls.Load() != 0 {
-		t.Fatalf("exit %d calls %d stderr %q", code, calls.Load(), errout.String())
+	if code != 1 || len(bodies) != 1 || !strings.Contains(bodies[0], `"manifest":`) || !strings.Contains(bodies[0], `"compose_files":{"cache":"services: {}\n"}`) || !strings.Contains(errout.String(), "refused") {
+		t.Fatalf("exit %d requests %v stderr %q", code, bodies, errout.String())
 	}
 }
 

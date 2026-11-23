@@ -879,8 +879,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 						}
 						file, err := agentclient.ReadComposeFile(projectDir, m.Apps[app].File)
 						if err != nil {
-							fmt.Fprintln(errout, err)
-							return 1
+							continue
 						}
 						if req.ComposeFiles == nil {
 							req.ComposeFiles = map[string]string{}
