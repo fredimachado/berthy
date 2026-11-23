@@ -9,6 +9,8 @@ if [[ ! $server =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
   exit 1
 fi
 export FS_HOME="$RUN/setup-home"
+export FS_DOCKER_HOST="unix://$SOCK"
+export DOCKER_CONFIG="$E2E_ROOT/docker-config"
 mkdir -p "$FS_HOME/bin"
 ln -sf "$DOCKER_BIN" "$FS_HOME/bin/docker"
 export PATH="$FS_HOME/bin:/usr/bin:/bin"
