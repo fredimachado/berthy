@@ -152,8 +152,8 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 		report.OK = setup.Run(ctx, session, setup.Steps(), show)
 	}
-	// A live token must be shown when it was not confirmed saved, even if a later step failed.
-	if session != nil && session.Token != "" && session.TokenLive && (!session.TokenStored || *showToken) {
+	// A failed run also shows an uncertain token because the server may have kept its configuration.
+	if session != nil && session.Token != "" && (session.TokenLive && (!session.TokenStored || *showToken) || !report.OK && session.TokenUncertain) {
 		report.Token = session.Token
 	}
 	if session != nil {

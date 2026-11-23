@@ -1157,8 +1157,8 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 	if journalScript != "journalctl -u berthy -n 20 --no-pager -o cat 2>&1" {
 		t.Errorf("journal command = %q", journalScript)
 	}
-	if ae.ConfigInPlace {
-		t.Errorf("the previous configuration is back, but ConfigInPlace is set")
+	if ae.ConfigOutcome != ConfigPrevious {
+		t.Errorf("the previous configuration is back, but outcome is %s", ae.ConfigOutcome)
 	}
 	var order []string
 	for _, sc := range f.scripts() {
@@ -1215,7 +1215,7 @@ func TestActivateOnAFirstInstallLeavesTheAgentStopped(t *testing.T) {
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %v", err)
 	}
-	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || !ae.ConfigInPlace {
+	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || ae.ConfigOutcome != ConfigRetained {
 		t.Errorf("error = %+v", ae)
 	}
 	if !f.ran("systemctl stop berthy") || f.restarts != 1 {

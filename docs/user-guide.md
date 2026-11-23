@@ -275,7 +275,7 @@ If you want a machine-readable result, add `--json`. It prints one object and no
  "token": "<token>", "next_steps": ["..."]}
 ```
 
-Exit codes: `0` all steps fine, `1` a step failed (the output names it), `2` the command line is wrong. If a later step fails after the configuration holding the token went live, setup prints the token if the save was not confirmed or `--show-token` was given.
+Exit codes: `0` all steps fine, `1` a step failed (the output names it), `2` the command line is wrong. If a later step fails after the configuration holding the token went live, setup prints the token if the save was not confirmed or `--show-token` was given. If activation is interrupted while installing or rolling back the configuration and setup cannot tell which configuration remains, the failed run also shows the token in case the server kept it. The token is not saved or treated as live in that case.
 
 #### Where the binary comes from
 

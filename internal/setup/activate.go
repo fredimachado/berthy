@@ -27,12 +27,26 @@ type Staged struct {
 // ActivateError is the failure of Activate: the new agent did not come up. Message already says what was put back and carries
 // the agent's last log lines.
 type ActivateError struct {
-	Message string
-	// ConfigInPlace is true when the new configuration is still the live one: there was nothing to put back.
-	ConfigInPlace bool
+	Message       string
+	ConfigOutcome ConfigOutcome
+	Cause         error
 }
 
 func (e *ActivateError) Error() string { return e.Message }
+func (e *ActivateError) Unwrap() error { return e.Cause }
+
+// ConfigOutcome records what activation confirmed about the staged configuration.
+type ConfigOutcome string
+
+const (
+	ConfigPrevious    ConfigOutcome = "previous"
+	ConfigRetained    ConfigOutcome = "retained"
+	ConfigUnconfirmed ConfigOutcome = "unconfirmed"
+)
+
+func activationFailure(err error, outcome ConfigOutcome) error {
+	return &ActivateError{Message: err.Error(), Cause: err, ConfigOutcome: outcome}
+}
 
 // getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.
 const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 3 -o /dev/null "$1" >/dev/null 2>&1; else wget -q -T 3 -O /dev/null "$1" >/dev/null 2>&1; fi; }
@@ -74,13 +88,26 @@ func wholeSeconds(d time.Duration) int {
 // Only the agent's process restarts: no app is touched.
 func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeout time.Duration) error {
 	var out string
+	outcome := ConfigPrevious
 	if swap := swapScript(staged); swap != "" {
+		if err := ctx.Err(); err != nil {
+			return activationFailure(fmt.Errorf("putting the new agent in place: %w", err), outcome)
+		}
 		res, err := r.Run(ctx, swap, nil)
 		if err != nil {
-			return fmt.Errorf("putting the new agent in place: %w", err)
+			if staged.Config {
+				outcome = ConfigUnconfirmed
+			}
+			return activationFailure(fmt.Errorf("putting the new agent in place: %w", err), outcome)
 		}
 		if res.Code != 0 {
-			return fmt.Errorf("putting the new agent in place: %s", failureText(res))
+			if staged.Config {
+				outcome = ConfigUnconfirmed
+			}
+			return activationFailure(fmt.Errorf("putting the new agent in place: %s", failureText(res)), outcome)
+		}
+		if staged.Config {
+			outcome = ConfigRetained
 		}
 		out = string(res.Stdout)
 	}
@@ -90,7 +117,7 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	secs := wholeSeconds(timeout)
 	up, err := restartAndWait(ctx, r, listen, secs)
 	if err != nil {
-		return err
+		return activationFailure(err, outcome)
 	}
 	if up {
 		return nil
@@ -98,13 +125,17 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 
 	journal, err := journalTail(ctx, r)
 	if err != nil {
-		return err
+		return activationFailure(err, outcome)
 	}
 	if !prevBin && !prevCfg {
-		if _, err := r.Run(ctx, "systemctl stop berthy", nil); err != nil {
-			return fmt.Errorf("stopping the agent: %w", err)
+		res, err := r.Run(ctx, "systemctl stop berthy", nil)
+		if err != nil {
+			return activationFailure(fmt.Errorf("stopping the agent: %w", err), outcome)
 		}
-		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigInPlace: staged.Config}
+		if res.Code != 0 {
+			return activationFailure(fmt.Errorf("stopping the agent: %s", failureText(res)), outcome)
+		}
+		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigOutcome: outcome}
 	}
 	var back strings.Builder
 	back.WriteString("set -e\n")
@@ -116,21 +147,29 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	}
 	res, err := r.Run(ctx, back.String(), nil)
 	if err != nil {
-		return fmt.Errorf("putting the previous agent back: %w", err)
+		if prevCfg {
+			outcome = ConfigUnconfirmed
+		}
+		return activationFailure(fmt.Errorf("putting the previous agent back: %w", err), outcome)
 	}
-	inPlace := staged.Config && !prevCfg
 	if res.Code != 0 {
-		return &ActivateError{Message: withLog("the new agent did not come up and the previous one could not be put back: "+failureText(res), journal), ConfigInPlace: staged.Config}
+		if prevCfg {
+			outcome = ConfigUnconfirmed
+		}
+		return &ActivateError{Message: withLog("the new agent did not come up and the previous one could not be put back: "+failureText(res), journal), ConfigOutcome: outcome}
+	}
+	if prevCfg {
+		outcome = ConfigPrevious
 	}
 	msg := "the new agent did not come up; the previous one was put back"
 	again, err := restartAndWait(ctx, r, listen, secs)
 	if err != nil {
-		return err
+		return activationFailure(err, outcome)
 	}
 	if !again {
 		msg += ", but it does not answer either"
 	}
-	return &ActivateError{Message: withLog(msg, journal), ConfigInPlace: inPlace}
+	return &ActivateError{Message: withLog(msg, journal), ConfigOutcome: outcome}
 }
 
 // swapScript puts the staged binary and configuration in place, keeping the previous ones as .prev and printing which it kept. It
@@ -185,6 +224,9 @@ func journalTail(ctx context.Context, r Runner) (string, error) {
 	res, err := r.Run(ctx, "journalctl -u berthy -n 20 --no-pager -o cat 2>&1", nil)
 	if err != nil {
 		return "", fmt.Errorf("reading the agent's log: %w", err)
+	}
+	if res.Code != 0 {
+		return "", fmt.Errorf("reading the agent's log: %s", failureText(res))
 	}
 	return lastLines(res, 20), nil
 }

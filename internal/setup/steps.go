@@ -107,6 +107,8 @@ type Session struct {
 	// TokenLive is true once the agent's configuration with its digest is in place on the server.
 	Token     string
 	TokenLive bool
+	// TokenUncertain means activation could have installed this run's token, but did not confirm it.
+	TokenUncertain bool
 	// TokenStored is true once this run saved its token and the store confirmed it.
 	TokenStored bool
 	// TokenEnv is the environment variable the CLI configuration names for the token, once the cli_config step knows it.
@@ -128,14 +130,13 @@ type Session struct {
 	// it runs.
 	dockerStopped bool
 
-	existing        *agent.File // the server's agent configuration, when there is one
-	existingRaw     []byte
-	configRead      bool
-	newToken        *agent.Token
-	staged          Staged // what this run staged for the service step
-	stagedConfigSHA string // digest of the exact configuration staged by this run
-	unitChanged     bool
-	serverVer       *string // the version the agent binary on the server reports; "" when it says none
+	existing    *agent.File // the server's agent configuration, when there is one
+	existingRaw []byte
+	configRead  bool
+	newToken    *agent.Token
+	staged      Staged // what this run staged for the service step
+	unitChanged bool
+	serverVer   *string // the version the agent binary on the server reports; "" when it says none
 }
 
 // StepResult is what a step reported.
