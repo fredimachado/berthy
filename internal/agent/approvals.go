@@ -256,10 +256,14 @@ func redactApprovalPlan(rest []string, method string, plan []byte, redact func(s
 	dec.DisallowUnknownFields()
 	var value any
 	if kind == "secret generate" {
-		var p api.SecretGeneratePlan
-		if err := dec.Decode(&p); err != nil || p.Action != "secret generate" || !slices.Contains(api.GenerateFormats, p.Format) {
+		var p struct {
+			api.SecretGeneratePlan
+			Exists *bool `json:"exists"`
+		}
+		if err := dec.Decode(&p); err != nil || p.Exists == nil || p.Action != "secret generate" || !slices.Contains(api.GenerateFormats, p.Format) {
 			return nil, errors.New("invalid generation plan")
 		}
+		p.SecretGeneratePlan.Exists = *p.Exists
 		p.Name = redact(p.Name)
 		if p.App != "" {
 			p.App = redact(p.App)
@@ -267,7 +271,7 @@ func redactApprovalPlan(rest []string, method string, plan []byte, redact func(s
 		if p.Volume != "" {
 			p.Volume = redact(p.Volume)
 		}
-		value = p
+		value = p.SecretGeneratePlan
 	} else {
 		var p api.SecretsDeclared
 		if err := dec.Decode(&p); err != nil || p.Action != "secret generate declared" || p.Secrets == nil {
@@ -603,8 +607,8 @@ func (g *approvalGate) approve(w http.ResponseWriter, r *http.Request, decider s
 		return
 	}
 	stored, err := canonicalJSON(a.Plan)
-	if kind := routeKind(rest, a.Method); kind == "secret generate" || kind == "secret generate declared" {
-		stored, err = redactApprovalPlan(rest, a.Method, a.Plan, func(s string) string { return s })
+	if kind := routeKind(rest, a.Method); err == nil && (kind == "secret generate" || kind == "secret generate declared") {
+		_, err = redactApprovalPlan(rest, a.Method, a.Plan, func(s string) string { return s })
 	}
 	if err != nil || !bytes.Equal(stored, plan) {
 		fail("the plan changed since it was requested; ask for a new request", "the plan changed since it was requested")

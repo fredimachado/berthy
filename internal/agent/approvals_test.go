@@ -750,6 +750,7 @@ func TestGenerationPlanRedactionPreservesDecisions(t *testing.T) {
 		{"declared generate", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"secret-name","outcome":"generate","bytes":32,"format":"hex","app":"reader","volume":"volume"}]}`, `{"action":"secret generate declared","secrets":[{"name":"[redacted]","outcome":"generate","bytes":32,"format":"hex","app":"[redacted]","volume":"[redacted]"}]}`},
 		{"declared refuse", "generate-declared", `{"action":"secret generate declared","secrets":[{"name":"secret-name","outcome":"refuse","bytes":32,"format":"hex","app":"reader","volume":"volume"}]}`, `{"action":"secret generate declared","secrets":[{"name":"[redacted]","outcome":"refuse","bytes":32,"format":"hex","app":"[redacted]","volume":"[redacted]"}]}`},
 		{"named", "generate", `{"action":"secret generate","name":"secret-name","exists":false,"bytes":20,"format":"alnum","app":"reader","volume":"volume"}`, `{"action":"secret generate","name":"[redacted]","exists":false,"bytes":20,"format":"alnum","app":"[redacted]","volume":"[redacted]"}`},
+		{"named exists", "generate", `{"action":"secret generate","name":"secret-name","exists":true,"bytes":32,"format":"hex"}`, `{"action":"secret generate","name":"[redacted]","exists":true,"bytes":32,"format":"hex"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := redactApprovalPlan([]string{"secrets", tc.route}, "POST", []byte(tc.plan), mask)
@@ -834,42 +835,74 @@ func TestHeldDeclaredGenerateRejectsChangedState(t *testing.T) {
 }
 
 func TestInvalidStoredGenerationPlanIsHiddenAndRefused(t *testing.T) {
+	for _, tc := range []struct{ name, plan string }{
+		{"invalid format", `{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"not-a-format"}`},
+		{"missing exists", `{"action":"secret generate","name":"GEN_PASS","bytes":32,"format":"hex"}`},
+		{"null exists", `{"action":"secret generate","name":"GEN_PASS","exists":null,"bytes":32,"format":"hex"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApprovalFixture(t, true, nil)
+			held := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS"}`)
+			old, err := f.s.Approval(t.Context(), held.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old.Plan = []byte(tc.plan)
+			invalid, err := f.s.CreateApproval(t.Context(), old, []byte(`{"name":"GEN_PASS"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := f.call("GET", "/approvals", apAdminToken, "")
+			var entries []struct {
+				ID   string          `json:"id"`
+				Plan json.RawMessage `json:"plan"`
+			}
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &entries) != nil {
+				t.Fatalf("list status %d", w.Code)
+			}
+			found := false
+			for _, entry := range entries {
+				if entry.ID == invalid.ID {
+					found = true
+					if len(entry.Plan) != 0 {
+						t.Fatal("invalid plan was listed")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("approval absent from list")
+			}
+			w = f.call("POST", "/approvals/"+invalid.ID+"/approve", apAdminToken, "")
+			if w.Code != 409 || f.status(invalid.ID) != "failed" {
+				t.Fatalf("approval status %d", w.Code)
+			}
+			if _, ok := storedValue(t, f, "GEN_PASS"); ok {
+				t.Fatal("invalid plan stored a secret")
+			}
+		})
+	}
+}
+
+func TestHeldNamedGenerationComparesOriginalStoredPlanShape(t *testing.T) {
 	f := newApprovalFixture(t, true, nil)
+	if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "GEN_PASS"}, []byte("existing-value")); err != nil {
+		t.Fatal(err)
+	}
 	held := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS"}`)
 	old, err := f.s.Approval(t.Context(), held.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old.Plan = []byte(`{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"not-a-format"}`)
-	invalid, err := f.s.CreateApproval(t.Context(), old, []byte(`{"name":"GEN_PASS"}`))
+	old.Plan = []byte(`{"action":"secret generate","name":"GEN_PASS","exists":true,"bytes":32,"format":"hex","app":null}`)
+	changed, err := f.s.CreateApproval(t.Context(), old, []byte(`{"name":"GEN_PASS"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := f.call("GET", "/approvals", apAdminToken, "")
-	var entries []struct {
-		ID   string          `json:"id"`
-		Plan json.RawMessage `json:"plan"`
+	w := f.call("POST", "/approvals/"+changed.ID+"/approve", apAdminToken, "")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "the plan changed") || f.status(changed.ID) != "failed" {
+		t.Fatalf("status %d, expected changed plan %t", w.Code, strings.Contains(w.Body.String(), "the plan changed"))
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &entries) != nil {
-		t.Fatalf("list status %d", w.Code)
-	}
-	found := false
-	for _, entry := range entries {
-		if entry.ID == invalid.ID {
-			found = true
-			if len(entry.Plan) != 0 {
-				t.Fatal("invalid plan was listed")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("approval absent from list")
-	}
-	w = f.call("POST", "/approvals/"+invalid.ID+"/approve", apAdminToken, "")
-	if w.Code != 409 || f.status(invalid.ID) != "failed" {
-		t.Fatalf("approval status %d", w.Code)
-	}
-	if _, ok := storedValue(t, f, "GEN_PASS"); ok {
-		t.Fatal("invalid plan stored a secret")
+	if value, ok := storedValue(t, f, "GEN_PASS"); !ok || value != "existing-value" {
+		t.Fatal("stored value changed")
 	}
 }
