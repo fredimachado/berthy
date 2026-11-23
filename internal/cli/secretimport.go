@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 
 	"berthy/internal/agentclient"
@@ -125,7 +126,11 @@ func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout
 	if !ok {
 		return 1
 	}
-	missing := missingSecrets(m.SecretNeeds(), held)
+	needs := unmetSecrets(m, held)
+	missing := make([]manifest.SecretNeed, 0, len(needs))
+	for _, n := range needs {
+		missing = append(missing, n.SecretNeed)
+	}
 	if f.json {
 		b, err := json.Marshal(struct {
 			Secrets []storedSecret        `json:"secrets"`
@@ -143,23 +148,90 @@ func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout
 	if len(missing) == 0 {
 		fmt.Fprintln(out, "every secret the manifest needs is stored")
 	}
-	for _, n := range missing {
-		fmt.Fprintf(out, "missing: %s (needed by %s)\n", terminalSafe(n.Name), terminalSafe(strings.Join(n.NeededBy, ", ")))
+	for _, n := range needs {
+		name := terminalSafe(n.Name)
+		switch n.Kind {
+		case unmetRegistry:
+			if n.Stored == "" {
+				fmt.Fprintf(out, "missing: %s (stored without registry %s; needed by registry %s)\n", name, terminalSafe(n.Registry), terminalSafe(n.Registry))
+			} else {
+				fmt.Fprintf(out, "missing: %s (stored for registry %s; needed by registry %s)\n", name, terminalSafe(n.Stored), terminalSafe(n.Registry))
+			}
+		case unmetNotPlain:
+			fmt.Fprintf(out, "missing: %s (stored as the password of %s; needed by %s)\n", name, terminalSafe(n.Stored), terminalSafe(strings.Join(n.NeededBy, ", ")))
+		case unmetShared:
+			fmt.Fprintf(out, "conflict: %s is the password_secret of %s: give each registry its own secret name\n", name, safeRegistryList(n.Registries))
+		default:
+			fmt.Fprintf(out, "missing: %s (needed by %s)\n", name, terminalSafe(strings.Join(n.NeededBy, ", ")))
+		}
 	}
 	return 0
 }
 
-// missingSecrets returns the needs whose secret the agent does not hold, in the order of needs. It is never nil.
-func missingSecrets(needs []manifest.SecretNeed, held []storedSecret) []manifest.SecretNeed {
-	stored := make(map[string]bool, len(held))
-	for _, s := range held {
-		stored[s.Name] = true
-	}
-	missing := []manifest.SecretNeed{}
-	for _, n := range needs {
-		if !stored[n.Name] {
-			missing = append(missing, n)
+type unmetKind int
+
+const (
+	unmetMissing unmetKind = iota
+	unmetRegistry
+	unmetNotPlain
+	unmetShared
+)
+
+type unmetNeed struct {
+	manifest.SecretNeed
+	Kind       unmetKind
+	Registry   string
+	Stored     string
+	Registries []string
+}
+
+func registriesOf(m *manifest.Manifest, name string) []string {
+	var regs []string
+	for host, reg := range m.Registries {
+		if reg.PasswordSecret == name {
+			regs = append(regs, host)
 		}
 	}
-	return missing
+	sort.Strings(regs)
+	return regs
+}
+func safeRegistryList(regs []string) string {
+	safe := make([]string, len(regs))
+	for i, r := range regs {
+		safe[i] = terminalSafe(r)
+	}
+	return strings.Join(safe, " and ")
+}
+func unmetSecrets(m *manifest.Manifest, held []storedSecret) []unmetNeed {
+	stored := make(map[string]storedSecret, len(held))
+	for _, s := range held {
+		stored[s.Name] = s
+	}
+	needs := []unmetNeed{}
+	for _, n := range m.SecretNeeds() {
+		regs := registriesOf(m, n.Name)
+		s, ok := stored[n.Name]
+		u := unmetNeed{SecretNeed: n}
+		switch {
+		case len(regs) > 1:
+			u.Kind = unmetShared
+			u.Registries = regs
+		case !ok:
+			u.Kind = unmetMissing
+			if len(regs) == 1 {
+				u.Registry = regs[0]
+			}
+		case len(regs) == 1 && s.Registry != regs[0]:
+			u.Kind = unmetRegistry
+			u.Registry = regs[0]
+			u.Stored = s.Registry
+		case len(regs) == 0 && s.Registry != "":
+			u.Kind = unmetNotPlain
+			u.Stored = s.Registry
+		default:
+			continue
+		}
+		needs = append(needs, u)
+	}
+	return needs
 }
