@@ -236,7 +236,11 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		store := agentclient.Tokens(context.Background())
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
 		if err != nil {
-			fmt.Fprintf(errout, "the stored token was not deleted (%v): the entry is kept, so the command can be run again\n", err)
+			message := "the stored token was not deleted"
+			if errors.Is(err, credstore.ErrGivenUp) {
+				message = "the stored token could not be confirmed deleted"
+			}
+			fmt.Fprintf(errout, "%s (%v): the entry is kept, so the command can be run again\n", message, err)
 			return 1
 		}
 		if removed {

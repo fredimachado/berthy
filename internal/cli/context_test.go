@@ -407,3 +407,17 @@ func TestContextCommandsRefuseAmbiguousTokenVariableBeforeStore(t *testing.T) {
 		})
 	}
 }
+
+func TestContextRemoveDeleteTokenGivenUpKeepsTheEntry(t *testing.T) {
+	cfg := blockedTokenFixture(t)
+	before, readErr := os.ReadFile(cfg)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	code, out, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
+	after, readErr := os.ReadFile(cfg)
+	want := "the stored token could not be confirmed deleted (no credential store on this machine: the store did not answer): the entry is kept, so the command can be run again\n"
+	if code != 1 || out != "" || err != want || readErr != nil || string(before) != string(after) {
+		t.Fatalf("exit %d stdout %q stderr %q file error %v", code, out, err, readErr)
+	}
+}
