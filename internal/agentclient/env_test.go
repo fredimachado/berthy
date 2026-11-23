@@ -4,12 +4,12 @@ import "testing"
 
 func TestEnvironmentName(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		flag         string
-		given        bool
-		variable     string
-		wantName     string
-		wantFromVar  bool
+		name        string
+		flag        string
+		given       bool
+		variable    string
+		wantName    string
+		wantFromVar bool
 	}{
 		{"given with a value", "dev", true, "prod", "dev", false},
 		{"given and empty with the variable set", "", true, "prod", "", false},
