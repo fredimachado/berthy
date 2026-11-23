@@ -68,6 +68,7 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
 - `lib.sh`: settings, the `adm` and `ci` wrappers for the CLI, process helpers, `drive` (runs a command in a pseudo-terminal via `tuidriver`), and the assertions. `write_agent_config` joins the fragments of `run/environments.d` into `agent.json`; `add_environment PROJECT ENV` adds a hosted environment (state, key, admin token, fragment, manifest directory `$MAN-PROJECT-ENV`, CLI entry) and restarts the agent; `env_cmd PROJECT ENV CMD [ARGS]` runs berthy as that environment's admin from its manifest directory. `start_agent` waits on `/healthz`, which answers once every hosted environment has started. `start_agent2` starts a second agent process on the same Docker daemon (`AGENT2_LISTEN`, `$RUN/agent2.json`, `$RUN/state2`) with one hosted environment (`$PROJECT`, `${ENVN}c`) and adds it to `admin.json`; `purge_fixture` stops it and removes its journaled network and workloads.
 - `scenarios/`: one script per scenario. `00-smoke.sh` deploys v1, runs `exec`, lists the history, deploys v2 and rolls back.
   `38-two-agents.sh` starts a second agent and shows one project with an environment on each.
+  `41-secret-generate-declared.sh` drives nameless `secret generate` for declared secrets, the deployed-reader and external-volume guards, and the named `--replace` escape hatch.
 
 ## Add a scenario
 
