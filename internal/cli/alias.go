@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -57,7 +58,7 @@ func checkAliases(aliases map[string]string) error {
 			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
 				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line or by BERTHY_ENV", name, w)
 			}
-			if aliasArgTakesValue(w) {
+			if aliasDefFlagTakesValue(w) {
 				i++
 			}
 		}
@@ -65,20 +66,29 @@ func checkAliases(aliases map[string]string) error {
 	return nil
 }
 
-// aliasArgTakesValue reports whether a flag on an alias invocation takes a value. It matches checkAliases and
-// parseDeploymentArgs, so a value of "--" is not mistaken for the end of options.
-func aliasArgTakesValue(flag string) bool {
+// aliasDefFlagTakesValue is for validating an alias definition: which flags in the alias text take a following word.
+func aliasDefFlagTakesValue(flag string) bool {
 	return deploymentFlagTakesValue(flag) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, flag)
+}
+
+// aliasIntent is the environment, project, config and manifest directory the operator chose when invoking an alias, before
+// expansion. The real command parsers must resolve the same selectors; ordinary builtin calls carry a nil intent.
+type aliasIntent struct {
+	name                                string
+	env                                 string
+	project, config, manifestDir        string
+	projectGiven, configGiven, dirGiven bool
 }
 
 // expandAlias returns the command line the alias cmd of the manifest stands for. The person's -e, --config and --manifest-dir
 // go right after the alias's first word, and every other argument the person gave goes at the end. ok reports whether cmd is
 // an alias of the manifest. When it is not, err says why cmd is unknown. When it is, but the manifest's aliases cannot run,
 // ok is true and err names the alias. dir is the manifest directory the alias was found in: the expanded line may not take
-// --manifest-dir, and the command still has to find its project in that directory, not in the one it runs in.
-func expandAlias(cmd string, args []string) (expanded []string, dir string, ok bool, err error) {
-	dir, env := ".", ""
-	var envGiven bool
+// --manifest-dir, and the command still has to find its project in that directory, not in the one it runs in. intent holds the
+// selectors extracted from the invocation for the dispatcher to check after the real parsers run.
+func expandAlias(cmd string, args []string) (expanded []string, dir string, intent *aliasIntent, ok bool, err error) {
+	dir, env, project, config := ".", "", "", ""
+	var envGiven, projectGiven, configGiven, dirGiven bool
 	var flags, manifestDir, rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -89,7 +99,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 		switch a {
 		case "-e", "--project", "--config", "--manifest-dir":
 			if i+1 == len(args) {
-				return nil, "", false, fmt.Errorf("missing value for %s", a)
+				return nil, "", nil, false, fmt.Errorf("missing value for %s", a)
 			}
 			i++
 			switch a {
@@ -97,21 +107,21 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 				env = args[i]
 				envGiven = true
 				flags = append(flags, a, args[i])
-			case "--config", "--project":
+			case "--config":
+				config = args[i]
+				configGiven = true
+				flags = append(flags, a, args[i])
+			case "--project":
+				project = args[i]
+				projectGiven = true
 				flags = append(flags, a, args[i])
 			case "--manifest-dir":
 				dir = args[i]
+				dirGiven = true
 				manifestDir = []string{a, args[i]}
 			}
 		default:
 			rest = append(rest, a)
-			if aliasArgTakesValue(a) {
-				if i+1 == len(args) {
-					break
-				}
-				i++
-				rest = append(rest, args[i])
-			}
 		}
 	}
 	env, fromVariable := agentclient.EnvironmentName(env, envGiven)
@@ -120,26 +130,26 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 		// Aliases live in the manifest, and an overlay is per environment, so -e is needed to read them. Without -e the CLI cannot
 		// tell a typo from an alias, so the message says both.
 		if _, statErr := os.Stat(filepath.Join(dir, "berthy.yml")); statErr == nil {
-			return nil, "", false, fmt.Errorf("unknown command %s (an alias of the manifest needs -e)", cmd)
+			return nil, "", nil, false, fmt.Errorf("unknown command %s (an alias of the manifest needs -e)", cmd)
 		}
-		return nil, "", false, unknown
+		return nil, "", nil, false, unknown
 	}
 	if fromVariable && !scope.ValidEnvironment(env) {
-		return nil, "", false, fmt.Errorf("BERTHY_ENV is not a valid environment")
+		return nil, "", nil, false, fmt.Errorf("BERTHY_ENV is not a valid environment")
 	}
 	m, err := manifest.Load(dir, env)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, "", false, unknown
+		return nil, "", nil, false, unknown
 	}
 	if err != nil {
-		return nil, "", false, fmt.Errorf("unknown command %s (the manifest did not load: %v)", cmd, err)
+		return nil, "", nil, false, fmt.Errorf("unknown command %s (the manifest did not load: %v)", cmd, err)
 	}
 	value, found := m.Aliases[cmd]
 	if !found {
-		return nil, "", false, unknown
+		return nil, "", nil, false, unknown
 	}
 	if err := checkAliases(m.Aliases); err != nil {
-		return nil, "", true, err
+		return nil, "", nil, true, err
 	}
 	words := strings.Fields(value)
 	line := func(pairs []string) []string {
@@ -152,38 +162,35 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, ok b
 	if withDir := line(append(slices.Clone(flags), manifestDir...)); len(manifestDir) > 0 && acceptsFlag(withDir, "--manifest-dir") {
 		expanded = withDir
 	}
-	if target := lineEnvironment(expanded); target != env {
-		return nil, "", true, fmt.Errorf("alias %s targets environment %s but was loaded for environment %s", cmd, target, env)
+	intent = &aliasIntent{
+		name: cmd, env: env,
+		project: project, config: config, manifestDir: dir,
+		projectGiven: projectGiven, configGiven: configGiven, dirGiven: dirGiven,
 	}
-	return expanded, dir, true, nil
+	return expanded, dir, intent, true, nil
 }
 
-// lineEnvironment is the environment the expanded command will resolve, with the same -e, value-flag and "--" rules as
-// deployment parsing and EnvironmentName.
-func lineEnvironment(argv []string) string {
-	var env string
-	var given bool
-	for i := 1; i < len(argv); i++ {
-		a := argv[i]
-		if a == "--" {
-			break
-		}
-		if a == "-e" {
-			given = true
-			if i+1 < len(argv) {
-				i++
-				env = argv[i]
-			} else {
-				env = ""
-			}
-			continue
-		}
-		if aliasArgTakesValue(a) && i+1 < len(argv) {
-			i++
-		}
+// checkAliasIntent refuses when the real parser resolved a different environment, project, config or manifest directory than
+// the ones used to load the alias. Call it only after the ordinary environment and project validations.
+func checkAliasIntent(errout io.Writer, intent *aliasIntent, env, project, config, manifestDir string, projectGiven, configGiven, dirGiven bool) int {
+	if intent == nil {
+		return 0
 	}
-	name, _ := agentclient.EnvironmentName(env, given)
-	return name
+	switch {
+	case env != intent.env:
+		fmt.Fprintf(errout, "alias %s targets environment %s but was loaded for environment %s\n", intent.name, env, intent.env)
+	case projectGiven != intent.projectGiven || project != intent.project:
+		fmt.Fprintf(errout, "alias %s targets a different project than the one used to load it\n", intent.name)
+	case configGiven != intent.configGiven || config != intent.config:
+		fmt.Fprintf(errout, "alias %s targets a different config than the one used to load it\n", intent.name)
+	case dirGiven && (!intent.dirGiven || manifestDir != intent.manifestDir):
+		// A --manifest-dir used only to find the alias may be dropped from the expanded line. Refuse only when the real
+		// parser saw a directory that was not the operator's declared one.
+		fmt.Fprintf(errout, "alias %s targets a different manifest directory than the one used to load it\n", intent.name)
+	default:
+		return 0
+	}
+	return 1
 }
 
 // acceptsFlag reports whether the command line takes flag. It asks the list that already refuses the flags a change command does

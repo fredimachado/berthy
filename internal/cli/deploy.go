@@ -371,7 +371,8 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 }
 
 // runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
-func runDeployment(cmd string, args []string, out, errout io.Writer, dir string) int {
+// intent is non-nil for an expanded alias: after ordinary validation, the parsed selectors must match it.
+func runDeployment(cmd string, args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
 	f, err := parseDeploymentArgs(args)
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -386,9 +387,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string)
 		fmt.Fprintln(errout, "valid -e environment required")
 		return 2
 	}
-	if slices.Contains(f.given, "--project") && !scope.ValidProject(f.project) {
+	projectGiven := slices.Contains(f.given, "--project")
+	if projectGiven && !scope.ValidProject(f.project) {
 		fmt.Fprintln(errout, "valid --project required")
 		return 2
+	}
+	configGiven := slices.Contains(f.given, "--config")
+	dirGiven := slices.Contains(f.given, "--manifest-dir")
+	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, dirGiven); code != 0 {
+		return code
 	}
 	if f.volumes && cmd != "remove" && cmd != "destroy" {
 		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")

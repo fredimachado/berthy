@@ -35,11 +35,12 @@ import (
 	"time"
 )
 
-func Run(args []string, out, errout io.Writer) int { return runIn(args, out, errout, ".") }
+func Run(args []string, out, errout io.Writer) int { return runIn(args, out, errout, ".", nil) }
 
 // runIn is Run for a command line that may have come from an alias. dir is the manifest directory a command that reads no manifest
 // looks in for its project: "." for a line the person typed, and for an expanded alias the directory the alias was found in.
-func runIn(args []string, out, errout io.Writer, dir string) int {
+// intent is non-nil only for an expanded alias: the dispatcher checks the real parsers against it before resolving a target.
+func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errout, "usage: berthy <setup|context|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
 		return 2
@@ -49,7 +50,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 	if !slices.Contains(builtinCommands, cmd) && !strings.HasPrefix(cmd, "-") {
 		// An alias is expanded before any flag is checked. expandAlias returns no error only for an alias, so the expanded
 		// line starts with a built-in command and is not expanded again.
-		expanded, aliasDir, isAlias, err := expandAlias(cmd, args)
+		expanded, aliasDir, aliasSel, isAlias, err := expandAlias(cmd, args)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			if isAlias {
@@ -57,7 +58,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			}
 			return 2
 		}
-		return runIn(expanded, out, errout, aliasDir)
+		return runIn(expanded, out, errout, aliasDir, aliasSel)
 	}
 	if cmd == "version" {
 		// Local: it prints this build's version and needs no agent or config.
@@ -104,13 +105,13 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 		return runStateRestore(args, out, errout)
 	}
 	if isDeploymentCommand(cmd) {
-		return runDeployment(cmd, args, out, errout, dir)
+		return runDeployment(cmd, args, out, errout, dir, intent)
 	}
 	if cmd == "agent" && len(args) > 0 && args[0] == "token" {
 		return runAgentToken(args[1:], out, errout)
 	}
 	var config, env, project string
-	var jsonOutput, watch, projectGiven, envGiven bool
+	var jsonOutput, watch, projectGiven, configGiven, envGiven bool
 	var since, tail, grep, role, replica string
 	var follow bool
 	var positional []string
@@ -124,6 +125,7 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 			i++
 			if args[i-1] == "--config" {
 				config = args[i]
+				configGiven = true
 			} else if args[i-1] == "--project" {
 				project = args[i]
 				projectGiven = true
@@ -243,6 +245,9 @@ func runIn(args []string, out, errout io.Writer, dir string) int {
 	if projectGiven && !scope.ValidProject(project) {
 		fmt.Fprintln(errout, "valid --project required")
 		return 2
+	}
+	if code := checkAliasIntent(errout, intent, env, project, config, dir, projectGiven, configGiven, false); code != 0 {
+		return code
 	}
 	path, err := agentclient.ConfigPath(config)
 	if err != nil {

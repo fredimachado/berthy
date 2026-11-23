@@ -114,7 +114,7 @@ func TestExpandAliasPlacesTheEnvironmentAfterTheFirstWord(t *testing.T) {
 		if slices.Contains(tc.args, "--manifest-dir") {
 			wantDir = dir
 		}
-		got, gotDir, ok, err := expandAlias(tc.cmd, tc.args)
+		got, gotDir, _, ok, err := expandAlias(tc.cmd, tc.args)
 		if err != nil || !ok || !reflect.DeepEqual(got, tc.want) || gotDir != wantDir {
 			t.Errorf("%s: got %q dir %q ok %v err %v, want %q dir %q", tc.name, got, gotDir, ok, err, tc.want, wantDir)
 		}
@@ -142,7 +142,7 @@ func TestExpandAliasRefusesWhatItCannotExpand(t *testing.T) {
 		{"missing value", "console", []string{"-e"}, false, "missing value for -e"},
 		{"bad alias set", "console", []string{"-e", "prod", "--manifest-dir", shadowing}, true, "deploy"},
 	} {
-		got, _, ok, err := expandAlias(tc.cmd, tc.args)
+		got, _, _, ok, err := expandAlias(tc.cmd, tc.args)
 		if got != nil || ok != tc.isAlias || err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %q ok %v err %v, want ok %v and an error with %q", tc.name, got, ok, err, tc.isAlias, tc.want)
 		}
@@ -338,44 +338,109 @@ func twoEnvAliasConfig(t *testing.T, devURL, prodURL string) string {
 	return cfg
 }
 
-func TestAliasLookupSeesFlagValuesSoDashDashDoesNotHideTheEnvironment(t *testing.T) {
+func TestAliasForwardsVersionAndHonorsExplicitEnvironment(t *testing.T) {
 	dev, devReqs := aliasAgent(t)
 	prod, prodReqs := aliasAgent(t)
 	cfg := twoEnvAliasConfig(t, dev.URL, prod.URL)
-	dir := writeDevOnlyHoldAlias(t, "lock acquire")
-	t.Chdir(dir)
-	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	t.Chdir(writeAliasDir(t, aliasManifest))
+	t.Setenv(agentclient.EnvironmentEnv, "prod")
 	var out, errs bytes.Buffer
-	code := Run([]string{"hold", "-m", "--", "-e", "prod", "--config", cfg}, &out, &errs)
-	if code != 2 || !strings.Contains(errs.String(), "unknown command hold") {
-		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	code := Run([]string{"console", "--version", "-e", "dev", "--config", cfg}, &out, &errs)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
 	}
-	if len(devReqs()) != 0 || len(prodReqs()) != 0 {
-		t.Fatalf("requests reached an agent: dev %v prod %v", devReqs(), prodReqs())
+	if len(prodReqs()) != 0 {
+		t.Fatalf("prod agent was asked: %v", prodReqs())
+	}
+	got := devReqs()
+	if len(got) != 1 || got[0].method != "POST" || got[0].path != "/v1/projects/demo/environments/dev/exec" {
+		t.Fatalf("dev requests %+v", got)
+	}
+	var body struct {
+		Command []string `json:"command"`
+	}
+	if err := json.Unmarshal(got[0].body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Command, []string{"bin/console", "--version"}) {
+		t.Fatalf("command %q", body.Command)
 	}
 }
 
-func TestAliasRefusesWhenTheExpandedCommandTargetsAnotherEnvironment(t *testing.T) {
+func TestAliasRefusesEnvironmentChangedAfterExpansion(t *testing.T) {
 	dev, devReqs := aliasAgent(t)
 	prod, prodReqs := aliasAgent(t)
 	cfg := twoEnvAliasConfig(t, dev.URL, prod.URL)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	for _, tc := range []struct {
+		name, hold string
+		args       []string
+	}{
+		{"message value is dash-dash", "lock acquire", []string{"hold", "-m", "--", "-e", "prod", "--config", cfg}},
+		{"alias ends with message flag", "lock acquire -m", []string{"hold", "--", "-e", "prod", "--config", cfg}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(writeDevOnlyHoldAlias(t, tc.hold))
+			var out, errs bytes.Buffer
+			code := Run(tc.args, &out, &errs)
+			if code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "loaded for environment dev") {
+				t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+			}
+			if strings.Contains(errs.String(), "Bad!") {
+				t.Fatalf("stderr echoes an invalid environment: %q", errs.String())
+			}
+			if len(devReqs()) != 0 || len(prodReqs()) != 0 {
+				t.Fatalf("requests reached an agent: dev %v prod %v", devReqs(), prodReqs())
+			}
+		})
+	}
+}
+
+func TestAliasRefusesProjectOrConfigChangedAfterExpansion(t *testing.T) {
+	demo, demoReqs := aliasAgent(t)
+	other, otherReqs := aliasAgent(t)
+	cfg := filepath.Join(t.TempDir(), "both.json")
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}},"other":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, demo.URL, other.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
 	dir := writeDevOnlyHoldAlias(t, "lock acquire -m")
 	t.Chdir(dir)
-	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	for _, args := range [][]string{
+		{"hold", "--config", cfg, "--", "--project", "other"},
+		{"hold", "-e", "dev", "--", "--config", filepath.Join(t.TempDir(), "other.json")},
+	} {
+		var out, errs bytes.Buffer
+		code := Run(args, &out, &errs)
+		if code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "alias hold") {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q", args, code, out.String(), errs.String())
+		}
+		if len(demoReqs()) != 0 || len(otherReqs()) != 0 {
+			t.Fatalf("%v: requests reached an agent", args)
+		}
+	}
+}
+
+func TestAliasKeepsInvalidExplicitEnvironmentDiagnostic(t *testing.T) {
+	dev, asked := aliasAgent(t)
+	cfg := twoEnvAliasConfig(t, dev.URL, "http://127.0.0.1:1")
+	t.Chdir(writeDevOnlyHoldAlias(t, "lock acquire -m"))
 	var out, errs bytes.Buffer
-	code := Run([]string{"hold", "--", "-e", "prod", "--config", cfg}, &out, &errs)
-	if code != 1 || !strings.Contains(errs.String(), "targets environment prod") || !strings.Contains(errs.String(), "loaded for environment dev") {
+	code := Run([]string{"hold", "-e", "dev", "--", "-e", "Bad!", "--config", cfg}, &out, &errs)
+	if code != 2 || out.Len() != 0 || errs.String() != "valid -e environment required\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
-	if len(devReqs()) != 0 || len(prodReqs()) != 0 {
-		t.Fatalf("requests reached an agent: dev %v prod %v", devReqs(), prodReqs())
+	if len(asked()) != 0 {
+		t.Fatalf("requests %v", asked())
 	}
 }
 
 func TestAliasStillTreatsBareDashDashAsTheEndOfOptions(t *testing.T) {
 	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Chdir(writeAliasDir(t, aliasManifest))
-	_, _, ok, err := expandAlias("console", []string{"--", "-e", "dev"})
+	_, _, _, ok, err := expandAlias("console", []string{"--", "-e", "dev"})
 	if ok || err == nil || !strings.Contains(err.Error(), "an alias of the manifest needs -e") {
 		t.Fatalf("ok %v err %v, want a missing -e refusal", ok, err)
 	}
