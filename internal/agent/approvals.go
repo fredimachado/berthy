@@ -643,6 +643,8 @@ func summarize(rest []string, method string, body []byte) string {
 		return "secret set " + cleanText(b.Name, 80)
 	case "secret generate":
 		return "secret generate " + cleanText(b.Name, 80)
+	case "secret generate declared":
+		return "generate the declared secrets"
 	case "secret import":
 		if len(b.Secrets) == 1 {
 			return "secret import 1 secret"
@@ -684,6 +686,8 @@ func routeKind(rest []string, method string) string {
 				return "secret import"
 			case "generate":
 				return "secret generate"
+			case "generate-declared":
+				return "secret generate declared"
 			}
 		}
 		return "secret delete"

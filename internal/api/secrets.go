@@ -61,11 +61,13 @@ var GenerateFormats = manifest.GenerateFormats
 // SecretGenerate is the body of POST secrets/generate. Bytes and Format may be left out, and then take their defaults. The agent
 // makes the value and the request never carries one.
 type SecretGenerate struct {
-	Name    string `json:"name"`
-	Bytes   *int   `json:"bytes,omitempty"`
-	Format  string `json:"format,omitempty"`
-	Replace bool   `json:"replace,omitempty"`
-	DryRun  bool   `json:"dry_run,omitempty"`
+	Manifest     *manifest.Manifest `json:"manifest,omitempty"`
+	ComposeFiles map[string]string  `json:"compose_files,omitempty"`
+	Name         string             `json:"name"`
+	Bytes        *int               `json:"bytes,omitempty"`
+	Format       string             `json:"format,omitempty"`
+	Replace      bool               `json:"replace,omitempty"`
+	DryRun       bool               `json:"dry_run,omitempty"`
 }
 
 // SecretGenerated is what a generate stored: the name, the length, the format and whether it replaced a stored secret. It
@@ -80,6 +82,8 @@ type SecretGenerated struct {
 // SecretGeneratePlan is the dry run of a generate and the plan a held one shows. It names the secret and whether it exists, and
 // never holds a value.
 type SecretGeneratePlan struct {
+	App    string `json:"app,omitempty"`
+	Volume string `json:"volume,omitempty"`
 	Action string `json:"action"`
 	Name   string `json:"name"`
 	Exists bool   `json:"exists"`
@@ -150,4 +154,31 @@ func CheckSecretImport(entries []SecretEntry) error {
 		}
 	}
 	return nil
+}
+
+// SecretsGenerateDeclared is the body of POST secrets/generate-declared.
+type SecretsGenerateDeclared struct {
+	Manifest     manifest.Manifest `json:"manifest"`
+	ComposeFiles map[string]string `json:"compose_files,omitempty"`
+	DryRun       bool              `json:"dry_run,omitempty"`
+}
+type DeclaredOutcome string
+
+const (
+	DeclaredGenerate DeclaredOutcome = "generate"
+	DeclaredKeep     DeclaredOutcome = "keep"
+	DeclaredRefuse   DeclaredOutcome = "refuse"
+)
+
+type DeclaredSecretOutcome struct {
+	Name    string          `json:"name"`
+	Outcome DeclaredOutcome `json:"outcome"`
+	Bytes   int             `json:"bytes"`
+	Format  string          `json:"format"`
+	App     string          `json:"app,omitempty"`
+	Volume  string          `json:"volume,omitempty"`
+}
+type SecretsDeclared struct {
+	Action  string                  `json:"action"`
+	Secrets []DeclaredSecretOutcome `json:"secrets"`
 }

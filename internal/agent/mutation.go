@@ -445,6 +445,8 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			serveSecretImport(w, r, d, sa)
 		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && r.Method == "POST":
 			serveSecretGenerate(w, r, d, sa)
+		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && r.Method == "POST":
+			serveSecretsGenerateDeclared(w, r, d, sa)
 		case rest[0] == "secrets" && r.Method == "GET":
 			rows, err := d.Store.Secrets(ctx)
 			if err != nil {
@@ -716,6 +718,9 @@ func routeScope(rest []string, httpMethod string) (required, method string, ok b
 		required = "admin"
 		method = "POST"
 	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && httpMethod == "POST":
+		required = "admin"
+		method = "POST"
+	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && httpMethod == "POST":
 		required = "admin"
 		method = "POST"
 	case len(rest) == 2 && rest[0] == "secrets":

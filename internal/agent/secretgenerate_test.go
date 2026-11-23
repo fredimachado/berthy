@@ -2,12 +2,15 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 
+	"berthy/internal/engine"
 	"berthy/internal/state"
 )
 
@@ -329,5 +332,237 @@ func TestDeletingASecretNamedGenerateIsStillADelete(t *testing.T) {
 	}
 	if _, ok := storedValue(t, f, "generate"); ok {
 		t.Fatal("the secret named generate was not deleted")
+	}
+}
+
+func TestGenerateDeclaredRejectsInvalidManifest(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, `{}`)
+	if w.Code != 400 {
+		t.Fatalf("invalid manifest: %d %s, want 400", w.Code, w.Body.String())
+	}
+}
+
+func TestSecretGenerateByNameIsRefusedWhenAReaderWasDeployed(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "deploy-db", ActorID: "a", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: []byte(m)}}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/secrets/generate", apAdminToken, `{"name":"DB_PASS"}`)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "app db was deployed here and may hold the value of DB_PASS") {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("refusal stored secret")
+	}
+}
+
+func TestGenerateDeclaredKeepsAStoredSecret(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASS"}, []byte("old-value")); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}}}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"keep"`) {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if v, _ := storedValue(t, f, "DB_PASS"); v != "old-value" {
+		t.Fatal("stored value changed")
+	}
+}
+
+func TestGenerateDeclaredRefusesWhenAReaderWasDeployed(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "db-deploy", ActorID: "a", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: []byte(m)}}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}}}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"refuse"`) || !strings.Contains(w.Body.String(), `"app":"db"`) {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("refused secret stored")
+	}
+}
+
+func TestSecretGenerateByNameDryRunNamesTheFinding(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "db-deploy", ActorID: "a", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: []byte(m)}}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/secrets/generate", apAdminToken, `{"name":"DB_PASS","dry_run":true}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"app":"db"`) {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("dry run stored secret")
+	}
+}
+
+type generateEngine struct{ planEngine }
+
+func (generateEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+}
+
+func TestGenerateDeclaredAfterAFailureHalfway(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = generateEngine{}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["A_PASS","B_PASS"]}}},"secrets":{"A_PASS":{"generate":{"format":"hex"}},"B_PASS":{"generate":{"format":"hex"}}}}}`
+	previous := secretRandom
+	t.Cleanup(func() { secretRandom = previous })
+	secretRandom = bytes.NewReader(make([]byte, 32))
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 503 {
+		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
+	}
+	first, ok := storedValue(t, f, "A_PASS")
+	if !ok {
+		t.Fatal("first missing")
+	}
+	if _, ok := storedValue(t, f, "B_PASS"); ok {
+		t.Fatal("second stored despite failed random")
+	}
+	secretRandom = previous
+	w = f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"keep"`) || !strings.Contains(w.Body.String(), `"outcome":"generate"`) {
+		t.Fatalf("second request: %d %s", w.Code, w.Body.String())
+	}
+	again, _ := storedValue(t, f, "A_PASS")
+	if again != first {
+		t.Fatal("first value changed")
+	}
+	if _, ok := storedValue(t, f, "B_PASS"); !ok {
+		t.Fatal("second missing")
+	}
+	for _, name := range []string{"A_PASS", "B_PASS"} {
+		count := 0
+		for _, row := range f.audit() {
+			if strings.Contains(row, "secret_generate:"+name+" ") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("%s audit count %d", name, count)
+		}
+	}
+	if strings.Contains(w.Body.String(), first) {
+		t.Fatal("response exposes value")
+	}
+}
+
+func TestHeldGenerateDeclaredPlanIsTheDryRun(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	f.ctrl.Engine = generateEngine{}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["A_PASS"]}}},"secrets":{"A_PASS":{"generate":{"format":"hex"}}}}}`
+	dry := strings.TrimSuffix(body, "}") + `,"dry_run":true}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, dry)
+	if w.Code != 200 {
+		t.Fatalf("dry run: %d %s", w.Code, w.Body.String())
+	}
+	h := f.hold("POST", "/secrets/generate-declared", apAgentAdmin, body)
+	if !sameJSON(t, h.Plan, w.Body.Bytes()) {
+		t.Fatalf("held %s, dry %s", h.Plan, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "A_PASS"); ok {
+		t.Fatal("planning stored a secret")
+	}
+	w = f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != 200 {
+		t.Fatalf("approval: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "A_PASS"); !ok {
+		t.Fatal("approval did not generate")
+	}
+}
+
+func TestGenerateDeclaredSeesAReaderOfAnOlderRelease(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = generateEngine{}
+	manifests := []string{
+		`{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`,
+		`{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}}}}}`,
+	}
+	for i, m := range manifests {
+		op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: fmt.Sprint(i), ActorID: "a", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: []byte(m)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}}}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"refuse"`) || !strings.Contains(w.Body.String(), `"app":"db"`) {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("secret stored")
+	}
+}
+
+func TestGenerateDeclaredRefusesAfterAFailedFirstDeploy(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "failed", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["A_PASS"]}}},"secrets":{"A_PASS":{"generate":{"format":"hex"}}}}}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"outcome":"refuse"`) || !strings.Contains(w.Body.String(), `"app":"api"`) {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "A_PASS"); ok {
+		t.Fatal("secret stored")
+	}
+}
+
+func TestSecretGenerateByNameWithReplaceIsNotGuarded(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "old", ActorID: "a", Kind: "deploy", App: "db", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"image","image":"ghcr.io/acme/db","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}}}`
+	if err := f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "db", Manifest: []byte(m)}}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/secrets/generate", apAdminToken, `{"name":"DB_PASS","replace":true}`)
+	if w.Code != 200 {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); !ok {
+		t.Fatal("secret missing")
+	}
+}
+
+func TestGenerateDeclaredNeedsAnAdminToken(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	for _, token := range []string{apReadToken, apDeployToken} {
+		w := f.call("POST", "/secrets/generate-declared", token, `{}`)
+		if w.Code != 403 {
+			t.Fatalf("response: %d %s", w.Code, w.Body.String())
+		}
 	}
 }

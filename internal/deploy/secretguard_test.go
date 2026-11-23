@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
@@ -75,5 +76,34 @@ func TestGuardAllowsAReaderWithNoExistingFixedVolume(t *testing.T) {
 	finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m, ComposeFiles: map[string]string{"db": "volumes: {data: {name: absent}}"}})
 	if err != nil || finding != nil {
 		t.Fatalf("finding: %+v, %v", finding, err)
+	}
+}
+
+func TestGuardSeesContainersServicesAndLabelledVolumes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		docker *composeDocker
+		kind   string
+		volume string
+	}{
+		{"stopped container", &composeDocker{positiveEngine: &positiveEngine{}, containers: []engine.ComposeContainer{{State: "exited"}}}, "compose", ""},
+		{"labelled volume", &composeDocker{positiveEngine: &positiveEngine{}, projectVolumes: []string{"project-data"}}, "compose", "project-data"},
+		{"image service", &composeDocker{positiveEngine: &positiveEngine{spec: []byte(`{}`)}}, "image", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Controller{Store: openStore(t), Engine: tc.docker, Environment: "test"}
+			m := composeApp(false)
+			a := m.Apps["db"]
+			a.Kind = tc.kind
+			a.Env.Secret = []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}
+			if tc.kind == "image" {
+				a.Roles = map[string]manifest.Role{"web": {Service: "existing"}}
+			}
+			m.Apps["db"] = a
+			finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
+			if err != nil || finding == nil || finding.App != "db" || finding.Volume != tc.volume {
+				t.Fatalf("finding: %+v %v", finding, err)
+			}
+		})
 	}
 }
