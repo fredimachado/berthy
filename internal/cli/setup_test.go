@@ -1028,8 +1028,45 @@ func TestSetupAtATerminalRunsTheSecretsGuide(t *testing.T) {
 	code := Run([]string{"setup", "-e", "p5", "--host", "ops@s1", "--listen", strings.TrimPrefix(agent.URL, "http://"), "--manifest-dir", dir, "--config", filepath.Join(t.TempDir(), "config.json")}, &output, &output)
 	text := output.String()
 	token, guide, prompt := strings.Index(text, "admin token for"), strings.Index(text, "secrets:"), strings.Index(text, "Value of OTHER")
-	if code != 0 || reads.Load() != 1 || len(paths) != 3 || requestBeforeToken.Load() || token < 0 || guide <= token || prompt <= guide || !strings.Contains(text, "generated GEN_PASS") || !strings.Contains(text, "stored OTHER") || strings.Contains(text, "set the secrets the manifest names") {
+	if code != 0 || reads.Load() != 1 || len(paths) != 3 || requestBeforeToken.Load() || token < 0 || guide <= token || prompt <= guide || !strings.Contains(text, "generated GEN_PASS") || !strings.Contains(text, "stored OTHER") {
 		t.Fatalf("exit %d reads %d paths %v output %q", code, reads.Load(), paths, text)
+	}
+	for _, step := range []string{"set the secrets the manifest names:", "set the secrets still missing (", "generate the secrets the manifest declares:"} {
+		if strings.Contains(text, step) {
+			t.Errorf("unexpected secret step %q in output %q", step, text)
+		}
+	}
+}
+
+func TestSetupDryRunAtATerminalDoesNotRunTheSecretsGuide(t *testing.T) {
+	var requests atomic.Int32
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request", http.StatusBadRequest)
+	}))
+	defer agent.Close()
+	addr := strings.TrimPrefix(agent.URL, "http://")
+	server := installedServer(t, "ops@s1")
+	server.probe = strings.ReplaceAll(server.probe, "172.31.250.10", "127.0.0.1")
+	server.config = strings.ReplaceAll(server.config, "172.31.250.10:7710", addr)
+	withSetupRunner(t, server)
+	t.Setenv("BERTHY_TOKEN_STORE", "none")
+	t.Setenv("BERTHY_SHOP_P5_TOKEN", "synthetic-admin-token")
+	reads := fakeTerminal(t, "unused")
+	dir := declaredManifestDir(t)
+	path := filepath.Join(dir, "berthy.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = bytes.ReplaceAll(b, []byte("project: demo"), []byte("project: shop"))
+	b = bytes.ReplaceAll(b, []byte("network: overlay"), []byte("network: p5net"))
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", addr, "--manifest-dir", dir, "--config", filepath.Join(t.TempDir(), "config.json"), "--dry-run")
+	if code != 0 || requests.Load() != 0 || reads.Load() != 0 || !strings.Contains(out, "the admin token is in $BERTHY_SHOP_P5_TOKEN") || strings.Contains(out, "\nsecrets:") {
+		t.Fatalf("exit %d requests %d reads %d stdout %q stderr %q", code, requests.Load(), reads.Load(), out, stderr)
 	}
 }
 

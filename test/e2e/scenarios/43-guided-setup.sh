@@ -57,7 +57,7 @@ cat > "$private/fresh.json" <<'JSON'
  {"wait_text":"stored API_KEY"},
  {"wait_text":"Value of REG_PASS"},
  {"type":"fixture-registry-value"}, {"keys":["enter"]},
- {"wait_text":"next steps:"}, {"snapshot":"complete"}, {"expect_exit":0}
+ {"wait_text":"deploy every app in depends_on order"}, {"snapshot":"complete"}, {"expect_exit":0}
 ]
 JSON
 if ! "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
@@ -70,7 +70,9 @@ fi
 for text in 'secrets:' 'generated GEN_PASS' 'stored API_KEY' 'next steps:'; do
  if ! grep -Fq "$text" "$private/fresh/complete.txt"; then fail "fresh guide" "missing $text"; exit 1; fi
 done
-if grep -Fq 'set the secrets the manifest names:' "$private/fresh/complete.txt"; then fail "fresh guide" "manual secrets step remains"; exit 1; fi
+for step in 'set the secrets the manifest names:' 'set the secrets still missing (' 'generate the secrets the manifest declares:'; do
+ if grep -Fq "$step" "$private/fresh/complete.txt"; then fail "fresh guide" "secrets step remains"; exit 1; fi
+done
 pass "fresh guided setup"
 token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg") || { fail "token variable" "missing token_env"; exit 1; }
 expected_env=$(printf 'BERTHY_%s_%s_TOKEN' "$PROJECT" "$ENVN" | tr '[:lower:]-' '[:upper:]_')
