@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,11 +13,12 @@ import (
 	"text/tabwriter"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/credstore"
 )
 
 const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--config FILE]\n" +
 	"       berthy context list [--config FILE] [--json]\n" +
-	"       berthy context remove --project PROJECT -e ENV [--config FILE]"
+	"       berthy context remove --project PROJECT -e ENV [--config FILE] [--delete-token]"
 
 // runContext runs "context add", "context list" and "context remove": they edit the CLI configuration on this machine and
 // never contact an agent.
@@ -123,13 +126,16 @@ func runContextList(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	type row struct {
-		Project     string `json:"project"`
-		Environment string `json:"environment"`
-		URL         string `json:"url"`
-		TokenEnv    string `json:"token_env"`
-		TokenSet    bool   `json:"token_set"`
+		Project      string `json:"project"`
+		Environment  string `json:"environment"`
+		URL          string `json:"url"`
+		TokenEnv     string `json:"token_env"`
+		TokenSet     bool   `json:"token_set"`
+		TokenStored  bool   `json:"token_stored"`
+		storedStatus string
 	}
 	var rows []row
+	store := agentclient.Tokens(context.Background())
 	projects := make([]string, 0, len(c.Projects))
 	for name := range c.Projects {
 		projects = append(projects, name)
@@ -143,7 +149,15 @@ func runContextList(args []string, out, errout io.Writer) int {
 		slices.Sort(envs)
 		for _, env := range envs {
 			e := c.Projects[project].Environments[env]
+			_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
+			status := "unknown"
+			if storeErr == nil {
+				status = "stored"
+			} else if errors.Is(storeErr, credstore.ErrNotFound) {
+				status = "not stored"
+			}
 			rows = append(rows, row{
+				TokenStored: storeErr == nil, storedStatus: status,
 				Project: project, Environment: env, URL: e.URL, TokenEnv: e.TokenEnv,
 				TokenSet: os.Getenv(e.TokenEnv) != "",
 			})
@@ -167,7 +181,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 		if r.TokenSet {
 			set = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Project), terminalSafe(r.Environment), terminalSafe(r.URL), terminalSafe(r.TokenEnv), set)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Project), terminalSafe(r.Environment), terminalSafe(r.URL), terminalSafe(r.TokenEnv), set, r.storedStatus)
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)
@@ -183,6 +197,7 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 	project := fset.String("project", "", "project")
 	env := fset.String("e", "", "environment")
 	cliConfig := fset.String("config", "", "CLI configuration file")
+	deleteToken := fset.Bool("delete-token", false, "delete the stored token")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
@@ -204,10 +219,23 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	if !c.Remove(*project, *env) {
+	entry, exists := c.Projects[*project].Environments[*env]
+	if !exists {
 		fmt.Fprintf(errout, "no environment %s for project %s in the CLI configuration\n", *env, *project)
 		return 1
 	}
+	if *deleteToken {
+		store := agentclient.Tokens(context.Background())
+		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
+		if err != nil {
+			fmt.Fprintf(errout, "the stored token was not deleted (%v): the entry is kept, so the command can be run again\n", err)
+			return 1
+		}
+		if removed {
+			fmt.Fprintf(out, "deleted the token of %s/%s from the %s\n", *project, *env, store.Name())
+		}
+	}
+	c.Remove(*project, *env)
 	if err := agentclient.WriteConfig(path, c); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1

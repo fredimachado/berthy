@@ -76,4 +76,6 @@ Copy `scenarios/00-smoke.sh` to `scenarios/NN-name.sh` and keep its shape: sourc
 - The source images `127.0.0.1:15001/berthy-phase2/web:*`. They are only tagged, and the e2e tags are removed again.
 - Anything under `~/berthy-e2e/` outside `$E2E_ROOT`.
 
+The harness exports `BERTHY_TOKEN_STORE=none` so no scenario accesses the OS credential store.
+
 The harness never prints a token. Logs hold no tokens, and `grep -rF` over `logs/` is how to check that.

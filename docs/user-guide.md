@@ -39,7 +39,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
   2. the `BERTHY_CONFIG` environment variable
   3. `berthy/config.json` in your user configuration directory: `~/.config/berthy/config.json` on Linux (or `$XDG_CONFIG_HOME/berthy/config.json` when that is set), `~/Library/Application Support/berthy/config.json` on macOS, and `%AppData%\berthy\config.json` on Windows
 
-  The file maps each project and environment to its agent and names the variable that holds its token. It never holds a token. When none of the three is set, or the file is missing, the error names the path it looked for.
+  The file maps each project and environment to its agent and names the variable that holds its token. It never holds a token. Commands use the variable first, then look in the OS credential store when it is empty. A stored token belongs to that agent, project, environment and token variable, so another entry with a different variable cannot use it. Set `BERTHY_TOKEN_STORE=none` to disable the store. When none of the three is set, or the file is missing, the error names the path it looked for.
 
 - `<token>`, `<password>` and similar in angle brackets are placeholders. The guide never prints a real token or secret. A secret is typed at a hidden prompt or piped in, so it never appears in a command line or in your shell history.
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
@@ -402,7 +402,7 @@ Host checks (disk, memory, Docker, public ports, reboot) still run inside every 
 berthy context add --project todo -e prod --url "http://10.0.0.5:7710" --token-env BERTHY_TODO_PROD_TOKEN
 ```
 
-That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. Set the variable to the token you already keep, then the other commands work. `berthy context list` shows each context and whether its variable is set (`yes` or `no`), never the token. `berthy context remove --project todo -e prod` removes the entry. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
+That prints `added todo/prod at http://10.0.0.5:7710 to … (token in $BERTHY_TODO_PROD_TOKEN)`. Set the variable to the token you already keep, then the other commands work. `berthy context list` shows each context, whether its variable is set (`yes` or `no`), and whether a token is `stored`, `not stored`, or `unknown` if the store is unavailable. It never shows the token. `berthy context remove --project todo -e prod` removes the entry and keeps any stored token. Add `--delete-token` to delete the stored token first. `berthy agent token --project todo -e prod --config /etc/berthy/agent.json` prints a `context add` line for another machine; without `--config` the URL is `http://ADDRESS:PORT` for you to fill in.
 
 #### A server set up before projects
 
@@ -2552,7 +2552,7 @@ Put this in the client's `.mcp.json` (adjust the paths):
 }
 ```
 
-The CLI configuration file is the same one as everywhere (`token_env` names the variable). The token comes from the environment the client runs in. It is never printed and never in a tool result. `--manifest-dir` (default `.`) is where `deploy` reads the manifest and a Compose app's file. The AI agent's `version` for `api` on prod must be a digest.
+The CLI configuration file is the same one as everywhere (`token_env` names the variable). The token comes only from the environment the client runs in; MCP never reads the credential store. Use an agent token made with `berthy token create --agent` so changes can be held for approval. It is never printed and never in a tool result. `--manifest-dir` (default `.`) is where `deploy` reads the manifest and a Compose app's file. The AI agent's `version` for `api` on prod must be a digest.
 
 The tools:
 

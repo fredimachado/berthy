@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/credstore/credtest"
 )
 
 func TestContextAddWritesAnEntryThatTheOtherCommandsUse(t *testing.T) {
@@ -239,5 +242,142 @@ func TestContextAddRefusesAnothersTokenVariable(t *testing.T) {
 	b, _ := os.ReadFile(cfg)
 	if string(b) != original {
 		t.Fatal("config changed")
+	}
+}
+
+func tokenFixture(t *testing.T) (*credtest.Memory, string, string, *string) {
+	t.Helper()
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(server.Close)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"CTX_STORE_TOKEN"}}}}}`, server.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CTX_STORE_TOKEN", "")
+	s := credtest.NewMemory()
+	if err := s.Set(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: server.URL, TokenEnv: "CTX_STORE_TOKEN"}), "stored"); err != nil {
+		t.Fatal(err)
+	}
+	old := agentclient.TokenStore
+	agentclient.TokenStore = s
+	t.Cleanup(func() { agentclient.TokenStore = old })
+	return s, cfg, server.URL, &auth
+}
+func TestAnEntryWithAnotherVariableDoesNotGetTheStoredToken(t *testing.T) {
+	_, _, url, auth := tokenFixture(t)
+	t.Setenv("CTX_SCRIPT_TOKEN", "")
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"CTX_SCRIPT_TOKEN"}}}}}`, url)
+	_ = os.WriteFile(cfg, []byte(body), 0600)
+	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
+	if code != 1 || !strings.Contains(err, "the test store has none saved for it") || *auth != "" {
+		t.Fatalf("%d %q auth %q", code, err, *auth)
+	}
+}
+func TestRemoteCommandSendsTheStoredToken(t *testing.T) {
+	_, cfg, _, auth := tokenFixture(t)
+	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
+	if code != 0 || *auth != "Bearer stored" {
+		t.Fatalf("%d %q auth %q", code, err, *auth)
+	}
+}
+func TestTheVariableWinsOverTheStoredToken(t *testing.T) {
+	_, cfg, _, auth := tokenFixture(t)
+	t.Setenv("CTX_STORE_TOKEN", "variable")
+	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
+	if code != 0 || *auth != "Bearer variable" {
+		t.Fatalf("%d %q auth %q", code, err, *auth)
+	}
+}
+func TestContextListSaysWhetherATokenIsStored(t *testing.T) {
+	store, cfg, url, _ := tokenFixture(t)
+	code, out, err := runCLI("context", "list", "--config", cfg)
+	if code != 0 || !strings.Contains(out, "stored") {
+		t.Fatalf("%d %q %q", code, out, err)
+	}
+	code, out, err = runCLI("context", "list", "--config", cfg, "--json")
+	var rows []struct {
+		Stored bool `json:"token_stored"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || !rows[0].Stored {
+		t.Fatalf("%d %q %q", code, out, err)
+	}
+	_, _ = store.Delete(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: url, TokenEnv: "CTX_STORE_TOKEN"}))
+	code, out, err = runCLI("context", "list", "--config", cfg)
+	if code != 0 || !strings.Contains(out, "not stored") {
+		t.Fatalf("%d %q %q", code, out, err)
+	}
+	code, out, err = runCLI("context", "list", "--config", cfg, "--json")
+	if code != 0 || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Stored {
+		t.Fatalf("%d %q %q", code, out, err)
+	}
+}
+func blockedTokenFixture(t *testing.T) string {
+	t.Helper()
+	s, cfg, _, _ := tokenFixture(t)
+	ch := make(chan struct{})
+	started := make(chan struct{})
+	s.OnCall = func() { close(started) }
+	s.Block = ch
+	old := agentclient.StoreWait
+	agentclient.StoreWait = time.Millisecond
+	t.Cleanup(func() { <-started; close(ch); s.Wait(); agentclient.StoreWait = old })
+	return cfg
+}
+func TestContextListDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
+	cfg := blockedTokenFixture(t)
+	code, out, err := runCLI("context", "list", "--config", cfg)
+	if code != 0 || !strings.Contains(out, "unknown") {
+		t.Fatalf("%d %q %q", code, out, err)
+	}
+}
+func TestARemoteCommandDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
+	cfg := blockedTokenFixture(t)
+	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
+	if code != 1 || !strings.Contains(err, "this machine has no credential store") {
+		t.Fatalf("%d %q", code, err)
+	}
+}
+func TestContextRemoveKeepsTheStoredToken(t *testing.T) {
+	s, cfg, _, auth := tokenFixture(t)
+	b, _ := os.ReadFile(cfg)
+	cfg2 := filepath.Join(t.TempDir(), "config.json")
+	_ = os.WriteFile(cfg2, b, 0600)
+	calls := s.Calls()
+	code, _, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg)
+	if code != 0 || s.Calls() != calls {
+		t.Fatalf("%d %q calls %d", code, err, s.Calls()-calls)
+	}
+	code, _, err = runCLI("ps", "-e", "dev", "--config", cfg2)
+	if code != 0 || *auth != "Bearer stored" {
+		t.Fatalf("%d %q %q", code, err, *auth)
+	}
+}
+func TestContextRemoveDeleteTokenDeletesItFirst(t *testing.T) {
+	s, cfg, _, _ := tokenFixture(t)
+	original, readErr := os.ReadFile(cfg)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var during []byte
+	s.OnCall = func() { during, _ = os.ReadFile(cfg) }
+	code, out, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
+	if code != 0 || s.Len() != 0 || string(during) != string(original) || !strings.Contains(out, "deleted the token of demo/dev from the test store") {
+		t.Fatalf("%d %q %q len %d", code, out, err, s.Len())
+	}
+}
+func TestContextRemoveDeleteTokenThatFailsKeepsTheEntry(t *testing.T) {
+	s, cfg, _, _ := tokenFixture(t)
+	before, _ := os.ReadFile(cfg)
+	s.DeleteErr = errors.New("refused")
+	code, _, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
+	after, _ := os.ReadFile(cfg)
+	if code != 1 || string(before) != string(after) || !strings.Contains(err, "the stored token was not deleted (refused): the entry is kept, so the command can be run again") {
+		t.Fatalf("%d %q", code, err)
 	}
 }

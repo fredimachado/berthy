@@ -4,6 +4,7 @@
 # e2e labels or names below, and it writes only under $E2E_ROOT.
 
 export PATH=/usr/bin:/bin
+export BERTHY_TOKEN_STORE=none
 
 GO=/var/tmp/berthy-phase1/go/bin/go
 DOCKER_BIN=/var/tmp/berthy-phase1/bin/docker
