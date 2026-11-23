@@ -130,15 +130,19 @@ out=$(adm secret generate DB_PASS --dry-run --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "named dry run of DB_PASS exits 0" 0 "$code" "$out"
 expect_contains "named dry run would generate DB_PASS" "$out" "would generate DB_PASS"
 
-# 2. Real nameless run generates both; compare the whole output to the metadata lines only (never print $out on failure).
-want_gen=$'generated DB_PASS (32 bytes, hex)\ngenerated GEN_PASS (20 characters, alnum)\n'
-out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
+# 2. Real nameless run generates both. Capture bytes to a private file and cmp against the expected metadata lines
+# (command substitution would strip trailing newlines; never print the capture on failure).
+gen_cap=$(mktemp "$RUN/declared-gen.XXXXXX")
+gen_want=$(mktemp "$RUN/declared-gen-want.XXXXXX")
+adm secret generate --manifest-dir "$MAN" >"$gen_cap" 2>&1; code=$?
 expect_code "nameless generate exits 0" 0 "$code"
-if [ "$out" = "$want_gen" ]; then
+printf 'generated DB_PASS (32 bytes, hex)\ngenerated GEN_PASS (20 characters, alnum)\n' >"$gen_want"
+if cmp -s "$gen_cap" "$gen_want"; then
   pass "nameless generate prints only the two metadata lines"
 else
   fail "nameless generate prints only the two metadata lines" "output did not match the expected metadata lines"
 fi
+rm -f "$gen_cap" "$gen_want"
 
 # 3. Second run keeps both; deploy web and db; service holds 20-character GEN_PASS.
 out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
