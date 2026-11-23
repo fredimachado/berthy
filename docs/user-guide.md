@@ -1002,7 +1002,7 @@ Each `missing:` line identifies a secret the manifest needs that is absent or st
 
 #### What Berthy does at a terminal
 
-With no name, `berthy secret set -e prod` first generates declared secrets, then asks for each unmet secret with `Value of NAME (hidden, Enter skips):`. It checks registry passwords and Cloudflare tokens before storing them. A refused value is asked for again; an empty line prints `skipped NAME`. A held request stops the guide. If the agent redacted a required plan detail, the guide prints the approval ID and `plan details were redacted`. A password stored for the wrong registry is replaced in one set; a registry password needed as a plain secret must first be removed.
+With no name, `berthy secret set -e prod` first generates declared secrets, then asks for each unmet secret with `Value of NAME (hidden, Enter skips):`. It checks registry passwords and Cloudflare tokens before storing them. A refused value is asked for again; an empty line prints `skipped NAME`. A held request stops the guide. If the agent redacted a required display field of a held secret store, the guide prints the approval ID and expiry with `plan details were redacted`; a held declared generation can still show a plan with masked values. A password stored for the wrong registry is replaced in one set; a registry password needed as a plain secret must first be removed.
 
 When given a name and standard input is a terminal, `berthy secret set` does the steps below in this order. A piped value skips all of them: it makes one request, with no guide, no prompt and no check, and the agent keeps the stored registry.
 
