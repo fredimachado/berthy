@@ -294,3 +294,27 @@ func TestVolumeLabelsReadsTheLabelsOfAnExistingVolume(t *testing.T) {
 		t.Fatal("server error reported as absent")
 	}
 }
+
+func TestProjectVolumesRefusesPartialInventoryWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+	}{
+		{"warning with no volumes", `{"Volumes":[],"Warnings":["driver private detail"]}`, true},
+		{"warning with volumes", `{"Volumes":[{"Name":"present"}],"Warnings":["driver private detail"]}`, true},
+		{"empty warning string", `{"Volumes":[],"Warnings":[""]}`, true},
+		{"empty warnings", `{"Volumes":[{"Name":"present"}],"Warnings":[]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := fakeEngine(func(*http.Request) (*http.Response, error) { return response(200, tc.body), nil })
+			got, err := e.ProjectVolumes(context.Background(), "shop-db")
+			if tc.wantErr {
+				if err == nil || err.Error() != "volume inventory unavailable" || got != nil {
+					t.Fatalf("partial inventory accepted: %v %v", got, err)
+				}
+			} else if err != nil || len(got) != 1 || got[0] != "present" {
+				t.Fatalf("complete inventory: %v %v", got, err)
+			}
+		})
+	}
+}

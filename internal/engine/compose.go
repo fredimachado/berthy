@@ -182,9 +182,15 @@ func (e *Engine) ProjectVolumes(ctx context.Context, project string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	var raw struct{ Volumes []struct{ Name string } }
+	var raw struct {
+		Volumes  []struct{ Name string }
+		Warnings []string
+	}
 	if err = e.jsonRequest(ctx, "GET", "/volumes?"+url.Values{"filters": {string(f)}}.Encode(), nil, nil, &raw); err != nil {
 		return nil, err
+	}
+	if len(raw.Warnings) > 0 {
+		return nil, errors.New("volume inventory unavailable")
 	}
 	out := make([]string, 0, len(raw.Volumes))
 	for _, v := range raw.Volumes {
