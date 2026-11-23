@@ -349,14 +349,32 @@ func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token s
 		return nil, false
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
 		return nil, false
 	}
-	var held []storedSecret
-	// Only an array is the list: a JSON null decodes to a nil slice, which is not one.
-	if json.Unmarshal(data, &held) != nil || held == nil {
+	var rows []json.RawMessage
+	if json.Unmarshal(data, &rows) != nil || rows == nil {
 		fmt.Fprintln(errout, "invalid agent response")
 		return nil, false
+	}
+	held := make([]storedSecret, 0, len(rows))
+	seen := make(map[string]string, len(rows))
+	for _, row := range rows {
+		var item struct {
+			Name     string          `json:"name"`
+			Registry json.RawMessage `json:"registry"`
+		}
+		var registry string
+		if string(row) == "null" || json.Unmarshal(row, &item) != nil || item.Name == "" || (len(item.Registry) != 0 && (string(item.Registry) == "null" || json.Unmarshal(item.Registry, &registry) != nil)) {
+			fmt.Fprintln(errout, "invalid agent response")
+			return nil, false
+		}
+		if prior, ok := seen[item.Name]; ok && prior != registry {
+			fmt.Fprintln(errout, "invalid agent response")
+			return nil, false
+		}
+		seen[item.Name] = registry
+		held = append(held, storedSecret{Name: item.Name, Registry: registry})
 	}
 	return held, true
 }

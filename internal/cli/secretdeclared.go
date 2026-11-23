@@ -100,7 +100,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 	}
 	if status == http.StatusAccepted {
 		if guide {
-			if reportGuideDeclaredHeld(data, out) {
+			if reportGuideDeclaredHeld(data, out, target.Token) {
 				return res, declaredHeld
 			}
 			fmt.Fprintln(errout, "invalid agent response")
@@ -120,10 +120,14 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		return res, declaredFailed
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		if guide {
+			fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), target.Token))
+		} else {
+			fmt.Fprintln(errout, agentclient.Message(status, data))
+		}
 		return res, declaredFailed
 	}
-	if json.Unmarshal(data, &res) != nil || !validDeclaredAnswer(res) {
+	if json.Unmarshal(data, &res) != nil || !validDeclaredAnswer(m, res) {
 		fmt.Fprintln(errout, "invalid agent response")
 		return res, declaredFailed
 	}
@@ -160,11 +164,16 @@ func declaredComposeFiles(m *manifest.Manifest, dir string) map[string]string {
 
 // validDeclaredAnswer reports whether res is a usable secrets/generate-declared answer: known action, known outcomes, and
 // protocol formats and lengths. A bad row is refused before any of it is printed.
-func validDeclaredAnswer(res api.SecretsDeclared) bool {
-	if res.Action != "secret generate declared" || res.Secrets == nil {
+func validDeclaredAnswer(m *manifest.Manifest, res api.SecretsDeclared) bool {
+	if res.Action != "secret generate declared" || res.Secrets == nil || len(res.Secrets) != len(m.Secrets) {
 		return false
 	}
+	seen := make(map[string]bool, len(res.Secrets))
 	for _, s := range res.Secrets {
+		if _, ok := m.Secrets[s.Name]; !ok || seen[s.Name] {
+			return false
+		}
+		seen[s.Name] = true
 		if s.Name == "" || s.Bytes < api.GenerateMinBytes || s.Bytes > api.GenerateMaxBytes {
 			return false
 		}
@@ -172,7 +181,11 @@ func validDeclaredAnswer(res api.SecretsDeclared) bool {
 			return false
 		}
 		switch s.Outcome {
-		case api.DeclaredGenerate, api.DeclaredKeep, api.DeclaredRefuse:
+		case api.DeclaredGenerate, api.DeclaredKeep:
+		case api.DeclaredRefuse:
+			if s.App == "" {
+				return false
+			}
 		default:
 			return false
 		}

@@ -129,6 +129,11 @@ func TestSecretGenerateWithoutANameOmitsAMissingComposeFile(t *testing.T) {
 	}
 }
 
+func fourDeclaredManifestDir(t *testing.T) string {
+	t.Helper()
+	return secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  web:\n    kind: image\n    image: example.com/web\n    env:\n      secret: [A, B, C, D]\n    roles:\n      main: {}\nsecrets:\n  A: {generate: {format: hex}}\n  B: {generate: {format: hex}}\n  C: {generate: {format: hex}}\n  D: {generate: {format: hex}}\n")
+}
+
 func TestSecretGenerateWithoutANamePrintsEachOutcome(t *testing.T) {
 	reply := `{"action":"secret generate declared","secrets":[` +
 		`{"name":"A","outcome":"generate","bytes":32,"format":"hex"},` +
@@ -140,7 +145,7 @@ func TestSecretGenerateWithoutANamePrintsEachOutcome(t *testing.T) {
 	server := answeringAgent(&bodies, `[]`, reply)
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
-	dir := declaredManifestDir(t)
+	dir := fourDeclaredManifestDir(t)
 	var out, errout bytes.Buffer
 	code := Run([]string{"secret", "generate", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
 	want := "generated A (32 bytes, hex)\n" +
@@ -177,7 +182,7 @@ func TestSecretGenerateWithoutANameDryRun(t *testing.T) {
 	server := answeringAgent(&bodies, `[]`, reply)
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
-	dir := declaredManifestDir(t)
+	dir := fourDeclaredManifestDir(t)
 	var out, errout bytes.Buffer
 	code := Run([]string{"secret", "generate", "--dry-run", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
 	want := "would generate A (32 bytes, hex)\n" +

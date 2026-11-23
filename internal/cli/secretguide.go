@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,7 +59,14 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 	if call == declaredFailed {
 		return nil, guideFailed
 	}
-	printDeclared(out, declared, false)
+	display := declared
+	display.Secrets = append([]api.DeclaredSecretOutcome(nil), declared.Secrets...)
+	for i := range display.Secrets {
+		display.Secrets[i].Name = redactSecretText(display.Secrets[i].Name, target.Token)
+		display.Secrets[i].App = redactSecretText(display.Secrets[i].App, target.Token)
+		display.Secrets[i].Volume = redactSecretText(display.Secrets[i].Volume, target.Token)
+	}
+	printDeclared(out, display, false)
 	refused := map[string]api.DeclaredSecretOutcome{}
 	for _, s := range declared.Secrets {
 		if s.Outcome == api.DeclaredRefuse {
@@ -92,21 +100,21 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			remaining = append(remaining, n)
 			continue
 		case unmetNotPlain:
-			fmt.Fprintf(errout, "%s is stored as the password of %s: remove it with berthy secret rm %s, then set it\n", name, terminalSafe(n.Stored), name)
+			fmt.Fprintf(errout, "%s is stored as the password of %s: remove it with berthy secret rm %s, then set it\n", name, safeSecretText(n.Stored, target.Token), name)
 			remaining = append(remaining, n)
 			continue
 		case unmetRegistry:
 			if n.Stored == "" {
 				fmt.Fprintf(errout, "%s is stored without the registry %s: enter it again and it is stored for %s\n", name, terminalSafe(n.Registry), terminalSafe(n.Registry))
 			} else {
-				fmt.Fprintf(errout, "%s is stored for the registry %s: enter the password for %s and it replaces it\n", name, terminalSafe(n.Stored), terminalSafe(n.Registry))
+				fmt.Fprintf(errout, "%s is stored for the registry %s: enter the password for %s and it replaces it\n", name, safeSecretText(n.Stored, target.Token), terminalSafe(n.Registry))
 			}
 		}
 		if s, ok := refused[n.Name]; ok {
 			if s.Volume == "" {
-				fmt.Fprintf(errout, "app %s was deployed here: enter the value it runs with\n", terminalSafe(s.App))
+				fmt.Fprintf(errout, "app %s was deployed here: enter the value it runs with\n", safeSecretText(s.App, target.Token))
 			} else {
-				fmt.Fprintf(errout, "the volume %s of app %s exists: enter the value it was created with\n", terminalSafe(s.Volume), terminalSafe(s.App))
+				fmt.Fprintf(errout, "the volume %s of app %s exists: enter the value it was created with\n", safeSecretText(s.Volume, target.Token), safeSecretText(s.App, target.Token))
 			}
 		}
 		g := guideFor(m, env, n.Name, n.Registry)
@@ -119,9 +127,9 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				defer cancel()
 				res := check(checkCtx, value)
 				for i := range res.notes {
-					res.notes[i] = terminalSafe(res.notes[i])
+					res.notes[i] = safeSecretText(res.notes[i], value, target.Token)
 				}
-				res.refusal = terminalSafe(res.refusal)
+				res.refusal = safeSecretText(res.refusal, value, target.Token)
 				return res
 			}
 		}
@@ -150,14 +158,14 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				return remaining, guideFailed
 			}
 			if status == http.StatusAccepted {
-				if reportGuideHeld(data, value, n.Name, n.Registry, out) {
+				if reportGuideHeld(data, value, n.Name, n.Registry, out, target.Token) {
 					return remaining, guideHeld
 				}
 				fmt.Fprintln(errout, "invalid agent response")
 				return remaining, guideFailed
 			}
 			if status != http.StatusOK {
-				fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), value))
+				fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), value, target.Token))
 				return remaining, guideFailed
 			}
 			var ack struct {
@@ -173,11 +181,11 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			}
 			reply := secretSetReply{Ok: ack.Ok, Registry: registry, Services: ack.Services, ServicesError: ack.ServicesError}
 			if n.Registry != "" {
-				reply.Registry = safeSecretText(reply.Registry, value)
-				reply.ServicesError = safeSecretText(reply.ServicesError, value)
+				reply.Registry = safeSecretText(reply.Registry, value, target.Token)
+				reply.ServicesError = safeSecretText(reply.ServicesError, value, target.Token)
 				for i := range reply.Services {
-					reply.Services[i].Name = safeSecretText(reply.Services[i].Name, value)
-					reply.Services[i].Error = safeSecretText(reply.Services[i].Error, value)
+					reply.Services[i].Name = safeSecretText(reply.Services[i].Name, value, target.Token)
+					reply.Services[i].Error = safeSecretText(reply.Services[i].Error, value, target.Token)
 				}
 				if printRegistrySet(out, reply) {
 					fmt.Fprintln(out, "Run berthy secret set NAME --registry HOST with the same targeting flags to retry the services that were not updated.")
@@ -191,27 +199,35 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 	return remaining, guideDone
 }
 
-// safeSecretText removes a submitted value before escaping untrusted display text.
-func safeSecretText(text, value string) string {
-	if value != "" {
-		text = strings.ReplaceAll(text, value, "[redacted]")
+// redactSecretText removes longer values first so overlapping secrets cannot reveal one another.
+func redactSecretText(text string, values ...string) string {
+	values = append([]string(nil), values...)
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, value := range values {
+		if value != "" {
+			text = strings.ReplaceAll(text, value, "[redacted]")
+		}
 	}
-	return terminalSafe(text)
+	return text
 }
 
-func safeJSONValue(v any, value string) any {
+func safeSecretText(text string, values ...string) string {
+	return terminalSafe(redactSecretText(text, values...))
+}
+
+func safeJSONValue(v any, values ...string) any {
 	switch x := v.(type) {
 	case string:
-		return safeSecretText(x, value)
+		return safeSecretText(x, values...)
 	case []any:
 		for i := range x {
-			x[i] = safeJSONValue(x[i], value)
+			x[i] = safeJSONValue(x[i], values...)
 		}
 		return x
 	case map[string]any:
 		safe := make(map[string]any, len(x))
 		for k, v := range x {
-			safe[safeSecretText(k, value)] = safeJSONValue(v, value)
+			safe[safeSecretText(k, values...)] = safeJSONValue(v, values...)
 		}
 		return safe
 	default:
@@ -229,16 +245,16 @@ func decodeGuideHeld(data []byte) (heldApproval, bool) {
 	return h, len(plan) > 0 && plan[0] == '{'
 }
 
-func printGuideHeldHeading(out io.Writer, h heldApproval, value string) {
-	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, value), safeSecretText(h.Expires.UTC().Format(time.RFC3339), value))
+func printGuideHeldHeading(out io.Writer, h heldApproval, values ...string) {
+	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, values...), safeSecretText(h.Expires.UTC().Format(time.RFC3339), values...))
 }
 
-func printGuideHeld(out io.Writer, h heldApproval, plan []byte, value string) {
-	printGuideHeldHeading(out, h, value)
+func printGuideHeld(out io.Writer, h heldApproval, plan []byte, values ...string) {
+	printGuideHeldHeading(out, h, values...)
 	printPlan(out, plan)
 }
 
-func reportGuideDeclaredHeld(data []byte, out io.Writer) bool {
+func reportGuideDeclaredHeld(data []byte, out io.Writer, token string) bool {
 	h, ok := decodeGuideHeld(data)
 	if !ok {
 		return false
@@ -249,16 +265,16 @@ func reportGuideDeclaredHeld(data []byte, out io.Writer) bool {
 	if dec.Decode(&plan) != nil {
 		return false
 	}
-	encoded, err := json.Marshal(safeJSONValue(plan, ""))
+	encoded, err := json.Marshal(safeJSONValue(plan, token))
 	if err != nil {
 		return false
 	}
-	printGuideHeld(out, h, encoded, "")
+	printGuideHeld(out, h, encoded, token)
 	return true
 }
 
 // reportGuideHeld validates the store plan against the request before displaying it.
-func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) bool {
+func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, token string) bool {
 	h, ok := decodeGuideHeld(data)
 	if !ok {
 		return false
@@ -283,7 +299,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 		}
 	}
 	if redacted {
-		printGuideHeldHeading(out, h, value)
+		printGuideHeldHeading(out, h, value, token)
 		fmt.Fprintln(out, "plan details were redacted")
 		return true
 	}
@@ -299,9 +315,9 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 		return false
 	}
 	safe := map[string]any{
-		"action":   safeSecretText(*plan.Action, value),
-		"name":     safeSecretText(*plan.Name, value),
-		"registry": safeSecretText(*plan.Registry, value),
+		"action":   safeSecretText(*plan.Action, value, token),
+		"name":     safeSecretText(*plan.Name, value, token),
+		"registry": safeSecretText(*plan.Registry, value, token),
 		"exists":   *plan.Exists,
 	}
 	if len(plan.ServicesError) != 0 {
@@ -309,7 +325,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 		if string(plan.ServicesError) == "null" || json.Unmarshal(plan.ServicesError, &message) != nil {
 			return false
 		}
-		safe["services_error"] = safeSecretText(message, value)
+		safe["services_error"] = safeSecretText(message, value, token)
 	}
 	if len(plan.Services) != 0 {
 		var services []string
@@ -317,7 +333,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 			return false
 		}
 		for i := range services {
-			services[i] = safeSecretText(services[i], value)
+			services[i] = safeSecretText(services[i], value, token)
 		}
 		safe["services"] = services
 	}
@@ -325,6 +341,6 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer) b
 	if err != nil {
 		return false
 	}
-	printGuideHeld(out, h, encoded, value)
+	printGuideHeld(out, h, encoded, value, token)
 	return true
 }
