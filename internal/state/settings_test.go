@@ -173,3 +173,44 @@ func TestSettingsMustBeJSON(t *testing.T) {
 		t.Fatalf("invalid settings accepted: %v", err)
 	}
 }
+
+func TestReleasesReturnsEveryRelease(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	for _, tag := range []string{"v1", "v2"} {
+		op, _, err := s.Admit(ctx, Admission{RequestID: tag, ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, op.ID, Outcome{State: "succeeded", Release: &Release{App: "api", Tag: tag, Manifest: []byte(`{}`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Releases(ctx)
+	if err != nil || len(got) != 2 || got[0].Tag != "v1" || got[1].Tag != "v2" {
+		t.Fatalf("releases: %+v %v", got, err)
+	}
+}
+
+func TestDeployAttempted(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	for _, tc := range []struct{ app, status string }{{"ok", "succeeded"}, {"failed", "failed"}} {
+		op, _, err := s.Admit(ctx, Admission{RequestID: tc.app, ActorID: "a", Kind: "deploy", App: tc.app, PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, op.ID, Outcome{State: tc.status}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		app  string
+		want bool
+	}{{"ok", true}, {"failed", true}, {"other", false}} {
+		got, err := s.DeployAttempted(ctx, tc.app)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: %v %v", tc.app, got, err)
+		}
+	}
+}

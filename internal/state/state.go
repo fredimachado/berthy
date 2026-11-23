@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1553,4 +1554,18 @@ func (s *Store) Bindings(ctx context.Context, app string) ([]Binding, error) {
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// Releases returns all releases in this environment, oldest first.
+func (s *Store) Releases(ctx context.Context) ([]Release, error) {
+	out, err := s.History(ctx, "")
+	slices.Reverse(out)
+	return out, err
+}
+
+// DeployAttempted reports whether an operation to deploy app was admitted.
+func (s *Store) DeployAttempted(ctx context.Context, app string) (bool, error) {
+	var found bool
+	err := s.queryRow(ctx, `SELECT EXISTS(SELECT 1 FROM operations WHERE environment=? AND kind='deploy' AND app=?)`, s.env, app).Scan(&found)
+	return found, err
 }
