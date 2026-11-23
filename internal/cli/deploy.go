@@ -392,11 +392,6 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		fmt.Fprintln(errout, "valid --project required")
 		return 2
 	}
-	configGiven := slices.Contains(f.given, "--config")
-	dirGiven := slices.Contains(f.given, "--manifest-dir")
-	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, dirGiven); code != 0 {
-		return code
-	}
 	if f.volumes && cmd != "remove" && cmd != "destroy" {
 		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
 		return 2
@@ -424,6 +419,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	if flag, key := refusedFlag(cmd, f); flag != "" {
 		fmt.Fprintf(errout, "%s is not a flag of %s\n", flag, key)
 		return 2
+	}
+	configGiven := slices.Contains(f.given, "--config")
+	dirGiven := slices.Contains(f.given, "--manifest-dir")
+	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, dirGiven); code != 0 {
+		return code
 	}
 	if cmd == "config" {
 		if len(f.pos) != 1 || (f.pos[0] != "show" && f.pos[0] != "validate") {

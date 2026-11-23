@@ -445,3 +445,39 @@ func TestAliasStillTreatsBareDashDashAsTheEndOfOptions(t *testing.T) {
 		t.Fatalf("ok %v err %v, want a missing -e refusal", ok, err)
 	}
 }
+
+func TestAliasKeepsAManifestDirDeclaredInItsDefinition(t *testing.T) {
+	lookup := t.TempDir()
+	other := t.TempDir()
+	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(lookup, "berthy.yml"), []byte(base+fmt.Sprintf("aliases:\n  show-other: config show --manifest-dir %s --json\n", other)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "berthy.yml"), []byte("project: other\nnetwork: other\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(lookup)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	t.Setenv(agentclient.ConfigEnv, filepath.Join(t.TempDir(), "missing.json"))
+	var out, errs bytes.Buffer
+	code := Run([]string{"show-other"}, &out, &errs)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
+	}
+	if !strings.Contains(out.String(), `"project": "other"`) && !strings.Contains(out.String(), `"project":"other"`) {
+		t.Fatalf("stdout %q, want project other", out.String())
+	}
+}
+
+func TestAliasRefusesManifestDirIntroducedOnlyByTheForwardedTail(t *testing.T) {
+	cfg := ingressCLIConfig(t, "http://127.0.0.1:1")
+	dir := writeDevOnlyHoldAlias(t, "deploy api --version")
+	evil := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	var out, errs bytes.Buffer
+	code := Run([]string{"hold", "--config", cfg, "--", "--manifest-dir", evil}, &out, &errs)
+	if code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "manifest directory") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+}

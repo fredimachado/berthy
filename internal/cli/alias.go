@@ -88,7 +88,7 @@ type aliasIntent struct {
 // selectors extracted from the invocation for the dispatcher to check after the real parsers run.
 func expandAlias(cmd string, args []string) (expanded []string, dir string, intent *aliasIntent, ok bool, err error) {
 	dir, env, project, config := ".", "", "", ""
-	var envGiven, projectGiven, configGiven, dirGiven bool
+	var envGiven, projectGiven, configGiven bool
 	var flags, manifestDir, rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -117,7 +117,6 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, inte
 				flags = append(flags, a, args[i])
 			case "--manifest-dir":
 				dir = args[i]
-				dirGiven = true
 				manifestDir = []string{a, args[i]}
 			}
 		default:
@@ -152,20 +151,30 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, inte
 		return nil, "", nil, true, err
 	}
 	words := strings.Fields(value)
-	line := func(pairs []string) []string {
+	prefix := func(pairs []string) []string {
 		out := append([]string{words[0]}, pairs...)
-		out = append(out, words[1:]...)
-		return append(out, rest...)
+		return append(out, words[1:]...)
+	}
+	line := func(pairs []string) []string {
+		return append(prefix(pairs), rest...)
 	}
 	// --manifest-dir is read for the lookup above. It goes on to the expanded line only when that command takes it.
+	trusted := prefix(flags)
 	expanded = line(flags)
 	if withDir := line(append(slices.Clone(flags), manifestDir...)); len(manifestDir) > 0 && acceptsFlag(withDir, "--manifest-dir") {
+		trusted = prefix(append(slices.Clone(flags), manifestDir...))
 		expanded = withDir
 	}
 	intent = &aliasIntent{
 		name: cmd, env: env,
-		project: project, config: config, manifestDir: dir,
-		projectGiven: projectGiven, configGiven: configGiven, dirGiven: dirGiven,
+		project: project, config: config,
+		projectGiven: projectGiven, configGiven: configGiven,
+	}
+	// A complete --manifest-dir in the operator flags or the alias definition is trusted. One that appears only after
+	// expansion reinterprets the forwarded tail is not.
+	if tf, err := parseDeploymentArgs(trusted[1:]); err == nil && slices.Contains(tf.given, "--manifest-dir") {
+		intent.dirGiven = true
+		intent.manifestDir = tf.dir
 	}
 	return expanded, dir, intent, true, nil
 }
@@ -184,8 +193,7 @@ func checkAliasIntent(errout io.Writer, intent *aliasIntent, env, project, confi
 	case configGiven != intent.configGiven || config != intent.config:
 		fmt.Fprintf(errout, "alias %s targets a different config than the one used to load it\n", intent.name)
 	case dirGiven && (!intent.dirGiven || manifestDir != intent.manifestDir):
-		// A --manifest-dir used only to find the alias may be dropped from the expanded line. Refuse only when the real
-		// parser saw a directory that was not the operator's declared one.
+		// Refuse a directory the final parser saw that was not complete in the trusted prefix (operator flags + alias text).
 		fmt.Fprintf(errout, "alias %s targets a different manifest directory than the one used to load it\n", intent.name)
 	default:
 		return 0
