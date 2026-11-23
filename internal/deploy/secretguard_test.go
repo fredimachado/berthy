@@ -2,7 +2,9 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"berthy/internal/engine"
@@ -171,5 +173,23 @@ func TestGuardSeesImageReaderVolumeWithoutDeployment(t *testing.T) {
 	finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
 	if err != nil || finding == nil || finding.App != "db" || finding.Volume != "shop-test_data" {
 		t.Fatalf("finding: %+v, %v", finding, err)
+	}
+}
+
+func TestGuardInspectsImageRoleServiceName(t *testing.T) {
+	for _, tc := range []struct{ name, override, want string }{
+		{"default", "", "shop-test-db-web"},
+		{"explicit", "existing-service", "existing-service"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			docker := &boundFake{}
+			docker.add("service-id", json.RawMessage(`{"Name":"`+tc.want+`"}`))
+			c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
+			m := manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"db": {Kind: "image", Env: manifest.Env{Secret: []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}}, Roles: map[string]manifest.Role{"web": {Service: tc.override}}}}}
+			finding, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m})
+			if err != nil || finding == nil || finding.App != "db" || finding.Volume != "" || !reflect.DeepEqual(docker.inspected, []string{tc.want}) {
+				t.Fatalf("finding %+v, inspected %v, error %v", finding, docker.inspected, err)
+			}
+		})
 	}
 }

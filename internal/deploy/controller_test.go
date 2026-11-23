@@ -929,10 +929,11 @@ func TestRecoveryPendingDoesNotRepeatAudit(t *testing.T) {
 
 // boundFake answers service lookups by name or ID, as Docker does, and records the services it creates.
 type boundFake struct {
-	mu       sync.Mutex
-	services []engine.ServiceSnapshot
-	failures map[string]error // returned by InspectService for the keyed name or ID
-	created  []json.RawMessage
+	mu        sync.Mutex
+	services  []engine.ServiceSnapshot
+	failures  map[string]error // returned by InspectService for the keyed name or ID
+	created   []json.RawMessage
+	inspected []string
 }
 
 func (f *boundFake) add(id string, spec json.RawMessage) {
@@ -966,6 +967,7 @@ func (f *boundFake) InspectImage(context.Context, string) (engine.Image, error) 
 func (f *boundFake) InspectService(_ context.Context, ref string) (engine.ServiceSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.inspected = append(f.inspected, ref)
 	if err := f.failures[ref]; err != nil {
 		return engine.ServiceSnapshot{}, err
 	}
