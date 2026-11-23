@@ -72,11 +72,8 @@ func TestSecretGenerateWithoutANameSendsTheManifestAndTheComposeFiles(t *testing
 	if len(changes) != 1 || !strings.Contains(changes[0], "POST ") || !strings.Contains(changes[0], "/secrets/generate-declared ") {
 		t.Fatalf("requests %q", bodies)
 	}
-	if !strings.Contains(changes[0], `"compose_files":{"db":`) {
-		t.Fatalf("body missing db compose file: %s", changes[0])
-	}
-	if strings.Contains(changes[0], `"other"`) {
-		t.Fatalf("body sent the unrelated compose app: %s", changes[0])
+	if !strings.Contains(changes[0], `"compose_files":{"db":"services: {db: {image: x}}\n"}`) {
+		t.Fatalf("body must send only the Compose reader's file: %s", changes[0])
 	}
 	if !strings.Contains(changes[0], `"manifest":`) || !strings.Contains(changes[0], `"GEN_PASS"`) {
 		t.Fatalf("body missing manifest: %s", changes[0])

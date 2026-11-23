@@ -98,50 +98,51 @@ func withRemoteFlags(extra ...string) []string {
 // taken from the code: the flags the handler reads, and for the deploy requests the fields the agent acts on for that kind.
 // scale accepts --manifest-dir and does not read it: a scale needs no checkout, and TestScaleDoesNotLoadCheckoutManifest relies on that.
 var changeFlags = map[string][]string{
-	"deploy":           withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
-	"apply":            withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
-	"rollback":         withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
-	"restart":          withRemoteFlags("--dry-run", "--request-id", "--role"),
-	"scale":            withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
-	"exec":             withRemoteFlags("--dry-run", "--request-id", "--role", "--service", "--interactive"),
-	"run":              withRemoteFlags("--dry-run", "--request-id", "--role", "--timeout", "--interactive"),
-	"prune":            withRemoteFlags("--dry-run", "--request-id"),
-	"remove":           withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
-	"destroy":          withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
-	"restore":          withRemoteFlags("--dry-run", "--request-id", "--into", "--exec", "--role", "--service", "--timeout"),
-	"wait":             withRemoteFlags("--role", "--timeout", "--healthy"),
-	"history":          withRemoteFlags("--diff"),
-	"diagnostics":      withRemoteFlags(),
-	"audit":            withRemoteFlags(),
-	"lock status":      withRemoteFlags(),
-	"lock acquire":     withRemoteFlags("--dry-run", "--message"),
-	"lock release":     withRemoteFlags("--dry-run"),
-	"recovery resolve": withRemoteFlags("--dry-run", "--message"),
-	"cancel":           withRemoteFlags("--dry-run"),
-	"job cancel":       withRemoteFlags(),
-	"ingress apply":    withRemoteFlags("--dry-run", "--manifest-dir", "--request-id", "--replace-existing", "--commit"),
-	"ingress status":   withRemoteFlags(),
-	"alerts test":      withRemoteFlags(),
-	"secret list":      withRemoteFlags("--manifest-dir"),
-	"secret import":    withRemoteFlags("--dry-run"),
-	"secret set":       withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
-	"secret generate":  withRemoteFlags("--dry-run", "--replace", "--bytes", "--format", "--manifest-dir"),
-	"secret delete":    withRemoteFlags("--dry-run"),
-	"secret rm":        withRemoteFlags("--dry-run"),
-	"job run":          withRemoteFlags(),
-	"job logs":         withRemoteFlags("--run"),
-	"backup list":      withRemoteFlags("--backup"),
-	"backup run":       withRemoteFlags(),
-	"state-backup":     withRemoteFlags(),
-	"key rotate":       withRemoteFlags("--dry-run"),
-	"approvals":        withRemoteFlags("--all"),
-	"approve":          withRemoteFlags(),
-	"reject":           withRemoteFlags("--message"),
-	"token create":     withRemoteFlags("--dry-run", "--scope", "--agent", "--expires"),
-	"token list":       withRemoteFlags(),
-	"token revoke":     withRemoteFlags("--dry-run"),
-	"config show":      {"-e", "--manifest-dir", "--json", "--origin"},
-	"config validate":  {"-e", "--manifest-dir", "--json"},
+	"deploy":                   withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
+	"apply":                    withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
+	"rollback":                 withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
+	"restart":                  withRemoteFlags("--dry-run", "--request-id", "--role"),
+	"scale":                    withRemoteFlags("--dry-run", "--request-id", "--role", "--replicas", "--manifest-dir"),
+	"exec":                     withRemoteFlags("--dry-run", "--request-id", "--role", "--service", "--interactive"),
+	"run":                      withRemoteFlags("--dry-run", "--request-id", "--role", "--timeout", "--interactive"),
+	"prune":                    withRemoteFlags("--dry-run", "--request-id"),
+	"remove":                   withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate"),
+	"destroy":                  withRemoteFlags("--dry-run", "--request-id", "--volumes", "--allow-recreate", "--confirm", "--tunnel"),
+	"restore":                  withRemoteFlags("--dry-run", "--request-id", "--into", "--exec", "--role", "--service", "--timeout"),
+	"wait":                     withRemoteFlags("--role", "--timeout", "--healthy"),
+	"history":                  withRemoteFlags("--diff"),
+	"diagnostics":              withRemoteFlags(),
+	"audit":                    withRemoteFlags(),
+	"lock status":              withRemoteFlags(),
+	"lock acquire":             withRemoteFlags("--dry-run", "--message"),
+	"lock release":             withRemoteFlags("--dry-run"),
+	"recovery resolve":         withRemoteFlags("--dry-run", "--message"),
+	"cancel":                   withRemoteFlags("--dry-run"),
+	"job cancel":               withRemoteFlags(),
+	"ingress apply":            withRemoteFlags("--dry-run", "--manifest-dir", "--request-id", "--replace-existing", "--commit"),
+	"ingress status":           withRemoteFlags(),
+	"alerts test":              withRemoteFlags(),
+	"secret list":              withRemoteFlags("--manifest-dir"),
+	"secret import":            withRemoteFlags("--dry-run"),
+	"secret set":               withRemoteFlags("--dry-run", "--registry", "--manifest-dir"),
+	"secret generate":          withRemoteFlags("--dry-run", "--replace", "--bytes", "--format", "--manifest-dir"),
+	"secret generate declared": withRemoteFlags("--dry-run", "--manifest-dir"),
+	"secret delete":            withRemoteFlags("--dry-run"),
+	"secret rm":                withRemoteFlags("--dry-run"),
+	"job run":                  withRemoteFlags(),
+	"job logs":                 withRemoteFlags("--run"),
+	"backup list":              withRemoteFlags("--backup"),
+	"backup run":               withRemoteFlags(),
+	"state-backup":             withRemoteFlags(),
+	"key rotate":               withRemoteFlags("--dry-run"),
+	"approvals":                withRemoteFlags("--all"),
+	"approve":                  withRemoteFlags(),
+	"reject":                   withRemoteFlags("--message"),
+	"token create":             withRemoteFlags("--dry-run", "--scope", "--agent", "--expires"),
+	"token list":               withRemoteFlags(),
+	"token revoke":             withRemoteFlags("--dry-run"),
+	"config show":              {"-e", "--manifest-dir", "--json", "--origin"},
+	"config validate":          {"-e", "--manifest-dir", "--json"},
 }
 
 type commandFlags struct {
@@ -346,6 +347,9 @@ func changeKey(cmd string, pos []string) (key string, ok bool) {
 		if len(pos) == 2 && sub == "set" {
 			return "secret set", true
 		}
+		if len(pos) == 1 && sub == "generate" {
+			return "secret generate declared", true
+		}
 		if len(pos) == 2 && sub == "generate" {
 			return "secret generate", true
 		}
@@ -527,6 +531,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "list" && slices.Contains(f.given, "--manifest-dir") {
 		return runSecretList(f, u, prefix, token, out, errout)
+	}
+	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" {
+		return runSecretGenerateDeclared(f, target, projectDir, out, errout)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
