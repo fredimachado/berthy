@@ -321,8 +321,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"✓ verify      the agent answers; run berthy doctor with an admin token to check it fully\n" +
 		"setup of shop/p5 on ops@s1: done\n" +
 		"\nnext steps:\n" +
-		"  1. " + setupNextSteps(scope.ID{Project: "shop", Environment: "p5"}, "/var/lib/berthy/environments/shop/p5/key", "", false, "ops@s1", "BERTHY_SHOP_P5_TOKEN", false, false, dir)[0] + "\n" +
-		"  2. " + setupNextSteps(scope.ID{Project: "shop", Environment: "p5"}, "/var/lib/berthy/environments/shop/p5/key", "", false, "ops@s1", "BERTHY_SHOP_P5_TOKEN", false, false, dir)[1] + "\n" +
+		"  1. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, keyFile: "/var/lib/berthy/environments/shop/p5/key", config: "", local: false, target: "ops@s1", tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[0] + "\n" +
+		"  2. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, keyFile: "/var/lib/berthy/environments/shop/p5/key", config: "", local: false, target: "ops@s1", tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[1] + "\n" +
 		"  3. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --manifest-dir " + shellWord(dir) + "\n" +
 		"  4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version REF)\n"
 	if out != want {
@@ -467,18 +467,18 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 }
 
 func TestSetupNextStepsMentionTheIngressOnlyWhenTheManifestHasOne(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "BERTHY_PROD_TOKEN", true, true, "")
+	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/var/lib/berthy/environments/shop/prod/key", config: "", local: false, target: "ops@s1", tokenEnv: "BERTHY_PROD_TOKEN", storeToken: true, ingress: true, manifestDir: ""})
 	if len(steps) != 6 || !strings.Contains(steps[4], "berthy ingress apply -e prod") || strings.Contains(steps[4], "--config") {
 		t.Fatalf("steps = %q", steps)
 	}
-	local := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "", true, "this server", "X", false, false, "")
+	local := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/var/lib/berthy/environments/shop/prod/key", config: "", local: true, target: "this server", tokenEnv: "X", storeToken: false, ingress: false, manifestDir: ""})
 	if len(local) != 4 || !strings.Contains(local[1], "sudo cat /var/lib/berthy/environments/shop/prod/key") {
 		t.Fatalf("local steps = %q", local)
 	}
 }
 
 func TestSetupNextStepsNameTheConfigGivenToSetup(t *testing.T) {
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", "/etc/berthy/cli.json", false, "ops@s1", "BERTHY_PROD_TOKEN", false, false, "")
+	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/var/lib/berthy/environments/shop/prod/key", config: "/etc/berthy/cli.json", local: false, target: "ops@s1", tokenEnv: "BERTHY_PROD_TOKEN", storeToken: false, ingress: false, manifestDir: ""})
 	want := []string{
 		"berthy secret set NAME -e prod --project shop --config /etc/berthy/cli.json",
 		"berthy deploy APP -e prod --project shop --config /etc/berthy/cli.json",
@@ -505,7 +505,7 @@ func TestSetupNextStepsQuoteTheConfigWhenItNeedsIt(t *testing.T) {
 	}
 	for cfg, want := range tests {
 		// The ingress step is among the steps: it takes the config too.
-		steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/var/lib/berthy/environments/shop/prod/key", cfg, false, "ops@s1", "BERTHY_PROD_TOKEN", false, true, "")
+		steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/var/lib/berthy/environments/shop/prod/key", config: cfg, local: false, target: "ops@s1", tokenEnv: "BERTHY_PROD_TOKEN", storeToken: false, ingress: true, manifestDir: ""})
 		if len(steps) != 5 {
 			t.Fatalf("steps = %q", steps)
 		}
@@ -881,7 +881,7 @@ func TestSetupWithoutAManifestDefaultsTheNetwork(t *testing.T) {
 
 func TestSetupNextStepsNameThisEnvironmentsKey(t *testing.T) {
 	id := scope.ID{Project: "shop", Environment: "prod"}
-	steps := setupNextSteps(id, "/var/lib/berthy/environments/shop/prod/key", "", false, "ops@s1", "X", true, false, "")
+	steps := setupNextSteps(nextSteps{id: id, keyFile: "/var/lib/berthy/environments/shop/prod/key", config: "", local: false, target: "ops@s1", tokenEnv: "X", storeToken: true, ingress: false, manifestDir: ""})
 	if !strings.Contains(steps[1], "sudo cat /var/lib/berthy/environments/shop/prod/key") {
 		t.Fatalf("step: %s", steps[1])
 	}
@@ -896,7 +896,7 @@ func TestTheKeyCopyNamesAFileNoOtherEnvironmentCanShare(t *testing.T) {
 			t.Fatalf("duplicate name %s", name)
 		}
 		seen[name] = true
-		if !strings.Contains(setupNextSteps(id, "/key", "", true, "this server", "X", true, false, "")[1], "> "+name+".") {
+		if !strings.Contains(setupNextSteps(nextSteps{id: id, keyFile: "/key", config: "", local: true, target: "this server", tokenEnv: "X", storeToken: true, ingress: false, manifestDir: ""})[1], "> "+name+".") {
 			t.Errorf("setup name for %v", id)
 		}
 		var out, errout bytes.Buffer

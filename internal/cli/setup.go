@@ -184,7 +184,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 				manifestDir = *dir
 			}
 		})
-		report.NextSteps = setupNextSteps(scope.ID{Project: from.project, Environment: *env}, session.KeyFile(), *cliConfig, *local, report.Target, session.TokenEnv, report.Token != "" && !session.TokenStored, from.ingress, manifestDir)
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir})
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -276,29 +276,41 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 // setupNextSteps is what the person does after a successful setup. It prints the command that copies the key, never the key.
 // cfg is the --config path given to setup, quoted for the shell when it needs it. The commands name it only when it was given:
 // without it they find the CLI configuration themselves, the one the cli_config step wrote or the one BERTHY_CONFIG names.
-func setupNextSteps(id scope.ID, keyFile, cfg string, local bool, target, tokenEnv string, madeToken, ingress bool, manifestDir string) []string {
-	env := id.Environment
-	read := "sudo cat " + shellWord(keyFile)
-	if !local {
-		read = "ssh " + shellWord(target) + " " + shellWord(read)
+type nextSteps struct {
+	id          scope.ID
+	keyFile     string
+	config      string
+	manifestDir string
+	local       bool
+	target      string
+	tokenEnv    string
+	storeToken  bool
+	ingress     bool
+}
+
+func setupNextSteps(n nextSteps) []string {
+	env := n.id.Environment
+	read := "sudo cat " + shellWord(n.keyFile)
+	if !n.local {
+		read = "ssh " + shellWord(n.target) + " " + shellWord(read)
 	}
 	config := ""
-	if cfg != "" {
-		config = " --config " + shellWord(cfg)
+	if n.config != "" {
+		config = " --config " + shellWord(n.config)
 	}
-	if manifestDir != "" {
-		config += " --manifest-dir " + shellWord(manifestDir)
+	if n.manifestDir != "" {
+		config += " --manifest-dir " + shellWord(n.manifestDir)
 	}
-	config = " --project " + shellWord(id.Project) + config
+	config = " --project " + shellWord(n.id.Project) + config
 	steps := []string{
 		"run the command from a private folder, such as your home folder (cd ~), and keep the file private",
-		"in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): " + keyCopyCommand(read, id),
+		"in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): " + keyCopyCommand(read, n.id),
 	}
-	if madeToken {
-		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", tokenEnv))
+	if n.storeToken {
+		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", n.tokenEnv))
 	}
 	steps = append(steps, fmt.Sprintf("set the secrets the manifest names: berthy secret set NAME -e %s%s", env, config))
-	if ingress {
+	if n.ingress {
 		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s%s", env, config))
 	}
 	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))

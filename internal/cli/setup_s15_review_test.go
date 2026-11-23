@@ -20,7 +20,7 @@ func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T
 	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
 	t.Cleanup(func() { keyCopyNow = old })
 	id := scope.ID{Project: "shop", Environment: "prod"}
-	step := setupNextSteps(id, "/srv/keys/my key", "", false, "ops@s1", "T", true, false, "")[1]
+	step := setupNextSteps(nextSteps{id: id, keyFile: "/srv/keys/my key", config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: true, ingress: false, manifestDir: ""})[1]
 	_, command, ok := strings.Cut(step, ": ")
 	if !ok {
 		t.Fatal(step)
@@ -70,7 +70,7 @@ func TestSetupFollowUpsNameProjectAndManifestDirectory(t *testing.T) {
 	if !strings.Contains(out, "berthy secret set NAME -e prod --project shop") || !strings.Contains(out, "berthy deploy -e prod --project shop") || !strings.Contains(out, "--manifest-dir "+shellWord(dir)) {
 		t.Fatalf("follow-ups: %s", out)
 	}
-	steps := setupNextSteps(scope.ID{Project: "sliceup", Environment: "prod"}, "/key", cfg, true, "this server", "TOKEN", true, true, dir)
+	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "sliceup", Environment: "prod"}, keyFile: "/key", config: cfg, local: true, target: "this server", tokenEnv: "TOKEN", storeToken: true, ingress: true, manifestDir: dir})
 	for _, step := range steps[3:] {
 		if !strings.Contains(step, "--project sliceup") || !strings.Contains(step, "--manifest-dir "+shellWord(dir)) {
 			t.Errorf("follow-up lacks project or manifest: %s", step)
@@ -128,7 +128,7 @@ func TestTimestampedKeyCopyText(t *testing.T) {
 		{"/srv/keys/my key", `'sudo cat '\''/srv/keys/my key'\'''`},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
-			steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, tc.key, "", false, "ops@s1", "T", false, false, "")
+			steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: tc.key, config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
 			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), and keep the file private" {
 				t.Fatalf("instruction: %q", steps[0])
 			}
@@ -148,7 +148,7 @@ func TestTimestampedKeyCopyDoesNotOverwrite(t *testing.T) {
 	old := keyCopyNow
 	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
 	t.Cleanup(func() { keyCopyNow = old })
-	steps := setupNextSteps(scope.ID{Project: "shop", Environment: "prod"}, "/srv/keys/my key", "", false, "ops@s1", "T", false, false, "")
+	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/srv/keys/my key", config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
 	_, command, ok := strings.Cut(steps[1], ": ")
 	if !ok {
 		t.Fatal(steps)
