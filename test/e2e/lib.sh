@@ -5,6 +5,7 @@
 
 export PATH=/usr/bin:/bin
 export BERTHY_TOKEN_STORE=none
+unset BERTHY_ENV
 
 GO=/var/tmp/berthy-phase1/go/bin/go
 DOCKER_BIN=/var/tmp/berthy-phase1/bin/docker

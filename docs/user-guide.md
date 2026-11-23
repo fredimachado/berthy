@@ -33,7 +33,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 ## How to read the commands
 
 - `prod` is the environment in the story, of the project `todo`. The server is `10.0.0.5`, and its agent listens on `10.0.0.5:7710`.
-- Commands that talk to the agent need `-e prod`, which names the environment. The project comes from `--project`, else the `project` of `berthy.yml` in the directory you run from, else the only project that has that environment. They find the CLI configuration file on their own, from the first of these that is set:
+- Commands that talk to the agent need `-e prod`, which names the environment. Without `-e`, they read `BERTHY_ENV` from the shell (for example `export BERTHY_ENV=prod`). A given `-e` wins, including an empty one. `BERTHY_ENV` lives in the shell only; it is never written to the CLI configuration. `context add` and `context remove`, `agent token`, `state-restore` and `mcp` do not read it. The project comes from `--project`, else the `project` of `berthy.yml` in the directory you run from, else the only project that has that environment. They find the CLI configuration file on their own, from the first of these that is set:
 
   1. `--config <file>`
   2. the `BERTHY_CONFIG` environment variable
@@ -1482,7 +1482,7 @@ commit=$(git rev-parse --verify HEAD)
 
 A clean CI checkout needs no `--commit`: without one, the deploy records `HEAD` of the checkout, which the script passes anyway. If the checkout has local changes to the manifest or the app's Compose file (a generated file, say), the release is recorded as modified, and a protected environment refuses the deploy.
 
-Its inputs are environment variables: `BERTHY_ENV` (`prod`), `BERTHY_CONFIG` (a CLI configuration file), `IMAGE_DIGEST`, `BERTHY_TOKEN`, and optionally `APP` (default `api`) and `BERTHY_BIN`. The CLI configuration in CI names the variable that holds the token:
+Its inputs are environment variables: `BERTHY_ENV` (`prod`), `BERTHY_CONFIG` (a CLI configuration file), `IMAGE_DIGEST`, `BERTHY_TOKEN`, and optionally `APP` (default `api`) and `BERTHY_BIN`. The script still passes `-e "$BERTHY_ENV"`; the CLI now reads the same variable when `-e` is omitted, so a shell that exports `BERTHY_ENV` can drop the flag. The CLI configuration in CI names the variable that holds the token:
 
 ```json
 { "projects": { "todo": { "environments": { "prod": { "url": "http://10.0.0.5:7710", "token_env": "BERTHY_TOKEN" } } } } }
