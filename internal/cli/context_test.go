@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -578,14 +579,30 @@ func TestContextAddSaveTokenAsksAtATerminal(t *testing.T) {
 	old := agentclient.TokenStore
 	agentclient.TokenStore = s
 	t.Cleanup(func() { agentclient.TokenStore = old })
-	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Chdir(t.TempDir())
+	cfg := "config.json"
+	want := agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_TERM_TOKEN"}
 	t.Setenv("CTX_TERM_TOKEN", "")
-	reads := fakeTerminal(t, "typed-secret")
-	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", "http://127.0.0.1:9", "--token-env", "CTX_TERM_TOKEN", "--config", cfg, "--save-token")
-	if code != 0 || reads.Load() != 1 || !strings.Contains(errs, "Token of demo/dev (hidden):") || !strings.Contains(out, "saved the token of demo/dev in the test store") {
-		t.Fatalf("exit %d reads %d stdout %q stderr %q", code, reads.Load(), out, errs)
+	var reads atomic.Int32
+	var during agentclient.Environment
+	var duringOK bool
+	oldHidden := hiddenInput
+	hiddenInput = func() (func() ([]byte, error), bool) {
+		return func() ([]byte, error) {
+			reads.Add(1)
+			c, err := agentclient.ReadConfig(cfg)
+			if err == nil {
+				during, duringOK = c.Projects["demo"].Environments["dev"]
+			}
+			return []byte("typed-secret"), nil
+		}, true
 	}
-	got, err := s.Get(agentclient.StoreKey("demo", "dev", agentclient.Environment{URL: "http://127.0.0.1:9", TokenEnv: "CTX_TERM_TOKEN"}))
+	t.Cleanup(func() { hiddenInput = oldHidden })
+	code, out, errs := runCLI("context", "add", "--project", "demo", "-e", "dev", "--url", want.URL, "--token-env", want.TokenEnv, "--config", cfg, "--save-token")
+	if code != 0 || reads.Load() != 1 || !duringOK || during != want || !strings.Contains(errs, "Token of demo/dev (hidden):") || !strings.Contains(out, "saved the token of demo/dev in the test store") {
+		t.Fatalf("exit %d reads %d during %+v ok %v stdout %q stderr %q", code, reads.Load(), during, duringOK, out, errs)
+	}
+	got, err := s.Get(agentclient.StoreKey("demo", "dev", want))
 	if err != nil || got != "typed-secret" {
 		t.Fatalf("store: %q %v", got, err)
 	}
