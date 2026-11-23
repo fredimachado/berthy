@@ -189,6 +189,12 @@ func generationBodyUnambiguous(rest []string, method string, body []byte) bool {
 		if dec.Decode(&value) != nil {
 			return false
 		}
+		if strings.EqualFold(name, "dry_run") {
+			var dry bool
+			if json.Unmarshal(value, &dry) != nil {
+				return false
+			}
+		}
 	}
 	_, err = dec.Token()
 	return err == nil

@@ -903,3 +903,41 @@ func TestHeldGenerateAcceptsSingleCaseVariantDryRun(t *testing.T) {
 		t.Fatal("stored value does not match approved plan")
 	}
 }
+
+func TestProtectedGenerationRejectsInvalidDryRunTypes(t *testing.T) {
+	manifest := `{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}`
+	for _, route := range []string{"generate", "generate-declared"} {
+		for _, tc := range []struct{ name, key, value string }{{"string", "dry_run", `"false"`}, {"number", "DRY_RUN", "1"}, {"object", "dry_run", "{}"}} {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				f := newApprovalFixture(t, true, nil)
+				body := `{"name":"GEN_PASS","` + tc.key + `":` + tc.value + `}`
+				if route == "generate-declared" {
+					body = `{"manifest":` + manifest + `,"` + tc.key + `":` + tc.value + `}`
+				}
+				w := f.call("POST", "/secrets/"+route, apAgentAdmin, body)
+				if w.Code != 400 || !sameJSON(t, w.Body.Bytes(), []byte(`{"code":"bad_request","message":"invalid request"}`)) || w.Header().Get("Berthy-Approval") != "" {
+					t.Fatalf("status %d response %s", w.Code, w.Body.String())
+				}
+				list := f.call("GET", "/approvals", apAdminToken, "")
+				if strings.TrimSpace(list.Body.String()) != "[]" {
+					t.Fatal("invalid request was held")
+				}
+			})
+		}
+	}
+}
+
+func TestProtectedGenerationAcceptsNullDryRun(t *testing.T) {
+	for _, tc := range []struct{ name, route, body string }{
+		{"named", "generate", `{"name":"GEN_PASS","DRY_RUN":null}`},
+		{"declared", "generate-declared", `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}},"dry_run":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApprovalFixture(t, true, nil)
+			w := f.call("POST", "/secrets/"+tc.route, apAgentAdmin, tc.body)
+			if w.Code != 202 || w.Header().Get("Berthy-Approval") != "pending" {
+				t.Fatalf("status %d response %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
