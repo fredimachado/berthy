@@ -2514,7 +2514,7 @@ The `--agent` flag marks it as an agent token. It works at once, as for any toke
 
 The agent checks the token and its scope as usual, then **stores the request instead of carrying it out**. Nothing changes: no operation starts and the lock is not taken. The answer is `202` with an approval id.
 
-Held: `deploy`, `apply`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, `secret import` and `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `job cancel`, `cancel`, `state-backup`, `recovery resolve` and `alerts test`.
+Held: `deploy`, `apply`, `rollback`, `restart`, `scale`, `exec`, `run`, `prune`, `remove`, `destroy`, `restore`, `ingress apply`, `secret set`, both forms of `secret generate`, `secret import`, `secret rm`, `lock acquire` and `release`, `backup run`, `job run`, `job cancel`, `cancel`, `state-backup`, `recovery resolve` and `alerts test`.
 
 `key rotate` is not held: an agent token is refused with `an agent token cannot rotate the state key`, whatever its scope, on every environment.
 

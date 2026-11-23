@@ -38,10 +38,10 @@ Berthy makes choices so that you do not have to. If you disagree with several of
 
 You need a Linux server with systemd (amd64 or arm64), a private address on it, and an account that is `root` or has passwordless `sudo`. Setup does not create the server, its firewall or your VPN. Read the [user guide](docs/user-guide.md#step-1-prepare-a-server-and-set-it-up) before you point it at a server you care about.
 
-**1. Install the CLI** from the [release](https://github.com/fredimachado/berthy/releases/tag/v0.3.0). The files are named `berthy-<os>-<arch>` for linux and darwin on amd64 and arm64, plus `berthy-windows-amd64.exe` and `checksums.txt`.
+**1. Install the CLI** from the [release](https://github.com/fredimachado/berthy/releases/tag/v0.4.0). The files are named `berthy-<os>-<arch>` for linux and darwin on amd64 and arm64, plus `berthy-windows-amd64.exe` and `checksums.txt`.
 
 ```bash
-VERSION=v0.3.0 OS=linux ARCH=amd64     # OS: linux or darwin. ARCH: amd64 or arm64.
+VERSION=v0.4.0 OS=linux ARCH=amd64     # OS: linux or darwin. ARCH: amd64 or arm64.
 curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/berthy-$OS-$ARCH
 curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/checksums.txt
 sha256sum --ignore-missing -c checksums.txt    # on macOS, compare the hash with shasum -a 256
@@ -49,7 +49,7 @@ chmod +x berthy-$OS-$ARCH && sudo mv berthy-$OS-$ARCH /usr/local/bin/berthy
 berthy version
 ```
 
-With the GitHub CLI: `gh release download v0.3.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
+With the GitHub CLI: `gh release download v0.4.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
 
 To try a development build instead, clone this repository and run `go build -o berthy ./cmd/berthy`. Pass `--binary` to setup when that CLI is not a Linux build of the server's architecture.
 
@@ -159,7 +159,7 @@ Main documentation and sources:
 
 ### Which one to choose
 
-- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.3.0.
+- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.4.0.
 - **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram or an HTTP webhook. It also needs a private network to reach the agent.
 - **Choose Kamal when** you want deploys over plain SSH with nothing but Docker on the servers, builds in your own pipeline, and several hosts in one config file. It runs from your machine over SSH, with no agent of its own on the server.
 - **Choose Dokploy when** you want a web UI with builds on the server, managed databases with backups, templates, notifications, and Swarm or remote servers.
@@ -177,7 +177,7 @@ Main documentation and sources:
 
 ## Status
 
-The latest release is [v0.3.0](https://github.com/fredimachado/berthy/releases/tag/v0.3.0). Built and released: the agent and CLI, projects (one agent hosts any number of environments), image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`.
+The latest release is [v0.4.0](https://github.com/fredimachado/berthy/releases/tag/v0.4.0). Built and released: the agent and CLI, projects (one agent hosts any number of environments), image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`. This release adds guided setup, local credential storage, environment defaults, and guarded secret generation.
 
 Berthy's tests run against a real Docker Swarm, a real registry and fakes for the rest. On 2026-11-17 it was also run against a real Ubuntu server, real Cloudflare and GHCR. Telegram alerts, OpenTelemetry backends and S3 backups have not yet been run against the real services. The user guide lists the rest under "Not verified against real services". Expect to find edge cases, and try a non-production environment first.
 
