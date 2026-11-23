@@ -132,6 +132,11 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if err != nil {
 		return usage("%v", err)
 	}
+	where := "on " + *host
+	if *local {
+		where = "on this server"
+	}
+	printBanner(errout, scope.ID{Project: from.project, Environment: *env}, where, envFromVariable)
 	preflightErr := checkSetupTokenEnv(from.project, *env, *cliConfig)
 	opts := setup.Options{
 		Env: *env, Project: from.project, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,

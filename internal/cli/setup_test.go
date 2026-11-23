@@ -575,6 +575,49 @@ func TestSetupPassesItsFlagsToTheSteps(t *testing.T) {
 	}
 }
 
+// TestSetupPrintsTheBannerBeforeTheFirstStep: on a terminal, setup prints the banner before connect, and the runner has
+// run no script yet when that line appears.
+func TestSetupPrintsTheBannerBeforeTheFirstStep(t *testing.T) {
+	server := installedServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	forceStderrTerminal(t, true)
+	var combined bytes.Buffer
+	scriptsAtBanner := -1
+	w := writeCatch{Writer: &combined, onWrite: func(p []byte) {
+		if strings.Contains(string(p), "berthy: shop/p5 on ops@s1") {
+			scriptsAtBanner = len(server.scripts)
+		}
+	}}
+	code := Run([]string{"setup", "-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net",
+		"--manifest-dir", projectDir(t), "--dry-run"}, w, w)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, combined.String())
+	}
+	text := combined.String()
+	banner := strings.Index(text, "berthy: shop/p5 on ops@s1\n")
+	connect := strings.Index(text, "connect")
+	if banner < 0 || connect < 0 || banner >= connect {
+		t.Fatalf("banner must come before connect:\n%s", text)
+	}
+	if scriptsAtBanner != 0 {
+		t.Fatalf("runner had run %d scripts when the banner printed", scriptsAtBanner)
+	}
+}
+
+// TestSetupPrintsNoBannerWhenStderrIsNotATerminal: redirected stderr gets no banner from setup.
+func TestSetupPrintsNoBannerWhenStderrIsNotATerminal(t *testing.T) {
+	withSetupRunner(t, installedServer(t, "ops@s1"))
+	forceStderrTerminal(t, false)
+	code, out, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net",
+		"--manifest-dir", projectDir(t), "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	if strings.Contains(errout, "berthy:") || strings.Contains(out, "berthy:") {
+		t.Fatalf("banner appeared without a terminal: out=%q err=%q", out, errout)
+	}
+}
+
 func TestSetupDryRunOutput(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	server.probe = freshProbe

@@ -502,6 +502,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	f.project = target.Project
 	u, token, prefix := target.Base, target.Token, target.Prefix
+	if key, ok := changeKey(cmd, f.pos); ok && !slices.Contains(readOnlyCommands, key) {
+		printBanner(errout, scope.ID{Project: f.project, Environment: f.env}, "at "+u.String(), f.envFromVariable)
+	}
 	if cmd == "destroy" && f.confirm != (scope.ID{Project: f.project, Environment: f.env}).String() {
 		fmt.Fprintln(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment")
 		return 2
