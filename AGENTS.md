@@ -61,6 +61,10 @@
   against a real Swarm. A new user-facing feature gets a scenario.
 - Scenarios build names from `$PROJECT` and `$ENVN`, never a literal `e2e`, so
   two runs with their own names, registry and ports can share one daemon.
+- Refuse existing Docker fixture names and clean up only resources the current
+  run can prove it created, even when setup fails partway through. Use a per-run
+  ownership marker when a resource name can collide. Scenario 41 checks its
+  volume's label before removal.
 - The harness builds the working tree. To check committed work while someone
   else edits the checkout, run it from a clean clone of HEAD.
 
@@ -74,11 +78,19 @@
   CRLF and refuses any other line break.
 - A plan must come out byte-identical when it is re-planned at approval time.
   Name services and image digests, never container ids.
+  Planning and execution must interpret the same request identically. Reject
+  ambiguous inputs such as repeated JSON fields that affect the action.
+  Preserve decision fields when redacting metadata so approval comparison
+  can detect a changed outcome.
 - Each manifest key is defined once, in `internal/manifest/keys.go`. The guide
   reference, `berthy docs` and the JSON Schema are generated from it with
   `go generate`, and a test fails if they drift.
 - A Docker call that waits on the server, such as a stop with a grace period,
   needs a deadline longer than that wait, not the client's short default.
+- Require a complete, valid response before treating a resource or secret as
+  absent. A Docker volume list with warnings cannot establish absence. The
+  secret guide needs one decision per declared secret and a valid inventory
+  before it prompts.
 - `third_party/` holds vendored packages with patches (for example, `xid`
   reads the machine id lazily so startup never searches PATH). Don't replace
   them with upstream copies.
@@ -109,6 +121,9 @@
   `berthy mcp` never reads it: the agent's approval gate holds only tokens
   marked `agent`, so an MCP server or a script's entry that fell back to it
   would bypass approvals.
+- Redact the active bearer token and any entered secret before displaying
+  agent or registry diagnostics, including preflight errors. Exercise
+  version preflight with a release-stamped CLI because dev builds skip it.
 
 ## Docs
 
