@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/agentclient"
@@ -317,29 +318,35 @@ func TestContextListSaysWhetherATokenIsStored(t *testing.T) {
 		t.Fatalf("%d %q %q", code, out, err)
 	}
 }
-func blockedTokenFixture(t *testing.T) (*credtest.Memory, string) {
+func blockTokenStore(t *testing.T, s *credtest.Memory) {
 	t.Helper()
-	s, cfg, _, _ := tokenFixture(t)
 	ch := make(chan struct{})
 	s.Block = ch
 	old := agentclient.StoreWait
 	agentclient.StoreWait = time.Millisecond
 	t.Cleanup(func() { close(ch); s.Wait(); agentclient.StoreWait = old })
-	return s, cfg
 }
 func TestContextListDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
-	s, cfg := blockedTokenFixture(t)
-	code, out, err := runCLI("context", "list", "--config", cfg)
-	if code != 0 || !strings.Contains(out, "unknown") || s.Calls() <= 1 {
-		t.Fatalf("%d %q %q", code, out, err)
-	}
+	s, cfg, _, _ := tokenFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		blockTokenStore(t, s)
+		code, out, err := runCLI("context", "list", "--config", cfg)
+		synctest.Wait()
+		if code != 0 || !strings.Contains(out, "unknown") || s.Calls() <= 1 {
+			t.Fatalf("%d %q %q calls %d", code, out, err, s.Calls())
+		}
+	})
 }
 func TestARemoteCommandDoesNotHangOnAStoreThatNeverAnswers(t *testing.T) {
-	s, cfg := blockedTokenFixture(t)
-	code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
-	if code != 1 || !strings.Contains(err, "this machine has no credential store") || s.Calls() <= 1 {
-		t.Fatalf("%d %q", code, err)
-	}
+	s, cfg, _, _ := tokenFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		blockTokenStore(t, s)
+		code, _, err := runCLI("ps", "-e", "dev", "--config", cfg)
+		synctest.Wait()
+		if code != 1 || !strings.Contains(err, "this machine has no credential store") || s.Calls() <= 1 {
+			t.Fatalf("%d %q calls %d", code, err, s.Calls())
+		}
+	})
 }
 func TestContextRemoveKeepsTheStoredToken(t *testing.T) {
 	s, cfg, _, auth := tokenFixture(t)
@@ -407,21 +414,25 @@ func TestContextCommandsRefuseAmbiguousTokenVariableBeforeStore(t *testing.T) {
 }
 
 func TestContextRemoveDeleteTokenGivenUpKeepsTheEntry(t *testing.T) {
-	s, cfg := blockedTokenFixture(t)
+	s, cfg, _, _ := tokenFixture(t)
 	before, readErr := os.ReadFile(cfg)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	code, out, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
-	after, readErr := os.ReadFile(cfg)
-	want := "the stored token could not be confirmed deleted (no credential store on this machine: the store did not answer): the entry is kept, so the command can be run again\n"
-	if code != 1 || out != "" || err != want || readErr != nil || string(before) != string(after) || s.Calls() <= 1 {
-		t.Fatalf("exit %d stdout %q stderr %q file error %v", code, out, err, readErr)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		blockTokenStore(t, s)
+		code, out, err := runCLI("context", "remove", "--project", "demo", "-e", "dev", "--config", cfg, "--delete-token")
+		synctest.Wait()
+		after, readErr := os.ReadFile(cfg)
+		want := "the stored token could not be confirmed deleted (no credential store on this machine: the store did not answer): the entry is kept, so the command can be run again\n"
+		if code != 1 || out != "" || err != want || readErr != nil || string(before) != string(after) || s.Calls() <= 1 {
+			t.Fatalf("exit %d stdout %q stderr %q file error %v calls %d", code, out, err, readErr, s.Calls())
+		}
+	})
 }
-
 func TestBlockedTokenFixtureCanCleanUpWithoutAStoreCall(t *testing.T) {
-	t.Run("no lookup", func(t *testing.T) { _, _ = blockedTokenFixture(t) })
+	s, _, _, _ := tokenFixture(t)
+	synctest.Test(t, func(t *testing.T) { blockTokenStore(t, s) })
 }
 
 func TestContextListSkipsUnsafeStoreKeys(t *testing.T) {
