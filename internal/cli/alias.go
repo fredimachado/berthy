@@ -170,9 +170,9 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, inte
 		project: project, config: config,
 		projectGiven: projectGiven, configGiven: configGiven,
 	}
-	// A complete --manifest-dir in the operator flags or the alias definition is trusted. One that appears only after
-	// expansion reinterprets the forwarded tail is not.
-	if tf, err := parseDeploymentArgs(trusted[1:]); err == nil && slices.Contains(tf.given, "--manifest-dir") {
+	// A complete --manifest-dir in the operator flags or the alias definition is trusted, even when the trusted prefix ends
+	// in another value flag whose argument the caller will supply. An incomplete --manifest-dir is not (dirSet stays false).
+	if tf, _ := parseDeploymentArgs(trusted[1:]); tf.dirSet {
 		intent.dirGiven = true
 		intent.manifestDir = tf.dir
 	}

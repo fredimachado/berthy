@@ -481,3 +481,50 @@ func TestAliasRefusesManifestDirIntroducedOnlyByTheForwardedTail(t *testing.T) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
 	}
 }
+
+func TestAliasKeepsManifestDirWhenDefinitionEndsInAnotherValueFlag(t *testing.T) {
+	lookup := t.TempDir()
+	chosen := t.TempDir()
+	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	alias := fmt.Sprintf("aliases:\n  ship: deploy api --manifest-dir %s --version\n", chosen)
+	if err := os.WriteFile(filepath.Join(lookup, "berthy.yml"), []byte(base+alias), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chosen, "berthy.yml"), []byte("project: chosen\nnetwork: chosen\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, asked := pathLoggingAgent(t)
+	cfg := envCLIConfig(t, server.URL, "dev")
+	// Point chosen/dev at the same agent so a successful request proves the declared directory was kept.
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}},"chosen":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL, server.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(lookup)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	var out, errs bytes.Buffer
+	code := Run([]string{"ship", "v1", "--config", cfg, "--dry-run"}, &out, &errs)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
+	}
+	got := asked()
+	if len(got) == 0 || !strings.Contains(got[0], "/projects/chosen/environments/dev/") {
+		t.Fatalf("paths %v, want chosen/dev", got)
+	}
+}
+
+func TestAliasRefusesIncompleteManifestDirFilledOnlyByTheTail(t *testing.T) {
+	cfg := ingressCLIConfig(t, "http://127.0.0.1:1")
+	lookup := writeDevOnlyHoldAlias(t, "deploy api --manifest-dir")
+	evil := t.TempDir()
+	if err := os.WriteFile(filepath.Join(evil, "berthy.yml"), []byte("project: evil\nnetwork: evil\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(lookup)
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	var out, errs bytes.Buffer
+	code := Run([]string{"hold", evil, "--config", cfg, "--dry-run"}, &out, &errs)
+	if code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "manifest directory") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+}

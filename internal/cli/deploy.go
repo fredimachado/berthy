@@ -148,8 +148,11 @@ type commandFlags struct {
 	bytes, format, diff                                                                                                                              string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                                      bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
-	replaceGenerated              bool
-	envFromVariable               bool
+	replaceGenerated bool
+	envFromVariable  bool
+	// dirSet is true only when --manifest-dir's value was assigned. An incomplete --manifest-dir leaves it false even if the
+	// flag name was seen, including when parsing stops with a later missing-value error.
+	dirSet                        bool
 	pos, command, given, versions []string
 }
 
@@ -227,6 +230,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 				f.exec = v
 			case "--manifest-dir":
 				f.dir = v
+				f.dirSet = true
 			case "--version":
 				f.versions = append(f.versions, v)
 			case "--commit":
@@ -421,8 +425,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		return 2
 	}
 	configGiven := slices.Contains(f.given, "--config")
-	dirGiven := slices.Contains(f.given, "--manifest-dir")
-	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, dirGiven); code != 0 {
+	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, f.dirSet); code != 0 {
 		return code
 	}
 	if cmd == "config" {
