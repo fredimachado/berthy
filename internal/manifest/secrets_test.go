@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,6 +23,19 @@ func declaredYAML(envSecret, secretsBlock string) string {
 	return b.String()
 }
 
+func problemMessages(t *testing.T, err error) []string {
+	t.Helper()
+	var ps Problems
+	if !errors.As(err, &ps) {
+		t.Fatalf("want Problems, got %#v", err)
+	}
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.Message
+	}
+	return out
+}
+
 func TestDeclaredSecretProblems(t *testing.T) {
 	valid := declaredYAML("secret: [GEN]", `secrets:
   GEN:
@@ -32,15 +46,17 @@ func TestDeclaredSecretProblems(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
-		want string // empty: valid
+		want []string // nil: valid; otherwise every diagnostic, in order
 	}{
-		{"valid", valid, ""},
-		{"invalid name", declaredYAML("secret: [GEN]", "secrets:\n  \"1BAD\":\n    generate:\n      format: hex\n"), "secrets.1BAD: invalid secret name"},
-		{"reserved name", declaredYAML("", "secrets:\n  TUNNEL_TOKEN:\n    generate:\n      format: hex\n"), "secrets.TUNNEL_TOKEN: TUNNEL_TOKEN is reserved for managed ingress"},
-		{"no generate", declaredYAML("secret: [GEN]", "secrets:\n  GEN: {}\n"), "secrets.GEN: generate is required"},
-		{"bad format", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: uuid\n"), "secrets.GEN.generate.format: must be hex, base64 or alnum"},
-		{"bytes too small", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: hex\n      bytes: 15\n"), "secrets.GEN.generate.bytes: must be from 16 to 256"},
-		{"bytes too large", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: hex\n      bytes: 257\n"), "secrets.GEN.generate.bytes: must be from 16 to 256"},
+		{"valid", valid, nil},
+		{"invalid name", declaredYAML("secret: [GEN]", "secrets:\n  \"1BAD\":\n    generate:\n      format: hex\n"), []string{"secrets.1BAD: invalid secret name"}},
+		{"reserved name", declaredYAML("", "secrets:\n  TUNNEL_TOKEN:\n    generate:\n      format: hex\n"), []string{"secrets.TUNNEL_TOKEN: TUNNEL_TOKEN is reserved for managed ingress"}},
+		{"no generate", declaredYAML("secret: [GEN]", "secrets:\n  GEN: {}\n"), []string{"secrets.GEN: generate is required"}},
+		{"bad format", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: uuid\n"), []string{"secrets.GEN.generate.format: must be hex, base64 or alnum"}},
+		{"bytes too small", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: hex\n      bytes: 15\n"), []string{"secrets.GEN.generate.bytes: must be from 16 to 256"}},
+		{"bytes too large", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: hex\n      bytes: 257\n"), []string{"secrets.GEN.generate.bytes: must be from 16 to 256"}},
+		// Format is checked before length: one diagnostic, the format one.
+		{"bad format and bytes", declaredYAML("secret: [GEN]", "secrets:\n  GEN:\n    generate:\n      format: uuid\n      bytes: 15\n"), []string{"secrets.GEN.generate.format: must be hex, base64 or alnum"}},
 		{"needed by registry", `project: demo
 network: demo
 registries:
@@ -59,17 +75,47 @@ secrets:
   REG_PASS:
     generate:
       format: hex
-`, "secrets.REG_PASS.generate: REG_PASS is needed by registry ghcr.io and cannot be generated"},
+`, []string{"secrets.REG_PASS.generate: REG_PASS is needed by registry ghcr.io and cannot be generated"}},
+		// Non-app use beats "no app reads": registry-only, no env.secret reader.
+		{"registry only no reader", `project: demo
+network: demo
+registries:
+  ghcr.io:
+    username: bot
+    password_secret: REG_PASS
+apps:
+  app:
+    kind: image
+    image: alpine
+    roles:
+      main: {}
+secrets:
+  REG_PASS:
+    generate:
+      format: hex
+`, []string{"secrets.REG_PASS.generate: REG_PASS is needed by registry ghcr.io and cannot be generated"}},
 		{"no reader", declaredYAML("secret: [OTHER]", `secrets:
   GEN:
     generate:
       format: hex
-`), "secrets.GEN: no app reads GEN"},
+`), []string{"secrets.GEN: no app reads GEN"}},
+		// One diagnostic per invalid declaration, in name order.
+		{"two invalid declarations", declaredYAML("secret: [OTHER]", `secrets:
+  A_BAD:
+    generate:
+      format: uuid
+  Z_MISS:
+    generate:
+      format: hex
+`), []string{
+			"secrets.A_BAD.generate.format: must be hex, base64 or alnum",
+			"secrets.Z_MISS: no app reads Z_MISS",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeFiles(t, map[string]string{"berthy.yml": tc.body})
 			m, err := Load(dir, "dev")
-			if tc.want == "" {
+			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("valid manifest refused: %v", err)
 				}
@@ -78,8 +124,11 @@ secrets:
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error %v, want %q", err, tc.want)
+			if err == nil {
+				t.Fatal("accepted a bad manifest")
+			}
+			if got := problemMessages(t, err); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("problems\n got %v\nwant %v", got, tc.want)
 			}
 		})
 	}

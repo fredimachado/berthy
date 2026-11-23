@@ -50,6 +50,14 @@ func (m *Manifest) SecretReaders(name string) []string {
 
 // checkSecrets checks each declared secret: its name, that it may be generated, and that an app reads it.
 func (m *Manifest) checkSecrets(p *Problems) {
+	if len(m.Secrets) == 0 {
+		return
+	}
+	// One SecretNeeds pass for every declared name: NeededBy empty means no reader; a non-app entry refuses generation.
+	neededBy := map[string][]string{}
+	for _, need := range m.SecretNeeds() {
+		neededBy[need.Name] = need.NeededBy
+	}
 	for _, name := range sortedKeys(m.Secrets) {
 		path := join("secrets", name)
 		s := m.Secrets[name]
@@ -74,25 +82,18 @@ func (m *Manifest) checkSecrets(p *Problems) {
 			p.add(join(gpath, "bytes"), "secrets.%s.generate.bytes: must be from %d to %d", name, GenerateMinBytes, GenerateMaxBytes)
 			continue
 		}
-		refused := false
-		for _, need := range m.SecretNeeds() {
-			if need.Name != name {
+		who := neededBy[name]
+		hasApp, refused := false, false
+		for _, w := range who {
+			if strings.HasPrefix(w, "app ") {
+				hasApp = true
 				continue
 			}
-			for _, who := range need.NeededBy {
-				if strings.HasPrefix(who, "app ") {
-					continue
-				}
-				p.add(gpath, "secrets.%s.generate: %s is needed by %s and cannot be generated", name, name, who)
-				refused = true
-				break
-			}
+			p.add(gpath, "secrets.%s.generate: %s is needed by %s and cannot be generated", name, name, w)
+			refused = true
 			break
 		}
-		if refused {
-			continue
-		}
-		if len(m.SecretReaders(name)) == 0 {
+		if !refused && !hasApp {
 			p.add(path, "secrets.%s: no app reads %s", name, name)
 		}
 	}
