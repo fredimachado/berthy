@@ -9,15 +9,59 @@ set -uo pipefail
 # Fixture-owned external volume: refuse a pre-existing same name, label what this run creates, remove only that.
 EXT_VOL="${PROJECT}_${ENVN}_cache_ext"
 created_ext=
+
+# ext_fixture_label NAME: the berthy.e2e.fixture label, or empty when absent / missing.
+ext_fixture_label() {
+  d volume inspect -f '{{index .Labels "berthy.e2e.fixture"}}' "$1" 2>/dev/null || true
+}
+
+# cleanup_ext: EXIT trap. Removes created_ext only when it still carries this fixture's label.
 cleanup_ext() {
-  if [ -n "$created_ext" ]; then
-    label=$(d volume inspect -f '{{index .Labels "berthy.e2e.fixture"}}' "$created_ext" 2>/dev/null) || label=
-    if [ "$label" = "$FIXTURE_ID" ]; then
-      d volume rm "$created_ext" >/dev/null 2>&1 || true
-    fi
+  if [ -z "$created_ext" ]; then
+    return 0
+  fi
+  if [ "$(ext_fixture_label "$created_ext")" = "$FIXTURE_ID" ]; then
+    d volume rm "$created_ext" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_ext EXIT
+
+# create_owned_ext: create EXT_VOL for this fixture, or exit before touching a colliding name.
+create_owned_ext() {
+  if d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
+    fail "the fixture volume name is free before create" "$EXT_VOL exists"
+    exit 1
+  fi
+  if ! d volume create --label "berthy.e2e.fixture=$FIXTURE_ID" "$EXT_VOL" >/dev/null; then
+    fail "create the fixture-owned external volume" "docker volume create failed"
+    exit 1
+  fi
+  if [ "$(ext_fixture_label "$EXT_VOL")" != "$FIXTURE_ID" ]; then
+    fail "the new external volume is labeled for this fixture" "label missing or foreign"
+    exit 1
+  fi
+  created_ext=$EXT_VOL
+  pass "created the fixture-owned external volume"
+}
+
+# remove_owned_ext: mid-scenario removal with the same ownership check as cleanup_ext. A foreign or missing
+# label leaves the volume untouched; a docker error fails the scenario. Ownership clears only after a successful rm.
+remove_owned_ext() {
+  if [ -z "$created_ext" ]; then
+    return 0
+  fi
+  name=$created_ext
+  if [ "$(ext_fixture_label "$name")" != "$FIXTURE_ID" ]; then
+    fail "remove only a fixture-owned external volume" "label is not this fixture; left untouched"
+    exit 1
+  fi
+  if ! d volume rm "$name" >/dev/null; then
+    fail "remove the fixture-owned external volume" "docker volume rm failed"
+    exit 1
+  fi
+  created_ext=
+  pass "removed the fixture-owned external volume"
+}
 
 # gen_value SPEC: the value of GEN_PASS in a Swarm service spec, or nothing when absent.
 gen_value() { grep -oE 'GEN_PASS=[0-9A-Za-z]*' <<<"$1" | head -n 1 | cut -d= -f2; }
@@ -237,13 +281,56 @@ volumes:
     external: true
     name: $EXT_VOL
 YML
-if d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
-  fail "the fixture volume name is free before create" "$EXT_VOL exists"
-else
-  pass "the fixture volume name is free before create"
+# Collision stub: a foreign volume on the same name must stop create and survive the ownership gate.
+if ! d volume create --label "berthy.e2e.fixture=collision-stub" "$EXT_VOL" >/dev/null; then
+  fail "plant a disposable collision stub" "docker volume create failed"
+  exit 1
 fi
-d volume create --label "berthy.e2e.fixture=$FIXTURE_ID" "$EXT_VOL" >/dev/null
+if d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
+  pass "collision stub occupies the fixture volume name"
+else
+  fail "collision stub occupies the fixture volume name" "missing after create"
+  exit 1
+fi
+# create_owned_ext must exit before docker create; run in a subshell so the hard stop stays local.
+status=0
+(create_owned_ext) >/dev/null 2>&1 || status=$?
+if [ "$status" -eq 1 ] && [ -z "$created_ext" ]; then
+  pass "create_owned_ext exits on a colliding name"
+else
+  fail "create_owned_ext exits on a colliding name" "status=$status created_ext=$created_ext"
+  exit 1
+fi
+# remove_owned_ext must refuse a foreign label without deleting it.
 created_ext=$EXT_VOL
+status=0
+(remove_owned_ext) >/dev/null 2>&1 || status=$?
+created_ext=
+if [ "$status" -eq 1 ] && d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
+  pass "remove_owned_ext leaves a foreign volume untouched"
+else
+  fail "remove_owned_ext leaves a foreign volume untouched" "status=$status"
+  exit 1
+fi
+# EXIT cleanup with a wrongly tracked foreign name must also leave it.
+created_ext=$EXT_VOL
+cleanup_ext
+created_ext=
+if d volume inspect "$EXT_VOL" >/dev/null 2>&1; then
+  pass "cleanup_ext leaves a colliding volume untouched"
+else
+  fail "cleanup_ext leaves a colliding volume untouched" "volume was removed"
+  exit 1
+fi
+# Dispose the stub this scenario planted; a found foreign volume would not reach this path.
+if ! d volume rm "$EXT_VOL" >/dev/null; then
+  fail "dispose the collision stub" "docker volume rm failed"
+  exit 1
+fi
+pass "disposed the collision stub"
+
+# Ordinary path: create under this fixture's label, assert guards, then ownership-gated remove.
+create_owned_ext
 out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "nameless with existing external volume exits 1" 1 "$code" "$out"
 expect_contains "nameless names the external volume" "$out" "not generated CACHE_PASS: the volume $EXT_VOL of app cache exists"
@@ -265,8 +352,7 @@ YML
 out=$(adm secret generate --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "interpolated volume name exits 1" 1 "$code" "$out"
 expect_contains "interpolated name cannot be established" "$out" "the state of app cache cannot be established"
-d volume rm "$EXT_VOL" >/dev/null
-created_ext=
+remove_owned_ext
 cat > "$MAN/cache.yml" <<YML
 services:
   cache:
