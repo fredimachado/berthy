@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/state"
 )
@@ -564,5 +565,68 @@ func TestGenerateDeclaredNeedsAnAdminToken(t *testing.T) {
 		if w.Code != 403 {
 			t.Fatalf("response: %d %s", w.Code, w.Body.String())
 		}
+	}
+}
+
+type generateComposeEngine struct {
+	generateEngine
+	volumes   map[string]bool
+	forbidden bool
+}
+
+func (e *generateComposeEngine) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {
+	if e.forbidden {
+		panic("foreign container lookup")
+	}
+	return nil, nil
+}
+func (e *generateComposeEngine) ProjectVolumes(context.Context, string) ([]string, error) {
+	if e.forbidden {
+		panic("foreign project volume lookup")
+	}
+	return nil, nil
+}
+func (e *generateComposeEngine) VolumeExists(_ context.Context, name string) (bool, error) {
+	if e.forbidden {
+		panic("foreign volume lookup")
+	}
+	return e.volumes[name], nil
+}
+
+func TestSecretGenerateByNameWithAManifestAgreesWithTheDeclaredRoute(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = &generateComposeEngine{volumes: map[string]bool{"shared": true}}
+	m := `{"project":"demo","network":"overlay","apps":{"db":{"kind":"compose","file":"compose.yml","env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}}`
+	files := `{"db":"volumes: {data: {external: true, name: shared}}"}`
+	named := f.call("POST", "/secrets/generate", apAdminToken, `{"name":"DB_PASS","manifest":`+m+`,"compose_files":`+files+`}`)
+	if named.Code != 409 || !strings.Contains(named.Body.String(), "the volume shared of app db exists") {
+		t.Fatalf("named: %d %s", named.Code, named.Body.String())
+	}
+	declared := f.call("POST", "/secrets/generate-declared", apAdminToken, `{"manifest":`+m+`,"compose_files":`+files+`}`)
+	if declared.Code != 200 || !strings.Contains(declared.Body.String(), `"outcome":"refuse"`) || !strings.Contains(declared.Body.String(), `"volume":"shared"`) {
+		t.Fatalf("declared: %d %s", declared.Code, declared.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("refusal stored secret")
+	}
+	named = f.call("POST", "/secrets/generate", apAdminToken, `{"name":"DB_PASS"}`)
+	if named.Code != 200 {
+		t.Fatalf("state-only: %d %s", named.Code, named.Body.String())
+	}
+}
+
+func TestGenerateDeclaredRefusesForeignComposeProject(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = &generateComposeEngine{forbidden: true}
+	f.ctrl.Foreign = func(context.Context) (deploy.Foreign, error) {
+		return deploy.Foreign{Claims: map[state.Claim]bool{{Kind: state.ClaimComposeProject, Name: "foreign"}: true}}, nil
+	}
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"db":{"kind":"compose","file":"compose.yml","project_name":"foreign","env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}},"compose_files":{"db":"volumes: {data: {name: private-volume}}"}}`
+	w := f.call("POST", "/secrets/generate-declared", apAdminToken, body)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "Compose project name is taken by another project or environment on this server") || strings.Contains(w.Body.String(), "private-volume") {
+		t.Fatalf("response: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := storedValue(t, f, "DB_PASS"); ok {
+		t.Fatal("foreign refusal stored secret")
 	}
 }

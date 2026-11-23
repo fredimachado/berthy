@@ -107,3 +107,58 @@ func TestGuardSeesContainersServicesAndLabelledVolumes(t *testing.T) {
 		})
 	}
 }
+
+type brokenGuardEngine struct {
+	*composeDocker
+	fail string
+}
+
+func (e *brokenGuardEngine) ComposeContainers(ctx context.Context, p string) ([]engine.ComposeContainer, error) {
+	if e.fail == "containers" {
+		return nil, errors.New("offline")
+	}
+	return e.composeDocker.ComposeContainers(ctx, p)
+}
+func (e *brokenGuardEngine) ProjectVolumes(ctx context.Context, p string) ([]string, error) {
+	if e.fail == "projects" {
+		return nil, errors.New("offline")
+	}
+	return e.composeDocker.ProjectVolumes(ctx, p)
+}
+func (e *brokenGuardEngine) VolumeExists(ctx context.Context, n string) (bool, error) {
+	if e.fail == "volumes" {
+		return false, errors.New("offline")
+	}
+	return e.composeDocker.VolumeExists(ctx, n)
+}
+func (e *brokenGuardEngine) InspectService(ctx context.Context, n string) (engine.ServiceSnapshot, error) {
+	if e.fail == "service" {
+		return engine.ServiceSnapshot{}, &engine.StatusError{Code: 500}
+	}
+	return e.composeDocker.InspectService(ctx, n)
+}
+
+func TestGuardRefusesFailedInventories(t *testing.T) {
+	for _, fail := range []string{"containers", "projects", "volumes", "service", "foreign"} {
+		t.Run(fail, func(t *testing.T) {
+			docker := &brokenGuardEngine{composeDocker: newComposeDocker(), fail: fail}
+			c := &Controller{Store: openStore(t), Engine: docker, Environment: "test"}
+			m := composeApp(false)
+			a := m.Apps["db"]
+			a.Env.Secret = []manifest.SecretVar{{Var: "PASS", Secret: "PASS"}}
+			if fail == "service" {
+				a.Kind = "image"
+				a.Roles = map[string]manifest.Role{"web": {}}
+			}
+			m.Apps["db"] = a
+			if fail == "foreign" {
+				c.Foreign = func(context.Context) (Foreign, error) { return Foreign{}, errors.New("offline") }
+			}
+			_, err := c.GuardSecret(context.Background(), "PASS", &Submitted{Manifest: m, ComposeFiles: map[string]string{"db": "volumes: {data: {name: shared}}"}})
+			var refusal Refusal
+			if !errors.As(err, &refusal) || err.Error() != "the state of app db cannot be established, so nothing is generated" {
+				t.Fatalf("refusal: %v", err)
+			}
+		})
+	}
+}
