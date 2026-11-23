@@ -7,7 +7,7 @@ import (
 
 // Bounded returns s with every call given up when ctx ends or after wait, whichever comes first. A call that is given up
 // answers ErrGivenUp, and what it returns later is dropped. The call keeps running in its goroutine; a CLI that exits
-// while it runs simply ends it, which is accepted.
+// while it runs simply ends it, which is accepted. When ctx is already done, the store is not called.
 func Bounded(ctx context.Context, s Store, wait time.Duration) Store {
 	return &bounded{ctx: ctx, s: s, wait: wait}
 }
@@ -21,6 +21,9 @@ type bounded struct {
 func (b *bounded) Name() string { return b.s.Name() }
 
 func (b *bounded) Get(k Key) (string, error) {
+	if b.ctx.Err() != nil {
+		return "", ErrGivenUp
+	}
 	type result struct {
 		v   string
 		err error
@@ -43,6 +46,9 @@ func (b *bounded) Get(k Key) (string, error) {
 }
 
 func (b *bounded) Set(k Key, secret string) error {
+	if b.ctx.Err() != nil {
+		return ErrGivenUp
+	}
 	ch := make(chan error, 1)
 	go func() { ch <- b.s.Set(k, secret) }()
 	timer := time.NewTimer(b.wait)
@@ -58,6 +64,9 @@ func (b *bounded) Set(k Key, secret string) error {
 }
 
 func (b *bounded) Delete(k Key) (bool, error) {
+	if b.ctx.Err() != nil {
+		return false, ErrGivenUp
+	}
 	type result struct {
 		removed bool
 		err     error

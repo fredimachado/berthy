@@ -69,3 +69,23 @@ func TestBoundedPassesAnAnswerThrough(t *testing.T) {
 		t.Fatalf("Name = %q, want %q", s.Name(), m.Name())
 	}
 }
+
+func TestBoundedSkipsTheStoreWhenTheContextIsAlreadyDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m := credtest.NewMemory()
+	s := credstore.Bounded(ctx, m, time.Hour)
+	key := credstore.Key{URL: "http://10.0.0.5:7710", Project: "todo", Environment: "dev", Variable: "BERTHY_TODO_DEV_TOKEN"}
+	if _, err := s.Get(key); !errors.Is(err, credstore.ErrGivenUp) {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := s.Set(key, "secret"); !errors.Is(err, credstore.ErrGivenUp) {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := s.Delete(key); !errors.Is(err, credstore.ErrGivenUp) {
+		t.Fatalf("Delete: %v", err)
+	}
+	if m.Calls() != 0 {
+		t.Fatalf("Calls = %d, want 0", m.Calls())
+	}
+}
