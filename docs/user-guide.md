@@ -2859,7 +2859,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 
 #### Change
 
-Every one of these also reads `-e`, `--config` and `--json`. **A change command refuses any other flag it does not read.** It exits `2` with `<flag> is not a flag of <command>` before anything is sent. So `berthy approve <id> --dry-run` does not approve for real: it is refused. The last column is the flags each command reads, exactly.
+Every one of these also reads `-e` and `--config`. All accept `--json` except `secret set` with no name. **A change command refuses any other flag it does not read.** It exits `2` with `<flag> is not a flag of <command>` before anything is sent. So `berthy approve <id> --dry-run` does not approve for real: it is refused. The last column is the flags each command reads, exactly.
 
 | Command | Scope | Flags it reads | What it does |
 | --- | --- | --- | --- |
@@ -2885,10 +2885,11 @@ Every one of these also reads `-e`, `--config` and `--json`. **A change command 
 | `remove <app>` | admin | `--dry-run`, `--request-id`, `--volumes`, `--allow-recreate` | Take an app down and remove what Berthy created for it. |
 | `destroy` | admin | `--dry-run`, `--request-id`, `--confirm` (required), `--volumes`, `--allow-recreate`, `--tunnel` | Remove everything Berthy created in the environment. |
 | `secret set <NAME>` | admin | `--dry-run`, `--registry`, `--manifest-dir`; the value is typed at a hidden prompt or piped on standard input | Store a secret. Setting a registry password again keeps its registry and updates the running services. |
+| `secret set` (no name) | admin | `--manifest-dir`; terminal input required, no `--json` or `--dry-run` | Generate declared secrets and ask for each unmet value. |
 | `secret generate <NAME>` | admin | `--dry-run`, `--replace`, `--bytes` (16 to 256, default 32), `--format` (`hex`, `base64` or `alnum`), `--manifest-dir` | Make a random secret on the server and store it. The value is never shown. A stored name is refused unless `--replace`. A registry password is refused. |
 | `secret generate` (no name) | admin | `--dry-run`, `--manifest-dir` | Generate each secret declared under `secrets` that is not stored and whose apps were never deployed here. Prints one line per secret; `--json` prints the agent's document. |
 | `secret import` | admin | `--dry-run`; standard input is `NAME=value` lines | Store every line of standard input as a secret, all or nothing. A registry password name is refused. |
-| `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that have no value. |
+| `secret list` | admin | `--manifest-dir` | List secret names (never values). With `--manifest-dir`, also the secrets the manifest needs that are missing or unusable, including registry association conflicts. |
 | `secret rm <NAME>` (or `delete`) | admin | `--dry-run` | Remove a secret. |
 | `restore <key>` | admin | `--dry-run`, `--request-id`, and `--into` or `--exec` (one is required); with `--exec`: `--service` or `--role`, `--timeout`, and the command after `--` | Restore a backup into a new volume, or stream a command backup into a command. |
 | `state-backup` | admin | none | Snapshot the agent's state now and wait. |
@@ -2904,7 +2905,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set`), `--replace`, `--bytes` and `--format` (`secret generate <NAME>`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set <NAME>`), `--replace`, `--bytes` and `--format` (`secret generate <NAME>`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. For `secret generate <NAME>`, a dry run also says when a real run would be refused without `--replace`. `backup run`, `job run`, `job cancel`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 

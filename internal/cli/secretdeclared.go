@@ -39,7 +39,7 @@ func runSecretGenerateDeclared(f commandFlags, target *agentclient.Target, dir s
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
-	res, call := generateDeclared(ctx, client, target, m, dir, f.dry, out, errout, f.json)
+	res, call := generateDeclared(ctx, client, target, m, dir, f.dry, out, errout, f.json, false)
 	switch call {
 	case declaredHeld:
 		return exitHeld
@@ -74,7 +74,7 @@ func runSecretGenerateDeclared(f commandFlags, target *agentclient.Target, dir s
 // generateDeclared asks the agent to generate the declared secrets of m, or to plan it. It reads from dir the Compose file
 // of each Compose app that reads a declared secret and sends them along. A manifest that declares nothing is answered
 // here, with an empty list and no request.
-func generateDeclared(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, dir string, dry bool, out, errout io.Writer, asJSON bool) (res api.SecretsDeclared, call declaredCall) {
+func generateDeclared(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, dir string, dry bool, out, errout io.Writer, asJSON, guide bool) (res api.SecretsDeclared, call declaredCall) {
 	empty := api.SecretsDeclared{Action: "secret generate declared", Secrets: []api.DeclaredSecretOutcome{}}
 	if len(m.Secrets) == 0 {
 		return empty, declaredAnswered
@@ -99,6 +99,9 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		return res, declaredFailed
 	}
 	if status == http.StatusAccepted {
+		if guide {
+			data = safeHeldJSON(data)
+		}
 		if code, held := reportHeld(data, out, errout, asJSON); held {
 			if code != exitHeld {
 				return res, declaredFailed

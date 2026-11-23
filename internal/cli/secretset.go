@@ -446,11 +446,13 @@ func printSecretSet(out io.Writer, data []byte) bool {
 	if json.Unmarshal(data, &reply) != nil || reply.Registry == "" {
 		return false
 	}
-	printRegistrySet(out, reply)
+	if printRegistrySet(out, reply) {
+		fmt.Fprintln(out, "Run the command again to retry the services that were not updated.")
+	}
 	return true
 }
 
-func printRegistrySet(out io.Writer, reply secretSetReply) {
+func printRegistrySet(out io.Writer, reply secretSetReply) bool {
 	registry := terminalSafe(reply.Registry)
 	fmt.Fprintln(out, "ok: true")
 	retry := false
@@ -469,7 +471,5 @@ func printRegistrySet(out io.Writer, reply secretSetReply) {
 		fmt.Fprintln(out, terminalSafe(s.Name)+": not updated ("+terminalSafe(s.Error)+")")
 		retry = true
 	}
-	if retry {
-		fmt.Fprintln(out, "Run the command again to retry the services that were not updated.")
-	}
+	return retry
 }

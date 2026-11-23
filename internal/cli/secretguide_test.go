@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -209,7 +210,7 @@ func TestGuideRejectsInvalidStoreResponses(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`},
+		{"empty ok", 200, `{}`}, {"false ok", 200, `{"ok":false}`}, {"wrong registry", 200, `{"ok":true,"registry":"unexpected"}`}, {"invalid held", 202, `{}`}, {"null registry", 200, `{"ok":true,"registry":null}`}, {"held without expiry", 202, `{"approval_id":"ap1","plan":{}}`}, {"held without plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z"}`}, {"held null plan", 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":null}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := fakeTerminal(t, "secret-value")
@@ -370,9 +371,137 @@ func TestGuideChecksRegistryAcknowledgementAndShowsRefreshWarnings(t *testing.T)
 			if code != tc.code || reads.Load() != 1 || len(bodies) != 2 || !strings.Contains(out.String()+errout.String(), tc.want) {
 				t.Fatalf("exit %d reads %d calls %d stdout %q stderr %q", code, reads.Load(), len(bodies), out.String(), errout.String())
 			}
-			if code == 0 && !strings.Contains(out.String(), "Run the command again to retry") {
+			if code == 0 && !strings.Contains(out.String(), "secret set REGISTRY_TOKEN --registry "+strconv.Quote(host)) {
 				t.Fatalf("missing retry advice: %q", out.String())
 			}
 		})
+	}
+}
+
+func TestGuideRedactsReflectedValueInAgentReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		body     string
+		wantCode int
+		want     string
+	}{
+		{"refusal", 400, `{"message":"rejected private-value"}`, 1, "rejected"},
+		{"held", 202, `{"approval_id":"private-value","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"API_KEY","registry":"private-value","extra":"private-value"}}`, 3, "held for approval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeTerminal(t, "private-value")
+			var calls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method)
+				if r.Method == "GET" {
+					fmt.Fprint(w, `[]`)
+					return
+				}
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  api:\n    kind: image\n    image: example.com/api\n    env:\n      secret: [API_KEY]\n    roles:\n      web:\n        port: 8080\n")
+			var out, errout bytes.Buffer
+			code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+			if code != tc.wantCode || !strings.Contains(out.String()+errout.String(), tc.want) || strings.Contains(out.String()+errout.String(), "private-value") {
+				t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+			}
+			if tc.name == "held" && strings.Contains(out.String(), "extra:") {
+				t.Fatalf("unknown plan field was printed: %q", out.String())
+			}
+		})
+	}
+}
+
+func TestGuideRedactsRegistryRefreshResponse(t *testing.T) {
+	host, _ := fakeRegistry(t)
+	fakeTerminal(t, "right")
+	var bodies []string
+	reply := fmt.Sprintf(`{"ok":true,"registry":%q,"services":[{"name":"right-service","error":"right denied"}]}`, host)
+	server := answeringAgent(&bodies, `[]`, reply)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", secretManifestDir(t, registryManifest(host, host+"/acme/api"))}, &out, &errout)
+	if code != 0 || strings.Contains(out.String(), "right") || !strings.Contains(out.String(), "not updated") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestGuideAndManifestListEscapeStoredAndHeldRegistries(t *testing.T) {
+	host := "ghcr.io\x1b[31m"
+	dir := secretManifestDir(t, registryManifest(host, "example.com/api"))
+	t.Run("list", func(t *testing.T) {
+		var bodies []string
+		stored := `[{"name":"REGISTRY_TOKEN","registry":"ghcr.io\u001b[31m"}]`
+		server := answeringAgent(&bodies, stored, `{}`)
+		defer server.Close()
+		cfg := ingressCLIConfig(t, server.URL)
+		var out, errout bytes.Buffer
+		code := Run([]string{"secret", "list", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+		if code != 0 || strings.Contains(out.String()+errout.String(), "\x1b") {
+			t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+		}
+		out.Reset()
+		errout.Reset()
+		code = Run([]string{"secret", "list", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--json"}, &out, &errout)
+		var doc struct {
+			Secrets []storedSecret `json:"secrets"`
+		}
+		if code != 0 || json.Unmarshal(out.Bytes(), &doc) != nil || len(doc.Secrets) != 1 || doc.Secrets[0].Registry != host {
+			t.Fatalf("JSON changed: %q", out.String())
+		}
+	})
+	t.Run("held", func(t *testing.T) {
+		fakeTerminal(t, "private")
+		var bodies []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			bodies = append(bodies, r.Method)
+			if r.Method == "GET" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret set","name":"REGISTRY_TOKEN","registry":"ghcr.io\u001b[31m","exists":false}}`)
+		}))
+		defer server.Close()
+		cfg := ingressCLIConfig(t, server.URL)
+		var out, errout bytes.Buffer
+		code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+		if code != 3 || strings.Contains(out.String()+errout.String(), "\x1b") {
+			t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+		}
+	})
+}
+
+func TestGuideEscapesDeclaredHeldPlan(t *testing.T) {
+	reads := fakeTerminal(t, "unused")
+	var bodies []string
+	server := replyingAgent(&bodies, 202, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"action":"secret generate declared","secrets":[{"name":"bad\u001b[31m"}]}}`)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", declaredManifestDir(t)}, &out, &errout)
+	if code != 3 || reads.Load() != 0 || strings.Contains(out.String()+errout.String(), "\x1b") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
+	}
+}
+
+func TestGuideRedactsRegistryServicesErrorAndShowsTarget(t *testing.T) {
+	host, _ := fakeRegistry(t)
+	fakeTerminal(t, "right")
+	var bodies []string
+	reply := fmt.Sprintf(`{"ok":true,"registry":%q,"services_error":"right unavailable"}`, host)
+	server := answeringAgent(&bodies, `[]`, reply)
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := secretManifestDir(t, registryManifest(host, host+"/acme/api"))
+	var out, errout bytes.Buffer
+	code := Run([]string{"secret", "set", "-e", "dev", "--config", cfg, "--manifest-dir", dir}, &out, &errout)
+	if code != 0 || strings.Contains(out.String()+errout.String(), "right") || !strings.Contains(out.String(), "services not updated: [redacted] unavailable") || !strings.Contains(out.String(), "--project demo") || !strings.Contains(out.String(), "--config "+strconv.Quote(cfg)) || !strings.Contains(out.String(), "--manifest-dir "+strconv.Quote(dir)) {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), errout.String())
 	}
 }
