@@ -423,6 +423,29 @@ func TestAliasRefusesProjectOrConfigChangedAfterExpansion(t *testing.T) {
 	}
 }
 
+// The alias ends in --grep with no value. Lookup leaves "-- --project other" in the tail, and the read parser takes "--" as
+// the grep value, so --project other becomes a real selector. The read-side intent check must refuse that.
+func TestAliasRefusesProjectChangedThroughReadGrepValue(t *testing.T) {
+	demo, demoReqs := aliasAgent(t)
+	other, otherReqs := aliasAgent(t)
+	cfg := filepath.Join(t.TempDir(), "both.json")
+	body := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}},"other":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, demo.URL, other.URL)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
+	t.Setenv(agentclient.EnvironmentEnv, "dev")
+	t.Chdir(writeAliasDir(t, aliasManifest+"  peek: logs api --grep\n"))
+	var out, errs bytes.Buffer
+	code := Run([]string{"peek", "--config", cfg, "--", "--project", "other"}, &out, &errs)
+	if code == 0 || out.Len() != 0 || !strings.Contains(errs.String(), "alias peek targets a different project") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errs.String())
+	}
+	if len(demoReqs()) != 0 || len(otherReqs()) != 0 {
+		t.Fatalf("requests reached an agent: demo %v other %v", demoReqs(), otherReqs())
+	}
+}
+
 func TestAliasKeepsInvalidExplicitEnvironmentDiagnostic(t *testing.T) {
 	dev, asked := aliasAgent(t)
 	cfg := twoEnvAliasConfig(t, dev.URL, "http://127.0.0.1:1")
@@ -447,13 +470,19 @@ func TestAliasStillTreatsBareDashDashAsTheEndOfOptions(t *testing.T) {
 }
 
 func TestAliasKeepsAManifestDirDeclaredInItsDefinition(t *testing.T) {
-	lookup := t.TempDir()
-	other := t.TempDir()
-	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
-	if err := os.WriteFile(filepath.Join(lookup, "berthy.yml"), []byte(base+fmt.Sprintf("aliases:\n  show-other: config show --manifest-dir %s --json\n", other)), 0o600); err != nil {
+	lookup := filepath.Join(t.TempDir(), "path with spaces", "lookup")
+	if err := os.MkdirAll(lookup, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(other, "berthy.yml"), []byte("project: other\nnetwork: other\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
+	otherRel := "other-dir"
+	if err := os.Mkdir(filepath.Join(lookup, otherRel), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(lookup, "berthy.yml"), []byte(base+"aliases:\n  show-other: config show --manifest-dir "+otherRel+" --json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lookup, otherRel, "berthy.yml"), []byte("project: other\nnetwork: other\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(lookup)
@@ -483,14 +512,20 @@ func TestAliasRefusesManifestDirIntroducedOnlyByTheForwardedTail(t *testing.T) {
 }
 
 func TestAliasKeepsManifestDirWhenDefinitionEndsInAnotherValueFlag(t *testing.T) {
-	lookup := t.TempDir()
-	chosen := t.TempDir()
+	lookup := filepath.Join(t.TempDir(), "path with spaces", "lookup")
+	if err := os.MkdirAll(lookup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chosenRel := "chosen-dir"
+	if err := os.Mkdir(filepath.Join(lookup, chosenRel), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	base := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
-	alias := fmt.Sprintf("aliases:\n  ship: deploy api --manifest-dir %s --version\n", chosen)
+	alias := "aliases:\n  ship: deploy api --manifest-dir " + chosenRel + " --version\n"
 	if err := os.WriteFile(filepath.Join(lookup, "berthy.yml"), []byte(base+alias), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(chosen, "berthy.yml"), []byte("project: chosen\nnetwork: chosen\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(lookup, chosenRel, "berthy.yml"), []byte("project: chosen\nnetwork: chosen\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	server, asked := pathLoggingAgent(t)
