@@ -22,8 +22,9 @@ func defaultSessionBusPath() string {
 }
 
 // sessionBus reports whether a D-Bus session bus is already available. Without one, go-keyring's Linux backend runs
-// dbus-launch (a PATH search and a new daemon), which we refuse. The check matches godbus/dbus/v5's
-// getSessionBusAddress: DBUS_SESSION_BUS_ADDRESS set and not autolaunch:-prefixed, or sessionBusPath exists.
+// dbus-launch (a PATH search and a new daemon), which we refuse. When the address is unset and sessionBusPath
+// exists, it sets DBUS_SESSION_BUS_ADDRESS=unix:path=<sessionBusPath> so godbus uses that address and never
+// reaches its autolaunch branch if the socket vanishes before the library call.
 func sessionBus() bool {
 	if addr := os.Getenv("DBUS_SESSION_BUS_ADDRESS"); addr != "" && !strings.HasPrefix(addr, "autolaunch:") {
 		return true
@@ -31,6 +32,9 @@ func sessionBus() bool {
 	if sessionBusPath == "" {
 		return false
 	}
-	_, err := os.Stat(sessionBusPath)
-	return err == nil
+	if _, err := os.Stat(sessionBusPath); err != nil {
+		return false
+	}
+	_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+sessionBusPath)
+	return true
 }
