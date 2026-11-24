@@ -459,6 +459,14 @@ func TestSetupMixedStreamsAndVerbose(t *testing.T) {
 	if piped != plain || !strings.HasPrefix(banner, "berthy:") {
 		t.Fatal("terminal stderr changed redirected stdout")
 	}
+	oldWidth := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 80, nil }
+	t.Cleanup(func() { progressWidth = oldWidth })
+	t.Setenv("NO_COLOR", "")
+	terminal, redirectedErr := run(true, false)
+	if !strings.Contains(terminal, "\x1b[32m") || !strings.Contains(terminal, "s)\n") || redirectedErr != "" {
+		t.Fatalf("terminal stdout or redirected stderr incorrect: stdout %q, stderr %q", terminal, redirectedErr)
+	}
 	verbose, _ := run(true, false, "--verbose")
 	if verbose != plain {
 		t.Fatal("verbose terminal stdout changed")
