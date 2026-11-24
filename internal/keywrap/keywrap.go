@@ -48,9 +48,14 @@ func line(b []byte) ([]byte, bool) {
 	}
 	return b, true
 }
-func Wrap(publicLine, key []byte) ([]byte, error) {
+
+// Public is a validated wrapping key.
+type Public struct{ key *rsa.PublicKey }
+
+// ParsePublicLine validates the canonical public key before the server reads its key file.
+func ParsePublicLine(publicLine []byte) (*Public, error) {
 	b, ok := line(publicLine)
-	if !ok || len(key) != 32 {
+	if !ok {
 		return nil, ErrPublicKey
 	}
 	der, err := base64.StdEncoding.Strict().DecodeString(string(b))
@@ -62,18 +67,35 @@ func Wrap(publicLine, key []byte) ([]byte, error) {
 		return nil, ErrPublicKey
 	}
 	pub, ok := parsed.(*rsa.PublicKey)
-	if !ok || pub.N.BitLen() != Bits || pub.E != 65537 {
+	if !ok || pub.N.BitLen() != Bits || pub.N.Bit(0) == 0 || pub.E != 65537 {
 		return nil, ErrPublicKey
 	}
 	canonical, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil || !bytes.Equal(der, canonical) {
 		return nil, ErrPublicKey
 	}
-	cipher, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, key, label)
+	return &Public{key: pub}, nil
+}
+
+// Wrap encrypts a key using a previously validated wrapping key.
+func (p *Public) Wrap(key []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, ErrPublicKey
+	}
+	cipher, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, p.key, key, label)
 	if err != nil {
 		return nil, ErrPublicKey
 	}
 	return []byte(answerPrefix + base64.StdEncoding.EncodeToString(cipher) + "\n"), nil
+}
+
+// Wrap validates a public key and encrypts a key for it.
+func Wrap(publicLine, key []byte) ([]byte, error) {
+	p, err := ParsePublicLine(publicLine)
+	if err != nil {
+		return nil, err
+	}
+	return p.Wrap(key)
 }
 func (p *Private) Unwrap(answer []byte) ([]byte, error) {
 	b, ok := line(answer)

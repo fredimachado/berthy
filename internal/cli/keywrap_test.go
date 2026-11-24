@@ -3,9 +3,16 @@ package cli
 import (
 	"berthy/internal/keywrap"
 	"bytes"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"math/big"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -17,17 +24,28 @@ func TestKeyWrapHandsOverOnlyWrapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := bytes.Repeat([]byte{42}, 32)
+	key := bytes.Repeat([]byte{0xfb}, 32)
 	path := filepath.Join(t.TempDir(), "key")
 	if err := os.WriteFile(path, key, 0600); err != nil {
 		t.Fatal(err)
 	}
 	var out, diag bytes.Buffer
 	if code := keyWrap(path, bytes.NewReader(p.PublicLine()), &out, &diag); code != 0 {
-		t.Fatal("helper failed", code, diag.String())
+		t.Fatal("helper failed", code)
+	}
+	forms := [][]byte{key, []byte(hex.EncodeToString(key)), []byte(base64.StdEncoding.EncodeToString(key)), []byte(base64.RawStdEncoding.EncodeToString(key)), []byte(base64.URLEncoding.EncodeToString(key)), []byte(base64.RawURLEncoding.EncodeToString(key))}
+	if bytes.Equal(forms[2], forms[4]) {
+		t.Fatal("fixture does not distinguish base64 alphabets")
+	}
+	for _, stream := range [][]byte{out.Bytes(), diag.Bytes()} {
+		for _, form := range forms {
+			if bytes.Contains(stream, form) {
+				t.Fatal("key form disclosed in helper output")
+			}
+		}
 	}
 	got, err := p.Unwrap(out.Bytes())
-	if err != nil || !bytes.Equal(got, key) || bytes.Contains(out.Bytes(), key) || bytes.Contains(diag.Bytes(), key) {
+	if err != nil || !bytes.Equal(got, key) {
 		t.Fatal("invalid handover", err)
 	}
 	if err := os.WriteFile(path+".next", nil, 0600); err != nil {
@@ -126,7 +144,41 @@ func TestAgentKeyWrapDispatchWithSyntheticInput(t *testing.T) {
 	defer func() { os.Stdin = previous }()
 	var out, diag bytes.Buffer
 	code := Run([]string{"agent", "key-wrap", filepath.Join(t.TempDir(), "key")}, &out, &diag)
-	if code != 1 || out.Len() != 0 || !bytes.Contains(diag.Bytes(), []byte("key-wrap")) {
-		t.Fatal("dispatch did not refuse synthetic input")
+	want := "key-wrap runs on the server\n"
+	if runtime.GOOS == "linux" {
+		u, err := user.Lookup("berthy")
+		if err == nil && u.Uid == strconv.Itoa(os.Geteuid()) {
+			t.Skip("test already runs as the agent user")
+		}
+		want = "key-wrap: must run as the agent user\n"
+	}
+	if code != 1 || out.Len() != 0 || diag.String() != want {
+		t.Fatal("dispatch did not enforce the platform and agent-user restriction")
+	}
+}
+
+func TestKeyWrapRejectsEvenModulusBeforeReadingKey(t *testing.T) {
+	p, err := keywrap.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(p.PublicLine())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey := parsed.(*rsa.PublicKey)
+	rsaKey.N = new(big.Int).SetBit(rsaKey.N, 0, 0)
+	der, err = x509.MarshalPKIXPublicKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, diag bytes.Buffer
+	code := keyWrap(filepath.Join(t.TempDir(), "missing"), bytes.NewReader([]byte(base64.StdEncoding.EncodeToString(der))), &out, &diag)
+	if code != 1 || out.Len() != 0 || diag.String() != "key-wrap: invalid wrapping key\n" {
+		t.Fatal("invalid wrapping key was not rejected before reading")
 	}
 }

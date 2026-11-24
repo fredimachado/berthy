@@ -35,7 +35,8 @@ func keyWrap(path string, stdin io.Reader, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "key-wrap: invalid wrapping key")
 		return 1
 	}
-	if _, err = keywrap.Wrap(line, make([]byte, 32)); err != nil {
+	public, err := keywrap.ParsePublicLine(line)
+	if err != nil {
 		fmt.Fprintln(errout, "key-wrap: invalid wrapping key")
 		return 1
 	}
@@ -52,7 +53,7 @@ func keyWrap(path string, stdin io.Reader, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "key-wrap: cannot read the key")
 		return 1
 	}
-	answer, err := keywrap.Wrap(line, key)
+	answer, err := public.Wrap(key)
 	if err != nil {
 		fmt.Fprintln(errout, "key-wrap: cannot wrap the key")
 		return 1
