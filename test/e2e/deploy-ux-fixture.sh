@@ -89,7 +89,7 @@ private_image_inventory() {
 private_tag_image() {
   local inventory absent
   inventory=$(private_image_inventory) || return 1
-  printf '%s' "$inventory" | jq -e 'type == "array" and all(.[]; (.Id | type == "string" and length > 0) and ((.RepoTags == null) or (.RepoTags | type == "array" and all(.[]; type == "string"))))' >/dev/null || return 1
+  printf '%s' "$inventory" | jq -e -s 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object" and has("RepoTags") and (.Id | type == "string" and length > 0) and ((.RepoTags == null) or (.RepoTags | type == "array" and all(.[]; type == "string" and length > 0)))))' >/dev/null || return 1
   absent=$(printf '%s' "$inventory" | jq -r --arg tag "$2" 'if any(.[]; (.RepoTags // []) | index($tag) != null) then "present" else "absent" end') || return 1
   [ "$absent" = absent ] || return 1
   PRIVATE_LOCAL_IMAGE=$(d image inspect -f '{{.Id}}' "$1") || return 1

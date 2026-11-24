@@ -35,6 +35,12 @@ fixture_self_test() (
     private_image_inventory() { printf '%s\n' '{"message":"incomplete"}'; }
     if private_tag_image source target; then exit 1; fi
     [ ! -e "$tmp/tagged" ] || exit 1
+    private_image_inventory() { printf '%s\n' '[{"Id":"sha256:abc"}]'; }
+    if private_tag_image source target; then exit 1; fi
+    [ ! -e "$tmp/tagged" ] || exit 1
+    private_image_inventory() { printf '%s\n' '[]' '[]'; }
+    if private_tag_image source target; then exit 1; fi
+    [ ! -e "$tmp/tagged" ] || exit 1
     private_image_inventory() { printf '%s\n' '[]'; }
     d() { case "$1 $2" in "image inspect") echo source-id ;; "tag source") return 1 ;; *) return 1 ;; esac; }
     if private_tag_image source target; then exit 1; fi
