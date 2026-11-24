@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"berthy/internal/agentclient"
@@ -21,11 +22,14 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 	destBody := fmt.Sprintf(`{"id":7,"digest":"ghcr.io/acme/api@sha256:%s","tag":"older"}`, b)
 	sourceStatus, destStatus := 200, 200
 	requests := 0
+	var mu sync.Mutex
 	server := func(env, token string, body *string, status *int) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
 			requests++
 			if r.Method != "GET" || r.URL.Path != "/v1/projects/demo/environments/"+env+"/applied/api" || r.Header.Get("Authorization") != "Bearer "+token {
-				t.Errorf("unexpected request to %s: %s %s %q", env, r.Method, r.URL.Path, r.Header.Get("Authorization"))
+				t.Errorf("unexpected method, path or credential for %s", env)
 			}
 			w.WriteHeader(*status)
 			fmt.Fprint(w, *body)
@@ -54,12 +58,17 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.sourceID != 12 || snap.expectedID != 7 || snap.image != "ghcr.io/acme/api@sha256:"+a || snap.tag != "stable" || requests != 2 {
-		t.Fatalf("snapshot: %+v, requests %d", snap, requests)
+	mu.Lock()
+	gotRequests := requests
+	mu.Unlock()
+	if snap.sourceID != 12 || snap.expectedID != 7 || snap.image != "ghcr.io/acme/api@sha256:"+a || snap.tag != "stable" || gotRequests != 2 {
+		t.Fatalf("snapshot: %+v, requests %d", snap, gotRequests)
 	}
+	mu.Lock()
 	sourceBody = fmt.Sprintf(`{"id":99,"digest":"ghcr.io/acme/api@sha256:%s"}`, b)
 	destBody = `{"code":"not_deployed","message":"app is not deployed"}`
 	destStatus = 404
+	mu.Unlock()
 	first, err := selectSnapshot()
 	if err != nil || first.expectedID != 0 {
 		t.Fatalf("initial destination: %+v %v", first, err)
@@ -80,10 +89,12 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 		{"equal", fmt.Sprintf(`{"id":1,"digest":"ghcr.io/acme/api@sha256:%s"}`, a), fmt.Sprintf(`{"id":2,"digest":"ghcr.io/acme/api@sha256:%s"}`, a), 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
 			sourceBody, sourceStatus, destBody, destStatus = tc.src, tc.status, tc.dst, 200
 			if tc.dst == `{"code":"not_deployed","message":"app is not deployed"}` {
 				destStatus = 404
 			}
+			mu.Unlock()
 			if _, err := selectSnapshot(); err == nil {
 				t.Fatal("expected refusal")
 			}
@@ -93,7 +104,13 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 
 func TestReadAppliedStrictResponses(t *testing.T) {
 	body, status := "", http.StatusOK
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status); fmt.Fprint(w, body) }))
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
 	defer srv.Close()
 	base, err := url.Parse(srv.URL)
 	if err != nil {
@@ -107,6 +124,11 @@ func TestReadAppliedStrictResponses(t *testing.T) {
 	}{
 		{"valid", `{"id":1,"digest":"x","tag":""}`, 200, true, true},
 		{"absent", `{"code":"not_deployed","message":"none"}`, 404, false, true},
+		{"missing message", `{"code":"not_deployed"}`, 404, false, false},
+		{"null message", `{"code":"not_deployed","message":null}`, 404, false, false},
+		{"empty message", `{"code":"not_deployed","message":""}`, 404, false, false},
+		{"wrong message", `{"code":"not_deployed","message":3}`, 404, false, false},
+		{"empty digest", `{"id":1,"digest":""}`, 200, false, false},
 		{"non-json", `oops`, 200, false, false},
 		{"null", `null`, 200, false, false},
 		{"trailing", `{"id":1,"digest":"x"}{}`, 200, false, false},
@@ -119,7 +141,9 @@ func TestReadAppliedStrictResponses(t *testing.T) {
 		{"error token", `{"message":"secret-token"}`, 403, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
 			body, status = tc.body, tc.status
+			mu.Unlock()
 			_, found, err := readApplied(context.Background(), http.DefaultClient, target, "api")
 			if (err == nil) != tc.valid || found != tc.found || err != nil && strings.Contains(err.Error(), "secret-token") {
 				t.Fatalf("found=%v err=%v", found, err)

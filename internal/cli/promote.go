@@ -52,13 +52,13 @@ func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app
 		return result, false, agentclient.ErrInvalidResponse
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		var code string
-		if v, ok := fields["code"]; ok && json.Unmarshal(v, &code) == nil && code == "not_deployed" && fields["id"] == nil && fields["digest"] == nil && fields["tag"] == nil {
+		var code, message string
+		if v, ok := fields["code"]; ok && json.Unmarshal(v, &code) == nil && code == "not_deployed" && fields["message"] != nil && json.Unmarshal(fields["message"], &message) == nil && message != "" && fields["id"] == nil && fields["digest"] == nil && fields["tag"] == nil {
 			return result, false, nil
 		}
 		return result, false, errors.New(t.Redact(agentclient.Message(resp.StatusCode, data)))
 	}
-	if fields["code"] != nil || fields["id"] == nil || fields["digest"] == nil || bytes.Equal(bytes.TrimSpace(fields["id"]), []byte("null")) || bytes.Equal(bytes.TrimSpace(fields["digest"]), []byte("null")) || json.Unmarshal(fields["id"], &result.ID) != nil || result.ID <= 0 || json.Unmarshal(fields["digest"], &result.Digest) != nil {
+	if fields["code"] != nil || fields["id"] == nil || fields["digest"] == nil || bytes.Equal(bytes.TrimSpace(fields["id"]), []byte("null")) || bytes.Equal(bytes.TrimSpace(fields["digest"]), []byte("null")) || json.Unmarshal(fields["id"], &result.ID) != nil || result.ID <= 0 || json.Unmarshal(fields["digest"], &result.Digest) != nil || result.Digest == "" {
 		return appliedRelease{}, false, agentclient.ErrInvalidResponse
 	}
 	if tag := fields["tag"]; tag != nil && (bytes.Equal(bytes.TrimSpace(tag), []byte("null")) || json.Unmarshal(tag, &result.Tag) != nil) {
@@ -92,7 +92,7 @@ func appliedFields(data []byte) (map[string]json.RawMessage, bool) {
 			return nil, false
 		}
 		seen[folded] = true
-		if (folded == "id" || folded == "digest" || folded == "tag" || folded == "code") && key != folded {
+		if (folded == "id" || folded == "digest" || folded == "tag" || folded == "code" || folded == "message") && key != folded {
 			return nil, false
 		}
 		var value json.RawMessage
