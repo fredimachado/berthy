@@ -14,13 +14,23 @@ import (
 	"berthy/internal/agentclient"
 )
 
-func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, extraTokens ...string) int {
-	redact := append([]string{token}, extraTokens...)
+type operationWatchOptions struct {
+	config      string
+	extraTokens []string
+}
+
+func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, options ...operationWatchOptions) int {
+	var config string
+	redact := []string{token}
+	for _, opt := range options {
+		config = opt.config
+		redact = append(redact, opt.extraTokens...)
+	}
 	interactive := !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(out)
 	progress := newProgressLine(out, interactive)
 	defer progress.Close()
 	if interactive {
-		progress.Start("deploying")
+		progress.Start("following deploy")
 	}
 	printResult := func(data []byte) {
 		if !asJSON {
@@ -147,7 +157,12 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 	}
 	interrupted := func() int {
 		progress.Close()
-		fmt.Fprintf(errout, "watch interrupted; operation %s may continue; inspect with berthy diagnostics %s -e %s --project %s or cancel with berthy cancel %s -e %s --project %s\n", safeSecretText(id, redact...), safeSecretText(id, redact...), safeSecretText(env, redact...), safeSecretText(project, redact...), safeSecretText(id, redact...), safeSecretText(env, redact...), safeSecretText(project, redact...))
+		suffix := fmt.Sprintf(" -e %s --project %s", safeSecretText(env, redact...), safeSecretText(project, redact...))
+		if config != "" {
+			suffix += " --config " + shellWord(safeSecretText(config, redact...))
+		}
+		shownID := safeSecretText(id, redact...)
+		fmt.Fprintf(errout, "watch interrupted; operation %s may continue; inspect with berthy diagnostics %s%s or cancel with berthy cancel %s%s\n", shownID, shownID, suffix, shownID, suffix)
 		return 1
 	}
 	for {
@@ -180,9 +195,6 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			}
 		} else if status != nil {
 			status.Body.Close()
-		}
-		if ctx.Err() != nil {
-			return interrupted()
 		}
 		if state != "" && state != "running" {
 			if streamErr != nil || !finals[state] {
@@ -255,6 +267,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				fmt.Fprintln(hint, safeSecretText(failureHint(env, project, id), redact...))
 			}
 			return 1
+		}
+		if ctx.Err() != nil {
+			return interrupted()
 		}
 		if state == "running" {
 			failures = 0

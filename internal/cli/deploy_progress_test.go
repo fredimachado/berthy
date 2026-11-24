@@ -306,10 +306,10 @@ func TestDeployProgressStreamNotFound(t *testing.T) {
 func TestDeployProgressJSONPreservesControls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
-			fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"a secret\\u001b\\u0085\\n\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
+			fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"a secret\\u001b\\u007f\\u0085\\n\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
 			return
 		}
-		fmt.Fprint(w, `{"state":"succeeded","reason":"secret\u001b\u0085\n"}`)
+		fmt.Fprint(w, `{"state":"succeeded","reason":"secret\u001b\u007f\u0085\n"}`)
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
@@ -321,7 +321,7 @@ func TestDeployProgressJSONPreservesControls(t *testing.T) {
 			Step string `json:"step"`
 		} `json:"checks"`
 	}
-	if strings.Contains(out.String(), "\u0085") || json.Unmarshal(out.Bytes(), &doc) != nil || got != 0 || doc.Reason != "[redacted]\x1b\u0085\n" || len(doc.Checks) != 1 || doc.Checks[0].Step != "a [redacted]\x1b\u0085\n" {
+	if strings.ContainsAny(out.String(), "\u0085\u007f") || json.Unmarshal(out.Bytes(), &doc) != nil || got != 0 || doc.Reason != "[redacted]\x1b\x7f\u0085\n" || len(doc.Checks) != 1 || doc.Checks[0].Step != "a [redacted]\x1b\x7f\u0085\n" {
 		t.Fatalf("exit=%d doc=%+v out=%q err=%q", got, doc, out.String(), errs.String())
 	}
 }
@@ -539,8 +539,91 @@ func TestDeployOperationRedactsBothTokensInStreamError(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	code := watchOperation(context.Background(), server.Client(), base, "dest-secret", "/v1/", "op-real", "/v1/operations/op-real/events", &out, &errs, false, "deploy", "dev", "demo", "source-secret")
+	code := watchOperation(context.Background(), server.Client(), base, "dest-secret", "/v1/", "op-real", "/v1/operations/op-real/events", &out, &errs, false, "deploy", "dev", "demo", operationWatchOptions{extraTokens: []string{"source-secret"}})
 	if code != 1 || errs.String() != "agent returned HTTP 404: [redacted] [redacted]\n" || out.Len() != 0 {
 		t.Fatalf("exit=%d out=%q err=%q", code, out.String(), errs.String())
+	}
+}
+
+type cancelAtEOF struct {
+	io.Reader
+	cancel context.CancelFunc
+}
+
+func (r cancelAtEOF) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF {
+		r.cancel()
+	}
+	return n, err
+}
+
+func TestDeployInterruptIncludesExplicitConfig(t *testing.T) {
+	for _, tc := range []struct{ config, want string }{
+		{"/tmp/private config.json", `--config '/tmp/private config.json'`},
+		{"/tmp/person's config.json", `--config '/tmp/person'\''s config.json'`},
+		{"", "--config"},
+	} {
+		t.Run(tc.config, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+				var body io.Reader = strings.NewReader(`{"operation_id":"op1","events_url":"/v1/operations/op1/events"}`)
+				status := http.StatusAccepted
+				if r.Method == "GET" {
+					status = 200
+					body = cancelAtEOF{strings.NewReader(": heartbeat\n\n"), cancel}
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(body), Header: make(http.Header), Request: r}, nil
+			})}
+			base, _ := url.Parse("http://agent.invalid")
+			var out, errs bytes.Buffer
+			got := sendCommand(ctx, client, base, "/v1/", "token", "POST", "deploys", nil, commandFlags{config: tc.config, env: "dev", project: "demo"}, "deploy", &out, &errs)
+			wantCount := 2
+			if tc.config == "" {
+				wantCount = 0
+			}
+			if got != 1 || strings.Count(errs.String(), tc.want) != wantCount {
+				t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
+			}
+		})
+	}
+}
+
+func TestDeployTerminalStatusSurvivesCancelAfterRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+		var body io.Reader = strings.NewReader("id: 1\nevent: succeeded\ndata: {}\n\n")
+		if !strings.HasSuffix(r.URL.Path, "/events") {
+			body = cancelAtEOF{strings.NewReader(`{"state":"succeeded"}`), cancel}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(body), Header: make(http.Header), Request: r}, nil
+	})}
+	base, _ := url.Parse("http://agent.invalid")
+	var out, errs bytes.Buffer
+	got := watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+	if got != 0 || !json.Valid(out.Bytes()) || !strings.Contains(out.String(), `"succeeded"`) || strings.Contains(errs.String(), "may continue") {
+		t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
+	}
+}
+
+func TestApproveInterruptIncludesConfig(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(cancelAtEOF{strings.NewReader(": heartbeat\n\n"), cancel}), Header: make(http.Header), Request: r}, nil
+	})}
+	call := func(method, endpoint, query string, body []byte) ([]byte, int, error) {
+		if method == "GET" {
+			return []byte(`[]`), 200, nil
+		}
+		return []byte(`{"operation_id":"op1","events_url":"/v1/operations/op1/events"}`), 202, nil
+	}
+	base, _ := url.Parse("http://agent.invalid")
+	var out, errs bytes.Buffer
+	got := runApprove(ctx, call, client, commandFlags{pos: []string{"ap1"}, config: "/tmp/private config.json", env: "dev", project: "demo"}, base, "/v1/", "token", &out, &errs)
+	if got != 1 || strings.Count(errs.String(), `--config '/tmp/private config.json'`) != 2 {
+		t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
 	}
 }

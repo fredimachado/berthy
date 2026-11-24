@@ -297,22 +297,5 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	}
 	req.DryRun = false
 	f.redactToken = snapshot.source.Token
-	return sendCommand(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", req, f, "deploy", &promotionRedactor{out: out, redact: redact}, &promotionRedactor{out: errout, redact: redact})
-}
-
-type promotionRedactor struct {
-	out    io.Writer
-	redact func(string) string
-}
-
-func (w *promotionRedactor) Write(p []byte) (int, error) {
-	s := w.redact(string(p))
-	n, err := io.WriteString(w.out, s)
-	if err != nil {
-		return 0, err
-	}
-	if n != len(s) {
-		return 0, io.ErrShortWrite
-	}
-	return len(p), nil
+	return sendCommand(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", req, f, "deploy", out, errout)
 }

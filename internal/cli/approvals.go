@@ -278,7 +278,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 			return 1
 		}
 		cmd, _, _ := strings.Cut(kind, " ")
-		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
+		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, operationWatchOptions{config: f.config})
 	}
 	if status != http.StatusOK && status != http.StatusAccepted {
 		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))

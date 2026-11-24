@@ -434,11 +434,11 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 	return err
 }
 
-// escapeJSONC1 preserves JSON values without writing C1 controls to a terminal.
+// escapeJSONC1 preserves JSON values without writing DEL or C1 controls to a terminal.
 func escapeJSONC1(encoded string) string {
 	var out strings.Builder
 	for _, r := range encoded {
-		if r >= 0x80 && r <= 0x9f {
+		if r >= 0x7f && r <= 0x9f {
 			fmt.Fprintf(&out, `\u%04x`, r)
 		} else {
 			out.WriteRune(r)

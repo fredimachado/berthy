@@ -3,6 +3,9 @@
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
+unset BERTHY_CONFIG
+selected_config="$RUN/selected config.json"
+cp "$RUN/admin.json" "$selected_config" || exit 1
 
 id=
 driver_pid=
@@ -56,7 +59,7 @@ record_deploy "$PROJECT" "$ENVN" web --version "$WEB_V1_DIGEST" --manifest-dir "
 mkdir -p "$RUN/progress-pty" "$LOG/progress-pty"
 cat > "$RUN/progress-steps.json" <<'JSON'
 [
-  {"wait_text":"deploying (", "timeout":"100s"},
+  {"wait_text":"following deploy (", "timeout":"100s"},
   {"snapshot":"pending"},
   {"keys":["ctrl+c"]},
   {"expect_exit":1, "timeout":"100s"},
@@ -65,8 +68,8 @@ cat > "$RUN/progress-steps.json" <<'JSON'
 JSON
 stamp=$(date +%s)
 started=yes
-"$TUI_BIN" --command "$BIN deploy web -e $ENVN --config $RUN/admin.json --version $WEB_V1_DIGEST --manifest-dir $MAN" \
-  --size 120x40 --script "$RUN/progress-steps.json" --out "$RUN/progress-pty" --timeout 180s \
+"$TUI_BIN" --command "$BIN deploy web -e $ENVN --config '$selected_config' --version $WEB_V1_DIGEST --manifest-dir $MAN" \
+  --size 400x40 --script "$RUN/progress-steps.json" --out "$RUN/progress-pty" --timeout 180s \
   --env TERM=xterm --env NO_COLOR=1 --redact-env BERTHY_ADMIN_TOKEN >"$RUN/progress-driver.out" 2>&1 &
 driver_pid=$!
 
@@ -100,13 +103,13 @@ driver_pid=
 expect_code 'interrupt terminal deploy watcher' 0 "$driver_code" "$(cat "$RUN/progress-driver.out")"
 if [ "$driver_code" -eq 0 ]; then
   interrupted=$(cat "$RUN/progress-pty/interrupted.txt")
-  if grep -Eq '^[|/\\-] deploying \([0-9]+\.[0-9]s\)' "$RUN/progress-pty/pending.txt"; then
-    grep -E '^[|/\\-] deploying \([0-9]+\.[0-9]s\)' "$RUN/progress-pty/pending.txt" > "$LOG/progress-pty/pending.txt"
+  if grep -Eq '^[|/\\-] following deploy \([0-9]+\.[0-9]s\)' "$RUN/progress-pty/pending.txt"; then
+    grep -E '^[|/\\-] following deploy \([0-9]+\.[0-9]s\)' "$RUN/progress-pty/pending.txt" > "$LOG/progress-pty/pending.txt"
     pass 'delayed pending frame'
   else fail 'delayed pending frame' 'missing spinner frame'; fi
   expect_contains 'interruption names the operation' "$interrupted" "$id"
-  expect_contains 'interruption gives inspection path' "$interrupted" 'berthy diagnostics'
-  expect_contains 'interruption gives cancellation path' "$interrupted" 'berthy cancel'
+  expect_contains 'interruption gives inspection path' "$interrupted" "berthy diagnostics $id -e $ENVN --project $PROJECT --config '$selected_config'"
+  expect_contains 'interruption gives cancellation path' "$interrupted" "berthy cancel $id -e $ENVN --project $PROJECT --config '$selected_config'"
   expect_contains 'interruption says operation may continue' "$interrupted" 'may continue'
   printf 'operation <id> may continue; diagnostics and cancel paths shown\n' > "$LOG/progress-pty/interrupted.txt"
 fi
@@ -115,7 +118,10 @@ fi
 status=$(curl --noproxy '*' --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $BERTHY_ADMIN_TOKEN" \
   "http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN/operations/$id")
 if printf '%s' "$status" | jq -e --arg id "$id" '.id == $id and .state == "running"' >/dev/null; then pass 'operation remains running and inspectable'; else fail 'operation remains running and inspectable' 'status did not identify the running operation'; fi
-out=$(adm cancel "$id" 2>&1); code=$?
+out=$("$BIN" diagnostics "$id" -e "$ENVN" --project "$PROJECT" --config "$selected_config" 2>&1); code=$?
+expect_code 'run the shown inspection command' 0 "$code" "$out"
+expect_contains 'inspection identifies the operation' "$out" "$id"
+out=$("$BIN" cancel "$id" -e "$ENVN" --project "$PROJECT" --config "$selected_config" 2>&1); code=$?
 expect_code 'cancel the admitted operation' 0 "$code" "$out"
 expect_contains 'agent accepted cancellation' "$out" 'cancel accepted'
 if [ "$code" -eq 0 ] && [[ $out == *'cancel accepted'* ]]; then started=; fi
