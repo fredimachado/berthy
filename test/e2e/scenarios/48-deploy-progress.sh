@@ -71,12 +71,15 @@ started=yes
 driver_pid=$!
 
 # Replay Docker's start events from just before the watcher started, limited to this fixture.
-set +o pipefail
-event=$(timeout 100 "$DOCKER_BIN" --host "unix://$SOCK" events --since "$stamp" \
+coproc EVENTS { exec timeout 100 "$DOCKER_BIN" --host "unix://$SOCK" events --since "$stamp" \
   --filter type=container --filter event=start --filter "label=berthy.project=$PROJECT" \
   --filter "label=berthy.environment=$ENVN" --filter label=berthy.oneoff=pre_hook \
-  --format '{{json .Actor}}' | head -n 1)
-set -o pipefail
+  --format '{{json .Actor}}'; }
+events_pid=$EVENTS_PID
+event=
+read -r -t 100 event <&"${EVENTS[0]}" || true
+kill "$events_pid" 2>/dev/null || true
+wait "$events_pid" 2>/dev/null || true
 id=$(printf '%s' "$event" | jq -r '.Attributes["berthy.operation"] // empty' 2>/dev/null)
 container=$(printf '%s' "$event" | jq -r '.ID // empty' 2>/dev/null)
 if [[ ! $id =~ ^[0-9a-f]{32}$ || ! $container =~ ^[0-9a-f]{64}$ ]]; then
@@ -84,9 +87,12 @@ if [[ ! $id =~ ^[0-9a-f]{32}$ || ! $container =~ ^[0-9a-f]{64}$ ]]; then
   finish
 fi
 pass 'observe the scoped pre-deploy hook'
-set +o pipefail
-gate=$(timeout 90 "$DOCKER_BIN" --host "unix://$SOCK" logs --follow "$container" 2>/dev/null | grep -m1 -F 'fixture-fifo-ready')
-set -o pipefail
+coproc GATE { exec timeout 90 "$DOCKER_BIN" --host "unix://$SOCK" logs --follow "$container" 2>/dev/null; }
+gate_pid=$GATE_PID
+gate=
+read -r -t 90 gate <&"${GATE[0]}" || true
+kill "$gate_pid" 2>/dev/null || true
+wait "$gate_pid" 2>/dev/null || true
 if [ "$gate" = fixture-fifo-ready ]; then pass 'hook reached its FIFO'; else fail 'hook reached its FIFO' 'ready event absent'; fi
 
 wait "$driver_pid"; driver_code=$?
@@ -112,5 +118,5 @@ if printf '%s' "$status" | jq -e --arg id "$id" '.id == $id and .state == "runni
 out=$(adm cancel "$id" 2>&1); code=$?
 expect_code 'cancel the admitted operation' 0 "$code" "$out"
 expect_contains 'agent accepted cancellation' "$out" 'cancel accepted'
-started=
+if [ "$code" -eq 0 ] && [[ $out == *'cancel accepted'* ]]; then started=; fi
 finish
