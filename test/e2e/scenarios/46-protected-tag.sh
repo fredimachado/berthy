@@ -260,7 +260,7 @@ try:
             raise
         if not chunk: break
         data.extend(chunk)
-    if proc.wait(timeout=120) == 0 or b'HTTP 409' not in data: raise RuntimeError('stale batch was not refused')
+    if proc.wait(timeout=120) == 0 or b'HTTP 409' not in data or b'deploy stopped at aux' not in data: raise RuntimeError('stale kept step was not refused')
     final = applied()
     if final['id'] != newer['id'] or final['digest'] != newer['digest'] or final.get('tag') != 'batch-b' or len(history()) != before + 1: raise RuntimeError('stale batch changed kept release')
 finally:
