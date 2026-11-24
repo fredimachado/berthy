@@ -906,3 +906,45 @@ func TestHeldNamedGenerationComparesOriginalStoredPlanShape(t *testing.T) {
 		t.Fatal("stored value changed")
 	}
 }
+
+func TestDeployPlanRedactsMetadataButProtectsSelection(t *testing.T) {
+	mask := func(s string) string { return strings.ReplaceAll(s, "secret", "[redacted]") }
+	plan := []byte(`{"image":"repo@sha256:abc","tag":"v1","diff":{"changes":[{"area":"roles","change":"replicas secret"}]}}`)
+	got, err := redactApprovalPlan([]string{"deploys"}, "POST", plan, mask)
+	if err != nil || !strings.Contains(string(got), "[redacted]") {
+		t.Fatalf("metadata: %s %v", got, err)
+	}
+	for _, p := range []string{`{"image":"repo-secret","tag":"v1"}`, `{"image":"repo","tag":"secret"}`} {
+		if _, err := redactApprovalPlan([]string{"deploys"}, "POST", []byte(p), mask); err == nil {
+			t.Fatal("redacted selection was accepted")
+		}
+	}
+}
+
+func TestApprovalPlanRedactionIsStableAcrossActors(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	gate := &approvalGate{c: f.cfg, d: f.ctrl}
+	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"image": "repo@sha256:abc", "notes": []string{"value " + apAgentDeploy}})
+	}
+	var plans [][]byte
+	for _, token := range []string{apAgentDeploy, apAdminToken} {
+		r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/deploys", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		plan, refused := gate.plan(r, deploy.Actor{}, []string{"deploys"}, "POST", r.URL.Path, []byte(`{}`))
+		if refused != nil {
+			t.Fatal("plan refused")
+		}
+		plans = append(plans, plan)
+	}
+	if !bytes.Equal(plans[0], plans[1]) || bytes.Contains(plans[0], []byte(apAgentDeploy)) || !bytes.Contains(plans[0], []byte("[redacted]")) {
+		t.Fatal("redacted plan differs between requester and approver or exposes token")
+	}
+	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"image": "repo@sha256:abc", "tag": apAgentDeploy})
+	}
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/deploys", nil)
+	if _, refused := gate.plan(r, deploy.Actor{}, []string{"deploys"}, "POST", r.URL.Path, []byte(`{}`)); refused == nil {
+		t.Fatal("plan with token-shaped image label was accepted")
+	}
+}

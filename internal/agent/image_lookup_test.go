@@ -3,26 +3,81 @@ package agent
 import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 func TestImageLookupRequiresHumanAdminBeforeOutbound(t *testing.T) {
-	for _, protected := range []bool{false, true} {
-		f := newApprovalFixture(t, protected, nil)
-		for _, path := range []string{"/images/resolve", "/images/tags"} {
-			for _, token := range []string{apReadToken, apDeployToken, apAgentRead, apAgentDeploy, apAgentAdmin} {
-				w := f.call(http.MethodPost, path, token, `{}`)
-				if w.Code != http.StatusForbidden {
-					t.Errorf("protected=%v path=%s: got %d, want 403", protected, path, w.Code)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"name":"acme/api","tags":["v1"]}`))
+	}))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+	public := strings.Replace(apManifestSource, "ghcr.io/acme/api", host+"/acme/api", 1)
+	private := strings.Replace(public, `"network":"overlay"`, `"network":"overlay","registries":{"`+host+`":{"username":"user","password_secret":"REGISTRY_PASSWORD"}}`, 1)
+	for _, policy := range []string{"unprotected", "configured", "sticky"} {
+		t.Run(policy, func(t *testing.T) {
+			f := newApprovalFixture(t, policy == "configured", nil)
+			if policy == "sticky" {
+				m, err := manifest.DecodeJSON([]byte(apManifestSource))
+				if err != nil {
+					t.Fatal(err)
+				}
+				op, _, err := f.s.Admit(context.Background(), state.Admission{RequestID: "sticky", ActorID: "ci", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = f.s.Finish(context.Background(), op.ID, state.Outcome{State: "succeeded", Protected: true, Release: &state.Release{App: "api", Digest: apDigest, Manifest: mustJSON(t, m)}}); err != nil {
+					t.Fatal(err)
 				}
 			}
-		}
-		f.noOperation()
+			if err := f.s.PutSecret(context.Background(), state.Actor{ID: "test", Name: "test"}, state.SecretInfo{Name: "REGISTRY_PASSWORD", Registry: host}, []byte("test-value")); err != nil {
+				t.Fatal(err)
+			}
+			e := &lookupEngine{}
+			f.ctrl.Engine = e
+			for _, path := range []string{"/images/resolve", "/images/tags"} {
+				for _, m := range []string{public, private} {
+					body := `{"manifest":` + m + `,"app":"api"`
+					if path == "/images/resolve" {
+						body += `,"tag":"v1"`
+					}
+					body += `}`
+					for _, token := range []string{apReadToken, apDeployToken, apAgentRead, apAgentDeploy, apAgentAdmin} {
+						if w := f.call(http.MethodPost, path, token, body); w.Code != http.StatusForbidden {
+							t.Errorf("%s: denied token got %d", path, w.Code)
+						}
+					}
+					for _, token := range []string{"", "bty.demo.other." + strings.Repeat("1", 64)} {
+						if w := f.call(http.MethodPost, path, token, body); w.Code != http.StatusUnauthorized {
+							t.Errorf("%s: authentication got %d", path, w.Code)
+						}
+					}
+				}
+			}
+			if e.calls != 0 || requests.Load() != 0 {
+				t.Fatalf("outbound calls: docker=%d HTTP=%d", e.calls, requests.Load())
+			}
+			f.noOperation()
+			if _, err := f.s.Lock(context.Background()); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("lock: %v", err)
+			}
+			approvals, err := f.s.Approvals(context.Background(), "pending", f.now)
+			if err != nil || len(approvals) != 0 {
+				t.Fatalf("approvals: %d, %v", len(approvals), err)
+			}
+		})
 	}
 }
 
@@ -148,4 +203,19 @@ func TestDeployRejectsAmbiguousManifestFields(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 	f.noOperation()
+}
+
+func TestAgentLookupDeniedWhenStateUnavailable(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Store = nil
+	for _, path := range []string{"/images/resolve", "/images/tags"} {
+		body := `{"manifest":` + apManifestSource + `,"app":"api"`
+		if path == "/images/resolve" {
+			body += `,"tag":"v1"`
+		}
+		w := f.call(http.MethodPost, path, apAgentAdmin, body+`}`)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s status %d", path, w.Code)
+		}
+	}
 }

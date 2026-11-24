@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -238,9 +239,8 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 		return nil, failure
 	}
 	managedRedact := redact
-	if token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found && token != "" {
-		redact = func(s string) string { return managedRedact(strings.ReplaceAll(s, token, "[redacted]")) }
-	}
+	tokens := regexp.MustCompile(tokenExpression(g.c.ID()))
+	redact = func(s string) string { return managedRedact(tokens.ReplaceAllString(s, "[redacted]")) }
 	plan, err := redactApprovalPlan(rest, method, rec.body.Bytes(), redact)
 	if err != nil {
 		failure := newCapture()
@@ -255,19 +255,11 @@ func redactApprovalPlan(rest []string, method string, plan []byte, redact func(s
 	kind := routeKind(rest, method)
 	if kind == "deploy" {
 		var decision struct {
-			Image string          `json:"image"`
-			Tag   string          `json:"tag"`
-			Diff  json.RawMessage `json:"diff"`
+			Image string `json:"image"`
+			Tag   string `json:"tag"`
 		}
 		if json.Unmarshal(plan, &decision) != nil || redact(decision.Image) != decision.Image || redact(decision.Tag) != decision.Tag {
 			return nil, errors.New("image selection unavailable")
-		}
-		if len(decision.Diff) > 0 {
-			redacted, err := redactPlan(decision.Diff, redact)
-			original, originalErr := canonicalJSON(decision.Diff)
-			if err != nil || originalErr != nil || !bytes.Equal(redacted, original) {
-				return nil, errors.New("image selection unavailable")
-			}
 		}
 	}
 	if kind != "secret generate" && kind != "secret generate declared" {

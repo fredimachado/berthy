@@ -101,7 +101,11 @@ func dockerHost(socket string) string {
 
 // tokenPattern matches a bearer token issued for id: bty.<project>.<environment>.<64 hex>.
 func tokenPattern(id scope.ID) *regexp.Regexp {
-	return regexp.MustCompile(`^bty\.` + regexp.QuoteMeta(id.Project) + `\.` + regexp.QuoteMeta(id.Environment) + `\.[0-9a-f]{64}$`)
+	return regexp.MustCompile(`^` + tokenExpression(id) + `$`)
+}
+
+func tokenExpression(id scope.ID) string {
+	return `bty\.` + regexp.QuoteMeta(id.Project) + `\.` + regexp.QuoteMeta(id.Environment) + `\.[0-9a-f]{64}`
 }
 
 func Digest(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }

@@ -641,6 +641,10 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			writeError(w, 405, "method_not_allowed", "method not allowed")
 			return
 		}
+		if rest[0] == "images" && actor.Agent {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
 		if d == nil || d.Store == nil {
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
@@ -651,10 +655,6 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				writeError(w, 400, "bad_request", "invalid request")
 				return
 			}
-		}
-		if rest[0] == "images" && actor.Agent {
-			writeError(w, 403, "forbidden", "forbidden")
-			return
 		}
 		if rest[0] == "approvals" {
 			gate.serveApprovals(w, r, actor, scope, rest)
