@@ -143,9 +143,10 @@ record_deploy "$PROJECT" "$ENVN" zstack --manifest-dir "$MAN" || { fail 'record 
 out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
 expect_code 'preview image and Compose batch' 0 "$code" "$out"
 if jq -e '.apps | length == 2 and .[0].app == "web" and .[1].app == "zstack"' <<< "$out" >/dev/null; then pass 'batch preview preserves order'; else fail 'batch preview preserves order' 'unexpected plans'; fi
-if python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" <<'PY'
+terminal_batch() {
+python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" "$1" <<'PY'
 import errno, os, pty, select, subprocess, sys, time
-binary, env, config, manifest = sys.argv[1:]
+binary, env, config, manifest, mode = sys.argv[1:]
 master, slave = pty.openpty()
 proc = subprocess.Popen([binary, 'deploy', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'web=stable'], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
@@ -164,15 +165,18 @@ try:
             data.extend(chunk)
             if not prompted and b'Proceed with this deploy? [y/N] ' in data:
                 prompted = True
-                os.write(master, b'y\n')
+                os.write(master, b'y\n' if mode == 'yes' else b'n\n')
         if proc.poll() is not None and not ready: break
     else: raise RuntimeError('batch timed out')
-    if not prompted or proc.wait(timeout=10) != 0: raise RuntimeError('batch failed')
+    code = proc.wait(timeout=10)
+    if mode == 'yes' and (not prompted or code != 0): raise RuntimeError('batch failed')
+    if mode == 'blocked' and (prompted or code == 0 or b'blocker' not in data): raise RuntimeError('blocked batch was not refused before confirmation')
 finally:
     if proc.poll() is None: proc.kill(); proc.wait()
     os.close(master)
 PY
-then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
+}
+if terminal_batch yes; then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
 before=$(adm history web --json 2>&1 | jq 'length')
 sed -i 's/BATCH_MODE: one/BATCH_MODE: two/' "$MAN/batch-compose.yml"
 git -C "$MAN" add batch-compose.yml
@@ -180,6 +184,7 @@ git -C "$MAN" commit -qm 'change Compose service'
 out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
 expect_code 'stateful Compose blocker refuses mixed batch' 1 "$code" "$out"
 expect_contains 'batch reports nested blocker' "$out" 'blocker'
+if terminal_batch blocked; then pass 'blocked batch refuses before confirmation'; else fail 'blocked batch refuses before confirmation' 'terminal batch failed'; fi
 after=$(adm history web --json 2>&1 | jq 'length')
 if [ "$before" = "$after" ]; then pass 'blocked batch leaves image history unchanged'; else fail 'blocked batch leaves image history unchanged' 'image deployed'; fi
 finish
