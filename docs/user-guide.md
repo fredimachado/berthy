@@ -350,7 +350,7 @@ A second run repairs what is missing and changes nothing else. It never replaces
 
 Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped.
 
-Put the server name and its SSH destination in the environment's overlay. For example, in `berthy.prod.yml`:
+Put the server name and its SSH destination in the environment's overlay, and set `min_version` to the release that ships that key so an older CLI or agent is refused before the request. For example, in `berthy.prod.yml`:
 
 ```yaml
 servers:
@@ -360,7 +360,7 @@ servers:
 
 From the project directory, with one server, run `berthy setup -e prod` to repair or upgrade the agent on it. On the first install, also pass `--listen 10.0.0.5:7710`. With several servers, `--server pg` picks one. `--host` still sets up any destination. The SSH destination can also be an alias from your SSH config.
 
-The overlay merges `servers` by name. Define the entries in the overlay when each environment uses different servers. If the base manifest has a shared entry, the overlay can change its `ssh` value or remove the entry with `pg: null` under `servers`.
+The overlay merges `servers` by name. Define the entries in the overlay when each environment uses different servers. If the base manifest has a shared entry, the overlay can change its `ssh` value or remove the entry with `pg: null` under `servers`. `berthy apply` and deploys store it with the environment settings; `apply` shows a change as `servers: + pg` or `servers: ~ pg`.
 
 #### The other setup options
 
