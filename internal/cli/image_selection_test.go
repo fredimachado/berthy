@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -397,11 +398,29 @@ func TestProtectedTagJSONEscapesC1(t *testing.T) {
 func TestImagePlanAcceptsPlannerShapes(t *testing.T) {
 	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}, "worker": {}}}}}
 	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
-	for _, diff := range []string{"", `,"diff":{"new":true}`, `,"diff":{"same":true}`, `,"diff":{"changes":[{"area":"image","change":"old -> new"}]}`, `,"changes":["adoption setting"]`} {
+	for _, diff := range []string{"", `,"diff":{"new":true}`, `,"diff":{"same":true}`, `,"diff":{"changes":[{"area":"image","change":"old -> new"}]}`} {
 		data := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["worker","web"]%s}`, image, diff)
 		if err := imagePlan([]byte(data), m, deploy.Request{App: "api"}, image, "stable"); err != nil {
 			t.Errorf("valid planner shape %q rejected: %v", diff, err)
 		}
+	}
+}
+
+func TestImagePlanAcceptsAdoptionAndIngressShapes(t *testing.T) {
+	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}}}}}
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	for _, extra := range []string{
+		`,"ingress":{"tunnel":"t","dns":false,"changes":[]}`,
+		`,"ingress":{"tunnel":"t","tunnel_id":"id","dns":true,"changes":[{"hostname":"one.example","app":"api","role":"web","route":"add","dns":"adopt","target":"http://api-web:80"},{"hostname":"old.example","app":"api","role":"former","route":"release","dns":"release","previous":"http://old:80"}]}`,
+	} {
+		data := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]%s}`, image, extra)
+		if err := imagePlan([]byte(data), m, deploy.Request{App: "api"}, image, "stable"); err != nil {
+			t.Errorf("valid ingress rejected: %v", err)
+		}
+	}
+	data := fmt.Sprintf(`{"app":"api","image":%q,"roles":["web"],"changes":["web: replicas 2 -> 1"]}`, image)
+	if err := imagePlan([]byte(data), m, deploy.Request{App: "api", Adopt: true}, image, ""); err != nil {
+		t.Errorf("valid adoption rejected: %v", err)
 	}
 }
 
@@ -432,5 +451,67 @@ func TestProtectedTagRefusesCheckoutSwitchDuringCapture(t *testing.T) {
 	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable", "--dry-run"}, &out, &errs)
 	if code == 0 || len(a.calls) != 0 || !strings.Contains(errs.String(), "checkout changed") {
 		t.Errorf("checkout switch not refused before remote work: exit %d calls %v stderr %q", code, a.calls, errs.String())
+	}
+}
+
+func TestSingleTagRejectsMalformedIngressBeforeMutation(t *testing.T) {
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct{ name, extra string }{
+		{"conflicts without blockers", `,"ingress":{"tunnel":"t","dns":false,"changes":[],"conflicts":["route occupied"]}`},
+		{"missing fields", `,"ingress":{}`},
+		{"null ingress", `,"ingress":null`},
+		{"null changes", `,"ingress":{"tunnel":"t","dns":false,"changes":null}`},
+		{"null conflicts", `,"ingress":{"tunnel":"t","dns":false,"changes":[],"conflicts":null}`},
+		{"apply-only connector", `,"ingress":{"tunnel":"t","dns":false,"changes":[],"connector":{}}`},
+		{"wrong dns type", `,"ingress":{"tunnel":"t","dns":"yes","changes":[]}`},
+		{"malformed change", `,"ingress":{"tunnel":"t","dns":false,"changes":[{"hostname":"api.example","route":null}]}`},
+		{"unknown route", `,"ingress":{"tunnel":"t","dns":false,"changes":[{"hostname":"api.example","route":"restart"}]}`},
+		{"ordinary adoption changes", `,"changes":["adoption-only change"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]%s}`, image, tc.extra)
+			legacy := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":false}`, plan: plan}
+			code, _, _ := runSelection(t, legacy, versionsManifest, "--version", "stable")
+			if code == 0 || len(legacy.requests) != 1 || string(legacy.requests[0]["dry_run"]) != "true" {
+				t.Errorf("legacy plan accepted or mutation submitted: exit %d posts %d", code, len(legacy.requests))
+			}
+			protected := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: plan}
+			code, out, _ := runSelection(t, protected, "protected: true\n"+versionsManifest, "--version", "stable", "--dry-run")
+			if code == 0 || out != "" || len(protected.requests) != 1 || string(protected.requests[0]["dry_run"]) != "true" {
+				t.Errorf("protected plan accepted: exit %d posts %d", code, len(protected.requests))
+			}
+		})
+	}
+}
+
+func TestQualifiedSha256HostTagCapturesCheckout(t *testing.T) {
+	image := "sha256:5000/acme/api@sha256:" + strings.Repeat("a", 64)
+	manifestText := strings.Replace(versionsManifest, "image: alpine", "image: sha256:5000/acme/api", 1)
+	dir, head := checkoutRepo(t, map[string]string{"berthy.yml": "protected: true\n" + manifestText})
+	a := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image)}
+	server := httptest.NewServer(http.HandlerFunc(a.serve))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "sha256:5000/acme/api:stable", "--dry-run", "--json"}, &out, &errs)
+	if code != 0 || len(a.requests) != 1 || string(a.requests[0]["commit"]) != strconv.Quote(head) || !strings.Contains(out.String(), image) {
+		t.Errorf("qualified tag did not plan with captured checkout: exit %d posts %d stderr %q", code, len(a.requests), errs.String())
+	}
+}
+
+func TestBareSHA256Classification(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		bare  bool
+	}{
+		{"sha256:" + strings.Repeat("a", 64), true},
+		{"sha256:5000/acme/api:stable", false},
+		{"sha256:" + strings.Repeat("A", 64), false},
+		{"sha256:" + strings.Repeat("a", 63), false},
+		{"example/api:stable@sha256:" + strings.Repeat("a", 64), false},
+	} {
+		if got := bareSHA256(tc.value); got != tc.bare {
+			t.Errorf("bareSHA256(%q) = %v", tc.value, got)
+		}
 	}
 }

@@ -505,7 +505,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	var checkoutBefore gitcheck.Identity
 	// A mutable tag needs the identity from before target resolution or manifest loading reads the checkout.
-	if cmd == "deploy" && len(f.pos) == 1 && len(f.versions) == 1 && !strings.Contains(f.versions[0], "@") && !strings.HasPrefix(f.versions[0], "sha256:") {
+	if cmd == "deploy" && len(f.pos) == 1 && len(f.versions) == 1 && !strings.Contains(f.versions[0], "@") && !bareSHA256(f.versions[0]) {
 		checkoutBefore, err = gitcheck.Capture(context.Background(), f.dir)
 		if err != nil {
 			fmt.Fprintln(errout, err)

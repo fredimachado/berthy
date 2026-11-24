@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -24,6 +25,11 @@ import (
 
 // loadDeployManifest lets checkout capture tests switch revisions after the file read.
 var loadDeployManifest = manifest.Load
+
+// bareSHA256 matches the bare digest grammar accepted by the manifest, not a registry host prefix.
+func bareSHA256(value string) bool {
+	return len(value) == len("sha256:")+64 && strings.HasPrefix(value, "sha256:") && strings.Trim(value[len("sha256:"):], "0123456789abcdef") == ""
+}
 
 // exactFields refuses ambiguous spellings and repeated fields before using a decision from the agent.
 func exactFields(data []byte, names ...string) (map[string]json.RawMessage, error) {
@@ -77,7 +83,7 @@ func pinnedImage(m *manifest.Manifest, app, image string) bool {
 }
 
 func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag string) error {
-	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "remove", "destroy", "restore", "exec", "command", "schema_revert")
+	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "ingress", "changes", "remove", "destroy", "restore", "exec", "command", "schema_revert")
 	if err != nil {
 		return err
 	}
@@ -114,7 +120,13 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 			return errors.New("invalid agent deploy plan")
 		}
 	}
-	if raw := fields["diff"]; raw != nil && !validImageDiff(raw) {
+	if raw := fields["diff"]; raw != nil && (req.Adopt || !validImageDiff(raw)) {
+		return errors.New("invalid agent deploy plan")
+	}
+	if raw := fields["changes"]; raw != nil && (!req.Adopt || !validStringList(raw)) {
+		return errors.New("invalid agent deploy plan")
+	}
+	if raw := fields["ingress"]; raw != nil && !validDeployIngress(raw) {
 		return errors.New("invalid agent deploy plan")
 	}
 	if raw := fields["blockers"]; raw != nil {
@@ -127,6 +139,77 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 		}
 	}
 	return nil
+}
+
+// validStringList requires a non-null array of non-null strings.
+func validStringList(data []byte) bool {
+	var values []json.RawMessage
+	if json.Unmarshal(data, &values) != nil || values == nil {
+		return false
+	}
+	for _, raw := range values {
+		var value *string
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// validDeployIngress validates the route plan produced by dryRunPublish, not ingress apply.
+func validDeployIngress(data []byte) bool {
+	fields, err := exactOnlyFields(data, "tunnel", "tunnel_id", "dns", "changes", "conflicts", "notes")
+	if err != nil {
+		return false
+	}
+	var tunnel *string
+	var dns *bool
+	if json.Unmarshal(fields["tunnel"], &tunnel) != nil || tunnel == nil || json.Unmarshal(fields["dns"], &dns) != nil || dns == nil {
+		return false
+	}
+	if raw := fields["tunnel_id"]; raw != nil {
+		var id *string
+		if json.Unmarshal(raw, &id) != nil || id == nil {
+			return false
+		}
+	}
+	if raw := fields["notes"]; raw != nil && !validStringList(raw) {
+		return false
+	}
+	if raw := fields["conflicts"]; raw != nil {
+		if !validStringList(raw) {
+			return false
+		}
+		var conflicts []string
+		if json.Unmarshal(raw, &conflicts) != nil || len(conflicts) != 0 {
+			return false
+		}
+	}
+	var changes []json.RawMessage
+	if json.Unmarshal(fields["changes"], &changes) != nil || changes == nil {
+		return false
+	}
+	for _, raw := range changes {
+		change, err := exactOnlyFields(raw, "hostname", "app", "role", "route", "dns", "target", "previous")
+		if err != nil {
+			return false
+		}
+		values := make(map[string]string, len(change))
+		for key, raw := range change {
+			var value *string
+			if json.Unmarshal(raw, &value) != nil || value == nil {
+				return false
+			}
+			values[key] = *value
+		}
+		if values["hostname"] == "" || !slices.Contains([]string{"add", "change", "remove", "release", "adopt", "keep"}, values["route"]) {
+			return false
+		}
+		if value := values["dns"]; value != "" && !slices.Contains([]string{"add", "change", "remove", "release", "adopt", "keep"}, value) {
+			return false
+		}
+	}
+	return true
 }
 
 // exactOnlyFields also refuses fields the renderer would otherwise silently discard.
