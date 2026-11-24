@@ -11,9 +11,9 @@ import (
 
 // A manifest has two scopes. The app scope of an app is apps.<app>, the jobs and backups that name it, and the service probes
 // aimed at it: a deploy of the app applies it, and a rollback of the app takes it back. The environment scope is everything
-// else: the project, the network, the registries, the declared secrets, the destinations, the state backup, telemetry, peers,
-// alerts, the probes that name no app, and the rest. A deploy of any app, and berthy apply, applies it, and a rollback never
-// changes it.
+// else: the project, the network, the servers, the registries, the declared secrets, the destinations, the state backup,
+// telemetry, peers, alerts, the probes that name no app, and the rest. A deploy of any app, and berthy apply, applies it, and
+// a rollback never changes it.
 
 // EnvScope returns m without its apps, and without the jobs, backups and probes that name an app.
 func (m Manifest) EnvScope() Manifest {
@@ -110,6 +110,7 @@ func SettingsChanges(prev, next Manifest, environment string) []string {
 	}
 	scalar("network", previousNetwork, next.NetworkName(environment))
 	scalar("protected", fmt.Sprint(prev.Protected), fmt.Sprint(next.Protected))
+	out = append(out, mapChanges("servers", prev.Servers, next.Servers)...)
 	out = append(out, mapChanges("registries", prev.Registries, next.Registries)...)
 	out = append(out, mapChanges("secrets", prev.Secrets, next.Secrets)...)
 	out = append(out, mapChanges("destinations", prev.Destinations, next.Destinations)...)

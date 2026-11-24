@@ -132,8 +132,9 @@ func TestSettingsChangesNamesEachDifference(t *testing.T) {
 	next.Alerts.Telegram.ChatID = "2"
 	next.Peers["staging"] = "https://staging.example.com:443"
 	next.Telemetry = &Telemetry{OTLPEndpoint: "http://127.0.0.1:4318"}
+	next.Servers = map[string]Server{"pg": {SSH: "ops@10.0.0.5"}}
 	got := SettingsChanges(prev, next, "test")
-	want := []string{"network: demo -> other", "registries: - ghcr.io", "destinations: ~ offsite", "telemetry: added", "probes: + extra", "peers: + staging", "alerts: changed"}
+	want := []string{"network: demo -> other", "registries: - ghcr.io", "destinations: ~ offsite", "telemetry: added", "probes: + extra", "peers: + staging", "alerts: changed", "servers: + pg"}
 	slices.Sort(got)
 	slices.Sort(want)
 	if !reflect.DeepEqual(got, want) {
