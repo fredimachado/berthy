@@ -5,9 +5,7 @@ package keycopy
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -76,6 +74,17 @@ func createFile(parent *os.File, name string) (*os.File, error) {
 	}
 	return ntOpen(parent, name, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE, windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE, sd)
 }
+func createStage(parent *os.File, name string) (*staging, *os.File, error) {
+	f, err := createFile(parent, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &staging{parent: parent, dir: parent, name: name}, f, nil
+}
+func finishStageWrite(f *os.File) error        { return f.Close() }
+func closeStageWrite(*os.File) error           { return nil }
+func closeStage(*staging)                      {}
+func removeStage(s *staging, info os.FileInfo) { removeOwn(s.dir, s.name, info) }
 func openDir(parent *os.File, name string) (*os.File, error) {
 	return ntOpen(parent, name, windows.FILE_GENERIC_READ, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, nil)
 }
@@ -124,13 +133,6 @@ func checkPrivate(f *os.File, dir bool) error {
 	}
 	return nil
 }
-func isLink(fi fs.FileInfo) bool {
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return true
-	}
-	d, ok := fi.Sys().(*syscall.Win32FileAttributeData)
-	return !ok || d.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
 
 // The legacy FileLinkInformation class makes a no-replace hard link relative to RootDirectory.
 type linkInfo struct {
@@ -140,8 +142,8 @@ type linkInfo struct {
 	name    [1]uint16
 }
 
-func linkFile(dir *os.File, old, name string, info os.FileInfo) error {
-	f, err := openDelete(dir, old)
+func linkFile(from, to *os.File, old, name string, info os.FileInfo) error {
+	f, err := openDelete(from, old)
 	if err != nil {
 		return err
 	}
@@ -162,7 +164,7 @@ func linkFile(dir *os.File, old, name string, info os.FileInfo) error {
 	size := int(unsafe.Offsetof(shape.name)) + len(n)*2
 	buf := make([]byte, size)
 	p := (*linkInfo)(unsafe.Pointer(&buf[0]))
-	p.root = windows.Handle(dir.Fd())
+	p.root = windows.Handle(to.Fd())
 	p.length = uint32(len(n) * 2)
 	copy(unsafe.Slice(&p.name[0], len(n)), n)
 	var iosb windows.IO_STATUS_BLOCK

@@ -20,6 +20,76 @@ var testID = scope.ID{Project: "shop", Environment: "prod"}
 
 func testKey(n byte) []byte { return bytes.Repeat([]byte{n}, 32) }
 
+func snapshotFile(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := openFile(dir, filepath.Base(path))
+	dir.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func makePrivateFixture(t *testing.T, path string, content []byte) {
+	t.Helper()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := createFile(dir, filepath.Base(path))
+	dir.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write(content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentitySnapshotDetectsReplacement(t *testing.T) {
+	home := t.TempDir()
+	path, _, err := Save(home, testID, testKey(41))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotFile(t, path)
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	makePrivateFixture(t, path, testKey(41))
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after := snapshotFile(t, path)
+	if os.SameFile(before, after) {
+		t.Fatal("replacement has the original identity")
+	}
+}
+
+func TestAbandonedFixtureIsPrivate(t *testing.T) {
+	home := t.TempDir()
+	path, _, err := Save(home, testID, testKey(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(filepath.Dir(path), ".abandoned.tmp")
+	makePrivateFixture(t, tmp, testKey(42))
+	assertPrivatePath(t, tmp, false)
+}
+
 func TestSaveWritesAndRetainsPrivateCopies(t *testing.T) {
 	home := t.TempDir()
 	key := testKey(17)
@@ -41,18 +111,12 @@ func TestSaveWritesAndRetainsPrivateCopies(t *testing.T) {
 	if err != nil || !bytes.Equal(got, key) {
 		t.Fatal("copy differs")
 	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := snapshotFile(t, path)
 	again, made, err := Save(home, testID, key)
 	if err != nil || made || again != path {
 		t.Fatalf("repeat: created=%v err=%v", made, err)
 	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := snapshotFile(t, path)
 	if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
 		t.Fatal("copy replaced")
 	}
@@ -224,6 +288,28 @@ func TestSaveReportsMovedFolder(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsLinkToMovedFolderDuringVerification(t *testing.T) {
+	home := t.TempDir()
+	var moveErr error
+	afterVerifyBerthy = func() {
+		moveErr = os.Rename(filepath.Join(home, ".berthy"), filepath.Join(home, "moved"))
+		if moveErr == nil {
+			moveErr = plantLink(filepath.Join(home, ".berthy"), filepath.Join(home, "moved"))
+		}
+	}
+	t.Cleanup(func() { afterVerifyBerthy = nil })
+	path, _, err := Save(home, testID, testKey(40))
+	if moveErr != nil {
+		if _, e := os.Lstat(filepath.Join(home, ".berthy")); e == nil && err == nil && path != "" {
+			return
+		}
+		t.Fatalf("move or link failed: %v, save: %v", moveErr, err)
+	}
+	if path != "" || !errors.Is(err, ErrMoved) {
+		t.Fatalf("returned path through moved directory: %q, %v", path, err)
+	}
+}
+
 func TestSaveDoesNotRemoveAReplacedTemporaryEntry(t *testing.T) {
 	home := t.TempDir()
 	var replacement string
@@ -286,8 +372,8 @@ func TestSyncFailureIsNotRescuedByPublishedFile(t *testing.T) {
 func TestPublicationErrorIsNotRescuedByPublishedFile(t *testing.T) {
 	home := t.TempDir()
 	realPublish := publish
-	publish = func(dir *os.File, old, name string, info os.FileInfo) error {
-		if err := realPublish(dir, old, name, info); err != nil {
+	publish = func(from, to *os.File, old, name string, info os.FileInfo) error {
+		if err := realPublish(from, to, old, name, info); err != nil {
 			return err
 		}
 		return errors.New("injected publication failure")
@@ -356,13 +442,8 @@ func TestSaveLeavesEarlierTemporaryFiles(t *testing.T) {
 	var before []os.FileInfo
 	for i, content := range [][]byte{nil, key} {
 		tmp := filepath.Join(filepath.Dir(path), "."+FileName(testID, id)+fmt.Sprintf(".%016x.tmp", i))
-		if err = os.WriteFile(tmp, content, 0600); err != nil {
-			t.Fatal(err)
-		}
-		info, err := os.Stat(tmp)
-		if err != nil {
-			t.Fatal(err)
-		}
+		makePrivateFixture(t, tmp, content)
+		info := snapshotFile(t, tmp)
 		paths = append(paths, tmp)
 		before = append(before, info)
 	}
@@ -372,8 +453,8 @@ func TestSaveLeavesEarlierTemporaryFiles(t *testing.T) {
 			t.Fatalf("save %d: %v", i, err)
 		}
 		for j, tmp := range paths {
-			after, err := os.Stat(tmp)
-			if err != nil || !os.SameFile(before[j], after) || before[j].Size() != after.Size() || !before[j].ModTime().Equal(after.ModTime()) {
+			after := snapshotFile(t, tmp)
+			if !os.SameFile(before[j], after) || before[j].Size() != after.Size() || !before[j].ModTime().Equal(after.ModTime()) {
 				t.Fatal("earlier temporary file changed")
 			}
 		}

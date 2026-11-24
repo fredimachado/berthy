@@ -21,9 +21,16 @@ var ErrMoved = errors.New("the key folder changed while the copy was written")
 
 // Test hooks are set only by tests that do not run concurrently.
 var afterPin func()
+var afterVerifyBerthy func()
 var beforeCleanup func()
 var syncDir = syncDirectory
 var publish = linkFile
+
+type staging struct {
+	parent, dir *os.File
+	name, outer string
+	outerInfo   os.FileInfo
+}
 
 // FileName names a copy without exposing its key.
 func FileName(id scope.ID, keyID string) string {
@@ -79,20 +86,76 @@ func Save(home string, id scope.ID, key []byte) (string, bool, error) {
 		return "", false, err
 	}
 	defer file.Close()
-	for _, c := range []struct {
-		path string
-		f    *os.File
-	}{{bp, b}, {kp, k}, {path, file}} {
-		pi, e := os.Lstat(c.path)
-		if e != nil || isLink(pi) {
-			return "", false, ErrMoved
-		}
-		hi, e := c.f.Stat()
-		if e != nil || !os.SameFile(pi, hi) {
-			return "", false, ErrMoved
-		}
+	if err = verifyPath(h, b, k, file, name); err != nil {
+		return "", false, err
 	}
 	return path, created, nil
+}
+
+func verifyPath(home, berthy, keys, file *os.File, name string) error {
+	b, err := openDir(home, ".berthy")
+	if err != nil {
+		return ErrMoved
+	}
+	defer b.Close()
+	if !samePrivate(b, berthy, true) {
+		return ErrMoved
+	}
+	if afterVerifyBerthy != nil {
+		afterVerifyBerthy()
+	}
+	k, err := openDir(b, "keys")
+	if err != nil {
+		return ErrMoved
+	}
+	defer k.Close()
+	if !samePrivate(k, keys, true) {
+		return ErrMoved
+	}
+	f, err := openFile(k, name)
+	if err != nil {
+		return ErrMoved
+	}
+	defer f.Close()
+	if !samePrivate(f, file, false) {
+		return ErrMoved
+	}
+	for _, c := range []struct {
+		parent   *os.File
+		name     string
+		expected *os.File
+		dir      bool
+	}{
+		{k, name, f, false}, {b, "keys", k, true}, {home, ".berthy", b, true},
+	} {
+		var current *os.File
+		if c.dir {
+			current, err = openDir(c.parent, c.name)
+		} else {
+			current, err = openFile(c.parent, c.name)
+		}
+		if err != nil {
+			return ErrMoved
+		}
+		matches := samePrivate(current, c.expected, c.dir)
+		current.Close()
+		if !matches {
+			return ErrMoved
+		}
+	}
+	return nil
+}
+
+func samePrivate(a, b *os.File, dir bool) bool {
+	if checkPrivate(a, dir) != nil {
+		return false
+	}
+	ai, err := a.Stat()
+	if err != nil {
+		return false
+	}
+	bi, err := b.Stat()
+	return err == nil && os.SameFile(ai, bi)
 }
 
 func childDir(parent *os.File, name, path, parentPath string) (*os.File, error) {
@@ -156,51 +219,54 @@ func save(dir *os.File, path, name string, key []byte) (bool, *os.File, error) {
 		return false, nil, cannotWrite(path, err)
 	}
 	tmp := "." + name + "." + hex.EncodeToString(nonce[:]) + ".tmp"
-	w, err := createFile(dir, tmp)
+	stage, w, err := createStage(dir, tmp)
 	if err != nil {
 		return false, nil, cannotWrite(path, err)
 	}
+	defer w.Close()
 	info, statErr := w.Stat()
 	if statErr == nil {
 		statErr = checkPrivate(w, false)
 	}
 	if statErr != nil {
-		w.Close()
+		closeStage(stage)
 		return false, nil, cannotWrite(path, statErr)
 	}
 	// The cleanup checks the created identity; it never removes a later occupant.
 	cleaned := false
 	defer func() {
 		if !cleaned {
-			removeOwn(dir, tmp, info)
+			removeStage(stage, info)
 		}
+		closeStage(stage)
 	}()
-	entry, err := openFile(dir, tmp)
+	entry, err := openFile(stage.dir, stage.name)
 	if err != nil {
-		w.Close()
 		return false, nil, cannotWrite(path, err)
 	}
 	current, e := entry.Stat()
 	entry.Close()
 	if e != nil || !os.SameFile(info, current) {
-		w.Close()
 		return false, nil, cannotWrite(path, errors.New("temporary entry changed"))
 	}
 	if _, err = w.Write(key); err == nil {
 		err = w.Sync()
 	}
-	if e := w.Close(); err == nil {
+	if e := finishStageWrite(w); err == nil {
 		err = e
 	}
 	if err != nil {
 		return false, nil, cannotWrite(path, err)
 	}
-	linkErr := publish(dir, tmp, name, info)
+	linkErr := publish(stage.dir, dir, stage.name, name, info)
 	if beforeCleanup != nil {
 		beforeCleanup()
 	}
-	removeOwn(dir, tmp, info)
+	removeStage(stage, info)
 	cleaned = true
+	if err = closeStageWrite(w); err != nil {
+		return false, nil, cannotWrite(path, err)
+	}
 	if linkErr != nil && !errors.Is(linkErr, fs.ErrExist) {
 		return false, nil, cannotWrite(path, linkErr)
 	}
