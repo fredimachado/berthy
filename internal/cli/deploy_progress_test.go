@@ -672,3 +672,58 @@ func TestDeployInterruptQuotesWindowsConfigForPowerShell(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployInterruptQuotesOperationID(t *testing.T) {
+	forceStderrTerminal(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	id := "op a';&\u2018"
+	events := "/v1/operations/" + url.PathEscape(id) + "/events"
+	statusPath := "/v1/operations/" + url.PathEscape(id)
+	var requests []string
+	client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		var body io.Reader = strings.NewReader("id: 1\nevent: accepted\ndata: {}\n\n")
+		if r.URL.Path == statusPath {
+			body = cancelAtEOF{strings.NewReader(`{"state":"running"}`), cancel}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(body), Header: make(http.Header), Request: r}, nil
+	})}
+	base, _ := url.Parse("http://agent.invalid")
+	var out, errs bytes.Buffer
+	got := watchOperation(ctx, client, base, "token", "/v1/", id, events, &out, &errs, false, "deploy", "dev", "demo", operationWatchOptions{config: "/tmp/private config.json"})
+	if got != 1 || len(requests) != 2 || requests[0] != events+"?progress=1" || requests[1] != statusPath+"?" {
+		t.Fatalf("exit=%d requests=%q", got, requests)
+	}
+	lines := strings.Split(errs.String(), "\n")
+	if len(lines) < 3 || !strings.Contains(lines[0], "operation "+id+" may continue") {
+		t.Fatalf("diagnostic %q", errs.String())
+	}
+	for _, prefix := range []struct{ line, command string }{{lines[1], "inspect: berthy diagnostics "}, {lines[2], "cancel: berthy cancel "}} {
+		if !strings.HasPrefix(prefix.line, prefix.command) {
+			t.Fatalf("command %q", prefix.line)
+		}
+		argument, _, ok := strings.Cut(strings.TrimPrefix(prefix.line, prefix.command), " -e dev --project demo --config ")
+		if !ok {
+			t.Fatalf("missing common suffix: %q", prefix.line)
+		}
+		var command *exec.Cmd
+		if runtime.GOOS == "windows" {
+			command = exec.Command("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($value) [Console]::Out.Write($value) } `+argument)
+		} else {
+			command = exec.Command("sh", "-c", "printf '%s' "+argument)
+		}
+		actual, err := command.CombinedOutput()
+		if err != nil || string(actual) != id {
+			t.Fatalf("shell received %q, err %v, argument %q", actual, err, argument)
+		}
+	}
+}
+
+func TestOperationHintLeavesSafeIDsUnchanged(t *testing.T) {
+	for _, id := range []string{"op", "op-real", "0123456789abcdef0123456789abcdef"} {
+		if got := operationHintArg(id, false); got != id {
+			t.Errorf("operationHintArg(%q) = %q", id, got)
+		}
+	}
+}

@@ -29,6 +29,19 @@ var powerShellSingleQuotes = strings.NewReplacer(
 	"\u201b", "\u201b\u201b",
 )
 
+func operationHintArg(word string, config bool) string {
+	if runtime.GOOS == "windows" {
+		if !config && word != "" && strings.Trim(word, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == "" {
+			return word
+		}
+		return "'" + powerShellSingleQuotes.Replace(word) + "'"
+	}
+	if !config && strings.Contains(word, "~") {
+		return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+	}
+	return shellWord(word)
+}
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, options ...operationWatchOptions) int {
 	var config string
 	redact := []string{token}
@@ -169,16 +182,11 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		progress.Close()
 		suffix := fmt.Sprintf(" -e %s --project %s", safeSecretText(env, redact...), safeSecretText(project, redact...))
 		if config != "" {
-			word := safeSecretText(config, redact...)
-			if runtime.GOOS == "windows" {
-				word = "'" + powerShellSingleQuotes.Replace(word) + "'"
-			} else {
-				word = shellWord(word)
-			}
-			suffix += " --config " + word
+			suffix += " --config " + operationHintArg(safeSecretText(config, redact...), true)
 		}
 		shownID := safeSecretText(id, redact...)
-		fmt.Fprintf(errout, "watch interrupted; operation %s may continue\ninspect: berthy diagnostics %s%s\ncancel: berthy cancel %s%s\n", shownID, shownID, suffix, shownID, suffix)
+		argID := operationHintArg(shownID, false)
+		fmt.Fprintf(errout, "watch interrupted; operation %s may continue\ninspect: berthy diagnostics %s%s\ncancel: berthy cancel %s%s\n", shownID, argID, suffix, argID, suffix)
 		return 1
 	}
 	for {
