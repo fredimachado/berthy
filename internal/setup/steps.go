@@ -38,6 +38,7 @@ type Build struct {
 
 // Options are the choices of one run.
 type Options struct {
+	StepStarted     func(name string)
 	Local           bool                             // --local: this machine is the server and keeps no copy
 	KeyHome         string                           // this machine's home, or empty when unavailable
 	NewWrapKey      func() (*keywrap.Private, error) // nil uses keywrap.Generate
@@ -188,6 +189,9 @@ func Steps() []Step {
 func Run(ctx context.Context, s *Session, steps []Step, report func(StepResult)) bool {
 	for _, step := range steps {
 		s.Log.begin(step.Name)
+		if s.Opts.StepStarted != nil {
+			s.Opts.StepStarted(step.Name)
+		}
 		status, detail, err := step.Run(ctx, s)
 		if err != nil {
 			status, detail = StatusFailed, clean(err.Error())

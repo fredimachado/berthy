@@ -169,10 +169,16 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if *local {
 		report.Target = "this server"
 	}
+	progress := newProgressLine(out, !*asJSON && !*verbose && stderrTerminal(out) && os.Getenv("TERM") != "dumb")
+	opts.StepStarted = progress.Start
 	show := func(r setup.StepResult) {
 		report.Steps = append(report.Steps, r)
 		if !*asJSON {
-			printSetupStep(out, r)
+			if progress.label == "" {
+				printSetupStep(out, r)
+			} else {
+				progress.Finish(r.Status, r.Detail)
+			}
 		}
 	}
 	var session *setup.Session
@@ -190,6 +196,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 		report.OK = setup.Run(ctx, session, setup.Steps(), show)
 	}
+	progress.Close()
 	// A failed run also shows an uncertain token because the server may have kept its configuration.
 	if session != nil && session.Token != "" && (session.TokenLive && (!session.TokenStored || *showToken) || !report.OK && session.TokenUncertain) {
 		report.Token = session.Token

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -400,4 +401,71 @@ func indexOfScript(t *testing.T, server *setupServer, marker string) int {
 	}
 	t.Fatalf("no script with %q", marker)
 	return 0
+}
+
+func TestSetupStepStartsBeforeCancelledWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan string, 1)
+	entered := make(chan struct{})
+	results := make(chan setup.StepResult, 1)
+	done := make(chan bool, 1)
+	session := &setup.Session{Opts: setup.Options{StepStarted: func(name string) { started <- name }}}
+	go func() {
+		done <- setup.Run(ctx, session, []setup.Step{{Name: "wait", Run: func(ctx context.Context, _ *setup.Session) (string, string, error) {
+			close(entered)
+			<-ctx.Done()
+			return "", "", ctx.Err()
+		}}}, func(r setup.StepResult) { results <- r })
+	}()
+	<-entered
+	if got := <-started; got != "wait" {
+		t.Fatalf("start = %q", got)
+	}
+	cancel()
+	if <-done {
+		t.Fatal("cancelled run succeeded")
+	}
+	if got := <-results; got.Step != "wait" || got.Status != setup.StatusFailed {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestSetupMixedStreamsAndVerbose(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	args := setupArgs(t, "--dry-run")
+	run := func(outTerminal, errTerminal bool, extra ...string) (string, string) {
+		withSetupRunner(t, freshNoDocker(t, "ops@s1"))
+		var out, errout bytes.Buffer
+		old := stderrTerminal
+		stderrTerminal = func(w io.Writer) bool {
+			if w == &out {
+				return outTerminal
+			}
+			if w == &errout {
+				return errTerminal
+			}
+			return false
+		}
+		defer func() { stderrTerminal = old }()
+		code := Run(append(append([]string{"setup"}, args...), extra...), &out, &errout)
+		if code != 0 {
+			t.Fatalf("setup exit %d: %s", code, errout.String())
+		}
+		return out.String(), errout.String()
+	}
+	plain, _ := run(false, false)
+	piped, banner := run(false, true)
+	if piped != plain || !strings.HasPrefix(banner, "berthy:") {
+		t.Fatal("terminal stderr changed redirected stdout")
+	}
+	verbose, _ := run(true, false, "--verbose")
+	if verbose != plain {
+		t.Fatal("verbose terminal stdout changed")
+	}
+	jsonPlain, _ := run(false, false, "--json")
+	jsonTerminal, _ := run(true, false, "--json")
+	if jsonPlain != jsonTerminal {
+		t.Fatal("terminal changed JSON stdout")
+	}
 }
