@@ -1002,7 +1002,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
 		if payload != nil && agentclient.InvalidRequest(status, data) {
 			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
 				fmt.Fprintln(errout, hint)

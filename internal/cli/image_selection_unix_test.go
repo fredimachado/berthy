@@ -47,7 +47,7 @@ func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
 					}
 					requests <- req
 					if req.DryRun {
-						fmt.Fprintf(w, `{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, req.Version)
+						fmt.Fprintf(w, `{"app":"api","image":%q,"tag":"stable","roles":["web"],"notes":["start\u001b[2Kend","\u0074est-token"]}`, req.Version)
 					} else {
 						fmt.Fprint(w, `{}`)
 					}
@@ -73,24 +73,31 @@ func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
 				done <- Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable"}, tty, &errs)
 			}()
 			// Drain the preview and wait for the prompt, without a clock-based sleep.
-			prompt := make(chan error, 1)
+			type promptResult struct {
+				text string
+				err  error
+			}
+			prompt := make(chan promptResult, 1)
 			go func() {
 				reader := bufio.NewReader(master)
 				var seen strings.Builder
 				for !strings.Contains(seen.String(), "Proceed with this deploy? [y/N] ") {
 					c, err := reader.ReadByte()
 					if err != nil {
-						prompt <- err
+						prompt <- promptResult{err: err}
 						return
 					}
 					seen.WriteByte(c)
 				}
-				prompt <- nil
+				prompt <- promptResult{text: seen.String()}
 			}()
 			select {
-			case err := <-prompt:
-				if err != nil {
-					t.Fatal(err)
+			case result := <-prompt:
+				if result.err != nil {
+					t.Fatal(result.err)
+				}
+				if strings.ContainsRune(result.text, '\x1b') || strings.Contains(result.text, "test-token") || !strings.Contains(result.text, "[redacted]") {
+					t.Error("interactive preview contains unsafe response text")
 				}
 			case code := <-done:
 				t.Fatalf("deploy exited %d before confirmation: %s", code, errs.String())

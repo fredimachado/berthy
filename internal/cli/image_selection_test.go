@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"berthy/internal/deploy"
+	"berthy/internal/manifest"
 )
 
 func TestProtectedTagDryRunPinsBeforePreview(t *testing.T) {
@@ -251,5 +252,101 @@ func TestProtectedTagReleaseVersionPreflightRedactsToken(t *testing.T) {
 	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable", "--dry-run"}, &out, &errs)
 	if code == 0 || lookup.Load() != 0 || out.Len() != 0 || strings.Contains(errs.String(), "v0.8.2") || !strings.Contains(errs.String(), "[redacted]") {
 		t.Fatal("minimum-version refusal was missing, leaked the token, or reached lookup")
+	}
+}
+
+func TestProtectedTagPreviewRedactsDecodedResponse(t *testing.T) {
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	a := &selectionAgent{
+		policy:   `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`,
+		resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image),
+		plan:     fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"],"notes":["start\u001b[2Kend","\u0074est-token"],"x\u001b[31m":{"\u0074est-token":"details"}}`, image),
+	}
+	for _, asJSON := range []bool{false, true} {
+		args := []string{"--version", "stable", "--dry-run"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		code, out, errs := runSelection(t, a, "protected: true\n"+versionsManifest, args...)
+		if code != 0 {
+			t.Fatalf("json %t: exit %d: %s", asJSON, code, errs)
+		}
+		if strings.Contains(out, "test-token") || strings.ContainsRune(out, '\x1b') {
+			t.Errorf("json %t: output contains bearer or terminal control", asJSON)
+		}
+		if !strings.Contains(out, "[redacted]") || !strings.Contains(out, image) || !strings.Contains(out, "details") {
+			t.Errorf("json %t: missing expected preview content", asJSON)
+		}
+		if asJSON {
+			var plan struct {
+				Notes []string `json:"notes"`
+			}
+			if err := json.Unmarshal([]byte(out), &plan); err != nil || len(plan.Notes) != 2 || plan.Notes[0] != "start\x1b[2Kend" || plan.Notes[1] != "[redacted]" {
+				t.Error("machine preview did not preserve decoded data and redact its credential")
+			}
+		}
+	}
+}
+
+func TestDeploySubmissionRefusalRedactsDecodedBearer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"denied \u0074est-token"}`)
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := writeAliasDir(t, versionsManifest)
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable"}, &out, &errs)
+	if code != 1 || out.Len() != 0 || strings.Contains(errs.String(), "test-token") || !strings.Contains(errs.String(), "[redacted]") || !strings.Contains(errs.String(), "HTTP 403") {
+		t.Errorf("submission refusal is not safely redacted: exit %d", code)
+	}
+}
+
+func TestProtectedTagPreviewRefusesRedactionCollisions(t *testing.T) {
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct{ name, token, extra string }{
+		{"selection", "stable", ""},
+		{"decision key", "roles", ""},
+		{"redacted key collision", "test-token", `,"extra":{"[redacted]":"one","\u0074est-token":"two"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]%s}`, image, tc.extra)}
+			server := httptest.NewServer(http.HandlerFunc(a.serve))
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			t.Setenv("BERTHY_TEST_TOKEN", tc.token)
+			dir := writeAliasDir(t, "protected: true\n"+versionsManifest)
+			for _, extra := range [][]string{{}, {"--json"}} {
+				var out, errs bytes.Buffer
+				args := append([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable", "--dry-run"}, extra...)
+				code := Run(args, &out, &errs)
+				if code == 0 || out.Len() != 0 || strings.Contains(errs.String(), tc.token) {
+					t.Errorf("preview collision did not fail safely")
+				}
+			}
+		})
+	}
+}
+
+func TestImagePlanAllowsOnlyOmittedOrValidEmptyTag(t *testing.T) {
+	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine"}}}
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	req := deploy.Request{App: "api"}
+	for _, tc := range []struct {
+		name, field string
+		valid       bool
+	}{
+		{"omitted", "", true}, {"empty", `,"tag":""`, true}, {"null", `,"tag":null`, false}, {"number", `,"tag":1`, false}, {"nonempty", `,"tag":"stable"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := fmt.Sprintf(`{"app":"api","image":%q,"roles":["web"]%s}`, image, tc.field)
+			if got := imagePlan([]byte(data), m, req, image, ""); (got == nil) != tc.valid {
+				t.Errorf("plan accepted = %t", got == nil)
+			}
+		})
 	}
 }

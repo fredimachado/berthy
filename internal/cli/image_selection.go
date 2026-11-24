@@ -79,7 +79,16 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	}
 	var app, gotImage, gotTag string
 	var roles []string
-	if json.Unmarshal(fields["app"], &app) != nil || json.Unmarshal(fields["image"], &gotImage) != nil || json.Unmarshal(fields["tag"], &gotTag) != nil || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || app != req.App || gotTag != tag || !pinnedImage(m, req.App, gotImage) || (image != "" && gotImage != image) {
+	if raw := fields["tag"]; raw != nil {
+		var present *string
+		if json.Unmarshal(raw, &present) != nil || present == nil {
+			return errors.New("invalid agent deploy plan")
+		}
+		gotTag = *present
+	} else if tag != "" {
+		return errors.New("invalid agent deploy plan")
+	}
+	if json.Unmarshal(fields["app"], &app) != nil || json.Unmarshal(fields["image"], &gotImage) != nil || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || app != req.App || gotTag != tag || !pinnedImage(m, req.App, gotImage) || (image != "" && gotImage != image) {
 		return errors.New("invalid agent deploy plan")
 	}
 	if raw := fields["compose"]; raw != nil && string(raw) != "null" {
@@ -97,19 +106,101 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	return nil
 }
 
-func showImagePlan(out, errout io.Writer, data []byte, asJSON bool, heading string) error {
+// safeDeployPlan redacts decoded strings and keys before rendering, without changing the checked selection.
+func safeDeployPlan(data []byte, token string, asJSON bool) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var plan map[string]any
+	if dec.Decode(&plan) != nil || plan == nil || dec.Decode(new(json.RawMessage)) != io.EOF {
+		return nil, errors.New("invalid agent deploy plan")
+	}
+	for _, key := range []string{"app", "image", "tag"} {
+		if value, ok := plan[key].(string); ok && redactSecretText(value, token) != value {
+			return nil, errors.New("cannot safely display deploy selection")
+		}
+	}
+	safe, err := redactDeployValue(plan, token, !asJSON)
+	if err != nil {
+		return nil, err
+	}
+	return safe.(map[string]any), nil
+}
+
+func redactDeployValue(value any, token string, text bool) (any, error) {
+	sanitize := func(s string) string {
+		s = redactSecretText(s, token)
+		if text {
+			s = terminalSafe(s)
+		}
+		return s
+	}
+	switch v := value.(type) {
+	case string:
+		return sanitize(v), nil
+	case []any:
+		for i, item := range v {
+			safe, err := redactDeployValue(item, token, text)
+			if err != nil {
+				return nil, err
+			}
+			v[i] = safe
+		}
+		return v, nil
+	case map[string]any:
+		safe := make(map[string]any, len(v))
+		for key, item := range v {
+			name := sanitize(key)
+			for _, decision := range []string{"app", "image", "tag", "roles", "blockers", "compose"} {
+				if strings.EqualFold(key, decision) && name != key {
+					return nil, errors.New("cannot safely display deploy plan")
+				}
+			}
+			if _, exists := safe[name]; exists {
+				return nil, errors.New("cannot safely display deploy plan")
+			}
+			var err error
+			safe[name], err = redactDeployValue(item, token, text)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return safe, nil
+	default:
+		return v, nil
+	}
+}
+
+func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, heading string) error {
+	plan, err := safeDeployPlan(data, token, asJSON)
+	if err != nil {
+		return err
+	}
+	if redactSecretText(heading, token) != heading {
+		return errors.New("cannot safely display deploy selection")
+	}
 	var buf bytes.Buffer
-	if !asJSON && heading != "" {
-		fmt.Fprintln(&buf, terminalSafe(heading))
-	}
-	var code int
 	if asJSON {
-		code = printResponse(&buf, errout, data, true)
+		encoded, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			return errors.New("invalid agent deploy plan")
+		}
+		fmt.Fprintln(&buf, string(encoded))
 	} else {
-		code = printDryRun(&buf, errout, data)
-	}
-	if code != 0 {
-		return errors.New("invalid agent deploy plan")
+		if heading != "" {
+			fmt.Fprintln(&buf, terminalSafe(heading))
+		}
+		lines := takeDiffLines(plan)
+		if lines == nil {
+			printText(&buf, plan, "")
+		} else {
+			app, _ := plan["app"].(string)
+			delete(plan, "app")
+			fmt.Fprintln(&buf, app)
+			printLines(&buf, "  ", lines)
+			if len(plan) > 0 {
+				printText(&buf, plan, "")
+			}
+		}
 	}
 	n, err := out.Write(buf.Bytes())
 	if err == nil && n != buf.Len() {
@@ -189,8 +280,8 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 			return 1
 		}
 		if f.dry {
-			if err := showImagePlan(out, errout, []byte(target.Redact(string(data))), f.json, ""); err != nil {
-				fmt.Fprintln(errout, err)
+			if err := showImagePlan(out, data, target.Token, f.json, ""); err != nil {
+				fmt.Fprintln(errout, safeSecretText(err.Error(), target.Token))
 				return 1
 			}
 			return 0
@@ -257,8 +348,8 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	if err := showImagePlan(out, errout, []byte(target.Redact(string(data))), f.json, "Deploy "+target.Project+"/"+target.Env+" app "+req.App); err != nil {
-		fmt.Fprintln(errout, err)
+	if err := showImagePlan(out, data, target.Token, f.json, "Deploy "+target.Project+"/"+target.Env+" app "+req.App); err != nil {
+		fmt.Fprintln(errout, safeSecretText(err.Error(), target.Token))
 		return 1
 	}
 	if f.dry {
