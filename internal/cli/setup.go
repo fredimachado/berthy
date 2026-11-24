@@ -10,10 +10,12 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +28,7 @@ import (
 	"berthy/internal/version"
 )
 
-const setupUsage = "usage: berthy setup -e ENV [--host USER@SERVER | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
+const setupUsage = "usage: berthy setup -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
 	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]"
 
@@ -85,6 +87,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	env := fset.String("e", "", "environment")
 	project := fset.String("project", "", "project name")
 	host := fset.String("host", "", "USER@SERVER to set up over ssh")
+	server := fset.String("server", "", "NAME of the manifest server to set up")
 	local := fset.Bool("local", false, "set up the server this command runs on")
 	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run")
 	network := fset.String("network", "", "the shared network, when there is no manifest")
@@ -102,7 +105,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	envGiven, keyFileGiven, hostGiven := false, false, false
+	envGiven, keyFileGiven, hostGiven, serverGiven := false, false, false, false
 	fset.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "e":
@@ -111,6 +114,8 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 			keyFileGiven = true
 		case "host":
 			hostGiven = true
+		case "server":
+			serverGiven = true
 		}
 	})
 	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
@@ -119,6 +124,16 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		fmt.Fprintf(errout, format+"\n", a...)
 		fmt.Fprintln(errout, setupUsage)
 		return 2
+	}
+	chosen := 0
+	if hostGiven {
+		chosen++
+	}
+	if serverGiven {
+		chosen++
+	}
+	if *local {
+		chosen++
 	}
 	switch {
 	case fset.NArg() != 0:
@@ -130,8 +145,8 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 			return usage("BERTHY_ENV is not a valid environment")
 		}
 		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
-	case hostGiven && *local:
-		return usage("--host and --local cannot be used together")
+	case chosen > 1:
+		return usage("use only one of --host, --server and --local")
 	case hostGiven && !sshhost.Valid(*host):
 		return usage("invalid --host %q: use USER@SERVER or SERVER", *host)
 	}
@@ -149,15 +164,11 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		return usage("%v", err)
 	}
 	if !*local && !hostGiven {
-		if from.manifest == nil || len(from.manifest.Servers) == 0 {
-			return usage("setup needs --host USER@SERVER, a single server in the manifest, or --local")
+		dest, err := setupDestination(from.manifest, *env, *server, serverGiven)
+		if err != nil {
+			return usage("%v", err)
 		}
-		if len(from.manifest.Servers) > 1 {
-			return usage("the manifest lists multiple servers: pass --host USER@SERVER or --local")
-		}
-		for _, server := range from.manifest.Servers {
-			*host = server.SSH
-		}
+		*host = dest
 	}
 	where := "on " + *host
 	if *local {
@@ -337,6 +348,34 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 		return setupFrom{project: project, network: network, protected: protected}, nil
 	}
 	return setupFrom{}, fmt.Errorf("manifest of %s: %v", env, err)
+}
+
+// setupDestination picks the SSH destination from the manifest's servers: the one named by --server, or the
+// only one. m is nil when the directory has no manifest.
+func setupDestination(m *manifest.Manifest, env, name string, named bool) (string, error) {
+	var servers map[string]manifest.Server
+	if m != nil {
+		servers = m.Servers
+	}
+	names := slices.Sorted(maps.Keys(servers))
+	joined := strings.Join(names, ", ")
+	if named {
+		if len(servers) == 0 {
+			return "", fmt.Errorf("the manifest of %s lists no servers", env)
+		}
+		server, ok := servers[name]
+		if !ok {
+			return "", fmt.Errorf("the manifest of %s has no server %q: use one of %s", env, name, joined)
+		}
+		return server.SSH, nil
+	}
+	switch len(servers) {
+	case 0:
+		return "", fmt.Errorf("setup needs --host USER@SERVER, a server in the manifest, or --local")
+	case 1:
+		return servers[names[0]].SSH, nil
+	}
+	return "", fmt.Errorf("the manifest of %s lists servers %s: pass --server NAME", env, joined)
 }
 
 // secretsStep describes the secrets still needing attention after setup.
