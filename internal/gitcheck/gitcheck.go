@@ -185,19 +185,52 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 			changed = append(changed, name)
 			continue
 		}
-		hash, _, err := runInput(ctx, root, f.Bytes, "hash-object", "--stdin", "--path="+rootName)
+		match, err := matchesCheckout(ctx, root, rootName, meta[2], f.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("checkout input hash unavailable: %w", err)
+			return nil, fmt.Errorf("checkout input conversion unavailable: %w", err)
 		}
-		hash = strings.TrimSpace(hash)
-		if len(hash) != len(meta[2]) {
-			return nil, fmt.Errorf("invalid checkout input hash")
-		}
-		if hash != meta[2] {
+		if !match {
 			changed = append(changed, name)
 		}
 	}
 	return changed, nil
+}
+
+// matchesCheckout compares streamed checkout output without retaining filter output.
+func matchesCheckout(ctx context.Context, dir, name, object string, captured []byte) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "--filters", "--path="+name, object)
+	cmd.Env = environment()
+	cmd.WaitDelay = time.Second
+	output := &checkoutComparison{expected: captured}
+	diagnostics := &checkoutComparison{}
+	cmd.Stdout, cmd.Stderr = output, diagnostics
+	if err := cmd.Run(); err != nil {
+		return false, err
+	}
+	if diagnostics.different {
+		return false, fmt.Errorf("checkout conversion reported diagnostics")
+	}
+	return !output.different && output.offset == len(captured), nil
+}
+
+type checkoutComparison struct {
+	expected  []byte
+	offset    int
+	different bool
+}
+
+func (c *checkoutComparison) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := len(c.expected) - c.offset
+	if n > remaining {
+		c.different = true
+		p = p[:remaining]
+	}
+	if !bytes.Equal(p, c.expected[c.offset:c.offset+len(p)]) {
+		c.different = true
+	}
+	c.offset += len(p)
+	return n, nil
 }
 
 // changedPaths reads the NUL-separated entries of git status --porcelain=v1 -z. Each is "XY path", and a rename or a copy
@@ -227,12 +260,7 @@ func changedPaths(status, prefix string) []string {
 // and the home directory, and the variables that keep its output and its locking predictable. GIT_DIR and the like are left
 // out, so git finds the repository of dir and no other.
 func run(ctx context.Context, dir string, args ...string) (stdout, stderr string, err error) {
-	return runInput(ctx, dir, nil, args...)
-}
-
-func runInput(ctx context.Context, dir string, input []byte, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Stdin = bytes.NewReader(input)
 	cmd.Env = environment()
 	cmd.WaitDelay = time.Second
 	var out, errOut bytes.Buffer

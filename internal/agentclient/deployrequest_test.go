@@ -399,3 +399,82 @@ func TestCapturedUntrackedOverlayRemovedBeforeStatus(t *testing.T) {
 		t.Fatalf("%+v %+v %v", req, co, err)
 	}
 }
+
+func TestCapturedIdentOverlayRestoredBeforeStatus(t *testing.T) {
+	overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: \"$Id$\"\n"
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay, ".gitattributes": "berthy.dev.yml ident\n"})
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty := strings.Replace(overlay, "$Id$", "$Id: local $", 1)
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte(dirty), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Manifest.Apps["api"].Env.Plain["BUILD"]; got != "$Id: local $" {
+		t.Fatalf("decoded BUILD %q", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "checkout", "--", "berthy.dev.yml")
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"berthy.dev.yml"}) {
+		t.Fatalf("%+v %+v %v", req, co, err)
+	}
+}
+
+func TestCapturedCRLFBlobRestoredCheckout(t *testing.T) {
+	crlf := strings.ReplaceAll(imageManifest, "\n", "\r\n")
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": crlf})
+	git(t, dir, "config", "core.autocrlf", "true")
+	if err := os.Remove(filepath.Join(dir, "berthy.yml")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "checkout", "--", "berthy.yml")
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(loaded.Files["berthy.yml"].Bytes) != crlf {
+		t.Fatal("checkout did not preserve CRLF")
+	}
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || req.Modified || len(co.Changed) != 0 {
+		t.Fatalf("%+v %+v %v", req, co, err)
+	}
+}
+
+func TestCapturedCheckoutConversionFailureRefuses(t *testing.T) {
+	for _, required := range []string{"true", "false"} {
+		t.Run(required, func(t *testing.T) {
+			dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, ".gitattributes": "berthy.yml filter=broken\n"})
+			git(t, dir, "config", "filter.broken.clean", "git --version")
+			git(t, dir, "config", "filter.broken.smudge", "git no-such-command")
+			git(t, dir, "config", "filter.broken.required", required)
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := deploy.Request{App: "api"}
+			_, err = PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err == nil || !strings.Contains(err.Error(), "checkout input conversion unavailable") {
+				t.Fatalf("failed checkout conversion: %v", err)
+			}
+		})
+	}
+}
