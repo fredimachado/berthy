@@ -312,7 +312,7 @@ A development build on macOS or Windows has no release to download, so give it `
 
    With `--local`, setup saves none. It tells you to run setup for that same project and environment over SSH from your own machine, with `--project` and the same build that is installed on the server: the same released version of the CLI, or the same custom Linux binary given with `--binary`. First resolve any interrupted key rotation on that server. If you are not sure about the build or the rotation, check before you copy.
 
-   If `cli_key` says `not saved`, do what the first next step says: fix the reason, then run the same `berthy setup` command again, from this same directory and with the same environment. If it says a folder is not private, look at it first with `ls -ld ~/.berthy ~/.berthy/keys` (Windows: `icacls`). Only when it is a real directory that you own, and not a link, make it private on POSIX with `chmod 700 <that directory>`, or move that owned folder aside and let setup create a new one. On macOS an extra access entry shows as `+` in `ls -le`.
+   If `cli_key` says `not saved`, do what the first next step says: fix the reason, then run the same `berthy setup` command again, from this same directory and with the same environment; leave out `--new-token` if that run used it, because this run already added that admin token. If it says a folder is not private, look at it first with `ls -ld ~/.berthy ~/.berthy/keys` (Windows: `icacls`). Only when it is a real directory that you own, and not a link, make it private on POSIX with `chmod 700 <that directory>`, or move that owned folder aside and let setup create a new one. On macOS an extra access entry shows as `+` in `ls -le`.
 
    If `cli_key` says the server did not hand over the key, no copy was saved. A server running an older `--binary` cannot hand it over. Upgrading that agent is an ordinary upgrade that you plan on its own, and only when no hosted environment on the server has an unresolved key rotation failure. If one is known, diagnose and fix it before any restart.
 
@@ -337,8 +337,8 @@ A development build on macOS or Windows has no release to download, so give it `
 Setup never prints a command that copies the key file. When you still need one (for example after `key rotate`, or when you prefer a second off-machine copy), use a POSIX shell. Two things first: `<key>.next` must not exist beside the key on the server, and a sudo that records command output will record the key.
 
 ```bash
-(umask 077; set -C; ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > ~/berthy.todo.prod.91c0aa11bb22cc33.key)
-chmod 600 ~/berthy.todo.prod.91c0aa11bb22cc33.key
+(umask 077; set -C; ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > ~/todo.prod.key.20261122T153012Z)
+chmod 600 ~/todo.prod.key.20261122T153012Z
 ```
 
 Keep the file in a password manager or your provisioning tool's vault as well.
@@ -2439,7 +2439,7 @@ Recovery starts from the backup's capture time. Anything written after the last 
 
 #### Back up the agent's state
 
-The agent's SQLite file holds its releases, history, audit log, checks and **secrets**. The agent can upload a copy of it daily. That upload is the encrypted SQLite copy alone: secrets stay sealed inside it, and the key file is not uploaded. Remote setup's `cli_key` reads the configured key under the existing reader rules. Add this to the prod overlay:
+The agent's SQLite file holds its releases, history, audit log, checks and **secrets**. The agent can upload a copy of it daily. That upload is a SQLite snapshot that contains sealed secret values, with a separate metadata sidecar. Secret values stay sealed, and the key file is not uploaded, but SQLite metadata such as operation actors and secret names can still be read without the key. Remote setup's `cli_key` reads the configured key under the existing reader rules. Add this to the prod overlay:
 
 ```yaml
 state_backup:
@@ -2493,7 +2493,7 @@ The agent makes a new key on the server, seals every secret, held request and di
 
 The old key stays on the server as `/var/lib/berthy/environments/todo/prod/key.prev` until the next state snapshot succeeds with the new key. Then the agent deletes it. Until then `berthy doctor` shows a `state_key` check. Without a `state_backup` block no snapshot runs, so the previous key stays; delete it yourself when you no longer need it.
 
-If the rotation ends with `key_rotation_incomplete`, the agent uses the new key but its key files are not in place yet. Setup then saves no copy. On the server, find and fix what kept the agent from putting its key files in place (for example a leftover `<key>.prev.tmp` it cannot remove, a full disk, or wrong ownership). Do not restart the agent before that: it finishes the rotation when it starts, and it cannot start while the cause remains. Then restart it and run the same `berthy setup` command again, from this same directory and with the same environment.
+If the rotation ends with `key_rotation_incomplete`, the agent uses the new key but its key files are not in place yet. Setup then saves no copy. On the server, find and fix what kept the agent from putting its key files in place (for example a leftover `<key>.prev.tmp` it cannot remove, a full disk, or wrong ownership). Do not restart the agent before that: it finishes the rotation when it starts, and it cannot start while the cause remains. Then restart it and run the same `berthy setup` command again, from this same directory and with the same environment; leave out `--new-token` if that run used it, because this run already added that admin token. If that earlier command used `--key-file`, leave `--key-file` out of this retry only: after the agent settles the rotation the saved file can still hold the old key.
 
 Never replace the key file of a running agent: rotate through the agent. Setup copies the key file, and cannot tell that it was swapped underneath a running agent.
 
@@ -2823,6 +2823,8 @@ The order:
    berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 \
      --key-file ~/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key --config ~/.config/berthy/config.json
    ```
+
+   Automatic remote setup wraps the key for the `cli_key` download. This rebuild's `--key-file` path is different: setup streams the key bytes on stdin over SSH, and sudo input recording on the server can capture them.
 
    Setup makes the managed parent directories traversable by the `berthy` user, installs your key instead of making one, gives the restored state to that user, installs the agent and starts it on that state. Secrets, history and the audit log are back. If a state directory exists but no key, setup stops and tells you to pass `--key-file`; it never replaces a key that is there.
 
