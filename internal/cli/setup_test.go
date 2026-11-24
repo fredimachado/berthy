@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -315,11 +314,17 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(baseOnly, "berthy.yml"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	multi := t.TempDir()
+	if err := os.WriteFile(filepath.Join(multi, "berthy.yml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(multi, "berthy.p5.yml"), []byte("servers:\n  api1:\n    ssh: ops@api1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for file, contents := range map[string]string{
-		"berthy.p5.yml":       "servers:\n  pg:\n    ssh: ops@p5\n",
-		"berthy.cleared.yml":  "servers:\n  pg: null\n",
-		"berthy.invalid.yml":  "servers:\n  pg:\n    ssh: -oProxyCommand=x\n",
-		"berthy.multiple.yml": "servers:\n  api1:\n    ssh: ops@api1\n",
+		"berthy.p5.yml":      "servers:\n  pg:\n    ssh: ops@p5\n",
+		"berthy.cleared.yml": "servers:\n  pg: null\n",
+		"berthy.invalid.yml": "servers:\n  pg:\n    ssh: -oProxyCommand=x\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
@@ -342,26 +347,16 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 		{name: "explicitly empty host", args: []string{"--host="}, problem: "invalid --host"},
 		{name: "cleared", args: []string{"-e", "cleared"}, problem: "a server in the manifest, or --local"},
 		{name: "invalid", args: []string{"-e", "invalid"}, problem: "servers.pg.ssh"},
-		{name: "multiple", args: []string{"-e", "multiple"}, problem: "lists servers api1, pg: pass --server NAME"},
-		{name: "named", args: []string{"-e", "multiple", "--server", "api1"}, host: "ops@api1"},
-		{name: "named base", args: []string{"-e", "multiple", "--server", "pg"}, host: "ops@base"},
-		{name: "unknown name", args: []string{"-e", "multiple", "--server", "db"}, problem: "has no server \"db\": use one of api1, pg"},
+		{name: "multiple", args: []string{"--manifest-dir", multi}, problem: "lists servers api1, pg: pass --server NAME"},
+		{name: "named", args: []string{"--manifest-dir", multi, "--server", "api1"}, host: "ops@api1"},
+		{name: "named base", args: []string{"--manifest-dir", multi, "--server", "pg"}, host: "ops@base"},
+		{name: "unknown name", args: []string{"--manifest-dir", multi, "--server", "db"}, problem: "has no server \"db\": use one of api1, pg"},
 		{name: "no servers named", args: []string{"-e", "cleared", "--server", "pg"}, problem: "lists no servers"},
 		{name: "server and host", args: []string{"--server", "pg", "--host", "ops@x"}, problem: "only one of --host, --server and --local"},
 		{name: "server and local", args: []string{"--server", "pg", "--local"}, problem: "only one of --host, --server and --local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			*made = [2]any{}
-			// The shared fixture hosts p5; cases that set up "multiple" need that name on the server so the dry run is an
-			// upgrade, not a second environment on the same network.
-			savedConfig, savedProbe := server.config, server.probe
-			if tc.host != "" && slices.Contains(tc.args, "multiple") {
-				server.config = strings.ReplaceAll(server.config, `"environment": "p5"`, `"environment": "multiple"`)
-				server.config = strings.ReplaceAll(server.config, "/shop/p5/", "/shop/multiple/")
-				server.probe = strings.ReplaceAll(server.probe, "agent_env=p5", "agent_env=multiple")
-				server.probe = strings.ReplaceAll(server.probe, "/shop/p5/", "/shop/multiple/")
-				t.Cleanup(func() { server.config, server.probe = savedConfig, savedProbe })
-			}
 			code, out, errout := runSetupCmd(append([]string{"--manifest-dir", dir, "--dry-run", "--json"}, tc.args...)...)
 			if tc.problem != "" {
 				if code != 2 || !strings.Contains(errout, tc.problem) || made[0] != nil {
