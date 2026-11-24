@@ -148,3 +148,68 @@ func TestInvalidRequestIsTheAgentsDecodeRefusal(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentProtectionRequiresUnambiguousScopedCapability(t *testing.T) {
+	const prefix = `/v1/projects/demo/environments/prod/`
+	const token = `fixture-token`
+	cases := []struct {
+		name, body string
+		status     int
+		want       Protection
+		fail       bool
+	}{
+		{"legacy unprotected", `{"project":"demo","environment":"prod","protected":false,"extra":{"x":1}}`, 200, ProtectionLegacyUnprotected, false},
+		{"legacy protected", `{"project":"demo","environment":"prod","protected":true}`, 200, ProtectionLegacyProtected, false},
+		{"effective unprotected", `{"project":"demo","environment":"prod","protected":false,"effective_protected":false}`, 200, ProtectionUnprotected, false},
+		{"effective protected", `{"project":"demo","environment":"prod","protected":true,"effective_protected":true}`, 200, ProtectionProtected, false},
+		{"sticky protected", `{"project":"demo","environment":"prod","protected":false,"effective_protected":true}`, 200, ProtectionProtected, false},
+		{"contradiction", `{"project":"demo","environment":"prod","protected":true,"effective_protected":false}`, 200, ProtectionUnknown, true},
+		{"null effective", `{"project":"demo","environment":"prod","protected":false,"effective_protected":null}`, 200, ProtectionUnknown, true},
+		{"invalid effective", `{"project":"demo","environment":"prod","protected":false,"effective_protected":"false"}`, 200, ProtectionUnknown, true},
+		{"missing protected", `{"project":"demo","environment":"prod"}`, 200, ProtectionUnknown, true},
+		{"null protected", `{"project":"demo","environment":"prod","protected":null}`, 200, ProtectionUnknown, true},
+		{"invalid protected", `{"project":"demo","environment":"prod","protected":0}`, 200, ProtectionUnknown, true},
+		{"wrong project", `{"project":"other","environment":"prod","protected":false}`, 200, ProtectionUnknown, true},
+		{"wrong environment", `{"project":"demo","environment":"other","protected":false}`, 200, ProtectionUnknown, true},
+		{"missing identity", `{"environment":"prod","protected":false}`, 200, ProtectionUnknown, true},
+		{"null identity", `{"project":null,"environment":"prod","protected":false}`, 200, ProtectionUnknown, true},
+		{"duplicate project", `{"project":"demo","project":"demo","environment":"prod","protected":false}`, 200, ProtectionUnknown, true},
+		{"variant environment", `{"project":"demo","Environment":"prod","protected":false}`, 200, ProtectionUnknown, true},
+		{"duplicate protected", `{"project":"demo","environment":"prod","protected":false,"protected":true}`, 200, ProtectionUnknown, true},
+		{"variant effective", `{"project":"demo","environment":"prod","protected":false,"Effective_Protected":false}`, 200, ProtectionUnknown, true},
+		{"nonobject", `[]`, 200, ProtectionUnknown, true},
+		{"truncated", `{"project":"demo"`, 200, ProtectionUnknown, true},
+		{"trailing json", `{"project":"demo","environment":"prod","protected":false} {}`, 200, ProtectionUnknown, true},
+		{"redirect", `{}`, 300, ProtectionUnknown, true},
+		{"unauthorized", `{}`, 401, ProtectionUnknown, true},
+		{"forbidden", `{}`, 403, ProtectionUnknown, true},
+		{"not found", `{}`, 404, ProtectionUnknown, true},
+		{"server error", `{}`, 500, ProtectionUnknown, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || (r.URL.Path != prefix+"agent" && !(tc.status == 404 && r.URL.Path == "/v1/environments/prod/agent")) || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer "+token {
+					t.Errorf("request binding incorrect")
+				}
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			u, _ := url.Parse(server.URL)
+			got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
+			if got != tc.want || (err != nil) != tc.fail {
+				t.Errorf("got %v, error %v; want %v, error %v", got, err, tc.want, tc.fail)
+			}
+		})
+	}
+	t.Run("transport", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		server.Close()
+		u, _ := url.Parse(server.URL)
+		got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
+		if got != ProtectionUnknown || err == nil {
+			t.Fatalf("got %v, %v", got, err)
+		}
+	})
+}

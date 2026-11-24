@@ -1,15 +1,93 @@
 package agentclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"berthy/internal/manifest"
 	"berthy/internal/version"
 )
+
+// Protection describes the agent's effective policy or the configured policy of a legacy agent.
+type Protection uint8
+
+const (
+	ProtectionUnknown Protection = iota
+	ProtectionUnprotected
+	ProtectionProtected
+	ProtectionLegacyUnprotected
+	ProtectionLegacyProtected
+)
+
+// AgentProtection reads a scoped, unambiguous protection capability from the agent.
+func AgentProtection(ctx context.Context, c *http.Client, t *Target) (Protection, error) {
+	data, status, err := Do(ctx, c, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
+	if err != nil {
+		return ProtectionUnknown, errors.New("agent protection lookup failed")
+	}
+	if status != http.StatusOK {
+		return ProtectionUnknown, fmt.Errorf("agent returned HTTP %d", status)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return ProtectionUnknown, ErrInvalidResponse
+	}
+	fields := make(map[string]json.RawMessage)
+	for dec.More() {
+		tok, err = dec.Token()
+		if err != nil {
+			return ProtectionUnknown, ErrInvalidResponse
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return ProtectionUnknown, ErrInvalidResponse
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return ProtectionUnknown, ErrInvalidResponse
+		}
+		for _, name := range []string{"project", "environment", "protected", "effective_protected"} {
+			if strings.EqualFold(key, name) {
+				if key != name || fields[name] != nil {
+					return ProtectionUnknown, ErrInvalidResponse
+				}
+				fields[name] = raw
+			}
+		}
+	}
+	if tok, err = dec.Token(); err != nil || tok != json.Delim('}') || dec.Decode(new(json.RawMessage)) != io.EOF {
+		return ProtectionUnknown, ErrInvalidResponse
+	}
+	var project, environment string
+	if string(fields["project"]) == "null" || string(fields["environment"]) == "null" || json.Unmarshal(fields["project"], &project) != nil || json.Unmarshal(fields["environment"], &environment) != nil || project != t.Project || environment != t.Env {
+		return ProtectionUnknown, ErrInvalidResponse
+	}
+	configured := fields["protected"]
+	if string(configured) != "true" && string(configured) != "false" {
+		return ProtectionUnknown, ErrInvalidResponse
+	}
+	effective, present := fields["effective_protected"]
+	if !present {
+		if string(configured) == "true" {
+			return ProtectionLegacyProtected, nil
+		}
+		return ProtectionLegacyUnprotected, nil
+	}
+	if string(effective) == "true" {
+		return ProtectionProtected, nil
+	}
+	if string(effective) == "false" && string(configured) == "false" {
+		return ProtectionUnprotected, nil
+	}
+	return ProtectionUnknown, ErrInvalidResponse
+}
 
 // AgentVersion asks the agent of target for its version. It returns "" with no error when the agent answers without one.
 func AgentVersion(ctx context.Context, c *http.Client, t *Target) (string, error) {
