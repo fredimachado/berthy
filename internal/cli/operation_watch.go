@@ -162,7 +162,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			suffix += " --config " + shellWord(safeSecretText(config, redact...))
 		}
 		shownID := safeSecretText(id, redact...)
-		fmt.Fprintf(errout, "watch interrupted; operation %s may continue; inspect with berthy diagnostics %s%s or cancel with berthy cancel %s%s\n", shownID, shownID, suffix, shownID, suffix)
+		fmt.Fprintf(errout, "watch interrupted; operation %s may continue\ninspect: berthy diagnostics %s%s\ncancel: berthy cancel %s%s\n", shownID, shownID, suffix, shownID, suffix)
 		return 1
 	}
 	for {

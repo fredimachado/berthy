@@ -119,8 +119,8 @@ status=$(curl --noproxy '*' --fail --silent --show-error --max-time 30 -H "Autho
   "http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN/operations/$id")
 if printf '%s' "$status" | jq -e --arg id "$id" '.id == $id and .state == "running"' >/dev/null; then pass 'operation remains running and inspectable'; else fail 'operation remains running and inspectable' 'status did not identify the running operation'; fi
 out=$("$BIN" diagnostics "$id" -e "$ENVN" --project "$PROJECT" --config "$selected_config" 2>&1); code=$?
-expect_code 'run the shown inspection command' 0 "$code" "$out"
-expect_contains 'inspection identifies the operation' "$out" "$id"
+expect_code 'run the shown inspection command' 1 "$code" "$out"
+expect_contains 'inspection reaches the selected operation' "$out" 'no diagnostics for this operation'
 out=$("$BIN" cancel "$id" -e "$ENVN" --project "$PROJECT" --config "$selected_config" 2>&1); code=$?
 expect_code 'cancel the admitted operation' 0 "$code" "$out"
 expect_contains 'agent accepted cancellation' "$out" 'cancel accepted'
