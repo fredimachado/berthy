@@ -81,19 +81,48 @@ except Exception:
 PYCODE
 }
 redact() { sed -E 's/bty\.[A-Za-z0-9._-]+/[redacted]/g; s/[0-9A-Fa-f]{32,}/[redacted]/g' "$1"; }
-# keep_failure NAME: copies the error and failed frames of driver run NAME to $LOG/tui-guided-setup/NAME-failure,
-# with admin tokens and long hex runs replaced. Nothing is kept when a form of the encryption key remains.
+# keep_failure NAME: redacts the error and failed frames of driver run NAME into
+# $LOG/tui-guided-setup/NAME-failure, then scans them against the server's key (not the
+# local cli_key copy, which appears later and can be skipped). Prints one short phrase
+# for the caller: what was kept, that frames were withheld, or that nothing was kept.
 keep_failure() {
- local name=$1 kept="$private/$1-kept" dest="$LOG/tui-guided-setup/$1-failure" f keyfile
+ local name=$1 kept="$private/$1-kept" dest="$LOG/tui-guided-setup/$1-failure" f server_key st size
  rm -rf "$kept" && mkdir -p "$kept" || return 1
  redact "$private/$name.err" > "$kept/driver-error.txt" || return 1
  for f in "$private/$name"/FAILED-*.txt; do
   [ -f "$f" ] || continue
   redact "$f" > "$kept/${f##*/}" || return 1
  done
- keyfile=$(find "$FS_HOME/.berthy/keys" -type f -name "berthy.$PROJECT.$ENVN.*.key" -print 2>/dev/null | head -1)
- if [ -n "$keyfile" ] && ! key_absent "$keyfile" "$kept"; then echo "driver output of the $name run held the key; not kept" >&2; return 1; fi
- rm -rf "$dest" && mv "$kept" "$dest"
+ server_key="/var/lib/berthy/environments/$PROJECT/$ENVN/key"
+ rm -f "$private/server.key"
+ bash "$fixture" exec "$server" sh -c 'test -f "$1" || exit 2; cat "$1"' sh "$server_key" >"$private/server.key" 2>/dev/null
+ st=$?
+ if [ "$st" -eq 2 ]; then
+  rm -f "$private/server.key"
+  rm -rf "$dest" && mv "$kept" "$dest" || return 1
+  echo "see tui-guided-setup/$name-failure"
+  return 0
+ fi
+ if [ "$st" -eq 0 ]; then
+  size=$(wc -c < "$private/server.key" | tr -d ' ')
+  if [ "$size" -eq 32 ]; then
+   if key_absent "$private/server.key" "$kept"; then
+    rm -f "$private/server.key"
+    rm -rf "$dest" && mv "$kept" "$dest" || return 1
+    echo "see tui-guided-setup/$name-failure"
+    return 0
+   fi
+   rm -f "$private/server.key"
+   rm -rf "$kept" "$dest"
+   echo "driver output not kept: it held the key"
+   return 1
+  fi
+ fi
+ rm -f "$private/server.key"
+ rm -f "$kept"/FAILED-*.txt
+ rm -rf "$dest" && mv "$kept" "$dest" || return 1
+ echo "see tui-guided-setup/$name-failure; frames withheld, the key could not be checked"
+ return 0
 }
 cat > "$private/cancel.json" <<'JSON'
 [
@@ -105,7 +134,8 @@ cat > "$private/cancel.json" <<'JSON'
 ]
 JSON
 if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >"$private/cancel.err" 2>&1; then
- keep_failure cancel; fail "cancel pending setup" "terminal driver failed (see tui-guided-setup/cancel-failure)"; exit 1
+ note=$(keep_failure cancel)
+ fail "cancel pending setup" "terminal driver failed ($note)"; exit 1
 fi
 if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" ||
    ! grep -Eq '^failed +connect ' "$private/cancel/cancelled.txt" ||
@@ -134,7 +164,8 @@ cat > "$private/fresh.json" <<'JSON'
 ]
 JSON
 if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >"$private/fresh.err" 2>&1; then
- keep_failure fresh; fail "fresh guided setup" "terminal driver failed (see tui-guided-setup/fresh-failure)"; exit 1
+ note=$(keep_failure fresh)
+ fail "fresh guided setup" "terminal driver failed ($note)"; exit 1
 fi
 screen="$private/fresh/token.txt"
 # Preserve only the setup step names and status words from the real terminal frame.
@@ -174,7 +205,7 @@ if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --
  cp "$repeat" "$LOG/tui-guided-setup/complete.txt" || exit 1
  repeat_text=$(< "$repeat")
  if [[ $repeat_text == *"Value of "* || $repeat_text == *"$token"* || $repeat_text != *"the admin token is in \$$token_env"* ]] || ! awk '/^secrets:/ { guide=NR } /every secret the manifest needs is stored/ { inventory=NR } END { exit !(guide && inventory > guide) }' "$repeat"; then fail "repeat guided setup" "unexpected prompt or token, or missing inventory"; else pass "repeat guided setup without prompts"; fi
-else keep_failure repeat; fail "repeat guided setup" "terminal driver failed (see tui-guided-setup/repeat-failure)"; fi
+else note=$(keep_failure repeat); fail "repeat guided setup" "terminal driver failed ($note)"; fi
 out=$("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$MAN" --config "$cfg" </dev/null 2>&1); code=$?
 expect_code "piped setup" 0 "$code"
 if [[ $out == *"keep the copy of the encryption key"* && $out != *" --project "* && $out == *"generate the secrets the manifest declares:"* && $out == *"set the secrets the manifest names:"* && $out != *$'\nsecrets:'* && $out != *"Value of "* ]]; then
