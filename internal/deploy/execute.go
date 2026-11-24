@@ -374,6 +374,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		w.intent.Deadline = deadline
 		id := w.intent.ServiceID
 		var e error
+		c.rolloutEvent(ctx, op.ID, w.intent.Role, "started")
 		if w.intent.Kind == "create" {
 			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
 		} else {
@@ -384,6 +385,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			unwind(e, work[:n+1])
 			return
 		}
+		c.rolloutEvent(ctx, op.ID, w.intent.Role, "ready")
 		releaseBindings = append(releaseBindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
 	}
 	manifestJSON, err := json.Marshal(req.Manifest)
@@ -480,6 +482,15 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		c.verifyDeploy(ctx, op.ID, req.Manifest.NetworkName(c.Environment), app, work, ing != nil)
 	}
 	return
+}
+
+// rolloutEvent persists a role milestone. status is "started" (create/update begins) or "ready" (that role's create/update verification passed).
+func (c *Controller) rolloutEvent(ctx context.Context, opID, role, status string) {
+	data, err := json.Marshal(map[string]string{"role": role, "status": status})
+	if err != nil {
+		return
+	}
+	_ = c.Store.AppendEvent(ctx, opID, state.Event{Kind: "rollout", Data: data})
 }
 
 // boundServiceGone reports whether a bound service was removed: its name and its recorded ID are both unknown to Docker.
