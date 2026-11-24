@@ -116,16 +116,9 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 		return Plan{}, err
 	}
 	host := reference.Domain(named)
-	var auth *engine.RegistryAuth
-	if reg, ok := req.Manifest.Registries[host]; ok {
-		if c.Store == nil {
-			return Plan{}, errors.New("registry credential unavailable")
-		}
-		info, value, err := c.Store.Secret(ctx, reg.PasswordSecret)
-		if err != nil || info.Registry != host {
-			return Plan{}, errors.New("registry credential unavailable for image host")
-		}
-		auth = &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}
+	auth, err := c.registryAuth(ctx, req.Manifest, host)
+	if err != nil {
+		return Plan{}, err
 	}
 	for _, name := range app.Env.SecretNames() {
 		if _, err := c.workloadSecret(ctx, name); err != nil {
@@ -155,6 +148,21 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 	return p, nil
 }
 
+func (c *Controller) registryAuth(ctx context.Context, m manifest.Manifest, host string) (*engine.RegistryAuth, error) {
+	reg, ok := m.Registries[host]
+	if !ok {
+		return nil, nil
+	}
+	if c.Store == nil {
+		return nil, errors.New("registry credential unavailable")
+	}
+	info, value, err := c.Store.Secret(ctx, reg.PasswordSecret)
+	if err != nil || info.Registry != host {
+		return nil, errors.New("registry credential unavailable for image host")
+	}
+	return &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}, nil
+}
+
 func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) (preparedPlan, error) {
 	n, err := c.Engine.InspectNetwork(ctx, req.Manifest.NetworkName(c.Environment))
 	if err != nil || n.Name != req.Manifest.NetworkName(c.Environment) || n.Driver != "overlay" || n.Scope != "swarm" || !n.Attachable {
@@ -172,12 +180,9 @@ func (c *Controller) prepareExecution(ctx context.Context, req Request, p Plan) 
 	}
 	out.Identity = identity{Environment: c.Environment, Project: req.Manifest.Project, App: req.App, Version: p.Tag, Digest: canonical.Digest().String()}
 	host := reference.Domain(named)
-	if reg, ok := req.Manifest.Registries[host]; ok {
-		info, value, e := c.Store.Secret(ctx, reg.PasswordSecret)
-		if e != nil || info.Registry != host {
-			return out, errors.New("registry credential unavailable")
-		}
-		out.Auth = &engine.RegistryAuth{Username: reg.Username, Password: string(value), ServerAddress: host}
+	out.Auth, err = c.registryAuth(ctx, req.Manifest, host)
+	if err != nil {
+		return out, err
 	}
 	app := req.Manifest.Apps[req.App]
 	vars, err := c.resolveEnv(ctx, app.Env)

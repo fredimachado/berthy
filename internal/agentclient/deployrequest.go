@@ -43,22 +43,53 @@ func PrepareDeploy(dir, env string, req *deploy.Request) (gitcheck.Checkout, err
 	if err != nil {
 		return gitcheck.Checkout{}, err
 	}
-	req.Manifest = *m
-	var extra []string
 	if m.Apps[req.App].Kind == "compose" {
 		if req.Version != "" {
 			return gitcheck.Checkout{}, ErrVersionNotAllowed
 		}
-		file, err := ReadComposeFile(dir, m.Apps[req.App].File)
-		if err != nil {
-			return gitcheck.Checkout{}, err
-		}
-		req.ComposeFile = file
-		extra = append(extra, manifest.FilePath(m.Apps[req.App].File))
 	} else if err := checkImageVersion(m, req); err != nil {
 		return gitcheck.Checkout{}, err
 	}
-	return StampCheckout(dir, env, req, extra...)
+	return PrepareDeployFiles(context.Background(), dir, env, m, []*deploy.Request{req})
+}
+
+// PrepareDeployFiles freezes the manifest, selected Compose files and checkout facts for a batch.
+func PrepareDeployFiles(ctx context.Context, dir, env string, m *manifest.Manifest, reqs []*deploy.Request) (gitcheck.Checkout, error) {
+	files := append([]string{}, manifest.Files(env)...)
+	paths := make(map[*deploy.Request]string)
+	for _, req := range reqs {
+		req.Manifest = *m
+		if app := m.Apps[req.App]; app.Kind == "compose" {
+			file, err := ReadComposeFile(dir, app.File)
+			if err != nil {
+				return gitcheck.Checkout{}, err
+			}
+			req.ComposeFile = file
+			paths[req] = filepath.ToSlash(manifest.FilePath(app.File))
+			files = append(files, manifest.FilePath(app.File))
+		}
+	}
+	co, err := gitcheck.Inspect(ctx, dir, files)
+	if err != nil {
+		return co, err
+	}
+	for _, req := range reqs {
+		if req.Commit == "" {
+			req.Commit = co.Head
+		}
+		req.Modified = false
+		for _, changed := range co.Changed {
+			for _, file := range manifest.Files(env) {
+				if changed == filepath.ToSlash(file) {
+					req.Modified = true
+				}
+			}
+			if paths[req] != "" && changed == paths[req] {
+				req.Modified = true
+			}
+		}
+	}
+	return co, nil
 }
 
 // checkImageVersion refuses an image app's deploy without a version, or with one its manifest does not allow.

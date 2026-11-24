@@ -27,9 +27,11 @@ func (c *Controller) id() scope.ID {
 }
 
 type Request struct {
-	App     string `json:"app"`
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
+	App             string `json:"app"`
+	Version         string `json:"version"`
+	VersionTag      string `json:"version_tag,omitempty"`
+	ExpectedApplied *int64 `json:"expected_applied,omitempty"`
+	Commit          string `json:"commit"`
 	// Modified marks a deploy from a checkout whose manifest or Compose files have local changes, so Commit does not hold
 	// what is deployed. A protected environment refuses it.
 	Modified      bool              `json:"modified,omitempty"`
@@ -270,7 +272,62 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if err := c.checkNames(ctx, req); err != nil {
 		return Plan{}, err
 	}
+	if err := c.validatePin(ctx, req); err != nil {
+		return Plan{}, err
+	}
 	return c.plan(ctx, actor, req)
+}
+
+// EffectiveProtected combines configured and sticky environment protection.
+func (c *Controller) EffectiveProtected(ctx context.Context) (bool, error) {
+	if c.Store == nil {
+		return c.Protected, nil
+	}
+	sticky, err := c.Store.Protected(ctx)
+	return c.Protected || sticky, err
+}
+
+func (c *Controller) validatePin(ctx context.Context, req Request) error {
+	if req.VersionTag == "" && req.ExpectedApplied == nil {
+		return nil
+	}
+	if (req.Kind != "" && req.Kind != "deploy") || req.Adopt || req.KeepVersion || req.KeepDigest != "" || composeRequest(req) {
+		return errors.New("image selection fields require an ordinary image deploy")
+	}
+	if req.ExpectedApplied != nil && *req.ExpectedApplied < 0 {
+		return errors.New("invalid expected applied release")
+	}
+	ref, err := req.Manifest.ImageReference(req.App, req.Version)
+	if err != nil {
+		return err
+	}
+	if _, ok := ref.(reference.Canonical); !ok {
+		return errors.New("image selection requires a digest")
+	}
+	if _, ok := ref.(reference.NamedTagged); ok {
+		return errors.New("image selection requires digest without tag")
+	}
+	if req.VersionTag != "" {
+		if _, err := reference.WithTag(reference.TrimNamed(ref), req.VersionTag); err != nil {
+			return errors.New("invalid image tag")
+		}
+	}
+	if req.ExpectedApplied != nil {
+		if c.Store == nil {
+			return errors.New("state unavailable")
+		}
+		release, err := c.Store.Applied(ctx, req.App)
+		if errors.Is(err, sql.ErrNoRows) {
+			if *req.ExpectedApplied != 0 {
+				return state.ErrConflict
+			}
+		} else if err != nil {
+			return err
+		} else if release.ID != *req.ExpectedApplied {
+			return state.ErrConflict
+		}
+	}
+	return nil
 }
 
 func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, error) {
@@ -368,6 +425,9 @@ func (c *Controller) plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	p, err := c.prepare(ctx, req, image)
 	if err != nil {
 		return Plan{}, err
+	}
+	if req.VersionTag != "" {
+		p.Tag = req.VersionTag
 	}
 	if req.recordTag != "" {
 		// The digest of an earlier release has no tag of its own, so the deploy records the one that release had.
@@ -467,6 +527,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if err := c.checkNames(ctx, req); err != nil {
 		return state.Operation{}, false, err
 	}
+	if err := c.validatePin(ctx, req); err != nil {
+		return state.Operation{}, false, err
+	}
 	if req.KeepVersion || req.KeepDigest != "" {
 		// What state alone can refuse is refused now, so the caller sees it at once instead of in a failed operation.
 		if _, err := c.resolveKeepVersion(ctx, req); err != nil {
@@ -513,6 +576,17 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		if err := checkComposeRequest(req); err != nil {
 			return state.Operation{}, false, err
 		}
+		if !req.Adopt && !req.KeepVersion && !composeRequest(req) {
+			protected, err := c.EffectiveProtected(ctx)
+			if err != nil {
+				return state.Operation{}, false, err
+			}
+			if protected || req.Manifest.Protected {
+				if _, err := req.Manifest.CheckImageDeploy(req.App, req.Version, protected); err != nil {
+					return state.Operation{}, false, err
+				}
+			}
+		}
 	}
 	if c.Store != nil && req.Kind == "scale" {
 		_, compose, err := c.appliedCompose(ctx, req.App)
@@ -551,7 +625,9 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 		RestoreInto     string `json:"restore_into,omitempty"`
 		KeepVersion     bool   `json:"keep_version,omitempty"`
 		KeepDigest      string `json:"keep_digest,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Modified, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest})
+		VersionTag      string `json:"version_tag,omitempty"`
+		ExpectedApplied *int64 `json:"expected_applied,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Modified, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest, req.VersionTag, req.ExpectedApplied})
 	if err != nil {
 		return state.Operation{}, false, err
 	}
@@ -562,7 +638,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if kind == "" {
 		kind = "deploy"
 	}
-	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind, App: req.App, Commit: req.Commit, Modified: req.Modified, RequestHash: sum, PublicRequest: public})
+	op, created, err := c.Store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, ActorName: actor.Name, Remote: actor.Remote, Kind: kind, App: req.App, Commit: req.Commit, Modified: req.Modified, RequestHash: sum, PublicRequest: public, ExpectedApplied: req.ExpectedApplied})
 	if err != nil || !created {
 		return op, created, err
 	}

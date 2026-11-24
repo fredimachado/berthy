@@ -931,14 +931,14 @@ func (m *Manifest) defaults() {
 		m.Apps[k] = a
 	}
 }
-func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string, error) {
+func (m *Manifest) ImageReference(app, version string) (reference.Named, error) {
 	a, ok := m.Apps[app]
 	if !ok || a.Kind != "image" {
-		return "", fmt.Errorf("app %q is not an image app", app)
+		return nil, fmt.Errorf("app %q is not an image app", app)
 	}
 	repo, e := reference.ParseNormalizedNamed(a.Image)
 	if e != nil {
-		return "", e
+		return nil, e
 	}
 	if digest.MatchString(version) {
 		version = reference.TrimNamed(repo).String() + "@" + version
@@ -947,22 +947,30 @@ func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string
 	}
 	selected, e := reference.ParseNormalizedNamed(version)
 	if e != nil {
-		return "", fmt.Errorf("invalid image reference: %w", e)
+		return nil, fmt.Errorf("invalid image reference: %w", e)
 	}
 	if reference.TrimNamed(selected).Name() != reference.TrimNamed(repo).Name() {
-		return "", fmt.Errorf("image repository does not match app")
+		return nil, fmt.Errorf("image repository does not match app")
+	}
+	if canonical, ok := selected.(reference.Canonical); ok && !digest.MatchString(canonical.Digest().String()) {
+		return nil, fmt.Errorf("image requires a sha256 digest")
+	}
+	if reference.IsNameOnly(selected) {
+		return nil, fmt.Errorf("image version required")
+	}
+	return selected, nil
+}
+
+func (m *Manifest) CheckImageDeploy(app, version string, protected bool) (string, error) {
+	selected, err := m.ImageReference(app, version)
+	if err != nil {
+		return "", err
 	}
 	if _, ok := selected.(reference.Canonical); (protected || m.Protected) && !ok {
 		return "", fmt.Errorf("protected environment requires a digest")
 	}
 	if _, tagged := selected.(reference.NamedTagged); (protected || m.Protected) && tagged {
 		return "", fmt.Errorf("protected environment requires digest without tag")
-	}
-	if canonical, ok := selected.(reference.Canonical); ok && !digest.MatchString(canonical.Digest().String()) {
-		return "", fmt.Errorf("image requires a sha256 digest")
-	}
-	if reference.IsNameOnly(selected) {
-		return "", fmt.Errorf("image version required")
 	}
 	return selected.String(), nil
 }

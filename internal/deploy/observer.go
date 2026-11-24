@@ -72,10 +72,14 @@ func (c *Controller) reportEnd(ctx context.Context, op state.Operation, o state.
 	}
 	if tag == "" && digest == "" {
 		var req struct {
-			Version string `json:"version"`
+			Version    string `json:"version"`
+			VersionTag string `json:"version_tag"`
 		}
 		_ = json.Unmarshal(op.PublicRequest, &req)
 		tag, digest = versionParts(req.Version)
+		if req.VersionTag != "" {
+			tag = req.VersionTag
+		}
 	}
 	e := c.event(op, o.State, tag, digest)
 	e.Reason, e.Err = o.Reason, o.Err
@@ -91,6 +95,9 @@ func (c *Controller) started(ctx context.Context, op state.Operation, req Reques
 		return
 	}
 	tag, digest := versionParts(req.Version)
+	if req.VersionTag != "" {
+		tag = req.VersionTag
+	}
 	if req.recordTag != "" {
 		tag = req.recordTag
 	}

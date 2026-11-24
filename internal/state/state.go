@@ -43,9 +43,10 @@ type Store struct {
 type Admission struct {
 	RequestID, ActorID, ActorName, Remote, Kind, App, Commit string
 	// Modified marks a deploy from a checkout with local changes, so Commit does not hold what was deployed.
-	Modified      bool
-	RequestHash   [32]byte
-	PublicRequest json.RawMessage
+	Modified        bool
+	RequestHash     [32]byte
+	PublicRequest   json.RawMessage
+	ExpectedApplied *int64
 }
 type Operation struct {
 	ID string
@@ -111,8 +112,8 @@ type Lock struct {
 	Acquired                    time.Time
 }
 type Audit struct {
-	OperationID, ActorID, ActorName, Remote, Action, Outcome string
-	Time                                                     time.Time
+	OperationID, ActorID, ActorName, Remote, Action, Outcome, Tag string
+	Time                                                          time.Time
 }
 
 // IngressState is the managed ingress configuration of one environment.
@@ -447,7 +448,7 @@ func publicJSON(b []byte) bool {
 	}
 	for k, v := range fields {
 		switch k {
-		case "app", "version", "commit", "state", "role", "step", "check", "status", "digest", "code", "reason", "restore_key", "restore_into", "keep_digest", "App", "Version", "Commit":
+		case "app", "version", "commit", "state", "role", "step", "check", "status", "digest", "code", "reason", "restore_key", "restore_into", "keep_digest", "version_tag", "App", "Version", "Commit":
 			var s string
 			if json.Unmarshal(v, &s) != nil || len(s) > 1024 {
 				return false
@@ -457,7 +458,7 @@ func publicJSON(b []byte) bool {
 			if json.Unmarshal(v, &x) != nil {
 				return false
 			}
-		case "exit_code", "exit_status", "target_release":
+		case "exit_code", "exit_status", "target_release", "expected_applied":
 			var x int
 			if json.Unmarshal(v, &x) != nil {
 				return false
@@ -486,6 +487,16 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, err
+	}
+	if a.ExpectedApplied != nil {
+		var id int64
+		err := tx.QueryRowContext(ctx, `SELECT release_id FROM applied WHERE environment=? AND app=?`, s.env, a.App).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Operation{}, false, err
+		}
+		if id != *a.ExpectedApplied {
+			return Operation{}, false, ErrConflict
+		}
 	}
 	id, err := randomID()
 	if err != nil {
@@ -1261,7 +1272,7 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.query(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created FROM audit a WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
+	rows, err := s.query(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created,COALESCE(o.public_request,'{}') FROM audit a LEFT JOIN operations o ON o.environment=a.environment AND o.id=a.operation_id WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1270,9 +1281,15 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 	for rows.Next() {
 		var a Audit
 		var ms int64
-		if err = rows.Scan(&a.OperationID, &a.ActorID, &a.ActorName, &a.Remote, &a.Action, &a.Outcome, &ms); err != nil {
+		var public []byte
+		if err = rows.Scan(&a.OperationID, &a.ActorID, &a.ActorName, &a.Remote, &a.Action, &a.Outcome, &ms, &public); err != nil {
 			return nil, err
 		}
+		var selection struct {
+			Tag string `json:"version_tag"`
+		}
+		_ = json.Unmarshal(public, &selection)
+		a.Tag = selection.Tag
 		a.Time = time.UnixMilli(ms).UTC()
 		out = append(out, a)
 	}

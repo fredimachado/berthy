@@ -2,6 +2,7 @@ package agentclient
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"berthy/internal/deploy"
+	"berthy/internal/manifest"
 )
 
 // checkoutRepo makes a git repository holding the files, committed, and returns its directory and HEAD. The test is skipped
@@ -100,5 +102,23 @@ func TestPrepareDeployOutsideAWorkTreeChangesNothing(t *testing.T) {
 	co, err := PrepareDeploy(dir, "dev", &req)
 	if err != nil || req.Commit != "" || req.Modified || co.InWorkTree {
 		t.Fatalf("outside a work tree: %v %+v %+v", err, req, co)
+	}
+}
+
+func TestPrepareDeployFilesAttributesComposeChanges(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": composeManifest, "compose.yaml": "services: {}\n"})
+	m, err := manifest.Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Apps["api"] = manifest.App{Kind: "image", Image: "example/api"}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {x: {}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	image := deploy.Request{App: "api"}
+	compose := deploy.Request{App: "db"}
+	co, err := PrepareDeployFiles(context.Background(), dir, "dev", m, []*deploy.Request{&image, &compose})
+	if err != nil || image.Modified || !compose.Modified || compose.ComposeFile != "services: {x: {}}\n" || len(co.Changed) != 1 {
+		t.Fatalf("preparation: %+v %+v %+v %v", image, compose, co, err)
 	}
 }

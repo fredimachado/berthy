@@ -116,14 +116,14 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 }
 
 type HistoryOperation struct {
-	OperationID, Kind, App, Commit, State string
-	SchemaBefore, SchemaAfter, Reason     string
-	Modified                              bool
-	Started                               time.Time
+	OperationID, Kind, App, Commit, State  string
+	SchemaBefore, SchemaAfter, Reason, Tag string
+	Modified                               bool
+	Started                                time.Time
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}
@@ -132,9 +132,15 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 	for rows.Next() {
 		var o HistoryOperation
 		var ms int64
-		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified); err != nil {
+		var public []byte
+		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified, &public); err != nil {
 			return nil, err
 		}
+		var selection struct {
+			Tag string `json:"version_tag"`
+		}
+		_ = json.Unmarshal(public, &selection)
+		o.Tag = selection.Tag
 		o.Started = time.UnixMilli(ms).UTC()
 		out = append(out, o)
 	}

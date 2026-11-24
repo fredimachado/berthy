@@ -566,3 +566,17 @@ func TestLoadRefusesSharedComposeProjects(t *testing.T) {
 		})
 	}
 }
+
+func TestImageReferenceSeparatesShapeFromProtection(t *testing.T) {
+	m := Manifest{Protected: true, Apps: map[string]App{"api": {Kind: "image", Image: "ghcr.io/acme/api"}}}
+	ref, err := m.ImageReference("api", "v1")
+	if err != nil || ref.String() != "ghcr.io/acme/api:v1" {
+		t.Fatalf("reference = %v, %v", ref, err)
+	}
+	if _, err := m.CheckImageDeploy("api", "v1", false); err == nil {
+		t.Fatal("protected deploy accepted mutable tag")
+	}
+	if _, err := m.ImageReference("api", "ghcr.io/other/api:v1"); err == nil {
+		t.Fatal("accepted another repository")
+	}
+}
