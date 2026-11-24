@@ -45,7 +45,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
 - On a terminal, a changing remote command or `setup` prints one line to stderr before it does anything, dry runs included: `berthy: todo/prod at http://10.0.0.5:7710` for a remote command, or `berthy: todo/prod on ops@10.0.0.5` (or `on this server` with `--local`) for `setup`. When `BERTHY_ENV` chose the environment, the line ends with ` (environment from BERTHY_ENV)`. With stderr redirected, or under `--json` on stdout, nothing is added.
-- Longer preflights, setup steps and pending operations show delayed progress on the stream being animated. Short waits stay quiet. `NO_COLOR` turns colour off. Status words stay readable when the terminal is dumb or unsupported. A redirected stream or a `--json` capture never receives a progress frame.
+- Longer preflights, setup steps and pending operations show a delayed interactive spinner on the stream being animated. Short waits stay quiet. Interactive deploy and rollback followers also show real role rollout milestones. `NO_COLOR` turns colour off. Status words stay readable when the terminal is dumb or unsupported. A redirected stream keeps plain event text and never receives a progress frame. `--json` prints exactly one JSON object for that command shape. Ctrl+C stops following an already-admitted operation, prints its id with `diagnostics` and `cancel` commands, and leaves the operation running on the agent.
 
 ---
 
@@ -1152,7 +1152,7 @@ berthy deploy postgres -e prod
 
 A Compose app takes **no** `--version`: the version is whatever its Compose file says. (`berthy deploy redis --version 7` is refused with `--version does not apply to a compose app`.)
 
-The CLI reads the Compose file from `--manifest-dir` (default: the current directory), sends it with the deploy, and follows the operation until it ends. It prints the name of each event as it arrives, then the operation's record:
+The CLI reads the Compose file from `--manifest-dir` (default: the current directory), sends it with the deploy, and follows the operation until it ends. On an interactive terminal a delayed spinner covers the wait. Redirected output keeps the plain event names, then the operation's record:
 
 ```text
 app: redis
@@ -1163,7 +1163,7 @@ started: 2026-11-16T10:21:07Z
 state: succeeded
 ```
 
-Exit code `0` means `succeeded`. Anything else (`failed`, `rolled_back`, `recovery_required`, `interrupted`) exits `1`.
+`--json` prints that record as one object. Exit code `0` means `succeeded`. Anything else (`failed`, `rolled_back`, `recovery_required`, `interrupted`) exits `1`. Ctrl+C stops only the local follower. The admitted operation may continue. The CLI prints the operation id with `berthy diagnostics` and `berthy cancel` so you can inspect or stop it.
 
 #### What a Compose deploy does
 
@@ -1181,7 +1181,7 @@ A failed `up` is reported. There is no automatic rollback for Compose apps: the 
 
 The prod overlay says `protected: true`. The agent admits only a digest for that environment. A tag never reaches admission, even a unique one such as a git SHA, because a tag can move.
 
-**At a terminal, with a human admin token,** list the tags the registry knows, then deploy one. The project still comes from `--project`, else `berthy.yml` in the directory you run from, else the only project that has that environment. The CLI freezes the checkout and Compose attribution first. Only then does it ask the agent to resolve each protected mutable tag once, show the destination, the tag, the full repository-qualified digest and the plan, and ask you to confirm. The default answer is no. Cancel, blank, EOF or interrupt admit nothing.
+**At a terminal, with a human admin token,** list the tags the registry knows, then deploy one. The project still comes from `--project`, else `berthy.yml` in the directory you run from, else the only project that has that environment. The CLI captures checkout identity before it reads deploy files. A revision or worktree change during that capture is refused before any registry lookup or mutation. It freezes the checkout and Compose attribution, then asks the agent to resolve each protected mutable tag once, shows the destination, the tag, the full repository-qualified digest and the plan, and asks you to confirm. The default answer is no. Cancel, blank, EOF or interrupt admit nothing.
 
 ```bash
 berthy versions api -e prod
@@ -1273,7 +1273,7 @@ The release is recorded as not clean, and `history` shows it next to the commit:
 
 #### All the apps in one command
 
-Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version. Checkout and Compose files are frozen first. Only protected mutable tags are resolved. Every plan is checked before any admission. One default-no confirmation covers the batch:
+Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version. Checkout identity is captured first. A revision or worktree change during that capture is refused before resolution or mutation. Compose files are frozen with it. Only protected mutable tags are resolved. Every plan is checked before any admission. One default-no confirmation covers the batch:
 
 ```bash
 berthy deploy -e prod --version 1.4.2 --dry-run
@@ -1296,7 +1296,7 @@ redis  succeeded
 api  succeeded
 ```
 
-- **Everything is prepared first.** The CLI freezes the manifest, Compose bytes and checkout attribution before any registry lookup. Protected mutable tags are resolved next. Every plan is checked before any admission. A missing Compose file or a bad version for the last app leaves the first apps undeployed.
+- **Everything is prepared first.** The CLI captures checkout identity, freezes the manifest and Compose bytes, and refuses a switched checkout before any registry lookup. Protected mutable tags are resolved next. Every plan is checked before any admission. A missing Compose file or a bad version for the last app leaves the first apps undeployed.
 - **It stops at the first failure.** The command exits with that app's code, prints `deploy stopped at <app>; not run: <the apps after it>` and runs nothing more. With `--dry-run` it plans every app, goes on past a plan that fails, and exits `1` if any failed.
 - **Versions.** A plain `--version` is for a manifest with exactly one image app. With several, name each one: `--version api=sha256:...`, once for each app. A plain version together with `app=version`, an `app=` that names an unknown app or a Compose app, and a repeated app are refused with exit `2` before anything is sent.
 - **An image app given no version keeps the one it runs now.** Berthy deploys the digest of its last release, and the tag it was deployed with, and applies the new manifest, migrations and hooks as in any deploy. This is how a change to the manifest alone reaches every app. An app that was never deployed has no version to keep: the command refuses it with `image app api is not deployed yet: give --version api=REF` and exit `2`, before anything is deployed. A first deploy names a version for every image app. The command reads each version before it deploys anything and sends it along, so a version that changed since it was read, because another deploy of that app landed first, is refused with `app api changed since its version was read: it runs sha256:… now, not sha256:…; deploy it again`, not deployed.
@@ -1492,7 +1492,7 @@ berthy deploy api -e prod --version 1.4.3
 berthy promote api --from dev -e prod
 ```
 
-`promote` reads the same project's applied source release with the source token, shows its release id and full digest, and after confirmation submits an ordinary destination deploy of that snapshot. Each environment keeps its own URL, token and store. A later move of the source tag cannot retarget it. An incompatible repository, a Compose app, a missing source, an equal destination digest or a stale destination preview admits nothing. `--dry-run` and `--dry-run --json` preview without admission. Scripts can take the image from that JSON and deploy the digest under normal CI semantics.
+`promote` reads the same project's applied source release with the source token. That applied pointer can name a verified release even when a later source operation ended differently. It shows the release id and full digest, captures destination checkout identity the same way a protected tag deploy does, and after confirmation submits an ordinary destination deploy of that snapshot. Admission matches the destination's applied release id observed at preview. Each environment keeps its own URL, token and store. A later move of the source tag cannot retarget it. An incompatible repository, a Compose app, a missing source, an equal destination digest or a stale destination preview admits nothing. `--dry-run` and `--dry-run --json` preview without admission. Scripts can take the image from that JSON and deploy the digest under normal CI semantics.
 
 #### A token for CI
 
