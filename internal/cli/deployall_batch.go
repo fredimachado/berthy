@@ -23,9 +23,6 @@ import (
 func prepareBatchTags(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, co gitcheck.Checkout, steps []deployStep, tags map[string]string, out, errout io.Writer) (bool, int) {
 	fail := func(err any) (bool, int) { fmt.Fprintln(errout, err); return true, 1 }
 	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
-	if m.Protected && len(co.Changed) > 0 {
-		return fail("the manifest has local changes: commit them first: " + terminalSafe(strings.Join(co.Changed, ", ")))
-	}
 	progress.Start("Checking agent policy")
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()

@@ -181,7 +181,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 	}
 	client := agentclient.NewHTTPClient()
 	warnCheckout(errout, f.commit, co)
-	if len(tags) == 0 {
+	if len(tags) == 0 || m.Protected {
 		if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
 			fmt.Fprintf(errout, "%v (nothing was deployed)\n", e)
 			return 1

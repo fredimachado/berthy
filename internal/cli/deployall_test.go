@@ -1004,3 +1004,19 @@ func TestBatchR2ComposeAllowsDesiredAndRemovedServices(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployAllProtectedDirtyTagRefusesBeforeRemoteReads(t *testing.T) {
+	manifestText := "project: demo\nnetwork: demo\nprotected: true\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  worker:\n    kind: image\n    image: ghcr.io/acme/worker\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": manifestText, "berthy.dev.yml": "apps:\n  api:\n    env:\n      plain:\n        MARKER: before\n"})
+	editFile(t, dir, "berthy.dev.yml")
+	agent := &fakeDeployAgent{}
+	_, cfg := deployAllFixture(t, manifestText, agent)
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=stable")
+	if agent.calls != 0 {
+		t.Fatalf("sent %d remote requests, paths %v; exit %d stderr %q", agent.calls, agent.reads, code, errs)
+	}
+	want := "warning: the manifest has local changes: berthy.dev.yml\nthe manifest has local changes: commit them first: berthy.dev.yml (nothing was deployed)\n"
+	if code != 1 || out != "" || errs != want {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+}
