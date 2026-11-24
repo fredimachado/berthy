@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -176,17 +177,35 @@ func TestRolloutEventsStartedBeforeUpdateAndReadyAfterVerify(t *testing.T) {
 	}
 	drained := make(chan error, 1)
 	go func() { drained <- c.Drain(ctx) }()
+	releaseJoin := func(msg string) {
+		if !released {
+			close(f.allowVerify)
+			released = true
+		}
+		err := <-drained
+		if msg != "" {
+			t.Fatalf("%s (drain=%v)", msg, err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	select {
 	case <-f.mutated:
+	case <-f.verifyHold:
+		releaseJoin("verify hold before update mutation")
+		return
 	case err := <-drained:
 		t.Fatalf("drain finished before update mutation: %v", err)
 	}
 	if msg, _ := f.mutateErr.Load().(string); msg != "" {
-		t.Fatal(msg)
+		releaseJoin(msg)
+		return
 	}
 	if got := rolloutStatuses(t, s, op.ID); len(got) != 1 || got[0] != [2]string{"api", "started"} {
-		t.Fatalf("after mutate entry %v", got)
+		releaseJoin(fmt.Sprintf("after mutate entry %v", got))
+		return
 	}
 
 	select {
@@ -195,7 +214,8 @@ func TestRolloutEventsStartedBeforeUpdateAndReadyAfterVerify(t *testing.T) {
 		t.Fatalf("drain finished before verify hold: %v", err)
 	}
 	if got := rolloutStatuses(t, s, op.ID); len(got) != 1 || got[0][1] != "started" {
-		t.Fatalf("during verify gate %v", got)
+		releaseJoin(fmt.Sprintf("during verify gate %v", got))
+		return
 	}
 	close(f.allowVerify)
 	released = true

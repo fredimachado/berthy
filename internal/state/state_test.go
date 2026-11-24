@@ -335,6 +335,91 @@ func TestRecordIntentAndMarkStepPersistOptInEvents(t *testing.T) {
 	}
 }
 
+func blockRolloutEvents(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.db.Exec(`CREATE TEMP TRIGGER reject_rollout BEFORE INSERT ON events WHEN NEW.kind='rollout' BEGIN SELECT RAISE(ROLLBACK, 'rollout blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOptionalRolloutEventFailureKeepsRequiredJournal(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "opt-fail", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockRolloutEvents(t, s)
+	started := Event{Kind: "rollout", Data: []byte(`{"role":"api","status":"started"}`)}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: 1, Kind: "update", Role: "api", Name: "svc", Desired: []byte(`{"v":1}`), Event: &started}); err != nil {
+		t.Fatalf("RecordIntent should keep the required write: %v", err)
+	}
+	steps, err := s.Intents(ctx, op.ID)
+	if err != nil || len(steps) != 1 || steps[0].Phase != "intent" || string(steps[0].Desired) != `{"v":1}` {
+		t.Fatalf("intent after optional failure: %+v %v", steps, err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 1, "observed", []byte(`{"id":"id"}`)); err != nil {
+		t.Fatal(err)
+	}
+	ready := Event{Kind: "rollout", Data: []byte(`{"role":"api","status":"ready"}`)}
+	if err = s.MarkStep(ctx, op.ID, 1, "verified", []byte(`{"id":"id","ok":true}`), ready); err != nil {
+		t.Fatalf("MarkStep verified should keep the required write: %v", err)
+	}
+	steps, err = s.Intents(ctx, op.ID)
+	if err != nil || len(steps) != 1 || steps[0].Phase != "verified" {
+		t.Fatalf("verified phase after optional failure: %+v %v", steps, err)
+	}
+	events, err := s.EventsAfter(ctx, op.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind == "rollout" {
+			t.Fatalf("false milestone persisted: %s %s", e.Kind, e.Data)
+		}
+	}
+	// Required journal errors still fail without a retry path that invents success.
+	if err = s.MarkStep(ctx, op.ID, 99, "verified", []byte(`{"id":"missing"}`)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing intent: %v", err)
+	}
+	if err = s.RecordIntent(ctx, "missing", Intent{Ordinal: 2, Kind: "update", Desired: []byte(`{}`), Event: &started}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unowned operation: %v", err)
+	}
+}
+
+func TestInvalidOptionalEventDoesNotBlockOrPersistMilestone(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "bad-opt", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := Event{Kind: "rollout", Data: []byte(`{"token":"secret"}`)}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: 1, Kind: "create", Role: "api", Name: "svc", Desired: []byte(`{}`), Event: &bad}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := s.Intents(ctx, op.ID)
+	if err != nil || len(steps) != 1 || steps[0].Phase != "intent" {
+		t.Fatalf("intent %+v %v", steps, err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 1, "verified", []byte(`{"id":"id"}`), bad); err != nil {
+		t.Fatal(err)
+	}
+	steps, err = s.Intents(ctx, op.ID)
+	if err != nil || steps[0].Phase != "verified" {
+		t.Fatalf("verified %+v %v", steps, err)
+	}
+	events, err := s.EventsAfter(ctx, op.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind == "rollout" {
+			t.Fatalf("invalid optional event persisted: %s", e.Data)
+		}
+	}
+}
+
 // TestPublicRequestAcceptsTheKeptVersionAndItsDigest: keep_digest is a digest the client read, not a secret, so a request that
 // carries it is recorded.
 func TestPublicRequestAcceptsTheKeptVersionAndItsDigest(t *testing.T) {

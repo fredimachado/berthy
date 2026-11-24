@@ -558,6 +558,16 @@ func eventTx(ctx context.Context, tx *sql.Tx, id, kind string, data json.RawMess
 	_, err := tx.ExecContext(ctx, `INSERT INTO events(operation_id,kind,data,created) VALUES(?,?,?,?)`, id, kind, []byte(data), now())
 	return err
 }
+
+// errOptionalEvent marks a pre-commit failure of an opt-in journal event insert. The required journal write may still succeed without it.
+var errOptionalEvent = errors.New("optional event")
+
+func optionalEventTx(ctx context.Context, tx *sql.Tx, id string, e Event) error {
+	if err := eventTx(ctx, tx, id, e.Kind, e.Data); err != nil {
+		return fmt.Errorf("%w: %v", errOptionalEvent, err)
+	}
+	return nil
+}
 func auditTx(ctx context.Context, tx *sql.Tx, env, id string, a Admission, outcome string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO audit(environment,operation_id,actor_id,actor_name,remote,action,outcome,created) VALUES(?,?,?,?,?,?,?,?)`, env, id, a.ActorID, a.ActorName, a.Remote, a.Kind, outcome, now())
 	return err
@@ -582,16 +592,24 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 	if err != nil {
 		return err
 	}
+	receipt, err := s.seal(intentRecord(id, i.Ordinal, "receipt"), []byte(`{}`))
+	if err != nil {
+		return err
+	}
+	err = s.recordIntent(ctx, id, i, before, desired, receipt, i.Event)
+	if err != nil && i.Event != nil && errors.Is(err, errOptionalEvent) {
+		return s.recordIntent(ctx, id, i, before, desired, receipt, nil)
+	}
+	return err
+}
+
+func (s *Store) recordIntent(ctx context.Context, id string, i Intent, before, desired, receipt []byte, event *Event) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if err = owned(ctx, tx, s.env, id); err != nil {
-		return err
-	}
-	receipt, err := s.seal(intentRecord(id, i.Ordinal, "receipt"), []byte(`{}`))
-	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", receipt)
@@ -603,27 +621,36 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 			return err
 		}
 	}
-	if i.Event != nil {
-		if err = eventTx(ctx, tx, id, i.Event.Kind, i.Event.Data); err != nil {
+	if event != nil {
+		if err = optionalEventTx(ctx, tx, id, *event); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
+
 func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase string, receipt json.RawMessage, events ...Event) error {
 	if phase == "" || !validJSON(receipt) {
 		return errors.New("invalid step")
 	}
+	sealed, err := s.seal(intentRecord(id, ordinal, "receipt"), receipt)
+	if err != nil {
+		return err
+	}
+	err = s.markStep(ctx, id, ordinal, phase, sealed, events)
+	if err != nil && len(events) > 0 && errors.Is(err, errOptionalEvent) {
+		return s.markStep(ctx, id, ordinal, phase, sealed, nil)
+	}
+	return err
+}
+
+func (s *Store) markStep(ctx context.Context, id string, ordinal int, phase string, sealed []byte, events []Event) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if err = owned(ctx, tx, s.env, id); err != nil {
-		return err
-	}
-	sealed, err := s.seal(intentRecord(id, ordinal, "receipt"), receipt)
-	if err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE intents SET phase=?,receipt=? WHERE operation_id=? AND ordinal=?`, phase, sealed, id, ordinal)
@@ -635,7 +662,7 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 		return sql.ErrNoRows
 	}
 	for _, e := range events {
-		if err = eventTx(ctx, tx, id, e.Kind, e.Data); err != nil {
+		if err = optionalEventTx(ctx, tx, id, e); err != nil {
 			return err
 		}
 	}
