@@ -3,11 +3,12 @@ package registrycheck_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"berthy/internal/registrycheck"
 )
@@ -134,7 +135,7 @@ func TestResolveTagRejectsUntrustedDestinations(t *testing.T) {
 	}
 }
 
-func TestResolveTagRejectsInvalidInputAndCancellation(t *testing.T) {
+func TestResolveTagRejectsInvalidInput(t *testing.T) {
 	calls := 0
 	p := registrycheck.Probe{Host: "ghcr.io", HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { calls++; return nil, errors.New("unexpected") })}}
 	for _, pair := range [][2]string{{"../repo", "v1"}, {"acme/api", "a/b"}, {"acme/api", ""}} {
@@ -146,17 +147,10 @@ func TestResolveTagRejectsInvalidInputAndCancellation(t *testing.T) {
 	if calls != 0 {
 		t.Fatal("invalid input contacted registry")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	got, err := p.ResolveTag(ctx, "acme/api", "v1")
-	if err == nil || got != "" {
-		t.Fatal("cancellation accepted")
-	}
-	_ = fmt.Sprint(err)
 }
 
 func TestResolveTagRedirectsAndTokenLimits(t *testing.T) {
-	for _, stage := range []string{"initial", "token", "retry", "oversized token"} {
+	for _, stage := range []string{"initial", "token", "retry"} {
 		t.Run(stage, func(t *testing.T) {
 			targetCalls := 0
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { targetCalls++ }))
@@ -165,10 +159,6 @@ func TestResolveTagRedirectsAndTokenLimits(t *testing.T) {
 			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if stage == "initial" || (stage == "token" && r.URL.Path == "/token") || (stage == "retry" && r.Header.Get("Authorization") != "") {
 					http.Redirect(w, r, target.URL, 302)
-					return
-				}
-				if r.URL.Path == "/token" {
-					fmt.Fprint(w, strings.Repeat("x", (1<<20)+1))
 					return
 				}
 				if stage == "retry" {
@@ -185,5 +175,137 @@ func TestResolveTagRedirectsAndTokenLimits(t *testing.T) {
 			}
 			requireClean(t, err)
 		})
+	}
+}
+
+func TestResolveTagCancellationInterruptsRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered := make(chan struct{}, 1)
+		released := make(chan struct{})
+		observed := make(chan error, 1)
+		result := make(chan error, 1)
+		p := registrycheck.Probe{Host: "ghcr.io", HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			entered <- struct{}{}
+			select {
+			case <-r.Context().Done():
+				observed <- r.Context().Err()
+			case <-released:
+				observed <- nil
+			}
+			return nil, errors.New("transport stopped")
+		})}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		defer close(released)
+		go func() { _, err := p.ResolveTag(ctx, "acme/api", "v1"); result <- err }()
+		synctest.Wait()
+		select {
+		case <-entered:
+		default:
+			t.Fatal("request never started")
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-observed:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal("request did not observe cancellation")
+			}
+		default:
+			t.Fatal("request did not stop on cancellation")
+		}
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("canceled request succeeded")
+			}
+		default:
+			t.Fatal("resolver did not return")
+		}
+	})
+}
+
+func TestResolveTagSharesOverallDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		type observation struct {
+			deadline time.Time
+			ok       bool
+		}
+		observations := make(chan observation, 3)
+		stopped := make(chan error, 1)
+		released := make(chan struct{})
+		result := make(chan error, 1)
+		defer close(released)
+		calls := 0
+		start := time.Now()
+		p := registrycheck.Probe{Host: "ghcr.io", HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			deadline, ok := r.Context().Deadline()
+			observations <- observation{deadline, ok}
+			switch calls {
+			case 1:
+				time.Sleep(4 * time.Second)
+				return response(r, 401, "", http.Header{"Www-Authenticate": []string{`Bearer realm="https://ghcr.io/token"`}}), nil
+			case 2:
+				time.Sleep(4 * time.Second)
+				return response(r, 200, `{"token":"fixture"}`, nil), nil
+			default:
+				select {
+				case <-r.Context().Done():
+					stopped <- r.Context().Err()
+				case <-released:
+					stopped <- nil
+				}
+				return nil, errors.New("transport stopped")
+			}
+		})}}
+		go func() { _, err := p.ResolveTag(context.Background(), "acme/api", "v1"); result <- err }()
+		time.Sleep(16 * time.Second)
+		synctest.Wait()
+		for i := 0; i < 3; i++ {
+			select {
+			case got := <-observations:
+				if !got.ok || !got.deadline.Equal(start.Add(15*time.Second)) {
+					t.Error("request lacks the shared overall deadline")
+				}
+			default:
+				t.Error("authentication flight did not reach every request")
+			}
+		}
+		select {
+		case err := <-stopped:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Error("retry did not observe deadline expiry")
+			}
+		default:
+			t.Error("retry did not stop at the deadline")
+		}
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Error("expired operation succeeded")
+			}
+		default:
+			t.Error("resolver did not return at the deadline")
+		}
+	})
+}
+
+func TestResolveTagRejectsOversizedValidToken(t *testing.T) {
+	calls := 0
+	p := registrycheck.Probe{Host: "ghcr.io", HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return response(r, 401, "", http.Header{"Www-Authenticate": []string{`Bearer realm="https://ghcr.io/token"`}}), nil
+		case 2:
+			return response(r, 200, `{"token":"fixture","padding":"`+strings.Repeat("x", 1<<20)+`"}`, nil), nil
+		default:
+			return response(r, 200, "", http.Header{"Docker-Content-Digest": []string{testDigest}}), nil
+		}
+	})}}
+	digest, err := p.ResolveTag(context.Background(), "acme/api", "v1")
+	if err == nil || digest != "" || calls != 2 {
+		t.Fatalf("oversized token accepted; calls=%d", calls)
 	}
 }

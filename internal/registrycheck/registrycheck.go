@@ -1,6 +1,5 @@
-// Package registrycheck asks a container registry whether a credential can pull a repository. It speaks only the part
-// of the registry v2 protocol that takes: the challenge on a repository's tag list and, for a Bearer challenge, the
-// token request. It uses only the standard library.
+// Package registrycheck checks repository pull access, lists tags, and resolves a tag with a manifest HEAD request.
+// It handles registry authentication challenges and Bearer token requests using only the standard library.
 package registrycheck
 
 import (
