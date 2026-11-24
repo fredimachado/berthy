@@ -347,7 +347,8 @@ func TestDeployProgressCountsRealRoles(t *testing.T) {
 			return &http.Response{StatusCode: 200, Body: reader, Header: make(http.Header), Request: r}, nil
 		})}
 		base, _ := url.Parse("http://agent.invalid")
-		var out, errs bytes.Buffer
+		var out progressTestBuffer
+		var errs bytes.Buffer
 		done := make(chan int, 1)
 		go func() {
 			done <- watchOperationWithProgress(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")

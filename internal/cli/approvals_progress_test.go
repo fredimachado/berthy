@@ -7,10 +7,24 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 )
+
+type progressTestBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *progressTestBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *progressTestBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
+func (b *progressTestBuffer) Len() int       { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.Len() }
 
 func TestApproveReplanProgressAndRedaction(t *testing.T) {
 	t.Setenv("TERM", "xterm")
@@ -21,7 +35,8 @@ func TestApproveReplanProgressAndRedaction(t *testing.T) {
 	progressWidth = func(io.Writer) (int, error) { return 100, nil }
 	t.Cleanup(func() { progressWidth = old })
 	synctest.Test(t, func(t *testing.T) {
-		var out, errs bytes.Buffer
+		var out progressTestBuffer
+		var errs bytes.Buffer
 		release := make(chan struct{})
 		done := make(chan int, 1)
 		call := func(method, endpoint, query string, body []byte) ([]byte, int, error) {
