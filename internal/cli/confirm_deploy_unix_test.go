@@ -7,11 +7,13 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 func TestConfirmDeployTerminal(t *testing.T) {
@@ -54,12 +56,68 @@ func TestConfirmDeployTerminal(t *testing.T) {
 				t.Fatalf("ok=%v err=%v", got.ok, got.err)
 			}
 			if strings.HasSuffix(tc.input, "next\n") {
+				fds := []unix.PollFd{{Fd: int32(tty.Fd()), Events: unix.POLLIN}}
+				if n, err := unix.Poll(fds, 0); err != nil || n != 1 || fds[0].Revents&unix.POLLIN == 0 {
+					t.Fatalf("next line unavailable: n=%d events=%v err=%v", n, fds[0].Revents, err)
+				}
+				fd := int(tty.Fd())
+				if err := unix.SetNonblock(fd, true); err != nil {
+					t.Fatal(err)
+				}
 				var next [5]byte
-				if _, err := io.ReadFull(tty, next[:]); err != nil || string(next[:]) != "next\n" {
-					t.Fatalf("next=%q err=%v", next, err)
+				if n, err := unix.Read(fd, next[:]); err != nil || n != len(next) || string(next[:]) != "next\n" {
+					t.Fatalf("next=%q n=%d err=%v", next, n, err)
 				}
 			}
 		})
+	}
+}
+
+func TestConfirmDeployCanonicalQuotedEnter(t *testing.T) {
+	master, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer tty.Close()
+	before, err := term.GetState(tty.Fd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		ok  bool
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() { ok, err := confirmDeploy(context.Background(), tty, tty); resultCh <- result{ok, err} }()
+	prompt := make([]byte, len("Deploy this image? [y/N] "))
+	if _, err := io.ReadFull(master, prompt); err != nil {
+		t.Fatal(err)
+	}
+	during, err := term.GetState(tty.Fd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := master.Write([]byte("y\x16\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := <-resultCh
+	if reflect.DeepEqual(before, during) {
+		t.Error("prompt displayed before terminal mode changed")
+	}
+	if got.ok || got.err != nil {
+		t.Errorf("quoted Enter: ok=%v err=%v", got.ok, got.err)
+	}
+	transcript := make([]byte, len("y\r\n"))
+	if _, err := io.ReadFull(master, transcript); err != nil {
+		t.Fatal(err)
+	}
+	if string(transcript) != "y\r\n" {
+		t.Errorf("transcript = %q", transcript)
+	}
+	after, err := term.GetState(tty.Fd())
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Errorf("terminal not restored: %v", err)
 	}
 }
 
@@ -75,8 +133,16 @@ func TestConfirmDeployCancelAndWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer readOnly.Close()
+	before, err := term.GetState(tty.Fd())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ok, err := confirmDeploy(context.Background(), tty, readOnly); ok || err == nil {
 		t.Fatalf("write: %v %v", ok, err)
+	}
+	after, err := term.GetState(tty.Fd())
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("terminal not restored after write failure: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)

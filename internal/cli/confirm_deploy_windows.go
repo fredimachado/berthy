@@ -49,6 +49,9 @@ func readDeployConfirmation(ctx context.Context, in *os.File, out io.Writer) (st
 		}
 		windows.CloseHandle(event)
 	}()
+	if err := writeDeployPrompt(ctx, out); err != nil {
+		return "", err
+	}
 	var line confirmationLine
 	for {
 		_, err := windows.WaitForMultipleObjects([]windows.Handle{event, h}, false, windows.INFINITE)

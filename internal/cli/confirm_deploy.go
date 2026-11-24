@@ -19,14 +19,6 @@ func confirmDeploy(ctx context.Context, in *os.File, out io.Writer) (bool, error
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	const prompt = "Deploy this image? [y/N] "
-	n, err := io.WriteString(out, prompt)
-	if err == nil && n != len(prompt) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		return false, fmt.Errorf("write deploy confirmation: %w", err)
-	}
 	answer, err := readDeployConfirmation(ctx, in, out)
 	if ctx.Err() != nil {
 		return false, ctx.Err()
@@ -36,6 +28,21 @@ func confirmDeploy(ctx context.Context, in *os.File, out io.Writer) (bool, error
 	}
 	answer = strings.TrimSpace(answer)
 	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
+}
+
+func writeDeployPrompt(ctx context.Context, out io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	const prompt = "Deploy this image? [y/N] "
+	n, err := io.WriteString(out, prompt)
+	if err == nil && n != len(prompt) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return fmt.Errorf("write deploy confirmation: %w", err)
+	}
+	return nil
 }
 
 // confirmationLine treats escape sequences and oversized input as invalid even if edited away.
@@ -61,7 +68,9 @@ func (l *confirmationLine) add(c byte, out io.Writer) (bool, error) {
 		if len(l.text) >= 256 {
 			l.invalid = true
 		} else {
-			l.text = append(l.text, c)
+			l.text = append(l.text, ' ')
+			_, err := io.WriteString(out, " ")
+			return false, err
 		}
 	case 27:
 		l.invalid = true

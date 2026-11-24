@@ -30,6 +30,9 @@ func readDeployConfirmation(ctx context.Context, in *os.File, out io.Writer) (st
 		unix.Close(p[0])
 		unix.Close(p[1])
 	}()
+	if err := writeDeployPrompt(ctx, out); err != nil {
+		return "", err
+	}
 	fds := []unix.PollFd{{Fd: int32(in.Fd()), Events: unix.POLLIN}, {Fd: int32(p[0]), Events: unix.POLLIN}}
 	var line confirmationLine
 	for {

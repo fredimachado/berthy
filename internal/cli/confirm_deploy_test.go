@@ -1,12 +1,48 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
 )
+
+type confirmationWriter struct{ err error }
+
+func (w confirmationWriter) Write(p []byte) (int, error) { return 0, w.err }
+
+func TestConfirmationWriteFailures(t *testing.T) {
+	failure := errors.New("write failed")
+	if err := writeDeployPrompt(context.Background(), confirmationWriter{}); !errors.Is(err, io.ErrShortWrite) {
+		t.Errorf("short prompt: %v", err)
+	}
+	if err := writeDeployPrompt(context.Background(), confirmationWriter{failure}); !errors.Is(err, failure) {
+		t.Errorf("prompt: %v", err)
+	}
+	var line confirmationLine
+	if _, err := line.add('\t', confirmationWriter{failure}); !errors.Is(err, failure) {
+		t.Errorf("tab echo: %v", err)
+	}
+}
+
+func TestConfirmationTabBackspaceTranscript(t *testing.T) {
+	var line confirmationLine
+	var out bytes.Buffer
+	for _, c := range []byte("y\t\b\r") {
+		if _, err := line.add(c, &out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := out.String(); got != "y \b \b\r\n" {
+		t.Errorf("transcript = %q", got)
+	}
+	if got := line.answer(); got != "y" {
+		t.Errorf("answer = %q", got)
+	}
+}
 
 func TestConfirmDeployRejectsPipes(t *testing.T) {
 	r, w, err := os.Pipe()
