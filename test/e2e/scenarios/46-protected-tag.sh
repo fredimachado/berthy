@@ -192,7 +192,7 @@ PY
 }
 if terminal_batch yes; then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
 before=''
-if before_json=$(adm history web --json 2>/dev/null) && before=$(jq -er 'if type == "array" then length else error("invalid history") end' <<< "$before_json" 2>/dev/null); then
+if before_json=$(adm history web --json 2>/dev/null) && before=$(jq -esr 'if length == 1 and (.[0] | type) == "array" then .[0] | length else error("invalid history") end' <<< "$before_json" 2>/dev/null); then
   pass 'read history before blocked batch'
 else
   fail 'read history before blocked batch' 'history unavailable or invalid'
@@ -206,7 +206,7 @@ expect_code 'stateful Compose blocker refuses mixed batch' 1 "$code" "$out"
 expect_contains 'batch reports nested blocker' "$out" 'blocker'
 if terminal_batch blocked; then pass 'blocked batch refuses before confirmation'; else fail 'blocked batch refuses before confirmation' 'terminal batch failed'; fi
 after=''
-if after_json=$(adm history web --json 2>/dev/null) && after=$(jq -er 'if type == "array" then length else error("invalid history") end' <<< "$after_json" 2>/dev/null); then
+if after_json=$(adm history web --json 2>/dev/null) && after=$(jq -esr 'if length == 1 and (.[0] | type) == "array" then .[0] | length else error("invalid history") end' <<< "$after_json" 2>/dev/null); then
   pass 'read history after blocked batch'
 else
   fail 'read history after blocked batch' 'history unavailable or invalid'
