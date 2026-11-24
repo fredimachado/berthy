@@ -6,8 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -19,32 +23,46 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(job)
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		return err
-	}
-	port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
-	if err != nil {
-		return err
-	}
-	portOpen := true
+	jobClosed := false
 	defer func() {
-		if portOpen {
-			windows.CloseHandle(port)
+		if !jobClosed {
+			windows.CloseHandle(job)
 		}
 	}()
-	association := struct {
-		key  uintptr
-		port windows.Handle
-	}{1, port}
-	if _, err = windows.SetInformationJobObject(job, windows.JobObjectAssociateCompletionPortInformation, uintptr(unsafe.Pointer(&association)), uint32(unsafe.Sizeof(association))); err != nil {
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	var pin runtime.Pinner
+	pin.Pin(&limits)
+	_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)))
+	pin.Unpin()
+	if err != nil {
 		return err
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
 	ready := make(chan struct{})
-	cmd.Cancel = func() error { <-ready; return windows.TerminateJobObject(job, 1) }
+	var jobMu sync.Mutex
+	var stopErr error
+	stop := func() error {
+		jobMu.Lock()
+		defer jobMu.Unlock()
+		if jobClosed {
+			return nil
+		}
+		err := cancelConversion(func() error { return windows.TerminateJobObject(job, 1) }, func() error {
+			closeErr := windows.CloseHandle(job)
+			if closeErr == nil {
+				jobClosed = true
+			}
+			killErr := cmd.Process.Kill()
+			if errors.Is(killErr, os.ErrProcessDone) {
+				killErr = nil
+			}
+			return errors.Join(errJobDrain, closeErr, killErr)
+		})
+		stopErr = errors.Join(stopErr, err)
+		return err
+	}
+	cmd.Cancel = func() error { <-ready; return stop() }
 	if err = cmd.Start(); err != nil {
 		close(ready)
 		return err
@@ -56,7 +74,7 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 		if !assigned {
 			_ = cmd.Process.Kill()
 		} else {
-			err = errors.Join(err, windows.TerminateJobObject(job, 1))
+			_ = stop()
 		}
 		if !readyClosed {
 			close(ready)
@@ -64,46 +82,17 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 		if !waited {
 			err = errors.Join(err, cmd.Wait())
 		}
+		err = errors.Join(err, stopErr)
 		if assigned {
-			finished := make(chan error, 1)
-			go func() {
-				for {
-					var message uint32
-					var key uintptr
-					var value *windows.Overlapped
-					if e := windows.GetQueuedCompletionStatus(port, &message, &key, &value, windows.INFINITE); e != nil {
-						finished <- e
-						return
-					}
-					const activeProcessZero = 4 // JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO
-					if key == 1 && message == activeProcessZero {
-						var accounting struct {
-							user, kernel, periodUser, periodKernel int64
-							faults, total, active, terminated      uint32
-						}
-						if e := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil); e != nil {
-							finished <- e
-							return
-						}
-						// Nested jobs also send their notifications to this port.
-						if accounting.active == 0 {
-							finished <- nil
-							return
-						}
-					}
+			if jobClosed {
+				err = errors.Join(err, errJobDrain)
+			} else {
+				drainCtx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+				drainErr := waitJobDrain(drainCtx, func() (uint32, error) { return activeJobProcesses(job) })
+				cancel()
+				if drainErr != nil {
+					err = errors.Join(err, errJobDrain, drainErr)
 				}
-			}()
-			drainCtx, cancel := context.WithTimeout(context.Background(), gitTimeout)
-			drainErr := awaitJobDrain(drainCtx, finished)
-			cancel()
-			if drainErr != nil {
-				windows.CloseHandle(port)
-				portOpen = false
-				// Closing the port releases the notification reader before returning.
-				if errors.Is(drainErr, context.DeadlineExceeded) {
-					<-finished
-				}
-				err = errors.Join(err, errJobDrain, drainErr)
 			}
 		}
 		if ctx.Err() != nil {
@@ -119,6 +108,9 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 		return err
 	}
 	assigned = true
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
 		return err
@@ -146,6 +138,9 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 		return err
 	}
 	defer windows.CloseHandle(thread)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	count, err := windows.ResumeThread(thread)
 	if err != nil {
 		return err
@@ -160,12 +155,41 @@ func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
 	return err
 }
 
-// The completion notification is not guaranteed, so failure to observe it refuses the checkout.
-func awaitJobDrain(ctx context.Context, finished <-chan error) error {
-	select {
-	case err := <-finished:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
+// Job completion notifications may be lost, so accounting decides when the view can be removed.
+func activeJobProcesses(job windows.Handle) (uint32, error) {
+	var accounting struct {
+		user, kernel, periodUser, periodKernel int64
+		faults, total, active, terminated      uint32
 	}
+	var pin runtime.Pinner
+	pin.Pin(&accounting)
+	err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil)
+	pin.Unpin()
+	return accounting.active, err
+}
+
+func waitJobDrain(ctx context.Context, active func() (uint32, error)) error {
+	for {
+		count, err := active()
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return nil
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func cancelConversion(terminate, fallback func() error) error {
+	if err := terminate(); err != nil {
+		return errors.Join(err, fallback())
+	}
+	return nil
 }

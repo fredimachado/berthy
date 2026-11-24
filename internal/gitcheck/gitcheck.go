@@ -86,6 +86,9 @@ func capturedFileInfo(path string) (os.FileInfo, error) {
 // gitTimeout bounds an individual Git operation.
 const gitTimeout = 20 * time.Second
 
+// compareTimeout bounds a comparison even when it needs many Git operations.
+const compareTimeout = 2 * time.Minute
+
 // notRepository is git's message for a directory outside any repository. Any other failure is an error.
 const notRepository = "not a git repository"
 
@@ -143,6 +146,8 @@ var errJobDrain = errors.New("checkout process cleanup could not be confirmed")
 
 // CompareCaptured reports inputs whose captured contents do not match the given HEAD tree.
 func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile) (changed []string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, compareTimeout)
+	defer cancel()
 	prefix, _, err := run(ctx, dir, "rev-parse", "--show-prefix")
 	if err != nil {
 		return nil, fmt.Errorf("checkout prefix unavailable: %w", err)

@@ -44,12 +44,50 @@ func TestConversionJobStartErrors(t *testing.T) {
 	}
 }
 
-func TestJobDrainTimeout(t *testing.T) {
+func TestJobDrainUsesAccounting(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
-		if err := awaitJobDrain(ctx, make(chan error)); !errors.Is(err, context.DeadlineExceeded) {
+		calls := 0
+		err := waitJobDrain(ctx, func() (uint32, error) {
+			calls++
+			if calls == 1 {
+				return 1, nil
+			}
+			return 0, nil
+		})
+		if err != nil || calls != 2 {
+			t.Fatalf("drain: calls %d, error %v", calls, err)
+		}
+	})
+}
+
+func TestJobDrainAccountingTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		if err := waitJobDrain(ctx, func() (uint32, error) { return 1, nil }); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("drain: %v", err)
 		}
 	})
+}
+
+func TestCancelConversionFallsBack(t *testing.T) {
+	failure := errors.New("job termination failed")
+	killed := false
+	err := cancelConversion(func() error { return failure }, func() error { killed = true; return nil })
+	if !killed || !errors.Is(err, failure) {
+		t.Fatalf("kill %v, err %v", killed, err)
+	}
+}
+
+func TestJobDrainEmptyAndQueryError(t *testing.T) {
+	calls := 0
+	if err := waitJobDrain(context.Background(), func() (uint32, error) { calls++; return 0, nil }); err != nil || calls != 1 {
+		t.Fatalf("empty job: calls %d, error %v", calls, err)
+	}
+	failure := errors.New("accounting unavailable")
+	if err := waitJobDrain(context.Background(), func() (uint32, error) { return 0, failure }); !errors.Is(err, failure) {
+		t.Fatalf("accounting error: %v", err)
+	}
 }
