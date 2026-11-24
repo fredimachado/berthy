@@ -72,6 +72,8 @@ type Intent struct {
 	// NoReturn, when set, makes recording this step the operation's crossing of its point of no return, with this reason. The
 	// first reason an operation records stays.
 	NoReturn string
+	// Event, when set, is appended in the same RecordIntent transaction. It is never stored on the intents row.
+	Event *Event
 }
 type Event struct {
 	ID                uint64
@@ -601,9 +603,14 @@ func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
 			return err
 		}
 	}
+	if i.Event != nil {
+		if err = eventTx(ctx, tx, id, i.Event.Kind, i.Event.Data); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
-func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase string, receipt json.RawMessage) error {
+func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase string, receipt json.RawMessage, events ...Event) error {
 	if phase == "" || !validJSON(receipt) {
 		return errors.New("invalid step")
 	}
@@ -626,6 +633,11 @@ func (s *Store) MarkStep(ctx context.Context, id string, ordinal int, phase stri
 	n, _ := res.RowsAffected()
 	if n != 1 {
 		return sql.ErrNoRows
+	}
+	for _, e := range events {
+		if err = eventTx(ctx, tx, id, e.Kind, e.Data); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

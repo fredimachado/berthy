@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
-// rolloutStatuses returns the ordered role/status pairs from persisted rollout events.
-func rolloutStatuses(t *testing.T, s *state.Store, opID string) [][2]string {
-	t.Helper()
+func readRolloutStatuses(s *state.Store, opID string) ([][2]string, error) {
 	events, err := s.EventsAfter(context.Background(), opID, 0, 100)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	var out [][2]string
 	for _, ev := range events {
@@ -27,9 +27,19 @@ func rolloutStatuses(t *testing.T, s *state.Store, opID string) [][2]string {
 			Status string `json:"status"`
 		}
 		if err := json.Unmarshal(ev.Data, &data); err != nil {
-			t.Fatalf("rollout data: %v", err)
+			return nil, err
 		}
 		out = append(out, [2]string{data.Role, data.Status})
+	}
+	return out, nil
+}
+
+// rolloutStatuses returns the ordered role/status pairs from persisted rollout events.
+func rolloutStatuses(t *testing.T, s *state.Store, opID string) [][2]string {
+	t.Helper()
+	out, err := readRolloutStatuses(s, opID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }
@@ -51,48 +61,157 @@ func admitAndDrain(t *testing.T, c *Controller, req Request) state.Operation {
 	return got
 }
 
-func TestRolloutEventsMarkStartedAndReadyForSuccessfulRole(t *testing.T) {
-	c, s := diagController(t, newDiagFake())
-	got := admitAndDrain(t, c, Request{
-		RequestID: "ok",
-		App:       "web",
-		Version:   "sha256:" + strings.Repeat("a", 64),
-		Manifest:  webManifest(testDeployTimeout, nil),
-	})
-	if got.State != "succeeded" {
-		t.Fatalf("operation %s %q", got.State, got.Err)
+// apiRoleManifest is webManifest with role "api" so app and role ids differ.
+func apiRoleManifest(timeout string) manifest.Manifest {
+	m := webManifest(timeout, nil)
+	app := m.Apps["web"]
+	app.Roles = map[string]manifest.Role{"api": app.Roles["web"]}
+	m.Apps["web"] = app
+	return m
+}
+
+// gatedUpdateFake blocks update health until released, and records whether started was
+// already durable when UpdateService ran. After-Drain snapshots alone would still pass if
+// started were appended after Docker mutation; the mutate-entry check would not.
+type gatedUpdateFake struct {
+	*positiveEngine
+	store *state.Store
+	role  string
+
+	mutated     chan struct{}
+	verifyHold  chan struct{}
+	allowVerify chan struct{}
+	hold        atomic.Bool
+	held        atomic.Bool
+
+	mutateErr atomic.Value // string
+}
+
+func (f *gatedUpdateFake) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	op, err := f.store.Active(ctx)
+	if err != nil {
+		f.mutateErr.Store("active: " + err.Error())
+		return err
 	}
-	statuses := rolloutStatuses(t, s, got.ID)
-	want := [][2]string{{"web", "started"}, {"web", "ready"}}
-	if len(statuses) != len(want) {
-		t.Fatalf("rollout events %v", statuses)
+	got, err := readRolloutStatuses(f.store, op.ID)
+	if err != nil {
+		f.mutateErr.Store("events: " + err.Error())
+		return err
 	}
-	for i := range want {
-		if statuses[i] != want[i] {
-			t.Fatalf("rollout events %v", statuses)
+	started, ready := false, false
+	for _, p := range got {
+		if p[0] == f.role && p[1] == "started" {
+			started = true
+		}
+		if p[0] == f.role && p[1] == "ready" {
+			ready = true
+		}
+		if p[0] != f.role {
+			f.mutateErr.Store("wrong role " + p[0])
 		}
 	}
-	events, err := s.EventsAfter(context.Background(), got.ID, 0, 100)
+	if !started || ready {
+		f.mutateErr.Store("at mutate: started/ready mismatch")
+	}
+	select {
+	case f.mutated <- struct{}{}:
+	default:
+	}
+	return f.positiveEngine.UpdateService(ctx, id, version, spec, auth)
+}
+
+func (f *gatedUpdateFake) InspectContainerHealth(ctx context.Context, id string) (string, error) {
+	if f.hold.Load() && f.held.CompareAndSwap(false, true) {
+		select {
+		case f.verifyHold <- struct{}{}:
+		default:
+		}
+		<-f.allowVerify
+	}
+	return f.positiveEngine.InspectContainerHealth(ctx, id)
+}
+
+func TestRolloutEventsStartedBeforeUpdateAndReadyAfterVerify(t *testing.T) {
+	s := openStore(t)
+	f := &gatedUpdateFake{
+		positiveEngine: &positiveEngine{},
+		store:          s,
+		role:           "api",
+		mutated:        make(chan struct{}, 1),
+		verifyHold:     make(chan struct{}, 1),
+		allowVerify:    make(chan struct{}),
+	}
+	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	m := apiRoleManifest(testDeployTimeout)
+	first := admitAndDrain(t, c, Request{
+		RequestID: "first",
+		App:       "web",
+		Version:   "sha256:" + strings.Repeat("a", 64),
+		Manifest:  m,
+	})
+	if first.State != "succeeded" {
+		t.Fatalf("first deploy %s %q", first.State, first.Err)
+	}
+	if got := rolloutStatuses(t, s, first.ID); len(got) != 2 || got[0] != [2]string{"api", "started"} || got[1] != [2]string{"api", "ready"} {
+		t.Fatalf("create milestones %v", got)
+	}
+
+	f.hold.Store(true)
+	released := false
+	defer func() {
+		if !released {
+			close(f.allowVerify)
+		}
+	}()
+
+	ctx := context.Background()
+	op, _, err := admit(t, c, ctx, Actor{ID: "admin"}, Request{
+		RequestID: "second",
+		App:       "web",
+		Version:   "sha256:" + strings.Repeat("b", 64),
+		Manifest:  m,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	readyAt, finalAt := -1, -1
-	for i, ev := range events {
-		if ev.Kind == "rollout" {
-			var data struct {
-				Status string `json:"status"`
-			}
-			_ = json.Unmarshal(ev.Data, &data)
-			if data.Status == "ready" {
-				readyAt = i
-			}
-		}
-		if ev.Kind == "succeeded" {
-			finalAt = i
-		}
+	drained := make(chan error, 1)
+	go func() { drained <- c.Drain(ctx) }()
+
+	select {
+	case <-f.mutated:
+	case err := <-drained:
+		t.Fatalf("drain finished before update mutation: %v", err)
 	}
-	if readyAt < 0 || finalAt < 0 || finalAt <= readyAt {
-		t.Fatalf("ready must precede final: ready@%d final@%d events=%v", readyAt, finalAt, statuses)
+	if msg, _ := f.mutateErr.Load().(string); msg != "" {
+		t.Fatal(msg)
+	}
+	if got := rolloutStatuses(t, s, op.ID); len(got) != 1 || got[0] != [2]string{"api", "started"} {
+		t.Fatalf("after mutate entry %v", got)
+	}
+
+	select {
+	case <-f.verifyHold:
+	case err := <-drained:
+		t.Fatalf("drain finished before verify hold: %v", err)
+	}
+	if got := rolloutStatuses(t, s, op.ID); len(got) != 1 || got[0][1] != "started" {
+		t.Fatalf("during verify gate %v", got)
+	}
+	close(f.allowVerify)
+	released = true
+	if err := <-drained; err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Operation(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "succeeded" {
+		t.Fatalf("update %s %q", got.State, got.Err)
+	}
+	statuses := rolloutStatuses(t, s, op.ID)
+	if len(statuses) != 2 || statuses[0] != [2]string{"api", "started"} || statuses[1] != [2]string{"api", "ready"} {
+		t.Fatalf("final milestones %v", statuses)
 	}
 }
 

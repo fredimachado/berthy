@@ -27,7 +27,7 @@ func (j *journalFake) RecordIntent(_ context.Context, _ string, i state.Intent) 
 	j.saved = append(j.saved, i)
 	return nil
 }
-func (j *journalFake) MarkStep(context.Context, string, int, string, json.RawMessage) error {
+func (j *journalFake) MarkStep(context.Context, string, int, string, json.RawMessage, ...state.Event) error {
 	return nil
 }
 

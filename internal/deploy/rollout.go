@@ -12,7 +12,16 @@ import (
 
 type journal interface {
 	RecordIntent(context.Context, string, state.Intent) error
-	MarkStep(context.Context, string, int, string, json.RawMessage) error
+	MarkStep(context.Context, string, int, string, json.RawMessage, ...state.Event) error
+}
+
+// rolloutMilestone is a role started/ready event persisted inside a journal transaction.
+func rolloutMilestone(role, status string) state.Event {
+	data, err := json.Marshal(map[string]string{"role": role, "status": status})
+	if err != nil {
+		return state.Event{}
+	}
+	return state.Event{Kind: "rollout", Data: data}
 }
 type serviceMutator interface {
 	InspectService(context.Context, string) (engine.ServiceSnapshot, error)
@@ -253,6 +262,8 @@ func withRole(err error, role string) error {
 }
 
 func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) (string, error) {
+	started := rolloutMilestone(i.Role, "started")
+	i.Event = &started
 	if err := j.RecordIntent(ctx, op, i); err != nil {
 		return "", err
 	}
@@ -277,13 +288,15 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
 		return "", withRole(err, i.Role)
 	}
-	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt); err != nil {
+	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
 		return "", err
 	}
 	return live.ID, nil
 }
 
 func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) error {
+	started := rolloutMilestone(i.Role, "started")
+	i.Event = &started
 	if err := applyIntent(ctx, j, e, op, i, auth); err != nil {
 		return err
 	}
@@ -312,7 +325,7 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = waitDrain(ctx, e, live.ID, i.Generation); err != nil {
 		return err
 	}
-	return j.MarkStep(ctx, op, i.Ordinal, "verified", receipt)
+	return j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready"))
 }
 
 func waitDrain(ctx context.Context, e healthReader, id, generation string) error {

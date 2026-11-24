@@ -298,6 +298,43 @@ func TestPublicDataRejectsPrivateFields(t *testing.T) {
 	}
 }
 
+func TestRecordIntentAndMarkStepPersistOptInEvents(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "rollout", ActorID: "a", Kind: "deploy", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := Event{Kind: "rollout", Data: []byte(`{"role":"api","status":"started"}`)}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Ordinal: 1, Kind: "update", Role: "api", Name: "svc", Desired: []byte(`{}`), Event: &started}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkStep(ctx, op.ID, 1, "observed", []byte(`{"id":"id"}`)); err != nil {
+		t.Fatal(err)
+	}
+	ready := Event{Kind: "rollout", Data: []byte(`{"role":"api","status":"ready"}`)}
+	if err = s.MarkStep(ctx, op.ID, 1, "verified", []byte(`{"id":"id"}`), ready); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.EventsAfter(ctx, op.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, e := range events {
+		if e.Kind == "rollout" {
+			kinds = append(kinds, string(e.Data))
+		}
+	}
+	if len(kinds) != 2 || kinds[0] != `{"role":"api","status":"started"}` || kinds[1] != `{"role":"api","status":"ready"}` {
+		t.Fatalf("rollout events %v", kinds)
+	}
+	steps, err := s.Intents(ctx, op.ID)
+	if err != nil || len(steps) != 1 || steps[0].Event != nil {
+		t.Fatalf("intent must not store Event: %+v %v", steps, err)
+	}
+}
+
 // TestPublicRequestAcceptsTheKeptVersionAndItsDigest: keep_digest is a digest the client read, not a secret, so a request that
 // carries it is recorded.
 func TestPublicRequestAcceptsTheKeptVersionAndItsDigest(t *testing.T) {
