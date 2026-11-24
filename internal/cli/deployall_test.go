@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,6 +48,8 @@ type fakeDeployAgent struct {
 	mixedPlans   bool
 	blockCompose bool
 	legacy       bool
+	lookupFail   string
+	lookups      []string
 	protected    bool // whether the agent is configured for a protected environment
 }
 
@@ -80,7 +83,21 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t,"effective_protected":%t}`, f.protected, f.protected)
 		}
 	case r.Method == "POST" && rest == "images/resolve" && f.mixedPlans:
-		fmt.Fprintf(w, `{"image":"ghcr.io/acme/api@sha256:%s","tag":"v1"}`, strings.Repeat("a", 64))
+		var lookup struct {
+			App string `json:"app"`
+			Tag string `json:"tag"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&lookup); err != nil {
+			http.Error(w, "bad lookup", 400)
+			return
+		}
+		f.lookups = append(f.lookups, lookup.App)
+		if lookup.App == f.lookupFail {
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"code":"not_found","message":"lookup failed"}`)
+			return
+		}
+		fmt.Fprintf(w, `{"image":"ghcr.io/acme/%s@sha256:%s","tag":%q}`, lookup.App, strings.Repeat("a", 64), lookup.Tag)
 	case r.Method == "POST" && rest == "deploys":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -519,5 +536,47 @@ func TestDeployAllLegacyGuardKeepsOriginalTagBody(t *testing.T) {
 	}
 	if agent.deploys[0]["dry_run"] != true || agent.deploys[1]["dry_run"] == true || agent.deploys[1]["version"] != "v1" || agent.deploys[1]["version_tag"] != nil {
 		t.Fatalf("requests %v", agent.deploys)
+	}
+}
+
+func TestDeployAllLookupFailureLastSendsNoPlansOrMutations(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true, lookupFail: "zlast"}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	code, _, _ := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--version", "zlast=v1", "--dry-run", "--json")
+	if code == 0 || strings.Join(agent.lookups, ",") != "api,zlast" || len(agent.deploys) != 0 {
+		t.Fatalf("exit %d lookups %v deploys %v", code, agent.lookups, agent.apps())
+	}
+}
+
+func TestDeployAllLegacyGuardIncludesLaterComposeChanges(t *testing.T) {
+	agent := &fakeDeployAgent{legacy: true, mixedPlans: true}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	file := filepath.Join(dir, "compose.yml")
+	if err := os.WriteFile(file, []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	git("init", "-q")
+	git("add", "berthy.yml", "compose.yml")
+	git("commit", "-qm", "fixture")
+	if err := os.WriteFile(file, []byte("services: {}\n# changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1")
+	if code != 0 || len(agent.deploys) != 3 {
+		t.Fatalf("exit %d stdout %q stderr %q requests %v", code, out, errs, agent.apps())
+	}
+	if agent.deploys[0]["dry_run"] != true || agent.deploys[0]["modified"] != true || agent.deploys[1]["modified"] == true {
+		t.Fatalf("guard and actual: %v", agent.deploys)
 	}
 }
