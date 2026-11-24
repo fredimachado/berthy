@@ -224,6 +224,10 @@ func TestCancelledCheckoutReleasesView(t *testing.T) {
 	command := fmt.Sprintf("\"%s\" -test.run=^TestCheckoutFilterHelper$ -- %s", filepath.ToSlash(exe), listener.Addr())
 	gitIn(t, dir, "config", "filter.blocked.smudge", command)
 	gitIn(t, dir, "config", "filter.blocked.required", "true")
+	tempRoot := t.TempDir()
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
+	t.Setenv("TMPDIR", tempRoot)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
@@ -267,6 +271,10 @@ func TestCancelledCheckoutReleasesView(t *testing.T) {
 	if runtime.GOOS == "windows" && !errors.Is(err, context.Canceled) {
 		t.Fatalf("lost cancellation: %v", err)
 	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("temporary checkout remains: %v, %v", entries, err)
+	}
 }
 
 func TestCheckoutFilterHelper(t *testing.T) {
@@ -279,4 +287,21 @@ func TestCheckoutFilterHelper(t *testing.T) {
 	}
 	defer conn.Close()
 	_, _ = io.Copy(io.Discard, conn)
+}
+
+func TestConfigResultCancellationAndNoMatch(t *testing.T) {
+	dir := newRepo(t)
+	cmd := exec.Command("git", "-C", dir, "config", "--get", "berthy-nonexistent.value")
+	noMatch := cmd.Run()
+	if exit, ok := noMatch.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("expected absent config: %v", noMatch)
+	}
+	if err := configResult(context.Background(), noMatch, &attributeBuffer{}, &checkoutComparison{}); err != nil {
+		t.Fatalf("absent config: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := configResult(ctx, noMatch, &attributeBuffer{}, &checkoutComparison{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled exit 1: %v", err)
+	}
 }

@@ -91,3 +91,37 @@ func TestJobDrainEmptyAndQueryError(t *testing.T) {
 		t.Fatalf("accounting error: %v", err)
 	}
 }
+
+func TestConversionWaitBoundsStuckWorker(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		worker := make(chan error)
+		defer close(worker)
+		result := make(chan error, 1)
+		go func() { result <- awaitConversion(ctx, worker) }()
+		cancel()
+		deadline, stop := context.WithTimeout(context.Background(), 2*gitTimeout)
+		defer stop()
+		select {
+		case err := <-result:
+			if !errors.Is(err, errJobDrain) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("stuck worker: %v", err)
+			}
+		case <-deadline.Done():
+			t.Fatal("cancelled conversion did not return within cleanup budget")
+		}
+	})
+}
+
+func TestConversionWaitPreservesWorkerErrorAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	failure := errors.New("worker failed")
+	worker := make(chan error, 1)
+	worker <- failure
+	err := awaitConversion(ctx, worker)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, failure) || errors.Is(err, errJobDrain) {
+		t.Fatalf("finished worker: %v", err)
+	}
+}

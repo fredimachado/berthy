@@ -17,8 +17,34 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// runConversion owns Git and its filter descendants before any of them can run.
-func runConversion(ctx context.Context, cmd *exec.Cmd) (err error) {
+// runConversion leaves the private view intact if the worker cannot finish after cancellation.
+func runConversion(ctx context.Context, cmd *exec.Cmd) error {
+	finished := make(chan error, 1)
+	go func() { finished <- runConversionWorker(ctx, cmd) }()
+	return awaitConversion(ctx, finished)
+}
+
+func awaitConversion(ctx context.Context, finished <-chan error) error {
+	select {
+	case err := <-finished:
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), err)
+		}
+		return err
+	case <-ctx.Done():
+		timer := time.NewTimer(gitTimeout)
+		defer timer.Stop()
+		select {
+		case err := <-finished:
+			return errors.Join(ctx.Err(), err)
+		case <-timer.C:
+			return errors.Join(ctx.Err(), errJobDrain)
+		}
+	}
+}
+
+// runConversionWorker owns Git and its filter descendants before any of them can run.
+func runConversionWorker(ctx context.Context, cmd *exec.Cmd) (err error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return err

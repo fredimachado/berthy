@@ -263,14 +263,14 @@ func sourceConversionConfig(ctx context.Context, root string) ([]string, error) 
 		output := &attributeBuffer{}
 		diagnostics := &checkoutComparison{}
 		cmd.Stdout, cmd.Stderr = output, diagnostics
-		err := cmd.Run()
-		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && output.Len() == 0 && !diagnostics.different {
+		err := configResult(ctx, cmd.Run(), output, diagnostics)
+		if err != nil {
+			return nil, err
+		}
+		if output.Len() == 0 {
 			return nil, nil
 		}
-		if err != nil || output.tooLarge || diagnostics.different {
-			return nil, fmt.Errorf("checkout conversion configuration unavailable")
-		}
-		if output.Len() == 0 || output.Bytes()[output.Len()-1] != 0 {
+		if output.Bytes()[output.Len()-1] != 0 {
 			return nil, fmt.Errorf("invalid checkout conversion configuration")
 		}
 		return output.Bytes(), nil
@@ -322,6 +322,23 @@ func sourceConversionConfig(ctx context.Context, root string) ([]string, error) 
 		args = append(args, "-c", key+`=cd -- "$BERTHY_GIT_SOURCE_ROOT" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_PARAMETERS GIT_PREFIX BERTHY_GIT_SOURCE_ROOT && `+commands[key])
 	}
 	return args, nil
+}
+
+// configResult distinguishes a missing setting from a cancelled Git lookup.
+func configResult(ctx context.Context, err error, output *attributeBuffer, diagnostics *checkoutComparison) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("checkout conversion configuration unavailable: %w", ctx.Err())
+	}
+	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && output.Len() == 0 && !diagnostics.different {
+		return nil
+	}
+	if err != nil || output.tooLarge || diagnostics.different {
+		return fmt.Errorf("checkout conversion configuration unavailable")
+	}
+	if output.Len() == 0 {
+		return fmt.Errorf("invalid checkout conversion configuration")
+	}
+	return nil
 }
 
 // checkoutAttributes supplies the HEAD attribute files because older Git does not
@@ -402,7 +419,7 @@ func matchesCheckout(ctx context.Context, view string, args, env []string, name,
 	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "cat-file", "--filters", "--path="+name, object)...)
 	cmd.Dir, cmd.Env = view, env
 	cmd.WaitDelay = time.Second
-	output := &checkoutComparison{expected: captured}
+	output := &checkoutComparison{expected: bytes.Clone(captured)}
 	diagnostics := &checkoutComparison{}
 	cmd.Stdout, cmd.Stderr = output, diagnostics
 	if err := runConversion(ctx, cmd); err != nil {
