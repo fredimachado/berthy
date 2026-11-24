@@ -8,6 +8,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestProgressShortLongAndClosed(t *testing.T) {
@@ -59,6 +61,28 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 		}
 		if strings.Count(before, "a message\n") != 1 || strings.Count(before, "done (") != 1 {
 			t.Fatalf("missing permanent lines: %q", before)
+		}
+	})
+}
+
+func TestProgressFitsLongLabel(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 30, nil }
+	t.Cleanup(func() { progressWidth = old })
+	synctest.Test(t, func(t *testing.T) {
+		var out bytes.Buffer
+		p := newProgressLine(&out, true)
+		defer p.Close()
+		p.Start(strings.Repeat("x", 80) + "\x1b[31m")
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		p.mu.Lock()
+		frame := strings.TrimPrefix(out.String(), "\r\x1b[2K")
+		p.mu.Unlock()
+		if !strings.Contains(frame, "s)") || ansi.StringWidth(frame) >= 30 || strings.Contains(frame, "\x1b") {
+			t.Fatalf("invalid frame: %q", frame)
 		}
 	})
 }

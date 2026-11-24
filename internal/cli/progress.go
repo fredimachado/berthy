@@ -71,9 +71,15 @@ func (p *progressLine) Start(label string) {
 			p.mu.Lock()
 			width, err := progressWidth(p.out)
 			if err == nil && width >= 30 {
-				frame := fmt.Sprintf("%c %s (%.1fs)", frames[i%len(frames)], p.label, time.Since(p.started).Seconds())
-				fmt.Fprintf(p.out, "\r\033[2K%s", ansi.Truncate(frame, width-1, ""))
-				p.visible = true
+				prefix := fmt.Sprintf("%c ", frames[i%len(frames)])
+				suffix := fmt.Sprintf(" (%.1fs)", time.Since(p.started).Seconds())
+				room := width - 1 - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+				if room > 0 {
+					fmt.Fprintf(p.out, "\r\033[2K%s%s%s", prefix, ansi.Truncate(p.label, room, ""), suffix)
+					p.visible = true
+				} else {
+					p.clear()
+				}
 			} else {
 				p.clear()
 			}
@@ -103,6 +109,7 @@ func (p *progressLine) Message(text string) {
 
 func (p *progressLine) Finish(status, detail string) {
 	p.Close()
+	status = terminalSafe(status)
 	marker := setupGlyphs[status]
 	if p.enabled {
 		marker = status
