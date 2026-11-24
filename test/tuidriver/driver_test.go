@@ -223,6 +223,28 @@ func TestRedactorAppliesToNamedVariables(t *testing.T) {
 	}
 }
 
+// BERTHY_TOKEN_STORE is a typed store selector (e2e exports none), not a secret. Automatic
+// BERTHY_*TOKEN* matching must leave it alone so a UI that draws "none" is not a false leak;
+// --redact-env still opts it in.
+func TestRedactorSkipsTokenStoreUnlessNamed(t *testing.T) {
+	r := newRedactor([]string{"BERTHY_TOKEN_STORE=none", "BERTHY_FAKE_TOKEN=real-secret-xyz"}, nil)
+	got := r.apply("store is none and secret is real-secret-xyz")
+	if got != "store is none and secret is [redacted]" {
+		t.Fatalf("auto: %q", got)
+	}
+	if r.contains("none") {
+		t.Fatal("BERTHY_TOKEN_STORE=none must not be treated as a secret automatically")
+	}
+	if !r.contains("real-secret-xyz") {
+		t.Fatal("genuine BERTHY_*TOKEN* values must still be redacted")
+	}
+
+	named := newRedactor([]string{"BERTHY_TOKEN_STORE=none"}, []string{"BERTHY_TOKEN_STORE"})
+	if !named.contains("none") || named.apply("none") != "[redacted]" {
+		t.Fatal("--redact-env BERTHY_TOKEN_STORE must still redact its value")
+	}
+}
+
 func TestKeyBytes(t *testing.T) {
 	for name, want := range map[string]string{
 		"enter": "\r", "esc": "\x1b", "tab": "\t", "shift+tab": "\x1b[Z", "up": "\x1b[A", "down": "\x1b[B", "left": "\x1b[D", "right": "\x1b[C",

@@ -98,6 +98,8 @@ func (r *redactor) longest() int {
 var tokenVar = regexp.MustCompile(`^BERTHY_.*TOKEN.*$`)
 
 // newRedactor collects the values of every BERTHY_*TOKEN* variable and of the named variables.
+// BERTHY_TOKEN_STORE is a typed store selector, not a secret; automatic matching skips it, but
+// an explicit name in names (--redact-env) still includes its value.
 func newRedactor(environ, names []string) *redactor {
 	want := map[string]bool{}
 	for _, n := range names {
@@ -110,7 +112,7 @@ func newRedactor(environ, names []string) *redactor {
 		if !ok || v == "" || seen[v] {
 			continue
 		}
-		if want[k] || tokenVar.MatchString(k) {
+		if want[k] || (tokenVar.MatchString(k) && k != "BERTHY_TOKEN_STORE") {
 			seen[v] = true
 			r.values = append(r.values, v)
 		}
