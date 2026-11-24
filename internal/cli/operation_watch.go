@@ -21,6 +21,14 @@ type operationWatchOptions struct {
 	extraTokens []string
 }
 
+var powerShellSingleQuotes = strings.NewReplacer(
+	"'", "''",
+	"\u2018", "\u2018\u2018",
+	"\u2019", "\u2019\u2019",
+	"\u201a", "\u201a\u201a",
+	"\u201b", "\u201b\u201b",
+)
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, options ...operationWatchOptions) int {
 	var config string
 	redact := []string{token}
@@ -163,7 +171,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		if config != "" {
 			word := safeSecretText(config, redact...)
 			if runtime.GOOS == "windows" {
-				word = "'" + strings.ReplaceAll(word, "'", "''") + "'"
+				word = "'" + powerShellSingleQuotes.Replace(word) + "'"
 			} else {
 				word = shellWord(word)
 			}

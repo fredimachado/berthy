@@ -638,27 +638,37 @@ func TestDeployInterruptQuotesWindowsConfigForPowerShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PowerShell quoting is used on Windows")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(cancelAtEOF{strings.NewReader(": heartbeat\n\n"), cancel}), Header: make(http.Header), Request: r}, nil
-	})}
-	base, _ := url.Parse("http://agent.invalid")
-	var out, errs bytes.Buffer
-	config := `C:\Users\O'Brien\private config.json`
-	got := watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo", operationWatchOptions{config: config})
-	if got != 1 || strings.Count(errs.String(), `--config 'C:\Users\O''Brien\private config.json'`) != 2 {
-		t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
+	for _, tc := range []struct{ name, mark string }{
+		{"ascii", "'"}, {"left", "\u2018"}, {"right", "\u2019"}, {"low", "\u201a"}, {"reversed", "\u201b"},
+		{"all", "'\u2018\u2019\u201a\u201b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(cancelAtEOF{strings.NewReader(": heartbeat\n\n"), cancel}), Header: make(http.Header), Request: r}, nil
+			})}
+			base, _ := url.Parse("http://agent.invalid")
+			var out, errs bytes.Buffer
+			config := `C:\Users\O` + tc.mark + `Brien\private ` + string(rune(0x60)) + `$config.json`
+			got := watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo", operationWatchOptions{config: config})
+			lines := strings.Split(errs.String(), "\n")
+			if got != 1 || len(lines) < 3 {
+				t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
+			}
+			var prior string
+			for _, line := range lines[1:3] {
+				_, quoted, ok := strings.Cut(line, "--config ")
+				if !ok || (prior != "" && quoted != prior) {
+					t.Fatalf("different or missing config argument: %q", errs.String())
+				}
+				prior = quoted
+				command := `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($value) [Console]::Out.Write($value) } ` + quoted
+				actual, err := exec.Command("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput()
+				if err != nil || string(actual) != config {
+					t.Fatalf("PowerShell received %q, err %v; argument %q", actual, err, quoted)
+				}
+			}
+		})
 	}
-	line := strings.Split(errs.String(), "\n")[1]
-	_, quoted, ok := strings.Cut(line, "--config ")
-	if !ok {
-		t.Fatal("missing config argument")
-	}
-	cmd := exec.Command("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `& { param($value) [Console]::Out.Write($value) } `+quoted)
-	actual, err := cmd.Output()
-	if err != nil || string(actual) != config {
-		t.Fatalf("PowerShell received %q, err %v", actual, err)
-	}
-	t.Logf("PowerShell received: %s", actual)
 }
