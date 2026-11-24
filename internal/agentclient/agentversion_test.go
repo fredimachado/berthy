@@ -213,3 +213,50 @@ func TestAgentProtectionRequiresUnambiguousScopedCapability(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentProtectionRejectsRedirectWithoutChangingClient(t *testing.T) {
+	for _, policy := range []string{"default", "permissive"} {
+		t.Run(policy, func(t *testing.T) {
+			var followed atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/elsewhere" {
+					followed.Add(1)
+					fmt.Fprint(w, `{"project":"demo","environment":"prod","protected":false,"version":"v0.5.0"}`)
+					return
+				}
+				http.Redirect(w, r, "/elsewhere", http.StatusFound)
+			}))
+			defer server.Close()
+			client := &http.Client{}
+			if policy == "permissive" {
+				client.CheckRedirect = func(*http.Request, []*http.Request) error { return nil }
+			}
+			u, _ := url.Parse(server.URL)
+			target := &Target{Project: "demo", Env: "prod", Base: u, Prefix: "/v1/projects/demo/environments/prod/", Token: "fixture-token"}
+			got, err := AgentProtection(context.Background(), client, target)
+			if got != ProtectionUnknown || err == nil {
+				t.Errorf("AgentProtection = %v, %v; want unknown and error", got, err)
+			}
+			if followed.Load() != 0 {
+				t.Errorf("followed redirect %d times", followed.Load())
+			}
+			before := followed.Load()
+			version, err := AgentVersion(context.Background(), client, target)
+			if err != nil || version != "v0.5.0" || followed.Load() != before+1 {
+				t.Errorf("caller redirect behavior changed: version %q, error %v, follows %d", version, err, followed.Load())
+			}
+		})
+	}
+}
+
+func TestAgentProtectionRejectsInvalidUTF8(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "{\"project\":\"demo\",\"environment\":\"prod\",\"protected\":false,\"effective_protected\xff\":false}")
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: "/v1/projects/demo/environments/prod/", Token: "fixture-token"})
+	if got != ProtectionUnknown || err == nil {
+		t.Fatalf("AgentProtection = %v, %v; want unknown and error", got, err)
+	}
+}

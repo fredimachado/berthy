@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"berthy/internal/manifest"
 	"berthy/internal/version"
@@ -27,12 +28,17 @@ const (
 
 // AgentProtection reads a scoped, unambiguous protection capability from the agent.
 func AgentProtection(ctx context.Context, c *http.Client, t *Target) (Protection, error) {
-	data, status, err := Do(ctx, c, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
+	client := *c
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	data, status, err := Do(ctx, &client, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
 	if err != nil {
 		return ProtectionUnknown, errors.New("agent protection lookup failed")
 	}
 	if status != http.StatusOK {
 		return ProtectionUnknown, fmt.Errorf("agent returned HTTP %d", status)
+	}
+	if !utf8.Valid(data) {
+		return ProtectionUnknown, ErrInvalidResponse
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
