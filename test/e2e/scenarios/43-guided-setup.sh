@@ -81,47 +81,40 @@ except Exception:
 PYCODE
 }
 redact() { sed -E 's/bty\.[A-Za-z0-9._-]+/[redacted]/g; s/[0-9A-Fa-f]{32,}/[redacted]/g' "$1"; }
-# keep_failure NAME: redacts the error and failed frames of driver run NAME into
-# $LOG/tui-guided-setup/NAME-failure, then scans them against the server's key (not the
-# local cli_key copy, which appears later and can be skipped). Prints one short phrase
-# for the caller: what was kept, that frames were withheld, or that nothing was kept.
+# keep_failure NAME: writes $LOG/tui-guided-setup/NAME-failure with the driver's fixed-form
+# error lines and only known-safe fields from the failed frames (step status or spinner, step
+# name, elapsed time; secret prompt/names; section headings; that an admin token was shown).
+# Free-form detail is dropped, so no key scan is needed. Prints see tui-guided-setup/NAME-failure
+# on success, or its output was not kept when writing failed (with nothing partial left).
 keep_failure() {
- local name=$1 kept="$private/$1-kept" dest="$LOG/tui-guided-setup/$1-failure" f server_key st size
- rm -rf "$kept" && mkdir -p "$kept" || return 1
- redact "$private/$name.err" > "$kept/driver-error.txt" || return 1
+ local name=$1 kept="$private/$1-kept" dest="$LOG/tui-guided-setup/$1-failure" f
+ rm -rf "$kept" "$dest"
+ mkdir -p "$kept" || { echo "its output was not kept"; return 1; }
+ grep -E '^tuidriver: ' "$private/$name.err" > "$kept/driver-error.raw" 2>/dev/null || : > "$kept/driver-error.raw"
+ if ! redact "$kept/driver-error.raw" > "$kept/driver-error.txt"; then
+  rm -rf "$kept"; echo "its output was not kept"; return 1
+ fi
+ rm -f "$kept/driver-error.raw"
+ if ! : > "$kept/frame.txt"; then
+  rm -rf "$kept"; echo "its output was not kept"; return 1
+ fi
  for f in "$private/$name"/FAILED-*.txt; do
   [ -f "$f" ] || continue
-  redact "$f" > "$kept/${f##*/}" || return 1
- done
- server_key="/var/lib/berthy/environments/$PROJECT/$ENVN/key"
- rm -f "$private/server.key"
- bash "$fixture" exec "$server" sh -c 'test -f "$1" || exit 2; cat "$1"' sh "$server_key" >"$private/server.key" 2>/dev/null
- st=$?
- if [ "$st" -eq 2 ]; then
-  rm -f "$private/server.key"
-  rm -rf "$dest" && mv "$kept" "$dest" || return 1
-  echo "see tui-guided-setup/$name-failure"
-  return 0
- fi
- if [ "$st" -eq 0 ]; then
-  size=$(wc -c < "$private/server.key" | tr -d ' ')
-  if [ "$size" -eq 32 ]; then
-   if key_absent "$private/server.key" "$kept"; then
-    rm -f "$private/server.key"
-    rm -rf "$dest" && mv "$kept" "$dest" || return 1
-    echo "see tui-guided-setup/$name-failure"
-    return 0
-   fi
-   rm -f "$private/server.key"
-   rm -rf "$kept" "$dest"
-   echo "driver output not kept: it held the key"
-   return 1
+  if ! awk '
+   /^(ok|changed|would_change|skipped|failed|[|\/\\-]) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key)( |$)/ {
+    t = ""; if (match($0, /\([0-9]+\.[0-9]s\)$/)) t = " " substr($0, RSTART, RLENGTH); print $1, $2 t; next }
+   /^Value of [A-Z][A-Z0-9_]*( |$)/ { print $1, $2, $3; next }
+   /^(stored|generated|kept) [A-Z][A-Z0-9_]*( |:|$)/ { n = $2; sub(/:$/, "", n); print $1, n; next }
+   /^(secrets|next steps):$/ { print; next }
+   /^admin token for / { print "admin token shown"; next }
+  ' "$f" >> "$kept/frame.txt"; then
+   rm -rf "$kept"; echo "its output was not kept"; return 1
   fi
+ done
+ if ! mv "$kept" "$dest"; then
+  rm -rf "$kept" "$dest"; echo "its output was not kept"; return 1
  fi
- rm -f "$private/server.key"
- rm -f "$kept"/FAILED-*.txt
- rm -rf "$dest" && mv "$kept" "$dest" || return 1
- echo "see tui-guided-setup/$name-failure; frames withheld, the key could not be checked"
+ echo "see tui-guided-setup/$name-failure"
  return 0
 }
 cat > "$private/cancel.json" <<'JSON'
@@ -135,7 +128,7 @@ cat > "$private/cancel.json" <<'JSON'
 JSON
 if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >"$private/cancel.err" 2>&1; then
  note=$(keep_failure cancel)
- fail "cancel pending setup" "terminal driver failed ($note)"; exit 1
+ fail "cancel pending setup" "terminal driver failed (${note:-its output was not kept})"; exit 1
 fi
 if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" ||
    ! grep -Eq '^failed +connect ' "$private/cancel/cancelled.txt" ||
@@ -165,7 +158,7 @@ cat > "$private/fresh.json" <<'JSON'
 JSON
 if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >"$private/fresh.err" 2>&1; then
  note=$(keep_failure fresh)
- fail "fresh guided setup" "terminal driver failed ($note)"; exit 1
+ fail "fresh guided setup" "terminal driver failed (${note:-its output was not kept})"; exit 1
 fi
 screen="$private/fresh/token.txt"
 # Preserve only the setup step names and status words from the real terminal frame.
@@ -205,7 +198,7 @@ if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --
  cp "$repeat" "$LOG/tui-guided-setup/complete.txt" || exit 1
  repeat_text=$(< "$repeat")
  if [[ $repeat_text == *"Value of "* || $repeat_text == *"$token"* || $repeat_text != *"the admin token is in \$$token_env"* ]] || ! awk '/^secrets:/ { guide=NR } /every secret the manifest needs is stored/ { inventory=NR } END { exit !(guide && inventory > guide) }' "$repeat"; then fail "repeat guided setup" "unexpected prompt or token, or missing inventory"; else pass "repeat guided setup without prompts"; fi
-else note=$(keep_failure repeat); fail "repeat guided setup" "terminal driver failed ($note)"; fi
+else note=$(keep_failure repeat); fail "repeat guided setup" "terminal driver failed (${note:-its output was not kept})"; fi
 out=$("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$MAN" --config "$cfg" </dev/null 2>&1); code=$?
 expect_code "piped setup" 0 "$code"
 if [[ $out == *"keep the copy of the encryption key"* && $out != *" --project "* && $out == *"generate the secrets the manifest declares:"* && $out == *"set the secrets the manifest names:"* && $out != *$'\nsecrets:'* && $out != *"Value of "* ]]; then
