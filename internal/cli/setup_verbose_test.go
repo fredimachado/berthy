@@ -234,7 +234,7 @@ func TestSetupVerboseJSONHasTheCommandsOfEachStep(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if len(got.Steps) != 14 {
+	if len(got.Steps) != 15 {
 		t.Fatalf("%d steps", len(got.Steps))
 	}
 	log := parseVerboseLog(t, errout)

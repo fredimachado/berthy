@@ -49,7 +49,7 @@ func TestKeyRotatePrintsTheNewKeyIDAndHowToCopyTheKeyButNeverTheKey(t *testing.T
 	for _, want := range []string{
 		"rotated the state key: 12 values resealed, key 3f2a9c01e4b7d210 replaces 91c0aa11bb22cc33",
 		"the previous key is kept on the server until the next state snapshot succeeds",
-		"> demo.dev.key.",
+		"> ~/demo.dev.key.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -103,8 +103,8 @@ func TestKeyRotateShowsTimestampedPosixKeyCopy(t *testing.T) {
 	for _, tc := range []struct{ path, quoted string }{{"/srv/key", "/srv/key"}, {"/srv/keys/my key", "'/srv/keys/my key'"}} {
 		a := &rotateAgent{status: 200, body: `{"old_key_id":"old","new_key_id":"new","key_file":"` + tc.path + `"}`}
 		code, out, errout := runKeyRotate(t, a)
-		want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; sudo cat ` + tc.quoted + ` > demo.dev.key.20261122T153012Z)`
-		if code != 0 || !strings.Contains(out, want) || !strings.Contains(out, "private folder") || strings.Contains(out, "Windows PowerShell:") {
+		want := `or, on the server, in a POSIX shell, copy it by hand and then move the file to another machine: (umask 077; set -C; sudo cat ` + tc.quoted + ` > ~/demo.dev.key.20261122T153012Z)`
+		if code != 0 || !strings.Contains(out, want) || !strings.Contains(out, "run berthy setup for this environment again") || strings.Contains(out, "Windows PowerShell:") {
 			t.Fatalf("exit %d: %s %s", code, out, errout)
 		}
 	}

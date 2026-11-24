@@ -33,8 +33,7 @@ Both print `manifest valid`.
 ## Setup and deploy
 
 Work from `examples/todo` so the manifest supplies the project. Setup writes
-the CLI configuration and saves the admin token in the local credential store. If it cannot confirm a save, it prints the token; keep it privately and set it in `BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). Use `--show-token` to print it as well. The key copy
-setup asks for is named `todo.dev.key` (or `todo.prod.key`).
+the CLI configuration and saves the admin token in the local credential store. If it cannot confirm a save, it prints the token; keep it privately and set it in `BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). Use `--show-token` to print it as well. Setup saves a copy of the key as `~/.berthy/keys/berthy.todo.dev.<key ID>.key` (or `berthy.todo.prod.…`).
 
 ```bash
 cd examples/todo

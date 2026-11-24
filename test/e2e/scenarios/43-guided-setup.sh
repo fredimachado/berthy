@@ -3,6 +3,7 @@
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 export FS_HOME="$RUN/guided-setup-home" FS_DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config"
+export HOME="$FS_HOME"
 mkdir -p "$FS_HOME/bin"
 ln -sf "$DOCKER_BIN" "$FS_HOME/bin/docker"
 export PATH="$FS_HOME/bin:/usr/bin:/bin"
@@ -67,9 +68,10 @@ if [[ $token != bty.* ]]; then fail "fresh token" "token was not captured"; exit
 if ! awk '/admin token for / && !token { token=NR } /^secrets:/ && !guide { guide=NR } /Value of / && !prompt { prompt=NR } END { exit !(token && guide > token && prompt > guide) }' "$screen"; then
  fail "fresh output order" "expected token, secrets, then prompt"; exit 1
 fi
-for text in 'secrets:' 'generated GEN_PASS' 'stored API_KEY' 'next steps:'; do
+for text in 'secrets:' 'generated GEN_PASS' 'stored API_KEY' 'next steps:' 'keep the copy of the encryption key'; do
  if ! grep -Fq "$text" "$private/fresh/complete.txt"; then fail "fresh guide" "missing $text"; exit 1; fi
 done
+if grep -Fq ' --project ' "$private/fresh/complete.txt"; then fail "fresh guide" "unexpected project flag"; exit 1; fi
 for step in 'set the secrets the manifest names:' 'set the secrets still missing (' 'generate the secrets the manifest declares:'; do
  if grep -Fq "$step" "$private/fresh/complete.txt"; then fail "fresh guide" "secrets step remains"; exit 1; fi
 done
@@ -84,14 +86,35 @@ if [[ $out == *"every secret the manifest needs is stored"* ]]; then pass "all s
 cat > "$private/repeat.json" <<'JSON'
 [{"wait_text":"every secret the manifest needs is stored", "timeout":"100s"}, {"snapshot":"complete"}, {"expect_exit":0}]
 JSON
-if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --out "$LOG/tui-guided-setup" --timeout 180s --redact-env "$token_env" >/dev/null 2>&1; then
- repeat="$LOG/tui-guided-setup/complete.txt"
+if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --out "$private/repeat" --timeout 180s --redact-env "$token_env" >/dev/null 2>&1; then
+ repeat="$private/repeat/complete.txt"
+ keyfile=$(find "$FS_HOME/.berthy/keys" -type f -name "berthy.$PROJECT.$ENVN.*.key" -print) || exit 1
+ if ! python3 - "$keyfile" "$private/repeat" "$token_env" <<'PYCODE'
+import base64, os, pathlib, sys
+try:
+    key = pathlib.Path(sys.argv[1]).read_bytes()
+    if len(key) != 32:
+        raise ValueError()
+    forms = [key, key.hex().encode()]
+    for f in (base64.b64encode, base64.urlsafe_b64encode):
+        encoded = f(key)
+        forms.extend((encoded, encoded.rstrip(b"=")))
+    forms.append(os.environ[sys.argv[3]].encode())
+    for path in pathlib.Path(sys.argv[2]).rglob("*"):
+        if path.is_file() and any(form in path.read_bytes() for form in forms):
+            raise ValueError()
+except Exception:
+    sys.exit(1)
+PYCODE
+ then fail "repeat capture" "private data check failed"; exit 1; fi
+ mkdir -p "$LOG/tui-guided-setup" || exit 1
+ cp "$repeat" "$LOG/tui-guided-setup/complete.txt" || exit 1
  repeat_text=$(< "$repeat")
  if [[ $repeat_text == *"Value of "* || $repeat_text == *"$token"* || $repeat_text != *"the admin token is in \$$token_env"* ]] || ! awk '/^secrets:/ { guide=NR } /every secret the manifest needs is stored/ { inventory=NR } END { exit !(guide && inventory > guide) }' "$repeat"; then fail "repeat guided setup" "unexpected prompt or token, or missing inventory"; else pass "repeat guided setup without prompts"; fi
 else fail "repeat guided setup" "terminal driver failed"; fi
 out=$("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$MAN" --config "$cfg" </dev/null 2>&1); code=$?
 expect_code "piped setup" 0 "$code"
-if [[ $out == *"generate the secrets the manifest declares:"* && $out == *"set the secrets the manifest names:"* && $out != *$'\nsecrets:'* && $out != *"Value of "* ]]; then
+if [[ $out == *"keep the copy of the encryption key"* && $out != *" --project "* && $out == *"generate the secrets the manifest declares:"* && $out == *"set the secrets the manifest names:"* && $out != *$'\nsecrets:'* && $out != *"Value of "* ]]; then
  pass "piped setup prints manual secrets steps"
 else
  fail "piped setup prints manual secrets steps" "missing manual step or unexpected guide or prompt"

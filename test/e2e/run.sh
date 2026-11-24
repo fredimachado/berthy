@@ -47,6 +47,13 @@ for name in "${names[@]}"; do
   fi
 done
 
+for file in "$DIR"/scenarios/*.sh; do
+  if grep -Eq '\$BIN"?[[:space:]]+setup([[:space:]]|$)' "$file" && ! grep -Fxq 'export HOME="$FS_HOME"' "$file"; then
+    echo "setup scenario lacks isolated HOME: $file" >&2
+    exit 2
+  fi
+done
+
 if [ "$build" -eq 1 ]; then
   if ! bash "$DIR/build.sh"; then
     echo "build failed; no scenario ran" >&2

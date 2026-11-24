@@ -63,6 +63,10 @@ func (l *CommandLog) exited(res Result, err error) {
 		return
 	}
 	if err != nil {
+		if l.step == "cli_key" {
+			fmt.Fprintln(l.w, "→ could not run")
+			return
+		}
 		fmt.Fprintf(l.w, "→ could not run: %s\n", clean(err.Error()))
 		return
 	}

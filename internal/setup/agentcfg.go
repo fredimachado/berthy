@@ -310,7 +310,7 @@ func firstField(b []byte) string {
 	return fields[0]
 }
 
-// keyGenerateScript makes the key on the server from its random source. The key never leaves the server.
+// keyGenerateScript makes the key on the server from its random source. Only cli_key takes it off the server, wrapped for the operator's machine.
 func keyGenerateScript(keyPath string) string {
 	dir := shellQuote(path.Dir(keyPath))
 	return "if [ ! -d " + dir + " ]; then install -d -o berthy -g berthy -m 0700 " + dir + "; fi\n" +

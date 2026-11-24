@@ -204,7 +204,7 @@ func TestASecondRunOfSetupChangesNothing(t *testing.T) {
 		t.Fatalf("rerun: %+v", got)
 	}
 	for _, r := range got {
-		if r.Status != StatusOK && !(r.Step == "cli_token" && r.Status == StatusSkipped) {
+		if r.Status != StatusOK && !((r.Step == "cli_token" || r.Step == "cli_key") && r.Status == StatusSkipped) {
 			t.Errorf("step: %+v", r)
 		}
 	}

@@ -12,11 +12,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/keywrap"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
@@ -44,6 +46,12 @@ var setupBuild = func() setup.Build {
 // setupDoctor asks the new agent for its doctor from this machine. Nil sends an HTTP request; tests replace it.
 var setupDoctor setup.DoctorFunc
 
+var errNoKeyHome = errors.New("no home folder")
+
+// KeyHome finds the home for key copies; only the executable enables it.
+var KeyHome = func() (string, error) { return "", errNoKeyHome }
+var setupNewWrapKey func() (*keywrap.Private, error)
+
 var keyCopyNow = time.Now
 
 // setupReport is the --json output of setup.
@@ -57,6 +65,7 @@ type setupReport struct {
 	// Token is the admin token this run made when the output rule requires it.
 	Token       string   `json:"token,omitempty"`
 	TokenStored bool     `json:"token_stored,omitempty"`
+	KeyCopy     string   `json:"key_copy,omitempty"`
 	NextSteps   []string `json:"next_steps,omitempty"`
 }
 
@@ -139,7 +148,14 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	}
 	printBanner(errout, scope.ID{Project: from.project, Environment: *env}, where, envFromVariable)
 	preflightErr := checkSetupTokenEnv(from.project, *env, *cliConfig)
+	keyHome := ""
+	if !*local {
+		if h, err := KeyHome(); err == nil && filepath.IsAbs(h) {
+			keyHome = h
+		}
+	}
 	opts := setup.Options{
+		Local: *local, KeyHome: keyHome, NewWrapKey: setupNewWrapKey,
 		Env: *env, Project: from.project, Network: from.network, ListenIP: ip, ListenPort: port, Protected: from.protected, NoInstallDocker: *noInstall,
 		Binary: *binary, KeyFile: *keyFile, NewToken: *newToken, CLIConfig: *cliConfig, Build: setupBuild(),
 		ReleaseURL: os.Getenv("BERTHY_RELEASE_URL"), Doctor: setupDoctor,
@@ -177,6 +193,9 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	}
 	if session != nil {
 		report.TokenStored = session.TokenStored
+		if report.OK && !*dry {
+			report.KeyCopy = session.KeyCopyPath
+		}
 	}
 	manifestDir := ""
 	if report.OK && !*dry {
@@ -195,7 +214,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		if report.Token != "" {
 			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(from.project+"/"+*env), report.Token)
 		}
-		if report.OK && !*dry && from.manifest != nil && session.AdminToken() != "" {
+		if report.OK && !*dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
 			if read, ok := hiddenInput(); ok {
 				id := scope.ID{Project: from.project, Environment: *env}
 				base, _ := url.Parse(session.AgentURL())
@@ -210,10 +229,10 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, envFromVariable: envFromVariable, newToken: *newToken, config: *cliConfig, local: *local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
 	}
 	if *asJSON {
-		// No HTML escaping: the next steps hold shell redirections that should stay readable.
+		// Keep characters in next steps readable.
 		enc := json.NewEncoder(out)
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
@@ -305,26 +324,24 @@ type secretsStep struct {
 
 // nextSteps is what setup needs to describe what follows a successful run.
 type nextSteps struct {
-	secrets      secretsStep
-	id           scope.ID
-	keyFile      string
-	config       string
-	manifestDir  string
-	local        bool
-	target       string
-	tokenEnv     string
-	storeToken   bool
-	ingress      bool
-	inferProject bool // setup loaded a manifest, so the follow-up commands read the project from it
+	secrets         secretsStep
+	id              scope.ID
+	keyCopy         string
+	keyUnsettled    bool
+	envFromVariable bool
+	newToken        bool
+	config          string
+	manifestDir     string
+	local           bool
+	tokenEnv        string
+	storeToken      bool
+	ingress         bool
+	inferProject    bool // setup loaded a manifest, so the follow-up commands read the project from it
 }
 
-// setupNextSteps prints the command that copies the key, never the key itself.
+// setupNextSteps describes what follows a successful setup.
 func setupNextSteps(n nextSteps) []string {
 	env := n.id.Environment
-	read := "sudo cat " + shellWord(n.keyFile)
-	if !n.local {
-		read = "ssh " + shellWord(n.target) + " " + shellWord(read)
-	}
 	config := ""
 	if !n.inferProject {
 		config = " --project " + shellWord(n.id.Project)
@@ -335,10 +352,30 @@ func setupNextSteps(n nextSteps) []string {
 	if n.manifestDir != "" {
 		config += " --manifest-dir " + shellWord(n.manifestDir)
 	}
-	steps := []string{
-		"run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the directory where you ran berthy setup before the other commands",
-		"in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): " + keyCopyCommand(read, n.id),
+	retry := "run the same berthy setup command again, from this same directory and with the same environment"
+	if n.envFromVariable {
+		retry += " (BERTHY_ENV=" + env + ")"
 	}
+	if n.newToken {
+		retry += "; leave out --new-token, because this run already added that admin token"
+	}
+	var first string
+	switch {
+	case n.keyCopy != "":
+		first = "keep the copy of the encryption key that setup saved in " + n.keyCopy + ", and store another in a password manager or vault: without the key, the secrets of a lost server are gone"
+	case n.keyUnsettled:
+		first = "a key rotation on the server did not finish, so setup copied no key. On the server, find and fix what kept the agent from putting its key files in place (for example a leftover <key>.prev.tmp it cannot remove, a full disk, or wrong ownership). Do not restart the agent before that: it finishes the rotation when it starts, and it cannot start while the cause remains. Then restart it and " + retry
+	case n.local:
+		first = "setup kept no copy of the encryption key of " + n.id.Project + "/" + env + ", because it ran on the server itself. To save one, run berthy setup for that same project and environment over SSH from your own machine, with --project " + n.id.Project + " and the same build that is installed on this server: the same released version of the CLI, or the same custom Linux binary given with --binary. First resolve any interrupted key rotation on this server. If you are not sure about the build or the rotation, check before you copy"
+		if n.inferProject {
+			first += "; run it from the directory of the " + n.id.Project + " manifest"
+		} else {
+			first += "; give the same --network and --protected settings as this run"
+		}
+	default:
+		first = "setup saved no copy of the encryption key (cli_key above says why): fix that, then " + retry
+	}
+	steps := []string{first}
 	if n.storeToken {
 		steps = append(steps, fmt.Sprintf("store the admin token above, and set it in $%s when you run berthy", n.tokenEnv))
 	}
@@ -356,13 +393,13 @@ func setupNextSteps(n nextSteps) []string {
 	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))
 }
 
-// keyCopyCommand is the shell command that copies the key off the server: read prints the key, and its output goes to a file
-// named for the environment. Setup and `key rotate` both print it, and neither prints the key.
+// keyFileName names the manual rotation copy for the environment.
 func keyFileName(id scope.ID) string { return id.Slug() + ".key" }
 
+// keyCopyCommand is the manual rotation command; read prints the key into a new file in the server's home folder.
 func keyCopyCommand(read string, id scope.ID) string {
 	name := keyFileName(id) + "." + keyCopyNow().UTC().Format("20060102T150405Z")
-	return "(umask 077; set -C; " + read + " > " + shellWord(name) + ")"
+	return "(umask 077; set -C; " + read + " > ~/" + shellWord(name) + ")"
 }
 
 // shellWord is s as one word of a POSIX shell command: unchanged when it has only letters, digits and _ . / ~ : -, and in

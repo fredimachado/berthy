@@ -28,6 +28,8 @@
 
 ## Tests
 
+- A test never writes a key copy under the real home folder: `cli.KeyHome` finds no folder unless `cmd/berthy` sets it, and an e2e scenario that runs `berthy setup` exports `HOME=$FS_HOME`.
+
 - A test never touches the user's real Berthy config or the real OS credential
   store. Pass `--config` or set `BERTHY_CONFIG` to a temp file.
   `agentclient.TokenStore` defaults to `credstore.None()`, the e2e harness
@@ -69,6 +71,10 @@
   else edits the checkout, run it from a clean clone of HEAD.
 
 ## Design rules
+
+- The encryption key crosses SSH and sudo only wrapped for a key pair that lives in one setup run (`internal/keywrap`). No script reads, hashes or prints it for transport, and what the hand-over prints never reaches `failureText` or a step detail.
+- While `<key>.next` exists the key file may be stale. Code that takes a key off the server reads it with `state.ReadSettledKey`.
+- A file that holds a secret on the operator’s machine is written through `internal/keycopy`: pinned directories, checks on the opened handle, never replaced.
 
 - The CLI runs on Windows, macOS and Linux, and the agent runs on Linux.
   Anything passed between them, such as a manifest path, must mean the same on

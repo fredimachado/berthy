@@ -22,6 +22,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/keywrap"
 )
 
 // call is one script the fake server received, with what arrived on its standard input.
@@ -32,9 +33,11 @@ type call struct {
 
 // agentFake is a server for the agent's steps. It answers the scripts of setup by what they contain.
 type agentFake struct {
-	probe   []string
-	config  string // what reading the agent's configuration returns
-	version string // what the installed binary's version command prints
+	key       []byte
+	keyAnswer func(context.Context, []byte) (Result, error)
+	probe     []string
+	config    string // what reading the agent's configuration returns
+	version   string // what the installed binary's version command prints
 
 	prevBin, prevCfg bool  // what the swap finds already installed
 	waits            []int // exit codes of the successive restart-and-wait scripts; the rest are 0
@@ -58,6 +61,12 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	f.calls = append(f.calls, call{script, in})
 	hash := func(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 	switch {
+	case strings.Contains(script, "# key copy"):
+		if f.keyAnswer != nil {
+			return f.keyAnswer(ctx, in)
+		}
+		answer, err := keywrap.Wrap(in, f.key)
+		return Result{Stdout: answer}, err
 	case script == "id -u; id -un":
 		return Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
@@ -286,7 +295,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	if !ok {
 		t.Fatalf("setup failed: %+v", got)
 	}
-	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=changed binary=changed key=changed token=changed config=changed service=changed cli_config=changed cli_token=skipped verify=ok"
+	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=changed binary=changed key=changed token=changed config=changed service=changed cli_config=changed cli_token=skipped verify=ok cli_key=skipped"
 	if statuses(got) != want {
 		t.Fatalf("statuses = %s\nwant       %s", statuses(got), want)
 	}
@@ -402,7 +411,7 @@ func TestSetUpServerChangesNothingAndMakesNoToken(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	if want := "connect=ok check=ok docker=ok swarm=ok network=ok user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=ok cli_token=ok verify=ok"; statuses(got) != want {
+	if want := "connect=ok check=ok docker=ok swarm=ok network=ok user=ok binary=ok key=ok token=ok config=ok service=ok cli_config=ok cli_token=ok verify=ok cli_key=skipped"; statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}
 	for _, sc := range f.scripts() {
@@ -475,7 +484,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
-	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=would_change binary=would_change key=would_change token=would_change config=would_change service=would_change cli_config=would_change cli_token=would_change verify=skipped"
+	want := "connect=ok check=ok docker=ok swarm=ok network=ok user=would_change binary=would_change key=would_change token=would_change config=would_change service=would_change cli_config=would_change cli_token=would_change verify=skipped cli_key=skipped"
 	if statuses(got) != want {
 		t.Fatalf("statuses = %s", statuses(got))
 	}

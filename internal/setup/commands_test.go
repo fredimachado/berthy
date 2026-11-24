@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"berthy/internal/keywrap"
 )
 
 // funcRunner is a Runner whose script runs are answered by run.
@@ -180,6 +182,10 @@ func sortedCopy(s []string) []string {
 // The dry run of --verbose lists, for every step that would change the server, the commands a real run sends in that step, and
 // every script a real run sends is in the dry run's log.
 func TestDryRunListsWhatARealRunSendsInEachStep(t *testing.T) {
+	wrap, err := keywrap.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
 	exe := elfFile(t, emX86)
 	scenarios := []struct {
 		name string
@@ -211,13 +217,18 @@ func TestDryRunListsWhatARealRunSendsInEachStep(t *testing.T) {
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
+			home := t.TempDir()
 			mod := func(o *Options) {
+				o.KeyHome = home
+				o.NewWrapKey = func() (*keywrap.Private, error) { return wrap, nil }
 				if sc.mod != nil {
 					sc.mod(t, o)
 				}
 			}
-			dry, dryLog := verboseRun(t, sc.fake(t), exe, true, mod)
-			live, _ := verboseRun(t, sc.fake(t), exe, false, mod)
+			dryServer, liveServer := sc.fake(t), sc.fake(t)
+			dryServer.key, liveServer.key = bytes.Repeat([]byte{37}, 32), bytes.Repeat([]byte{37}, 32)
+			dry, dryLog := verboseRun(t, dryServer, exe, true, mod)
+			live, _ := verboseRun(t, liveServer, exe, false, mod)
 			realByStep := map[string]StepResult{}
 			for _, r := range live {
 				realByStep[r.Step] = r

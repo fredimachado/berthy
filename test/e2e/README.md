@@ -71,8 +71,11 @@ under PREFIX, as JSON, and a request to `/_fake/fail` makes the next one fail (s
   `41-secret-generate-declared.sh` drives nameless `secret generate` for declared secrets, the deployed-reader and external-volume guards, and the named `--replace` escape hatch.
   `42-secret-guide.sh` drives the terminal secret guide, registry association replacement, and deploy.
   `43-guided-setup.sh` drives fresh and repeat setup over a disposable Debian SSH fixture; its first terminal snapshots are kept in a private temporary tmpfs directory and removed on exit.
+  `44-setup-key-copy.sh` checks key copies, rotation, sudo recording and a rebuild using two disposable SSH fixtures.
 
 ## Add a scenario
+
+A scenario that runs `berthy setup` exports `HOME=$FS_HOME`, so the key copy lands in the fixture home. `run.sh` refuses to start otherwise. A snapshot or log that could hold a key or token is written to a private temporary directory first and archived only after it was checked.
 
 Copy `scenarios/00-smoke.sh` to `scenarios/NN-name.sh` and keep its shape: source `../lib.sh`, drive `berthy` through
 `adm` (admin token) or `ci` (agent token), assert with `expect_eq`, `expect_contains`, `expect_not_contains` or

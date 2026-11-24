@@ -9,6 +9,7 @@ if [[ ! $server =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
   exit 1
 fi
 export FS_HOME="$RUN/setup-home"
+export HOME="$FS_HOME"
 export FS_DOCKER_HOST="unix://$SOCK"
 export DOCKER_CONFIG="$E2E_ROOT/docker-config"
 mkdir -p "$FS_HOME/bin"
@@ -32,10 +33,12 @@ mkdir -p "$RUN/setup-empty"
 out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --json 2>/dev/null); code=$?
 expect_code "setup on a fresh server" 0 "$code"
 if [ "$code" -eq 0 ]; then
-  jq -e '.ok and (.token | startswith("bty.")) and ([.steps[] | select(.step == "cli_token" and .status == "skipped" and (.detail | contains("no credential store on this machine")))] | length == 1) and ([.next_steps[] | select(contains("store the admin token above"))] | length == 1)' <<<"$out" >/dev/null || {
+  jq -e --arg prefix "$FS_HOME/.berthy/keys/berthy.$PROJECT.$ENVN." '.ok and (.key_copy | startswith($prefix)) and ([.steps[] | select(.step == "cli_key" and .status == "changed")] | length == 1) and (.next_steps[0] | contains("keep the copy of the encryption key")) and (.token | startswith("bty.")) and ([.steps[] | select(.step == "cli_token" and .status == "skipped" and (.detail | contains("no credential store on this machine")))] | length == 1) and ([.next_steps[] | select(contains("store the admin token above"))] | length == 1)' <<<"$out" >/dev/null || {
     echo "setup did not report the unstored token" >&2
     exit 1
   }
+  key_copy=$(jq -er .key_copy <<<"$out") || exit 1
+  if [ "$(stat -c '%a %s' "$key_copy")" != "600 32" ] || [ "$(stat -c %a "$FS_HOME/.berthy")" != 700 ] || [ "$(stat -c %a "$FS_HOME/.berthy/keys")" != 700 ]; then echo "key copy permissions or size are wrong" >&2; exit 1; fi
 fi
 unset out
 finish

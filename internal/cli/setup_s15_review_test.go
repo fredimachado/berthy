@@ -11,7 +11,7 @@ import (
 	"berthy/internal/scope"
 )
 
-func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T) {
+func TestKeyRotationCopyKeepsBackupOnFailure(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skipf("sh is not available: %v", err)
@@ -19,36 +19,35 @@ func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T
 	old := keyCopyNow
 	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
 	t.Cleanup(func() { keyCopyNow = old })
-	id := scope.ID{Project: "shop", Environment: "prod"}
-	step := setupNextSteps(nextSteps{id: id, keyFile: "/srv/keys/my key", config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: true, ingress: false, manifestDir: ""})[1]
-	_, command, ok := strings.Cut(step, ": ")
+	var out, errout strings.Builder
+	if printKeyRotation(&out, &errout, []byte(`{"old_key_id":"old","new_key_id":"new","key_file":"/srv/key"}`), scope.ID{Project: "shop", Environment: "prod"}) != 0 {
+		t.Fatal("rotation output failed")
+	}
+	_, cmd, ok := strings.Cut(out.String(), "another machine: ")
 	if !ok {
-		t.Fatal(step)
+		t.Fatal("copy instruction missing")
 	}
 	dir := t.TempDir()
-	backup := filepath.Join(dir, "shop.prod.key.20261122T153012Z")
 	run := func() error {
-		c := exec.Command(sh, "-c", "ssh() { printf '%s\\n' \"$@\" > args; printf 01234567890123456789012345678901; }; "+command)
+		c := exec.Command(sh, "-c", "sudo() { printf 01234567890123456789012345678901; }; "+cmd)
 		c.Dir = dir
+		c.Env = append(os.Environ(), "HOME="+dir)
 		return c.Run()
 	}
 	if err := run(); err != nil {
 		t.Fatal(err)
 	}
-	args, err := os.ReadFile(filepath.Join(dir, "args"))
-	if err != nil || string(args) != "ops@s1\nsudo cat '/srv/keys/my key'\n" {
-		t.Fatalf("ssh arguments: %q %v", args, err)
+	path := filepath.Join(dir, "shop.prod.key.20261122T153012Z")
+	before, err := os.ReadFile(path)
+	if err != nil || len(before) != 32 {
+		t.Fatal("copy missing")
 	}
-	b, err := os.ReadFile(backup)
-	if err != nil || string(b) != "01234567890123456789012345678901" {
-		t.Fatalf("backup: %q %v", b, err)
-	}
-	if err := run(); err == nil {
+	if run() == nil {
 		t.Fatal("overwrote existing backup")
 	}
-	after, _ := os.ReadFile(backup)
-	if string(after) != string(b) {
-		t.Fatalf("backup changed: %q", after)
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("backup changed")
 	}
 }
 
@@ -90,7 +89,7 @@ func TestSetupFollowUpsKeepRelativeManifestAndConfigPaths(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
-	if !strings.Contains(out, "return to the directory where you ran berthy setup before the other commands") {
+	if !strings.Contains(out, "from this same directory") {
 		t.Fatalf("instruction should name the setup cwd, not the manifest directory:\n%s", out)
 	}
 	if strings.Contains(out, "setup manifest directory") {
@@ -153,16 +152,16 @@ func TestSetupFollowUpsNameTheProjectWithoutAManifest(t *testing.T) {
 
 func TestNextStepsFlagsOrder(t *testing.T) {
 	id := scope.ID{Project: "shop", Environment: "prod"}
-	withProject := setupNextSteps(nextSteps{id: id, keyFile: "/key", config: "/etc/cli.json", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: false})
-	without := setupNextSteps(nextSteps{id: id, keyFile: "/key", config: "/etc/cli.json", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: true})
+	withProject := setupNextSteps(nextSteps{id: id, config: "/etc/cli.json", local: false, tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: false})
+	without := setupNextSteps(nextSteps{id: id, config: "/etc/cli.json", local: false, tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: true})
 	wantWith := "-e prod --project shop --config /etc/cli.json --manifest-dir /repo"
 	wantWithout := "-e prod --config /etc/cli.json --manifest-dir /repo"
-	for _, step := range withProject[2:] {
+	for _, step := range withProject[1:] {
 		if !strings.Contains(step, wantWith) {
 			t.Errorf("with project: %s", step)
 		}
 	}
-	for _, step := range without[2:] {
+	for _, step := range without[1:] {
 		if !strings.Contains(step, wantWithout) || strings.Contains(step, " --project ") {
 			t.Errorf("inferred project: %s", step)
 		}
@@ -188,11 +187,11 @@ func TestRebuildExamplesUseTheHostedStateAndSavedKey(t *testing.T) {
 		t.Fatal("next section missing")
 	}
 	g = g[start : start+4+end]
-	if !strings.Contains(g, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z") || !strings.Contains(g, "--key-file ./todo.prod.key.20261122T153012Z --config") || strings.Contains(g, "`prod.key`") {
+	if !strings.Contains(g, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./berthy.todo.prod.91c0aa11bb22cc33.key") || !strings.Contains(g, "--key-file ~/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key --config") || strings.Contains(g, "`prod.key`") {
 		t.Fatal("guide rebuild uses inconsistent key or state path")
 	}
 	s := string(spec)
-	if !strings.Contains(s, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./todo.prod.key.20261122T153012Z") {
+	if !strings.Contains(s, "--out /var/lib/berthy/environments/todo/prod/state --key-file ./berthy.todo.prod.91c0aa11bb22cc33.key") {
 		t.Fatal("spec restore uses wrong state or key")
 	}
 }
@@ -202,60 +201,10 @@ func TestKeyCopyShellTestSkipsWithoutSh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "-test.run=^TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure$", "-test.v")
+	cmd := exec.Command(exe, "-test.run=^TestKeyRotationCopyKeepsBackupOnFailure$", "-test.v")
 	cmd.Env = append(os.Environ(), "PATH="+t.TempDir())
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "--- SKIP:") || !strings.Contains(string(out), "sh is not available") {
 		t.Fatalf("result %v: %s", err, out)
-	}
-}
-
-func TestTimestampedKeyCopyText(t *testing.T) {
-	old := keyCopyNow
-	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
-	t.Cleanup(func() { keyCopyNow = old })
-	for _, tc := range []struct{ key, remote string }{
-		{"/srv/key", `'sudo cat /srv/key'`},
-		{"/srv/keys/my key", `'sudo cat '\''/srv/keys/my key'\'''`},
-	} {
-		t.Run(tc.key, func(t *testing.T) {
-			steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: tc.key, config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
-			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the directory where you ran berthy setup before the other commands" {
-				t.Fatalf("instruction: %q", steps[0])
-			}
-			want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@s1' ` + tc.remote + ` > shop.prod.key.20261122T153012Z)`
-			if steps[1] != want {
-				t.Fatalf("got %q\nwant %q", steps[1], want)
-			}
-		})
-	}
-}
-
-func TestTimestampedKeyCopyDoesNotOverwrite(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skipf("sh is not available: %v", err)
-	}
-	old := keyCopyNow
-	keyCopyNow = func() time.Time { return time.Date(2026, 11, 22, 15, 30, 12, 0, time.UTC) }
-	t.Cleanup(func() { keyCopyNow = old })
-	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: "/srv/keys/my key", config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
-	_, command, ok := strings.Cut(steps[1], ": ")
-	if !ok {
-		t.Fatal(steps)
-	}
-	dir := t.TempDir()
-	backup := filepath.Join(dir, "shop.prod.key.20261122T153012Z")
-	if err := os.WriteFile(backup, []byte("existing backup"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	c := exec.Command(sh, "-c", "ssh() { printf 01234567890123456789012345678901; }; "+command)
-	c.Dir = dir
-	if out, err := c.CombinedOutput(); err == nil || !(strings.Contains(string(out), "exists") || strings.Contains(string(out), "overwrite")) {
-		t.Fatalf("expected noclobber refusal, got %v: %s", err, out)
-	}
-	b, err := os.ReadFile(backup)
-	if err != nil || string(b) != "existing backup" {
-		t.Fatalf("backup %q: %v", b, err)
 	}
 }

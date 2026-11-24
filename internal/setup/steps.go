@@ -13,6 +13,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/credstore"
+	"berthy/internal/keywrap"
 )
 
 // Statuses of a step.
@@ -37,6 +38,9 @@ type Build struct {
 
 // Options are the choices of one run.
 type Options struct {
+	Local           bool                             // --local: this machine is the server and keeps no copy
+	KeyHome         string                           // this machine's home, or empty when unavailable
+	NewWrapKey      func() (*keywrap.Private, error) // nil uses keywrap.Generate
 	Env             string
 	Project         string // the project of the manifest the CLI read; empty when the directory has none
 	Network         string // the shared overlay network
@@ -95,10 +99,12 @@ func (o Options) listen() string {
 
 // Session is the state of one run, shared by its steps.
 type Session struct {
-	R      Runner
-	F      *Facts
-	Opts   Options
-	DryRun bool
+	KeyCopyPath  string // verified copy on this machine
+	KeyUnsettled bool   // the server refused a copy during an unfinished rotation
+	R            Runner
+	F            *Facts
+	Opts         Options
+	DryRun       bool
 
 	// Login is who setup runs as, found by the connect step.
 	Login Login
@@ -174,6 +180,7 @@ func Steps() []Step {
 		{"cli_config", cliConfigStep},
 		{"cli_token", tokenStoreStep},
 		{"verify", verifyStep},
+		{"cli_key", keyCopyStep},
 	}
 }
 
