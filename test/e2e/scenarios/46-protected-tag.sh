@@ -1,5 +1,5 @@
 #!/bin/bash
-# Single protected-tag selection on a private registry. Batch cases are added separately.
+# Protected tag selection on a private registry, including mixed batches.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$(dirname "$0")/../deploy-ux-fixture.sh" || exit 1
@@ -118,4 +118,68 @@ out=$(adm deploy web --version "$PRIVATE_B" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code 'explicit digest deployment needs no prompt' 0 "$code" "$out"
 spec=$(service_spec "$PROJECT-$ENVN-web-main")
 expect_contains 'digest automation deploys B' "$spec" "$PRIVATE_REG/$PRIVATE_IMAGE_REPO@$PRIVATE_B"
+
+# A mixed batch previews both apps before one confirmation. Use a separate Compose
+# project and record its ownership before creating it.
+. "$RUN/digests.env"
+cat >> "$MAN/berthy.yml" <<YML
+  zstack:
+    kind: compose
+    file: batch-compose.yml
+    stateful: true
+    depends_on: [web]
+YML
+cat > "$MAN/batch-compose.yml" <<YML
+services:
+  side:
+    image: $REG/e2e/web@$WEB_V1_DIGEST
+    entrypoint: ["sleep", "3600"]
+    environment:
+      BATCH_MODE: one
+YML
+git -C "$MAN" add berthy.yml batch-compose.yml
+git -C "$MAN" commit -qm batch
+record_deploy "$PROJECT" "$ENVN" zstack --manifest-dir "$MAN" || { fail 'record batch ownership' 'fixture names unavailable'; finish; exit 1; }
+out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
+expect_code 'preview image and Compose batch' 0 "$code" "$out"
+if jq -e '.apps | length == 2 and .[0].app == "web" and .[1].app == "zstack"' <<< "$out" >/dev/null; then pass 'batch preview preserves order'; else fail 'batch preview preserves order' 'unexpected plans'; fi
+if python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" <<'PY'
+import errno, os, pty, select, subprocess, sys, time
+binary, env, config, manifest = sys.argv[1:]
+master, slave = pty.openpty()
+proc = subprocess.Popen([binary, 'deploy', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'web=stable'], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+data = bytearray()
+prompted = False
+try:
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 1)
+        if ready:
+            try: chunk = os.read(master, 65536)
+            except OSError as e:
+                if e.errno == errno.EIO: break
+                raise
+            if not chunk: break
+            data.extend(chunk)
+            if not prompted and b'Proceed with this deploy? [y/N] ' in data:
+                prompted = True
+                os.write(master, b'y\n')
+        if proc.poll() is not None and not ready: break
+    else: raise RuntimeError('batch timed out')
+    if not prompted or proc.wait(timeout=10) != 0: raise RuntimeError('batch failed')
+finally:
+    if proc.poll() is None: proc.kill(); proc.wait()
+    os.close(master)
+PY
+then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
+before=$(adm history web --json 2>&1 | jq 'length')
+sed -i 's/BATCH_MODE: one/BATCH_MODE: two/' "$MAN/batch-compose.yml"
+git -C "$MAN" add batch-compose.yml
+git -C "$MAN" commit -qm 'change Compose service'
+out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
+expect_code 'stateful Compose blocker refuses mixed batch' 1 "$code" "$out"
+expect_contains 'batch reports nested blocker' "$out" 'blocker'
+after=$(adm history web --json 2>&1 | jq 'length')
+if [ "$before" = "$after" ]; then pass 'blocked batch leaves image history unchanged'; else fail 'blocked batch leaves image history unchanged' 'image deployed'; fi
 finish
