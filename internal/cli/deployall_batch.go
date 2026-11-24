@@ -257,6 +257,7 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 	if !safeDecision(plan.Project) {
 		return errors.New("cannot safely display deploy selection")
 	}
+	desired := false
 	for _, s := range plan.Services {
 		if s.Name == "" || (s.Action != "create" && s.Action != "recreate" && s.Action != "keep" && s.Action != "remove") {
 			return invalid
@@ -264,6 +265,12 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		if !safeDecision(s.Name) || !safeDecision(s.Action) {
 			return errors.New("cannot safely display deploy selection")
 		}
+		if s.Action != "remove" {
+			desired = true
+		}
+	}
+	if !desired {
+		return invalid
 	}
 	for _, v := range plan.Volumes {
 		if v.Name == "" || (v.Action != "create" && v.Action != "keep") {
@@ -353,13 +360,14 @@ func legacyKeptPlan(data []byte, m *manifest.Manifest, step deployStep) error {
 	if err != nil || canonical != step.image {
 		return invalid
 	}
-	tag := ""
+	tag := step.tag
 	if raw := fields["tag"]; raw != nil {
 		var present *string
-		if json.Unmarshal(raw, &present) != nil || present == nil || *present != step.tag {
+		if json.Unmarshal(raw, &present) != nil || present == nil || *present != tag {
 			return invalid
 		}
-		tag = *present
+	} else if tag != "" {
+		return invalid
 	}
 	var plan map[string]json.RawMessage
 	if json.Unmarshal(data, &plan) != nil {

@@ -342,6 +342,9 @@ func checkKeptVersions(ctx context.Context, client *http.Client, target *agentcl
 			step.req.KeepDigest = answer.Digest
 			step.header = " (keeps " + terminalSafe(keptVersionName(answer)) + ")"
 			step.tag = answer.Tag
+			if tagged, ok := stored.(reference.NamedTagged); step.tag == "" && ok {
+				step.tag = tagged.Tag()
+			}
 			step.image = image
 		}
 	}

@@ -17,6 +17,17 @@ import (
 func TestBatchComposeRedactionRefusesBeforePrompt(t *testing.T) {
 	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    project_name: test-token-project\n    depends_on: [api]\n"
 	plan := `{"app":"zstack","image":"","roles":[],"compose":{"project":"test-token-project","services":[{"name":"side","action":"keep"}],"volumes":[]}}`
+	testBatchComposeRefusesBeforePrompt(t, manifestText, plan, "cannot safely display")
+}
+
+func TestBatchR2RemoveOnlyRefusesBeforePrompt(t *testing.T) {
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	plan := `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"orphan","action":"remove"}],"volumes":[]}}`
+	testBatchComposeRefusesBeforePrompt(t, manifestText, plan, "invalid agent deploy plan")
+}
+
+func testBatchComposeRefusesBeforePrompt(t *testing.T, manifestText, plan, wantErr string) {
+	t.Helper()
 	agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zstack": plan}}
 	dir, cfg := deployAllFixture(t, manifestText, agent)
 	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
@@ -58,11 +69,11 @@ func TestBatchComposeRedactionRefusesBeforePrompt(t *testing.T) {
 		if prompted {
 			_, _ = io.WriteString(master, "n\n")
 			<-done
-			t.Fatal("prompted for a redacted Compose decision")
+			t.Fatal("prompted for an invalid Compose decision")
 		}
 		t.Fatal("terminal closed before deploy returned")
 	case code := <-done:
-		if code == 0 || !strings.Contains(errs.String(), "cannot safely display") {
+		if code == 0 || !strings.Contains(errs.String(), wantErr) {
 			t.Fatalf("exit %d stderr %q", code, errs.String())
 		}
 	}
