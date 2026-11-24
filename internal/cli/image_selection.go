@@ -73,7 +73,7 @@ func pinnedImage(m *manifest.Manifest, app, image string) bool {
 }
 
 func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag string) error {
-	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose")
+	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "remove", "destroy", "restore", "exec", "command", "schema_revert")
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,26 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	if json.Unmarshal(fields["app"], &app) != nil || json.Unmarshal(fields["image"], &gotImage) != nil || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || app != req.App || gotTag != tag || !pinnedImage(m, req.App, gotImage) || (image != "" && gotImage != image) {
 		return errors.New("invalid agent deploy plan")
 	}
-	if raw := fields["compose"]; raw != nil && string(raw) != "null" {
+	expected, exists := m.Apps[req.App]
+	if !exists || expected.Kind != "image" || len(roles) != len(expected.Roles) {
+		return errors.New("invalid agent deploy plan")
+	}
+	seen := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		if role == "" || seen[role] {
+			return errors.New("invalid agent deploy plan")
+		}
+		if _, exists := expected.Roles[role]; !exists {
+			return errors.New("invalid agent deploy plan")
+		}
+		seen[role] = true
+	}
+	for _, name := range []string{"compose", "remove", "destroy", "restore", "exec", "command", "schema_revert"} {
+		if raw := fields[name]; raw != nil && string(raw) != "null" {
+			return errors.New("invalid agent deploy plan")
+		}
+	}
+	if raw := fields["diff"]; raw != nil && !validImageDiff(raw) {
 		return errors.New("invalid agent deploy plan")
 	}
 	if raw := fields["blockers"]; raw != nil {
@@ -104,6 +123,35 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 		}
 	}
 	return nil
+}
+
+// validImageDiff accepts the three forms emitted by current and legacy planners.
+func validImageDiff(data []byte) bool {
+	fields, err := exactFields(data, "new", "same", "changes")
+	if err != nil {
+		return false
+	}
+	var isNew, isSame bool
+	for name, dst := range map[string]*bool{"new": &isNew, "same": &isSame} {
+		if raw := fields[name]; raw != nil && (string(raw) == "null" || json.Unmarshal(raw, dst) != nil) {
+			return false
+		}
+	}
+	var changes []json.RawMessage
+	if raw := fields["changes"]; raw != nil && (json.Unmarshal(raw, &changes) != nil || changes == nil) {
+		return false
+	}
+	if isNew && (isSame || len(changes) != 0) || isSame && len(changes) != 0 || !isNew && !isSame && len(changes) == 0 {
+		return false
+	}
+	for _, change := range changes {
+		item, err := exactFields(change, "area", "change")
+		var area, description string
+		if err != nil || json.Unmarshal(item["area"], &area) != nil || json.Unmarshal(item["change"], &description) != nil || area == "" || description == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // safeDeployPlan redacts decoded strings and keys before rendering, without changing the checked selection.
@@ -184,7 +232,7 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 		if err != nil {
 			return errors.New("invalid agent deploy plan")
 		}
-		fmt.Fprintln(&buf, string(encoded))
+		fmt.Fprintln(&buf, escapeJSONC1(string(encoded)))
 	} else {
 		if heading != "" {
 			fmt.Fprintln(&buf, terminalSafe(heading))
@@ -207,6 +255,19 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 		err = io.ErrShortWrite
 	}
 	return err
+}
+
+// escapeJSONC1 preserves JSON values without writing C1 controls to a terminal.
+func escapeJSONC1(encoded string) string {
+	var out strings.Builder
+	for _, r := range encoded {
+		if r >= 0x80 && r <= 0x9f {
+			fmt.Fprintf(&out, `\u%04x`, r)
+		} else {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 func interactiveDeploy(f commandFlags, out io.Writer) bool {

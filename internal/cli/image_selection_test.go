@@ -333,7 +333,7 @@ func TestProtectedTagPreviewRefusesRedactionCollisions(t *testing.T) {
 }
 
 func TestImagePlanAllowsOnlyOmittedOrValidEmptyTag(t *testing.T) {
-	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine"}}}
+	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}}}}}
 	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
 	req := deploy.Request{App: "api"}
 	for _, tc := range []struct {
@@ -348,5 +348,55 @@ func TestImagePlanAllowsOnlyOmittedOrValidEmptyTag(t *testing.T) {
 				t.Errorf("plan accepted = %t", got == nil)
 			}
 		})
+	}
+}
+
+func TestSingleTagRejectsMalformedPlanBeforeMutation(t *testing.T) {
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	policy := `{"project":"demo","environment":"dev","protected":false}`
+	for _, tc := range []struct{ name, roles, extra string }{
+		{"null role", `[null]`, ""}, {"empty role", `[""]`, ""}, {"missing role", `[]`, ""},
+		{"duplicate role", `["web","web"]`, ""}, {"extra role", `["web","other"]`, ""},
+		{"null diff", `["web"]`, `,"diff":null`}, {"unknown diff", `["web"]`, `,"diff":{"other":true}`},
+		{"invalid diff item", `["web"]`, `,"diff":{"changes":[null]}`},
+		{"contradictory diff", `["web"]`, `,"diff":{"new":true,"same":true}`},
+		{"wrong plan kind", `["web"]`, `,"remove":{"app":"api"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":%s%s}`, image, tc.roles, tc.extra)
+			a := &selectionAgent{policy: policy, plan: plan}
+			code, _, _ := runSelection(t, a, versionsManifest, "--version", "stable")
+			if code == 0 || len(a.requests) != 1 || string(a.requests[0]["dry_run"]) != "true" {
+				t.Errorf("legacy guard accepted malformed plan or reached mutation: exit %d, requests %d", code, len(a.requests))
+			}
+			a = &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: plan}
+			code, _, _ = runSelection(t, a, "protected: true\n"+versionsManifest, "--version", "stable", "--dry-run")
+			if code == 0 || len(a.requests) != 1 || string(a.requests[0]["dry_run"]) != "true" {
+				t.Errorf("protected preview accepted malformed plan: exit %d, requests %d", code, len(a.requests))
+			}
+		})
+	}
+}
+
+func TestProtectedTagJSONEscapesC1(t *testing.T) {
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	a := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"],"notes":["before\u009bafter"]}`, image)}
+	code, out, errs := runSelection(t, a, "protected: true\n"+versionsManifest, "--version", "stable", "--dry-run", "--json")
+	var got struct {
+		Notes []string `json:"notes"`
+	}
+	if code != 0 || strings.Contains(out, "\u009b") || json.Unmarshal([]byte(out), &got) != nil || len(got.Notes) != 1 || got.Notes[0] != "before\u009bafter" {
+		t.Errorf("C1 serialization incorrect: exit %d, err %q", code, errs)
+	}
+}
+
+func TestImagePlanAcceptsPlannerShapes(t *testing.T) {
+	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "alpine", Roles: map[string]manifest.Role{"web": {}, "worker": {}}}}}
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	for _, diff := range []string{"", `,"diff":{"new":true}`, `,"diff":{"same":true}`, `,"diff":{"changes":[{"area":"image","change":"old -> new"}]}`, `,"changes":["adoption setting"]`} {
+		data := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["worker","web"]%s}`, image, diff)
+		if err := imagePlan([]byte(data), m, deploy.Request{App: "api"}, image, "stable"); err != nil {
+			t.Errorf("valid planner shape %q rejected: %v", diff, err)
+		}
 	}
 }
