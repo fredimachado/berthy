@@ -259,7 +259,7 @@ func TestTagsBasicAndAnonymousBearer(t *testing.T) {
 }
 
 func TestTagsLinkSyntax(t *testing.T) {
-	for _, link := range []string{`<?last=v1>; rel = "next"`, `<?last=v1,v2;foo=x>; title="a,b;c"; rel="next"`, `<?last=v1>; title="escaped\";,value"; rel="next"`} {
+	for _, link := range []string{`<?last=v1>; rel="next"; marker`, `<?last=v1>; rel = "next"`, `<?last=v1,v2;foo=x>; title="a,b;c"; rel="next"`, `<?last=v1>; title="escaped\";,value"; rel="next"`} {
 		t.Run(link, func(t *testing.T) {
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +318,7 @@ func TestTagsRejectsHubIssuerVariants(t *testing.T) {
 }
 
 func TestTagsRejectsMalformedLinks(t *testing.T) {
-	for _, link := range []string{`<?last=v1>; rel="next`, `<?last=v1>; rel = "next"; REL = "next"`, `<?last=v1>; rel="next"; title="bad"junk`, `<?last=v1>; rel="next",`} {
+	for _, link := range []string{`<?last=v1>; rel`, `<?last=v1>; rel=`, `<?last=v1>; rel="next"; rel`, `<?last=v1>; rel="next`, `<?last=v1>; rel = "next"; REL = "next"`, `<?last=v1>; rel="next"; title="bad"junk`, `<?last=v1>; rel="next",`} {
 		t.Run(link, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Link", link)

@@ -370,8 +370,14 @@ func nextListing(headers []string, current, list *url.URL) (*url.URL, error) {
 			for _, part := range parts[1:] {
 				key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 				key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-				if !ok || !linkToken(key) {
+				if !linkToken(key) {
 					return nil, invalid
+				}
+				if !ok {
+					if strings.EqualFold(key, "rel") {
+						return nil, invalid
+					}
+					continue
 				}
 				value, ok = linkValue(value)
 				if !ok {
