@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,7 +85,7 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	req.ExpectedApplied = &applied.ID
 	req.VersionTag = "v2"
 	plan2, err := c.Plan(ctx, Actor{ID: "a"}, req)
-	if err != nil || plan2.Tag != "v2" || plan2.Image != plan.Image || plan2.Diff == nil {
+	if err != nil || plan2.Tag != "v2" || plan2.Image != plan.Image || plan2.Diff == nil || !slices.Contains(plan2.Diff.Changes, DiffChange{Area: "image", Change: "tag v1 -> v2"}) {
 		t.Fatalf("tag-only plan: %+v %v", plan2, err)
 	}
 	_, fresh, err = c.Admit(ctx, Actor{ID: "a"}, req)
@@ -101,7 +102,7 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	if err := json.Unmarshal(e.spec, &spec); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(spec.TaskTemplate.ContainerSpec.Env, "\n"), "BERTHY_VERSION=v2") {
+	if spec.TaskTemplate.ContainerSpec.Image != plan.Image || !slices.Contains(spec.TaskTemplate.ContainerSpec.Env, "BERTHY_IMAGE_DIGEST="+digest) || !slices.Contains(spec.TaskTemplate.ContainerSpec.Env, "BERTHY_VERSION=v2") {
 		t.Fatalf("second spec: %+v", spec)
 	}
 	req.ExpectedApplied = &zero
@@ -118,5 +119,46 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	}
 	if _, err := store.Active(ctx); err == nil {
 		t.Fatal("refused request acquired lock")
+	}
+}
+
+func TestPinnedLabelReachesHookIdentity(t *testing.T) {
+	c, f, id, _ := hookFixture(t)
+	f.Engine = dockerSpecs{&positiveEngine{}}
+	m := dockerManifest(nil)
+	app := m.Apps["web"]
+	app.Hooks.PreDeploy = []manifest.Hook{{Run: []string{"true"}}}
+	m.Apps["web"] = app
+	digest := "sha256:" + strings.Repeat("a", 64)
+	req := Request{App: "web", Version: digest, VersionTag: "v1", Manifest: m}
+	plan, err := c.Plan(context.Background(), Actor{}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := c.prepareExecution(context.Background(), req, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.exits = []int{0}
+	if _, _, err := c.runPre(context.Background(), id, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.specs) != 1 {
+		t.Fatalf("hook specs: %d", len(f.specs))
+	}
+	var spec struct {
+		Image string
+		Env   []string
+	}
+	if err := json.Unmarshal(f.specs[0], &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"BERTHY_VERSION=v1", "BERTHY_IMAGE_DIGEST=" + digest, "BERTHY_ROLE="} {
+		if !slices.Contains(spec.Env, value) {
+			t.Fatalf("hook environment %v lacks %s", spec.Env, value)
+		}
+	}
+	if spec.Image != plan.Image || !strings.HasSuffix(spec.Image, "@"+digest) {
+		t.Fatalf("hook image: %s", spec.Image)
 	}
 }
