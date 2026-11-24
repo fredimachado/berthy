@@ -102,6 +102,7 @@ func withRemoteFlags(extra ...string) []string {
 // scale accepts --manifest-dir and does not read it: a scale needs no checkout, and TestScaleDoesNotLoadCheckoutManifest relies on that.
 var changeFlags = map[string][]string{
 	"versions":                 withRemoteFlags("--manifest-dir"),
+	"promote":                  withRemoteFlags("--manifest-dir", "--from", "--dry-run", "--request-id", "--commit"),
 	"deploy":                   withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
 	"apply":                    withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
 	"rollback":                 withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
@@ -152,7 +153,7 @@ var changeFlags = map[string][]string{
 
 type commandFlags struct {
 	env, project, config, dir, commit, id, role, service, timeout, registry, message, to, replicas, confirm, backup, into, exec, scope, expires, run string
-	bytes, format, diff                                                                                                                              string
+	bytes, format, diff, from, redactToken                                                                                                           string
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                                      bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated bool
@@ -217,6 +218,8 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 			i++
 			v := args[i]
 			switch a {
+			case "--from":
+				f.from = v
 			case "--bytes":
 				f.bytes = v
 			case "--format":
@@ -275,10 +278,20 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 // deploymentFlagTakesValue is shared by parsing and alias validation.
 func deploymentFlagTakesValue(flag string) bool {
 	switch flag {
-	case "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+	case "--from", "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
 		return true
 	}
 	return false
+}
+
+func countFlag(flags []string, wanted string) int {
+	n := 0
+	for _, flag := range flags {
+		if flag == wanted {
+			n++
+		}
+	}
+	return n
 }
 
 // canonicalFlag is the name changeFlags lists a flag under: -m is --message, and -i is --interactive.
@@ -390,8 +403,8 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 // runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
 // intent is non-nil for an expanded alias: after ordinary validation, the parsed selectors must match it.
 func runDeployment(cmd string, args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
-	if cmd == "versions" && slices.Contains(args, "--") {
-		fmt.Fprintln(errout, "versions accepts no arguments after --")
+	if (cmd == "versions" || cmd == "promote") && slices.Contains(args, "--") {
+		fmt.Fprintf(errout, "%s accepts no arguments after --\n", cmd)
 		return 2
 	}
 	f, err := parseDeploymentArgs(args)
@@ -444,6 +457,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	if cmd == "secret" && len(f.pos) == 1 && (f.pos[0] == "generate" || f.pos[0] == "set") && len(f.command) > 0 {
 		fmt.Fprintln(errout, "this command accepts no arguments after --")
 		return 2
+	}
+	if cmd == "promote" {
+		if len(f.pos) != 1 || !scope.ValidEnvironment(f.from) || f.from == f.env || countFlag(f.given, "--from") != 1 {
+			fmt.Fprintln(errout, "promote requires one app and one different valid --from environment")
+			return 2
+		}
 	}
 	if cmd == "versions" && len(f.pos) != 1 {
 		fmt.Fprintln(errout, "versions requires one app")
@@ -570,6 +589,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
+	if cmd == "promote" {
+		return runPromote(ctx, client, target, cfgPath, f.from, f, out, errout)
+	}
 	if cmd == "versions" {
 		return runVersions(ctx, client, target, f, out, errout)
 	}
@@ -992,6 +1014,14 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	if !ok {
 		return 1
 	}
+	if f.redactToken != "" && (status == http.StatusOK || status == http.StatusAccepted) {
+		safe, err := safePromotionResponse(data, token, f.redactToken)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		data = safe
+	}
 	if status == http.StatusAccepted {
 		if code, held := reportHeld(data, out, errout, f.json); held {
 			return code
@@ -1012,7 +1042,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
+		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token, f.redactToken))
 		if payload != nil && agentclient.InvalidRequest(status, data) {
 			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
 				fmt.Fprintln(errout, hint)

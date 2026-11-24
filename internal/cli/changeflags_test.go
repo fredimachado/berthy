@@ -37,6 +37,7 @@ func (cc changeCommand) argv(cfg string, extra ...string) []string {
 
 var changeCommands = []changeCommand{
 	{name: "versions", pos: []string{"versions", "api"}},
+	{name: "promote", pos: []string{"promote", "api"}, fixed: []string{"--from", "stage"}},
 	{name: "deploy", pos: []string{"deploy", "api"}},
 	{name: "apply", pos: []string{"apply"}},
 	{name: "rollback", pos: []string{"rollback", "api"}},
@@ -87,7 +88,7 @@ var changeFlagArgs = [][]string{
 	{"--config", "cfg.json"}, {"--json"}, {"--dry-run"}, {"--adopt"}, {"--healthy"}, {"--replace-existing"},
 	{"--allow-recreate"}, {"--volumes"}, {"--tunnel"}, {"--all"}, {"--revert-schema"},
 	{"--confirm", "demo/dev"}, {"--backup", "main-db"}, {"--into", "volume"}, {"--exec", "db"}, {"--manifest-dir", "dir"},
-	{"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
+	{"--from", "stage"}, {"--version", "v1"}, {"--commit", "abc123"}, {"--request-id", "r1"}, {"--role", "web"}, {"--service", "postgres"}, {"--timeout", "1m"},
 	{"--registry", "ghcr.io"}, {"-m", "reason"}, {"--message", "reason"}, {"--to", "2"}, {"--replicas", "2"},
 	{"--replace"}, {"--bytes", "32"}, {"--format", "hex"}, {"--origin"}, {"--diff", "2"}, {"--run", "3"},
 }

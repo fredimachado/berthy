@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/agentclient"
@@ -170,12 +171,14 @@ func TestRunPromotePreview(t *testing.T) {
 		{"legacy", `{"code":"invalid_request","message":"invalid request"}`, 400, true, false, 1},
 		{"wrong app", fmt.Sprintf(`{"app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
 		{"duplicate app", fmt.Sprintf(`{"app":"api","app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"case shifted app", fmt.Sprintf(`{"App":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"unrelated plan", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"remove":{}}`, image), 200, true, false, 1},
 		{"blocked", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"blockers":["no"]}`, image), 200, true, false, 1},
 		{"compose", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"compose":{}}`, image), 200, true, false, 1},
 		{"wrong tag", fmt.Sprintf(`{"app":"api","image":%q,"tag":"other","roles":[]}`, image), 200, true, false, 1},
 		{"wrong image", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, "ghcr.io/acme/api@sha256:"+strings.Repeat("b", 64)), 200, true, false, 1},
-		{"short write", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, false, false, 1},
-		{"cancelled output", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, false, false, 1},
+		{"short write", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"cancelled output", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
 		{"redaction", `{"message":"source-secret dest-secret"}`, 403, true, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +247,12 @@ func TestRunPromotePreview(t *testing.T) {
 			mu.Lock()
 			requests := append([]deploy.Request(nil), sent...)
 			mu.Unlock()
+			if tc.name == "noninteractive" {
+				if len(requests) != 0 {
+					t.Fatal("noninteractive promotion reached agent")
+				}
+				return
+			}
 			if len(requests) != 1 || !requests[0].DryRun || requests[0].ExpectedApplied == nil || *requests[0].ExpectedApplied != 0 || requests[0].Version != image || requests[0].VersionTag != "stable" || requests[0].RequestID != "snapshot-id" || requests[0].Manifest.Project != "demo" {
 				t.Fatalf("wrong frozen preview: %+v", requests)
 			}
@@ -263,3 +272,56 @@ func TestRunPromotePreview(t *testing.T) {
 type promotionTestWriter struct{ write func([]byte) (int, error) }
 
 func (w promotionTestWriter) Write(p []byte) (int, error) { return w.write(p) }
+
+func TestPromoteDispatchRejectsInvalidBeforeRemote(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(500) }))
+	defer server.Close()
+	t.Setenv("PROMOTE_DST_TOKEN", "destination-token")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := fmt.Sprintf(`{"projects":{"demo":{"environments":{"prod":{"url":%q,"token_env":"PROMOTE_DST_TOKEN"}}}}}`, server.URL)
+	if err := os.WriteFile(path, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"promote", "api"}, {"promote", "api", "--from"}, {"promote", "api", "--from", "prod"},
+		{"promote", "api", "--from", "BAD!"}, {"promote", "api", "--from", "stage", "--from", "stage"},
+		{"promote", "api", "extra", "--from", "stage"}, {"promote", "api", "--from", "stage", "--"},
+		{"promote", "api", "--from", "stage", "--version", "v1"},
+		{"promote", "api", "--from", "stage", "--json"}, {"promote", "api", "--from", "stage"},
+	} {
+		var out, errs bytes.Buffer
+		argv := append(append([]string{}, args...), "-e", "prod", "--config", path)
+		if code := Run(argv, &out, &errs); code == 0 || calls.Load() != 0 {
+			t.Fatalf("invalid request reached agent or succeeded: %v, exit %d", args, code)
+		}
+	}
+}
+
+func TestPromotionPreviewRedactsDecodedTokens(t *testing.T) {
+	image := "ghcr.io/acme/api@sha256:" + strings.Repeat("a", 64)
+	plan := fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"notes":["source\u002dsecret", "dest\u002dsecret"]}`, image)
+	var out bytes.Buffer
+	err := showImagePlan(&out, []byte(plan), "dest-secret", true, "", "source-secret")
+	if err != nil || strings.Contains(out.String(), "source-secret") || strings.Contains(out.String(), "dest-secret") || !strings.Contains(out.String(), "[redacted]") {
+		t.Fatalf("unsafe preview or error: %v", err)
+	}
+}
+
+func TestPromotionSubmissionRedactsDecodedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"app":"api","image":"image","notes":["source\u002dsecret","dest\u002dsecret"]}}`)
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	code := sendCommand(context.Background(), http.DefaultClient, u, "/", "dest-secret", "POST", "deploys", struct{}{}, commandFlags{redactToken: "source-secret"}, "deploy", &out, &errs)
+	if code != 3 || strings.Contains(out.String(), "source-secret") || strings.Contains(out.String(), "dest-secret") || !strings.Contains(out.String(), "[redacted]") {
+		t.Fatalf("unsafe hold output, exit %d", code)
+	}
+}

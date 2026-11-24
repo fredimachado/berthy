@@ -255,28 +255,29 @@ func validImageDiff(data []byte) bool {
 }
 
 // safeDeployPlan redacts decoded strings and keys before rendering, without changing the checked selection.
-func safeDeployPlan(data []byte, token string, asJSON bool) (map[string]any, error) {
+func safeDeployPlan(data []byte, token string, asJSON bool, extra ...string) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var plan map[string]any
 	if dec.Decode(&plan) != nil || plan == nil || dec.Decode(new(json.RawMessage)) != io.EOF {
 		return nil, errors.New("invalid agent deploy plan")
 	}
+	tokens := append([]string{token}, extra...)
 	for _, key := range []string{"app", "image", "tag"} {
-		if value, ok := plan[key].(string); ok && redactSecretText(value, token) != value {
+		if value, ok := plan[key].(string); ok && redactSecretText(value, tokens...) != value {
 			return nil, errors.New("cannot safely display deploy selection")
 		}
 	}
-	safe, err := redactDeployValue(plan, token, !asJSON)
+	safe, err := redactDeployValue(plan, !asJSON, tokens...)
 	if err != nil {
 		return nil, err
 	}
 	return safe.(map[string]any), nil
 }
 
-func redactDeployValue(value any, token string, text bool) (any, error) {
+func redactDeployValue(value any, text bool, tokens ...string) (any, error) {
 	sanitize := func(s string) string {
-		s = redactSecretText(s, token)
+		s = redactSecretText(s, tokens...)
 		if text {
 			s = terminalSafe(s)
 		}
@@ -287,7 +288,7 @@ func redactDeployValue(value any, token string, text bool) (any, error) {
 		return sanitize(v), nil
 	case []any:
 		for i, item := range v {
-			safe, err := redactDeployValue(item, token, text)
+			safe, err := redactDeployValue(item, text, tokens...)
 			if err != nil {
 				return nil, err
 			}
@@ -307,7 +308,7 @@ func redactDeployValue(value any, token string, text bool) (any, error) {
 				return nil, errors.New("cannot safely display deploy plan")
 			}
 			var err error
-			safe[name], err = redactDeployValue(item, token, text)
+			safe[name], err = redactDeployValue(item, text, tokens...)
 			if err != nil {
 				return nil, err
 			}
@@ -318,12 +319,78 @@ func redactDeployValue(value any, token string, text bool) (any, error) {
 	}
 }
 
-func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, heading string) error {
-	plan, err := safeDeployPlan(data, token, asJSON)
+// safePromotionResponse keeps protocol identities intact while redacting decoded metadata.
+func safePromotionResponse(data []byte, tokens ...string) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var value any
+	if dec.Decode(&value) != nil || dec.Decode(new(json.RawMessage)) != io.EOF {
+		return nil, errors.New("invalid agent response")
+	}
+	var containsSecret func(any) bool
+	containsSecret = func(v any) bool {
+		switch x := v.(type) {
+		case string:
+			return redactSecretText(x, tokens...) != x
+		case []any:
+			for _, item := range x {
+				if containsSecret(item) {
+					return true
+				}
+			}
+		case map[string]any:
+			for key, item := range x {
+				if containsSecret(key) || containsSecret(item) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	var valid func(any) bool
+	valid = func(v any) bool {
+		switch x := v.(type) {
+		case []any:
+			for _, item := range x {
+				if !valid(item) {
+					return false
+				}
+			}
+		case map[string]any:
+			for key, item := range x {
+				switch strings.ToLower(key) {
+				case "operation_id", "events_url", "approval_id", "app", "image", "tag", "roles", "blockers", "compose":
+					if containsSecret(item) {
+						return false
+					}
+				}
+				if !valid(item) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	if !valid(value) {
+		return nil, errors.New("cannot safely display deploy response")
+	}
+	safe, err := redactDeployValue(value, false, tokens...)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(safe)
+	if err != nil {
+		return nil, errors.New("invalid agent response")
+	}
+	return encoded, nil
+}
+
+func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, heading string, extra ...string) error {
+	plan, err := safeDeployPlan(data, token, asJSON, extra...)
 	if err != nil {
 		return err
 	}
-	if redactSecretText(heading, token) != heading {
+	if redactSecretText(heading, append([]string{token}, extra...)...) != heading {
 		return errors.New("cannot safely display deploy selection")
 	}
 	var buf bytes.Buffer

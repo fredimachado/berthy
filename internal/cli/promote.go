@@ -183,6 +183,11 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		fmt.Fprintln(errout, "promotion with --json requires --dry-run; deploy an explicit digest for scripts")
 		return 2
 	}
+	if !f.dry && !interactiveDeploy(f, out) {
+		fmt.Fprintln(errout, "deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
+		return 1
+	}
+
 	m, err := manifest.Load(f.dir, dst.Env)
 	if err != nil {
 		return fail(err)
@@ -204,7 +209,7 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	client := *c
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	c = &client
-	progress := newProgressLine(out, !f.json && stderrTerminal(out))
+	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	progress.Start("checking checkout")
 	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, dst.Env, m, []*deploy.Request{&req})
 	progress.Close()
@@ -254,30 +259,19 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		}
 		return 1
 	}
-	if !validPromotionPlan(data, snapshot) {
-		fmt.Fprintln(errout, "invalid or blocked promotion plan")
+	if err := imagePlan(data, m, req, snapshot.image, snapshot.tag); err != nil {
+		fmt.Fprintln(errout, err)
 		return 1
 	}
+
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
-	var preview bytes.Buffer
-	if f.json {
-		preview.Write(data)
-		preview.WriteByte('\n')
-	} else {
-		fmt.Fprintf(&preview, "Source: %s release %d\nDestination: %s/%s app %s\nImage: %s\nTag: %s\n", terminalSafe(from), snapshot.sourceID, terminalSafe(dst.Project), terminalSafe(dst.Env), terminalSafe(req.App), terminalSafe(req.Version), terminalSafe(req.VersionTag))
-		if printDryRun(&preview, errout, data) != 0 {
-			return 1
-		}
+	heading := fmt.Sprintf("Source: %s release %d\nDestination: %s/%s app %s\nImage: %s\nTag: %s", from, snapshot.sourceID, dst.Project, dst.Env, req.App, req.Version, req.VersionTag)
+	if err := showImagePlan(out, data, dst.Token, f.json, heading, snapshot.source.Token); err != nil {
+		return fail(errors.New(safeSecretText(err.Error(), dst.Token, snapshot.source.Token)))
 	}
-	n, err := out.Write(preview.Bytes())
-	if err == nil && n != preview.Len() {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		return fail(fmt.Errorf("write promotion preview: %w", err))
-	}
+
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
@@ -296,7 +290,8 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		return fail(err)
 	}
 	req.DryRun = false
-	return sendCommand(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", req, f, "deploy", out, &promotionRedactor{out: errout, redact: redact})
+	f.redactToken = snapshot.source.Token
+	return sendCommand(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", req, f, "deploy", &promotionRedactor{out: out, redact: redact}, &promotionRedactor{out: errout, redact: redact})
 }
 
 type promotionRedactor struct {
@@ -314,35 +309,4 @@ func (w *promotionRedactor) Write(p []byte) (int, error) {
 		return 0, io.ErrShortWrite
 	}
 	return len(p), nil
-}
-
-func validPromotionPlan(data []byte, snapshot promotionSnapshot) bool {
-	fields, ok := appliedFields(data)
-	if !ok {
-		return false
-	}
-	for key := range fields {
-		switch strings.ToLower(key) {
-		case "app", "image", "tag", "roles", "blockers", "compose", "remove", "destroy", "restore", "exec", "command":
-			if key != strings.ToLower(key) {
-				return false
-			}
-		}
-	}
-	var plan deploy.Plan
-	if json.Unmarshal(data, &plan) != nil || plan.App != snapshot.app || plan.Image != snapshot.image || plan.Tag != snapshot.tag || len(plan.Blockers) != 0 || plan.Compose != nil || plan.Remove != nil || plan.Destroy != nil || plan.Restore != nil || plan.Exec != nil || len(plan.Command) != 0 {
-		return false
-	}
-	for _, key := range []string{"app", "image", "roles"} {
-		if fields[key] == nil || bytes.Equal(bytes.TrimSpace(fields[key]), []byte("null")) {
-			return false
-		}
-	}
-	if raw := fields["tag"]; raw != nil && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	if raw := fields["blockers"]; raw != nil && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	return true
 }
