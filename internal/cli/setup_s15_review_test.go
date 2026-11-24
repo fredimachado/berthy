@@ -52,28 +52,81 @@ func TestSetupKeyCopyPassesOneRemoteArgumentAndKeepsBackupOnFailure(t *testing.T
 	}
 }
 
-func TestSetupFollowUpsNameProjectAndManifestDirectory(t *testing.T) {
-	dir := projectDir(t)
+func twoProjectsSharingProdConfig(t *testing.T) string {
+	t.Helper()
 	cfg := filepath.Join(t.TempDir(), "cli.json")
 	content := `{"projects":{"shop":{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"SHOP_PROD"}}},"other":{"environments":{"prod":{"url":"http://127.0.0.1:7711","token_env":"OTHER_PROD"}}}}}`
 	if err := os.WriteFile(cfg, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
+	return cfg
+}
+
+func installedShopProd(t *testing.T) *setupServer {
+	t.Helper()
 	server := installedServer(t, "ops@s1")
 	server.config = strings.ReplaceAll(server.config, `"environment": "p5"`, `"environment": "prod"`)
 	server.config = strings.ReplaceAll(server.config, "/shop/p5/", "/shop/prod/")
-	withSetupRunner(t, server)
+	return server
+}
+
+func TestSetupFollowUpsLeaveOutTheProjectTheManifestGives(t *testing.T) {
+	dir := projectDir(t)
+	cfg := twoProjectsSharingProdConfig(t)
+	withSetupRunner(t, installedShopProd(t))
 	code, out, errout := runSetupCmd("-e", "prod", "--host", "ops@s1", "--manifest-dir", dir, "--config", cfg)
 	if code != 0 {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
-	if !strings.Contains(out, "berthy secret set NAME -e prod --project shop") || !strings.Contains(out, "berthy deploy -e prod --project shop") || !strings.Contains(out, "--manifest-dir "+shellWord(dir)) {
+	if strings.Contains(out, " --project ") {
+		t.Fatalf("follow-ups still name --project: %s", out)
+	}
+	if !strings.Contains(out, "berthy secret set NAME -e prod --config "+shellWord(cfg)+" --manifest-dir "+shellWord(dir)) ||
+		!strings.Contains(out, "berthy deploy -e prod --config "+shellWord(cfg)+" --manifest-dir "+shellWord(dir)) {
 		t.Fatalf("follow-ups: %s", out)
 	}
-	steps := setupNextSteps(nextSteps{id: scope.ID{Project: "sliceup", Environment: "prod"}, keyFile: "/key", config: cfg, local: true, target: "this server", tokenEnv: "TOKEN", storeToken: true, ingress: true, manifestDir: dir})
-	for _, step := range steps[3:] {
-		if !strings.Contains(step, "--project sliceup") || !strings.Contains(step, "--manifest-dir "+shellWord(dir)) {
-			t.Errorf("follow-up lacks project or manifest: %s", step)
+}
+
+func TestSetupFollowUpsNameTheProjectWithoutAManifest(t *testing.T) {
+	empty := t.TempDir()
+	cfg := twoProjectsSharingProdConfig(t)
+	withSetupRunner(t, installedShopProd(t))
+	code, out, errout := runSetupCmd("-e", "prod", "--project", "shop", "--host", "ops@s1", "--manifest-dir", empty, "--config", cfg)
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	if !strings.Contains(out, "berthy secret set NAME -e prod --project shop --config "+shellWord(cfg)) ||
+		!strings.Contains(out, "berthy deploy -e prod --project shop --config "+shellWord(cfg)) {
+		t.Fatalf("follow-ups: %s", out)
+	}
+	_, after, ok := strings.Cut(out, "\nnext steps:\n")
+	if !ok {
+		t.Fatal(out)
+	}
+	for _, line := range strings.Split(after, "\n") {
+		if !strings.Contains(line, "berthy secret ") && !strings.Contains(line, "berthy deploy") && !strings.Contains(line, "berthy ingress ") {
+			continue
+		}
+		if !strings.Contains(line, " --project shop") {
+			t.Fatalf("follow-up lacks --project shop: %s", line)
+		}
+	}
+}
+
+func TestNextStepsFlagsOrder(t *testing.T) {
+	id := scope.ID{Project: "shop", Environment: "prod"}
+	withProject := setupNextSteps(nextSteps{id: id, keyFile: "/key", config: "/etc/cli.json", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: false})
+	without := setupNextSteps(nextSteps{id: id, keyFile: "/key", config: "/etc/cli.json", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: "/repo", inferProject: true})
+	wantWith := "-e prod --project shop --config /etc/cli.json --manifest-dir /repo"
+	wantWithout := "-e prod --config /etc/cli.json --manifest-dir /repo"
+	for _, step := range withProject[2:] {
+		if !strings.Contains(step, wantWith) {
+			t.Errorf("with project: %s", step)
+		}
+	}
+	for _, step := range without[2:] {
+		if !strings.Contains(step, wantWithout) || strings.Contains(step, " --project ") {
+			t.Errorf("inferred project: %s", step)
 		}
 	}
 }
@@ -129,7 +182,7 @@ func TestTimestampedKeyCopyText(t *testing.T) {
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: tc.key, config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
-			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), and keep the file private" {
+			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands" {
 				t.Fatalf("instruction: %q", steps[0])
 			}
 			want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@s1' ` + tc.remote + ` > shop.prod.key.20261122T153012Z)`

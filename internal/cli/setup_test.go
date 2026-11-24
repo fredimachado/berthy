@@ -329,8 +329,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"\nnext steps:\n" +
 		"  1. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, keyFile: "/var/lib/berthy/environments/shop/p5/key", config: "", local: false, target: "ops@s1", tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[0] + "\n" +
 		"  2. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, keyFile: "/var/lib/berthy/environments/shop/p5/key", config: "", local: false, target: "ops@s1", tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[1] + "\n" +
-		"  3. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --manifest-dir " + shellWord(dir) + "\n" +
-		"  4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --project shop --manifest-dir " + shellWord(dir) + " --version REF)\n"
+		"  3. set the secrets the manifest names: berthy secret set NAME -e p5 --manifest-dir " + shellWord(dir) + "\n" +
+		"  4. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --manifest-dir " + shellWord(dir) + " --version REF)\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -362,8 +362,8 @@ func TestSetupWithoutAStorePrintsTheTokenAsBefore(t *testing.T) {
 		"✓ service     installed, enabled and started berthy.service", "✓ cli_config  wrote p5 at http://172.31.250.10:7710 to cli.json (token in $BERTHY_SHOP_P5_TOKEN)",
 		"– cli_token   no credential store on this machine: the token is shown below; set it in $BERTHY_SHOP_P5_TOKEN",
 		"3. store the admin token above, and set it in $BERTHY_SHOP_P5_TOKEN when you run berthy",
-		"4. set the secrets the manifest names: berthy secret set NAME -e p5 --project shop --config " + shellWord(cfgPath),
-		"5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --project shop --config " + shellWord(cfgPath)} {
+		"4. set the secrets the manifest names: berthy secret set NAME -e p5 --config " + shellWord(cfgPath),
+		"5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --config " + shellWord(cfgPath)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -452,7 +452,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 		t.Errorf("next step = %q", got.NextSteps[1])
 	}
 	steps := strings.Join(got.NextSteps, "\n")
-	if !strings.Contains(steps, "berthy secret set NAME -e p5") || !strings.Contains(steps, "berthy deploy APP -e p5 --project shop") {
+	if !strings.Contains(steps, "berthy secret set NAME -e p5") || !strings.Contains(steps, "berthy deploy APP -e p5 --manifest-dir") || strings.Contains(steps, " --project ") {
 		t.Errorf("next steps = %q", got.NextSteps)
 	}
 	if strings.Contains(steps, "--config") {

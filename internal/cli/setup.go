@@ -210,7 +210,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep})
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyFile: session.KeyFile(), config: *cliConfig, local: *local, target: report.Target, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
 	}
 	if *asJSON {
 		// No HTML escaping: the next steps hold shell redirections that should stay readable.
@@ -305,16 +305,17 @@ type secretsStep struct {
 
 // nextSteps is what setup needs to describe what follows a successful run.
 type nextSteps struct {
-	secrets     secretsStep
-	id          scope.ID
-	keyFile     string
-	config      string
-	manifestDir string
-	local       bool
-	target      string
-	tokenEnv    string
-	storeToken  bool
-	ingress     bool
+	secrets      secretsStep
+	id           scope.ID
+	keyFile      string
+	config       string
+	manifestDir  string
+	local        bool
+	target       string
+	tokenEnv     string
+	storeToken   bool
+	ingress      bool
+	inferProject bool // setup loaded a manifest, so the follow-up commands read the project from it
 }
 
 // setupNextSteps prints the command that copies the key, never the key itself.
@@ -325,15 +326,17 @@ func setupNextSteps(n nextSteps) []string {
 		read = "ssh " + shellWord(n.target) + " " + shellWord(read)
 	}
 	config := ""
+	if !n.inferProject {
+		config = " --project " + shellWord(n.id.Project)
+	}
 	if n.config != "" {
-		config = " --config " + shellWord(n.config)
+		config += " --config " + shellWord(n.config)
 	}
 	if n.manifestDir != "" {
 		config += " --manifest-dir " + shellWord(n.manifestDir)
 	}
-	config = " --project " + shellWord(n.id.Project) + config
 	steps := []string{
-		"run the command from a private folder, such as your home folder (cd ~), and keep the file private",
+		"run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands",
 		"in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): " + keyCopyCommand(read, n.id),
 	}
 	if n.storeToken {

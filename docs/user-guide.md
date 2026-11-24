@@ -249,15 +249,15 @@ setup of todo/prod on ops@10.0.0.5: done
 admin token for todo/prod (shown once, store it now): <token>
 
 next steps:
-  1. run the command from a private folder, such as your home folder (cd ~), and keep the file private
+  1. run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands
   2. in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@10.0.0.5' 'sudo cat /var/lib/berthy/environments/todo/prod/key' > todo.prod.key.20261122T153012Z)
   3. store the admin token above, and set it in $BERTHY_TODO_PROD_TOKEN when you run berthy
-  4. set the secrets the manifest names: berthy secret set NAME -e prod --project todo --config /home/me/.config/berthy/config.json
-  5. apply the managed ingress: berthy ingress apply -e prod --project todo --config /home/me/.config/berthy/config.json
-  6. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --project todo --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --project todo --config /home/me/.config/berthy/config.json --version REF)
+  4. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
+  5. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
+  6. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
 ```
 
-This sample is a non-terminal run with no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. (The sample above is from a run on a test server, shortened where its details differ.)
+This sample is a non-terminal run with no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. They name `--project` only when setup ran without a manifest. With one, each command reads the project from `berthy.yml` in the directory you run it from, or in `--manifest-dir`, so stay in that directory. (The sample above is from a run on a test server, shortened where its details differ.)
 
 After a successful text-mode setup with a loaded manifest, terminal input and an available admin token, setup runs the secrets guide after the summary and any token, before printing next steps. It generates declared secrets and asks for the remaining values without echoing them; Enter skips a value. When the guide finishes, next steps name any secrets still missing. If it cannot finish, setup keeps the manual secret commands. A pipe or `--json` skips the guide and prints those commands. A dry run also skips the guide. The guide does not change the setup exit status.
 

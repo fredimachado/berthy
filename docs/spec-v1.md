@@ -349,7 +349,7 @@ Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, 
 {"project": "shop", "environment": "prod", "target": "ops@s1", "dry_run": false, "ok": true,
  "steps": [{"step": "docker", "status": "ok", "detail": "Docker 29.9.3, running, enabled"}],
  "token": "bty.shop.prod.…",
- "next_steps": ["run the command from a private folder, such as your home folder (cd ~), and keep the file private"]}
+ "next_steps": ["run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands"]}
 ```
 
 `token` is present when this run made a live token and the save was unconfirmed or `--show-token` was given, or when a failed activation left the token's configuration outcome unconfirmed. `token_stored` is true when this run saved the token and the store confirmed it. `next_steps` is present after a successful run that is not a dry run. `commands` is present on each step only with `--verbose`: the scripts the step sent, each as it was sent, and in a dry run also the scripts a real run would send. A dry run makes no token, writes no file and sends only reads to the server: the steps that would change something report `would_change`, and `verify` reports `skipped` with `would check the agent`.
