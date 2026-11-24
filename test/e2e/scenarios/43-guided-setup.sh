@@ -59,6 +59,42 @@ read -r unused < "$SSH_GATE"
 exec /usr/bin/ssh "$@"
 SH
 chmod 700 "$private/gate/ssh" || exit 1
+# key_absent KEYFILE DIR [ENVNAME...]: succeeds when no form of the key in KEYFILE, and no value of the named
+# variables, appears in a file under DIR.
+key_absent() {
+ python3 - "$@" <<'PYCODE'
+import base64, os, pathlib, sys
+try:
+    key = pathlib.Path(sys.argv[1]).read_bytes()
+    if len(key) != 32:
+        raise ValueError()
+    forms = [key, key.hex().encode()]
+    for f in (base64.b64encode, base64.urlsafe_b64encode):
+        encoded = f(key)
+        forms.extend((encoded, encoded.rstrip(b"=")))
+    forms.extend(os.environ[name].encode() for name in sys.argv[3:])
+    for path in pathlib.Path(sys.argv[2]).rglob("*"):
+        if path.is_file() and any(form in path.read_bytes() for form in forms):
+            raise ValueError()
+except Exception:
+    sys.exit(1)
+PYCODE
+}
+redact() { sed -E 's/bty\.[A-Za-z0-9._-]+/[redacted]/g; s/[0-9A-Fa-f]{32,}/[redacted]/g' "$1"; }
+# keep_failure NAME: copies the error and failed frames of driver run NAME to $LOG/tui-guided-setup/NAME-failure,
+# with admin tokens and long hex runs replaced. Nothing is kept when a form of the encryption key remains.
+keep_failure() {
+ local name=$1 kept="$private/$1-kept" dest="$LOG/tui-guided-setup/$1-failure" f keyfile
+ rm -rf "$kept" && mkdir -p "$kept" || return 1
+ redact "$private/$name.err" > "$kept/driver-error.txt" || return 1
+ for f in "$private/$name"/FAILED-*.txt; do
+  [ -f "$f" ] || continue
+  redact "$f" > "$kept/${f##*/}" || return 1
+ done
+ keyfile=$(find "$FS_HOME/.berthy/keys" -type f -name "berthy.$PROJECT.$ENVN.*.key" -print 2>/dev/null | head -1)
+ if [ -n "$keyfile" ] && ! key_absent "$keyfile" "$kept"; then echo "driver output of the $name run held the key; not kept" >&2; return 1; fi
+ rm -rf "$dest" && mv "$kept" "$dest"
+}
 cat > "$private/cancel.json" <<'JSON'
 [
  {"wait_text":"connect (", "timeout":"100s"},
@@ -68,8 +104,8 @@ cat > "$private/cancel.json" <<'JSON'
  {"snapshot":"cancelled"}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >/dev/null 2>&1; then
- fail "cancel pending setup" "terminal driver failed"; exit 1
+if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >"$private/cancel.err" 2>&1; then
+ keep_failure cancel; fail "cancel pending setup" "terminal driver failed (see tui-guided-setup/cancel-failure)"; exit 1
 fi
 if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" ||
    ! grep -Eq '^failed +connect ' "$private/cancel/cancelled.txt" ||
@@ -97,7 +133,9 @@ cat > "$private/fresh.json" <<'JSON'
  {"wait_text":"deploy every app in depends_on order"}, {"snapshot":"complete"}, {"expect_exit":0}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
+if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >"$private/fresh.err" 2>&1; then
+ keep_failure fresh; fail "fresh guided setup" "terminal driver failed (see tui-guided-setup/fresh-failure)"; exit 1
+fi
 screen="$private/fresh/token.txt"
 # Preserve only the setup step names and status words from the real terminal frame.
 mkdir -p "$LOG/tui-guided-setup" || exit 1
@@ -128,32 +166,15 @@ if [[ $out == *"every secret the manifest needs is stored"* ]]; then pass "all s
 cat > "$private/repeat.json" <<'JSON'
 [{"wait_text":"every secret the manifest needs is stored", "timeout":"100s"}, {"snapshot":"complete"}, {"expect_exit":0}]
 JSON
-if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --out "$private/repeat" --timeout 180s --redact-env "$token_env" >/dev/null 2>&1; then
+if "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/repeat.json" --out "$private/repeat" --timeout 180s --redact-env "$token_env" >"$private/repeat.err" 2>&1; then
  repeat="$private/repeat/complete.txt"
  keyfile=$(find "$FS_HOME/.berthy/keys" -type f -name "berthy.$PROJECT.$ENVN.*.key" -print) || exit 1
- if ! python3 - "$keyfile" "$private/repeat" "$token_env" <<'PYCODE'
-import base64, os, pathlib, sys
-try:
-    key = pathlib.Path(sys.argv[1]).read_bytes()
-    if len(key) != 32:
-        raise ValueError()
-    forms = [key, key.hex().encode()]
-    for f in (base64.b64encode, base64.urlsafe_b64encode):
-        encoded = f(key)
-        forms.extend((encoded, encoded.rstrip(b"=")))
-    forms.append(os.environ[sys.argv[3]].encode())
-    for path in pathlib.Path(sys.argv[2]).rglob("*"):
-        if path.is_file() and any(form in path.read_bytes() for form in forms):
-            raise ValueError()
-except Exception:
-    sys.exit(1)
-PYCODE
- then fail "repeat capture" "private data check failed"; exit 1; fi
+ if ! key_absent "$keyfile" "$private/repeat" "$token_env"; then fail "repeat capture" "private data check failed"; exit 1; fi
  mkdir -p "$LOG/tui-guided-setup" || exit 1
  cp "$repeat" "$LOG/tui-guided-setup/complete.txt" || exit 1
  repeat_text=$(< "$repeat")
  if [[ $repeat_text == *"Value of "* || $repeat_text == *"$token"* || $repeat_text != *"the admin token is in \$$token_env"* ]] || ! awk '/^secrets:/ { guide=NR } /every secret the manifest needs is stored/ { inventory=NR } END { exit !(guide && inventory > guide) }' "$repeat"; then fail "repeat guided setup" "unexpected prompt or token, or missing inventory"; else pass "repeat guided setup without prompts"; fi
-else fail "repeat guided setup" "terminal driver failed"; fi
+else keep_failure repeat; fail "repeat guided setup" "terminal driver failed (see tui-guided-setup/repeat-failure)"; fi
 out=$("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$MAN" --config "$cfg" </dev/null 2>&1); code=$?
 expect_code "piped setup" 0 "$code"
 if [[ $out == *"keep the copy of the encryption key"* && $out != *" --project "* && $out == *"generate the secrets the manifest declares:"* && $out == *"set the secrets the manifest names:"* && $out != *$'\nsecrets:'* && $out != *"Value of "* ]]; then
