@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -559,9 +561,13 @@ func (r cancelAtEOF) Read(p []byte) (int, error) {
 }
 
 func TestDeployInterruptIncludesExplicitConfig(t *testing.T) {
+	apostrophe := `--config '/tmp/person'\''s config.json'`
+	if runtime.GOOS == "windows" {
+		apostrophe = `--config '/tmp/person''s config.json'`
+	}
 	for _, tc := range []struct{ config, want string }{
 		{"/tmp/private config.json", `--config '/tmp/private config.json'`},
-		{"/tmp/person's config.json", `--config '/tmp/person'\''s config.json'`},
+		{"/tmp/person's config.json", apostrophe},
 		{"", "--config"},
 	} {
 		t.Run(tc.config, func(t *testing.T) {
@@ -626,4 +632,33 @@ func TestApproveInterruptIncludesConfig(t *testing.T) {
 	if got != 1 || strings.Count(errs.String(), `--config '/tmp/private config.json'`) != 2 {
 		t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
 	}
+}
+
+func TestDeployInterruptQuotesWindowsConfigForPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell quoting is used on Windows")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(cancelAtEOF{strings.NewReader(": heartbeat\n\n"), cancel}), Header: make(http.Header), Request: r}, nil
+	})}
+	base, _ := url.Parse("http://agent.invalid")
+	var out, errs bytes.Buffer
+	config := `C:\Users\O'Brien\private config.json`
+	got := watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo", operationWatchOptions{config: config})
+	if got != 1 || strings.Count(errs.String(), `--config 'C:\Users\O''Brien\private config.json'`) != 2 {
+		t.Fatalf("exit=%d diagnostic=%q", got, errs.String())
+	}
+	line := strings.Split(errs.String(), "\n")[1]
+	_, quoted, ok := strings.Cut(line, "--config ")
+	if !ok {
+		t.Fatal("missing config argument")
+	}
+	cmd := exec.Command("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `& { param($value) [Console]::Out.Write($value) } `+quoted)
+	actual, err := cmd.Output()
+	if err != nil || string(actual) != config {
+		t.Fatalf("PowerShell received %q, err %v", actual, err)
+	}
+	t.Logf("PowerShell received: %s", actual)
 }

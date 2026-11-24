@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"berthy/internal/agentclient"
@@ -159,7 +161,13 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		progress.Close()
 		suffix := fmt.Sprintf(" -e %s --project %s", safeSecretText(env, redact...), safeSecretText(project, redact...))
 		if config != "" {
-			suffix += " --config " + shellWord(safeSecretText(config, redact...))
+			word := safeSecretText(config, redact...)
+			if runtime.GOOS == "windows" {
+				word = "'" + strings.ReplaceAll(word, "'", "''") + "'"
+			} else {
+				word = shellWord(word)
+			}
+			suffix += " --config " + word
 		}
 		shownID := safeSecretText(id, redact...)
 		fmt.Fprintf(errout, "watch interrupted; operation %s may continue\ninspect: berthy diagnostics %s%s\ncancel: berthy cancel %s%s\n", shownID, shownID, suffix, shownID, suffix)
