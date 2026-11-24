@@ -15,6 +15,7 @@ import (
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 	"github.com/distribution/reference"
 )
@@ -188,7 +189,11 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		return 1
 	}
 
-	m, err := manifest.Load(f.dir, dst.Env)
+	before, err := gitcheck.Capture(ctx, f.dir)
+	if err != nil {
+		return fail(err)
+	}
+	m, err := loadDeployManifest(f.dir, dst.Env)
 	if err != nil {
 		return fail(err)
 	}
@@ -211,7 +216,7 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	c = &client
 	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	progress.Start("checking checkout")
-	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, dst.Env, m, []*deploy.Request{&req})
+	co, err := agentclient.PrepareDeployFilesChecked(ctx, f.dir, dst.Env, m, []*deploy.Request{&req}, before)
 	progress.Close()
 	if err != nil {
 		return fail(err)

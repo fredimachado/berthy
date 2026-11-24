@@ -169,16 +169,16 @@ func TestRunPromotePreview(t *testing.T) {
 		{"text snapshot", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 0},
 		{"noninteractive", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, false, false, 1},
 		{"legacy", `{"code":"invalid_request","message":"invalid request"}`, 400, true, false, 1},
-		{"wrong app", fmt.Sprintf(`{"app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
-		{"duplicate app", fmt.Sprintf(`{"app":"api","app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
-		{"case shifted app", fmt.Sprintf(`{"App":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
-		{"unrelated plan", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"remove":{}}`, image), 200, true, false, 1},
-		{"blocked", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"blockers":["no"]}`, image), 200, true, false, 1},
-		{"compose", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"compose":{}}`, image), 200, true, false, 1},
-		{"wrong tag", fmt.Sprintf(`{"app":"api","image":%q,"tag":"other","roles":[]}`, image), 200, true, false, 1},
-		{"wrong image", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, "ghcr.io/acme/api@sha256:"+strings.Repeat("b", 64)), 200, true, false, 1},
-		{"short write", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
-		{"cancelled output", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"wrong app", fmt.Sprintf(`{"app":"other","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 1},
+		{"duplicate app", fmt.Sprintf(`{"app":"api","app":"other","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 1},
+		{"case shifted app", fmt.Sprintf(`{"App":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 1},
+		{"unrelated plan", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"],"remove":{}}`, image), 200, true, false, 1},
+		{"blocked", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"],"blockers":["no"]}`, image), 200, true, false, 1},
+		{"compose", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"],"compose":{}}`, image), 200, true, false, 1},
+		{"wrong tag", fmt.Sprintf(`{"app":"api","image":%q,"tag":"other","roles":["web"]}`, image), 200, true, false, 1},
+		{"wrong image", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, "ghcr.io/acme/api@sha256:"+strings.Repeat("b", 64)), 200, true, false, 1},
+		{"short write", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 1},
+		{"cancelled output", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 1},
 		{"redaction", `{"message":"source-secret dest-secret"}`, 403, true, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,5 +323,44 @@ func TestPromotionSubmissionRedactsDecodedResponse(t *testing.T) {
 	code := sendCommand(context.Background(), http.DefaultClient, u, "/", "dest-secret", "POST", "deploys", struct{}{}, commandFlags{redactToken: "source-secret"}, "deploy", &out, &errs)
 	if code != 3 || strings.Contains(out.String(), "source-secret") || strings.Contains(out.String(), "dest-secret") || !strings.Contains(out.String(), "[redacted]") {
 		t.Fatalf("unsafe hold output, exit %d", code)
+	}
+}
+
+func TestPromoteRefusesCheckoutSwitchDuringCapture(t *testing.T) {
+	manifestText := "project: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	dir, first := checkoutRepo(t, map[string]string{"berthy.yml": manifestText})
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(manifestText+"# another revision\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitRunIn(t, dir, "add", "berthy.yml")
+	gitRunIn(t, dir, "commit", "-q", "-m", "second")
+	second := gitRunIn(t, dir, "rev-parse", "HEAD")
+	gitRunIn(t, dir, "checkout", "-q", "--detach", first)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(500) }))
+	defer server.Close()
+	t.Setenv("PROMOTE_SWITCH_TOKEN", "test-token")
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := fmt.Sprintf(`{"projects":{"demo":{"environments":{"stage":{"url":%q,"token_env":"PROMOTE_SWITCH_TOKEN"},"prod":{"url":%q,"token_env":"PROMOTE_SWITCH_TOKEN"}}}}}`, server.URL, server.URL)
+	if err := os.WriteFile(path, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := agentclient.Resolve(path, agentclient.Selector{Project: "demo", Environment: "prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := loadDeployManifest
+	loadDeployManifest = func(dir, env string) (*manifest.Manifest, error) {
+		m, err := old(dir, env)
+		if err == nil {
+			gitRunIn(t, dir, "checkout", "-q", "--detach", second)
+		}
+		return m, err
+	}
+	defer func() { loadDeployManifest = old }()
+	var out, errs bytes.Buffer
+	code := runPromote(context.Background(), http.DefaultClient, target, path, "stage", commandFlags{dir: dir, env: "prod", pos: []string{"api"}, dry: true}, &out, &errs)
+	if code == 0 || calls.Load() != 0 || !strings.Contains(errs.String(), "checkout changed") {
+		t.Fatalf("checkout switch: exit %d calls %d stderr %q", code, calls.Load(), errs.String())
 	}
 }
