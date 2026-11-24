@@ -56,6 +56,7 @@ type fakeDeployAgent struct {
 	protected    bool // whether the agent is configured for a protected environment
 	plans        map[string]string
 	applied      map[string]string
+	calls        int
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -78,6 +79,7 @@ func deployAllFixture(t *testing.T, manifestYAML string, agent *fakeDeployAgent)
 func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	const base = "/v1/projects/demo/environments/dev/"
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
@@ -639,13 +641,13 @@ func TestBatchReviewComposeDecisionShapes(t *testing.T) {
 	req := deploy.Request{App: "z"}
 	for _, extra := range []string{`"tag":null,`, `"remove":{},`, `"exec":{},`} {
 		data := `{"app":"z","image":"",` + extra + `"roles":[],"compose":{"project":"demo-dev-z","services":[],"volumes":[]}}`
-		if batchPlan([]byte(data), m, "dev", req, "", "") == nil {
+		if batchPlan([]byte(data), m, "dev", req, "", "", "", false) == nil {
 			t.Errorf("accepted %s", data)
 		}
 	}
 	for _, field := range []string{`"services":[{"name":"a","action":"keep"},{"name":"a","action":"create"}],"volumes":[]`, `"services":[],"volumes":[{"name":"v","action":"keep"},{"name":"v","action":"create"}]`} {
 		data := `{"app":"z","image":"","roles":[],"compose":{"project":"demo-dev-z",` + field + `}}`
-		if batchPlan([]byte(data), m, "dev", req, "", "") == nil {
+		if batchPlan([]byte(data), m, "dev", req, "", "", "", false) == nil {
 			t.Errorf("accepted %s", data)
 		}
 	}
@@ -703,5 +705,92 @@ func TestBatchReviewRedactsTokenInAggregateApp(t *testing.T) {
 		if code == 0 || strings.Contains(out, "api") || strings.Contains(errs, "api") {
 			t.Fatalf("json %t exit %d stdout %q stderr %q", asJSON, code, out, errs)
 		}
+	}
+}
+
+func TestBatchCheckoutSwitchBeforePreparation(t *testing.T) {
+	dir, first := checkoutRepo(t, map[string]string{"berthy.yml": allAppsManifest, "berthy.dev.yml": "apps:\n  api:\n    env:\n      plain:\n        MARKER: before\n"})
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte("apps:\n  api:\n    env:\n      plain:\n        MARKER: after\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitRunIn(t, dir, "add", "berthy.dev.yml")
+	gitRunIn(t, dir, "commit", "-q", "-m", "second")
+	second := gitRunIn(t, dir, "rev-parse", "HEAD")
+	gitRunIn(t, dir, "checkout", "-q", "--detach", first)
+	agent := &fakeDeployAgent{}
+	_, cfg := deployAllFixture(t, allAppsManifest, agent)
+	old := loadDeployManifest
+	loadDeployManifest = func(dir, env string) (*manifest.Manifest, error) {
+		m, err := old(dir, env)
+		if err == nil {
+			gitRunIn(t, dir, "checkout", "-q", "--detach", second)
+		}
+		return m, err
+	}
+	defer func() { loadDeployManifest = old }()
+	code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--version", "postgres=v1", "--version", "redis=v1")
+	if code == 0 || agent.calls != 0 || !strings.Contains(errs, "checkout changed") {
+		t.Fatalf("exit %d calls %d stderr %q", code, agent.calls, errs)
+	}
+}
+
+func TestBatchComposeDecisionCannotBeRedacted(t *testing.T) {
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    project_name: test-token-project\n    depends_on: [api]\n"
+	for _, tc := range []struct{ project, services, volumes, token string }{
+		{"test-token-project", `[]`, `[]`, "test-token"},
+		{"test-token-project", `[{"name":"test-token-svc","action":"keep"}]`, `[]`, "test-token-svc"},
+		{"test-token-project", `[]`, `[{"name":"test-token-vol","action":"create"}]`, "test-token-vol"},
+		{"test-token-project", `[{"name":"svc","action":"keep"}]`, `[]`, "keep"},
+	} {
+		plan := fmt.Sprintf(`{"app":"zstack","image":"","roles":[],"compose":{"project":%q,"services":%s,"volumes":%s}}`, tc.project, tc.services, tc.volumes)
+		agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zstack": plan}}
+		dir, cfg := deployAllFixture(t, manifestText, agent)
+		if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BERTHY_TEST_TOKEN", tc.token)
+		code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+		if code == 0 || strings.Contains(out, "Proceed with this deploy?") || strings.Contains(out, tc.token) || !strings.Contains(errs, "cannot safely display") {
+			t.Fatalf("token %q exit %d stdout %q stderr %q", tc.token, code, out, errs)
+		}
+		for _, d := range agent.deploys {
+			if d["dry_run"] != true {
+				t.Fatalf("mutation: %v", d)
+			}
+		}
+	}
+}
+
+func TestBatchComposeControlTextAndMetadata(t *testing.T) {
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	for _, tc := range []struct {
+		name, plan string
+		asJSON, ok bool
+	}{
+		{"control in decision text", `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"svc\u001b[31m","action":"keep"}],"volumes":[]}}`, false, false},
+		{"escaped decision json", `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"svc\u001b[31m","action":"keep"}],"volumes":[]}}`, true, true},
+		{"control metadata text", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]}}`, false, true},
+		{"control metadata json", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]}}`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zstack": tc.plan}}
+			dir, cfg := deployAllFixture(t, manifestText, agent)
+			if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"--version", "api=v1", "--dry-run"}
+			if tc.asJSON {
+				args = append(args, "--json")
+			}
+			code, out, errs := deployAllCommand(t, dir, cfg, args...)
+			if (code == 0) != tc.ok || strings.ContainsRune(out, '\x1b') || strings.ContainsRune(errs, '\x1b') || (tc.asJSON && !json.Valid([]byte(out))) {
+				t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+			}
+			for _, d := range agent.deploys {
+				if d["dry_run"] != true {
+					t.Fatalf("mutation: %v", d)
+				}
+			}
+		})
 	}
 }

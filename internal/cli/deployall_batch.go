@@ -129,7 +129,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			tag = step.tag
 		}
 		if planErr == nil {
-			planErr = batchPlan(data, m, f.env, step.req, image, tag)
+			planErr = batchPlan(data, m, f.env, step.req, image, tag, target.Token, f.json)
 		}
 		if planErr != nil {
 			if !f.dry {
@@ -158,7 +158,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	return false, 0
 }
 
-func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request, image, tag string) error {
+func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request, image, tag, token string, asJSON bool) error {
 	invalid := errors.New("invalid agent deploy plan")
 	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "remove", "destroy", "restore", "exec", "command")
 	if err != nil {
@@ -230,14 +230,30 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 	if len(plan.Blockers) > 0 {
 		return errors.New("deploy plan has blockers")
 	}
+	safeDecision := func(s string) bool {
+		visible := redactSecretText(s, token)
+		if !asJSON {
+			visible = terminalSafe(visible)
+		}
+		return visible == s
+	}
+	if !safeDecision(plan.Project) {
+		return errors.New("cannot safely display deploy selection")
+	}
 	for _, s := range plan.Services {
 		if s.Name == "" || (s.Action != "create" && s.Action != "recreate" && s.Action != "keep" && s.Action != "remove") {
 			return invalid
+		}
+		if !safeDecision(s.Name) || !safeDecision(s.Action) {
+			return errors.New("cannot safely display deploy selection")
 		}
 	}
 	for _, v := range plan.Volumes {
 		if v.Name == "" || (v.Action != "create" && v.Action != "keep") {
 			return invalid
+		}
+		if !safeDecision(v.Name) || !safeDecision(v.Action) {
+			return errors.New("cannot safely display deploy selection")
 		}
 	}
 	return nil

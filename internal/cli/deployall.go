@@ -14,6 +14,7 @@ import (
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 	"github.com/distribution/reference"
 )
@@ -109,7 +110,14 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 			return 2
 		}
 	}
-	m, err := manifest.Load(f.dir, f.env)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	before, err := gitcheck.Capture(ctx, f.dir)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return 1
+	}
+	m, err := loadDeployManifest(f.dir, f.env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
@@ -122,8 +130,6 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		fmt.Fprintln(errout, err)
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	steps := make([]deployStep, 0, len(m.Apps))
 	tags := make(map[string]string)
 	for _, app := range m.DeployOrder() {
@@ -161,7 +167,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 	for i := range steps {
 		reqs[i] = &steps[i].req
 	}
-	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, f.env, m, reqs)
+	co, err := agentclient.PrepareDeployFilesChecked(ctx, f.dir, f.env, m, reqs, before)
 	if err != nil {
 		var composeApps []string
 		for _, step := range steps {
