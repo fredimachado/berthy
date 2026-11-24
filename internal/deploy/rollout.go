@@ -23,6 +23,7 @@ func rolloutMilestone(role, status string) state.Event {
 	}
 	return state.Event{Kind: "rollout", Data: data}
 }
+
 type serviceMutator interface {
 	InspectService(context.Context, string) (engine.ServiceSnapshot, error)
 	CreateService(context.Context, json.RawMessage, *engine.RegistryAuth) (string, error)
