@@ -439,7 +439,7 @@ func TestProtectedTagRefusesCheckoutSwitchDuringCapture(t *testing.T) {
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
 	old := loadDeployManifest
-	loadDeployManifest = func(dir, env string) (*manifest.Manifest, error) {
+	loadDeployManifest = func(dir, env string) (*manifest.Loaded, error) {
 		m, err := old(dir, env)
 		if err == nil {
 			gitRunIn(t, dir, "checkout", "-q", "--detach", bHead)
@@ -513,5 +513,68 @@ func TestBareSHA256Classification(t *testing.T) {
 		if got := bareSHA256(tc.value); got != tc.bare {
 			t.Errorf("bareSHA256(%q) = %v", tc.value, got)
 		}
+	}
+}
+
+func TestGuardedDeployRejectsRestoredCapturedOverlay(t *testing.T) {
+	const clean = "apps:\n  api:\n    env:\n      plain:\n        MARKER: clean\n"
+	const edited = "apps:\n  api:\n    env:\n      plain:\n        MARKER: edited\n"
+	for _, tc := range []struct {
+		name, env string
+		args      []string
+		absent    bool
+	}{
+		{"named", "dev", []string{"deploy", "api", "--version", "stable", "--dry-run"}, false},
+		{"batch", "dev", []string{"deploy", "--version", "api=stable", "--dry-run"}, false},
+		{"promote", "prod", []string{"promote", "api", "--from", "staging", "--dry-run"}, false},
+		{"named absent overlay", "dev", []string{"deploy", "api", "--version", "stable", "--dry-run"}, true},
+		{"batch absent overlay", "dev", []string{"deploy", "--version", "api=stable", "--dry-run"}, true},
+		{"promote absent overlay", "prod", []string{"promote", "api", "--from", "staging", "--dry-run"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overlay := "berthy." + tc.env + ".yml"
+			dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": "protected: true\n" + versionsManifest, overlay: clean})
+			file := filepath.Join(dir, overlay)
+			var err error
+			if tc.absent {
+				err = os.Remove(file)
+			} else {
+				err = os.WriteFile(file, []byte(edited), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			config := fmt.Sprintf(`{"projects":{"demo":{"environments":{"dev":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"},"prod":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"},"staging":{"url":%q,"token_env":"BERTHY_TEST_TOKEN"}}}}}`, server.URL, server.URL, server.URL)
+			if err := os.WriteFile(cfg, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("BERTHY_TEST_TOKEN", "fixture-token")
+			old := loadDeployManifest
+			called := false
+			loadDeployManifest = func(dir, env string) (*manifest.Loaded, error) {
+				m, err := old(dir, env)
+				if err == nil {
+					called = true
+					if e := os.WriteFile(file, []byte(clean), 0600); e != nil {
+						t.Fatal(e)
+					}
+				}
+				return m, err
+			}
+			defer func() { loadDeployManifest = old }()
+			var out, errs bytes.Buffer
+			args := append(append([]string{}, tc.args...), "-e", tc.env, "--config", cfg, "--manifest-dir", dir)
+			code := Run(args, &out, &errs)
+			if !called || code == 0 || calls.Load() != 0 || !strings.Contains(errs.String(), "commit them first") {
+				t.Errorf("restored captured overlay: seam %v exit %d remote calls %d stderr %q", called, code, calls.Load(), errs.String())
+			}
+		})
 	}
 }

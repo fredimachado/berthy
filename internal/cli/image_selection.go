@@ -24,7 +24,7 @@ import (
 )
 
 // loadDeployManifest lets checkout capture tests switch revisions after the file read.
-var loadDeployManifest = manifest.Load
+var loadDeployManifest = manifest.LoadDetailed
 
 // bareSHA256 matches the bare digest grammar accepted by the manifest, not a registry host prefix.
 func bareSHA256(value string) bool {
@@ -449,7 +449,8 @@ func interactiveDeploy(f commandFlags, out io.Writer) bool {
 	return !f.json && ok && screen != nil && os.Stdin != nil && term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(screen.Fd())
 }
 
-func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, req deploy.Request, selected reference.Named, before gitcheck.Identity, out, errout io.Writer) int {
+func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, loaded *manifest.Loaded, req deploy.Request, selected reference.Named, before gitcheck.Identity, out, errout io.Writer) int {
+	m := loaded.Manifest
 	tagged, ok := selected.(reference.NamedTagged)
 	if !ok {
 		fmt.Fprintln(errout, "image tag required")
@@ -457,7 +458,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	}
 	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	progress.Start("Checking checkout")
-	co, err := agentclient.PrepareDeployFilesChecked(ctx, f.dir, f.env, m, []*deploy.Request{&req}, before)
+	co, err := agentclient.PrepareCapturedDeployFiles(ctx, f.dir, f.env, loaded, []*deploy.Request{&req}, before)
 	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, err)

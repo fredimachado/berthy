@@ -117,11 +117,12 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	m, err := loadDeployManifest(f.dir, f.env)
+	loaded, err := loadDeployManifest(f.dir, f.env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	m := loaded.Manifest
 	if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
 		return 2
 	}
@@ -167,7 +168,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 	for i := range steps {
 		reqs[i] = &steps[i].req
 	}
-	co, err := agentclient.PrepareDeployFilesChecked(ctx, f.dir, f.env, m, reqs, before)
+	co, err := agentclient.PrepareCapturedDeployFiles(ctx, f.dir, f.env, loaded, reqs, before)
 	if err != nil {
 		var composeApps []string
 		for _, step := range steps {

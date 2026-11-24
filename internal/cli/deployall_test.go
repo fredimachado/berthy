@@ -733,7 +733,7 @@ func TestBatchCheckoutSwitchBeforePreparation(t *testing.T) {
 	agent := &fakeDeployAgent{}
 	_, cfg := deployAllFixture(t, allAppsManifest, agent)
 	old := loadDeployManifest
-	loadDeployManifest = func(dir, env string) (*manifest.Manifest, error) {
+	loadDeployManifest = func(dir, env string) (*manifest.Loaded, error) {
 		m, err := old(dir, env)
 		if err == nil {
 			gitRunIn(t, dir, "checkout", "-q", "--detach", second)

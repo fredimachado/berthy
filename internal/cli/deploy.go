@@ -680,11 +680,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return runInteractive(ctx, target, session.Request{Kind: cmd, App: req.App, Role: req.Role, Service: req.Service, Command: req.Command, Timeout: req.Timeout}, os.Stdin, out, errout)
 		}
 		if cmd == "deploy" {
-			m, e := loadDeployManifest(f.dir, f.env)
+			loaded, e := loadDeployManifest(f.dir, f.env)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
 			}
+			m := loaded.Manifest
 			if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
 				return 2
 			}
@@ -695,7 +696,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 					return 1
 				}
 				if _, canonical := selected.(reference.Canonical); !canonical {
-					return runSingleTagDeploy(ctx, client, target, f, m, req, selected, checkoutBefore, out, errout)
+					return runSingleTagDeploy(ctx, client, target, f, loaded, req, selected, checkoutBefore, out, errout)
 				}
 			}
 			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
