@@ -35,7 +35,7 @@ func AgentProtection(ctx context.Context, c *http.Client, t *Target) (Protection
 		return ProtectionUnknown, errors.New("agent protection lookup failed")
 	}
 	if status != http.StatusOK {
-		return ProtectionUnknown, fmt.Errorf("agent returned HTTP %d", status)
+		return ProtectionUnknown, errors.New(t.Redact(Message(status, data)))
 	}
 	if !utf8.Valid(data) {
 		return ProtectionUnknown, ErrInvalidResponse

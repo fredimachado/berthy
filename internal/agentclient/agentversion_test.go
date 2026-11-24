@@ -271,3 +271,58 @@ func TestCheckAgentVersionRedactsBearerToken(t *testing.T) {
 		t.Fatal("expected a redacted minimum-version diagnostic")
 	}
 }
+
+func TestAgentProtectionPreservesSafeRefusal(t *testing.T) {
+	const prefix = "/v1/projects/demo/environments/prod/"
+	const token = "fixture-secret-token"
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		oldStatus int
+		want      string
+	}{
+		{"pre-project agent", 404, `{}`, 200, "agent returned HTTP 404: " + OlderAgentMessage},
+		{"ordinary not found", 404, `{}`, 404, "agent returned HTTP 404"},
+		{"redacted credential", 403, `{"message":"credential ` + token + ` refused"}`, 0, "agent returned HTTP 403: credential [redacted] refused"},
+		{"control character", 500, `{"message":"unsafe\nmessage"}`, 0, "agent returned HTTP 500"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var scoped, fallback atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+token || r.URL.RawQuery != "" {
+					t.Error("request binding incorrect")
+				}
+				switch r.URL.Path {
+				case prefix + "agent":
+					scoped.Add(1)
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+				case "/v1/environments/prod/agent":
+					fallback.Add(1)
+					w.WriteHeader(tc.oldStatus)
+				default:
+					t.Error("unexpected request path")
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer server.Close()
+			u, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
+			if got != ProtectionUnknown || err == nil || err.Error() != tc.want {
+				t.Errorf("got %v, %v; want unknown, %q", got, err, tc.want)
+			}
+			wantFallback := int32(0)
+			if tc.status == 404 {
+				wantFallback = 1
+			}
+			if scoped.Load() != 1 || fallback.Load() != wantFallback {
+				t.Errorf("requests: scoped %d, fallback %d; want 1, %d", scoped.Load(), fallback.Load(), wantFallback)
+			}
+		})
+	}
+}
