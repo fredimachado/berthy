@@ -38,10 +38,10 @@ Berthy makes choices so that you do not have to. If you disagree with several of
 
 You need a Linux server with systemd (amd64 or arm64), a private address on it, and an account that is `root` or has passwordless `sudo`. Setup does not create the server, its firewall or your VPN. Read the [user guide](docs/user-guide.md#step-1-prepare-a-server-and-set-it-up) before you point it at a server you care about.
 
-**1. Install the CLI** from the [release](https://github.com/fredimachado/berthy/releases/tag/v0.6.0). The files are named `berthy-<os>-<arch>` for linux and darwin on amd64 and arm64, plus `berthy-windows-amd64.exe` and `checksums.txt`.
+**1. Install the CLI** from the [release](https://github.com/fredimachado/berthy/releases/tag/v0.7.0). The files are named `berthy-<os>-<arch>` for linux and darwin on amd64 and arm64, plus `berthy-windows-amd64.exe` and `checksums.txt`.
 
 ```bash
-VERSION=v0.6.0 OS=linux ARCH=amd64     # OS: linux or darwin. ARCH: amd64 or arm64.
+VERSION=v0.7.0 OS=linux ARCH=amd64     # OS: linux or darwin. ARCH: amd64 or arm64.
 curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/berthy-$OS-$ARCH
 curl -fsSLO https://github.com/fredimachado/berthy/releases/download/$VERSION/checksums.txt
 sha256sum --ignore-missing -c checksums.txt    # on macOS, compare the hash with shasum -a 256
@@ -49,7 +49,7 @@ chmod +x berthy-$OS-$ARCH && sudo mv berthy-$OS-$ARCH /usr/local/bin/berthy
 berthy version
 ```
 
-With the GitHub CLI: `gh release download v0.6.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
+With the GitHub CLI: `gh release download v0.7.0 -R fredimachado/berthy -p 'berthy-linux-amd64' -p checksums.txt`.
 
 To try a development build instead, clone this repository and run `go build -o berthy ./cmd/berthy`. Pass `--binary` to setup when that CLI is not a Linux build of the server's architecture.
 
@@ -58,6 +58,7 @@ To try a development build instead, clone this repository and run `go build -o b
 ```yaml
 project: hello
 network: hello
+min_version: 0.7.0
 
 registries:                      # only for a private image
   ghcr.io:
@@ -87,6 +88,9 @@ apps:
 
 ```yaml
 protected: true
+servers:
+  web1:
+    ssh: ops@10.0.0.5
 ```
 
 Check both without a server: `berthy config validate -e prod`.
@@ -94,11 +98,11 @@ Check both without a server: `berthy config validate -e prod`.
 **3. Set up the server** from the directory that holds that manifest. Look first with `--dry-run`, which changes nothing, then run it for real. It saves the first admin token in your credential store, or prints it if saving is unavailable or unconfirmed. Use `--show-token` to print it as well. Setup writes the CLI configuration to your user configuration directory (`~/.config/berthy/config.json` on Linux), which the other commands read by default. With no `berthy.yml` in the directory, pass `--project hello` instead.
 
 ```bash
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
-berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710
+berthy setup -e prod --listen 10.0.0.5:7710 --dry-run
+berthy setup -e prod --listen 10.0.0.5:7710
 ```
 
-If setup prints the token because it could not confirm a save, keep it privately and set it in the named variable. The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Run one `berthy setup` at a time against a server.
+Later runs (upgrades) need only `berthy setup -e prod`. `--host ops@10.0.0.5` still works without a `servers` entry. If setup prints the token because it could not confirm a save, keep it privately and set it in the named variable. The default token variable is `BERTHY_<PROJECT>_<ENVIRONMENT>_TOKEN` (here `hello` from the manifest). Run one `berthy setup` at a time against a server.
 
 Remote setup saves a private copy of the encryption key under `~/.berthy/keys`. Check `cli_key` for the saved path. If it says `not saved`, follow the first instruction under `next steps`. Keep another copy in a password manager. You need the key to recover secrets if the server is lost. See the [key backup instructions](docs/user-guide.md#save-three-things).
 
@@ -164,7 +168,7 @@ Main documentation and sources:
 
 ### Which one to choose
 
-- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.6.0.
+- **Choose Berthy when** CI already builds your images, you run your own servers behind a VPN (one agent can host several projects or environments), and you want digest-pinned, health-gated deploys, backups, scheduled jobs and AI-agent approvals driven from a CLI and a terminal UI, in one small binary. Berthy is young: this is v0.7.0.
 - **Do not choose Berthy when** you want a web dashboard, builds on the server (buildpacks, Nixpacks, `git push`), users and roles for a team beyond token scopes, one-click templates, a multi-server cluster set up and shown for you, or an alert channel other than Telegram or an HTTP webhook. It also needs a private network to reach the agent.
 - **Choose Kamal when** you want deploys over plain SSH with nothing but Docker on the servers, builds in your own pipeline, and several hosts in one config file. It runs from your machine over SSH, with no agent of its own on the server.
 - **Choose Dokploy when** you want a web UI with builds on the server, managed databases with backups, templates, notifications, and Swarm or remote servers.
@@ -182,7 +186,7 @@ Main documentation and sources:
 
 ## Status
 
-The latest release is [v0.6.0](https://github.com/fredimachado/berthy/releases/tag/v0.6.0). Built and released: the agent and CLI, projects (one agent hosts any number of environments), image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`. This release adds interactive protected-tag resolve and confirm while automation still sends digests, `berthy versions` to list registry tags, `berthy promote` to ship an applied image from another environment such as `dev`, and contextual terminal-only progress during deploy and setup.
+The latest release is [v0.7.0](https://github.com/fredimachado/berthy/releases/tag/v0.7.0). Built and released: the agent and CLI, projects (one agent hosts any number of environments), image and Compose deploys, managed ingress, health checks, alerts, scheduled commands, backups, the terminal UI, the MCP server, approvals, and `berthy setup`. This release adds the manifest `servers` section, so `berthy setup -e prod` finds its SSH destination and installs and upgrades need no `--host`; `--server NAME` when there are several; and `berthy apply` lists `servers` changes.
 
 Berthy's tests run against a real Docker Swarm, a real registry and fakes for the rest. On 2026-11-17 it was also run against a real Ubuntu server, real Cloudflare and GHCR. Telegram alerts, OpenTelemetry backends and S3 backups have not yet been run against the real services. The user guide lists the rest under "Not verified against real services". Expect to find edge cases, and try a non-production environment first.
 
