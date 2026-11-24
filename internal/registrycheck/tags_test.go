@@ -101,6 +101,7 @@ func TestTagsPaginationAndFailures(t *testing.T) {
 		{"failed final", `{"name":"acme/api","tags":["b"]}`, `bad`, `<?last=b>; rel="next"`, true},
 		{"wrong path", `{"name":"acme/api","tags":["b"]}`, "", `</v2/other/tags/list>; rel="next"`, true},
 		{"loop", `{"name":"acme/api","tags":["b"]}`, "", `</v2/acme/api/tags/list>; rel="next"`, true},
+		{"repeated rel", `{"name":"acme/api","tags":["b"]}`, `{"name":"acme/api","tags":["a"]}`, `<?a>; rel="next"; rel="next"`, true},
 		{"ambiguous", `{"name":"acme/api","tags":["b"]}`, "", `<?a>; rel="next", <?b>; rel="next"`, true},
 		{"oversize", `{"name":"acme/api","tags":[]}` + strings.Repeat(" ", 1<<20), "", "", true},
 	}

@@ -228,9 +228,14 @@ func nextListing(headers []string, current, list *url.URL) (*url.URL, error) {
 			}
 			params := strings.Split(part[end+1:], ";")
 			isNext := false
+			hasRel := false
 			for _, p := range params {
 				k, v, ok := strings.Cut(strings.TrimSpace(p), "=")
 				if ok && strings.EqualFold(k, "rel") {
+					if hasRel {
+						return nil, errors.New("ambiguous registry continuation")
+					}
+					hasRel = true
 					for _, rel := range strings.Fields(strings.Trim(v, `"`)) {
 						if strings.EqualFold(rel, "next") {
 							isNext = true
