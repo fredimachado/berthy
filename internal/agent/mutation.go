@@ -1059,6 +1059,14 @@ func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id 
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 		if op.State != "running" && len(events) < 100 {
+			latest, err := s.Operation(r.Context(), id)
+			if err != nil || r.Context().Err() != nil {
+				return
+			}
+			if latest.State != op.State {
+				continue
+			}
+			op = latest
 			result, _ := json.Marshal(struct {
 				Status    string `json:"status"`
 				Operation any    `json:"operation"`
