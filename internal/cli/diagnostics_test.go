@@ -112,6 +112,9 @@ func TestFailedDeployPointsToItsDiagnostics(t *testing.T) {
 	} {
 		t.Run(tc.state+strings.Join(tc.args, ""), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if answerCapablePolicy(w, r) {
+					return
+				}
 				switch r.URL.Path {
 				case "/v1/projects/demo/environments/dev/deploys":
 					w.WriteHeader(202)
@@ -150,6 +153,9 @@ func TestFailedDeployPointsToItsDiagnostics(t *testing.T) {
 
 func TestFailedDeployDiagnosticsNamesResolvedProject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/projects/demo/environments/dev/deploys":
 			w.WriteHeader(202)

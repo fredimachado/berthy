@@ -24,6 +24,9 @@ func TestConfigValidateOffline(t *testing.T) {
 }
 func TestDeployDryRunSendsManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		if r.Method != "POST" || r.URL.Path != "/v1/projects/demo/environments/dev/deploys" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("bad request %s %s", r.Method, r.URL.Path)
 		}
@@ -48,6 +51,9 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 	}{{"success", "/v1/projects/demo/environments/dev/operations/op1/events", "succeeded", 0}, {"rollback", "/v1/projects/demo/environments/dev/operations/op1/events", "rolled_back", 1}, {"external", "https://evil.example/events", "succeeded", 1}} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if answerCapablePolicy(w, r) {
+					return
+				}
 				switch r.URL.Path {
 				case "/v1/projects/demo/environments/dev/deploys":
 					w.WriteHeader(202)
@@ -77,6 +83,9 @@ func TestDeployWaitsForTerminalAndRejectsExternalEvents(t *testing.T) {
 
 func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/projects/demo/environments/dev/deploys":
 			w.WriteHeader(202)
@@ -104,6 +113,9 @@ func TestDeployJSONOutputIsSingleDocument(t *testing.T) {
 func TestDeployShowsWhatItsChecksFound(t *testing.T) {
 	const warning = "role web: healthy, but port 8080 does not answer on the network; is the app listening on 127.0.0.1?"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/projects/demo/environments/dev/deploys":
 			w.WriteHeader(202)

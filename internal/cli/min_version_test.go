@@ -36,7 +36,7 @@ type minVersionAgent struct {
 func (a *minVersionAgent) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/agent"):
-		fmt.Fprintf(w, `{"environment":"dev","hostname":"lab","protected":false,"version":%q}`, a.agentVersion)
+		fmt.Fprintf(w, `{"project":"demo","environment":"dev","hostname":"lab","protected":false,"effective_protected":false,"version":%q}`, a.agentVersion)
 	case r.Method == http.MethodPost:
 		a.mu.Lock()
 		a.posts++

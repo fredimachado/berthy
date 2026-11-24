@@ -26,6 +26,9 @@ func planDiffAgent(t *testing.T, plan string) (cfg string, paths func() []string
 	var mu sync.Mutex
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		mu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.RequestURI())
 		mu.Unlock()

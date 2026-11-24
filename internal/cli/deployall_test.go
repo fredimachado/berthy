@@ -71,7 +71,7 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
 	case r.Method == "GET" && rest == "agent":
-		fmt.Fprintf(w, `{"version":"test","protected":%t}`, f.protected)
+		fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t,"effective_protected":%t}`, f.protected, f.protected)
 	case r.Method == "POST" && rest == "deploys":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

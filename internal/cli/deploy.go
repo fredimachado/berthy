@@ -27,6 +27,8 @@ import (
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/session"
+
+	"github.com/distribution/reference"
 )
 
 // printProblems writes every problem of a manifest, one per line with its file, line and path, and then how many there are.
@@ -654,6 +656,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			}
 			if !manifestMatchesTarget(errout, f.dir, m.Project, target.Project) {
 				return 2
+			}
+			if req.Version != "" && m.Apps[req.App].Kind == "image" {
+				selected, selectErr := m.ImageReference(req.App, req.Version)
+				if selectErr != nil {
+					fmt.Fprintln(errout, selectErr)
+					return 1
+				}
+				if _, canonical := selected.(reference.Canonical); !canonical {
+					return runSingleTagDeploy(ctx, client, target, f, m, req, selected, out, errout)
+				}
 			}
 			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
 			if e != nil {

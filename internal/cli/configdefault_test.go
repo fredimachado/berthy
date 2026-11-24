@@ -55,6 +55,9 @@ func pathLoggingAgent(t *testing.T) (*httptest.Server, func() []string) {
 			t.Errorf("request %s without the token", r.URL.Path)
 		}
 		paths = append(paths, r.URL.Path)
+		if answerCapablePolicy(w, r) {
+			return
+		}
 		fmt.Fprint(w, `[]`)
 	}))
 	t.Cleanup(server.Close)
