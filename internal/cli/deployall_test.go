@@ -57,6 +57,8 @@ type fakeDeployAgent struct {
 	plans        map[string]string
 	applied      map[string]string
 	calls        int
+	policyReply  string
+	policyReads  int
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -84,7 +86,10 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
 	case r.Method == "GET" && rest == "agent":
-		if f.legacy {
+		f.policyReads++
+		if f.policyReply != "" {
+			fmt.Fprint(w, f.policyReply)
+		} else if f.legacy {
 			fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t}`, f.protected)
 		} else {
 			fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t,"effective_protected":%t}`, f.protected, f.protected)
@@ -123,7 +128,7 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 			if f.blockCompose {
 				blockers = `,"blockers":["blocked"]`
 			}
-			fmt.Fprintf(w, `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]%s}}`, blockers)
+			fmt.Fprintf(w, `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"side","action":"keep"}],"volumes":[]%s}}`, blockers)
 		case body["dry_run"] == true && f.failPlan[app]:
 			w.WriteHeader(400)
 			fmt.Fprint(w, `{"code":"operation_failed","message":"plan refused for `+app+`"}`)
@@ -357,6 +362,9 @@ func TestDeployAllKeepsTheVersionAnAppRunsNow(t *testing.T) {
 	}
 	if len(agent.reads) != 3 {
 		t.Fatalf("the preflight asked %v", agent.reads)
+	}
+	if agent.policyReads != 0 {
+		t.Fatalf("ordinary kept digests asked for policy %d times", agent.policyReads)
 	}
 }
 
@@ -640,12 +648,12 @@ func TestBatchReviewComposeDecisionShapes(t *testing.T) {
 	m := &manifest.Manifest{Project: "demo", Apps: map[string]manifest.App{"z": {Kind: "compose"}}}
 	req := deploy.Request{App: "z"}
 	for _, extra := range []string{`"tag":null,`, `"remove":{},`, `"exec":{},`} {
-		data := `{"app":"z","image":"",` + extra + `"roles":[],"compose":{"project":"demo-dev-z","services":[],"volumes":[]}}`
+		data := `{"app":"z","image":"",` + extra + `"roles":[],"compose":{"project":"demo-dev-z","services":[{"name":"side","action":"keep"}],"volumes":[]}}`
 		if batchPlan([]byte(data), m, "dev", req, "", "", "", false) == nil {
 			t.Errorf("accepted %s", data)
 		}
 	}
-	for _, field := range []string{`"services":[{"name":"a","action":"keep"},{"name":"a","action":"create"}],"volumes":[]`, `"services":[],"volumes":[{"name":"v","action":"keep"},{"name":"v","action":"create"}]`} {
+	for _, field := range []string{`"services":[{"name":"a","action":"keep"},{"name":"a","action":"create"}],"volumes":[]`, `"services":[{"name":"side","action":"keep"}],"volumes":[{"name":"v","action":"keep"},{"name":"v","action":"create"}]`} {
 		data := `{"app":"z","image":"","roles":[],"compose":{"project":"demo-dev-z",` + field + `}}`
 		if batchPlan([]byte(data), m, "dev", req, "", "", "", false) == nil {
 			t.Errorf("accepted %s", data)
@@ -665,7 +673,7 @@ func TestBatchReviewRejectsTaggedDigestUnderStickyProtection(t *testing.T) {
 
 func TestBatchReviewKeepsStoredDigestAndPreviewsCanonicalIdentity(t *testing.T) {
 	hash := strings.Repeat("b", 64)
-	stored := "ghcr.io/acme/zlast:old@sha256:" + hash
+	stored := "ghcr.io/acme/zlast@sha256:" + hash
 	agent := &fakeDeployAgent{protected: true, mixedPlans: true, applied: map[string]string{"zlast": fmt.Sprintf(`{"id":1,"digest":%q,"tag":"old"}`, stored)}, plans: map[string]string{"zlast": fmt.Sprintf(`{"app":"zlast","image":"ghcr.io/acme/zlast@sha256:%s","tag":"old","roles":["web"]}`, hash)}}
 	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
 	dir, cfg := deployAllFixture(t, manifest, agent)
@@ -737,9 +745,9 @@ func TestBatchCheckoutSwitchBeforePreparation(t *testing.T) {
 func TestBatchComposeDecisionCannotBeRedacted(t *testing.T) {
 	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    project_name: test-token-project\n    depends_on: [api]\n"
 	for _, tc := range []struct{ project, services, volumes, token string }{
-		{"test-token-project", `[]`, `[]`, "test-token"},
+		{"test-token-project", `[{"name":"side","action":"keep"}]`, `[]`, "test-token"},
 		{"test-token-project", `[{"name":"test-token-svc","action":"keep"}]`, `[]`, "test-token-svc"},
-		{"test-token-project", `[]`, `[{"name":"test-token-vol","action":"create"}]`, "test-token-vol"},
+		{"test-token-project", `[{"name":"side","action":"keep"}]`, `[{"name":"test-token-vol","action":"create"}]`, "test-token-vol"},
 		{"test-token-project", `[{"name":"svc","action":"keep"}]`, `[]`, "keep"},
 	} {
 		plan := fmt.Sprintf(`{"app":"zstack","image":"","roles":[],"compose":{"project":%q,"services":%s,"volumes":%s}}`, tc.project, tc.services, tc.volumes)
@@ -769,8 +777,8 @@ func TestBatchComposeControlTextAndMetadata(t *testing.T) {
 	}{
 		{"control in decision text", `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"svc\u001b[31m","action":"keep"}],"volumes":[]}}`, false, false},
 		{"escaped decision json", `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[{"name":"svc\u001b[31m","action":"keep"}],"volumes":[]}}`, true, true},
-		{"control metadata text", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]}}`, false, true},
-		{"control metadata json", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]}}`, true, true},
+		{"control metadata text", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[{"name":"side","action":"keep"}],"volumes":[]}}`, false, true},
+		{"control metadata json", `{"app":"zstack","image":"","roles":[],"notes":["before\u001b[31mafter"],"compose":{"project":"demo-dev-zstack","services":[{"name":"side","action":"keep"}],"volumes":[]}}`, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zstack": tc.plan}}
@@ -787,6 +795,130 @@ func TestBatchComposeControlTextAndMetadata(t *testing.T) {
 				t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
 			}
 			for _, d := range agent.deploys {
+				if d["dry_run"] != true {
+					t.Fatalf("mutation: %v", d)
+				}
+			}
+		})
+	}
+}
+
+func TestBatchR1ProtectedTaggedKeepRefusesBeforeFirstDeploy(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	agent := &fakeDeployAgent{protected: true, applied: map[string]string{"zlast": fmt.Sprintf(`{"id":1,"digest":"ghcr.io/acme/zlast:old@sha256:%s","tag":"old"}`, hash)}}
+	manifestText := "project: demo\nnetwork: demo\nprotected: true\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifestText, agent)
+	code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=sha256:"+strings.Repeat("a", 64))
+	if code == 0 || len(agent.deploys) != 0 {
+		t.Fatalf("exit %d stderr %q deploys %v", code, errs, agent.apps())
+	}
+}
+
+func TestBatchR1LegacyGuardFailureAggregatesDryRun(t *testing.T) {
+	agent := &fakeDeployAgent{legacy: true, failPlan: map[string]bool{"api": true}}
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	dir, cfg := deployAllFixture(t, manifestText, agent)
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=missing", "--dry-run", "--json")
+	var doc struct {
+		Apps []struct {
+			App  string `json:"app"`
+			Exit *int   `json:"exit"`
+		} `json:"apps"`
+	}
+	if code != 1 || json.Unmarshal([]byte(out), &doc) != nil || len(doc.Apps) != 2 || doc.Apps[0].Exit == nil || *doc.Apps[0].Exit != 1 || doc.Apps[1].Exit == nil || *doc.Apps[1].Exit != 0 || strings.Join(agent.apps(), ",") != "api,zstack" {
+		t.Fatalf("exit %d stdout %q stderr %q requests %v", code, out, errs, agent.apps())
+	}
+}
+
+func TestBatchR1ComposeRejectsEmptyAndInvalidDiff(t *testing.T) {
+	m := &manifest.Manifest{Project: "demo", Apps: map[string]manifest.App{"z": {Kind: "compose"}}}
+	req := deploy.Request{App: "z"}
+	for _, data := range []string{
+		`{"app":"z","image":"","roles":[],"compose":{"project":"demo-dev-z","services":[],"volumes":[]}}`,
+		`{"app":"z","image":"","roles":[],"diff":null,"compose":{"project":"demo-dev-z","services":[{"name":"side","action":"keep"}],"volumes":[]}}`,
+		`{"app":"z","image":"","roles":[],"diff":{"same":"yes"},"compose":{"project":"demo-dev-z","services":[{"name":"side","action":"keep"}],"volumes":[]}}`,
+	} {
+		if batchPlan([]byte(data), m, "dev", req, "", "", "", false) == nil {
+			t.Errorf("accepted %s", data)
+		}
+	}
+	for _, diff := range []string{"", `,"diff":{"new":true}`, `,"diff":{"same":true}`, `,"diff":{"changes":[{"area":"compose","change":"create side"}]}`} {
+		data := `{"app":"z","image":"","roles":[]` + diff + `,"compose":{"project":"demo-dev-z","services":[{"name":"side","action":"create"}],"volumes":[]}}`
+		if err := batchPlan([]byte(data), m, "dev", req, "", "", "", false); err != nil {
+			t.Errorf("rejected %s: %v", data, err)
+		}
+	}
+}
+
+func TestBatchR1LegacyTaggedKeepGuard(t *testing.T) {
+	digest := "ghcr.io/acme/zlast:old@sha256:" + strings.Repeat("b", 64)
+	applied := fmt.Sprintf(`{"id":1,"digest":%q,"tag":"old"}`, digest)
+	plan := fmt.Sprintf(`{"app":"zlast","image":%q,"roles":["web"]}`, digest)
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	for _, tc := range []struct {
+		name                    string
+		legacy, protected, fail bool
+		want                    int
+		order                   string
+	}{
+		{"legacy allowed", true, false, false, 0, "zlast,api,zlast"},
+		{"legacy guard refused", true, false, true, 1, "zlast"},
+		{"capable unprotected", false, false, false, 0, "api,zlast"},
+		{"capable protected", false, true, false, 1, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &fakeDeployAgent{legacy: tc.legacy, protected: tc.protected, applied: map[string]string{"zlast": applied}}
+			if tc.fail {
+				agent.failPlan = map[string]bool{"zlast": true}
+			} else {
+				agent.plans = map[string]string{"zlast": plan}
+			}
+			dir, cfg := deployAllFixture(t, manifestText, agent)
+			code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=sha256:"+strings.Repeat("a", 64))
+			if code != tc.want || strings.Join(agent.apps(), ",") != tc.order {
+				t.Fatalf("exit %d stderr %q requests %v", code, errs, agent.apps())
+			}
+			for _, d := range agent.deploys {
+				if d["app"] == "zlast" && d["keep_digest"] != digest {
+					t.Fatalf("changed kept digest: %v", d)
+				}
+			}
+		})
+	}
+}
+
+func TestBatchR1LegacyFailedGuardStopsMutation(t *testing.T) {
+	agent := &fakeDeployAgent{legacy: true, failPlan: map[string]bool{"api": true}}
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifestText, agent)
+	code, _, _ := deployAllCommand(t, dir, cfg, "--version", "api=missing")
+	if code == 0 || len(agent.deploys) != 1 || agent.deploys[0]["dry_run"] != true {
+		t.Fatalf("exit %d requests %v", code, agent.deploys)
+	}
+}
+
+func TestBatchR1TaggedKeepRejectsUnknownPolicyAndMalformedLegacyPlan(t *testing.T) {
+	digest := "ghcr.io/acme/zlast:old@sha256:" + strings.Repeat("b", 64)
+	applied := fmt.Sprintf(`{"id":1,"digest":%q,"tag":"old"}`, digest)
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	for _, tc := range []struct {
+		name   string
+		agent  *fakeDeployAgent
+		guards int
+	}{
+		{"unknown policy", &fakeDeployAgent{policyReply: `{"project":"demo","environment":"dev","protected":false,"effective_protected":null}`, applied: map[string]string{"zlast": applied}}, 0},
+		{"malformed guard", &fakeDeployAgent{legacy: true, plans: map[string]string{"zlast": `{"app":"zlast","image":"wrong","roles":["web"]}`}, applied: map[string]string{"zlast": applied}}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, cfg := deployAllFixture(t, manifestText, tc.agent)
+			code, _, _ := deployAllCommand(t, dir, cfg, "--version", "api=sha256:"+strings.Repeat("a", 64))
+			if code == 0 || len(tc.agent.deploys) != tc.guards {
+				t.Fatalf("exit %d requests %v", code, tc.agent.deploys)
+			}
+			for _, d := range tc.agent.deploys {
 				if d["dry_run"] != true {
 					t.Fatalf("mutation: %v", d)
 				}

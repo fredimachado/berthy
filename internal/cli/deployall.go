@@ -193,6 +193,20 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 	if code := checkKeptVersions(ctx, client, target, steps, errout); code != 0 {
 		return code
 	}
+	if len(tags) == 0 && hasTaggedKept(steps) {
+		policy := agentclient.ProtectionProtected
+		if !m.Protected {
+			policy, err = agentclient.AgentProtection(ctx, client, target)
+			if err != nil {
+				fmt.Fprintln(errout, target.Redact(err.Error()))
+				return 1
+			}
+		}
+		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+	}
 	if len(tags) != 0 {
 		if handled, code := prepareBatchTags(ctx, client, target, f, m, co, steps, tags, out, errout); handled {
 			return code

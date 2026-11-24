@@ -191,7 +191,13 @@ finally:
 PY
 }
 if terminal_batch yes; then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
-before=$(adm history web --json 2>&1 | jq 'length')
+before=''
+if before_json=$(adm history web --json 2>/dev/null) && before=$(jq -er 'if type == "array" then length else error("invalid history") end' <<< "$before_json" 2>/dev/null); then
+  pass 'read history before blocked batch'
+else
+  fail 'read history before blocked batch' 'history unavailable or invalid'
+  before=''
+fi
 sed -i 's/BATCH_MODE: one/BATCH_MODE: two/' "$MAN/batch-compose.yml"
 git -C "$MAN" add batch-compose.yml
 git -C "$MAN" commit -qm 'change Compose service'
@@ -199,6 +205,12 @@ out=$(adm deploy --version web=stable --version "aux=$WEB_V1_DIGEST" --manifest-
 expect_code 'stateful Compose blocker refuses mixed batch' 1 "$code" "$out"
 expect_contains 'batch reports nested blocker' "$out" 'blocker'
 if terminal_batch blocked; then pass 'blocked batch refuses before confirmation'; else fail 'blocked batch refuses before confirmation' 'terminal batch failed'; fi
-after=$(adm history web --json 2>&1 | jq 'length')
-if [ "$before" = "$after" ]; then pass 'blocked batch leaves image history unchanged'; else fail 'blocked batch leaves image history unchanged' 'image deployed'; fi
+after=''
+if after_json=$(adm history web --json 2>/dev/null) && after=$(jq -er 'if type == "array" then length else error("invalid history") end' <<< "$after_json" 2>/dev/null); then
+  pass 'read history after blocked batch'
+else
+  fail 'read history after blocked batch' 'history unavailable or invalid'
+  after=''
+fi
+if [ -n "$before" ] && [ -n "$after" ] && [ "$before" = "$after" ]; then pass 'blocked batch leaves image history unchanged'; else fail 'blocked batch leaves image history unchanged' 'history unavailable, invalid or changed'; fi
 finish

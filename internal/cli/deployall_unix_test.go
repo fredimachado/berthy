@@ -16,7 +16,7 @@ import (
 
 func TestBatchComposeRedactionRefusesBeforePrompt(t *testing.T) {
 	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    project_name: test-token-project\n    depends_on: [api]\n"
-	plan := `{"app":"zstack","image":"","roles":[],"compose":{"project":"test-token-project","services":[],"volumes":[]}}`
+	plan := `{"app":"zstack","image":"","roles":[],"compose":{"project":"test-token-project","services":[{"name":"side","action":"keep"}],"volumes":[]}}`
 	agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zstack": plan}}
 	dir, cfg := deployAllFixture(t, manifestText, agent)
 	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {

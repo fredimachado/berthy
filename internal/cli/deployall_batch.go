@@ -16,6 +16,7 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
+	"github.com/distribution/reference"
 )
 
 // prepareBatchTags completes all policy, registry and plan reads before any admission.
@@ -37,6 +38,9 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	}
 	if policy == agentclient.ProtectionLegacyProtected || (policy == agentclient.ProtectionLegacyUnprotected && protected) {
 		return fail("protected tag deployment requires an agent upgrade or an explicit digest")
+	}
+	if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
+		return fail(err)
 	}
 	if protected && !f.dry && !interactiveDeploy(f, out) {
 		return fail("deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
@@ -74,14 +78,21 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			progress.Start("Checking legacy agent")
 			data, status, e := agentclient.Do(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
 			progress.Close()
+			var guardErr string
 			if e != nil {
-				return fail("legacy agent check failed; upgrade the agent or deploy an explicit digest")
+				guardErr = "legacy agent check failed"
+			} else if status != http.StatusOK {
+				guardErr = target.Redact(agentclient.Message(status, data))
+			} else if e = imagePlan(data, m, guard, "", tag); e != nil {
+				guardErr = e.Error()
 			}
-			if status != http.StatusOK {
-				return fail(target.Redact(agentclient.Message(status, data)) + "; upgrade the agent or deploy an explicit digest")
-			}
-			if e = imagePlan(data, m, guard, "", tag); e != nil {
-				return fail(e.Error() + "; upgrade the agent or deploy an explicit digest")
+			if guardErr != "" {
+				guardErr += "; upgrade the agent or deploy an explicit digest"
+				if !f.dry {
+					return fail(guardErr)
+				}
+				step.previewErr = guardErr
+				continue
 			}
 			step.preview = data
 			continue
@@ -112,6 +123,9 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	}
 	for i := range steps {
 		step := &steps[i]
+		if step.previewErr != "" {
+			continue
+		}
 		preview := step.req
 		preview.DryRun = true
 		payload, _ := json.Marshal(preview)
@@ -160,7 +174,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 
 func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request, image, tag, token string, asJSON bool) error {
 	invalid := errors.New("invalid agent deploy plan")
-	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "remove", "destroy", "restore", "exec", "command")
+	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "remove", "destroy", "restore", "exec", "command")
 	if err != nil {
 		return invalid
 	}
@@ -175,6 +189,9 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 	}
 	if m.Apps[req.App].Kind != "compose" {
 		return imagePlan(data, m, req, image, tag)
+	}
+	if raw := fields["diff"]; raw != nil && !validImageDiff(raw) {
+		return invalid
 	}
 	for _, key := range []string{"remove", "destroy", "restore", "exec", "command"} {
 		if raw := fields[key]; raw != nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
@@ -195,7 +212,7 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		return invalid
 	}
 	var plan deploy.ComposePlan
-	if json.Unmarshal(fields["compose"], &plan) != nil || plan.Project != m.ComposeProject(env, req.App) || plan.Services == nil || plan.Volumes == nil {
+	if json.Unmarshal(fields["compose"], &plan) != nil || plan.Project != m.ComposeProject(env, req.App) || len(plan.Services) == 0 || plan.Volumes == nil {
 		return invalid
 	}
 	for _, field := range []string{"services", "volumes"} {
@@ -255,6 +272,103 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		if !safeDecision(v.Name) || !safeDecision(v.Action) {
 			return errors.New("cannot safely display deploy selection")
 		}
+	}
+	return nil
+}
+
+// hasTaggedKept identifies historical tag-plus-digest releases that protected agents reject.
+func hasTaggedKept(steps []deployStep) bool {
+	for _, step := range steps {
+		if !step.req.KeepVersion {
+			continue
+		}
+		ref, err := reference.ParseNormalizedNamed(step.req.KeepDigest)
+		if err == nil {
+			if _, ok := ref.(reference.NamedTagged); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// guardTaggedKept checks only the historical form whose validity depends on effective protection.
+func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, co gitcheck.Checkout, steps []deployStep, policy agentclient.Protection, dry bool) error {
+	for i := range steps {
+		step := &steps[i]
+		if !step.req.KeepVersion {
+			continue
+		}
+		ref, err := reference.ParseNormalizedNamed(step.req.KeepDigest)
+		if err != nil {
+			return errors.New("invalid applied release")
+		}
+		if _, tagged := ref.(reference.NamedTagged); !tagged {
+			continue
+		}
+		var guardErr error
+		switch {
+		case m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected:
+			guardErr = fmt.Errorf("image app %s keeps a tagged digest; deploy an explicit digest", terminalSafe(target.Redact(step.app)))
+		case policy == agentclient.ProtectionLegacyUnprotected:
+			guard := step.req
+			guard.DryRun = true
+			guard.Modified = guard.Modified || len(co.Changed) > 0
+			payload, _ := json.Marshal(guard)
+			data, status, err := agentclient.Do(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
+			switch {
+			case err != nil:
+				guardErr = errors.New("legacy agent check failed; upgrade the agent or deploy an explicit digest")
+			case status != http.StatusOK:
+				guardErr = errors.New(target.Redact(agentclient.Message(status, data)) + "; upgrade the agent or deploy an explicit digest")
+			default:
+				if err := legacyKeptPlan(data, m, *step); err != nil {
+					guardErr = err
+				} else if dry {
+					step.preview = data
+				}
+			}
+		}
+		if guardErr != nil {
+			if !dry {
+				return guardErr
+			}
+			step.previewErr = guardErr.Error()
+		}
+	}
+	return nil
+}
+
+func legacyKeptPlan(data []byte, m *manifest.Manifest, step deployStep) error {
+	invalid := errors.New("invalid legacy deploy plan; upgrade the agent or deploy an explicit digest")
+	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "remove", "destroy", "restore", "exec", "command", "schema_revert")
+	if err != nil {
+		return invalid
+	}
+	var image string
+	if json.Unmarshal(fields["image"], &image) != nil {
+		return invalid
+	}
+	canonical, err := promotionImage(m, step.app, image)
+	if err != nil || canonical != step.image {
+		return invalid
+	}
+	tag := ""
+	if raw := fields["tag"]; raw != nil {
+		var present *string
+		if json.Unmarshal(raw, &present) != nil || present == nil || *present != step.tag {
+			return invalid
+		}
+		tag = *present
+	}
+	var plan map[string]json.RawMessage
+	if json.Unmarshal(data, &plan) != nil {
+		return invalid
+	}
+	plan["image"], _ = json.Marshal(canonical)
+	normalized, err := json.Marshal(plan)
+	if err != nil || imagePlan(normalized, m, step.req, canonical, tag) != nil {
+		return invalid
 	}
 	return nil
 }
