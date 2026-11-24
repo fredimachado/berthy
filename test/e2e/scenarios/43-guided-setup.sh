@@ -63,6 +63,10 @@ cat > "$private/fresh.json" <<'JSON'
 JSON
 if ! "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
 screen="$private/fresh/token.txt"
+# Preserve only the setup step names and status words from the real terminal frame.
+mkdir -p "$LOG/tui-guided-setup" || exit 1
+awk '/^admin token for / { exit } /^(ok|changed|would_change|skipped|failed) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key) / { print $1, $2 }' "$screen" > "$LOG/tui-guided-setup/setup-frame.txt"
+if [ ! -s "$LOG/tui-guided-setup/setup-frame.txt" ]; then fail "setup frame" "no terminal step lines captured"; exit 1; fi
 token=$(sed -n 's/.*admin token for .*: \(bty\.[a-z0-9.-]*\).*/\1/p' "$screen" | head -1)
 if [[ $token != bty.* ]]; then fail "fresh token" "token was not captured"; exit 1; fi
 if ! awk '/admin token for / && !token { token=NR } /^secrets:/ && !guide { guide=NR } /Value of / && !prompt { prompt=NR } END { exit !(token && guide > token && prompt > guide) }' "$screen"; then

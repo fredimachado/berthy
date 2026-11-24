@@ -21,15 +21,23 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 		p.Start("check")
 		time.Sleep(249 * time.Millisecond)
 		synctest.Wait()
-		if out.Len() != 0 {
-			t.Fatalf("short wait flashed: %q", out.String())
+		p.mu.Lock()
+		short := out.String()
+		p.mu.Unlock()
+		if short != "" {
+			t.Fatalf("short wait flashed: %q", short)
 		}
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
+		p.mu.Lock()
 		first := out.String()
+		p.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
-		if out.String() == first {
+		p.mu.Lock()
+		second := out.String()
+		p.mu.Unlock()
+		if second == first {
 			t.Fatal("spinner did not advance")
 		}
 		p.Message("a message")
