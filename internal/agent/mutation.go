@@ -1027,11 +1027,19 @@ func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {
+		op, err := s.Operation(r.Context(), id)
+		if err != nil {
+			return
+		}
 		events, err := s.EventsAfter(r.Context(), id, after, 100)
 		if err != nil {
 			return
 		}
 		for _, ev := range events {
+			after = ev.ID
+			if ev.Kind == "rollout" && r.URL.Query().Get("progress") != "1" {
+				continue
+			}
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second))
 			payload, marshalErr := json.Marshal(ev.Data)
 			if marshalErr != nil {
@@ -1049,11 +1057,6 @@ func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id 
 			}
 			f.Flush()
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
-			after = ev.ID
-		}
-		op, err := s.Operation(r.Context(), id)
-		if err != nil {
-			return
 		}
 		if op.State != "running" && len(events) < 100 {
 			result, _ := json.Marshal(struct {
@@ -1066,6 +1069,10 @@ func streamOperation(w http.ResponseWriter, r *http.Request, s *state.Store, id 
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 			return
 		}
+		if op.State != "running" && len(events) == 100 {
+			continue
+		}
+
 		select {
 		case <-r.Context().Done():
 			return
