@@ -104,7 +104,7 @@ keep_failure() {
    /^(ok|changed|would_change|skipped|failed|[|\/\\-]) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key)( |$)/ {
     t = ""; if (match($0, /\([0-9]+\.[0-9]s\)$/)) t = " " substr($0, RSTART, RLENGTH); print $1, $2 t; next }
    /^Value of [A-Z][A-Z0-9_]*( |$)/ { print $1, $2, $3; next }
-   /^(stored|generated|kept) [A-Z][A-Z0-9_]*( |:|$)/ { n = $2; sub(/:$/, "", n); print $1, n; next }
+   /^(stored|generated|kept) [A-Z][A-Z0-9_]*( |:|$)/ { match($2, /^[A-Z][A-Z0-9_]*/); print $1, substr($2, 1, RLENGTH); next }
    /^(secrets|next steps):$/ { print; next }
    /^admin token for / { print "admin token shown"; next }
   ' "$f" >> "$kept/frame.txt"; then
