@@ -11,6 +11,48 @@ import (
 	"testing"
 )
 
+func TestSaveReturnsPathThroughResolvedHome(t *testing.T) {
+	fixture := t.TempDir()
+	nested := filepath.Join(fixture, "nested")
+	child := filepath.Join(nested, "child")
+	actualHome := filepath.Join(nested, "home")
+	decoyHome := filepath.Join(fixture, "home")
+	for _, dir := range []string{child, actualHome, decoyHome} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(fixture, "link")
+	if err := os.Symlink(child, link); err != nil {
+		t.Fatal(err)
+	}
+	home := link + "/../home"
+	key := testKey(44)
+	path, created, err := Save(home, testID, key)
+	if err != nil || !created {
+		t.Fatalf("save: created=%v err=%v", created, err)
+	}
+	name := filepath.Base(path)
+	returned, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("returned path: %v", err)
+	}
+	actual, err := os.Stat(filepath.Join(actualHome, ".berthy", "keys", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(returned, actual) {
+		t.Fatal("returned path names a different file")
+	}
+	if _, err := os.Lstat(filepath.Join(decoyHome, ".berthy")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("decoy home changed: %v", err)
+	}
+	again, made, err := Save(home+"/", testID, key)
+	if err != nil || made || again != path {
+		t.Fatalf("repeat with trailing slash: created=%v err=%v", made, err)
+	}
+}
+
 func TestSavePublishesFromItsPinnedStage(t *testing.T) {
 	home := t.TempDir()
 	key := testKey(43)

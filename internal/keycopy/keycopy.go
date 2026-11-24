@@ -50,6 +50,14 @@ func notUsable(path string) error {
 }
 func occupied(path string) error { return fmt.Errorf("%s is there and is not this key", path) }
 
+// Keep the home prefix intact: cleaning it can change symlink/.. resolution.
+func appendComponent(path, name string) string {
+	if os.IsPathSeparator(path[len(path)-1]) {
+		return path + name
+	}
+	return path + string(os.PathSeparator) + name
+}
+
 // Save stores key below home without replacing existing copies.
 func Save(home string, id scope.ID, key []byte) (string, bool, error) {
 	if !filepath.IsAbs(home) || !scope.ValidProject(id.Project) || !scope.ValidEnvironment(id.Environment) || len(key) != 32 {
@@ -64,13 +72,13 @@ func Save(home string, id scope.ID, key []byte) (string, bool, error) {
 		return "", false, cannotWrite(home, err)
 	}
 	defer h.Close()
-	bp := filepath.Join(home, ".berthy")
+	bp := appendComponent(home, ".berthy")
 	b, err := childDir(h, ".berthy", bp, home)
 	if err != nil {
 		return "", false, err
 	}
 	defer b.Close()
-	kp := filepath.Join(bp, "keys")
+	kp := appendComponent(bp, "keys")
 	k, err := childDir(b, "keys", kp, bp)
 	if err != nil {
 		return "", false, err
@@ -80,7 +88,7 @@ func Save(home string, id scope.ID, key []byte) (string, bool, error) {
 		afterPin()
 	}
 	name := FileName(id, keyID)
-	path := filepath.Join(kp, name)
+	path := appendComponent(kp, name)
 	created, file, err := save(k, kp, name, key)
 	if err != nil {
 		return "", false, err
@@ -181,7 +189,8 @@ func childDir(parent *os.File, name, path, parentPath string) (*os.File, error) 
 	return f, nil
 }
 
-func readCopy(dir *os.File, path, name string, key []byte) (*os.File, error) {
+func readCopy(dir *os.File, folder, name string, key []byte) (*os.File, error) {
+	path := appendComponent(folder, name)
 	f, err := openFile(dir, name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fs.ErrNotExist
@@ -196,7 +205,7 @@ func readCopy(dir *os.File, path, name string, key []byte) (*os.File, error) {
 	b, err := io.ReadAll(io.LimitReader(f, 33))
 	if err != nil {
 		f.Close()
-		return nil, cannotWrite(filepath.Dir(path), err)
+		return nil, cannotWrite(folder, err)
 	}
 	if subtle.ConstantTimeCompare(b, key) != 1 {
 		f.Close()
@@ -206,8 +215,8 @@ func readCopy(dir *os.File, path, name string, key []byte) (*os.File, error) {
 }
 
 func save(dir *os.File, path, name string, key []byte) (bool, *os.File, error) {
-	final := filepath.Join(path, name)
-	f, err := readCopy(dir, final, name, key)
+	final := appendComponent(path, name)
+	f, err := readCopy(dir, path, name, key)
 	if err == nil {
 		return false, f, nil
 	}
@@ -273,7 +282,7 @@ func save(dir *os.File, path, name string, key []byte) (bool, *os.File, error) {
 	if err = syncDir(dir); err != nil {
 		return false, nil, cannotWrite(path, err)
 	}
-	f, err = readCopy(dir, final, name, key)
+	f, err = readCopy(dir, path, name, key)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if errors.Is(linkErr, fs.ErrExist) {

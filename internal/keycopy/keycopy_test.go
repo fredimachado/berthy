@@ -20,6 +20,20 @@ var testID = scope.ID{Project: "shop", Environment: "prod"}
 
 func testKey(n byte) []byte { return bytes.Repeat([]byte{n}, 32) }
 
+func TestAppendComponentPreservesRootAndTrailingSeparators(t *testing.T) {
+	sep := string(os.PathSeparator)
+	for _, prefix := range []string{sep, sep + "home", sep + "home" + sep, sep + "link" + sep + ".." + sep + "home"} {
+		want := prefix
+		if !os.IsPathSeparator(prefix[len(prefix)-1]) {
+			want += sep
+		}
+		want += ".berthy"
+		if got := appendComponent(prefix, ".berthy"); got != want {
+			t.Errorf("append %q: got %q, want %q", prefix, got, want)
+		}
+	}
+}
+
 func snapshotFile(t *testing.T, path string) os.FileInfo {
 	t.Helper()
 	dir, err := os.Open(filepath.Dir(path))
