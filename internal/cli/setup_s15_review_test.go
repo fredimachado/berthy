@@ -70,6 +70,44 @@ func installedShopProd(t *testing.T) *setupServer {
 	return server
 }
 
+func TestSetupFollowUpsKeepRelativeManifestAndConfigPaths(t *testing.T) {
+	root := t.TempDir()
+	todo := filepath.Join(root, "todo")
+	if err := os.Mkdir(todo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	text := "project: shop\nnetwork: p5net\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(todo, "berthy.yml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"projects":{"shop":{"environments":{"prod":{"url":"http://127.0.0.1:7710","token_env":"SHOP_PROD"}}},"other":{"environments":{"prod":{"url":"http://127.0.0.1:7711","token_env":"OTHER_PROD"}}}}}`
+	if err := os.WriteFile(filepath.Join(root, "cli.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	withSetupRunner(t, installedShopProd(t))
+	code, out, errout := runSetupCmd("-e", "prod", "--host", "ops@s1", "--manifest-dir", "todo", "--config", "cli.json")
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, out, errout)
+	}
+	if !strings.Contains(out, "return to the directory where you ran berthy setup before the other commands") {
+		t.Fatalf("instruction should name the setup cwd, not the manifest directory:\n%s", out)
+	}
+	if strings.Contains(out, "setup manifest directory") {
+		t.Fatalf("instruction still names the manifest directory:\n%s", out)
+	}
+	flags := " -e prod --config cli.json --manifest-dir todo"
+	for _, want := range []string{
+		"berthy secret set NAME" + flags,
+		"berthy deploy" + flags + " --version APP=REF",
+		"berthy deploy APP" + flags + " --version REF",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestSetupFollowUpsLeaveOutTheProjectTheManifestGives(t *testing.T) {
 	dir := projectDir(t)
 	cfg := twoProjectsSharingProdConfig(t)
@@ -81,9 +119,15 @@ func TestSetupFollowUpsLeaveOutTheProjectTheManifestGives(t *testing.T) {
 	if strings.Contains(out, " --project ") {
 		t.Fatalf("follow-ups still name --project: %s", out)
 	}
-	if !strings.Contains(out, "berthy secret set NAME -e prod --config "+shellWord(cfg)+" --manifest-dir "+shellWord(dir)) ||
-		!strings.Contains(out, "berthy deploy -e prod --config "+shellWord(cfg)+" --manifest-dir "+shellWord(dir)) {
-		t.Fatalf("follow-ups: %s", out)
+	flags := " -e prod --config " + shellWord(cfg) + " --manifest-dir " + shellWord(dir)
+	for _, want := range []string{
+		"berthy secret set NAME" + flags,
+		"berthy deploy" + flags + " --version APP=REF",
+		"berthy deploy APP" + flags + " --version REF",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 
@@ -95,20 +139,14 @@ func TestSetupFollowUpsNameTheProjectWithoutAManifest(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
-	if !strings.Contains(out, "berthy secret set NAME -e prod --project shop --config "+shellWord(cfg)) ||
-		!strings.Contains(out, "berthy deploy -e prod --project shop --config "+shellWord(cfg)) {
-		t.Fatalf("follow-ups: %s", out)
-	}
-	_, after, ok := strings.Cut(out, "\nnext steps:\n")
-	if !ok {
-		t.Fatal(out)
-	}
-	for _, line := range strings.Split(after, "\n") {
-		if !strings.Contains(line, "berthy secret ") && !strings.Contains(line, "berthy deploy") && !strings.Contains(line, "berthy ingress ") {
-			continue
-		}
-		if !strings.Contains(line, " --project shop") {
-			t.Fatalf("follow-up lacks --project shop: %s", line)
+	flags := " -e prod --project shop --config " + shellWord(cfg) + " --manifest-dir " + shellWord(empty)
+	for _, want := range []string{
+		"berthy secret set NAME" + flags,
+		"berthy deploy" + flags + " --version APP=REF",
+		"berthy deploy APP" + flags + " --version REF",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
 		}
 	}
 }
@@ -182,7 +220,7 @@ func TestTimestampedKeyCopyText(t *testing.T) {
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			steps := setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "prod"}, keyFile: tc.key, config: "", local: false, target: "ops@s1", tokenEnv: "T", storeToken: false, ingress: false, manifestDir: ""})
-			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands" {
+			if steps[0] != "run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the directory where you ran berthy setup before the other commands" {
 				t.Fatalf("instruction: %q", steps[0])
 			}
 			want := `in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): (umask 077; set -C; ssh 'ops@s1' ` + tc.remote + ` > shop.prod.key.20261122T153012Z)`

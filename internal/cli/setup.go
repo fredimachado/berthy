@@ -336,7 +336,7 @@ func setupNextSteps(n nextSteps) []string {
 		config += " --manifest-dir " + shellWord(n.manifestDir)
 	}
 	steps := []string{
-		"run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the setup manifest directory before the other commands",
+		"run the command from a private folder, such as your home folder (cd ~), keep the file private, then return to the directory where you ran berthy setup before the other commands",
 		"in a POSIX shell (macOS, Linux, or Git Bash/WSL on Windows): " + keyCopyCommand(read, n.id),
 	}
 	if n.storeToken {
