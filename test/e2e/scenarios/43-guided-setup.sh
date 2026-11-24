@@ -76,7 +76,9 @@ if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt
  fail "cancel pending setup" "missing frame or stale spinner after cancellation"; exit 1
 fi
 grep -E '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" > "$LOG/tui-guided-setup/pending-frame.txt"
+awk '/^failed +connect / { print $1, $2 }' "$private/cancel/cancelled.txt" > "$LOG/tui-guided-setup/cancelled-frame.txt"
 printf '  frame %s\n' "$(cat "$LOG/tui-guided-setup/pending-frame.txt")"
+printf '  frame %s\n' "$(cat "$LOG/tui-guided-setup/cancelled-frame.txt")"
 pass "cancel pending setup without stale spinner"
 cat > "$private/fresh.json" <<'JSON'
 [
