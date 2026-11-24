@@ -128,7 +128,13 @@ cat >> "$MAN/berthy.yml" <<YML
     image: $REG/e2e/web
     depends_on: [web]
     roles:
-      main: {}
+      main:
+        health:
+          test: ["CMD", "true"]
+          interval: 2s
+          timeout: 2s
+          start_period: 1s
+          retries: 3
   zstack:
     kind: compose
     file: batch-compose.yml
@@ -176,7 +182,8 @@ try:
         if proc.poll() is not None and not ready: break
     else: raise RuntimeError('batch timed out')
     code = proc.wait(timeout=10)
-    if mode == 'yes' and (not prompted or code != 0): raise RuntimeError('batch failed')
+    if mode == 'yes' and (not prompted or code != 0):
+        raise RuntimeError('batch failed: prompted=%s code=%s stopped_at_aux=%s missing_health=%s' % (prompted, code, b'deploy stopped at aux' in data, b'healthcheck required' in data))
     if mode == 'blocked' and (prompted or code == 0 or b'blocker' not in data): raise RuntimeError('blocked batch was not refused before confirmation')
 finally:
     if proc.poll() is None: proc.kill(); proc.wait()
