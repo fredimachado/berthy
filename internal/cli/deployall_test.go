@@ -618,13 +618,19 @@ func TestBatchReviewInvalidLaterKeptRelease(t *testing.T) {
 }
 
 func TestBatchReviewPreviewSelectionContainingToken(t *testing.T) {
-	agent := &fakeDeployAgent{protected: true, mixedPlans: true}
-	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
-	dir, cfg := deployAllFixture(t, manifest, agent)
-	t.Setenv("BERTHY_TEST_TOKEN", "v1")
-	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
-	if code == 0 || strings.Contains(out, "[redacted]") || !strings.Contains(errs, "cannot safely display") {
-		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	for _, asJSON := range []bool{false, true} {
+		agent := &fakeDeployAgent{protected: true, mixedPlans: true}
+		manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+		dir, cfg := deployAllFixture(t, manifest, agent)
+		t.Setenv("BERTHY_TEST_TOKEN", "v1")
+		args := []string{"--version", "api=v1", "--dry-run"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		code, out, errs := deployAllCommand(t, dir, cfg, args...)
+		if code == 0 || strings.Contains(out, "v1") || strings.Contains(out, "[redacted]") || !strings.Contains(errs, "cannot safely display") {
+			t.Fatalf("json %t exit %d stdout %q stderr %q", asJSON, code, out, errs)
+		}
 	}
 }
 
@@ -679,6 +685,23 @@ func TestBatchReviewDecodedPreviewRedaction(t *testing.T) {
 		code, out, errs := deployAllCommand(t, dir, cfg, args...)
 		if code != 0 || strings.Contains(out, "test-token") || strings.ContainsRune(out, '\x1b') || !strings.Contains(out, "[redacted]") || (jsonOutput && !json.Valid([]byte(out))) {
 			t.Fatalf("json %t exit %d stdout %q stderr %q", jsonOutput, code, out, errs)
+		}
+	}
+}
+
+func TestBatchReviewRedactsTokenInAggregateApp(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		agent := &fakeDeployAgent{protected: true, mixedPlans: true}
+		manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+		dir, cfg := deployAllFixture(t, manifest, agent)
+		t.Setenv("BERTHY_TEST_TOKEN", "api")
+		args := []string{"--version", "api=v1", "--dry-run"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		code, out, errs := deployAllCommand(t, dir, cfg, args...)
+		if code == 0 || strings.Contains(out, "api") || strings.Contains(errs, "api") {
+			t.Fatalf("json %t exit %d stdout %q stderr %q", asJSON, code, out, errs)
 		}
 	}
 }

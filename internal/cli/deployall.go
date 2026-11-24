@@ -201,15 +201,21 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		var captured bytes.Buffer
 		if f.json {
 			stdout = &captured
-		} else {
-			fmt.Fprintf(out, "==> deploy %s%s\n", step.app, step.header)
+		} else if !f.dry || (step.preview == nil && step.previewErr == "") {
+			fmt.Fprintf(out, "==> deploy %s\n", target.Redact(step.app+step.header))
+		} else if step.previewErr != "" {
+			fmt.Fprintf(out, "==> deploy %s\n", target.Redact(step.app))
 		}
 		code := 0
 		if f.dry && step.previewErr != "" {
 			fmt.Fprintln(errout, step.previewErr)
 			code = 1
 		} else if f.dry && step.preview != nil {
-			if err := showImagePlan(stdout, step.preview, token, f.json, ""); err != nil {
+			heading := ""
+			if !f.json {
+				heading = "==> deploy " + step.app + step.header
+			}
+			if err := showImagePlan(stdout, step.preview, token, f.json, heading); err != nil {
 				fmt.Fprintln(errout, err)
 				code = 1
 			}
@@ -218,10 +224,10 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		}
 		result, capturedErr := capturedDocument(captured.Bytes())
 		if capturedErr != nil && code == 0 {
-			fmt.Fprintf(errout, "app %s: %v\n", step.app, capturedErr)
+			fmt.Fprintf(errout, "app %s: %v\n", target.Redact(step.app), capturedErr)
 			code = 1
 		}
-		results[i] = deployAllEntry{App: step.app, Exit: &code, Result: result}
+		results[i] = deployAllEntry{App: target.Redact(step.app), Exit: &code, Result: result}
 		if code == 0 {
 			continue
 		}
@@ -245,9 +251,9 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if len(notRun) > 0 {
 			line += "; not run: " + strings.Join(notRun, ", ")
 		}
-		fmt.Fprintln(errout, line)
+		fmt.Fprintln(errout, target.Redact(line))
 		for i := stoppedAt + 1; i < len(steps); i++ {
-			results[i] = deployAllEntry{App: steps[i].app, State: "not_run"}
+			results[i] = deployAllEntry{App: target.Redact(steps[i].app), State: "not_run"}
 		}
 	}
 	if f.json {
