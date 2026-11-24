@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -653,5 +654,80 @@ func TestCapturedRelativeProcessRunsInSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "process-ran")); err != nil {
 		t.Fatalf("process did not run in source: %v", err)
+	}
+}
+
+func TestCapturedFilterSeesSourceGitContext(t *testing.T) {
+	overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: value\n"
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay, ".gitattributes": "berthy.dev.yml filter=local\n"})
+	linked := filepath.Join(t.TempDir(), "linked source")
+	git(t, dir, "worktree", "add", "--detach", linked, "HEAD")
+	script := "#!/bin/sh\nroot=$(git rev-parse --show-toplevel) || exit 1\ntest \"$(cat \"$root/source-marker\")\" = source || exit 1\ntest -z \"${GIT_INDEX_FILE+x}\" || exit 1\ntest -z \"${GIT_CONFIG_PARAMETERS+x}\" || exit 1\ntest \"$1\" = berthy.dev.yml || exit 1\ncat\n"
+	if err := os.WriteFile(filepath.Join(linked, "local-filter"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, "source-marker"), []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, linked, "config", "filter.local.smudge", "./local-filter %f")
+	git(t, linked, "config", "filter.local.clean", "cat")
+	git(t, linked, "config", "filter.local.required", "true")
+	if err := os.Remove(filepath.Join(linked, "berthy.dev.yml")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, linked, "checkout", "--", "berthy.dev.yml")
+	before, err := gitcheck.Capture(context.Background(), linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(linked, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), linked, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || req.Modified || len(co.Changed) != 0 {
+		t.Fatalf("filter context: modified %v paths %v err %v", req.Modified, co.Changed, err)
+	}
+}
+
+func TestCapturedWindowsRootedAttributesFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows rooted paths")
+	}
+	overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: \"$Id$\"\n"
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay})
+	attrs := filepath.Join(t.TempDir(), "attrs")
+	if !strings.EqualFold(filepath.VolumeName(attrs), filepath.VolumeName(dir)) {
+		t.Skip("fixture is on another drive")
+	}
+	if err := os.WriteFile(attrs, []byte("berthy.dev.yml ident\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rooted := filepath.ToSlash(strings.TrimPrefix(attrs, filepath.VolumeName(attrs)))
+	for name, value := range map[string]string{"slash": rooted, "backslash": strings.ReplaceAll(rooted, "/", `\`)} {
+		t.Run(name, func(t *testing.T) {
+			git(t, dir, "config", "core.attributesFile", value)
+			if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "checkout", "--", "berthy.dev.yml")
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value := loaded.Manifest.Apps["api"].Env.Plain["BUILD"]; !strings.HasPrefix(value, "$Id: ") {
+				t.Fatalf("rooted attributes did not apply: %q", value)
+			}
+			req := deploy.Request{App: "api"}
+			co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err != nil || req.Modified || len(co.Changed) != 0 {
+				t.Fatalf("rooted attributes: modified %v paths %v err %v", req.Modified, co.Changed, err)
+			}
+		})
 	}
 }

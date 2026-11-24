@@ -270,7 +270,11 @@ func sourceConversionConfig(ctx context.Context, root string) ([]string, error) 
 			return nil, fmt.Errorf("invalid checkout conversion configuration")
 		}
 		if value != "" && !filepath.IsAbs(value) {
-			value = filepath.Join(root, value)
+			if filepath.VolumeName(root) != "" && filepath.VolumeName(value) == "" && os.IsPathSeparator(value[0]) {
+				value = filepath.VolumeName(root) + value
+			} else {
+				value = filepath.Join(root, value)
+			}
 		}
 		args = append(args, "-c", "core.attributesFile="+value)
 	}
@@ -298,8 +302,8 @@ func sourceConversionConfig(ctx context.Context, root string) ([]string, error) 
 		if commands[key] == "" {
 			continue
 		}
-		// Git runs filter commands through its shell; preserve the configured command verbatim.
-		args = append(args, "-c", key+`=cd -- "$BERTHY_GIT_SOURCE_ROOT" && `+commands[key])
+		// Filters may invoke Git, which must see the source rather than the private view.
+		args = append(args, "-c", key+`=cd -- "$BERTHY_GIT_SOURCE_ROOT" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_PARAMETERS GIT_PREFIX BERTHY_GIT_SOURCE_ROOT && `+commands[key])
 	}
 	return args, nil
 }
