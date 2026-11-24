@@ -101,10 +101,13 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	envGiven := false
+	envGiven, keyFileGiven := false, false
 	fset.Visit(func(f *flag.Flag) {
 		if f.Name == "e" {
 			envGiven = true
+		}
+		if f.Name == "key-file" {
+			keyFileGiven = true
 		}
 	})
 	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
@@ -229,7 +232,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 	}
 	if report.OK && !*dry {
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, envFromVariable: envFromVariable, newToken: *newToken, config: *cliConfig, local: *local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, keyFileGiven: keyFileGiven, envFromVariable: envFromVariable, newToken: *newToken, config: *cliConfig, local: *local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
 	}
 	if *asJSON {
 		// Keep characters in next steps readable.
@@ -328,6 +331,7 @@ type nextSteps struct {
 	id              scope.ID
 	keyCopy         string
 	keyUnsettled    bool
+	keyFileGiven    bool
 	envFromVariable bool
 	newToken        bool
 	config          string
@@ -365,6 +369,9 @@ func setupNextSteps(n nextSteps) []string {
 		first = "keep the copy of the encryption key that setup saved in " + n.keyCopy + ", and store another in a password manager or vault: without the key, the secrets of a lost server are gone"
 	case n.keyUnsettled:
 		first = "a key rotation on the server did not finish, so setup copied no key. On the server, find and fix what kept the agent from putting its key files in place (for example a leftover <key>.prev.tmp it cannot remove, a full disk, or wrong ownership). Do not restart the agent before that: it finishes the rotation when it starts, and it cannot start while the cause remains. Then restart it and " + retry
+		if n.keyFileGiven {
+			first += "; leave out --key-file, because the saved key may be older than the key the agent puts in place"
+		}
 	case n.local:
 		first = "setup kept no copy of the encryption key of " + n.id.Project + "/" + env + ", because it ran on the server itself. To save one, run berthy setup for that same project and environment over SSH from your own machine, with --project " + n.id.Project + " and the same build that is installed on this server: the same released version of the CLI, or the same custom Linux binary given with --binary. First resolve any interrupted key rotation on this server. If you are not sure about the build or the rotation, check before you copy"
 		if n.inferProject {

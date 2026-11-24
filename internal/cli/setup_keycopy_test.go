@@ -214,3 +214,69 @@ func TestKeyHomeDefaultsToUnavailable(t *testing.T) {
 		t.Fatal("default key home was enabled")
 	}
 }
+
+func TestSetupRetryAfterUnsettledRotationOmitsKeyFile(t *testing.T) {
+	for _, tc := range []struct {
+		name                               string
+		unsettled, newToken, envVar, empty bool
+	}{
+		{name: "unsettled", unsettled: true},
+		{name: "unsettled with empty key flag", unsettled: true, empty: true},
+		{name: "unsettled with token and environment", unsettled: true, newToken: true, envVar: true},
+		{name: "unrelated refusal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			old := KeyHome
+			KeyHome = func() (string, error) { return home, nil }
+			t.Cleanup(func() { KeyHome = old })
+			key := bytes.Repeat([]byte{0x45}, 32)
+			keyFile := filepath.Join(t.TempDir(), "saved.key")
+			if err := os.WriteFile(keyFile, key, 0600); err != nil {
+				t.Fatal(err)
+			}
+			server := installedServer(t, "ops@s1")
+			server.probe = strings.Replace(server.probe, "key_sha="+strings.Repeat("b", 64), "key_sha="+sha(key), 1)
+			server.keyAnswer = func(context.Context, []byte) (setup.Result, error) {
+				if tc.unsettled {
+					return setup.Result{Code: 3, Stdout: []byte(keywrap.UnsettledLine)}, nil
+				}
+				return setup.Result{Code: 2}, nil
+			}
+			withSetupRunner(t, server)
+			args := []string{"--host", "ops@s1", "--manifest-dir", projectDir(t), "--config", filepath.Join(t.TempDir(), "cli.json"), "--key-file", keyFile, "--json"}
+			if tc.empty {
+				args[len(args)-2] = ""
+			}
+			if tc.envVar {
+				t.Setenv("BERTHY_ENV", "p5")
+			} else {
+				args = append(args, "-e", "p5")
+			}
+			if tc.newToken {
+				args = append(args, "--new-token")
+			}
+			code, out, _ := runSetupCmd(args...)
+			var rep setupReport
+			if code != 0 || json.Unmarshal([]byte(out), &rep) != nil || !rep.OK || len(rep.NextSteps) == 0 {
+				t.Fatal("setup did not reach retry advice")
+			}
+			advice := rep.NextSteps[0]
+			if strings.Contains(advice, "leave out --key-file") != tc.unsettled {
+				t.Errorf("wrong key-file advice: %s", advice)
+			}
+			if !strings.Contains(advice, "from this same directory and with the same environment") {
+				t.Error("lost retry scope")
+			}
+			if tc.unsettled && !strings.Contains(advice, "Do not restart the agent before that") {
+				t.Error("lost rotation recovery order")
+			}
+			if tc.newToken && !strings.Contains(advice, "leave out --new-token") {
+				t.Error("lost new-token advice")
+			}
+			if tc.envVar && !strings.Contains(advice, "(BERTHY_ENV=p5)") {
+				t.Error("lost environment advice")
+			}
+		})
+	}
+}
