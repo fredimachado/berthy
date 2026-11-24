@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/deploy"
@@ -178,7 +179,7 @@ func TestProtectedTagNoninteractiveStopsBeforeLookup(t *testing.T) {
 	for _, args := range [][]string{{"--version", "stable"}, {"--version", "stable", "--json"}} {
 		a := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`}
 		code, out, _ := runSelection(t, a, "protected: true\n"+versionsManifest, args...)
-		if code == 0 || out != "" || strings.Join(a.calls, ",") != "agent" {
+		if code == 0 || out != "" || len(a.calls) != 0 {
 			t.Fatalf("exit %d output %q calls %v", code, out, a.calls)
 		}
 	}
@@ -229,5 +230,26 @@ func TestProtectedTagWithDigestStillRefused(t *testing.T) {
 	code, _, _ := runSelection(t, a, "protected: true\n"+versionsManifest, "--version", "alpine:stable@sha256:"+strings.Repeat("a", 64), "--dry-run")
 	if code == 0 || len(a.calls) != 0 {
 		t.Fatalf("exit %d calls %v", code, a.calls)
+	}
+}
+
+func TestProtectedTagReleaseVersionPreflightRedactsToken(t *testing.T) {
+	stampCLI(t, "v1.0.0")
+	var lookup atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/agent") {
+			fmt.Fprint(w, `{"project":"demo","environment":"dev","protected":true,"effective_protected":true,"version":"v0.8.2"}`)
+			return
+		}
+		lookup.Add(1)
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	t.Setenv("BERTHY_TEST_TOKEN", "v0.8.2")
+	dir := writeAliasDir(t, "protected: true\nmin_version: 0.9.0\n"+versionsManifest)
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable", "--dry-run"}, &out, &errs)
+	if code == 0 || lookup.Load() != 0 || out.Len() != 0 || strings.Contains(errs.String(), "v0.8.2") || !strings.Contains(errs.String(), "[redacted]") {
+		t.Fatal("minimum-version refusal was missing, leaked the token, or reached lookup")
 	}
 }

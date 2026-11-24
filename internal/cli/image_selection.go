@@ -118,6 +118,11 @@ func showImagePlan(out, errout io.Writer, data []byte, asJSON bool, heading stri
 	return err
 }
 
+func interactiveDeploy(f commandFlags, out io.Writer) bool {
+	screen, ok := out.(*os.File)
+	return !f.json && ok && screen != nil && os.Stdin != nil && term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(screen.Fd())
+}
+
 func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, req deploy.Request, selected reference.Named, out, errout io.Writer) int {
 	tagged, ok := selected.(reference.NamedTagged)
 	if !ok {
@@ -135,6 +140,10 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	warnCheckout(errout, f.commit, co)
 	if m.Protected && len(co.Changed) != 0 {
 		fmt.Fprintf(errout, "the manifest has local changes: commit them first: %s\n", terminalSafe(strings.Join(co.Changed, ", ")))
+		return 1
+	}
+	if m.Protected && !f.dry && !interactiveDeploy(f, out) {
+		fmt.Fprintln(errout, "deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
 		return 1
 	}
 	progress.Start("Checking agent policy")
@@ -196,8 +205,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 		return sendCommand(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", req, f, "deploy", out, errout)
 	}
 	if !f.dry {
-		screen, ok := out.(*os.File)
-		if f.json || !ok || screen == nil || os.Stdin == nil || !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(screen.Fd()) {
+		if !interactiveDeploy(f, out) {
 			fmt.Fprintln(errout, "deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
 			return 1
 		}
