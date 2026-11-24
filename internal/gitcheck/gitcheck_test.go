@@ -3,10 +3,15 @@ package gitcheck
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -200,4 +205,78 @@ func TestNamesAreTakenLiterally(t *testing.T) {
 	if len(co.Changed) != 0 {
 		t.Fatalf("a glob matched another file: %v", co.Changed)
 	}
+}
+
+func TestCancelledCheckoutReleasesView(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "file", "content\n")
+	write(t, dir, ".gitattributes", "file filter=blocked\n")
+	head := commit(t, dir)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := fmt.Sprintf("\"%s\" -test.run=^TestCheckoutFilterHelper$ -- %s", filepath.ToSlash(exe), listener.Addr())
+	gitIn(t, dir, "config", "filter.blocked.smudge", command)
+	gitIn(t, dir, "config", "filter.blocked.required", "true")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := CompareCaptured(ctx, dir, head, []CapturedFile{{Path: "file", Present: true, Bytes: []byte("content\n")}})
+		result <- err
+	}()
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	connections := make(chan accepted)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		conn, err := listener.Accept()
+		select {
+		case connections <- accepted{conn, err}:
+		case <-done:
+			if conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+	var conn net.Conn
+	select {
+	case incoming := <-connections:
+		if incoming.err != nil {
+			t.Fatal(incoming.err)
+		}
+		conn = incoming.conn
+	case err := <-result:
+		t.Fatalf("comparison ended before filter started: %v", err)
+	}
+	defer conn.Close()
+	cancel()
+	err = <-result
+	if err == nil || !strings.Contains(err.Error(), "checkout input conversion unavailable") || strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("cancellation: %v", err)
+	}
+	if runtime.GOOS == "windows" && !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation: %v", err)
+	}
+}
+
+func TestCheckoutFilterHelper(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
+		return
+	}
+	conn, err := net.Dial("tcp", os.Args[len(os.Args)-1])
+	if err != nil {
+		os.Exit(2)
+	}
+	defer conn.Close()
+	_, _ = io.Copy(io.Discard, conn)
 }

@@ -5,6 +5,7 @@ package gitcheck
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,7 +83,7 @@ func capturedFileInfo(path string) (os.FileInfo, error) {
 	return f.Stat()
 }
 
-// gitTimeout bounds one inspection, which runs a few short git commands.
+// gitTimeout bounds an individual Git operation.
 const gitTimeout = 20 * time.Second
 
 // notRepository is git's message for a directory outside any repository. Any other failure is an error.
@@ -138,10 +139,10 @@ type CapturedFile struct {
 	Bytes   []byte
 }
 
+var errJobDrain = errors.New("checkout process cleanup could not be confirmed")
+
 // CompareCaptured reports inputs whose captured contents do not match the given HEAD tree.
 func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile) (changed []string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
-	defer cancel()
 	prefix, _, err := run(ctx, dir, "rev-parse", "--show-prefix")
 	if err != nil {
 		return nil, fmt.Errorf("checkout prefix unavailable: %w", err)
@@ -162,9 +163,14 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 		return nil, fmt.Errorf("checkout view unavailable: %w", err)
 	}
 	defer func() {
+		if errors.Is(err, errJobDrain) {
+			changed = nil
+			err = errors.Join(err, fmt.Errorf("checkout view retained: %s", temp))
+			return
+		}
 		if cleanupErr := os.RemoveAll(temp); cleanupErr != nil {
 			changed = nil
-			err = fmt.Errorf("checkout view cleanup failed: %w", cleanupErr)
+			err = errors.Join(err, fmt.Errorf("checkout view cleanup failed: %w", cleanupErr))
 		}
 	}()
 	view := filepath.Join(temp, "worktree")
@@ -182,12 +188,15 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 		return nil, err
 	}
 	args = append(args, conversionArgs...)
-	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "read-tree", head)...)
+	readCtx, cancelRead := context.WithTimeout(ctx, gitTimeout)
+	cmd := exec.CommandContext(readCtx, "git", append(append([]string{}, args...), "read-tree", head)...)
 	cmd.Dir, cmd.Env, cmd.WaitDelay = view, env, time.Second
 	diagnostics := &checkoutComparison{}
 	cmd.Stdout, cmd.Stderr = diagnostics, diagnostics
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("checkout view unavailable: %w", err)
+	readErr := runConversion(readCtx, cmd)
+	cancelRead()
+	if readErr != nil {
+		return nil, fmt.Errorf("checkout view unavailable: %w", readErr)
 	}
 	if diagnostics.different {
 		return nil, fmt.Errorf("checkout view reported diagnostics")
@@ -242,6 +251,8 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 // sourceConversionConfig keeps relative Git conversion settings rooted at the source checkout.
 func sourceConversionConfig(ctx context.Context, root string) ([]string, error) {
 	config := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root, "config", "--null"}, args...)...)
 		cmd.Env, cmd.WaitDelay = environment(), time.Second
 		output := &attributeBuffer{}
@@ -331,13 +342,16 @@ func checkoutAttributes(ctx context.Context, root, view, head, name string, done
 				if len(meta) != 3 || (meta[0] != "100644" && meta[0] != "100755") || meta[1] != "blob" {
 					return fmt.Errorf("unsupported checkout attributes")
 				}
-				cmd := exec.CommandContext(ctx, "git", "-C", root, "cat-file", "blob", meta[2])
+				attrCtx, cancelAttr := context.WithTimeout(ctx, gitTimeout)
+				cmd := exec.CommandContext(attrCtx, "git", "-C", root, "cat-file", "blob", meta[2])
 				cmd.Env, cmd.WaitDelay = environment(), time.Second
 				output := &attributeBuffer{}
 				diagnostics := &checkoutComparison{}
 				cmd.Stdout, cmd.Stderr = output, diagnostics
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("checkout attributes unavailable: %w", err)
+				attrErr := cmd.Run()
+				cancelAttr()
+				if attrErr != nil {
+					return fmt.Errorf("checkout attributes unavailable: %w", attrErr)
 				}
 				if output.tooLarge || diagnostics.different {
 					return fmt.Errorf("checkout attributes unavailable")
@@ -378,13 +392,15 @@ func (b *attributeBuffer) Write(p []byte) (int, error) {
 
 // matchesCheckout compares streamed checkout output without retaining filter output.
 func matchesCheckout(ctx context.Context, view string, args, env []string, name, object string, captured []byte) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "cat-file", "--filters", "--path="+name, object)...)
 	cmd.Dir, cmd.Env = view, env
 	cmd.WaitDelay = time.Second
 	output := &checkoutComparison{expected: captured}
 	diagnostics := &checkoutComparison{}
 	cmd.Stdout, cmd.Stderr = output, diagnostics
-	if err := cmd.Run(); err != nil {
+	if err := runConversion(ctx, cmd); err != nil {
 		return false, err
 	}
 	if diagnostics.different {
@@ -440,6 +456,8 @@ func changedPaths(status, prefix string) []string {
 // and the home directory, and the variables that keep its output and its locking predictable. GIT_DIR and the like are left
 // out, so git finds the repository of dir and no other.
 func run(ctx context.Context, dir string, args ...string) (stdout, stderr string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = environment()
 	cmd.WaitDelay = time.Second
