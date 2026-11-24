@@ -81,6 +81,11 @@ awk '/^failed +connect / { print $1, $2 }' "$private/cancel/cancelled.txt" > "$L
 printf '  frame %s\n' "$(cat "$LOG/tui-guided-setup/pending-frame.txt")"
 printf '  frame %s\n' "$(cat "$LOG/tui-guided-setup/cancelled-frame.txt")"
 pass "cancel pending setup without stale spinner"
+# Setup installs Docker from the internet when it is missing, which can take minutes. Scenarios 27 and 44 run that
+# path; here Docker is installed first, without a deadline, so the guided run's waits cover setup's own steps.
+if ! bash "$fixture" install-docker "$server" > "$LOG/tui-guided-setup/install-docker.log" 2>&1; then
+ fail "install Docker on the setup fixture" "see tui-guided-setup/install-docker.log"; exit 1
+fi
 cat > "$private/fresh.json" <<'JSON'
 [
  {"wait_text":"Value of API_KEY", "timeout":"100s"},
@@ -98,6 +103,7 @@ screen="$private/fresh/token.txt"
 mkdir -p "$LOG/tui-guided-setup" || exit 1
 awk '/^admin token for / { exit } /^(ok|changed|would_change|skipped|failed) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key) / { print $1, $2 }' "$screen" > "$LOG/tui-guided-setup/setup-frame.txt"
 if [ ! -s "$LOG/tui-guided-setup/setup-frame.txt" ]; then fail "setup frame" "no terminal step lines captured"; exit 1; fi
+if ! grep -Fxq 'ok docker' "$LOG/tui-guided-setup/setup-frame.txt"; then fail "setup frame" "docker step was not ok"; exit 1; fi
 while IFS= read -r line; do printf '  frame %s\n' "$line"; done < "$LOG/tui-guided-setup/setup-frame.txt"
 token=$(sed -n 's/.*admin token for .*: \(bty\.[a-z0-9.-]*\).*/\1/p' "$screen" | head -1)
 if [[ $token != bty.* ]]; then fail "fresh token" "token was not captured"; exit 1; fi
