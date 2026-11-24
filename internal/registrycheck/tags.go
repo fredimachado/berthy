@@ -33,34 +33,7 @@ func (p Probe) Tags(ctx context.Context, repo string) ([]string, error) {
 	list.Path = "/v2/" + repo + "/tags/list"
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	client := http.Client{Timeout: 15 * time.Second}
-	if p.HTTP != nil {
-		client = *p.HTTP
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	request := func(u *url.URL, auth string) (int, http.Header, []byte, error) {
-		req, e := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		if e != nil {
-			return 0, nil, nil, errors.New("invalid registry request")
-		}
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		resp, e := client.Do(req)
-		if e != nil {
-			return 0, nil, nil, errors.New("registry request failed")
-		}
-		defer resp.Body.Close()
-		// Error bodies can contain credentials and are never needed.
-		if resp.StatusCode != http.StatusOK {
-			return resp.StatusCode, resp.Header, nil, nil
-		}
-		body, e := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-		if e != nil || len(body) > maxResponse {
-			return 0, nil, nil, errors.New("invalid registry response")
-		}
-		return resp.StatusCode, resp.Header, body, nil
-	}
+	flight := newRegistryFlight(ctx, p, origin, repo)
 	current := &list
 	auth := ""
 	seenURLs := map[string]bool{}
@@ -71,65 +44,16 @@ func (p Probe) Tags(ctx context.Context, repo string) ([]string, error) {
 			return nil, errors.New("registry pagination loop")
 		}
 		seenURLs[current.String()] = true
-		status, header, body, e := request(current, auth)
+		status, header, body, e := flight.request(http.MethodGet, current, auth, "")
 		if e != nil {
 			return nil, e
 		}
 		if page == 0 && status == http.StatusUnauthorized {
-			scheme, params, ok := parseChallenge(header.Values("WWW-Authenticate"))
-			if !ok {
-				return nil, errors.New("invalid registry challenge")
+			auth, e = flight.authenticate(header)
+			if e != nil {
+				return nil, e
 			}
-			switch scheme {
-			case "basic":
-				auth = p.basic()
-			case "bearer":
-				realm, e := url.Parse(params["realm"])
-				if e != nil || !trustedRealm(origin, realm, params["service"]) {
-					return nil, errors.New("untrusted registry token issuer")
-				}
-				q := realm.Query()
-				if !sameOrigin(origin, realm) {
-					q = url.Values{}
-				}
-				if params["service"] != "" {
-					q.Set("service", params["service"])
-				}
-				q.Set("scope", "repository:"+repo+":pull")
-				realm.RawQuery = q.Encode()
-				tokenAuth := ""
-				if p.Username != "" || p.Password != "" {
-					tokenAuth = p.basic()
-				}
-				s, _, b, e := request(realm, tokenAuth)
-				if e != nil {
-					return nil, e
-				}
-				if s == 401 || s == 403 || s == 404 {
-					return nil, ErrDenied
-				}
-				if s != 200 {
-					return nil, errors.New("registry token request failed")
-				}
-				var issued struct {
-					Token       string `json:"token"`
-					AccessToken string `json:"access_token"`
-				}
-				if json.Unmarshal(b, &issued) != nil {
-					return nil, errors.New("invalid registry token response")
-				}
-				token := issued.Token
-				if token == "" {
-					token = issued.AccessToken
-				}
-				if token == "" || strings.ContainsAny(token, "\r\n") {
-					return nil, errors.New("invalid registry token response")
-				}
-				auth = "Bearer " + token
-			default:
-				return nil, errors.New("invalid registry challenge")
-			}
-			status, header, body, e = request(current, auth)
+			status, header, body, e = flight.request(http.MethodGet, current, auth, "")
 			if e != nil {
 				return nil, e
 			}
