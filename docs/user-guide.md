@@ -350,7 +350,7 @@ A second run repairs what is missing and changes nothing else. It never replaces
 
 Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped.
 
-With a build that supports `servers`, put the server name and its SSH destination in the environment's overlay. For example, in `berthy.prod.yml`:
+Put the server name and its SSH destination in the environment's overlay. For example, in `berthy.prod.yml`:
 
 ```yaml
 servers:
@@ -358,7 +358,7 @@ servers:
     ssh: ops@10.0.0.5
 ```
 
-From the project directory, run `berthy setup -e prod` to repair or upgrade the agent on the one configured server. On the first install, also pass `--listen 10.0.0.5:7710`. If the merged manifest lists multiple servers, pass `--host` to choose which one to set up. The SSH destination can also be an alias from your SSH config.
+From the project directory, with one server, run `berthy setup -e prod` to repair or upgrade the agent on it. On the first install, also pass `--listen 10.0.0.5:7710`. With several servers, `--server pg` picks one. `--host` still sets up any destination. The SSH destination can also be an alias from your SSH config.
 
 The overlay merges `servers` by name. Define the entries in the overlay when each environment uses different servers. If the base manifest has a shared entry, the overlay can change its `ssh` value or remove the entry with `pg: null` under `servers`.
 
@@ -367,8 +367,9 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | Option | Meaning |
 | --- | --- |
 | `-e <env>` | The environment to set up. |
-| `--host <user>@<server>` | Set up a remote server over SSH. Overrides the destination in the manifest. Required for remote setup when the merged manifest lists zero or multiple servers. |
-| `--local` | Set up the server the command runs on. Cannot be combined with `--host`. |
+| `--host <user>@<server>` | Set up a remote server over SSH, at a destination the manifest does not need to name. |
+| `--server <name>` | Set up the server of that name from the manifest's `servers`. |
+| `--local` | Set up the server the command runs on. Use at most one of `--host`, `--server` and `--local`. |
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run. A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
 | `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
 | `--manifest-dir <dir>` | Where to read the manifest from. Default: the current directory. |
@@ -3011,7 +3012,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `project` | name | required | The project's name, which prefixes service and Compose project names. Lowercase letters, digits, `_` and `-`, at most 63 characters, starting with a letter or digit. |
 | `network` | name | `<project>-<environment>` | Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist. |
 | `servers` | map | none | Servers by name. Define them in the environment overlay when environments use different servers. |
-| `servers.<name>.ssh` | string | required | The SSH destination for `berthy setup`, such as `ops@10.0.0.5` or an SSH config alias. If the manifest names exactly one server, remote setup uses it by default. `--host` selects an explicit destination. |
+| `servers.<name>.ssh` | string | required | The SSH destination `berthy setup` connects to, such as `ops@10.0.0.5` or an alias from your SSH config. Setup uses it when the manifest names only this server, or with `--server <name>`. |
 | `protected` | boolean | `false` | Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval. |
 | `registries` | map | none | Registry credentials, by registry host. |
 | `secrets` | map | none | Secrets Berthy may generate, by name. Each must be read by an app. |

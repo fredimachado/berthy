@@ -67,7 +67,7 @@ var Keys = slices.Concat(
 		{Path: "project", Section: "top", Type: "name", Required: true, Description: "The project's name, which prefixes service and Compose project names. Lowercase letters, digits, `_` and `-`, at most 63 characters, starting with a letter or digit."},
 		{Path: "network", Section: "top", Type: "name", Default: "<project>-<environment>", Description: "Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist."},
 		{Path: "servers", Section: "top", Type: "map", NamePattern: identifier.String(), Description: "Servers by name. Define them in the environment overlay when environments use different servers."},
-		{Path: "servers.<name>.ssh", Section: "top", Type: "string", Required: true, Description: "The SSH destination for `berthy setup`, such as `ops@10.0.0.5` or an SSH config alias. If the manifest names exactly one server, remote setup uses it by default. `--host` selects an explicit destination."},
+		{Path: "servers.<name>.ssh", Section: "top", Type: "string", Required: true, Description: "The SSH destination `berthy setup` connects to, such as `ops@10.0.0.5` or an alias from your SSH config. Setup uses it when the manifest names only this server, or with `--server <name>`."},
 		{Path: "protected", Section: "top", Type: "boolean", Default: "false", Description: "Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval."},
 		{Path: "registries", Section: "top", Type: "map", Description: "Registry credentials, by registry host."},
 		{Path: "secrets", Section: "top", Type: "map", NamePattern: envName.String(), Description: "Secrets Berthy may generate, by name. Each must be read by an app."},

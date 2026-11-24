@@ -303,7 +303,7 @@ It works in one of two ways.
 
 | Where it runs | How | Used for |
 | --- | --- | --- |
-| From a laptop | `--host <user>@<server>` connects over SSH | Setting up a remote server by hand |
+| From a laptop | `--host <user>@<server>` connects over SSH, or the destination comes from the manifest's `servers` (the only entry, or `--server <name>`) | Setting up a remote server by hand |
 | On the server | `--local` runs the same steps directly | Provisioning tools and images that already carry the binary |
 
 ### What it does
@@ -372,8 +372,9 @@ Run from the application's repository, setup reads two values from the merged ma
 
 | Option | Meaning |
 | --- | --- |
-| `--host <user>@<server>` | Set up a remote server over SSH |
-| `--local` | Set up the server the command runs on |
+| `--host <user>@<server>` | Set up a remote server over SSH, at a destination the manifest does not need to name |
+| `--server <name>` | Set up the server of that name from the manifest's `servers` |
+| `--local` | Set up the server the command runs on. Use at most one of `--host`, `--server` and `--local` |
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run; later runs keep the agent's own. It must be one specific address of the server, not `0.0.0.0` or `::`, and a loopback, private or VPN address. |
 | `--project <name>` | The project, required when the directory has no manifest |
 | `--network <name>` | The shared network, when the directory has no manifest |
