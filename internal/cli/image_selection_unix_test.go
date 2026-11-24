@@ -73,14 +73,27 @@ func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
 				done <- Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable"}, tty, &errs)
 			}()
 			// Drain the preview and wait for the prompt, without a clock-based sleep.
-			reader := bufio.NewReader(master)
-			var seen strings.Builder
-			for !strings.Contains(seen.String(), "Proceed with this deploy? [y/N] ") {
-				c, e := reader.ReadByte()
-				if e != nil {
-					t.Fatal(e)
+			prompt := make(chan error, 1)
+			go func() {
+				reader := bufio.NewReader(master)
+				var seen strings.Builder
+				for !strings.Contains(seen.String(), "Proceed with this deploy? [y/N] ") {
+					c, err := reader.ReadByte()
+					if err != nil {
+						prompt <- err
+						return
+					}
+					seen.WriteByte(c)
 				}
-				seen.WriteByte(c)
+				prompt <- nil
+			}()
+			select {
+			case err := <-prompt:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case code := <-done:
+				t.Fatalf("deploy exited %d before confirmation: %s", code, errs.String())
 			}
 			resolved.Store(b)
 			if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte("apps:\n  api:\n    env:\n      plain:\n        MARKER: after\n"), 0600); err != nil {
