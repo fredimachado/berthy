@@ -169,7 +169,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if *local {
 		report.Target = "this server"
 	}
-	progress := newProgressLine(out, !*asJSON && !*verbose && stderrTerminal(out) && os.Getenv("TERM") != "dumb")
+	progress := newProgressLine(out, !*asJSON && !*verbose && stderrTerminal(out))
 	opts.StepStarted = progress.Start
 	show := func(r setup.StepResult) {
 		report.Steps = append(report.Steps, r)

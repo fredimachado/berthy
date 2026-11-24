@@ -50,6 +50,34 @@ secrets:
       format: hex
 YML
 cmd="$BIN setup -e $ENVN --host ops@$server --listen $ip:7710 --manifest-dir $MAN --config $cfg"
+mkdir -p "$private/gate" "$LOG/tui-guided-setup" || exit 1
+mkfifo "$private/ssh-gate" || exit 1
+cat > "$private/gate/ssh" <<'SH'
+#!/bin/sh
+read -r unused < "$SSH_GATE"
+exec /usr/bin/ssh "$@"
+SH
+chmod 700 "$private/gate/ssh" || exit 1
+cat > "$private/cancel.json" <<'JSON'
+[
+ {"wait_text":"connect (", "timeout":"100s"},
+ {"snapshot":"pending"},
+ {"keys":["ctrl+c"]},
+ {"expect_exit":1, "timeout":"100s"},
+ {"snapshot":"cancelled"}
+]
+JSON
+if ! "$TUI_BIN" --command "$cmd" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >/dev/null 2>&1; then
+ fail "cancel pending setup" "terminal driver failed"; exit 1
+fi
+if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" ||
+   ! grep -Eq '^failed +connect ' "$private/cancel/cancelled.txt" ||
+   grep -Eq '^[|/\\-] connect \(' "$private/cancel/cancelled.txt"; then
+ fail "cancel pending setup" "missing frame or stale spinner after cancellation"; exit 1
+fi
+grep -E '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" > "$LOG/tui-guided-setup/pending-frame.txt"
+printf '  frame %s\n' "$(cat "$LOG/tui-guided-setup/pending-frame.txt")"
+pass "cancel pending setup without stale spinner"
 cat > "$private/fresh.json" <<'JSON'
 [
  {"wait_text":"Value of API_KEY", "timeout":"100s"},
