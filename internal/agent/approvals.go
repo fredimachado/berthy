@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -215,7 +216,7 @@ func canonicalJSON(b []byte) (json.RawMessage, error) {
 // run a short description of the action. When the route refuses the request, or cannot plan it, the refusal is returned as the
 // captured answer and no plan.
 func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, method, path string, body []byte) (json.RawMessage, *capture) {
-	if !generationBodyUnambiguous(rest, method, body) {
+	if !requestBodyUnambiguous(rest, method, body) {
 		failure := newCapture()
 		writeError(failure, 400, "bad_request", "invalid request")
 		return nil, failure
@@ -261,6 +262,7 @@ func redactApprovalPlan(rest []string, method string, plan []byte, redact func(s
 		if json.Unmarshal(plan, &decision) != nil || redact(decision.Image) != decision.Image || redact(decision.Tag) != decision.Tag {
 			return nil, errors.New("image selection unavailable")
 		}
+		return redactDeployPlan(plan, redact)
 	}
 	if kind != "secret generate" && kind != "secret generate declared" {
 		return redactPlan(plan, redact)
@@ -343,6 +345,82 @@ func redactPlan(plan []byte, redact func(string) string) (json.RawMessage, error
 	return json.Marshal(walk(v))
 }
 
+// redactDeployPlan keeps protocol field names while redacting values and user-defined map keys.
+func redactDeployPlan(plan []byte, redact func(string) string) (json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(plan))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	var walk func(any, reflect.Type) (any, error)
+	walk = func(v any, typ reflect.Type) (any, error) {
+		for typ != nil && typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		switch item := v.(type) {
+		case string:
+			return redact(item), nil
+		case []any:
+			var elem reflect.Type
+			if typ != nil && (typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array) {
+				elem = typ.Elem()
+			}
+			for i := range item {
+				var err error
+				item[i], err = walk(item[i], elem)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return item, nil
+		case map[string]any:
+			if typ == reflect.TypeOf(deploy.Plan{}) {
+				for _, key := range []string{"image", "tag"} {
+					if s, ok := item[key].(string); ok && redact(s) != s {
+						return nil, errors.New("image selection unavailable")
+					}
+				}
+			}
+			out := make(map[string]any, len(item))
+			for key, entry := range item {
+				name := redact(key)
+				var child reflect.Type
+				if typ != nil && typ.Kind() == reflect.Map {
+					child = typ.Elem()
+				} else if typ != nil && typ.Kind() == reflect.Struct {
+					for i := 0; i < typ.NumField(); i++ {
+						field := typ.Field(i)
+						fieldName := strings.Split(field.Tag.Get("json"), ",")[0]
+						if fieldName == "" {
+							fieldName = field.Name
+						}
+						if fieldName != "-" && key == fieldName {
+							name, child = key, field.Type
+							break
+						}
+					}
+				}
+				if _, exists := out[name]; exists {
+					return nil, errors.New("redacted plan keys collide")
+				}
+				redacted, err := walk(entry, child)
+				if err != nil {
+					return nil, err
+				}
+				out[name] = redacted
+			}
+			return out, nil
+		}
+		return v, nil
+	}
+	redacted, err := walk(value, reflect.TypeOf(deploy.Plan{}))
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(redacted)
+}
+
 // protected reports whether the environment is protected, by the agent's configuration or by a protected deploy.
 func (g *approvalGate) protected(ctx context.Context) (bool, error) {
 	if g.c.Protected || g.d.Protected {
@@ -387,7 +465,7 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 		writeError(w, 400, "bad_request", "invalid request")
 		return true
 	}
-	if !generationBodyUnambiguous(rest, r.Method, body) {
+	if !requestBodyUnambiguous(rest, r.Method, body) {
 		writeError(w, 400, "bad_request", "invalid request")
 		return true
 	}

@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"sort"
 	"strconv"
 	"time"
@@ -361,15 +360,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			out := make([]map[string]any, 0, len(rows))
 			for _, r := range rows {
-				row := map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created}
-				if r.Tag != "" {
-					row["tag"] = r.Tag
-				}
-				if r.Modified {
-					row["modified"] = true
-				}
-				addSchemaStates(row, r.SchemaBefore, r.SchemaAfter)
-				out = append(out, row)
+				out = append(out, publicRelease(r))
 			}
 			failures, err := d.Store.DeployHistory(ctx, rest[1])
 			if err != nil {
@@ -651,7 +642,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		}
 		if len(rest) == 1 && rest[0] == "deploys" && r.Method == "POST" {
 			body, err := readBody(w, r)
-			if err != nil || !unambiguousJSON(body, reflect.TypeOf(deploy.Request{})) {
+			if err != nil || !requestBodyUnambiguous(rest, r.Method, body) {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
 			}
@@ -675,6 +666,21 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		}
 		serve(w, r, actor, rest)
 	}))
+}
+
+func publicRelease(r state.Release) map[string]any {
+	row := map[string]any{"id": r.ID, "app": r.App, "digest": r.Digest, "commit": r.Commit, "created": r.Created}
+	if r.OperationID != "" {
+		row["operation_id"] = r.OperationID
+	}
+	if r.Tag != "" {
+		row["tag"] = r.Tag
+	}
+	if r.Modified {
+		row["modified"] = true
+	}
+	addSchemaStates(row, r.SchemaBefore, r.SchemaAfter)
+	return row
 }
 
 // historyDiffIDs reads the release numbers of a history diff: release is required, base is optional and means the release

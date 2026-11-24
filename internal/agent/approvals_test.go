@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -946,5 +947,112 @@ func TestApprovalPlanRedactionIsStableAcrossActors(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/deploys", nil)
 	if _, refused := gate.plan(r, deploy.Actor{}, []string{"deploys"}, "POST", r.URL.Path, []byte(`{}`)); refused == nil {
 		t.Fatal("plan with token-shaped image label was accepted")
+	}
+}
+
+func TestLegacyAmbiguousDeployApprovalIsRefusedBeforeReplan(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	body := deployBody(t, false)
+	held := f.hold("POST", "/deploys", apAgentDeploy, body)
+	old, err := f.s.Approval(t.Context(), held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := "sha256:" + strings.Repeat("b", 64)
+	ambiguous := strings.Replace(body, `"version":"`+apDigest+`"`, `"version":"`+other+`","VERSION":"`+apDigest+`"`, 1)
+	var original, rewritten deploy.Request
+	if json.Unmarshal([]byte(ambiguous), &original) != nil || json.Unmarshal(withDryRun([]byte(ambiguous)), &rewritten) != nil || original.Version != apDigest || rewritten.Version != other {
+		t.Fatal("fixture does not demonstrate differing decode order")
+	}
+	legacy, err := f.s.CreateApproval(t.Context(), old, []byte(ambiguous))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	gate := &approvalGate{c: f.cfg, d: f.ctrl, tokens: newTokenSource(f.cfg, f.s)}
+	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
+		calls++
+		_, _ = w.Write(old.Plan)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/approvals/"+legacy.ID+"/approve", nil)
+	gate.approve(w, r, state.Actor{ID: "human", Name: "human"}, legacy)
+	if w.Code != http.StatusConflict || calls != 0 || f.status(legacy.ID) != "failed" {
+		t.Fatalf("status=%d dispatches=%d state=%s", w.Code, calls, f.status(legacy.ID))
+	}
+	f.noOperation()
+}
+
+func TestDeployPlanKeepsFixedKeysWhenSecretsMatch(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	for i, value := range []string{"tag", "image"} {
+		if err := f.s.PutSecret(t.Context(), state.Actor{ID: "admin"}, state.SecretInfo{Name: fmt.Sprintf("SECRET_%d", i)}, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := &approvalGate{c: f.cfg, d: f.ctrl}
+	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
+		_, _ = w.Write([]byte(`{"image":"repo@sha256:abc","tag":"v1","ingress":{"connector":{"image":"other@sha256:abc","tag":"v2"}},"diff":{"changes":[{"area":"env","change":"tag and image"}]},"compose":{"project":"image","services":[{"name":"tag","action":"keep"}],"volumes":[]}}`))
+	}
+	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/deploys", nil)
+	a, err := gate.plan(r, deploy.Actor{}, []string{"deploys"}, "POST", r.URL.Path, []byte(`{}`))
+	if err != nil {
+		t.Fatal("first plan refused")
+	}
+	b, err := gate.plan(r, deploy.Actor{}, []string{"deploys"}, "POST", r.URL.Path, []byte(`{}`))
+	if err != nil || !bytes.Equal(a, b) {
+		t.Fatal("plan not stable")
+	}
+	var plan struct {
+		Image   string `json:"image"`
+		Tag     string `json:"tag"`
+		Ingress struct {
+			Connector struct {
+				Image string `json:"image"`
+				Tag   string `json:"tag"`
+			} `json:"connector"`
+		} `json:"ingress"`
+		Diff struct {
+			Changes []struct {
+				Area   string `json:"area"`
+				Change string `json:"change"`
+			} `json:"changes"`
+		} `json:"diff"`
+		Compose struct {
+			Project  string `json:"project"`
+			Services []struct {
+				Name   string `json:"name"`
+				Action string `json:"action"`
+			} `json:"services"`
+		} `json:"compose"`
+	}
+	if json.Unmarshal(a, &plan) != nil || plan.Image != "repo@sha256:abc" || plan.Tag != "v1" || plan.Ingress.Connector.Image != "other@sha256:abc" || plan.Ingress.Connector.Tag != "v2" || len(plan.Diff.Changes) != 1 || plan.Diff.Changes[0].Area != "env" || plan.Diff.Changes[0].Change != "[redacted] and [redacted]" || plan.Compose.Project != "[redacted]" || len(plan.Compose.Services) != 1 || plan.Compose.Services[0].Name != "[redacted]" || plan.Compose.Services[0].Action != "keep" {
+		t.Fatalf("invalid redacted deploy plan: %s", a)
+	}
+}
+
+func TestSuccessfulHistoryCarriesOperationID(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	m, err := manifest.DecodeJSON([]byte(apManifestSource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := f.s.Admit(t.Context(), state.Admission{RequestID: "history", ActorID: "ci", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.s.Finish(t.Context(), op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Digest: apDigest, Tag: "v1", Manifest: mustJSON(t, m)}}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("GET", "/history/api", apReadToken, "")
+	var rows []struct {
+		OperationID string `json:"operation_id"`
+		Tag         string `json:"tag"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rows) != nil || len(rows) != 1 || rows[0].OperationID != op.ID || rows[0].Tag != "v1" {
+		t.Fatalf("history response %d: %s", w.Code, w.Body.String())
+	}
+	if _, present := publicRelease(state.Release{App: "api"})["operation_id"]; present {
+		t.Fatal("legacy history exposed an empty operation ID")
 	}
 }

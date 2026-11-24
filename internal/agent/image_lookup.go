@@ -21,6 +21,19 @@ func serveImageLookup(w http.ResponseWriter, r *http.Request, d *deploy.Controll
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
+	if action == "tags" {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(body, &fields) != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		for name := range fields {
+			if strings.EqualFold(name, "tag") {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+		}
+	}
 	if action == "resolve" {
 		result, err := d.ResolveTag(r.Context(), q)
 		if err != nil {
@@ -36,6 +49,13 @@ func serveImageLookup(w http.ResponseWriter, r *http.Request, d *deploy.Controll
 		return
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+func requestBodyUnambiguous(rest []string, method string, body []byte) bool {
+	if method == http.MethodPost && len(rest) == 1 && rest[0] == "deploys" {
+		return unambiguousJSON(body, reflect.TypeOf(deploy.Request{}))
+	}
+	return generationBodyUnambiguous(rest, method, body)
 }
 
 // unambiguousJSON applies Go's case-insensitive struct matching without folding user map keys.

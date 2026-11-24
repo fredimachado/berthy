@@ -219,3 +219,29 @@ func TestAgentLookupDeniedWhenStateUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestImageTagsRejectsPresentTagBeforeOutbound(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"name":"acme/api","tags":[]}`))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	m := strings.Replace(apManifestSource, "ghcr.io/acme/api", host+"/acme/api", 1)
+	f := newApprovalFixture(t, false, nil)
+	for _, field := range []string{`"tag":""`, `"tag":null`, `"TAG":""`, `"tag":"v1"`} {
+		w := f.call("POST", "/images/tags", apAdminToken, `{"manifest":`+m+`,"app":"api",`+field+`}`)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d", field, w.Code)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("outbound requests: %d", requests.Load())
+	}
+	w := f.call("POST", "/images/tags", apAdminToken, `{"manifest":`+m+`,"app":"api"}`)
+	if w.Code != http.StatusOK || requests.Load() != 1 {
+		t.Fatalf("valid listing: status=%d calls=%d", w.Code, requests.Load())
+	}
+	f.noOperation()
+}
