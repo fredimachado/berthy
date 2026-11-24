@@ -34,17 +34,19 @@ PYSQL
   if grep -Fxq -- "$generation" <<<"$owned"; then d service rm "$id" >/dev/null || return 1; fi
 }
 cleanup_destination() {
-  local collision labels collisions
+  local collision spec full_id labels collisions
   if [ -n "$preview_proxy_pid" ]; then kill "$preview_proxy_pid" 2>/dev/null || :; wait "$preview_proxy_pid" 2>/dev/null || :; fi
   stop_agent2
   cleanup_owned_services || return 1
   # The daemon can create the intentional collision before the child records its ID.
-  collisions=$(d service ls --no-trunc --format '{{.ID}}' --filter "label=fixture.promotion.collision=$RUN_ID") || return 1
+  collisions=$(d service ls --format '{{.ID}}' --filter "label=fixture.promotion.collision=$RUN_ID") || return 1
   while IFS= read -r collision; do
     [ -n "$collision" ] || continue
-    labels=$(d service inspect --format '{{json .Spec.Labels}}' "$collision" 2>/dev/null) || return 1
+    spec=$(d service inspect --format '{{json .}}' "$collision" 2>/dev/null) || return 1
+    full_id=$(jq -er '.ID | select(type == "string" and length == 25)' <<<"$spec") || return 1
+    labels=$(jq -c '.Spec.Labels' <<<"$spec") || return 1
     if jq -e --arg marker "$RUN_ID" '.["fixture.promotion.collision"] == $marker' <<<"$labels" >/dev/null 2>&1; then
-      d service rm "$collision" >/dev/null || return 1
+      d service rm "$full_id" >/dev/null || return 1
     fi
   done <<< "$collisions"
   rm -f "$COLLISION_FILE"
