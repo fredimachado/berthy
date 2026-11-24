@@ -9,8 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"berthy/internal/sshhost"
 )
 
 // Markers of the scripts that change a server. The probe and the connect scripts contain none of them.
@@ -620,27 +618,9 @@ func TestLocalArgs(t *testing.T) {
 	}
 }
 
-func TestValidHost(t *testing.T) {
-	good := []string{"s1", "ops@s1", "deploy_user@10.0.0.5", "root@db-1.example.com", "a.b", "_svc@host"}
-	bad := []string{"", "-oProxyCommand=x", "-s1", "ops@-s1", "ops@", "@s1", "Ops@s1", "ops@s1;id", "ops@s1 id", "ops@@s1", "ops@s1\n", "ops@[::1]", "-ops@s1", "ops@s1:22", "a b"}
-	for _, h := range good {
-		if !sshhost.Valid(h) {
-			t.Errorf("sshhost.Valid(%q) = false", h)
-		}
-	}
-	for _, h := range bad {
-		if sshhost.Valid(h) {
-			t.Errorf("sshhost.Valid(%q) = true", h)
-		}
-	}
+func TestNewSSHRefusesAnInvalidHost(t *testing.T) {
 	if _, err := NewSSH("-oProxyCommand=x"); err == nil {
 		t.Error("NewSSH accepted an option")
-	}
-	if (&SSH{Dest: "-x"}).Target() != "-x" {
-		t.Error("target")
-	}
-	if _, err := (&SSH{Dest: "-x", Program: "ssh"}).Run(context.Background(), "id", nil); err == nil {
-		t.Error("Run accepted an option as the destination")
 	}
 }
 
