@@ -36,6 +36,7 @@ func (cc changeCommand) argv(cfg string, extra ...string) []string {
 }
 
 var changeCommands = []changeCommand{
+	{name: "versions", pos: []string{"versions", "api"}},
 	{name: "deploy", pos: []string{"deploy", "api"}},
 	{name: "apply", pos: []string{"apply"}},
 	{name: "rollback", pos: []string{"rollback", "api"}},

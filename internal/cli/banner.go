@@ -12,7 +12,7 @@ import (
 
 // readOnlyCommands are the keys of changeFlags that change nothing. Every other key gets the banner, so a command added
 // later gets it unless it is listed here.
-var readOnlyCommands = []string{"wait", "history", "diagnostics", "audit", "lock status", "ingress status", "secret list",
+var readOnlyCommands = []string{"versions", "wait", "history", "diagnostics", "audit", "lock status", "ingress status", "secret list",
 	"job logs", "backup list", "approvals", "token list", "config show", "config validate"}
 
 // stderrTerminal reports whether w is a terminal. Tests replace it.

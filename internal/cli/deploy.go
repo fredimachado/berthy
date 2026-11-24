@@ -98,6 +98,7 @@ func withRemoteFlags(extra ...string) []string {
 // taken from the code: the flags the handler reads, and for the deploy requests the fields the agent acts on for that kind.
 // scale accepts --manifest-dir and does not read it: a scale needs no checkout, and TestScaleDoesNotLoadCheckoutManifest relies on that.
 var changeFlags = map[string][]string{
+	"versions":                 withRemoteFlags("--manifest-dir"),
 	"deploy":                   withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
 	"apply":                    withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
 	"rollback":                 withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
@@ -386,6 +387,10 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 // runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
 // intent is non-nil for an expanded alias: after ordinary validation, the parsed selectors must match it.
 func runDeployment(cmd string, args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
+	if cmd == "versions" && slices.Contains(args, "--") {
+		fmt.Fprintln(errout, "versions accepts no arguments after --")
+		return 2
+	}
 	f, err := parseDeploymentArgs(args)
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -435,6 +440,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	if cmd == "secret" && len(f.pos) == 1 && (f.pos[0] == "generate" || f.pos[0] == "set") && len(f.command) > 0 {
 		fmt.Fprintln(errout, "this command accepts no arguments after --")
+		return 2
+	}
+	if cmd == "versions" && len(f.pos) != 1 {
+		fmt.Fprintln(errout, "versions requires one app")
 		return 2
 	}
 	configGiven := slices.Contains(f.given, "--config")
@@ -549,6 +558,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
+	if cmd == "versions" {
+		return runVersions(ctx, client, target, f, out, errout)
+	}
 	method := "GET"
 	endpoint := ""
 	var body any

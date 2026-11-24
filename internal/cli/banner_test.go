@@ -19,7 +19,7 @@ import (
 // expectedReadOnlyCommands is the approved set that must print no banner. It is independent of production's
 // readOnlyCommands so a mistaken edit there cannot hide a gap.
 var expectedReadOnlyCommands = []string{
-	"wait", "history", "diagnostics", "audit", "lock status", "ingress status", "secret list",
+	"versions", "wait", "history", "diagnostics", "audit", "lock status", "ingress status", "secret list",
 	"job logs", "backup list", "approvals", "token list", "config show", "config validate",
 }
 
