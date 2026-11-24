@@ -127,7 +127,7 @@ func CheckAgentVersion(ctx context.Context, c *http.Client, t *Target, m manifes
 	}
 	var old *manifest.TooOld
 	if errors.As(m.CheckVersion(agent), &old) {
-		return fmt.Errorf("this manifest needs Berthy %s or newer; the agent of %s runs %s: upgrade it with berthy setup", old.Need, t.Env, old.Have)
+		return errors.New(t.Redact(fmt.Sprintf("this manifest needs Berthy %s or newer; the agent of %s runs %s: upgrade it with berthy setup", old.Need, t.Env, old.Have)))
 	}
 	return nil
 }

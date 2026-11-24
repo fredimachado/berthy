@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -258,5 +259,15 @@ func TestAgentProtectionRejectsInvalidUTF8(t *testing.T) {
 	got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: "/v1/projects/demo/environments/prod/", Token: "fixture-token"})
 	if got != ProtectionUnknown || err == nil {
 		t.Fatalf("AgentProtection = %v, %v; want unknown and error", got, err)
+	}
+}
+
+func TestCheckAgentVersionRedactsBearerToken(t *testing.T) {
+	stampCLIVersion(t, "v0.9.0")
+	target, _ := versionAgent(t, "v0.8.2", false)
+	target.Token = "v0.8.2"
+	err := CheckAgentVersion(context.Background(), NewHTTPClient(), target, manifestNeeding("0.9.0"))
+	if err == nil || strings.Contains(err.Error(), target.Token) {
+		t.Fatal("expected a redacted minimum-version diagnostic")
 	}
 }
