@@ -182,3 +182,44 @@ func TestKeyWrapRejectsEvenModulusBeforeReadingKey(t *testing.T) {
 		t.Fatal("invalid wrapping key was not rejected before reading")
 	}
 }
+
+func TestRunKeyWrapAcceptsAbsolutePathWithDot(t *testing.T) {
+	path := t.TempDir() + string(os.PathSeparator) + "." + string(os.PathSeparator) + "key"
+	var out, diag bytes.Buffer
+	code := runKeyWrap([]string{path}, bytes.NewReader(nil), &out, &diag)
+	want := "key-wrap runs on the server\n"
+	if runtime.GOOS == "linux" {
+		want = "key-wrap: must run as the agent user\n"
+		u, err := user.Lookup("berthy")
+		if err == nil && u.Uid == strconv.Itoa(os.Geteuid()) {
+			want = "key-wrap: invalid wrapping key\n"
+		}
+	}
+	if code != 1 || out.Len() != 0 || diag.String() != want {
+		t.Fatalf("absolute path did not reach the platform and user checks: exit %d, diagnostic %q", code, diag.String())
+	}
+	if runtime.GOOS == "linux" {
+		key := bytes.Repeat([]byte{42}, 32)
+		if err := os.WriteFile(path, key, 0600); err != nil {
+			t.Fatal(err)
+		}
+		wrapping, err := keywrap.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		diag.Reset()
+		if code := keyWrap(path, bytes.NewReader(wrapping.PublicLine()), &out, &diag); code != 0 {
+			t.Fatal("configured path could not be read", code)
+		}
+		got, err := wrapping.Unwrap(out.Bytes())
+		if err != nil || !bytes.Equal(got, key) {
+			t.Fatal("configured path did not yield the key", err)
+		}
+	}
+	out.Reset()
+	diag.Reset()
+	if code = runKeyWrap([]string{"relative/key"}, bytes.NewReader(nil), &out, &diag); code != 2 || out.Len() != 0 || diag.String() != "key-wrap: expected an absolute clean key path\n" {
+		t.Fatal("relative path was not refused")
+	}
+}

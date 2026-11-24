@@ -14,7 +14,7 @@ import (
 )
 
 func runKeyWrap(args []string, stdin io.Reader, out, errout io.Writer) int {
-	if len(args) != 1 || !filepath.IsAbs(args[0]) || filepath.Clean(args[0]) != args[0] {
+	if len(args) != 1 || !filepath.IsAbs(args[0]) {
 		fmt.Fprintln(errout, "key-wrap: expected an absolute clean key path")
 		return 2
 	}
