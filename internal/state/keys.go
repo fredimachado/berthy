@@ -55,6 +55,14 @@ func KeyIDOfFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return KeyIDOfBytes(raw)
+}
+
+// KeyIDOfBytes returns the ID of a 32-byte key in memory.
+func KeyIDOfBytes(raw []byte) (string, error) {
+	if len(raw) != 32 {
+		return "", os.ErrInvalid
+	}
 	return keyIDOf(raw).String(), nil
 }
 
