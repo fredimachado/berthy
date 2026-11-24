@@ -11,6 +11,7 @@ B="$IMAGE@$WEB_V2_DIGEST"
 RUN_ID="promote-$(openssl rand -hex 16)"
 SERVICE="$PROJECT-$DEST-web-main"
 COLLISION_FILE="$RUN/promotion-collision-id"
+preview_proxy_pid=
 
 # Stop the agent before inspecting its private durable admissions, then delete only a service
 # whose current scope and generation match an operation admitted under this run's request IDs.
@@ -34,6 +35,7 @@ PYSQL
 }
 cleanup_destination() {
   local collision labels
+  if [ -n "$preview_proxy_pid" ]; then kill "$preview_proxy_pid" 2>/dev/null || :; wait "$preview_proxy_pid" 2>/dev/null || :; fi
   stop_agent2
   cleanup_owned_services || return 1
   if [ -s "$COLLISION_FILE" ]; then
@@ -105,6 +107,45 @@ out=$(cmd "$DEST" promote web --from "$ENVN" --json </dev/null 2>&1); code=$?
 [ "$code" -ne 0 ] && pass 'JSON without dry-run refuses mutation' || fail 'JSON without dry-run refuses mutation' 'command succeeded'
 expect_eq 'noninteractive JSON makes no admission' 0 "$(history | jq 'length')"
 unchanged 'noninteractive JSON leaves audit and approvals unchanged' "$guard"
+
+# A loopback proxy forwards destination reads but returns a deliberately malformed HTTP 200
+# plan for a dry run. Compare the real destination audit and approvals after the refusal.
+guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
+coproc PREVIEW_PROXY { python3 - "$AGENT2_LISTEN" 2>"$RUN/preview-proxy.log" <<'PYPROXY'
+import http.server, json, sys, urllib.error, urllib.request
+origin = sys.argv[1]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_GET(self):
+        req = urllib.request.Request('http://' + origin + self.path, headers={'Authorization': self.headers.get('Authorization', '')})
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=30) as r:
+                body, status = r.read(), r.status
+        except urllib.error.HTTPError as e:
+            body, status = e.read(), e.code
+        self.send_response(status); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        try: body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        except (ValueError, TypeError): body = {}
+        if self.path.endswith('/deploys') and body.get('dry_run') is True:
+            response, status = b'{"app":"web","image":"invalid","roles":["main"]}', 200
+        else:
+            response, status = b'{}', 400
+        self.send_response(status); self.end_headers(); self.wfile.write(response)
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+print(server.server_port, flush=True)
+server.serve_forever()
+PYPROXY
+}
+preview_proxy_pid=$PREVIEW_PROXY_PID
+IFS= read -r preview_port <&"${PREVIEW_PROXY[0]}" || { fail 'start invalid-preview proxy' 'no port'; finish; }
+jq --arg project "$PROJECT" --arg env "$DEST" --arg url "http://127.0.0.1:$preview_port" '.projects[$project].environments[$env].url = $url' "$RUN/admin.json" > "$RUN/invalid-preview.json" || { fail 'write proxy config' 'jq failed'; finish; }
+out=$(cd "$MAN" && "$BIN" promote web -e "$DEST" --project "$PROJECT" --config "$RUN/invalid-preview.json" --manifest-dir "$MAN" --from "$ENVN" --dry-run --json 2>&1); code=$?
+[ "$code" -ne 0 ] && pass 'malformed destination plan is refused' || fail 'malformed destination plan is refused' 'command succeeded'
+unchanged 'malformed preview leaves audit and approvals unchanged' "$guard"
+kill "$preview_proxy_pid" 2>/dev/null || :
+wait "$preview_proxy_pid" 2>/dev/null || :
+preview_proxy_pid=
 
 # The destination is never placed in the name-only ledger. The driver changes state only
 # after reading the real prompt; its private log is redacted before it is saved.
