@@ -13,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
@@ -27,6 +29,9 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 	}))
 	defer src.Close()
 	query := make(chan string, 1)
+	gate := make(chan struct{})
+	var release sync.Once
+	defer release.Do(func() { close(gate) })
 	dstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/applied/api"):
@@ -46,6 +51,13 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/prod/operations/op1/events"}`)
 		case strings.HasSuffix(r.URL.Path, "/operations/op1/events"):
 			query <- r.URL.RawQuery
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
 			fmt.Fprint(w, "id: 1\nevent: succeeded\ndata: {}\n\n")
 		case strings.HasSuffix(r.URL.Path, "/operations/op1"):
 			fmt.Fprint(w, `{"state":"succeeded"}`)
@@ -57,6 +69,8 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 	defer dstServer.Close()
 	t.Setenv("PROMOTE_SRC_TEST", "source-token")
 	t.Setenv("PROMOTE_DST_TEST", "dest-token")
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.json")
 	config := fmt.Sprintf(`{"projects":{"demo":{"environments":{"staging":{"url":%q,"token_env":"PROMOTE_SRC_TEST"},"prod":{"url":%q,"token_env":"PROMOTE_DST_TEST"}}}}}`, src.URL, dstServer.URL)
@@ -74,10 +88,15 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := pty.Setsize(tty, &pty.Winsize{Cols: 120, Rows: 40}); err != nil {
+		master.Close()
+		tty.Close()
+		t.Fatal(err)
+	}
 	oldIn := os.Stdin
 	os.Stdin = tty
-	defer func() { os.Stdin = oldIn; tty.Close() }()
 	readDone := make(chan struct{})
+	frame := make(chan struct{}, 1)
 	go func() {
 		defer close(readDone)
 		var seen bytes.Buffer
@@ -85,11 +104,17 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 		answered := false
 		for {
 			n, e := master.Read(b)
-			if n > 0 && !answered {
+			if n > 0 {
 				seen.Write(b[:n])
-				if bytes.Contains(seen.Bytes(), []byte("Proceed with this deploy?")) {
+				if !answered && bytes.Contains(seen.Bytes(), []byte("Proceed with this deploy?")) {
 					answered = true
 					_, _ = io.WriteString(master, "y\n")
+				}
+				if bytes.Contains(seen.Bytes(), []byte("following deploy (")) {
+					select {
+					case frame <- struct{}{}:
+					default:
+					}
 				}
 			}
 			if e != nil {
@@ -97,18 +122,46 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 			}
 		}
 	}()
-	defer func() { master.Close(); <-readDone }()
+	defer func() {
+		os.Stdin = oldIn
+		tty.Close()
+		master.Close()
+		<-readDone
+	}()
 	var errs bytes.Buffer
-	got := runPromote(context.Background(), dstServer.Client(), dst, cfg, "staging", commandFlags{dir: dir, env: "prod", project: "demo", pos: []string{"api"}}, tty, &errs)
-	if got != 0 {
-		t.Fatalf("exit %d: %s", got, errs.String())
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- runPromote(ctx, dstServer.Client(), dst, cfg, "staging", commandFlags{dir: dir, env: "prod", project: "demo", pos: []string{"api"}}, tty, &errs)
+	}()
+	finished := false
+	defer func() {
+		cancel()
+		release.Do(func() { close(gate) })
+		if !finished {
+			<-done
+		}
+	}()
 	select {
 	case q := <-query:
 		if q != "progress=1" {
 			t.Fatalf("watcher query %q", q)
 		}
-	default:
-		t.Fatal("no watcher request")
+	case got := <-done:
+		finished = true
+		t.Fatalf("exit %d without watcher: %s", got, errs.String())
+	case <-time.After(2 * time.Minute):
+		t.Fatal("watcher request did not arrive")
+	}
+	select {
+	case <-frame:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("watcher did not render a delayed frame")
+	}
+	release.Do(func() { close(gate) })
+	got := <-done
+	finished = true
+	if got != 0 {
+		t.Fatalf("exit %d: %s", got, errs.String())
 	}
 }
