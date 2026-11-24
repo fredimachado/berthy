@@ -257,7 +257,12 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 			}
 		}
 	}
+	progress := newProgressLine(out, !f.json && stderrTerminal(out))
+	if progress.enabled {
+		progress.Start("approving")
+	}
 	data, status, err := call("POST", "approvals/"+url.PathEscape(id)+"/approve", "", nil)
+	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
@@ -276,7 +281,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
 	}
 	if status != http.StatusOK && status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)

@@ -35,13 +35,13 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 		if dec.Decode(&payload) != nil {
 			return
 		}
-		payload = safeJSONValue(payload, token)
+		payload = redactOperationJSON(payload, token)
 		safeData, err := json.Marshal(payload)
 		if err != nil {
 			return
 		}
 		var detail struct{ Step, Role, Status string }
-		_ = json.Unmarshal(safeData, &detail)
+		_ = json.Unmarshal(ev.Data, &detail)
 		if ev.ID != 0 {
 			switch ev.Kind {
 			case "succeeded", "failed", "rolled_back", "interrupted", "recovery_required":
@@ -56,17 +56,19 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 		}
 		if ev.Kind == "rollout" {
 			if interactive && detail.Role != "" {
-				if detail.Status == "started" {
+				switch detail.Status {
+				case "started":
 					if started[detail.Role] {
 						return
 					}
 					started[detail.Role] = true
-				}
-				if detail.Status == "ready" {
+				case "ready":
 					if ready[detail.Role] {
 						return
 					}
-					ready[detail.Role] = true
+					started[detail.Role], ready[detail.Role] = true, true
+				default:
+					return
 				}
 				progress.Start(fmt.Sprintf("deploying %d ready of %d started", len(ready), len(started)))
 			}
@@ -78,22 +80,24 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 			}
 			if !asJSON {
 				if interactive {
-					progress.Message("  " + detail.Step)
+					progress.Message("  " + safeSecretText(detail.Step, token))
 				} else {
-					fmt.Fprintln(out, "  "+detail.Step)
+					fmt.Fprintln(out, "  "+safeSecretText(detail.Step, token))
 				}
 			}
 			return
 		}
 		if interactive {
 			if ev.Kind == "step" && detail.Step != "" {
-				progress.Message("  " + detail.Step)
+				progress.Message("  " + safeSecretText(detail.Step, token))
 			}
 		} else if !asJSON && !showsText(cmd, ev.Kind) {
 			fmt.Fprintln(out, ev.Kind)
 		}
 	}
+	var notFound string
 	stream := func() error {
+		notFound = ""
 		streamURL := *base
 		streamURL.Path, streamURL.RawPath, streamURL.RawQuery = events, "", ""
 		if interactive {
@@ -117,6 +121,11 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 			return err
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			notFound = safeSecretText(agentclient.Message(resp.StatusCode, body), token)
+			return fmt.Errorf("operation stream unavailable")
+		}
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("operation stream unavailable")
 		}
@@ -130,6 +139,11 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 	}
 	for {
 		streamErr := stream()
+		if notFound != "" {
+			progress.Close()
+			fmt.Fprintln(errout, notFound)
+			return 1
+		}
 		if ctx.Err() != nil {
 			return interrupted()
 		}
@@ -170,7 +184,12 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 			dec := json.NewDecoder(bytes.NewReader(data))
 			dec.UseNumber()
 			_ = dec.Decode(&doc)
-			data, _ = json.Marshal(safeJSONValue(doc, token))
+			if asJSON {
+				doc = redactOperationJSON(doc, token)
+			} else {
+				doc = safeJSONValue(doc, token)
+			}
+			data, _ = json.Marshal(doc)
 			exitCode := 0
 			if cmd == "exec" || cmd == "run" {
 				outputURL := *base
@@ -239,5 +258,25 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 		case <-ctx.Done():
 			return interrupted()
 		}
+	}
+}
+
+func redactOperationJSON(value any, token string) any {
+	switch v := value.(type) {
+	case string:
+		return redactSecretText(v, token)
+	case []any:
+		for i := range v {
+			v[i] = redactOperationJSON(v[i], token)
+		}
+		return v
+	case map[string]any:
+		clean := make(map[string]any, len(v))
+		for key, item := range v {
+			clean[redactSecretText(key, token)] = redactOperationJSON(item, token)
+		}
+		return clean
+	default:
+		return value
 	}
 }

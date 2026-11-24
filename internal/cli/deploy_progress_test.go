@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestDeployProgressResumesAtCompleteEvent(t *testing.T) {
@@ -264,5 +267,161 @@ func TestDeployProgressCancelledReplayKeepsKnownStatus(t *testing.T) {
 	got := watchOperationWithProgress(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 	if got != 0 || streams != 2 || !json.Valid(out.Bytes()) || !strings.Contains(errs.String(), "incomplete") || !strings.Contains(errs.String(), "succeeded") {
 		t.Fatalf("exit=%d streams=%d out=%q err=%q", got, streams, out.String(), errs.String())
+	}
+}
+
+func TestDeployProgressStreamNotFound(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		t.Run(fmt.Sprint(replay), func(t *testing.T) {
+			streams, statuses := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					streams++
+					if replay && streams == 1 {
+						fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: verify\ndata: {")
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprint(w, `{"message":"missing se\u0063ret"}`)
+					return
+				}
+				statuses++
+				fmt.Fprint(w, `{"state":"succeeded"}`)
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			var out, errs bytes.Buffer
+			got := watchOperationWithProgress(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+			if replay {
+				if got != 0 || streams != 2 || statuses != 1 || !strings.Contains(errs.String(), "incomplete") || !json.Valid(out.Bytes()) {
+					t.Fatalf("exit=%d streams=%d statuses=%d out=%q err=%q", got, streams, statuses, out.String(), errs.String())
+				}
+			} else if got != 1 || streams != 1 || statuses != 0 || out.Len() != 0 || errs.String() != "agent returned HTTP 404: missing [redacted]\n" {
+				t.Fatalf("exit=%d streams=%d statuses=%d out=%q err=%q", got, streams, statuses, out.String(), errs.String())
+			}
+		})
+	}
+}
+
+func TestDeployProgressJSONPreservesControls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"a secret\\u001b\\n\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
+			return
+		}
+		fmt.Fprint(w, `{"state":"succeeded","reason":"secret\u001b\n"}`)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	var out, errs bytes.Buffer
+	got := watchOperationWithProgress(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+	var doc struct {
+		Reason string `json:"reason"`
+		Checks []struct {
+			Step string `json:"step"`
+		} `json:"checks"`
+	}
+	if json.Unmarshal(out.Bytes(), &doc) != nil || got != 0 || doc.Reason != "[redacted]\x1b\n" || len(doc.Checks) != 1 || doc.Checks[0].Step != "a [redacted]\x1b\n" {
+		t.Fatalf("exit=%d doc=%+v out=%q err=%q", got, doc, out.String(), errs.String())
+	}
+}
+
+type progressRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f progressRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDeployProgressCountsRealRoles(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 100, nil }
+	t.Cleanup(func() { progressWidth = old })
+	synctest.Test(t, func(t *testing.T) {
+		reader, writer := io.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		defer writer.Close()
+		client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: reader, Header: make(http.Header), Request: r}, nil
+		})}
+		base, _ := url.Parse("http://agent.invalid")
+		var out, errs bytes.Buffer
+		done := make(chan int, 1)
+		go func() {
+			done <- watchOperationWithProgress(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+		}()
+		defer func() { cancel(); writer.Close(); <-done }()
+		write := func(id int, role, status string) {
+			t.Helper()
+			fmt.Fprintf(writer, "id: %d\nevent: rollout\ndata: {\"role\":%q,\"status\":%q}\n\n", id, role, status)
+			synctest.Wait()
+		}
+		write(1, "web", "ready")
+		time.Sleep(249 * time.Millisecond)
+		synctest.Wait()
+		if out.Len() != 0 {
+			t.Fatalf("short wait flashed: %q", out.String())
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(out.String(), "1 ready of 1 started (0.2s)") {
+			t.Fatalf("ready first: %q", out.String())
+		}
+		write(2, "web", "started")
+		write(3, "web", "ready")
+		write(4, "web", "unknown")
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(out.String(), "1 ready of 1 started (0.3s)") {
+			t.Fatalf("duplicates reset timer: %q", out.String())
+		}
+		write(5, "worker", "started")
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(out.String(), "1 ready of 2 started") {
+			t.Fatalf("distinct roles: %q", out.String())
+		}
+		cancel()
+		writer.Close()
+		synctest.Wait()
+		before := out.String()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if out.String() != before {
+			t.Fatal("write after close")
+		}
+		if !strings.Contains(errs.String(), "may continue") {
+			t.Fatalf("cancellation: %q", errs.String())
+		}
+	})
+}
+
+func TestDeployProgressCompletedStreamMachineOutput(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		t.Run(fmt.Sprint(asJSON), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					if r.URL.RawQuery != "" {
+						t.Errorf("query %q", r.URL.RawQuery)
+					}
+					fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: succeeded\ndata: {}\n\nevent: terminal\ndata: {}\n\n")
+					return
+				}
+				fmt.Fprint(w, `{"state":"succeeded"}`)
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			var out, errs bytes.Buffer
+			got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
+			want := "accepted\nsucceeded\nterminal\nstate: succeeded\n"
+			if asJSON {
+				want = "{\n  \"state\": \"succeeded\"\n}\n"
+			}
+			if got != 0 || out.String() != want || errs.Len() != 0 {
+				t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
+			}
+		})
 	}
 }
