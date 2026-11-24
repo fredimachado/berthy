@@ -45,6 +45,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
 - On a terminal, a changing remote command or `setup` prints one line to stderr before it does anything, dry runs included: `berthy: todo/prod at http://10.0.0.5:7710` for a remote command, or `berthy: todo/prod on ops@10.0.0.5` (or `on this server` with `--local`) for `setup`. When `BERTHY_ENV` chose the environment, the line ends with ` (environment from BERTHY_ENV)`. With stderr redirected, or under `--json` on stdout, nothing is added.
+- Longer preflights, setup steps and pending operations show delayed progress on the stream being animated. Short waits stay quiet. `NO_COLOR` turns colour off. Status words stay readable when the terminal is dumb or unsupported. A redirected stream or a `--json` capture never receives a progress frame.
 
 ---
 
@@ -102,7 +103,7 @@ A few decisions shape everything else:
 | **Operation** | One change run by the agent: a deploy, a rollback, a restart, a restore. It has an id, a state (`running`, `succeeded`, `failed`, `rolled_back`, `interrupted`, `recovery_required`), and events you can follow. |
 | **Digest** | A `sha256:` hash that names one exact image. A tag such as `1.4.2` can move. A digest cannot. Berthy pins every deploy to a digest. |
 | **Stateful** | A Compose app marked `stateful: true`. It holds data, so Berthy never recreates or removes it unless the command says so with `--allow-recreate`. |
-| **Protected** | An environment marked `protected: true`. It refuses mutable tags (you deploy a digest), and it holds changes that AI agents ask for until a person approves them. |
+| **Protected** | An environment marked `protected: true`. The agent admits only an image digest, never a mutable tag. A human admin can still pick a tag in the CLI. The CLI resolves it and submits the digest. Changes that AI agents ask for are held until a person approves them. |
 | **Token** | The secret a client sends to the agent. Each token has one hosted environment and one scope: `read`, `deploy` or `admin`. Setup makes the first `admin` token; every other token is made with `berthy token create`, kept as a digest in that environment's state, and can expire. |
 | **Agent token** | A token marked as belonging to an AI agent. On a protected environment its changes are held. It can never approve anything, and it can never make or revoke a token. |
 | **Approval** | A change that an agent token asked for on a protected environment. It waits for a person to approve or reject it, and expires after 15 minutes. |
@@ -117,8 +118,8 @@ A few decisions shape everything else:
 | Scope | You can |
 | --- | --- |
 | `read` | Look: `ps`, `describe`, `logs`, `stats`, `df`, `history`, `doctor`, `audit`, `checks`, `jobs`, `backup list`, `ingress status`, `approvals`. |
-| `deploy` | Everything in `read`, plus deploy, roll back, restart, scale, run jobs and backups, take the lock, apply ingress, read diagnostics. |
-| `admin` | Everything in `deploy`, plus secrets, `exec`, `run`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve`, `reject` and `token`. |
+| `deploy` | Everything in `read`, plus deploy, promote, roll back, restart, scale, run jobs and backups, take the lock, apply ingress, read diagnostics. |
+| `admin` | Everything in `deploy`, plus secrets, `versions`, `exec`, `run`, `prune`, `restore`, `remove`, `destroy`, recreating stateful apps, `approve`, `reject` and `token`. A human admin token may list and resolve registry tags. An agent token cannot. |
 
 ## 3. The todo app
 
@@ -160,7 +161,7 @@ You could put all three in one Compose file. Berthy keeps them apart on purpose:
 ### What each environment looks like
 
 - **dev** has one replica, debug logs, no backups and no alerts. You can deploy any tag to it.
-- **prod** is `protected`, has two replicas and resource limits, nightly backups, alerts, probes and a public hostname. You deploy a digest to it.
+- **prod** is `protected`, has two replicas and resource limits, nightly backups, alerts, probes and a public hostname. The agent runs a digest there. At a terminal you pick a tag or give a digest.
 
 ---
 
@@ -477,7 +478,7 @@ berthy agent-info -e prod
 
 A backup, a credential, an alert or a host warning in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent. The two host checks change nothing on the server. The firewall and the packages stay with your provisioning.
 
-`berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version.
+`berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version. A capable agent also reports `effective_protected` (configured or sticky protection). A legacy agent omits that field.
 
 ---
 
@@ -1178,26 +1179,39 @@ A failed `up` is reported. There is no automatic rollback for Compose apps: the 
 
 #### The API: a digest, not a tag
 
-The prod overlay says `protected: true`. A protected environment **refuses a tag**, even a unique one such as a git SHA, because a tag can be moved. You must give the image's **digest**:
+The prod overlay says `protected: true`. The agent admits only a digest for that environment. A tag never reaches admission, even a unique one such as a git SHA, because a tag can move.
+
+**At a terminal, with a human admin token,** list the tags the registry knows, then deploy one. The project still comes from `--project`, else `berthy.yml` in the directory you run from, else the only project that has that environment. The CLI asks the agent to resolve the tag once with the environment's registry credential, freezes the checkout and that digest, shows the destination, the tag and the full repository-qualified digest with the plan, and asks you to confirm. The default answer is no. Cancel, blank, EOF or interrupt send nothing.
 
 ```bash
+berthy versions api -e prod
+berthy deploy api -e prod --version 1.4.2 --dry-run
+berthy deploy api -e prod --version 1.4.2
+```
+
+`versions` prints one tag per line. Add `--json` for one document with `repository` and `tags`. A denied lookup asks for a human admin token. The CLI never falls back to local Docker credentials. For a private registry the agent also needs the named password secret bound with `--registry` to that image host. Listing trusts only the registry's own origin as issuer, plus Docker Hub's documented `auth.docker.io` token endpoint for the standard Hub hostnames. Other issuers and redirects are refused.
+
+`--dry-run` and `--dry-run --json` return the pinned preview and admit nothing. `--json` alone, a redirected preview or piped consent cannot authorize the mutation. After you confirm, moving the tag leaves the plan, the admitted request, Swarm and the applied release on the digest you saw.
+
+**In CI and scripts,** give the digest yourself. Get it from the build step (`docker/build-push-action` outputs it as `digest`), or look it up:
+
+```bash
+docker buildx imagetools inspect ghcr.io/acme/todo-api:1.4.2
 berthy deploy api -e prod --dry-run \
   --version sha256:<64 hex characters>
 ```
 
-Get the digest from your CI's build step (`docker/build-push-action` outputs it as `digest`), or look it up:
-
-```bash
-docker buildx imagetools inspect ghcr.io/acme/todo-api:1.4.2
-```
-
-Try a tag on prod and you see why:
+Send a raw tag to the protected agent without that resolution and you still see:
 
 ```text
 protected environment requires a digest
 ```
 
-In **dev**, which is not protected, `--version 1.4.2` (a tag) works. `--version` also accepts a full reference such as `ghcr.io/acme/todo-api:1.4.2` as long as the repository matches the app's `image`. An image app without `--version` is refused with `deploy requires --version`.
+An **agent token** on a protected environment still submits a digest. A held request keeps that digest for approval. Tools and the raw deploy API take the same shape.
+
+In **dev**, which is not protected, `--version 1.4.2` (a tag) works without confirmation or a new lookup when the capable agent reports the environment unprotected. A new CLI can still deploy an ordinary tag to a working v0.5.0 agent that way. A protected old agent stops before mutation and points at an upgrade or an explicit digest. An old CLI can still send a digest or a dev tag to a new agent. `--version` also accepts a full reference such as `ghcr.io/acme/todo-api:1.4.2` as long as the repository matches the app's `image`. An image app without `--version` is refused with `deploy requires --version`.
+
+The same digest with a different label can change `BERTHY_VERSION` in the task spec. The image and `BERTHY_IMAGE_DIGEST` stay the digest. The plan shows that difference.
 
 The dry run says what the deploy changes compared with the release the app runs now:
 
@@ -1239,7 +1253,7 @@ The dry run for an image app prints the plan as JSON when you add `--json`. The 
 }
 ```
 
-Notice that the plan shows the image **pinned by digest**. Now deploy it, with the commit that the manifest came from:
+The plan shows the image **pinned by digest**. A CI or scripted deploy names that digest with the commit:
 
 ```bash
 berthy deploy api -e prod \
@@ -1259,9 +1273,10 @@ The release is recorded as not clean, and `history` shows it next to the commit:
 
 #### All the apps in one command
 
-Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version:
+Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version. A protected tag is resolved and previewed for every image app before the first mutation, then one default-no confirmation covers the batch:
 
 ```bash
+berthy deploy -e prod --version 1.4.2 --dry-run
 berthy deploy -e prod --version sha256:<64 hex characters> --dry-run
 berthy deploy -e prod --version sha256:<64 hex characters> \
   --commit "$(git rev-parse HEAD)"
@@ -1295,7 +1310,7 @@ api  succeeded
 A deploy either finishes healthy or leaves the previous version running. It never leaves an app half-updated.
 
 1. **Lock.** Takes the deploy lock. If someone holds it, the deploy stops and says who and why.
-2. **Check.** Validates the manifest. Confirms every secret has a value. Resolves the tag to a digest (if you gave a tag) and pulls the image. On a protected environment, you gave a digest already.
+2. **Check.** Validates the manifest. Confirms every secret has a value. Pulls the image by digest. On a protected path the request already carries a digest. On an unprotected path the agent may still resolve a tag here.
 3. **Pre-deploy hooks.** Runs them in order. A failure stops the deploy with nothing changed.
 4. **Migrations.** Runs `version`, then `apply`, then `version` again (see step 6).
 5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. It must pass its health check within `deploy_timeout`. Failures during the check's `start_period` do not count. If the new version's tasks fail to start `start_attempts` times (3 by default), Berthy gives up at once instead of waiting out the timeout.
@@ -1334,7 +1349,7 @@ To turn both checks off for an app, set `deploy.verify: false`.
 
 | Flag | Meaning |
 | --- | --- |
-| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
+| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. On a protected environment a human admin may give a tag. The CLI resolves it before admission. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
 | `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. Default: `HEAD` of the manifest directory's git checkout, when there is one. |
 | `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Default `.`. |
 | `--dry-run` | Print the plan. Change nothing. |
@@ -1469,7 +1484,15 @@ berthy audit -e prod
 
 ### Step 6. Ship a new version of the API
 
-This is the daily loop. CI builds the image, pushes it, and deploys it.
+This is the daily loop. CI builds the image, pushes it, and deploys a digest. At a terminal a human admin can list tags, deploy one with confirmation, or promote what another environment already runs.
+
+```bash
+berthy versions api -e prod
+berthy deploy api -e prod --version 1.4.3
+berthy promote api --from dev -e prod
+```
+
+`promote` reads the same project's applied source release with the source token, shows its release id and full digest, and after confirmation submits an ordinary destination deploy of that snapshot. Each environment keeps its own URL, token and store. A later move of the source tag cannot retarget it. An incompatible repository, a Compose app, a missing source, an equal destination digest or a stale destination preview admits nothing. `--dry-run` and `--dry-run --json` preview without admission. Scripts can take the image from that JSON and deploy the digest under normal CI semantics.
 
 #### A token for CI
 
@@ -2509,8 +2532,8 @@ The agent can control Docker, which is as good as root on the server. You may wa
 
 #### What `protected: true` does
 
-- It **refuses mutable image tags.** You deploy a digest (step 4).
-- It **holds the changes an AI agent asks for** until a person approves them.
+- It **admits only image digests.** A human admin can pick a tag in the CLI. The agent still receives the resolved digest (step 4).
+- It **holds the changes an AI agent asks for** until a person approves them. An agent token cannot list tags or resolve them, and a held deploy still carries a digest.
 - It **refuses a deploy from a checkout with local changes** to `berthy.yml`, the overlay or the app's Compose file. The release would not record what was deployed. Commit the files first.
 
 Set it in the overlay (`protected: true` in `berthy.prod.yml`), or in the agent's configuration (`"protected": true`, which setup writes from the manifest). Once a deploy of a protected manifest has succeeded, the agent remembers the environment as protected, even if the line is later removed.
@@ -2878,6 +2901,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 | `backup list` | read | `--backup <name>` | Backups in object storage, with their keys. |
 | `ingress status` | read | | Tunnel health, connectors, hostnames and DNS records. |
 | `approvals` | read | `--all` | Held changes (the plan column needs `deploy`). |
+| `versions <app>` | admin, not an agent token | `--manifest-dir`, `--json` | List the image app's registry tags through the agent. One tag per line, or one JSON document. |
 
 #### Change
 
@@ -2885,8 +2909,9 @@ Every one of these also reads `-e` and `--config`. All accept `--json` except `s
 
 | Command | Scope | Flags it reads | What it does |
 | --- | --- | --- | --- |
-| `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. |
-| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
+| `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. On a protected environment a human admin may give a tag. The CLI resolves it, shows the pinned digest and asks before it admits. CI and agent tokens still give a digest. |
+| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Protected tags are previewed together before one confirmation. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
+| `promote <app>` | deploy | `--from` (required), `--dry-run`, `--request-id`, `--manifest-dir`, `--commit` | Deploy the applied release of the same app in `--from` to this environment after a pinned preview and confirmation. |
 | `apply` | deploy | `--dry-run`, `--manifest-dir`, `--commit` | Apply the environment settings of the manifest (probes, peers, alerts, destinations, telemetry and the rest) without deploying an app. Prints the changes, or `no changes`. Refused while the lock is held. |
 | `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. The environment's settings stay as they are. |
 | `restart <app>` | deploy | `--dry-run`, `--request-id`, `--role` | Restart an app's tasks or containers. |
@@ -2927,7 +2952,7 @@ The read commands in the tables above (`wait`, `history`, `audit`, `lock status`
 
 Using `--allow-recreate`, `--adopt`, `--replace-existing` or `--revert-schema` also needs an `admin` token, whatever command carries it.
 
-Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply` and `ingress apply`), `--version` (`deploy`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set <NAME>`), `--replace`, `--bytes` and `--format` (`secret generate <NAME>`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
+Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit` (`deploy`, `apply`, `ingress apply` and `promote`), `--version` (`deploy`), `--from` (`promote`), `--to` (`rollback`), `--confirm` and `--tunnel` (`destroy`), `--into` and `--exec` (`restore`), `--registry` (`secret set <NAME>`), `--replace`, `--bytes` and `--format` (`secret generate <NAME>`), `--replicas` (`scale`), `--run` (`job logs`), `--volumes` (`remove` and `destroy`), `--all` (`approvals`), `--backup` (`backup list`), `--scope`, `--agent` and `--expires` (`token create`).
 
 `--dry-run` prints the plan and changes nothing. It is available only where the table lists it. For `secret generate <NAME>`, a dry run also says when a real run would be refused without `--replace`. `backup run`, `job run`, `job cancel`, `state-backup`, `alerts test`, `approve` and `reject` have no dry run, so they refuse it. `--request-id` is for retries; the CLI makes a fresh one for each command.
 
