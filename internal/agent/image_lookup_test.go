@@ -41,6 +41,13 @@ func TestAgentInfoDistinguishesUnavailableEffectivePolicy(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["protected"] != false || body["effective_protected"] != false {
 		t.Fatalf("unprotected agent info: %v, %v", body, err)
 	}
+	store := f2.ctrl.Store
+	f2.ctrl.Store = nil
+	w = f2.call(http.MethodGet, "/agent", apReadToken, "")
+	f2.ctrl.Store = store
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["effective_protected"] != nil {
+		t.Fatalf("missing state agent info: %v, %v", body, err)
+	}
 	if err := f2.s.Close(); err != nil {
 		t.Fatal(err)
 	}

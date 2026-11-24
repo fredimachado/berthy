@@ -301,7 +301,7 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 			var effective any
 			if c.Protected || (deployment != nil && deployment.Protected) {
 				effective = true
-			} else if deployment != nil {
+			} else if deployment != nil && deployment.Store != nil {
 				if value, err := deployment.EffectiveProtected(ctx); err == nil {
 					effective = value
 				}
