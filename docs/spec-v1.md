@@ -164,7 +164,7 @@ All desired configuration lives in the application's repository as one base mani
 - A top-level `min_version` (a release such as `0.9.0`) is the oldest Berthy release the manifest works with. The CLI and the agent refuse a manifest that needs a newer release than theirs. `config validate` checks its format and the CLI's own release, without contacting a server.
 - A top-level `timezone` (an IANA name such as `Europe/Lisbon`, default `UTC`) is the zone every `schedule` of the manifest is read in: jobs, backups and the state backup. `config validate` refuses a name the binary does not know, with the file and line. It is part of the environment scope. See "Scheduled container commands".
 - A top-level `secrets` map declares secrets Berthy may generate (`secrets.<SECRET>.generate`), each with a required `format` (`hex`, `base64` or `alnum`) and optional `bytes` (16 to 256, default 32). Each name must be a secret name other than `TUNNEL_TOKEN`, must be read by an app (`env.secret` or `env.template`), and must not be needed by a registry, destination, telemetry, alerts or ingress. An overlay merges the map; a `null` removes one secret. It is part of the environment scope. An agent refuses a key it does not know, so this key needs the release that ships it: upgrade the agent with `berthy setup` before the first deploy of a manifest that uses it, and set `min_version` to that release.
-- A top-level `servers` map names the environment's servers (`servers.<name>.ssh`). The name follows the same pattern as `project` and `network`. `ssh` is required: `USER@HOST` or `HOST` (an SSH config alias works), and never starts with `-`. An overlay merges the map by name; a `null` removes one entry. `berthy setup` connects to the only server, or to the one `--server <name>` names, and refuses with the list of names when there are several and no `--server`. `--host` sets up any destination instead. It is part of the environment scope, so `apply` lists its changes. An agent refuses a key it does not know, so this key needs the release that ships it: upgrade the agent with `berthy setup` before the first deploy of a manifest that uses it, and set `min_version` to that release. Multi-server environments (#16) will refer to servers by these names.
+- A top-level `servers` map names the environment's servers (`servers.<name>.ssh`). The name follows the same pattern as `project` and `network`. `ssh` is required: `USER@HOST` or `HOST` (an SSH config alias works), and never starts with `-`. An overlay merges the map by name; a `null` removes one entry. `berthy setup` connects to the only server, or to the one `--server <name>` names, and refuses with the list of names when there are several and no `--server`. `--host` sets up any destination instead. It is part of the environment scope, so `apply` lists its changes. An agent refuses a key it does not know, so this key needs the release that ships it: upgrade the agent with `berthy setup` before the first deploy of a manifest that uses it, and set `min_version` to that release.
 
 The examples in this spec use two environments named `dev` and `prod`. Names and values are placeholders.
 
@@ -361,13 +361,14 @@ Each step has a name (`connect`, `check`, `docker`, `swarm`, `network`, `user`, 
 
 ### What it reads from the manifest
 
-Run from the application's repository, setup reads two values from the merged manifest for the environment.
+Run from the application's repository, setup reads these values from the merged manifest for the environment.
 
 | Value | Used for | Without a manifest |
 | --- | --- | --- |
 | `project` | The project of the hosted environment | `--project <name>` (required when there is no manifest) |
 | `network` | The shared network to create; defaults to `<project>-<environment>` | `--network <name>` |
 | `protected` | Marking the hosted environment as protected from its first start | `--protected` |
+| `servers` | The SSH destination to connect to: the only entry, or the one `--server <name>` names | `--host <user>@<server>` |
 
 ### Options
 

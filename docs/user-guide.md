@@ -179,7 +179,7 @@ You need:
 - A **private address** on that server. This guide uses `10.0.0.5`. Setup does not create the server, its firewall or its VPN.
 - An account that is `root` or can run `sudo` **without a password prompt**. Setup runs `sudo -n` and never asks for a password.
 - Over SSH, a working `ssh` on your laptop. Setup uses the `ssh` on your `PATH`, so your keys, SSH agent, jump hosts and host-key checks apply as usual. Setup never takes a password and never stores a key. If ssh refuses an unknown or changed host key, setup adds a hint to connect once with `ssh ops@10.0.0.5` to check and accept the key.
-- The repository checked out, so setup can read `network` and `protected` from the manifest. Run it from the repository root.
+- The repository checked out, so setup can read `network`, `protected` and the server's SSH destination (`servers`) from the manifest. Run it from the repository root.
 
 #### Look first with a dry run
 
@@ -385,7 +385,7 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--new-token` | Add another `admin` token, when the first one is lost. |
 | `--show-token` | Print the newly created admin token as well as saving it. |
 
-If the directory has a manifest, setup reads the project, `network` and `protected` from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
+If the directory has a manifest, setup reads the project, `network`, `protected` and the server's SSH destination (`servers`) from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
 
 #### What setup leaves on the server
 
