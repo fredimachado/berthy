@@ -67,6 +67,7 @@ screen="$private/fresh/token.txt"
 mkdir -p "$LOG/tui-guided-setup" || exit 1
 awk '/^admin token for / { exit } /^(ok|changed|would_change|skipped|failed) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key) / { print $1, $2 }' "$screen" > "$LOG/tui-guided-setup/setup-frame.txt"
 if [ ! -s "$LOG/tui-guided-setup/setup-frame.txt" ]; then fail "setup frame" "no terminal step lines captured"; exit 1; fi
+while IFS= read -r line; do printf '  frame %s\n' "$line"; done < "$LOG/tui-guided-setup/setup-frame.txt"
 token=$(sed -n 's/.*admin token for .*: \(bty\.[a-z0-9.-]*\).*/\1/p' "$screen" | head -1)
 if [[ $token != bty.* ]]; then fail "fresh token" "token was not captured"; exit 1; fi
 if ! awk '/admin token for / && !token { token=NR } /^secrets:/ && !guide { guide=NR } /Value of / && !prompt { prompt=NR } END { exit !(token && guide > token && prompt > guide) }' "$screen"; then
