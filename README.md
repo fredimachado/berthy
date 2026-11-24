@@ -13,7 +13,7 @@ Berthy makes choices so that you do not have to. If you disagree with several of
 - **One agent per server.** That agent hosts any number of (project, environment) pairs, of one or several projects. Each hosted environment has its own secrets and tokens. There is no central server.
 - **Swarm for stateless apps, Compose for stateful ones.** Image apps run as Docker Swarm services, even on one server, for rolling updates and rollback. Databases and caches are Docker Compose apps, and a `stateful` one is never recreated unless a command names it.
 - **CI builds, Berthy deploys.** Berthy never builds an image. It deploys images that already exist in a registry, pinned by digest.
-- **Protected environments pin by digest.** A tag can move. On a `protected` environment the agent admits only a `sha256:` digest. A human administrator can pick a tag in the CLI. The CLI resolves it once, shows the full digest, and asks before it deploys.
+- **Protected environments pin by digest.** A tag can move. On a `protected` environment the agent admits only a `sha256:` digest. A human administrator can pick a tag in the CLI. After checkout is frozen the CLI resolves it once, shows the full digest and plan, and asks before admission.
 - **The manifest lives in the app's repository.** YAML: a base file plus one overlay per environment. Every deploy sends the manifest of the commit it deploys. Nothing is configured by hand on the server.
 - **A private agent API.** The agent listens on one private address (a VPN such as WireGuard or Tailscale) and every request carries a scoped token. It is never meant to be on the public internet.
 - **Secrets stay in the agent.** They are encrypted on the server, write-only from the CLI, and the manifest names them without holding values.
@@ -111,7 +111,7 @@ berthy secret set DATABASE_URL -e prod
 
 For the registry token Berthy prints a link that creates a GitHub token with only `read:packages`, and tries the token against `ghcr.io` before it stores it. In CI, pipe the value instead: `printf '%s' "$VALUE" | berthy secret set NAME -e prod`. To replace a token later, run the same `secret set` command again: Berthy keeps the registry, and running services get the new password without a restart.
 
-**5. Deploy.** On protected `prod`, CI deploys an explicit digest. At a terminal a human admin can pick a tag instead. The CLI resolves it, shows the pinned digest and plan, and waits for confirmation (default no).
+**5. Deploy.** On protected `prod`, CI deploys an explicit digest. At a terminal a human admin can pick a tag instead. After checkout is frozen the CLI resolves it, shows the pinned digest and plan, and waits for confirmation (default no).
 
 ```bash
 berthy versions web -e prod

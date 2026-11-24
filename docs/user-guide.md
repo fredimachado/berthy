@@ -1181,7 +1181,7 @@ A failed `up` is reported. There is no automatic rollback for Compose apps: the 
 
 The prod overlay says `protected: true`. The agent admits only a digest for that environment. A tag never reaches admission, even a unique one such as a git SHA, because a tag can move.
 
-**At a terminal, with a human admin token,** list the tags the registry knows, then deploy one. The project still comes from `--project`, else `berthy.yml` in the directory you run from, else the only project that has that environment. The CLI asks the agent to resolve the tag once with the environment's registry credential, freezes the checkout and that digest, shows the destination, the tag and the full repository-qualified digest with the plan, and asks you to confirm. The default answer is no. Cancel, blank, EOF or interrupt send nothing.
+**At a terminal, with a human admin token,** list the tags the registry knows, then deploy one. The project still comes from `--project`, else `berthy.yml` in the directory you run from, else the only project that has that environment. The CLI freezes the checkout and Compose attribution first. Only then does it ask the agent to resolve each protected mutable tag once, show the destination, the tag, the full repository-qualified digest and the plan, and ask you to confirm. The default answer is no. Cancel, blank, EOF or interrupt admit nothing.
 
 ```bash
 berthy versions api -e prod
@@ -1189,9 +1189,9 @@ berthy deploy api -e prod --version 1.4.2 --dry-run
 berthy deploy api -e prod --version 1.4.2
 ```
 
-`versions` prints one tag per line. Add `--json` for one document with `repository` and `tags`. A denied lookup asks for a human admin token. The CLI never falls back to local Docker credentials. For a private registry the agent also needs the named password secret bound with `--registry` to that image host. Listing trusts only the registry's own origin as issuer, plus Docker Hub's documented `auth.docker.io` token endpoint for the standard Hub hostnames. Other issuers and redirects are refused.
+`versions` prints one tag per line. Add `--json` for one document with `repository` and `tags`. A denied lookup asks for a human admin token. The CLI never falls back to local Docker credentials. For a private registry the agent also needs the named password secret bound with `--registry` to that image host. Listing and resolution share one registry trust policy. They talk to the registry over HTTPS, or loopback HTTP, with no redirects. A Bearer realm must match that exact origin, except Docker Hub's documented `https://auth.docker.io/token` for the standard Hub hostnames. Resolution uses a manifest HEAD, accepts the usual OCI and Docker manifest and index types, and needs one canonical `sha256:` digest. That scoped lookup does not hand credentials to Docker. Ordinary pulls stay on the deploy path.
 
-`--dry-run` and `--dry-run --json` return the pinned preview and admit nothing. `--json` alone, a redirected preview or piped consent cannot authorize the mutation. After you confirm, moving the tag leaves the plan, the admitted request, Swarm and the applied release on the digest you saw.
+`--dry-run` and `--dry-run --json` return the pinned preview and admit nothing. The preview may already have called the agent for a plan. `--json` alone, a redirected preview or piped consent cannot authorize admission. After you confirm, moving the tag leaves the plan, the admitted request, Swarm and the applied release on the digest you saw.
 
 **In CI and scripts,** give the digest yourself. Get it from the build step (`docker/build-push-action` outputs it as `digest`), or look it up:
 
@@ -1273,7 +1273,7 @@ The release is recorded as not clean, and `history` shows it next to the commit:
 
 #### All the apps in one command
 
-Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version. A protected tag is resolved and previewed for every image app before the first mutation, then one default-no confirmation covers the batch:
+Deploying app by app shows what each deploy does. Once the project is set up, one command deploys every app of the manifest, in the order `depends_on` gives: an app after the apps it depends on, and among the apps that are ready, the first by name. Here that is `postgres`, `redis`, then `api`. The todo manifest has one image app, so a plain `--version` names its version. Checkout and Compose files are frozen first. Only protected mutable tags are resolved. Every plan is checked before any admission. One default-no confirmation covers the batch:
 
 ```bash
 berthy deploy -e prod --version 1.4.2 --dry-run
@@ -1296,7 +1296,7 @@ redis  succeeded
 api  succeeded
 ```
 
-- **Everything is checked first.** Nothing is sent to the agent until every app's request is ready: manifest loaded, Compose files read, versions checked. A missing Compose file or a bad version for the last app leaves the first apps undeployed.
+- **Everything is prepared first.** The CLI freezes the manifest, Compose bytes and checkout attribution before any registry lookup. Protected mutable tags are resolved next. Every plan is checked before any admission. A missing Compose file or a bad version for the last app leaves the first apps undeployed.
 - **It stops at the first failure.** The command exits with that app's code, prints `deploy stopped at <app>; not run: <the apps after it>` and runs nothing more. With `--dry-run` it plans every app, goes on past a plan that fails, and exits `1` if any failed.
 - **Versions.** A plain `--version` is for a manifest with exactly one image app. With several, name each one: `--version api=sha256:...`, once for each app. A plain version together with `app=version`, an `app=` that names an unknown app or a Compose app, and a repeated app are refused with exit `2` before anything is sent.
 - **An image app given no version keeps the one it runs now.** Berthy deploys the digest of its last release, and the tag it was deployed with, and applies the new manifest, migrations and hooks as in any deploy. This is how a change to the manifest alone reaches every app. An app that was never deployed has no version to keep: the command refuses it with `image app api is not deployed yet: give --version api=REF` and exit `2`, before anything is deployed. A first deploy names a version for every image app. The command reads each version before it deploys anything and sends it along, so a version that changed since it was read, because another deploy of that app landed first, is refused with `app api changed since its version was read: it runs sha256:… now, not sha256:…; deploy it again`, not deployed.
@@ -1349,7 +1349,7 @@ To turn both checks off for an app, set `deploy.verify: false`.
 
 | Flag | Meaning |
 | --- | --- |
-| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. On a protected environment a human admin may give a tag. The CLI resolves it before admission. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
+| `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. On a protected environment a human admin may give a tag. After checkout is frozen the CLI resolves that protected mutable tag before admission. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
 | `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. Default: `HEAD` of the manifest directory's git checkout, when there is one. |
 | `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Default `.`. |
 | `--dry-run` | Print the plan. Change nothing. |
@@ -2909,8 +2909,8 @@ Every one of these also reads `-e` and `--config`. All accept `--json` except `s
 
 | Command | Scope | Flags it reads | What it does |
 | --- | --- | --- | --- |
-| `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. On a protected environment a human admin may give a tag. The CLI resolves it, shows the pinned digest and asks before it admits. CI and agent tokens still give a digest. |
-| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Protected tags are previewed together before one confirmation. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
+| `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. On a protected environment a human admin may give a tag. After checkout is frozen the CLI resolves that tag, shows the pinned digest and plan, and asks before admission. CI and agent tokens still give a digest. |
+| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. Protected mutable tags are resolved and every plan is checked before one confirmation. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
 | `promote <app>` | deploy | `--from` (required), `--dry-run`, `--request-id`, `--manifest-dir`, `--commit` | Deploy the applied release of the same app in `--from` to this environment after a pinned preview and confirmation. |
 | `apply` | deploy | `--dry-run`, `--manifest-dir`, `--commit` | Apply the environment settings of the manifest (probes, peers, alerts, destinations, telemetry and the rest) without deploying an app. Prints the changes, or `no changes`. Refused while the lock is held. |
 | `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. The environment's settings stay as they are. |
