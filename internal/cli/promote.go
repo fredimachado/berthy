@@ -9,10 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"unicode/utf8"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 	"github.com/distribution/reference"
 )
@@ -169,4 +171,178 @@ func promotionImage(m *manifest.Manifest, app, image string) (string, error) {
 		return "", errors.New("invalid applied image digest")
 	}
 	return pinned.String(), nil
+}
+
+func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cfgPath, from string, f commandFlags, out, errout io.Writer) int {
+	fail := func(err error) int { fmt.Fprintln(errout, dst.Redact(err.Error())); return 1 }
+	if len(f.pos) != 1 || from == "" || from == dst.Env {
+		fmt.Fprintln(errout, "promotion needs an app and a different source environment")
+		return 2
+	}
+	if f.json && !f.dry {
+		fmt.Fprintln(errout, "promotion with --json requires --dry-run; deploy an explicit digest for scripts")
+		return 2
+	}
+	m, err := manifest.Load(f.dir, dst.Env)
+	if err != nil {
+		return fail(err)
+	}
+	if !manifestMatchesTarget(errout, f.dir, m.Project, dst.Project) {
+		return 2
+	}
+	if a, ok := m.Apps[f.pos[0]]; !ok || a.Kind != "image" {
+		fmt.Fprintln(errout, "promotion requires an image app")
+		return 2
+	}
+	req := deploy.Request{App: f.pos[0], Commit: f.commit, RequestID: f.id, DryRun: true}
+	if req.RequestID == "" {
+		req.RequestID, err = newRequestID()
+		if err != nil {
+			return fail(err)
+		}
+	}
+	client := *c
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c = &client
+	progress := newProgressLine(out, !f.json && stderrTerminal(out))
+	progress.Start("checking checkout")
+	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, dst.Env, m, []*deploy.Request{&req})
+	progress.Close()
+	if err != nil {
+		return fail(err)
+	}
+	warnCheckout(errout, f.commit, co)
+	progress.Start("checking destination")
+	err = refuseLocalChanges(ctx, c, dst, m.Protected, co)
+	if err == nil {
+		err = agentclient.CheckAgentVersion(ctx, c, dst, *m)
+	}
+	progress.Close()
+	if err != nil {
+		return fail(err)
+	}
+	if err = ctx.Err(); err != nil {
+		return fail(err)
+	}
+	progress.Start("reading applied releases")
+	snapshot, err := selectPromotion(ctx, c, dst, cfgPath, from, m, req.App)
+	progress.Close()
+	if err != nil {
+		return fail(err)
+	}
+	req.Version, req.VersionTag = snapshot.image, snapshot.tag
+	expected := snapshot.expectedID
+	req.ExpectedApplied = &expected
+	if _, err = m.CheckImageDeploy(req.App, req.Version, m.Protected); err != nil {
+		return fail(err)
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fail(err)
+	}
+	progress.Start("planning promotion")
+	data, status, err := agentclient.Do(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", "", payload)
+	progress.Close()
+	redact := func(s string) string { return snapshot.source.Redact(dst.Redact(s)) }
+	if err != nil {
+		return fail(errors.New(redact(err.Error())))
+	}
+	if status != http.StatusOK {
+		fmt.Fprintln(errout, redact(agentclient.Message(status, data)))
+		if status == http.StatusBadRequest || status == http.StatusNotFound {
+			fmt.Fprintln(errout, "promotion may require a newer agent; upgrade with berthy setup or deploy an explicit digest")
+		}
+		return 1
+	}
+	if !validPromotionPlan(data, snapshot) {
+		fmt.Fprintln(errout, "invalid or blocked promotion plan")
+		return 1
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	var preview bytes.Buffer
+	if f.json {
+		preview.Write(data)
+		preview.WriteByte('\n')
+	} else {
+		fmt.Fprintf(&preview, "Source: %s release %d\nDestination: %s/%s app %s\nImage: %s\nTag: %s\n", terminalSafe(from), snapshot.sourceID, terminalSafe(dst.Project), terminalSafe(dst.Env), terminalSafe(req.App), terminalSafe(req.Version), terminalSafe(req.VersionTag))
+		if printDryRun(&preview, errout, data) != 0 {
+			return 1
+		}
+	}
+	n, err := out.Write(preview.Bytes())
+	if err == nil && n != preview.Len() {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return fail(fmt.Errorf("write promotion preview: %w", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if f.dry {
+		return 0
+	}
+	yes, err := confirmDeploy(ctx, os.Stdin, out)
+	if err != nil {
+		return fail(err)
+	}
+	if !yes {
+		fmt.Fprintln(errout, "promotion cancelled")
+		return 1
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	req.DryRun = false
+	return sendCommand(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", req, f, "deploy", out, &promotionRedactor{out: errout, redact: redact})
+}
+
+type promotionRedactor struct {
+	out    io.Writer
+	redact func(string) string
+}
+
+func (w *promotionRedactor) Write(p []byte) (int, error) {
+	s := w.redact(string(p))
+	n, err := io.WriteString(w.out, s)
+	if err != nil {
+		return 0, err
+	}
+	if n != len(s) {
+		return 0, io.ErrShortWrite
+	}
+	return len(p), nil
+}
+
+func validPromotionPlan(data []byte, snapshot promotionSnapshot) bool {
+	fields, ok := appliedFields(data)
+	if !ok {
+		return false
+	}
+	for key := range fields {
+		switch strings.ToLower(key) {
+		case "app", "image", "tag", "roles", "blockers", "compose", "remove", "destroy", "restore", "exec", "command":
+			if key != strings.ToLower(key) {
+				return false
+			}
+		}
+	}
+	var plan deploy.Plan
+	if json.Unmarshal(data, &plan) != nil || plan.App != snapshot.app || plan.Image != snapshot.image || plan.Tag != snapshot.tag || len(plan.Blockers) != 0 || plan.Compose != nil || plan.Remove != nil || plan.Destroy != nil || plan.Restore != nil || plan.Exec != nil || len(plan.Command) != 0 {
+		return false
+	}
+	for _, key := range []string{"app", "image", "roles"} {
+		if fields[key] == nil || bytes.Equal(bytes.TrimSpace(fields[key]), []byte("null")) {
+			return false
+		}
+	}
+	if raw := fields["tag"]; raw != nil && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	if raw := fields["blockers"]; raw != nil && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	return true
 }

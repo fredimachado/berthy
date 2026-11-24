@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +16,7 @@ import (
 	"testing"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 )
 
@@ -62,7 +66,7 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 	gotRequests := requests
 	mu.Unlock()
 	if snap.sourceID != 12 || snap.expectedID != 7 || snap.image != "ghcr.io/acme/api@sha256:"+a || snap.tag != "stable" || gotRequests != 2 {
-		t.Fatalf("snapshot: %+v, requests %d", snap, gotRequests)
+		t.Fatalf("snapshot fields or request count were wrong: %d requests", gotRequests)
 	}
 	mu.Lock()
 	sourceBody = fmt.Sprintf(`{"id":99,"digest":"ghcr.io/acme/api@sha256:%s"}`, b)
@@ -71,16 +75,16 @@ func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 	mu.Unlock()
 	first, err := selectSnapshot()
 	if err != nil || first.expectedID != 0 {
-		t.Fatalf("initial destination: %+v %v", first, err)
+		t.Fatalf("initial destination expected ID %d, error %v", first.expectedID, err)
 	}
 	if snap.sourceID != 12 || snap.expectedID != 7 || snap.image != "ghcr.io/acme/api@sha256:"+a {
-		t.Fatalf("snapshot changed: %+v", snap)
+		t.Fatal("snapshot changed")
 	}
 	for _, tc := range []struct {
 		name, src, dst string
 		status         int
 	}{
-		{"source absent", `{"code":"not_deployed"}`, destBody, 404},
+		{"source absent", `{"code":"not_deployed","message":"not deployed"}`, destBody, 404},
 		{"wrong shape", `[]`, destBody, 200},
 		{"duplicate id", `{"id":1,"ID":2,"digest":"x"}`, destBody, 200},
 		{"bare digest", fmt.Sprintf(`{"id":1,"digest":"sha256:%s"}`, a), destBody, 200},
@@ -151,3 +155,111 @@ func TestReadAppliedStrictResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestRunPromotePreview(t *testing.T) {
+	image := "ghcr.io/acme/api@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, reply string
+		status      int
+		dry, asJSON bool
+		want        int
+	}{
+		{"json snapshot", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, true, 0},
+		{"text snapshot", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, true, false, 0},
+		{"noninteractive", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image), 200, false, false, 1},
+		{"legacy", `{"code":"invalid_request","message":"invalid request"}`, 400, true, false, 1},
+		{"wrong app", fmt.Sprintf(`{"app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"duplicate app", fmt.Sprintf(`{"app":"api","app":"other","image":%q,"tag":"stable","roles":[]}`, image), 200, true, false, 1},
+		{"blocked", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"blockers":["no"]}`, image), 200, true, false, 1},
+		{"compose", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[],"compose":{}}`, image), 200, true, false, 1},
+		{"wrong tag", fmt.Sprintf(`{"app":"api","image":%q,"tag":"other","roles":[]}`, image), 200, true, false, 1},
+		{"wrong image", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, "ghcr.io/acme/api@sha256:"+strings.Repeat("b", 64)), 200, true, false, 1},
+		{"short write", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, false, false, 1},
+		{"cancelled output", fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":[]}`, image), 200, false, false, 1},
+		{"redaction", `{"message":"source-secret dest-secret"}`, 403, true, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var sent []deploy.Request
+			src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer source-secret" {
+					t.Error("wrong source credential")
+				}
+				fmt.Fprintf(w, `{"id":12,"digest":%q,"tag":"stable"}`, image)
+			}))
+			defer src.Close()
+			dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer dest-secret" {
+					t.Error("wrong destination credential")
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/applied/api"):
+					w.WriteHeader(404)
+					fmt.Fprint(w, `{"code":"not_deployed","message":"not deployed"}`)
+				case strings.HasSuffix(r.URL.Path, "/deploys"):
+					var req deploy.Request
+					if json.NewDecoder(r.Body).Decode(&req) != nil {
+						t.Error("invalid request")
+					}
+					mu.Lock()
+					sent = append(sent, req)
+					mu.Unlock()
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.reply)
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(500)
+				}
+			}))
+			defer dst.Close()
+			t.Setenv("PROMOTE_SRC_TOKEN", "source-secret")
+			t.Setenv("PROMOTE_DST_TOKEN", "dest-secret")
+			dir := t.TempDir()
+			config := filepath.Join(dir, "config.json")
+			cfg := fmt.Sprintf(`{"projects":{"demo":{"environments":{"staging":{"url":%q,"token_env":"PROMOTE_SRC_TOKEN"},"prod":{"url":%q,"token_env":"PROMOTE_DST_TOKEN"}}}}}`, src.URL, dst.URL)
+			if err := os.WriteFile(config, []byte(cfg), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			target, err := agentclient.Resolve(config, agentclient.Selector{Project: "demo", Environment: "prod"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, errout bytes.Buffer
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var output io.Writer = &out
+			if tc.name == "short write" {
+				output = promotionTestWriter{write: func(p []byte) (int, error) { return len(p) / 2, nil }}
+			}
+			if tc.name == "cancelled output" {
+				output = promotionTestWriter{write: func(p []byte) (int, error) { cancel(); return len(p), nil }}
+			}
+			code := runPromote(ctx, http.DefaultClient, target, config, "staging", commandFlags{dir: dir, env: "prod", pos: []string{"api"}, id: "snapshot-id", dry: tc.dry, json: tc.asJSON}, output, &errout)
+			if code != tc.want {
+				t.Fatalf("exit %d, stderr %s", code, errout.String())
+			}
+			mu.Lock()
+			requests := append([]deploy.Request(nil), sent...)
+			mu.Unlock()
+			if len(requests) != 1 || !requests[0].DryRun || requests[0].ExpectedApplied == nil || *requests[0].ExpectedApplied != 0 || requests[0].Version != image || requests[0].VersionTag != "stable" || requests[0].RequestID != "snapshot-id" || requests[0].Manifest.Project != "demo" {
+				t.Fatalf("wrong frozen preview: %+v", requests)
+			}
+			if tc.want == 0 && (!strings.Contains(out.String(), image) || tc.asJSON && !json.Valid(out.Bytes()) || !tc.asJSON && !strings.Contains(out.String(), "staging")) {
+				t.Fatalf("output %q", out.String())
+			}
+			if tc.name == "redaction" && (strings.Contains(errout.String(), "source-secret") || strings.Contains(errout.String(), "dest-secret")) {
+				t.Fatal("credentials appeared in diagnostic")
+			}
+			if tc.name == "legacy" && !strings.Contains(errout.String(), "upgrade") {
+				t.Fatalf("missing upgrade hint: %s", errout.String())
+			}
+		})
+	}
+}
+
+type promotionTestWriter struct{ write func([]byte) (int, error) }
+
+func (w promotionTestWriter) Write(p []byte) (int, error) { return w.write(p) }
