@@ -10,6 +10,12 @@ SUBNET="${FS_SUBNET:-172.31.250.0/24}"
 GATEWAY="${FS_GATEWAY:-172.31.250.1}"
 FS_HOME="${FS_HOME:-$HOME/berthy-e2e/p5/home}"
 LABEL="berthy.fakeserver=1"
+OWNER="${FS_OWNER:-}"
+owner_args=() owner_filter=()
+if [[ -n "$OWNER" ]]; then
+  owner_args=(--label "berthy.fakeserver.owner=$OWNER")
+  owner_filter=(--filter "label=berthy.fakeserver.owner=$OWNER")
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "fakeserver: $*" >&2; exit 1; }
@@ -20,7 +26,7 @@ d() { docker "$@"; }
 # goes through cid (anchored name plus label), and the command acts on the id it returns.
 cid() {  # NAME -> full id of the labelled container NAME; prints nothing if there is none
   [[ -n "${1:-}" ]] || return 0
-  d ps -aq --no-trunc --filter "name=^/${1}\$" --filter "label=$LABEL"
+  d ps -aq --no-trunc --filter "name=^/${1}\$" --filter "label=$LABEL" "${owner_filter[@]}"
 }
 need_cid() {  # NAME -> full id of the labelled container NAME, or die
   local id
@@ -147,8 +153,11 @@ cmd_start() {
     done
     [[ -n "$ip" ]] || ip="$(alloc_ip)"
     # Docker 29 keeps image layers under /var/lib/containerd; both must be off overlayfs.
-    for v in docker containerd; do d volume create --label "$LABEL" "$name-$v" >/dev/null; done
-    d run -d --name "$name" --hostname "$name" --label "$LABEL" \
+    for v in docker containerd; do
+      d volume create --label "$LABEL" "${owner_args[@]}" "$name-$v" >/dev/null
+      volume_labelled "$name-$v" || die "volume $name-$v belongs to another fixture"
+    done
+    d run -d --name "$name" --hostname "$name" --label "$LABEL" "${owner_args[@]}" \
       --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
       --network "$NETWORK" --ip "$ip" \
       -v "$name-docker:/var/lib/docker" -v "$name-containerd:/var/lib/containerd" --label "berthy.fakeserver.name=$name" \
@@ -206,7 +215,8 @@ cmd_install_docker() {
 cmd_stop() { local name="${1:-}" id; need_name "$name"; id="$(need_cid "$name")"; d stop -t 20 "$id" >/dev/null; }
 
 volume_labelled() {  # NAME -> success when volume NAME exists and carries LABEL
-  [[ "$(d volume inspect -f '{{index .Labels "berthy.fakeserver"}}' "$1" 2>/dev/null || true)" == 1 ]]
+  [[ "$(d volume inspect -f '{{index .Labels "berthy.fakeserver"}}' "$1" 2>/dev/null || true)" == 1 ]] || return 1
+  [[ -z "$OWNER" || "$(d volume inspect -f '{{index .Labels "berthy.fakeserver.owner"}}' "$1" 2>/dev/null || true)" == "$OWNER" ]]
 }
 # A named volume is removed only if it carries LABEL; one that does not is left in place.
 rm_volume() {
@@ -221,14 +231,16 @@ rm_volume() {
 # Removes server NAME: its container (by ID, when it has one), its own labelled volumes
 # and its ssh entries.
 remove_server() {
-  local name="$1" id="${2:-}" ip=""
+  local name="$1" id="${2:-}" ip="" owned=0
+  [[ -n "$id" ]] && owned=1
+  if [[ -n "$OWNER" ]] && { volume_labelled "$name-docker" || volume_labelled "$name-containerd"; }; then owned=1; fi
   if [[ -n "$id" ]]; then
     ip="$(d container inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$id" 2>/dev/null || true)"
     d rm -f -v "$id" >/dev/null
   fi
   rm_volume "$name-docker"
   rm_volume "$name-containerd"
-  if [[ -d "$FS_HOME/.ssh" ]]; then ssh_config_del "$name"; forget_host "$name" "$ip"; fi
+  if [[ ( -z "$OWNER" || "$owned" == 1 ) && -d "$FS_HOME/.ssh" ]]; then ssh_config_del "$name"; forget_host "$name" "$ip"; fi
 }
 
 cmd_rm() {
@@ -238,6 +250,7 @@ cmd_rm() {
 }
 
 cmd_rm_all() {
+  [[ -z "$OWNER" ]] || die "rm-all is unavailable with an owner"
   local c n
   for c in $(d ps -aq --no-trunc --filter "label=$LABEL"); do
     n="$(d container inspect -f '{{.Name}}' "$c")"

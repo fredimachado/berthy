@@ -72,7 +72,7 @@
 
 ## Design rules
 
-- The encryption key crosses SSH and sudo only wrapped for a key pair that lives in one setup run (`internal/keywrap`). No script reads, hashes or prints it for transport, and what the hand-over prints never reaches `failureText` or a step detail.
+- During automatic `cli_key` download, the encryption key crosses SSH and sudo only wrapped for a key pair that lives in one setup run (`internal/keywrap`). No script reads, hashes or prints it for transport, and what the hand-over prints never reaches `failureText` or a step detail.
 - While `<key>.next` exists the key file may be stale. Code that takes a key off the server reads it with `state.ReadSettledKey`.
 - A file that holds a secret on the operator’s machine is written through `internal/keycopy`: pinned directories, checks on the opened handle, never replaced.
 

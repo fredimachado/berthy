@@ -12,6 +12,7 @@ private=$(mktemp -d /dev/shm/berthy-key-copy.XXXXXXXX) || exit 1
 chmod 700 "$private" || exit 1
 scope=$(printf '%s' "$PROJECT/$ENVN" | sha256sum | cut -c1-8)
 nonce=$(printf '%s' "$private" | sha256sum | cut -c1-16)
+export FS_OWNER="$nonce"
 server_a="a${scope}-${nonce}"
 server_b="b${scope}-${nonce}"
 started_a=0 started_b=0 setpriv_hidden=0
@@ -63,7 +64,9 @@ check jq -e '[.steps[] | select(.step == "cli_key" and .status == "changed")] | 
 check jq -e '[.steps[] | select((.step == "binary" or .step == "config" or .step == "service") and .status == "ok")] | length == 3' <<<"$out" >/dev/null
 first=$(jq -er '.key_copy | strings' <<<"$out") || { echo "setup did not return a copy path" >&2; exit 1; }
 keys="$FS_HOME/.berthy/keys"
-record() { find "$keys" -maxdepth 1 -type f -printf '%p\0' | sort -z | xargs -0 -r stat -c '%n %i %y' ; find "$keys" -maxdepth 1 -type f -printf '%p\0' | sort -z | xargs -0 -r sha256sum; }
+record_files() { printf '%s\0' "$@" | sort -z | xargs -0 -r stat -c '%n %i %y'; printf '%s\0' "$@" | sort -z | xargs -0 -r sha256sum; }
+record() { local files=(); while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$keys" -maxdepth 1 -type f -print0); record_files "${files[@]}"; }
+absent() { local status; grep -Fq -- "$1" "$2" >/dev/null 2>&1; status=$?; [ "$status" -eq 1 ]; }
 count() { find "$keys" -maxdepth 1 -type f | wc -l; }
 sum() { sha256sum "$1" | cut -d' ' -f1; }
 server_sum() { remote sha256sum "$1" | cut -d' ' -f1; }
@@ -79,17 +82,19 @@ check jq -e --arg path "$first" '.key_copy == $path and ([.steps[] | select(.ste
 record > "$private/current"
 check cmp -s "$private/one" "$private/current"
 # Search the recorded bytes without printing the key or matching output.
-remote sh -c 'find /var/log/sudo-io -type f -exec cat {} +' 2>/dev/null | od -An -v -tx1 | tr -d ' \n' > "$private/io"
+if ! remote sh -c 'find /var/log/sudo-io -type f -exec cat {} +' 2>/dev/null | od -An -v -tx1 | tr -d ' \n' > "$private/io"; then
+  echo "setup key copy check failed: sudo recording capture" >&2; exit 1
+fi
 label="sudo recording control"
 control=$(printf 'berthy-key-wrap/1 ok' | od -An -v -tx1 | tr -d ' \n')
-check grep -Fq "$control" "$private/io"
+check grep -Fq -- "$control" "$private/io"
 # Raw bytes and textual encodings are checked independently, as hex.
 label="sudo recording contains key material"
 raw=$(od -An -v -tx1 "$first" | tr -d ' \n')
-if grep -Fq "$raw" "$private/io"; then echo "setup key copy check failed: sudo recording contains key material" >&2; exit 1; fi
+if ! absent "$raw" "$private/io"; then echo "setup key copy check failed: sudo recording scan" >&2; exit 1; fi
 for form in "$(od -An -v -tx1 "$first" | tr -d ' \n')" "$(base64 -w0 "$first")" "$(base64 -w0 "$first" | tr '+/' '-_')" "$(base64 -w0 "$first" | tr -d '=')" "$(base64 -w0 "$first" | tr '+/' '-_' | tr -d '=')"; do
   encoded=$(printf %s "$form" | od -An -v -tx1 | tr -d ' \n')
-  if grep -Fq "$encoded" "$private/io"; then echo "setup key copy check failed: sudo recording contains key material" >&2; exit 1; fi
+  if ! absent "$encoded" "$private/io"; then echo "setup key copy check failed: sudo recording scan" >&2; exit 1; fi
 done
 token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg") || exit 1
 expected_env=$(printf 'BERTHY_%s_%s_TOKEN' "$PROJECT" "$ENVN" | tr '[:lower:]-' '[:upper:]_')
@@ -117,10 +122,17 @@ if "$BIN" key rotate -e "$ENVN" --config "$cfg" --project "$PROJECT" >"$private/
 label="blocked rotation did not leave a pending key"
 check remote test -f "$key.next"
 for attempt in 1 2; do
-  out=$("${setup[@]}" </dev/null 2>/dev/null); code=$?
+  if [ "$attempt" -eq 1 ]; then
+    out=$("${setup[@]}" --key-file "$second" </dev/null 2>/dev/null); code=$?
+  else
+    out=$("${setup[@]}" </dev/null 2>/dev/null); code=$?
+  fi
   label="unsettled rotation refusal"
   check test "$code" -eq 0
   check jq -e '(.key_copy == null) and ([.steps[] | select(.step == "cli_key" and .status == "skipped" and (.detail | contains("key rotation")))] | length == 1) and ([.next_steps[] | select(contains("sudo cat"))] | length == 0)' <<<"$out" >/dev/null
+  if [ "$attempt" -eq 1 ]; then
+    check jq -e '[.next_steps[] | select(contains("--key-file") and (contains("leave out") or contains("omit")))] | length == 1' <<<"$out"
+  fi
   record > "$private/current"
   check cmp -s "$private/two" "$private/current"
   find "$keys" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort > "$private/current-listing"
@@ -163,7 +175,7 @@ check test "$third" != "$first"
 check test "$third" != "$second"
 check test "$(count)" -eq 3
 check test "$(sum "$third")" = "$(server_sum "$key")"
-{ stat -c '%n %i %y' "$first" "$second" | sort; sha256sum "$first" "$second" | sort; } > "$private/previous"
+record_files "$first" "$second" > "$private/previous"
 check cmp -s "$private/two" "$private/previous"
 record > "$private/three"
 started_b=1
@@ -180,13 +192,13 @@ check cmp -s "$private/three" "$private/current"
 out=$("${setup[@]}" --verbose </dev/null 2>"$private/verbose"); code=$?
 label="verbose setup"
 check test "$code" -eq 0
-check grep -Fq '# cli_key' "$private/verbose"
+check grep -Fq -- '# cli_key' "$private/verbose"
 for file in "$first" "$second" "$third"; do
   raw=$(od -An -v -tx1 "$file" | tr -d ' \n')
   od -An -v -tx1 "$private/verbose" | tr -d ' \n' > "$private/verbose-hex"
-  if grep -Fq "$raw" "$private/verbose-hex"; then echo "setup key copy check failed: verbose output contains key material" >&2; exit 1; fi
+  if ! absent "$raw" "$private/verbose-hex"; then echo "setup key copy check failed: verbose output scan" >&2; exit 1; fi
   for form in "$raw" "$(base64 -w0 "$file")" "$(base64 -w0 "$file" | tr '+/' '-_')" "$(base64 -w0 "$file" | tr -d '=')" "$(base64 -w0 "$file" | tr '+/' '-_' | tr -d '=')"; do
-    if grep -Fq "$form" "$private/verbose"; then echo "setup key copy check failed: verbose output contains key material" >&2; exit 1; fi
+    if ! absent "$form" "$private/verbose"; then echo "setup key copy check failed: verbose output scan" >&2; exit 1; fi
   done
 done
 out=$("${setup[@]}" --dry-run </dev/null 2>/dev/null); code=$?
