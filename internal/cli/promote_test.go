@@ -364,3 +364,21 @@ func TestPromoteRefusesCheckoutSwitchDuringCapture(t *testing.T) {
 		t.Fatalf("checkout switch: exit %d calls %d stderr %q", code, calls.Load(), errs.String())
 	}
 }
+
+func TestPromotionHeldPlanEscapesControls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{"app":"api","image":"image","notes":["hello\u001b[31m source\u002dsecret", "world\rdest\u002dsecret"],"key\u001b[0m":"value\u0007","diff":{"changes":[{"area":"env","change":"changed"}]}}}`)
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	code := sendCommand(context.Background(), http.DefaultClient, u, "/", "dest-secret", "POST", "deploys", struct{}{}, commandFlags{redactToken: "source-secret"}, "deploy", &out, &errs)
+	text := out.String() + errs.String()
+	if code != 3 || strings.ContainsAny(text, "\x1b\r\x07") || strings.Contains(text, "source-secret") || strings.Contains(text, "dest-secret") || !strings.Contains(text, "ap1") || !strings.Contains(text, "env") || !strings.Contains(text, "changed") {
+		t.Fatalf("unsafe or incomplete held display, exit %d, output %q", code, text)
+	}
+}

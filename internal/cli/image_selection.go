@@ -378,6 +378,13 @@ func safePromotionResponse(data []byte, tokens ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if envelope, ok := safe.(map[string]any); ok && envelope["approval_id"] != nil && envelope["plan"] != nil {
+		plan, err := redactDeployValue(envelope["plan"], true, tokens...)
+		if err != nil {
+			return nil, err
+		}
+		envelope["plan"] = plan
+	}
 	encoded, err := json.Marshal(safe)
 	if err != nil {
 		return nil, errors.New("invalid agent response")

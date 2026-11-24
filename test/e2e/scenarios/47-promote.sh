@@ -8,7 +8,45 @@ DEST=${ENVN}c
 IMAGE="$REG/e2e/web"
 A="$IMAGE@$WEB_V1_DIGEST"
 B="$IMAGE@$WEB_V2_DIGEST"
-trap 'stop_agent2' EXIT
+RUN_ID="promote-$(openssl rand -hex 16)"
+SERVICE="$PROJECT-$DEST-web-main"
+COLLISION_FILE="$RUN/promotion-collision-id"
+
+# Stop the agent before inspecting its private durable admissions, then delete only a service
+# whose current scope and generation match an operation admitted under this run's request IDs.
+cleanup_owned_services() {
+  local id spec generation owned
+  [ -f "$RUN/state2/state.db" ] || return 0
+  owned=$(python3 - "$RUN/state2/state.db" "$DEST" "$RUN_ID" <<'PYSQL'
+import sqlite3, sys
+path, env, marker = sys.argv[1:]
+con = sqlite3.connect('file:' + path + '?mode=ro', uri=True)
+for (op,) in con.execute("SELECT o.id FROM operations o JOIN audit a ON a.environment=o.environment AND a.operation_id=o.id WHERE o.environment=? AND substr(o.request_id,1,?)=? AND a.outcome='accepted'", (env, len(marker)+1, marker+'-')):
+    print(op)
+PYSQL
+  ) || return 1
+  spec=$(d service inspect --format '{{json .}}' "$SERVICE" 2>/dev/null) || return 0
+  id=$(jq -er '.ID | select(type == "string" and length > 0)' <<<"$spec") || return 1
+  generation=$(jq -er --arg project "$PROJECT" --arg env "$DEST" --arg name "$SERVICE" '
+    select(.Spec.Name == $name and .Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and .Spec.Labels["berthy.app"] == "web" and .Spec.Labels["berthy.role"] == "main") |
+    .Spec.Labels["berthy.operation"] | select(type == "string" and length > 0)' <<<"$spec") || return 0
+  if grep -Fxq -- "$generation" <<<"$owned"; then d service rm "$id" >/dev/null || return 1; fi
+}
+cleanup_destination() {
+  local collision labels
+  stop_agent2
+  cleanup_owned_services || return 1
+  if [ -s "$COLLISION_FILE" ]; then
+    collision=$(cat "$COLLISION_FILE")
+    labels=$(d service inspect --format '{{json .Spec.Labels}}' "$collision" 2>/dev/null) || labels=
+    if jq -e --arg marker "$RUN_ID" '.["fixture.promotion.collision"] == $marker' <<<"$labels" >/dev/null 2>&1; then
+      d service rm "$collision" >/dev/null || return 1
+    fi
+    rm -f "$COLLISION_FILE"
+  fi
+}
+cleanup() { local status=$?; trap - EXIT; cleanup_destination || status=1; exit "$status"; }
+trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 start_agent2 || { fail 'start second agent' 'fixture failed'; finish; }
@@ -17,12 +55,27 @@ start_agent2 || { fail 'start second agent' 'fixture failed'; finish; }
 cmd() {
   local env=$1 verb=$2
   shift 2
-  local -a manifest_arg=()
+  local -a manifest_arg=() request_arg=()
+  if [ "$verb" = deploy ] && [ "$env" = "$DEST" ]; then request_arg=(--request-id "$RUN_ID-$(openssl rand -hex 8)"); fi
   case $verb in deploy|promote) manifest_arg=(--manifest-dir "$MAN");; esac
-  (cd "$MAN" && { [ "$verb" != deploy ] || record_deploy "$PROJECT" "$env" "$@"; } &&
-    "$BIN" "$verb" -e "$env" --project "$PROJECT" --config "$RUN/admin.json" "${manifest_arg[@]}" "$@")
+  (cd "$MAN" && { [ "$verb" != deploy ] || [ "$env" = "$DEST" ] || record_deploy "$PROJECT" "$env" "$@"; } &&
+    "$BIN" "$verb" -e "$env" --project "$PROJECT" --config "$RUN/admin.json" "${manifest_arg[@]}" "${request_arg[@]}" "$@")
 }
 history() { cmd "$DEST" history web --json; }
+# Refusals must leave both admissions and approval state unchanged; failed or malformed reads fail closed.
+guard_snapshot() {
+  local audit approvals
+  audit=$(cmd "$DEST" audit --json) || return 1
+  approvals=$(cmd "$DEST" approvals --all --json) || return 1
+  jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; (.operation_id | type == "string") and (.action | type == "string") and (.outcome | type == "string")))' <<<"$audit" >/dev/null || return 1
+  jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; (.id | type == "string" and length > 0) and (.status | type == "string" and length > 0)))' <<<"$approvals" >/dev/null || return 1
+  jq -cnS --argjson audit "$audit" --argjson approvals "$approvals" '{accepted: [$audit[] | select(.outcome == "accepted") | {operation_id,action,outcome}] | sort_by(.operation_id), approvals: [$approvals[] | {id,status}] | sort_by(.id)}'
+}
+unchanged() {
+  local label=$1 before=$2 after
+  after=$(guard_snapshot) || { fail "$label" 'audit or approvals could not be read'; finish; }
+  expect_eq "$label" "$before" "$after"
+}
 applied() {
   local token_var
   token_var=$(env_var "$PROJECT" "$DEST")
@@ -47,20 +100,21 @@ expect_code 'promotion dry-run returns one JSON plan' 0 "$code" "$out"
 if jq -e --arg image "$A" '.app == "web" and .image == $image and .tag == "v1"' <<<"$out" >/dev/null; then
   pass 'dry-run selects applied A after tag moves to B'
 else fail 'dry-run selects applied A after tag moves to B' 'plan is invalid or does not pin A'; fi
+guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
 out=$(cmd "$DEST" promote web --from "$ENVN" --json </dev/null 2>&1); code=$?
 [ "$code" -ne 0 ] && pass 'JSON without dry-run refuses mutation' || fail 'JSON without dry-run refuses mutation' 'command succeeded'
 expect_eq 'noninteractive JSON makes no admission' 0 "$(history | jq 'length')"
+unchanged 'noninteractive JSON leaves audit and approvals unchanged' "$guard"
 
-# Journal both services before a PTY child can create either. The driver changes state only
+# The destination is never placed in the name-only ledger. The driver changes state only
 # after reading the real prompt; its private log is redacted before it is saved.
-(cd "$MAN" && record_deploy "$PROJECT" "$ENVN" web --manifest-dir "$MAN" && record_deploy "$PROJECT" "$DEST" web --manifest-dir "$MAN") || { fail 'record fixture workloads' 'ownership tracking failed'; finish; }
 terminal_promote() {
   local name=$1 answer=$2 change=$3 expected=$4 config=${5:-$RUN/admin.json}
-  python3 - "$BIN" "$ENVN" "$DEST" "$PROJECT" "$config" "$MAN" "$answer" "$change" "$expected" "$WEB_V1_DIGEST" "$LOG/promote-$name.log" <<'PY'
+  python3 - "$BIN" "$ENVN" "$DEST" "$PROJECT" "$config" "$MAN" "$answer" "$change" "$expected" "$WEB_V1_DIGEST" "$LOG/promote-$name.log" "$RUN_ID-$name" "$RUN_ID" "$COLLISION_FILE" "$DOCKER_BIN" "$SOCK" "$E2E_ROOT/docker-config" <<'PY'
 import errno, os, pty, select, subprocess, sys, time
-binary, source, dest, project, config, manifest, answer, change, expected, digest, log = sys.argv[1:]
+binary, source, dest, project, config, manifest, answer, change, expected, digest, log, request_id, marker, collision_file, docker, socket, docker_config = sys.argv[1:]
 master, slave = pty.openpty()
-cmd = [binary, 'promote', 'web', '-e', dest, '--project', project, '--config', config, '--manifest-dir', manifest, '--from', source]
+cmd = [binary, 'promote', 'web', '-e', dest, '--project', project, '--config', config, '--manifest-dir', manifest, '--from', source, '--request-id', request_id]
 proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 data = bytearray()
@@ -81,9 +135,14 @@ try:
                 if change in ('source', 'destination'):
                     env, version = (source, 'v2') if change == 'source' else (dest, digest)
                     other = subprocess.run([binary, 'deploy', 'web', '-e', env, '--project', project, '--config', config,
-                                            '--manifest-dir', manifest, '--version', version], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
+                                            '--manifest-dir', manifest, '--version', version] + (['--request-id', marker+'-concurrent'] if change == 'destination' else []), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
                     data.extend(b'\n[concurrent deploy]\n' + other.stdout)
                     if other.returncode: raise RuntimeError('concurrent fixture deploy failed')
+                if change == 'collision':
+                    env = dict(os.environ, DOCKER_CONFIG=docker_config)
+                    created = subprocess.run([docker, '--host', 'unix://'+socket, 'service', 'create', '--name', project+'-'+dest+'-web-main', '--replicas', '0', '--no-resolve-image', '--label', 'fixture.promotion.collision='+marker, '--label', 'berthy.project='+project, '--label', 'berthy.environment='+dest, '--label', 'berthy.app=web', '--label', 'berthy.role=main', '--label', 'berthy.operation=foreign-'+marker, 'busybox:latest'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                    if created.returncode: raise RuntimeError('collision fixture creation failed')
+                    with open(collision_file, 'wb') as f: f.write(created.stdout.strip()+b'\n')
                 if change == 'source':
                     with open(os.path.join(manifest, 'berthy.' + dest + '.yml'), 'w') as f:
                         f.write('apps:\n  web:\n    env:\n      plain:\n        SNAPSHOT: after\n')
@@ -102,6 +161,19 @@ finally:
     with open(log, 'wb') as f: f.write(data)
 PY
 }
+
+# An unconfirmed preview must not grant ownership of a name claimed during its prompt.
+guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
+if terminal_promote collision n collision 1; then pass 'decline after destination name collision'; else fail 'decline after destination name collision' 'terminal driver failed'; finish; fi
+collision=$(cat "$COLLISION_FILE")
+cleanup_owned_services || { fail 'check collision cleanup' 'ownership check failed'; finish; }
+if [ "$(d service inspect --format '{{.ID}}' "$collision" 2>/dev/null)" = "$collision" ]; then pass 'foreign collision survives decline and fixture cleanup'; else fail 'foreign collision survives decline and fixture cleanup' 'service disappeared'; fi
+unchanged 'collision decline leaves audit and approvals unchanged' "$guard"
+labels=$(d service inspect --format '{{json .Spec.Labels}}' "$collision") || { fail 'read collision label' 'service unavailable'; finish; }
+if jq -e --arg marker "$RUN_ID" '.["fixture.promotion.collision"] == $marker' <<<"$labels" >/dev/null; then
+  d service rm "$collision" >/dev/null || { fail 'remove intentional collision by ID' 'removal failed'; finish; }
+  rm -f "$COLLISION_FILE"
+else fail 'remove intentional collision by ID' 'ownership marker missing'; finish; fi
 
 # Change the source and overlay at the prompt. The submitted request must retain A, v1 and the
 # original destination overlay, even though the source now applies B.
@@ -122,15 +194,19 @@ expect_contains 'Swarm keeps the previewed overlay' "$spec" 'SNAPSHOT=before'
 out=$(cmd "$ENVN" rollback web --to 1 2>&1); code=$?
 expect_code 'restore source A' 0 "$code" "$out"
 before=$(history | jq 'length')
+guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
 out=$(cmd "$DEST" promote web --from "$ENVN" --dry-run 2>&1); code=$?
 [ "$code" -ne 0 ] && pass 'equal digest refuses promotion' || fail 'equal digest refuses promotion' 'command succeeded'
 expect_eq 'equal digest makes no destination admission' "$before" "$(history | jq 'length')"
+unchanged 'invalid preview leaves audit and approvals unchanged' "$guard"
 
 out=$(cmd "$ENVN" deploy web --version v2 2>&1); code=$?
 expect_code 'advance source to B' 0 "$code" "$out"
 for answer in n ''; do
   label=${answer:-default}
+  guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
   if terminal_promote "$label" "$answer" none 1; then pass "$label declines promotion"; else fail "$label declines promotion" 'terminal driver failed'; fi
+  unchanged "$label decline leaves audit and approvals unchanged" "$guard"
 done
 expect_eq 'declined promotions make no admission' "$before" "$(history | jq 'length')"
 if terminal_promote stale y destination 1; then pass 'stale destination refuses confirmed promotion'; else fail 'stale destination refuses confirmed promotion' 'terminal driver failed'; fi
