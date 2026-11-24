@@ -101,10 +101,13 @@ keep_failure() {
  for f in "$private/$name"/FAILED-*.txt; do
   [ -f "$f" ] || continue
   if ! awk '
+   BEGIN { secret = "API_KEY|GEN_PASS|REG_PASS" }
    /^(ok|changed|would_change|skipped|failed|[|\/\\-]) +(connect|check|docker|swarm|network|user|binary|key|token|config|service|cli_config|cli_token|verify|cli_key)( |$)/ {
     t = ""; if (match($0, /\([0-9]+\.[0-9]s\)$/)) t = " " substr($0, RSTART, RLENGTH); print $1, $2 t; next }
-   /^Value of [A-Z][A-Z0-9_]*( |$)/ { print $1, $2, $3; next }
-   /^(stored|generated|kept) [A-Z][A-Z0-9_]*( |:|$)/ { match($2, /^[A-Z][A-Z0-9_]*/); print $1, substr($2, 1, RLENGTH); next }
+   $0 ~ ("^Value of (" secret ")( |:|$)") {
+    match($0, "(" secret ")"); print "Value of", substr($0, RSTART, RLENGTH); next }
+   $0 ~ ("^(stored|generated|kept) (" secret ")( |:|$)") {
+    match($0, "(" secret ")"); print $1, substr($0, RSTART, RLENGTH); next }
    /^(secrets|next steps):$/ { print; next }
    /^admin token for / { print "admin token shown"; next }
   ' "$f" >> "$kept/frame.txt"; then
