@@ -131,6 +131,75 @@ func Inspect(ctx context.Context, dir string, files []string) (Checkout, error) 
 	return co, nil
 }
 
+// CapturedFile is one input as read by the caller. Absent optional files have Present false.
+type CapturedFile struct {
+	Path    string
+	Present bool
+	Bytes   []byte
+}
+
+// CompareCaptured reports inputs whose captured contents do not match the given HEAD tree.
+func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	prefix, _, err := run(ctx, dir, "rev-parse", "--show-prefix")
+	if err != nil {
+		return nil, fmt.Errorf("checkout prefix unavailable: %w", err)
+	}
+	prefix = strings.TrimRight(prefix, "\r\n")
+	root, _, err := run(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimRight(root, "\r\n") == "" {
+		return nil, fmt.Errorf("checkout root unavailable")
+	}
+	root = strings.TrimRight(root, "\r\n")
+	var changed []string
+	for _, f := range files {
+		name := f.Path
+		if name == "" || name != path.Clean(name) || name == "." || name == ".." || strings.HasPrefix(name, "../") || strings.ContainsAny(name, "\\\x00") || path.IsAbs(name) || strings.Contains(name, ":") {
+			return nil, fmt.Errorf("invalid checkout input path")
+		}
+		rootName := prefix + name
+		entry, _, err := run(ctx, root, "--literal-pathspecs", "ls-tree", "-z", head, "--", rootName)
+		if err != nil {
+			return nil, fmt.Errorf("checkout tree unavailable: %w", err)
+		}
+		if entry == "" {
+			if f.Present {
+				changed = append(changed, name)
+			}
+			continue
+		}
+		parts := strings.Split(entry, "\x00")
+		if len(parts) != 2 || parts[1] != "" {
+			return nil, fmt.Errorf("invalid checkout tree entry")
+		}
+		fields := strings.SplitN(parts[0], "\t", 2)
+		if len(fields) != 2 || fields[1] != rootName {
+			return nil, fmt.Errorf("invalid checkout tree path")
+		}
+		meta := strings.Fields(fields[0])
+		if len(meta) != 3 || meta[1] != "blob" || len(meta[2]) < 40 {
+			return nil, fmt.Errorf("invalid checkout tree object")
+		}
+		if !f.Present || (meta[0] != "100644" && meta[0] != "100755") {
+			changed = append(changed, name)
+			continue
+		}
+		hash, _, err := runInput(ctx, root, f.Bytes, "hash-object", "--stdin", "--path="+rootName)
+		if err != nil {
+			return nil, fmt.Errorf("checkout input hash unavailable: %w", err)
+		}
+		hash = strings.TrimSpace(hash)
+		if len(hash) != len(meta[2]) {
+			return nil, fmt.Errorf("invalid checkout input hash")
+		}
+		if hash != meta[2] {
+			changed = append(changed, name)
+		}
+	}
+	return changed, nil
+}
+
 // changedPaths reads the NUL-separated entries of git status --porcelain=v1 -z. Each is "XY path", and a rename or a copy
 // is followed by the path it came from, which is not a change of its own. The paths are made relative to prefix, the
 // directory inside the repository, and a path outside it is left out.
@@ -158,7 +227,12 @@ func changedPaths(status, prefix string) []string {
 // and the home directory, and the variables that keep its output and its locking predictable. GIT_DIR and the like are left
 // out, so git finds the repository of dir and no other.
 func run(ctx context.Context, dir string, args ...string) (stdout, stderr string, err error) {
+	return runInput(ctx, dir, nil, args...)
+}
+
+func runInput(ctx context.Context, dir string, input []byte, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Stdin = bytes.NewReader(input)
 	cmd.Env = environment()
 	cmd.WaitDelay = time.Second
 	var out, errOut bytes.Buffer

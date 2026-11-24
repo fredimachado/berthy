@@ -480,7 +480,7 @@ func isLoopback(host string) bool {
 
 // readYAML reads one manifest file. An overlay is optional: it is nil when it is not there. What is wrong with its content is
 // returned as Problems of that file, each with its line.
-func readYAML(path string, overlay bool) (*yaml.Node, error) {
+func readYAML(path string, overlay bool, captured *CapturedFile) (*yaml.Node, error) {
 	f, err := os.Open(path)
 	if overlay && os.IsNotExist(err) {
 		return nil, nil
@@ -496,6 +496,8 @@ func readYAML(path string, overlay bool) (*yaml.Node, error) {
 	if len(b) > maxInput {
 		return nil, fmt.Errorf("%s exceeds size limit", path)
 	}
+	captured.Present = true
+	captured.Bytes = b
 	n, err := parseYAML(b, overlay)
 	if err != nil {
 		var ps Problems
@@ -619,9 +621,16 @@ func Load(dir, env string) (*Manifest, error) {
 	return l.Manifest, nil
 }
 
+// CapturedFile holds the bytes read from a manifest file, or its absence.
+type CapturedFile struct {
+	Present bool
+	Bytes   []byte
+}
+
 // Loaded is a valid manifest of one environment, with what Load found about it: its warnings, and where each value is written.
 type Loaded struct {
 	Manifest *Manifest
+	Files    map[string]CapturedFile
 	Warnings Problems
 	where    locator
 }
@@ -634,8 +643,11 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	}
 	names := Files(env)
 	var parse Problems
+	files := make(map[string]CapturedFile)
 	read := func(name string, overlay bool) (*yaml.Node, error) {
-		n, err := readYAML(filepath.Join(dir, name), overlay)
+		var captured CapturedFile
+		n, err := readYAML(filepath.Join(dir, name), overlay, &captured)
+		files[name] = captured
 		var ps Problems
 		if errors.As(err, &ps) {
 			parse = append(parse, ps...)
@@ -735,7 +747,7 @@ func LoadDetailed(dir, env string) (*Loaded, error) {
 	}
 	warnings = append(warnings, m.Warnings()...)
 	where.place(warnings)
-	return &Loaded{Manifest: m, Warnings: warnings, where: where}, nil
+	return &Loaded{Manifest: m, Files: files, Warnings: warnings, where: where}, nil
 }
 
 // DecodeJSON decodes and validates a manifest sent to the agent. It never sets the connector flag.

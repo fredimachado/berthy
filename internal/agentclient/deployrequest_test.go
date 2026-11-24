@@ -3,6 +3,7 @@ package agentclient
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -237,5 +238,164 @@ func TestPrepareDeployFilesCheckedRejectsSwitchDuringStatus(t *testing.T) {
 	req := deploy.Request{App: "api", Version: "v1"}
 	if _, err := PrepareDeployFilesChecked(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before); err == nil || !strings.Contains(err.Error(), "checkout changed") {
 		t.Fatalf("checkout switch was not refused: %v", err)
+	}
+}
+
+func TestCheckedCapturedOverlayRestoredBeforeStatus(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": "apps: {}\n"})
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte("apps: {}\n# dirty\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "checkout", "--", "berthy.dev.yml")
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before)
+	if err == nil && (!req.Modified || len(co.Changed) == 0) {
+		t.Fatalf("stale overlay attributed clean: %+v %+v", req, co)
+	}
+}
+
+func TestCapturedComposeRestoredBeforeStatus(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": composeManifest, "compose.yaml": "services: {}\n"})
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {x: {}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := inspectDeployFiles
+	inspectDeployFiles = func(ctx context.Context, dir string, files []string) (gitcheck.Checkout, error) {
+		git(t, dir, "checkout", "--", "compose.yaml")
+		return previous(ctx, dir, files)
+	}
+	defer func() { inspectDeployFiles = previous }()
+	req := deploy.Request{App: "db"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"compose.yaml"}) || req.ComposeFile != "services: {x: {}}\n" {
+		t.Fatalf("%+v %+v %v", req, co, err)
+	}
+}
+
+func TestCapturedOverlayAbsence(t *testing.T) {
+	for _, tracked := range []bool{false, true} {
+		t.Run(fmt.Sprint(tracked), func(t *testing.T) {
+			files := map[string]string{"berthy.yml": imageManifest}
+			if tracked {
+				files["berthy.dev.yml"] = "apps: {}\n"
+			}
+			dir, _ := checkoutRepo(t, files)
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tracked {
+				if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tracked {
+				git(t, dir, "checkout", "--", "berthy.dev.yml")
+			}
+			req := deploy.Request{App: "api"}
+			co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err != nil || req.Modified != tracked || (len(co.Changed) != 0) != tracked {
+				t.Fatalf("%+v %+v %v", req, co, err)
+			}
+		})
+	}
+}
+
+func TestCapturedCRLFAndNoGit(t *testing.T) {
+	for _, noGit := range []bool{false, true} {
+		t.Run(fmt.Sprint(noGit), func(t *testing.T) {
+			dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, ".gitattributes": "*.yml text\n"})
+			git(t, dir, "config", "core.autocrlf", "true")
+			if err := os.Remove(filepath.Join(dir, "berthy.yml")); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "checkout", "--", "berthy.yml")
+
+			if noGit {
+				t.Setenv("PATH", t.TempDir())
+			}
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := deploy.Request{App: "api", Commit: "explicit"}
+			co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err != nil || req.Modified || req.Commit != "explicit" || len(co.Changed) != 0 {
+				t.Fatalf("%+v %+v %v", req, co, err)
+			}
+		})
+	}
+}
+
+func TestCapturedInputsInsideRepositorySubdirectory(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "berthy.yml"), []byte(imageManifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "sub/berthy.yml")
+	git(t, dir, "commit", "-q", "-m", "add subdir")
+	before, err := gitcheck.Capture(context.Background(), sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(sub, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), sub, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || req.Modified || len(co.Changed) != 0 {
+		t.Fatalf("%+v %+v %v", req, co, err)
+	}
+}
+
+func TestCapturedUntrackedOverlayRemovedBeforeStatus(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte("apps: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+		t.Fatal(err)
+	}
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"berthy.dev.yml"}) {
+		t.Fatalf("%+v %+v %v", req, co, err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"berthy/internal/deploy"
@@ -110,6 +111,68 @@ func PrepareDeployFilesChecked(ctx context.Context, dir, env string, m *manifest
 	}
 	if !before.Same(after) || co.InWorkTree != before.InWorkTree || co.Head != before.Head {
 		return co, errors.New("checkout changed while reading deploy files; retry the deploy")
+	}
+	return co, nil
+}
+
+// PrepareCapturedDeployFiles checks the exact bytes loaded after before was captured.
+// loaded must be the result of manifest.LoadDetailed for dir and env. Discard requests on error.
+func PrepareCapturedDeployFiles(ctx context.Context, dir, env string, loaded *manifest.Loaded, reqs []*deploy.Request, before gitcheck.Identity) (gitcheck.Checkout, error) {
+	if loaded == nil || loaded.Manifest == nil {
+		return gitcheck.Checkout{}, errors.New("captured manifest unavailable")
+	}
+	files := make([]gitcheck.CapturedFile, 0, 2+len(reqs))
+	for _, name := range manifest.Files(env) {
+		f, ok := loaded.Files[name]
+		if !ok {
+			return gitcheck.Checkout{}, errors.New("captured manifest unavailable")
+		}
+		files = append(files, gitcheck.CapturedFile{Path: name, Present: f.Present, Bytes: f.Bytes})
+	}
+	co, err := PrepareDeployFilesChecked(ctx, dir, env, loaded.Manifest, reqs, before)
+	if err != nil {
+		return co, err
+	}
+	if !co.InWorkTree || co.Head == "" {
+		return co, nil
+	}
+	for _, req := range reqs {
+		if app := loaded.Manifest.Apps[req.App]; app.Kind == "compose" {
+			files = append(files, gitcheck.CapturedFile{Path: path.Clean(filepath.ToSlash(manifest.FilePath(app.File))), Present: true, Bytes: []byte(req.ComposeFile)})
+		}
+	}
+	changed, err := gitcheck.CompareCaptured(ctx, dir, co.Head, files)
+	if err != nil {
+		return co, err
+	}
+	after, err := gitcheck.Capture(ctx, dir)
+	if err != nil {
+		return co, err
+	}
+	if !before.Same(after) {
+		return co, errors.New("checkout changed while reading deploy files; retry the deploy")
+	}
+	all := make(map[string]bool)
+	for _, name := range co.Changed {
+		all[name] = true
+	}
+	for _, name := range changed {
+		all[name] = true
+	}
+	co.Changed = co.Changed[:0]
+	for name := range all {
+		co.Changed = append(co.Changed, name)
+	}
+	sort.Strings(co.Changed)
+	for _, req := range reqs {
+		for _, name := range manifest.Files(env) {
+			if all[name] {
+				req.Modified = true
+			}
+		}
+		if app := loaded.Manifest.Apps[req.App]; app.Kind == "compose" && all[path.Clean(filepath.ToSlash(manifest.FilePath(app.File)))] {
+			req.Modified = true
+		}
 	}
 	return co, nil
 }
