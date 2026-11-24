@@ -34,7 +34,7 @@ func writeDeployPrompt(ctx context.Context, out io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	const prompt = "Deploy this image? [y/N] "
+	const prompt = "Proceed with this deploy? [y/N] "
 	n, err := io.WriteString(out, prompt)
 	if err == nil && n != len(prompt) {
 		err = io.ErrShortWrite

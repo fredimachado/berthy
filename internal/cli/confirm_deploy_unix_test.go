@@ -41,11 +41,11 @@ func TestConfirmDeployTerminal(t *testing.T) {
 			}
 			resultCh := make(chan result, 1)
 			go func() { ok, err := confirmDeploy(context.Background(), tty, tty); resultCh <- result{ok, err} }()
-			prompt := make([]byte, len("Deploy this image? [y/N] "))
+			prompt := make([]byte, len("Proceed with this deploy? [y/N] "))
 			if _, err := io.ReadFull(master, prompt); err != nil {
 				t.Fatal(err)
 			}
-			if string(prompt) != "Deploy this image? [y/N] " {
+			if string(prompt) != "Proceed with this deploy? [y/N] " {
 				t.Fatalf("prompt %q", prompt)
 			}
 			if _, err := io.WriteString(master, tc.input); err != nil {
@@ -90,7 +90,7 @@ func TestConfirmDeployCanonicalQuotedEnter(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() { ok, err := confirmDeploy(context.Background(), tty, tty); resultCh <- result{ok, err} }()
-	prompt := make([]byte, len("Deploy this image? [y/N] "))
+	prompt := make([]byte, len("Proceed with this deploy? [y/N] "))
 	if _, err := io.ReadFull(master, prompt); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestConfirmDeployCancelAndWriteFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { _, err := confirmDeploy(ctx, tty, tty); result <- err }()
-	prompt := make([]byte, len("Deploy this image? [y/N] "))
+	prompt := make([]byte, len("Proceed with this deploy? [y/N] "))
 	if _, err := io.ReadFull(master, prompt); err != nil {
 		t.Fatal(err)
 	}
