@@ -1045,7 +1045,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			fmt.Fprintln(errout, "invalid operation events URL")
 			return 1
 		}
-		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project)
+		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, f.redactToken)
 	}
 	if status != http.StatusOK {
 		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token, f.redactToken))

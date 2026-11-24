@@ -14,7 +14,8 @@ import (
 	"berthy/internal/agentclient"
 )
 
-func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string) int {
+func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, extraTokens ...string) int {
+	redact := append([]string{token}, extraTokens...)
 	interactive := !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(out)
 	progress := newProgressLine(out, interactive)
 	defer progress.Close()
@@ -47,7 +48,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		if dec.Decode(&payload) != nil {
 			return
 		}
-		payload = redactOperationJSON(payload, token)
+		payload = redactOperationJSON(payload, redact...)
 		safeData, err := json.Marshal(payload)
 		if err != nil {
 			return
@@ -92,19 +93,19 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			}
 			if !asJSON {
 				if interactive {
-					progress.Message("  " + safeSecretText(detail.Step, token))
+					progress.Message("  " + safeSecretText(detail.Step, redact...))
 				} else {
-					fmt.Fprintln(out, "  "+safeSecretText(detail.Step, token))
+					fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...))
 				}
 			}
 			return
 		}
 		if interactive {
 			if ev.Kind == "step" && detail.Step != "" {
-				progress.Message("  " + safeSecretText(detail.Step, token))
+				progress.Message("  " + safeSecretText(detail.Step, redact...))
 			}
 		} else if !asJSON && !showsText(cmd, ev.Kind) {
-			fmt.Fprintln(out, ev.Kind)
+			fmt.Fprintln(out, safeSecretText(ev.Kind, redact...))
 		}
 	}
 	var notFound string
@@ -135,7 +136,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			notFound = safeSecretText(agentclient.Message(resp.StatusCode, body), token)
+			notFound = safeSecretText(agentclient.Message(resp.StatusCode, body), redact...)
 			return fmt.Errorf("operation stream unavailable")
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -146,7 +147,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 	}
 	interrupted := func() int {
 		progress.Close()
-		fmt.Fprintf(errout, "watch interrupted; operation %s may continue; inspect with berthy diagnostics %s -e %s --project %s or cancel with berthy cancel %s -e %s --project %s\n", safeSecretText(id, token), safeSecretText(id, token), safeSecretText(env, token), safeSecretText(project, token), safeSecretText(id, token), safeSecretText(env, token), safeSecretText(project, token))
+		fmt.Fprintf(errout, "watch interrupted; operation %s may continue; inspect with berthy diagnostics %s -e %s --project %s or cancel with berthy cancel %s -e %s --project %s\n", safeSecretText(id, redact...), safeSecretText(id, redact...), safeSecretText(env, redact...), safeSecretText(project, redact...), safeSecretText(id, redact...), safeSecretText(env, redact...), safeSecretText(project, redact...))
 		return 1
 	}
 	for {
@@ -188,7 +189,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				replayErr := stream()
 				if replayErr != nil || !finals[state] {
 					progress.Close()
-					fmt.Fprintf(errout, "incomplete event delivery for operation %s (state %s)\n", safeSecretText(id, token), state)
+					fmt.Fprintf(errout, "incomplete event delivery for operation %s (state %s)\n", safeSecretText(id, redact...), state)
 				}
 			}
 			progress.Close()
@@ -197,9 +198,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			dec.UseNumber()
 			_ = dec.Decode(&doc)
 			if asJSON {
-				doc = redactOperationJSON(doc, token)
+				doc = redactOperationJSON(doc, redact...)
 			} else {
-				doc = safeJSONValue(doc, token)
+				doc = safeJSONValue(doc, redact...)
 			}
 			data, _ = json.Marshal(doc)
 			exitCode := 0
@@ -251,7 +252,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				if asJSON {
 					hint = errout
 				}
-				fmt.Fprintln(hint, safeSecretText(failureHint(env, project, id), token))
+				fmt.Fprintln(hint, safeSecretText(failureHint(env, project, id), redact...))
 			}
 			return 1
 		}
@@ -273,19 +274,19 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 	}
 }
 
-func redactOperationJSON(value any, token string) any {
+func redactOperationJSON(value any, tokens ...string) any {
 	switch v := value.(type) {
 	case string:
-		return redactSecretText(v, token)
+		return redactSecretText(v, tokens...)
 	case []any:
 		for i := range v {
-			v[i] = redactOperationJSON(v[i], token)
+			v[i] = redactOperationJSON(v[i], tokens...)
 		}
 		return v
 	case map[string]any:
 		clean := make(map[string]any, len(v))
 		for key, item := range v {
-			clean[redactSecretText(key, token)] = redactOperationJSON(item, token)
+			clean[redactSecretText(key, tokens...)] = redactOperationJSON(item, tokens...)
 		}
 		return clean
 	default:

@@ -474,3 +474,73 @@ func TestDeploySubmissionDelayedProgress(t *testing.T) {
 		}
 	})
 }
+
+func TestDeployOperationRedactsBothPromotionTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		asJSON, terminal bool
+	}{{"pipe", false, false}, {"terminal", false, true}, {"json", true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			forceStderrTerminal(t, tc.terminal)
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.Method+" "+r.URL.RequestURI())
+				if r.Header.Get("Authorization") != "Bearer dest-secret" {
+					t.Errorf("wrong authorization")
+				}
+				switch r.Method + " " + r.URL.Path {
+				case "POST /v1/deploys":
+					w.WriteHeader(http.StatusAccepted)
+					fmt.Fprint(w, `{"operation_id":"op-real","events_url":"/v1/operations/op-real/events"}`)
+				case "GET /v1/operations/op-real/events":
+					fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"source\\u002dsecret dest\\u002dsecret\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
+				case "GET /v1/operations/op-real":
+					fmt.Fprint(w, `{"id":"op-real","state":"succeeded","commit":"before\rsource\u002dsecret dest\u002dsecret\u0085after"}`)
+				default:
+					t.Errorf("unexpected request %s", r.URL)
+				}
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			var out, errs bytes.Buffer
+			code := sendCommand(context.Background(), server.Client(), base, "/v1/", "dest-secret", "POST", "deploys", struct{}{}, commandFlags{redactToken: "source-secret", json: tc.asJSON}, "deploy", &out, &errs)
+			expected := "POST /v1/deploys,GET /v1/operations/op-real/events"
+			if tc.terminal {
+				expected += "?progress=1"
+			}
+			expected += ",GET /v1/operations/op-real"
+			if code != 0 || errs.Len() != 0 || strings.Join(paths, ",") != expected {
+				t.Fatalf("exit=%d paths=%v err=%q", code, paths, errs.String())
+			}
+			if strings.Contains(out.String(), "source-secret") || strings.Contains(out.String(), "dest-secret") || strings.ContainsAny(out.String(), "\r\u0085") || !strings.Contains(out.String(), "[redacted]") {
+				t.Fatalf("unsafe output %q", out.String())
+			}
+			if tc.asJSON {
+				var result struct {
+					ID, State, Commit string
+					Checks            []struct{ Step string }
+				}
+				if json.Unmarshal(out.Bytes(), &result) != nil || result.ID != "op-real" || result.State != "succeeded" || result.Commit != "before\r[redacted] [redacted]\u0085after" || len(result.Checks) != 1 || result.Checks[0].Step != "[redacted] [redacted]" {
+					t.Fatalf("incorrect decoded result: %+v", result)
+				}
+			}
+		})
+	}
+}
+
+func TestDeployOperationRedactsBothTokensInStreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/operations/op-real/events" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"source\u002dsecret dest\u002dsecret"}`)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	var out, errs bytes.Buffer
+	code := watchOperation(context.Background(), server.Client(), base, "dest-secret", "/v1/", "op-real", "/v1/operations/op-real/events", &out, &errs, false, "deploy", "dev", "demo", "source-secret")
+	if code != 1 || errs.String() != "agent returned HTTP 404: [redacted] [redacted]\n" || out.Len() != 0 {
+		t.Fatalf("exit=%d out=%q err=%q", code, out.String(), errs.String())
+	}
+}
