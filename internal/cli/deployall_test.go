@@ -37,14 +37,17 @@ apps:
 
 // fakeDeployAgent is an agent that records what berthy deploy sends and answers as each app is told to.
 type fakeDeployAgent struct {
-	mu         sync.Mutex
-	deploys    []map[string]any // the body of each deploy request, in the order received
-	reads      []string         // the path of each read request
-	failOp     map[string]bool  // apps whose operation ends failed
-	failPlan   map[string]bool  // apps whose dry run is refused
-	undeployed map[string]bool  // apps that have no applied release
-	held       string           // the app whose deploy the agent holds for approval
-	protected  bool             // whether the agent is configured for a protected environment
+	mu           sync.Mutex
+	deploys      []map[string]any // the body of each deploy request, in the order received
+	reads        []string         // the path of each read request
+	failOp       map[string]bool  // apps whose operation ends failed
+	failPlan     map[string]bool  // apps whose dry run is refused
+	undeployed   map[string]bool  // apps that have no applied release
+	held         string           // the app whose deploy the agent holds for approval
+	mixedPlans   bool
+	blockCompose bool
+	legacy       bool
+	protected    bool // whether the agent is configured for a protected environment
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -71,7 +74,13 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, base)
 	switch {
 	case r.Method == "GET" && rest == "agent":
-		fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t,"effective_protected":%t}`, f.protected, f.protected)
+		if f.legacy {
+			fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t}`, f.protected)
+		} else {
+			fmt.Fprintf(w, `{"project":"demo","environment":"dev","version":"test","protected":%t,"effective_protected":%t}`, f.protected, f.protected)
+		}
+	case r.Method == "POST" && rest == "images/resolve" && f.mixedPlans:
+		fmt.Fprintf(w, `{"image":"ghcr.io/acme/api@sha256:%s","tag":"v1"}`, strings.Repeat("a", 64))
 	case r.Method == "POST" && rest == "deploys":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -81,6 +90,14 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 		f.deploys = append(f.deploys, body)
 		app, _ := body["app"].(string)
 		switch {
+		case body["dry_run"] == true && f.mixedPlans && app == "api":
+			fmt.Fprintf(w, `{"app":"api","image":"ghcr.io/acme/api@sha256:%s","tag":"v1","roles":["web"]}`, strings.Repeat("a", 64))
+		case body["dry_run"] == true && f.mixedPlans:
+			blockers := ""
+			if f.blockCompose {
+				blockers = `,"blockers":["blocked"]`
+			}
+			fmt.Fprintf(w, `{"app":"zstack","image":"","roles":[],"compose":{"project":"demo-dev-zstack","services":[],"volumes":[]%s}}`, blockers)
 		case body["dry_run"] == true && f.failPlan[app]:
 			w.WriteHeader(400)
 			fmt.Fprint(w, `{"code":"operation_failed","message":"plan refused for `+app+`"}`)
@@ -446,5 +463,61 @@ func TestDeployAllAgainstAnAgentWithoutTheAppliedRead(t *testing.T) {
 	code, _, errs := deployAllCommand(t, dir, cfg)
 	if code != 1 || !strings.Contains(errs, "agent returned HTTP 404") || strings.Contains(errs, "not deployed yet") {
 		t.Fatalf("exit %d: %q", code, errs)
+	}
+}
+
+func TestDeployAllProtectedTagRefusesNoninteractiveBeforeMutation(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true}
+	dir, cfg := deployAllFixture(t, allAppsManifest, agent)
+	code, _, _ := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--json")
+	if code == 0 || len(agent.deploys) != 0 {
+		t.Fatalf("exit %d, requests %v", code, agent.apps())
+	}
+}
+
+func TestDeployAllProtectedMixedPlansRejectNestedBlocker(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true, blockCompose: true}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+	if code == 0 || !strings.Contains(errs, "blocker") {
+		t.Fatalf("exit %d stderr %q", code, errs)
+	}
+	for _, d := range agent.deploys {
+		if d["dry_run"] != true {
+			t.Fatalf("mutation: %v", d)
+		}
+	}
+}
+
+func TestDeployAllProtectedMixedDryRunUsesValidatedPlans(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true}
+	manifest := "project: demo\nnetwork: demo\nprotected: true\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    depends_on: [api]\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 {
+		t.Fatalf("exit %d, stdout %q, stderr %q, requests %v", code, out, errs, agent.apps())
+	}
+	if agent.deploys[0]["version_tag"] != "v1" || agent.deploys[0]["version"] != "ghcr.io/acme/api@sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("selection %v", agent.deploys[0])
+	}
+}
+
+func TestDeployAllLegacyGuardKeepsOriginalTagBody(t *testing.T) {
+	agent := &fakeDeployAgent{legacy: true, mixedPlans: true}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1")
+	if code != 0 || len(agent.deploys) != 2 {
+		t.Fatalf("exit %d stdout %q stderr %q requests %v", code, out, errs, agent.apps())
+	}
+	if agent.deploys[0]["dry_run"] != true || agent.deploys[1]["dry_run"] == true || agent.deploys[1]["version"] != "v1" || agent.deploys[1]["version_tag"] != nil {
+		t.Fatalf("requests %v", agent.deploys)
 	}
 }

@@ -8,16 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
-	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
+	"github.com/distribution/reference"
 )
 
 // allVersions is the version REF given for each image app that has one.
@@ -72,9 +70,12 @@ func parseAllVersions(m *manifest.Manifest, values []string) (allVersions, error
 
 // deployStep is one app of a deploy without an app: its request, ready to send, and what its header says about the version.
 type deployStep struct {
-	app    string
-	req    deploy.Request
-	header string
+	app        string
+	req        deploy.Request
+	header     string
+	tag        string
+	preview    []byte
+	previewErr string
 }
 
 // deployAllEntry is what the --json document of a deploy without an app says about one app: how its deploy ended and what
@@ -120,12 +121,30 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		fmt.Fprintln(errout, err)
 		return 2
 	}
-	var co gitcheck.Checkout
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	steps := make([]deployStep, 0, len(m.Apps))
+	tags := make(map[string]string)
 	for _, app := range m.DeployOrder() {
 		req := deploy.Request{App: app, Commit: f.commit, DryRun: f.dry}
 		step := deployStep{app: app}
 		if ref, ok := versions[app]; ok {
+			selected, e := m.ImageReference(app, ref)
+			if e != nil {
+				fmt.Fprintln(errout, e)
+				return 1
+			}
+			if tagged, ok := selected.(reference.NamedTagged); ok {
+				if _, digest := selected.(reference.Canonical); !digest {
+					tags[app] = tagged.Tag()
+				}
+			}
+			if _, mutable := tags[app]; !mutable {
+				if _, e := m.CheckImageDeploy(app, ref, false); e != nil {
+					fmt.Fprintln(errout, e)
+					return 1
+				}
+			}
 			req.Version = ref
 			step.header = " (" + terminalSafe(ref) + ")"
 		} else if m.Apps[app].Kind == "image" {
@@ -134,37 +153,43 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if req.RequestID, err = newRequestID(); err != nil {
 			return 1
 		}
-		checkout, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
-		if e != nil {
-			fmt.Fprintf(errout, "app %s: %v (nothing was deployed)\n", app, e)
-			return 1
-		}
-		if !manifestMatchesTarget(errout, f.dir, req.Manifest.Project, target.Project) {
-			return 2
-		}
-		// Every app reads the same base manifest and overlay, so the checkout is one: the files any of the apps reads.
-		co.InWorkTree, co.Head = checkout.InWorkTree, checkout.Head
-		co.Changed = append(co.Changed, checkout.Changed...)
 		step.req = req
 		steps = append(steps, step)
 	}
-	slices.Sort(co.Changed)
-	co.Changed = slices.Compact(co.Changed)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	reqs := make([]*deploy.Request, len(steps))
+	for i := range steps {
+		reqs[i] = &steps[i].req
+	}
+	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, f.env, m, reqs)
+	if err != nil {
+		var composeApps []string
+		for _, step := range steps {
+			if m.Apps[step.app].Kind == "compose" {
+				composeApps = append(composeApps, step.app)
+			}
+		}
+		fmt.Fprintf(errout, "apps %s: %v (nothing was deployed)\n", strings.Join(composeApps, ", "), err)
+		return 1
+	}
 	client := agentclient.NewHTTPClient()
 	warnCheckout(errout, f.commit, co)
-	if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
-		fmt.Fprintf(errout, "%v (nothing was deployed)\n", e)
-		return 1
+	if len(tags) == 0 {
+		if e := refuseLocalChanges(ctx, client, target, m.Protected, co); e != nil {
+			fmt.Fprintf(errout, "%v (nothing was deployed)\n", e)
+			return 1
+		}
 	}
 	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-		fmt.Fprintln(errout, e)
+		fmt.Fprintln(errout, target.Redact(e.Error()))
 		return 1
 	}
-	if code := checkKeptVersions(ctx, client, base, prefix, token, steps, errout); code != 0 {
+	if code := checkKeptVersions(ctx, client, target, steps, errout); code != 0 {
 		return code
+	}
+	if len(tags) != 0 {
+		if handled, code := prepareBatchTags(ctx, client, target, f, m, co, steps, tags, out, errout); handled {
+			return code
+		}
 	}
 
 	results := make([]deployAllEntry, len(steps))
@@ -178,7 +203,18 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		} else {
 			fmt.Fprintf(out, "==> deploy %s%s\n", step.app, step.header)
 		}
-		code := sendCommand(ctx, client, base, prefix, token, "POST", "deploys", step.req, f, "deploy", stdout, errout)
+		code := 0
+		if f.dry && step.previewErr != "" {
+			fmt.Fprintln(errout, step.previewErr)
+			code = 1
+		} else if f.dry && step.preview != nil {
+			if err := showImagePlan(stdout, errout, step.preview, f.json, ""); err != nil {
+				fmt.Fprintln(errout, err)
+				code = 1
+			}
+		} else {
+			code = sendCommand(ctx, client, base, prefix, token, "POST", "deploys", step.req, f, "deploy", stdout, errout)
+		}
 		result, capturedErr := capturedDocument(captured.Bytes())
 		if capturedErr != nil && code == 0 {
 			fmt.Fprintf(errout, "app %s: %v\n", step.app, capturedErr)
@@ -251,42 +287,27 @@ func capturedDocument(b []byte) (json.RawMessage, error) {
 // checkKeptVersions asks the agent, with a read that changes nothing, for the release of every image app that keeps its version.
 // An app that was never deployed has none, and the agent would refuse it only when its turn came, after the apps before it
 // were deployed, so it is refused here, before anything is sent. The apps' headers say which version each keeps.
-func checkKeptVersions(ctx context.Context, client *http.Client, base *url.URL, prefix, token string, steps []deployStep, errout io.Writer) int {
+func checkKeptVersions(ctx context.Context, client *http.Client, target *agentclient.Target, steps []deployStep, errout io.Writer) int {
 	missing := false
 	for i := range steps {
 		step := &steps[i]
 		if !step.req.KeepVersion {
 			continue
 		}
-		u := *base
-		u.Path = prefix + "applied/" + url.PathEscape(step.app)
-		resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
+		answer, found, err := readApplied(ctx, client, target, step.app)
 		if err != nil {
-			fmt.Fprintln(errout, "agent connection failed (nothing was deployed)")
+			fmt.Fprintf(errout, "%s (nothing was deployed)\n", err)
 			return 1
 		}
-		data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-		resp.Body.Close()
-		if err != nil || len(data) > 1<<20 {
-			fmt.Fprintln(errout, "invalid agent response (nothing was deployed)")
-			return 1
-		}
-		var answer struct {
-			Code string `json:"code"`
-			appliedRelease
-		}
-		switch {
-		case resp.StatusCode == http.StatusNotFound && json.Unmarshal(data, &answer) == nil && answer.Code == "not_deployed":
+		if !found {
 			fmt.Fprintf(errout, "image app %s is not deployed yet: give --version %s=REF (nothing was deployed)\n", step.app, step.app)
 			missing = true
-		case resp.StatusCode != http.StatusOK || json.Unmarshal(data, &answer) != nil:
-			fmt.Fprintf(errout, "%s (nothing was deployed)\n", agentclient.Message(resp.StatusCode, data))
-			return 1
-		default:
+		} else {
 			// The agent refuses the deploy if the app runs another version by the time it deploys it, so what the header says is
 			// what is kept.
 			step.req.KeepDigest = answer.Digest
-			step.header = " (keeps " + terminalSafe(keptVersionName(answer.appliedRelease)) + ")"
+			step.header = " (keeps " + terminalSafe(keptVersionName(answer)) + ")"
+			step.tag = answer.Tag
 		}
 	}
 	if missing {
