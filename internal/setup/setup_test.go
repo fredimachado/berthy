@@ -622,6 +622,9 @@ func TestNewSSHRefusesAnInvalidHost(t *testing.T) {
 	if _, err := NewSSH("-oProxyCommand=x"); err == nil {
 		t.Error("NewSSH accepted an option")
 	}
+	if _, err := (&SSH{Dest: "-x", Program: "ssh"}).Run(context.Background(), "id", nil); err == nil {
+		t.Error("Run accepted an option as the destination")
+	}
 }
 
 func TestParseListen(t *testing.T) {
