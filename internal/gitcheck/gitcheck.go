@@ -139,7 +139,7 @@ type CapturedFile struct {
 }
 
 // CompareCaptured reports inputs whose captured contents do not match the given HEAD tree.
-func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile) ([]string, error) {
+func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile) (changed []string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 	prefix, _, err := run(ctx, dir, "rev-parse", "--show-prefix")
@@ -152,7 +152,38 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 		return nil, fmt.Errorf("checkout root unavailable")
 	}
 	root = strings.TrimRight(root, "\r\n")
-	var changed []string
+	gitDir, _, err := run(ctx, dir, "rev-parse", "--absolute-git-dir")
+	if err != nil || strings.TrimRight(gitDir, "\r\n") == "" {
+		return nil, fmt.Errorf("checkout git directory unavailable")
+	}
+	gitDir = strings.TrimRight(gitDir, "\r\n")
+	temp, err := os.MkdirTemp("", "berthy-git-view-")
+	if err != nil {
+		return nil, fmt.Errorf("checkout view unavailable: %w", err)
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(temp); cleanupErr != nil {
+			changed = nil
+			err = fmt.Errorf("checkout view cleanup failed: %w", cleanupErr)
+		}
+	}()
+	view := filepath.Join(temp, "worktree")
+	if err := os.Mkdir(view, 0700); err != nil {
+		return nil, fmt.Errorf("checkout view unavailable: %w", err)
+	}
+	env := append(environment(), "GIT_INDEX_FILE="+filepath.Join(temp, "index"))
+	args := []string{"-C", view, "--git-dir=" + gitDir, "--work-tree=" + view, "-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false"}
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "read-tree", head)...)
+	cmd.Dir, cmd.Env, cmd.WaitDelay = view, env, time.Second
+	diagnostics := &checkoutComparison{}
+	cmd.Stdout, cmd.Stderr = diagnostics, diagnostics
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("checkout view unavailable: %w", err)
+	}
+	if diagnostics.different {
+		return nil, fmt.Errorf("checkout view reported diagnostics")
+	}
+	attributes := make(map[string]bool)
 	for _, f := range files {
 		name := f.Path
 		if name == "" || name != path.Clean(name) || name == "." || name == ".." || strings.HasPrefix(name, "../") || strings.ContainsAny(name, "\\\x00") || path.IsAbs(name) || strings.Contains(name, ":") {
@@ -185,7 +216,10 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 			changed = append(changed, name)
 			continue
 		}
-		match, err := matchesCheckout(ctx, root, rootName, meta[2], f.Bytes)
+		if err := checkoutAttributes(ctx, root, view, head, rootName, attributes); err != nil {
+			return nil, err
+		}
+		match, err := matchesCheckout(ctx, view, args, env, rootName, meta[2], f.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("checkout input conversion unavailable: %w", err)
 		}
@@ -196,10 +230,78 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 	return changed, nil
 }
 
+// checkoutAttributes supplies the HEAD attribute files because older Git does not
+// consult the index for absent worktree attributes when running cat-file.
+func checkoutAttributes(ctx context.Context, root, view, head, name string, done map[string]bool) error {
+	for dir := path.Dir(name); ; dir = path.Dir(dir) {
+		attr := path.Join(dir, ".gitattributes")
+		if !done[attr] {
+			entry, _, err := run(ctx, root, "--literal-pathspecs", "ls-tree", "-z", head, "--", attr)
+			if err != nil {
+				return fmt.Errorf("checkout attributes unavailable: %w", err)
+			}
+			if entry != "" {
+				parts := strings.Split(entry, "\x00")
+				if len(parts) != 2 || parts[1] != "" {
+					return fmt.Errorf("invalid checkout attributes entry")
+				}
+				fields := strings.SplitN(parts[0], "\t", 2)
+				if len(fields) != 2 || fields[1] != attr {
+					return fmt.Errorf("invalid checkout attributes path")
+				}
+				meta := strings.Fields(fields[0])
+				if len(meta) != 3 || (meta[0] != "100644" && meta[0] != "100755") || meta[1] != "blob" {
+					return fmt.Errorf("unsupported checkout attributes")
+				}
+				cmd := exec.CommandContext(ctx, "git", "-C", root, "cat-file", "blob", meta[2])
+				cmd.Env, cmd.WaitDelay = environment(), time.Second
+				output := &attributeBuffer{}
+				diagnostics := &checkoutComparison{}
+				cmd.Stdout, cmd.Stderr = output, diagnostics
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("checkout attributes unavailable: %w", err)
+				}
+				if output.tooLarge || diagnostics.different {
+					return fmt.Errorf("checkout attributes unavailable")
+				}
+				target := filepath.Join(view, filepath.FromSlash(attr))
+				if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+					return fmt.Errorf("checkout attributes unavailable: %w", err)
+				}
+				if err := os.WriteFile(target, output.Bytes(), 0600); err != nil {
+					return fmt.Errorf("checkout attributes unavailable: %w", err)
+				}
+			}
+			done[attr] = true
+		}
+		if dir == "." {
+			break
+		}
+	}
+	return nil
+}
+
+// attributeBuffer caps files copied into the temporary Git view.
+type attributeBuffer struct {
+	bytes.Buffer
+	tooLarge bool
+}
+
+func (b *attributeBuffer) Write(p []byte) (int, error) {
+	const maxAttributes = 1 << 20
+	n := len(p)
+	if n > maxAttributes-b.Len() {
+		b.tooLarge = true
+		p = p[:maxAttributes-b.Len()]
+	}
+	_, _ = b.Buffer.Write(p)
+	return n, nil
+}
+
 // matchesCheckout compares streamed checkout output without retaining filter output.
-func matchesCheckout(ctx context.Context, dir, name, object string, captured []byte) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "--filters", "--path="+name, object)
-	cmd.Env = environment()
+func matchesCheckout(ctx context.Context, view string, args, env []string, name, object string, captured []byte) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "cat-file", "--filters", "--path="+name, object)...)
+	cmd.Dir, cmd.Env = view, env
 	cmd.WaitDelay = time.Second
 	output := &checkoutComparison{expected: captured}
 	diagnostics := &checkoutComparison{}

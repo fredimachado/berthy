@@ -478,3 +478,68 @@ func TestCapturedCheckoutConversionFailureRefuses(t *testing.T) {
 		})
 	}
 }
+
+func TestCapturedAttributesPinnedToHead(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(fmt.Sprint(staged), func(t *testing.T) {
+			overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: \"$Id$\"\n"
+			dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay, ".gitattributes": "*.yml -ident\n"})
+			if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.yml ident\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if staged {
+				git(t, dir, "add", ".gitattributes")
+			}
+			if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "checkout", "--", "berthy.dev.yml")
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := loaded.Manifest.Apps["api"].Env.Plain["BUILD"]
+			if !strings.HasPrefix(value, "$Id: ") {
+				t.Fatalf("ident was not expanded: %q", value)
+			}
+			if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "checkout", "--", "berthy.dev.yml")
+			req := deploy.Request{App: "api"}
+			co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err != nil || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"berthy.dev.yml"}) {
+				t.Fatalf("attributes changed: modified %v, paths %v, err %v", req.Modified, co.Changed, err)
+			}
+		})
+	}
+}
+
+func TestCapturedCommittedIdentCheckout(t *testing.T) {
+	overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: \"$Id$\"\n"
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay, ".gitattributes": "*.yml ident\n"})
+	if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "checkout", "--", "berthy.dev.yml")
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value := loaded.Manifest.Apps["api"].Env.Plain["BUILD"]; !strings.HasPrefix(value, "$Id: ") {
+		t.Fatalf("ident was not expanded: %q", value)
+	}
+	req := deploy.Request{App: "api"}
+	co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil || req.Modified || len(co.Changed) != 0 {
+		t.Fatalf("committed ident: modified %v, paths %v, err %v", req.Modified, co.Changed, err)
+	}
+}
