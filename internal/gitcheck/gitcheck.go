@@ -22,6 +22,66 @@ type Checkout struct {
 	Changed    []string // the given files that are modified, staged, deleted or untracked, relative to dir, sorted
 }
 
+// Identity identifies the checkout around a read of deploy inputs. GitDir distinguishes linked worktrees.
+type Identity struct {
+	GitAvailable bool
+	InWorkTree   bool
+	Head         string
+	GitDir       string
+	gitDirInfo   os.FileInfo
+	workDirInfo  os.FileInfo
+}
+
+// Same reports whether two captures refer to the same Git availability, worktree and revision.
+func (id Identity) Same(other Identity) bool {
+	if id.GitAvailable != other.GitAvailable || id.InWorkTree != other.InWorkTree || id.Head != other.Head || id.GitDir != other.GitDir {
+		return false
+	}
+	return !id.InWorkTree || os.SameFile(id.gitDirInfo, other.gitDirInfo) && os.SameFile(id.workDirInfo, other.workDirInfo)
+}
+
+// Capture reads checkout identity without inspecting file status. Call it before reading deploy inputs.
+func Capture(ctx context.Context, dir string) (Identity, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return Identity{}, nil
+	}
+	id := Identity{GitAvailable: true}
+	co, err := Inspect(ctx, dir, nil)
+	if err != nil {
+		return Identity{}, err
+	}
+	id.InWorkTree, id.Head = co.InWorkTree, co.Head
+	if !id.InWorkTree {
+		return id, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	gitDir, _, err := run(ctx, dir, "rev-parse", "--absolute-git-dir")
+	if err != nil || strings.TrimSpace(gitDir) == "" {
+		return Identity{}, fmt.Errorf("checkout identity unavailable")
+	}
+	id.GitDir = filepath.Clean(strings.TrimSpace(gitDir))
+	id.gitDirInfo, err = capturedFileInfo(id.GitDir)
+	if err != nil {
+		return Identity{}, fmt.Errorf("checkout identity unavailable")
+	}
+	id.workDirInfo, err = capturedFileInfo(dir)
+	if err != nil {
+		return Identity{}, fmt.Errorf("checkout identity unavailable")
+	}
+	return id, nil
+}
+
+// capturedFileInfo takes the identity from an open handle; os.Stat defers it on Windows.
+func capturedFileInfo(path string) (os.FileInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.Stat()
+}
+
 // gitTimeout bounds one inspection, which runs a few short git commands.
 const gitTimeout = 20 * time.Second
 

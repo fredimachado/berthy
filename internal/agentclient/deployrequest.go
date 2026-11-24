@@ -54,6 +54,9 @@ func PrepareDeploy(dir, env string, req *deploy.Request) (gitcheck.Checkout, err
 	return PrepareDeployFiles(context.Background(), dir, env, m, []*deploy.Request{req})
 }
 
+// inspectDeployFiles permits a deterministic checkout switch during status in tests.
+var inspectDeployFiles = gitcheck.Inspect
+
 // PrepareDeployFiles freezes the manifest, selected Compose files and checkout facts for a batch.
 func PrepareDeployFiles(ctx context.Context, dir, env string, m *manifest.Manifest, reqs []*deploy.Request) (gitcheck.Checkout, error) {
 	files := append([]string{}, manifest.Files(env)...)
@@ -70,7 +73,7 @@ func PrepareDeployFiles(ctx context.Context, dir, env string, m *manifest.Manife
 			files = append(files, manifest.FilePath(app.File))
 		}
 	}
-	co, err := gitcheck.Inspect(ctx, dir, files)
+	co, err := inspectDeployFiles(ctx, dir, files)
 	if err != nil {
 		return co, err
 	}
@@ -89,6 +92,24 @@ func PrepareDeployFiles(ctx context.Context, dir, env string, m *manifest.Manife
 				req.Modified = true
 			}
 		}
+	}
+	return co, nil
+}
+
+// PrepareDeployFilesChecked completes a capture begun before manifest.Load. Callers must pass the
+// identity from before reading any manifest or Compose input; changed checkout identity refuses the request.
+// Discard the prepared requests if this returns an error.
+func PrepareDeployFilesChecked(ctx context.Context, dir, env string, m *manifest.Manifest, reqs []*deploy.Request, before gitcheck.Identity) (gitcheck.Checkout, error) {
+	co, err := PrepareDeployFiles(ctx, dir, env, m, reqs)
+	if err != nil {
+		return co, err
+	}
+	after, err := gitcheck.Capture(ctx, dir)
+	if err != nil {
+		return co, err
+	}
+	if !before.Same(after) || co.InWorkTree != before.InWorkTree || co.Head != before.Head {
+		return co, errors.New("checkout changed while reading deploy files; retry the deploy")
 	}
 	return co, nil
 }

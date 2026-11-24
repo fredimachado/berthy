@@ -15,11 +15,15 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/distribution/reference"
 )
+
+// loadDeployManifest lets checkout capture tests switch revisions after the file read.
+var loadDeployManifest = manifest.Load
 
 // exactFields refuses ambiguous spellings and repeated fields before using a decision from the agent.
 func exactFields(data []byte, names ...string) (map[string]json.RawMessage, error) {
@@ -125,9 +129,22 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	return nil
 }
 
+// exactOnlyFields also refuses fields the renderer would otherwise silently discard.
+func exactOnlyFields(data []byte, names ...string) (map[string]json.RawMessage, error) {
+	fields, err := exactFields(data, names...)
+	if err != nil {
+		return nil, err
+	}
+	var all map[string]json.RawMessage
+	if json.Unmarshal(data, &all) != nil || len(all) != len(fields) {
+		return nil, errors.New("invalid agent response")
+	}
+	return fields, nil
+}
+
 // validImageDiff accepts the three forms emitted by current and legacy planners.
 func validImageDiff(data []byte) bool {
-	fields, err := exactFields(data, "new", "same", "changes")
+	fields, err := exactOnlyFields(data, "new", "same", "changes")
 	if err != nil {
 		return false
 	}
@@ -145,7 +162,7 @@ func validImageDiff(data []byte) bool {
 		return false
 	}
 	for _, change := range changes {
-		item, err := exactFields(change, "area", "change")
+		item, err := exactOnlyFields(change, "area", "change")
 		var area, description string
 		if err != nil || json.Unmarshal(item["area"], &area) != nil || json.Unmarshal(item["change"], &description) != nil || area == "" || description == "" {
 			return false
@@ -275,7 +292,7 @@ func interactiveDeploy(f commandFlags, out io.Writer) bool {
 	return !f.json && ok && screen != nil && os.Stdin != nil && term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(screen.Fd())
 }
 
-func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, req deploy.Request, selected reference.Named, out, errout io.Writer) int {
+func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, req deploy.Request, selected reference.Named, before gitcheck.Identity, out, errout io.Writer) int {
 	tagged, ok := selected.(reference.NamedTagged)
 	if !ok {
 		fmt.Fprintln(errout, "image tag required")
@@ -283,7 +300,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	}
 	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	progress.Start("Checking checkout")
-	co, err := agentclient.PrepareDeployFiles(ctx, f.dir, f.env, m, []*deploy.Request{&req})
+	co, err := agentclient.PrepareDeployFilesChecked(ctx, f.dir, f.env, m, []*deploy.Request{&req}, before)
 	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, err)

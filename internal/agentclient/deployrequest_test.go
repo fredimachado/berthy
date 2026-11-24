@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 )
 
@@ -125,5 +126,116 @@ func TestPrepareDeployFilesAttributesComposeChanges(t *testing.T) {
 	co, err = PrepareDeploy(dir, "dev", &strict)
 	if err != nil || !strict.Modified || strict.ComposeFile != "services: {x: {}}\n" || len(co.Changed) != 1 {
 		t.Fatalf("strict preparation: %+v %+v %v", strict, co, err)
+	}
+}
+
+func TestPrepareDeployFilesCheckedKeepsStableCheckoutFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		unborn, noGit bool
+	}{{"clean", false, false}, {"unborn", true, false}, {"no git", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, head := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+			if tc.unborn {
+				git(t, dir, "update-ref", "-d", "HEAD")
+				head = ""
+			}
+			if tc.noGit {
+				t.Setenv("PATH", t.TempDir())
+				head = ""
+			}
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := manifest.Load(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := deploy.Request{App: "api", Version: "v1", Commit: "explicit"}
+			co, err := PrepareDeployFilesChecked(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before)
+			if err != nil || co.Head != head || req.Commit != "explicit" || co.InWorkTree == tc.noGit {
+				t.Fatalf("checkout %+v request %+v err %v", co, req, err)
+			}
+		})
+	}
+}
+
+func TestPrepareDeployFilesCheckedRejectsWorktreeReplacement(t *testing.T) {
+	parent := t.TempDir()
+	dir, head := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "moved")
+	if err := os.Rename(dir, moved); err != nil {
+		t.Skipf("cannot move open worktree: %v", err)
+	}
+	git(t, parent, "clone", "-q", moved, dir)
+	if got := git(t, dir, "rev-parse", "HEAD"); got != head {
+		t.Fatal("replacement checkout has wrong revision")
+	}
+	req := deploy.Request{App: "api", Version: "v1"}
+	if _, err := PrepareDeployFilesChecked(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before); err == nil || !strings.Contains(err.Error(), "checkout changed") {
+		t.Fatalf("replacement not refused: %v", err)
+	}
+}
+
+func TestPrepareDeployFilesCheckedRejectsCheckoutAppearing(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(imageManifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "init", "-q")
+	req := deploy.Request{App: "api", Version: "v1"}
+	if _, err := PrepareDeployFilesChecked(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before); err == nil || !strings.Contains(err.Error(), "checkout changed") {
+		t.Fatalf("new checkout not refused: %v", err)
+	}
+}
+
+func TestPrepareDeployFilesCheckedRejectsSwitchDuringStatus(t *testing.T) {
+	dir, headA := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(imageManifest+"# second commit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "berthy.yml")
+	git(t, dir, "commit", "-q", "-m", "second")
+	headB := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "--detach", headA)
+	before, err := gitcheck.Capture(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := inspectDeployFiles
+	inspectDeployFiles = func(ctx context.Context, dir string, files []string) (gitcheck.Checkout, error) {
+		git(t, dir, "checkout", "-q", "--detach", headB)
+		co, err := previous(ctx, dir, files)
+		git(t, dir, "checkout", "-q", "--detach", headA)
+		return co, err
+	}
+	defer func() { inspectDeployFiles = previous }()
+	req := deploy.Request{App: "api", Version: "v1"}
+	if _, err := PrepareDeployFilesChecked(context.Background(), dir, "dev", m, []*deploy.Request{&req}, before); err == nil || !strings.Contains(err.Error(), "checkout changed") {
+		t.Fatalf("checkout switch was not refused: %v", err)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -358,6 +360,8 @@ func TestSingleTagRejectsMalformedPlanBeforeMutation(t *testing.T) {
 		{"null role", `[null]`, ""}, {"empty role", `[""]`, ""}, {"missing role", `[]`, ""},
 		{"duplicate role", `["web","web"]`, ""}, {"extra role", `["web","other"]`, ""},
 		{"null diff", `["web"]`, `,"diff":null`}, {"unknown diff", `["web"]`, `,"diff":{"other":true}`},
+		{"extra diff field", `["web"]`, `,"diff":{"same":true,"other":"hidden"}`},
+		{"extra change field", `["web"]`, `,"diff":{"changes":[{"area":"image","change":"x","other":"hidden"}]}`},
 		{"invalid diff item", `["web"]`, `,"diff":{"changes":[null]}`},
 		{"contradictory diff", `["web"]`, `,"diff":{"new":true,"same":true}`},
 		{"wrong plan kind", `["web"]`, `,"remove":{"app":"api"}`},
@@ -398,5 +402,35 @@ func TestImagePlanAcceptsPlannerShapes(t *testing.T) {
 		if err := imagePlan([]byte(data), m, deploy.Request{App: "api"}, image, "stable"); err != nil {
 			t.Errorf("valid planner shape %q rejected: %v", diff, err)
 		}
+	}
+}
+
+func TestProtectedTagRefusesCheckoutSwitchDuringCapture(t *testing.T) {
+	dir, aHead := checkoutRepo(t, map[string]string{"berthy.yml": "protected: true\n" + versionsManifest, "berthy.dev.yml": "apps:\n  api:\n    env:\n      plain:\n        MARKER: before\n"})
+	if err := os.WriteFile(filepath.Join(dir, "berthy.dev.yml"), []byte("apps:\n  api:\n    env:\n      plain:\n        MARKER: after\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitRunIn(t, dir, "add", "berthy.dev.yml")
+	gitRunIn(t, dir, "commit", "-q", "-m", "second")
+	bHead := gitRunIn(t, dir, "rev-parse", "HEAD")
+	gitRunIn(t, dir, "checkout", "-q", "--detach", aHead)
+	image := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
+	a := &selectionAgent{policy: `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`, resolved: fmt.Sprintf(`{"image":%q,"tag":"stable"}`, image), plan: fmt.Sprintf(`{"app":"api","image":%q,"tag":"stable","roles":["web"]}`, image)}
+	server := httptest.NewServer(http.HandlerFunc(a.serve))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	old := loadDeployManifest
+	loadDeployManifest = func(dir, env string) (*manifest.Manifest, error) {
+		m, err := old(dir, env)
+		if err == nil {
+			gitRunIn(t, dir, "checkout", "-q", "--detach", bHead)
+		}
+		return m, err
+	}
+	defer func() { loadDeployManifest = old }()
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable", "--dry-run"}, &out, &errs)
+	if code == 0 || len(a.calls) != 0 || !strings.Contains(errs.String(), "checkout changed") {
+		t.Errorf("checkout switch not refused before remote work: exit %d calls %v stderr %q", code, a.calls, errs.String())
 	}
 }

@@ -24,6 +24,7 @@ import (
 
 	"berthy/internal/agentclient"
 	"berthy/internal/deploy"
+	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/session"
@@ -502,6 +503,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		b, _ := json.Marshal(loaded.Manifest)
 		return printResponse(out, errout, b, f.json)
 	}
+	var checkoutBefore gitcheck.Identity
+	// A mutable tag needs the identity from before target resolution or manifest loading reads the checkout.
+	if cmd == "deploy" && len(f.pos) == 1 && len(f.versions) == 1 && !strings.Contains(f.versions[0], "@") && !strings.HasPrefix(f.versions[0], "sha256:") {
+		checkoutBefore, err = gitcheck.Capture(context.Background(), f.dir)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+	}
 	projectDir := dir
 	if slices.Contains(f.given, "--manifest-dir") {
 		projectDir = f.dir
@@ -649,7 +659,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return runInteractive(ctx, target, session.Request{Kind: cmd, App: req.App, Role: req.Role, Service: req.Service, Command: req.Command, Timeout: req.Timeout}, os.Stdin, out, errout)
 		}
 		if cmd == "deploy" {
-			m, e := manifest.Load(f.dir, f.env)
+			m, e := loadDeployManifest(f.dir, f.env)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
@@ -664,7 +674,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 					return 1
 				}
 				if _, canonical := selected.(reference.Canonical); !canonical {
-					return runSingleTagDeploy(ctx, client, target, f, m, req, selected, out, errout)
+					return runSingleTagDeploy(ctx, client, target, f, m, req, selected, checkoutBefore, out, errout)
 				}
 			}
 			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
