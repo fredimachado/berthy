@@ -321,6 +321,9 @@ func redactDeployValue(value any, text bool, tokens ...string) (any, error) {
 
 // safePromotionResponse keeps protocol identities intact while redacting decoded metadata.
 func safePromotionResponse(data []byte, tokens ...string) ([]byte, error) {
+	if _, err := exactFields(data, "approval_id", "expires", "plan", "operation_id", "events_url"); err != nil {
+		return nil, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var value any

@@ -15,6 +15,31 @@ preview_proxy_pid=
 
 # Stop the agent before inspecting its private durable admissions, then delete only a service
 # whose current scope and generation match an operation admitted under this run's request IDs.
+# An inspect failure proves absence only if a complete, warning-free inventory excludes the name.
+service_absent() {
+  local listing errors status
+  listing=$(mktemp "$RUN/service-inventory.XXXXXX") || return 1
+  errors=$(mktemp "$RUN/service-errors.XXXXXX") || { rm -f "$listing"; return 1; }
+  if ! d service ls --format '{{json .}}' >"$listing" 2>"$errors" || [ -s "$errors" ]; then
+    echo 'destination service inventory unavailable' >&2
+    rm -f "$listing" "$errors"
+    return 1
+  fi
+  python3 - "$listing" "$SERVICE" <<'PYLIST'
+import json, sys
+path, target = sys.argv[1:]
+try:
+    with open(path) as f: rows = [json.loads(line) for line in f if line.strip()]
+    if any(not isinstance(r, dict) or not isinstance(r.get('ID'), str) or not r['ID'] or not isinstance(r.get('Name'), str) or not r['Name'] for r in rows): raise ValueError()
+    if len({r['ID'] for r in rows}) != len(rows) or len({r['Name'] for r in rows}) != len(rows): raise ValueError()
+    sys.exit(1 if any(r['Name'] == target for r in rows) else 0)
+except (ValueError, OSError):
+    sys.exit(2)
+PYLIST
+  status=$?
+  rm -f "$listing" "$errors"
+  if [ "$status" -ne 0 ]; then echo 'destination service lookup is uncertain' >&2; return 1; fi
+}
 cleanup_owned_services() {
   local id spec generation owned
   [ -f "$RUN/state2/state.db" ] || return 0
@@ -26,31 +51,88 @@ for (op,) in con.execute("SELECT o.id FROM operations o JOIN audit a ON a.enviro
     print(op)
 PYSQL
   ) || return 1
-  spec=$(d service inspect --format '{{json .}}' "$SERVICE" 2>/dev/null) || return 0
-  id=$(jq -er '.ID | select(type == "string" and length > 0)' <<<"$spec") || return 1
+  if ! spec=$(d service inspect --format '{{json .}}' "$SERVICE" 2>/dev/null); then
+    service_absent
+    return $?
+  fi
+  jq -e --arg name "$SERVICE" 'type == "object" and (.ID | type == "string" and length == 25) and (.Spec | type == "object") and .Spec.Name == $name and (.Spec.Labels | type == "object")' <<<"$spec" >/dev/null || { echo 'invalid destination service inspection' >&2; return 1; }
+  id=$(jq -er '.ID' <<<"$spec") || return 1
   generation=$(jq -er --arg project "$PROJECT" --arg env "$DEST" --arg name "$SERVICE" '
     select(.Spec.Name == $name and .Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and .Spec.Labels["berthy.app"] == "web" and .Spec.Labels["berthy.role"] == "main") |
     .Spec.Labels["berthy.operation"] | select(type == "string" and length > 0)' <<<"$spec") || return 0
   if grep -Fxq -- "$generation" <<<"$owned"; then d service rm "$id" >/dev/null || return 1; fi
 }
 cleanup_destination() {
-  local collision spec full_id labels collisions
+  local collision spec full_id labels collisions status=0
   if [ -n "$preview_proxy_pid" ]; then kill "$preview_proxy_pid" 2>/dev/null || :; wait "$preview_proxy_pid" 2>/dev/null || :; fi
-  stop_agent2
-  cleanup_owned_services || return 1
+  stop_agent2 || status=1
+  cleanup_owned_services || status=1
   # The daemon can create the intentional collision before the child records its ID.
-  collisions=$(d service ls --format '{{.ID}}' --filter "label=fixture.promotion.collision=$RUN_ID") || return 1
+  if ! collisions=$(d service ls --format '{{.ID}}' --filter "label=fixture.promotion.collision=$RUN_ID"); then
+    echo 'collision inventory unavailable' >&2
+    status=1
+    collisions=
+  fi
   while IFS= read -r collision; do
     [ -n "$collision" ] || continue
-    spec=$(d service inspect --format '{{json .}}' "$collision" 2>/dev/null) || return 1
-    full_id=$(jq -er '.ID | select(type == "string" and length == 25)' <<<"$spec") || return 1
-    labels=$(jq -c '.Spec.Labels' <<<"$spec") || return 1
+    if ! spec=$(d service inspect --format '{{json .}}' "$collision" 2>/dev/null); then status=1; continue; fi
+    if ! full_id=$(jq -er '.ID | select(type == "string" and length == 25)' <<<"$spec"); then status=1; continue; fi
+    if ! labels=$(jq -c '.Spec.Labels' <<<"$spec"); then status=1; continue; fi
     if jq -e --arg marker "$RUN_ID" '.["fixture.promotion.collision"] == $marker' <<<"$labels" >/dev/null 2>&1; then
-      d service rm "$full_id" >/dev/null || return 1
+      d service rm "$full_id" >/dev/null || status=1
+    else
+      echo 'collision ownership is uncertain' >&2
+      status=1
     fi
   done <<< "$collisions"
-  rm -f "$COLLISION_FILE"
+  [ "$status" -ne 0 ] || rm -f "$COLLISION_FILE"
+  return "$status"
 }
+
+# Exercise an inspect failure and independent collision cleanup without using Docker.
+selftest_cleanup() (
+  local temp
+  temp=$(mktemp -d "$RUN/cleanup-test.XXXXXX") || return 1
+  trap 'rm -rf "$temp"' EXIT
+  RUN=$temp
+  preview_proxy_pid=
+  mkdir -p "$RUN/state2"
+  python3 - "$RUN/state2/state.db" <<'PYDB'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript('CREATE TABLE operations(id TEXT, environment TEXT, request_id TEXT); CREATE TABLE audit(operation_id TEXT, environment TEXT, outcome TEXT);')
+con.commit()
+PYDB
+  stop_agent2() { :; }
+  local inventory_case=present
+  d() {
+    case "$1 $2 ${3:-}" in
+      "service inspect --format")
+        if [ "$5" = "$SERVICE" ]; then return 1; fi
+        printf '{"ID":"aaaaaaaaaaaaaaaaaaaaaaaaa","Spec":{"Labels":{"fixture.promotion.collision":"%s"}}}\n' "$RUN_ID" ;;
+      "service ls --format")
+        case "$*" in
+          *fixture.promotion.collision*) echo aaaaaaaaaaaaaaaaaaaaaaaaa ;;
+          *) case "$inventory_case" in
+            present) printf '{"ID":"bbbbbbbbbbbb","Name":"%s"}\n' "$SERVICE" ;;
+            absent) : ;;
+            malformed) echo '{broken' ;;
+            warning) echo warning >&2 ;;
+            error) return 1 ;;
+          esac ;;
+        esac ;;
+      "service rm aaaaaaaaaaaaaaaaaaaaaaaaa") touch "$RUN/removed" ;;
+      *) return 1 ;;
+    esac
+  }
+  if cleanup_destination; then return 1; fi
+  [ -f "$RUN/removed" ] || return 1
+  inventory_case=absent; service_absent || return 1
+  for inventory_case in present malformed warning error; do
+    if service_absent; then return 1; fi
+  done
+)
+if [ "${PROMOTE_CLEANUP_SELFTEST:-}" = 1 ]; then selftest_cleanup; exit $?; fi
 cleanup() { local status=$?; trap - EXIT; cleanup_destination || status=1; exit "$status"; }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -115,9 +197,9 @@ unchanged 'noninteractive JSON leaves audit and approvals unchanged' "$guard"
 # A loopback proxy forwards destination reads but returns a deliberately malformed HTTP 200
 # plan for a dry run. Compare the real destination audit and approvals after the refusal.
 guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }
-coproc PREVIEW_PROXY { python3 - "$AGENT2_LISTEN" 2>"$RUN/preview-proxy.log" <<'PYPROXY'
+coproc PREVIEW_PROXY { exec python3 - "$AGENT2_LISTEN" "$RUN" 2>"$RUN/preview-proxy.log" <<'PYPROXY'
 import http.server, json, sys, urllib.error, urllib.request
-origin = sys.argv[1]
+origin, run_dir = sys.argv[1:]
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -132,8 +214,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try: body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
         except (ValueError, TypeError): body = {}
         if self.path.endswith('/deploys') and body.get('dry_run') is True:
+            open(run_dir+'/invalid-preview-seen', 'w').close()
             response, status = b'{"app":"web","image":"invalid","roles":["main"]}', 200
         else:
+            open(run_dir+'/invalid-preview-mutation', 'w').close()
             response, status = b'{}', 400
         self.send_response(status); self.end_headers(); self.wfile.write(response)
 server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
@@ -144,12 +228,6 @@ PYPROXY
 preview_proxy_pid=$PREVIEW_PROXY_PID
 IFS= read -r preview_port <&"${PREVIEW_PROXY[0]}" || { fail 'start invalid-preview proxy' 'no port'; finish; }
 jq --arg project "$PROJECT" --arg env "$DEST" --arg url "http://127.0.0.1:$preview_port" '.projects[$project].environments[$env].url = $url' "$RUN/admin.json" > "$RUN/invalid-preview.json" || { fail 'write proxy config' 'jq failed'; finish; }
-out=$(cd "$MAN" && "$BIN" promote web -e "$DEST" --project "$PROJECT" --config "$RUN/invalid-preview.json" --manifest-dir "$MAN" --from "$ENVN" --dry-run --json 2>&1); code=$?
-[ "$code" -ne 0 ] && pass 'malformed destination plan is refused' || fail 'malformed destination plan is refused' 'command succeeded'
-unchanged 'malformed preview leaves audit and approvals unchanged' "$guard"
-kill "$preview_proxy_pid" 2>/dev/null || :
-wait "$preview_proxy_pid" 2>/dev/null || :
-preview_proxy_pid=
 
 # The destination is never placed in the name-only ledger. The driver changes state only
 # after reading the real prompt; its private log is redacted before it is saved.
@@ -197,7 +275,9 @@ try:
         if proc.poll() is not None and not ready: break
     else: raise RuntimeError('promotion prompt timed out')
     code = proc.wait(timeout=10)
-    if not prompted or code != int(expected): raise RuntimeError('promotion did not prompt or had unexpected exit')
+    if change == 'invalid':
+        if prompted or code == 0 or b'invalid agent deploy plan' not in data: raise RuntimeError('invalid plan was not refused before the prompt')
+    elif not prompted or code != int(expected): raise RuntimeError('promotion did not prompt or had unexpected exit')
 finally:
     if proc.poll() is None: proc.kill(); proc.wait()
     os.close(master)
@@ -208,6 +288,14 @@ finally:
     with open(log, 'wb') as f: f.write(data)
 PY
 }
+
+if terminal_promote invalid y invalid 1 "$RUN/invalid-preview.json"; then pass 'interactive malformed plan refuses without consent'; else fail 'interactive malformed plan refuses without consent' 'terminal driver failed'; fi
+[ -f "$RUN/invalid-preview-seen" ] && pass 'malformed dry-run plan reached the CLI' || fail 'malformed dry-run plan reached the CLI' 'preview was not requested'
+[ ! -e "$RUN/invalid-preview-mutation" ] && pass 'malformed plan sends no mutation' || fail 'malformed plan sends no mutation' 'proxy received a mutation'
+unchanged 'malformed preview leaves audit and approvals unchanged' "$guard"
+kill "$preview_proxy_pid" 2>/dev/null || :
+wait "$preview_proxy_pid" 2>/dev/null || :
+preview_proxy_pid=
 
 # An unconfirmed preview must not grant ownership of a name claimed during its prompt.
 guard=$(guard_snapshot) || { fail 'read destination audit and approvals' 'invalid response'; finish; }

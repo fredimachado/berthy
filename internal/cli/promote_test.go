@@ -382,3 +382,22 @@ func TestPromotionHeldPlanEscapesControls(t *testing.T) {
 		t.Fatalf("unsafe or incomplete held display, exit %d, output %q", code, text)
 	}
 }
+
+func TestPromotionResponseRejectsAmbiguousEnvelope(t *testing.T) {
+	for _, body := range []string{
+		`{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","Plan":{"notes":["\u001b[31m"]}}`,
+		`{"approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{},"plan":{"notes":["\r"]}}`,
+		`{"Approval_id":"ap1","expires":"2030-01-01T00:00:00Z","plan":{}}`,
+		`{"approval_id":"ap1","Expires":"2030-01-01T00:00:00Z","plan":{}}`,
+		`{"operation_id":"op1","Operation_ID":"op2","events_url":"/events"}`,
+		`{"operation_id":"op1","Events_Url":"/events"}`,
+	} {
+		if _, err := safePromotionResponse([]byte(body), "source-secret", "dest-secret"); err == nil {
+			t.Errorf("ambiguous envelope accepted: %s", body)
+		}
+	}
+	safe, err := safePromotionResponse([]byte(`{"operation_id":"op1","events_url":"/events","metadata":"future"}`), "source-secret", "dest-secret")
+	if err != nil || !bytes.Contains(safe, []byte(`"operation_id":"op1"`)) || !bytes.Contains(safe, []byte(`"metadata":"future"`)) {
+		t.Fatalf("valid accepted response changed: %s %v", safe, err)
+	}
+}
