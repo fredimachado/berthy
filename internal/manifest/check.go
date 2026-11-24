@@ -8,6 +8,7 @@ import (
 
 	"berthy/internal/schedule"
 	"berthy/internal/scope"
+	"berthy/internal/sshhost"
 
 	"github.com/distribution/reference"
 )
@@ -30,6 +31,15 @@ func (m *Manifest) Check() Problems {
 	}
 	if m.Network != "" && !identifier.MatchString(m.Network) {
 		p.add("network", "invalid project or network")
+	}
+	for _, name := range sortedKeys(m.Servers) {
+		path := join("servers", name)
+		if !identifier.MatchString(name) {
+			p.add(path, "invalid server name %q", name)
+		}
+		if !sshhost.Valid(m.Servers[name].SSH) {
+			p.add(path+".ssh", "%s.ssh: use USER@SERVER or SERVER", path)
+		}
 	}
 	if len(m.Apps) == 0 {
 		p.add("apps", "at least one app is required")

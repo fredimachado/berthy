@@ -45,6 +45,7 @@ type Manifest struct {
 	Project      string                    `json:"project" yaml:"project"`
 	Network      string                    `json:"network" yaml:"network"`
 	Protected    bool                      `json:"protected" yaml:"protected"`
+	Servers      map[string]Server         `json:"servers,omitempty" yaml:"servers,omitempty"`
 	Registries   map[string]Registry       `json:"registries,omitempty" yaml:"registries,omitempty"`
 	Secrets      map[string]DeclaredSecret `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 	Apps         map[string]App            `json:"apps" yaml:"apps"`
@@ -70,6 +71,11 @@ type Manifest struct {
 	// Connector marks the manifest Berthy builds to run the ingress connector. It is never read from JSON or YAML.
 	Connector bool `json:"-" yaml:"-"`
 }
+
+type Server struct {
+	SSH string `json:"ssh" yaml:"ssh"`
+}
+
 type Ingress struct {
 	Cloudflare *Cloudflare `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
 }

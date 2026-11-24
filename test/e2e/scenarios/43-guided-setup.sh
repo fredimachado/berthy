@@ -49,7 +49,8 @@ secrets:
     generate:
       format: hex
 YML
-cmd="$BIN setup -e $ENVN --host ops@$server --listen $ip:7710 --manifest-dir $MAN --config $cfg"
+printf 'servers:\n  primary:\n    ssh: ops@%s\n' "$server" > "$MAN/berthy.$ENVN.yml" || exit 1
+cmd="$BIN setup -e $ENVN --manifest-dir $MAN --config $cfg"
 mkdir -p "$private/gate" "$LOG/tui-guided-setup" || exit 1
 mkfifo "$private/ssh-gate" || exit 1
 cat > "$private/gate/ssh" <<'SH'
@@ -67,7 +68,7 @@ cat > "$private/cancel.json" <<'JSON'
  {"snapshot":"cancelled"}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >/dev/null 2>&1; then
+if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 120x40 --script "$private/cancel.json" --out "$private/cancel" --timeout 180s --env "PATH=$private/gate:$PATH" --env "SSH_GATE=$private/ssh-gate" >/dev/null 2>&1; then
  fail "cancel pending setup" "terminal driver failed"; exit 1
 fi
 if ! grep -Eq '^[|/\\-] connect \([0-9]+\.[0-9]s\)' "$private/cancel/pending.txt" ||
@@ -91,7 +92,7 @@ cat > "$private/fresh.json" <<'JSON'
  {"wait_text":"deploy every app in depends_on order"}, {"snapshot":"complete"}, {"expect_exit":0}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
+if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
 screen="$private/fresh/token.txt"
 # Preserve only the setup step names and status words from the real terminal frame.
 mkdir -p "$LOG/tui-guided-setup" || exit 1

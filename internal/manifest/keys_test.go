@@ -144,6 +144,9 @@ const fullManifest = `
 project: demo
 network: demo
 protected: true
+servers:
+  pg:
+    ssh: ops@deploy.example.com
 min_version: 0.9.0
 timezone: Europe/Lisbon
 registries:

@@ -299,6 +299,66 @@ func TestSetupReadsTheNetworkFromTheManifest(t *testing.T) {
 	}
 }
 
+func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
+	dir := projectDir(t)
+	base := filepath.Join(dir, "berthy.yml")
+	data, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, "servers:\n  pg:\n    ssh: ops@base\n"...)
+	if err := os.WriteFile(base, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseOnly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseOnly, "berthy.yml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for file, contents := range map[string]string{
+		"berthy.p5.yml":       "servers:\n  pg:\n    ssh: ops@p5\n",
+		"berthy.cleared.yml":  "servers:\n  pg: null\n",
+		"berthy.invalid.yml":  "servers:\n  pg:\n    ssh: -oProxyCommand=x\n",
+		"berthy.multiple.yml": "servers:\n  api1:\n    ssh: ops@api1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(agentclient.EnvironmentEnv, "p5")
+	server := installedServer(t, "fixture")
+	made := withSetupRunner(t, server)
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		host    string
+		local   bool
+		problem string
+	}{
+		{name: "environment overlay", host: "ops@p5"},
+		{name: "base", args: []string{"--manifest-dir", baseOnly}, host: "ops@base"},
+		{name: "override", args: []string{"--host", "ops@replacement"}, host: "ops@replacement"},
+		{name: "local", args: []string{"--local"}, local: true},
+		{name: "explicitly empty host", args: []string{"--host="}, problem: "invalid --host"},
+		{name: "cleared", args: []string{"-e", "cleared"}, problem: "a single server in the manifest"},
+		{name: "invalid", args: []string{"-e", "invalid"}, problem: "servers.pg.ssh"},
+		{name: "multiple", args: []string{"-e", "multiple"}, problem: "multiple servers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			*made = [2]any{}
+			code, out, errout := runSetupCmd(append([]string{"--manifest-dir", dir, "--dry-run", "--json"}, tc.args...)...)
+			if tc.problem != "" {
+				if code != 2 || !strings.Contains(errout, tc.problem) || made[0] != nil {
+					t.Fatalf("exit %d, output %q, error %q, runner %v", code, out, errout, made)
+				}
+				return
+			}
+			if code != 0 || made[0] != tc.host || made[1] != tc.local {
+				t.Fatalf("exit %d, output %q, error %q, runner %v", code, out, errout, made)
+			}
+		})
+	}
+}
+
 func TestSetupRefusesAnInvalidManifest(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("network: demo\nunknown_field: 1\n"), 0o600)

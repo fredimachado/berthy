@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
+
+	"berthy/internal/sshhost"
 )
 
 // Runner runs shell scripts as root on the server being set up.
@@ -41,12 +42,6 @@ type Result struct {
 const maxCaptured = 1 << 20
 
 const pipeGrace = 5 * time.Second
-
-var hostPattern = regexp.MustCompile(`^([a-z_][a-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$`)
-
-// ValidHost reports whether s is a destination for ssh: USER@HOST or a bare HOST. It never starts with "-", so it cannot be
-// read as an ssh option.
-func ValidHost(s string) bool { return len(s) <= 320 && hostPattern.MatchString(s) }
 
 // shellQuote quotes s as one word for sh: in single quotes, where each embedded single quote ends the quoting, is escaped
 // with a backslash and starts it again. Inside single quotes nothing is special, so $, backticks, backslashes and newlines
@@ -89,7 +84,7 @@ type SSH struct {
 
 // NewSSH checks dest and finds ssh on PATH.
 func NewSSH(dest string) (*SSH, error) {
-	if !ValidHost(dest) {
+	if !sshhost.Valid(dest) {
 		return nil, fmt.Errorf("invalid host %q: use USER@SERVER or SERVER", dest)
 	}
 	program, err := exec.LookPath("ssh")
@@ -104,7 +99,7 @@ func (r *SSH) Target() string { return r.Dest }
 func (r *SSH) SetSudo(v bool) { r.sudo = v }
 
 func (r *SSH) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
-	if !ValidHost(r.Dest) {
+	if !sshhost.Valid(r.Dest) {
 		return Result{}, fmt.Errorf("invalid host %q", r.Dest)
 	}
 	return runProcess(ctx, r.Program, sshArgs(r.Dest, r.sudo, script), stdin)

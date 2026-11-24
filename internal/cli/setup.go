@@ -22,10 +22,11 @@ import (
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
+	"berthy/internal/sshhost"
 	"berthy/internal/version"
 )
 
-const setupUsage = "usage: berthy setup -e ENV (--host USER@SERVER | --local) [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
+const setupUsage = "usage: berthy setup -e ENV [--host USER@SERVER | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
 	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]"
 
@@ -101,13 +102,15 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
-	envGiven, keyFileGiven := false, false
+	envGiven, keyFileGiven, hostGiven := false, false, false
 	fset.Visit(func(f *flag.Flag) {
-		if f.Name == "e" {
+		switch f.Name {
+		case "e":
 			envGiven = true
-		}
-		if f.Name == "key-file" {
+		case "key-file":
 			keyFileGiven = true
+		case "host":
+			hostGiven = true
 		}
 	})
 	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
@@ -127,9 +130,9 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 			return usage("BERTHY_ENV is not a valid environment")
 		}
 		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
-	case *host != "" && *local, *host == "" && !*local:
-		return usage("use exactly one of --host and --local")
-	case *host != "" && !setup.ValidHost(*host):
+	case hostGiven && *local:
+		return usage("--host and --local cannot be used together")
+	case hostGiven && !sshhost.Valid(*host):
 		return usage("invalid --host %q: use USER@SERVER or SERVER", *host)
 	}
 	// The agent's address is needed on a first run only; the server's own configuration has it afterwards.
@@ -144,6 +147,17 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	from, err := setupSettings(*dir, *env, *project, *network, *protected)
 	if err != nil {
 		return usage("%v", err)
+	}
+	if !*local && !hostGiven {
+		if from.manifest == nil || len(from.manifest.Servers) == 0 {
+			return usage("setup needs --host USER@SERVER, a single server in the manifest, or --local")
+		}
+		if len(from.manifest.Servers) > 1 {
+			return usage("the manifest lists multiple servers: pass --host USER@SERVER or --local")
+		}
+		for _, server := range from.manifest.Servers {
+			*host = server.SSH
+		}
 	}
 	where := "on " + *host
 	if *local {
