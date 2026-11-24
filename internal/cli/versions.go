@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
@@ -59,8 +62,8 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 		fmt.Fprintln(errout, t.Redact(agentclient.Message(status, data)))
 		return 1
 	}
-	var result api.ImageTags
-	if json.Unmarshal(data, &result) != nil || result.Repository != reference.TrimNamed(repo).String() || result.Tags == nil {
+	result, valid := decodeImageTags(data)
+	if !valid || result.Repository != reference.TrimNamed(repo).String() {
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
@@ -87,4 +90,59 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 		}
 	}
 	return 0
+}
+
+// decodeImageTags requires one exact spelling of each protocol field before using the response.
+func decodeImageTags(data []byte) (api.ImageTags, bool) {
+	var result api.ImageTags
+	if !utf8.Valid(data) {
+		return result, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	token, err := dec.Token()
+	if err != nil || token != json.Delim('{') {
+		return result, false
+	}
+	var repository *string
+	var tags *[]string
+	for dec.More() {
+		token, err = dec.Token()
+		if err != nil {
+			return result, false
+		}
+		key, ok := token.(string)
+		if !ok {
+			return result, false
+		}
+		switch {
+		case strings.EqualFold(key, "repository"):
+			if key != "repository" || repository != nil {
+				return result, false
+			}
+			if dec.Decode(&repository) != nil || repository == nil {
+				return result, false
+			}
+		case strings.EqualFold(key, "tags"):
+			if key != "tags" || tags != nil {
+				return result, false
+			}
+			if dec.Decode(&tags) != nil || tags == nil || *tags == nil {
+				return result, false
+			}
+		default:
+			var ignored json.RawMessage
+			if dec.Decode(&ignored) != nil {
+				return result, false
+			}
+		}
+	}
+	token, err = dec.Token()
+	if err != nil || token != json.Delim('}') || repository == nil || tags == nil {
+		return result, false
+	}
+	if _, err = dec.Token(); err != io.EOF {
+		return result, false
+	}
+	result.Repository, result.Tags = *repository, *tags
+	return result, true
 }

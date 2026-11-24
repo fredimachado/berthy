@@ -180,3 +180,44 @@ func TestVersionsRejectsComposeApp(t *testing.T) {
 		t.Fatalf("exit %d out %q err %q calls %d", code, out.String(), errs.String(), calls.Load())
 	}
 }
+
+func TestVersionsRejectsAmbiguousResponse(t *testing.T) {
+	response := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(response)) }))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := writeAliasDir(t, versionsManifest)
+	for _, tc := range []struct{ name, body string }{
+		{"duplicate tags", `{"repository":"docker.io/library/alpine","tags":["v1"],"tags":[]}`},
+		{"duplicate repository", `{"repository":"other","repository":"docker.io/library/alpine","tags":["v1"]}`},
+		{"case variant tags", `{"repository":"docker.io/library/alpine","tags":["v1"],"Tags":[]}`},
+		{"case variant repository", `{"repository":"other","Repository":"docker.io/library/alpine","tags":["v1"]}`},
+		{"variant alone", `{"Repository":"docker.io/library/alpine","tags":["v1"]}`},
+		{"escaped duplicate", `{"repository":"docker.io/library/alpine","tags":["v1"],"\u0074ags":[]}`},
+		{"invalid utf8 unknown key", "{\"repository\":\"docker.io/library/alpine\",\"tags\":[\"v1\"],\"bad\xff\":1}"},
+		{"wrong repository type", `{"repository":null,"tags":[]}`},
+		{"wrong tags type", `{"repository":"docker.io/library/alpine","tags":{}}`},
+		{"not object", `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response = tc.body
+			for _, jsonOutput := range []bool{false, true} {
+				args := []string{"versions", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir}
+				if jsonOutput {
+					args = append(args, "--json")
+				}
+				var out, errs bytes.Buffer
+				code := Run(args, &out, &errs)
+				if code == 0 || out.Len() != 0 {
+					t.Errorf("json=%t: exit %d stdout %q stderr %q", jsonOutput, code, out.String(), errs.String())
+				}
+			}
+		})
+	}
+	response = `{"future":{"tags":["ignored"]},"repository":"docker.io/library/alpine","tags":[]}`
+	var out, errs bytes.Buffer
+	code := Run([]string{"versions", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--json"}, &out, &errs)
+	if code != 0 || out.String() != `{"repository":"docker.io/library/alpine","tags":[]}`+"\n" {
+		t.Fatalf("forward-compatible empty: %d %q %q", code, out.String(), errs.String())
+	}
+}
