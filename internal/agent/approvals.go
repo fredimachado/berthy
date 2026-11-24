@@ -353,8 +353,8 @@ func redactDeployPlan(plan []byte, redact func(string) string) (json.RawMessage,
 	if err := dec.Decode(&value); err != nil {
 		return nil, err
 	}
-	var walk func(any, reflect.Type) (any, error)
-	walk = func(v any, typ reflect.Type) (any, error) {
+	var walk func(any, reflect.Type, bool) (any, error)
+	walk = func(v any, typ reflect.Type, root bool) (any, error) {
 		for typ != nil && typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
 		}
@@ -368,14 +368,14 @@ func redactDeployPlan(plan []byte, redact func(string) string) (json.RawMessage,
 			}
 			for i := range item {
 				var err error
-				item[i], err = walk(item[i], elem)
+				item[i], err = walk(item[i], elem, false)
 				if err != nil {
 					return nil, err
 				}
 			}
 			return item, nil
 		case map[string]any:
-			if typ == reflect.TypeOf(deploy.Plan{}) {
+			if !root && typ == reflect.TypeOf(deploy.Plan{}) {
 				for _, key := range []string{"image", "tag"} {
 					if s, ok := item[key].(string); ok && redact(s) != s {
 						return nil, errors.New("image selection unavailable")
@@ -404,7 +404,7 @@ func redactDeployPlan(plan []byte, redact func(string) string) (json.RawMessage,
 				if _, exists := out[name]; exists {
 					return nil, errors.New("redacted plan keys collide")
 				}
-				redacted, err := walk(entry, child)
+				redacted, err := walk(entry, child, false)
 				if err != nil {
 					return nil, err
 				}
@@ -414,7 +414,7 @@ func redactDeployPlan(plan []byte, redact func(string) string) (json.RawMessage,
 		}
 		return v, nil
 	}
-	redacted, err := walk(value, reflect.TypeOf(deploy.Plan{}))
+	redacted, err := walk(value, reflect.TypeOf(deploy.Plan{}), true)
 	if err != nil {
 		return nil, err
 	}

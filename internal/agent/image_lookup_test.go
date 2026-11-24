@@ -147,34 +147,65 @@ func (e *lookupEngine) ResolveImage(_ context.Context, _ string, _ *engine.Regis
 }
 
 func TestLookupHumanAndBoundCredential(t *testing.T) {
+	var calls, authenticated atomic.Int32
+	var private atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodHead || r.URL.Path != "/v2/acme/api/manifests/v1" {
+			t.Error("unexpected registry request")
+		}
+		if private.Load() {
+			if user, password, ok := r.BasicAuth(); !ok || user != "user" || password != "test-value" {
+				w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			authenticated.Add(1)
+		} else if r.Header.Get("Authorization") != "" {
+			t.Error("public request included credentials")
+		}
+		w.Header().Set("Docker-Content-Digest", apDigest)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	public := strings.Replace(apManifestSource, "ghcr.io/acme/api", host+"/acme/api", 1)
+	privateManifest := strings.Replace(public, `"network":"overlay"`, `"network":"overlay","registries":{"`+host+`":{"username":"user","password_secret":"REGISTRY_PASSWORD"}}`, 1)
+	body := func(m string) string { return `{"manifest":` + m + `,"app":"api","tag":"v1"}` }
 	f := newApprovalFixture(t, false, nil)
+	f.ctrl.Engine = nil
+	w := f.call(http.MethodPost, "/images/resolve", apAdminToken, body(public))
+	var result struct{ Image, Tag string }
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Image != host+"/acme/api@"+apDigest || result.Tag != "v1" || calls.Load() != 1 {
+		t.Fatalf("public resolution: status=%d calls=%d", w.Code, calls.Load())
+	}
 	e := &lookupEngine{}
 	f.ctrl.Engine = e
-	request := `{"manifest":` + apManifestSource + `,"app":"api","tag":"v1"}`
-	w := f.call(http.MethodPost, "/images/resolve", apAdminToken, request)
-	var result struct{ Image, Tag string }
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Image != "ghcr.io/acme/api@"+apDigest || result.Tag != "v1" || e.calls != 1 {
-		t.Fatalf("lookup: status=%d result=%+v calls=%d", w.Code, result, e.calls)
+	private.Store(true)
+	for _, token := range []string{apReadToken, apDeployToken, apAgentRead, apAgentDeploy, apAgentAdmin} {
+		if w = f.call(http.MethodPost, "/images/resolve", token, body(privateManifest)); w.Code != http.StatusForbidden {
+			t.Fatalf("scope status=%d", w.Code)
+		}
 	}
-	privateManifest := strings.Replace(apManifestSource, `"network":"overlay"`, `"network":"overlay","registries":{"ghcr.io":{"username":"user","password_secret":"REGISTRY_PASSWORD"}}`, 1)
-	request = `{"manifest":` + privateManifest + `,"app":"api","tag":"v1"}`
-	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, request)
-	if w.Code == http.StatusOK || e.calls != 1 {
-		t.Fatalf("unbound secret: status=%d calls=%d", w.Code, e.calls)
+	if calls.Load() != 1 || e.calls != 0 {
+		t.Fatal("denied lookup made an outbound call")
+	}
+	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, body(privateManifest))
+	if w.Code == http.StatusOK || calls.Load() != 1 || e.calls != 0 {
+		t.Fatal("unbound secret reached outbound work")
 	}
 	if err := f.s.PutSecret(context.Background(), state.Actor{ID: "test", Name: "test"}, state.SecretInfo{Name: "REGISTRY_PASSWORD", Registry: "other.example"}, []byte("test-value")); err != nil {
 		t.Fatal(err)
 	}
-	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, request)
-	if w.Code == http.StatusOK || e.calls != 1 {
-		t.Fatalf("wrong host: status=%d calls=%d", w.Code, e.calls)
+	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, body(privateManifest))
+	if w.Code == http.StatusOK || calls.Load() != 1 || e.calls != 0 {
+		t.Fatal("wrong-host secret reached outbound work")
 	}
-	if err := f.s.PutSecret(context.Background(), state.Actor{ID: "test", Name: "test"}, state.SecretInfo{Name: "REGISTRY_PASSWORD", Registry: "ghcr.io"}, []byte("test-value")); err != nil {
+	if err := f.s.PutSecret(context.Background(), state.Actor{ID: "test", Name: "test"}, state.SecretInfo{Name: "REGISTRY_PASSWORD", Registry: host}, []byte("test-value")); err != nil {
 		t.Fatal(err)
 	}
-	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, request)
-	if w.Code != http.StatusOK || e.calls != 2 {
-		t.Fatalf("bound secret: status=%d calls=%d body=%s", w.Code, e.calls, w.Body.String())
+	w = f.call(http.MethodPost, "/images/resolve", apAdminToken, body(privateManifest))
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Image != host+"/acme/api@"+apDigest || result.Tag != "v1" || calls.Load() != 3 || authenticated.Load() != 1 || e.calls != 0 {
+		t.Fatalf("private resolution: status=%d calls=%d docker=%d", w.Code, calls.Load(), e.calls)
 	}
 	f.noOperation()
 }
