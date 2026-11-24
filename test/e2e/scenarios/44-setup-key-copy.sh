@@ -67,6 +67,14 @@ keys="$FS_HOME/.berthy/keys"
 record_files() { printf '%s\0' "$@" | sort -z | xargs -0 -r stat -c '%n %i %y'; printf '%s\0' "$@" | sort -z | xargs -0 -r sha256sum; }
 record() { local files=(); while IFS= read -r -d '' file; do files+=("$file"); done < <(find "$keys" -maxdepth 1 -type f -print0); record_files "${files[@]}"; }
 absent() { local status; grep -Fq -- "$1" "$2" >/dev/null 2>&1; status=$?; [ "$status" -eq 1 ]; }
+hex() { od -An -v -tx1 "$@" | tr -d ' \n'; }
+key_forms() {
+  local b64 url
+  raw=$(hex "$1") || return 1
+  b64=$(base64 -w0 "$1") || return 1
+  url=${b64//+/-}; url=${url//\//_}
+  forms=("$raw" "$b64" "$url" "${b64//=/}" "${url//=/}")
+}
 count() { find "$keys" -maxdepth 1 -type f | wc -l; }
 sum() { sha256sum "$1" | cut -d' ' -f1; }
 server_sum() { remote sha256sum "$1" | cut -d' ' -f1; }
@@ -86,14 +94,14 @@ if ! remote sh -c 'find /var/log/sudo-io -type f -exec cat {} +' 2>/dev/null | o
   echo "setup key copy check failed: sudo recording capture" >&2; exit 1
 fi
 label="sudo recording control"
-control=$(printf 'berthy-key-wrap/1 ok' | od -An -v -tx1 | tr -d ' \n')
+control=$(printf 'berthy-key-wrap/1 ok' | hex) 2>/dev/null || { echo "setup key copy check failed: sudo recording control" >&2; exit 1; }
 check grep -Fq -- "$control" "$private/io"
 # Raw bytes and textual encodings are checked independently, as hex.
 label="sudo recording contains key material"
-raw=$(od -An -v -tx1 "$first" | tr -d ' \n')
+key_forms "$first" 2>/dev/null || { echo "setup key copy check failed: key encoding" >&2; exit 1; }
 if ! absent "$raw" "$private/io"; then echo "setup key copy check failed: sudo recording scan" >&2; exit 1; fi
-for form in "$(od -An -v -tx1 "$first" | tr -d ' \n')" "$(base64 -w0 "$first")" "$(base64 -w0 "$first" | tr '+/' '-_')" "$(base64 -w0 "$first" | tr -d '=')" "$(base64 -w0 "$first" | tr '+/' '-_' | tr -d '=')"; do
-  encoded=$(printf %s "$form" | od -An -v -tx1 | tr -d ' \n')
+for form in "${forms[@]}"; do
+  encoded=$(printf %s "$form" | hex) 2>/dev/null || { echo "setup key copy check failed: key encoding" >&2; exit 1; }
   if ! absent "$encoded" "$private/io"; then echo "setup key copy check failed: sudo recording scan" >&2; exit 1; fi
 done
 token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg") || exit 1
@@ -193,11 +201,13 @@ out=$("${setup[@]}" --verbose </dev/null 2>"$private/verbose"); code=$?
 label="verbose setup"
 check test "$code" -eq 0
 check grep -Fq -- '# cli_key' "$private/verbose"
+if ! hex "$private/verbose" > "$private/verbose-hex" 2>/dev/null; then
+  echo "setup key copy check failed: verbose output capture" >&2; exit 1
+fi
 for file in "$first" "$second" "$third"; do
-  raw=$(od -An -v -tx1 "$file" | tr -d ' \n')
-  od -An -v -tx1 "$private/verbose" | tr -d ' \n' > "$private/verbose-hex"
+  key_forms "$file" 2>/dev/null || { echo "setup key copy check failed: key encoding" >&2; exit 1; }
   if ! absent "$raw" "$private/verbose-hex"; then echo "setup key copy check failed: verbose output scan" >&2; exit 1; fi
-  for form in "$raw" "$(base64 -w0 "$file")" "$(base64 -w0 "$file" | tr '+/' '-_')" "$(base64 -w0 "$file" | tr -d '=')" "$(base64 -w0 "$file" | tr '+/' '-_' | tr -d '=')"; do
+  for form in "${forms[@]}"; do
     if ! absent "$form" "$private/verbose"; then echo "setup key copy check failed: verbose output scan" >&2; exit 1; fi
   done
 done

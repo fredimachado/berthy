@@ -27,6 +27,27 @@ record > "$private/original"
 if cmp -s "$private/original" "$private/old"; then echo "old ordering did not reproduce" >&2; exit 1; fi
 record_files "$keys/b" "$keys/a" > "$private/new"
 cmp -s "$private/original" "$private/new" || { echo "copy record ordering failed" >&2; exit 1; }
+# Conversions must reject partial output and failures from every stage.
+eval "$(sed -n '/^hex() /p; /^key_forms() {/,/^}/p' "$scenario")"
+key_forms "$private/key" 2>/dev/null || { echo "key encoding failed" >&2; exit 1; }
+[ "${forms[2]}" = "$encoded" ] || { echo "URL-safe encoding failed" >&2; exit 1; }
+[ "${forms[4]}" = "${encoded//=/}" ] || { echo "unpadded encoding failed" >&2; exit 1; }
+for broken in od tr base64; do
+  if (
+    eval "$broken() { printf partial; return 1; }"
+    key_forms "$private/key" 2>/dev/null
+  ) >/dev/null 2>&1; then
+    echo "key encoding accepted a conversion error" >&2; exit 1
+  fi
+done
+for broken in od tr; do
+  if (
+    eval "$broken() { printf partial; return 1; }"
+    hex "$private/input" > "$private/partial" 2>/dev/null
+  ) >/dev/null 2>&1; then
+    echo "capture conversion accepted an error" >&2; exit 1
+  fi
+done
 # Exercise owner filtering and partial cleanup without a Docker daemon.
 (
   export FS_OWNER=our-run FS_HOME="$private/home"
