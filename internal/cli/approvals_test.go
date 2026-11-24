@@ -256,7 +256,7 @@ func TestApproveShowsThePlanThenExecutesAndStreamsTheOperation(t *testing.T) {
 			fmt.Fprint(w, `{"operation_id":"op1","events_url":"/v1/projects/demo/environments/dev/operations/op1/events"}`)
 		case "GET /v1/projects/demo/environments/dev/operations/op1/events":
 			note("events")
-			fmt.Fprint(w, "id: 1\nevent: progress\ndata: {}\n\n")
+			fmt.Fprint(w, "id: 1\nevent: progress\ndata: {}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
 		case "GET /v1/projects/demo/environments/dev/operations/op1":
 			fmt.Fprint(w, `{"state":"succeeded"}`)
 		default:

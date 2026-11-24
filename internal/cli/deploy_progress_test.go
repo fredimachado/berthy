@@ -41,7 +41,7 @@ func TestDeployProgressResumesAtCompleteEvent(t *testing.T) {
 				defer server.Close()
 				base, _ := url.Parse(server.URL)
 				var out, errs bytes.Buffer
-				got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
+				got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
 				want := 1
 				if state == "succeeded" {
 					want = 0
@@ -84,7 +84,7 @@ func TestDeployProgressReplayFailureKeepsStatus(t *testing.T) {
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
 			var out, errs bytes.Buffer
-			got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+			got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 			want := 1
 			if state == "succeeded" {
 				want = 0
@@ -118,7 +118,7 @@ func TestDeployProgressMalformedStreamAndRedaction(t *testing.T) {
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
 			var out, errs bytes.Buffer
-			got := watchOperationWithProgress(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
+			got := watchOperation(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
 			if got != 0 || streams != 2 || strings.Contains(out.String()+errs.String(), "secret") || strings.Contains(out.String()+errs.String(), "\x1b") || !strings.Contains(out.String(), "[redacted]") {
 				t.Fatalf("exit=%d streams=%d out=%q err=%q", got, streams, out.String(), errs.String())
 			}
@@ -140,7 +140,7 @@ func TestDeployProgressCancellationNamesOperation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- watchOperationWithProgress(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+		done <- watchOperation(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
 	}()
 	<-started
 	cancel()
@@ -165,7 +165,7 @@ func TestDeployProgressTerminalMessages(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+	got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
 	if got != 0 || strings.Count(out.String(), "retry hook") != 1 || strings.Count(out.String(), "warning") != 1 || strings.Contains(out.String(), "rollout\n") || strings.Contains(out.String(), "terminal\n") {
 		t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
 	}
@@ -194,7 +194,7 @@ func TestDeployProgressReplaysCleanStreamWithoutFinal(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+	got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
 	if got != 0 || streams != 2 || strings.Count(out.String(), "terminal\n") != 1 || errs.Len() != 0 {
 		t.Fatalf("exit=%d streams=%d out=%q err=%q", got, streams, out.String(), errs.String())
 	}
@@ -213,7 +213,7 @@ func TestDeployProgressDoesNotTrustStreamOutcome(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	got := watchOperationWithProgress(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+	got := watchOperation(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 	if got != 1 || out.Len() != 0 || !strings.Contains(errs.String(), "may continue") {
 		t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
 	}
@@ -237,7 +237,7 @@ func TestDeployProgressPreservesRunOutput(t *testing.T) {
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
 			var out, errs bytes.Buffer
-			got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "run", "dev", "demo")
+			got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "run", "dev", "demo")
 			if got != 1 || !strings.Contains(out.String(), "run output") || errs.Len() != 0 || (asJSON && !json.Valid(out.Bytes())) {
 				t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
 			}
@@ -264,7 +264,7 @@ func TestDeployProgressCancelledReplayKeepsKnownStatus(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	got := watchOperationWithProgress(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+	got := watchOperation(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 	if got != 0 || streams != 2 || !json.Valid(out.Bytes()) || !strings.Contains(errs.String(), "incomplete") || !strings.Contains(errs.String(), "succeeded") {
 		t.Fatalf("exit=%d streams=%d out=%q err=%q", got, streams, out.String(), errs.String())
 	}
@@ -291,7 +291,7 @@ func TestDeployProgressStreamNotFound(t *testing.T) {
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
 			var out, errs bytes.Buffer
-			got := watchOperationWithProgress(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+			got := watchOperation(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 			if replay {
 				if got != 0 || streams != 2 || statuses != 1 || !strings.Contains(errs.String(), "incomplete") || !json.Valid(out.Bytes()) {
 					t.Fatalf("exit=%d streams=%d statuses=%d out=%q err=%q", got, streams, statuses, out.String(), errs.String())
@@ -306,22 +306,22 @@ func TestDeployProgressStreamNotFound(t *testing.T) {
 func TestDeployProgressJSONPreservesControls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
-			fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"a secret\\u001b\\n\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
+			fmt.Fprint(w, "id: 1\nevent: verify\ndata: {\"step\":\"a secret\\u001b\\u0085\\n\"}\n\nid: 2\nevent: succeeded\ndata: {}\n\n")
 			return
 		}
-		fmt.Fprint(w, `{"state":"succeeded","reason":"secret\u001b\n"}`)
+		fmt.Fprint(w, `{"state":"succeeded","reason":"secret\u001b\u0085\n"}`)
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	var out, errs bytes.Buffer
-	got := watchOperationWithProgress(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
+	got := watchOperation(context.Background(), server.Client(), base, "secret", "/v1/", "op", "/v1/operations/op/events", &out, &errs, true, "deploy", "dev", "demo")
 	var doc struct {
 		Reason string `json:"reason"`
 		Checks []struct {
 			Step string `json:"step"`
 		} `json:"checks"`
 	}
-	if json.Unmarshal(out.Bytes(), &doc) != nil || got != 0 || doc.Reason != "[redacted]\x1b\n" || len(doc.Checks) != 1 || doc.Checks[0].Step != "a [redacted]\x1b\n" {
+	if strings.Contains(out.String(), "\u0085") || json.Unmarshal(out.Bytes(), &doc) != nil || got != 0 || doc.Reason != "[redacted]\x1b\u0085\n" || len(doc.Checks) != 1 || doc.Checks[0].Step != "a [redacted]\x1b\u0085\n" {
 		t.Fatalf("exit=%d doc=%+v out=%q err=%q", got, doc, out.String(), errs.String())
 	}
 }
@@ -351,7 +351,7 @@ func TestDeployProgressCountsRealRoles(t *testing.T) {
 		var errs bytes.Buffer
 		done := make(chan int, 1)
 		go func() {
-			done <- watchOperationWithProgress(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+			done <- watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
 		}()
 		defer func() { cancel(); writer.Close(); <-done }()
 		write := func(id int, role, status string) {
@@ -415,7 +415,7 @@ func TestDeployProgressCompletedStreamMachineOutput(t *testing.T) {
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
 			var out, errs bytes.Buffer
-			got := watchOperationWithProgress(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
+			got := watchOperation(context.Background(), server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, asJSON, "deploy", "dev", "demo")
 			want := "accepted\nsucceeded\nterminal\nstate: succeeded\n"
 			if asJSON {
 				want = "{\n  \"state\": \"succeeded\"\n}\n"
@@ -425,4 +425,52 @@ func TestDeployProgressCompletedStreamMachineOutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeploySubmissionDelayedProgress(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 100, nil }
+	t.Cleanup(func() { progressWidth = old })
+	synctest.Test(t, func(t *testing.T) {
+		var out progressTestBuffer
+		var errs bytes.Buffer
+		release := make(chan struct{})
+		done := make(chan int, 1)
+		client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+			<-release
+			return &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader(`{"message":"refused"}`)), Header: make(http.Header), Request: r}, nil
+		})}
+		base, _ := url.Parse("http://agent.invalid")
+		go func() {
+			done <- sendCommand(context.Background(), client, base, "/v1/", "token", "POST", "deploys", nil, commandFlags{}, "deploy", &out, &errs)
+		}()
+		defer func() { close(release); <-done }()
+		synctest.Wait()
+		time.Sleep(249 * time.Millisecond)
+		synctest.Wait()
+		if out.Len() != 0 {
+			t.Fatalf("early output %q", out.String())
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(out.String(), "deploying") {
+			t.Fatalf("missing pending frame: %q", out.String())
+		}
+		close(release)
+		release = make(chan struct{})
+		synctest.Wait()
+		if !strings.Contains(errs.String(), "refused") {
+			t.Fatalf("diagnostic %q", errs.String())
+		}
+		before := out.String()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if out.String() != before {
+			t.Fatal("write after response")
+		}
+	})
 }

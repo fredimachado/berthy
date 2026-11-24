@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -1010,8 +1009,15 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			return 1
 		}
 	}
-	status, data, ok := askAgent(ctx, client, u, token, method, payload, errout)
+	progress := newProgressLine(out, cmd == "deploy" && method == http.MethodPost && !f.dry && !f.json && stderrTerminal(out))
+	if progress.enabled {
+		progress.Start("deploying")
+	}
+	var requestErr bytes.Buffer
+	status, data, ok := askAgent(ctx, client, u, token, method, payload, &requestErr)
+	progress.Close()
 	if !ok {
+		_, _ = io.Copy(errout, &requestErr)
 		return 1
 	}
 	if f.redactToken != "" && (status == http.StatusOK || status == http.StatusAccepted) {
@@ -1175,158 +1181,6 @@ func withChecks(data []byte, checks []json.RawMessage) []byte {
 		return data
 	}
 	return out
-}
-
-func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string) int {
-	cursor := ""
-	failures := 0
-	// checks are the verify events of the operation: what the checks at the end of a deploy found.
-	var checks []json.RawMessage
-	for {
-		streamURL := *base
-		streamURL.Path = events
-		streamURL.RawQuery = ""
-		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		req, _ := http.NewRequestWithContext(streamCtx, "GET", streamURL.String(), nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		if cursor != "" {
-			req.Header.Set("Last-Event-ID", cursor)
-		}
-		resp, err := agentclient.SendRequest(streamCtx, c, req, token)
-		if err == nil && resp.StatusCode == http.StatusNotFound {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
-			cancel()
-			fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, body))
-			return 1
-		}
-		if err == nil && resp.StatusCode == 200 {
-			scanner := bufio.NewScanner(resp.Body)
-			scanner.Buffer(make([]byte, 4096), 1<<20)
-			kind := ""
-			for scanner.Scan() {
-				line := scanner.Text()
-				if strings.HasPrefix(line, "id:") {
-					cursor = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
-				}
-				if strings.HasPrefix(line, "event:") {
-					kind = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-					// A removal or a restore reports what it did as steps, and a deploy what its checks found, so their text is
-					// shown instead of their name.
-					if !asJSON && !showsText(cmd, kind) {
-						fmt.Fprintln(out, kind)
-					}
-				}
-				if showsText(cmd, kind) && strings.HasPrefix(line, "data:") {
-					raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-					var step struct {
-						Step string `json:"step"`
-					}
-					if json.Unmarshal([]byte(raw), &step) == nil && step.Step != "" {
-						if !asJSON {
-							fmt.Fprintln(out, "  "+terminalSafe(step.Step))
-						}
-						if kind == "verify" {
-							checks = append(checks, json.RawMessage(raw))
-						}
-					}
-				}
-			}
-			resp.Body.Close()
-		} else if resp != nil {
-			resp.Body.Close()
-		}
-		cancel()
-		statusURL := *base
-		statusURL.Path = prefix + "operations/" + url.PathEscape(id)
-		statusURL.RawQuery = ""
-		status, e := agentclient.Send(ctx, c, "GET", statusURL.String(), token, nil)
-		validStatus := false
-		if e == nil {
-			data, e := io.ReadAll(io.LimitReader(status.Body, 1<<20))
-			status.Body.Close()
-			if e == nil && status.StatusCode == 200 {
-				validStatus = true
-				var v struct {
-					State string `json:"state"`
-				}
-				if json.Unmarshal(data, &v) == nil && v.State != "running" && v.State != "" {
-					exitCode := 0
-					if cmd == "exec" || cmd == "run" {
-						outputURL := *base
-						outputURL.Path = prefix + "operations/" + url.PathEscape(id) + "/output"
-						outputURL.RawQuery = ""
-						output, e := agentclient.Send(ctx, c, "GET", outputURL.String(), token, nil)
-						if e != nil {
-							fmt.Fprintln(errout, cmd+" output unavailable")
-							return 1
-						}
-						b, e := io.ReadAll(io.LimitReader(output.Body, (1<<20)+1))
-						output.Body.Close()
-						if output.StatusCode == http.StatusNotFound && v.State == "failed" {
-							// The command never started, so there is no output. The record says why it failed.
-							printResponse(out, errout, data, asJSON)
-							return 1
-						}
-						var result struct {
-							Output   string `json:"output"`
-							ExitCode int    `json:"exit_code"`
-						}
-						if e != nil || len(b) > 1<<20 || output.StatusCode != 200 || json.Unmarshal(b, &result) != nil {
-							fmt.Fprintln(errout, cmd+" output unavailable")
-							return 1
-						}
-						exitCode = result.ExitCode
-						if asJSON {
-							var resultObject map[string]any
-							if json.Unmarshal(data, &resultObject) != nil {
-								return 1
-							}
-							resultObject["output"] = result.Output
-							resultObject["exit_code"] = result.ExitCode
-							data, _ = json.Marshal(resultObject)
-						} else {
-							fmt.Fprint(out, result.Output)
-						}
-					}
-					if asJSON {
-						data = withChecks(data, checks)
-					}
-					printResponse(out, errout, data, asJSON)
-					if v.State == "succeeded" && exitCode == 0 {
-						return 0
-					}
-					if (v.State == "failed" || v.State == "rolled_back" || v.State == "recovery_required") && (cmd == "deploy" || cmd == "rollback" || cmd == "ingress") {
-						// stdout stays one JSON document under --json, so the pointer goes to stderr then.
-						hint := out
-						if asJSON {
-							hint = errout
-						}
-						fmt.Fprintln(hint, failureHint(env, project, id))
-					}
-					return 1
-				}
-			}
-		}
-		if validStatus {
-			failures = 0
-		} else {
-			failures++
-			if failures >= 3 {
-				fmt.Fprintln(errout, "operation status unavailable")
-				return 1
-			}
-		}
-		if ctx.Err() != nil {
-			fmt.Fprintln(errout, "operation status unavailable")
-			return 1
-		}
-		select {
-		case <-time.After(time.Second):
-		case <-ctx.Done():
-			return 1
-		}
-	}
 }
 
 func manifestMatchesTarget(errout io.Writer, dir, project, target string) bool {

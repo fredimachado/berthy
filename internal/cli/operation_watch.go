@@ -14,12 +14,24 @@ import (
 	"berthy/internal/agentclient"
 )
 
-func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string) int {
+func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string) int {
 	interactive := !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(out)
 	progress := newProgressLine(out, interactive)
 	defer progress.Close()
 	if interactive {
 		progress.Start("deploying")
+	}
+	printResult := func(data []byte) {
+		if !asJSON {
+			printResponse(out, errout, data, false)
+			return
+		}
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, data, "", "  ") != nil {
+			fmt.Fprintln(errout, "invalid agent response")
+			return
+		}
+		fmt.Fprintln(out, escapeJSONC1(pretty.String()))
 	}
 	var cursor uint64
 	var checks []json.RawMessage
@@ -202,7 +214,7 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 				b, e := io.ReadAll(io.LimitReader(output.Body, (1<<20)+1))
 				output.Body.Close()
 				if output.StatusCode == http.StatusNotFound && state == "failed" {
-					printResponse(out, errout, data, asJSON)
+					printResult(data)
 					return 1
 				}
 				var result struct {
@@ -230,7 +242,7 @@ func watchOperationWithProgress(ctx context.Context, c *http.Client, base *url.U
 			if asJSON {
 				data = withChecks(data, checks)
 			}
-			printResponse(out, errout, data, asJSON)
+			printResult(data)
 			if state == "succeeded" && exitCode == 0 {
 				return 0
 			}

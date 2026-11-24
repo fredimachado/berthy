@@ -157,7 +157,12 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 		repo := map[string]string{"api": "ghcr.io/acme/api", "postgres": "docker.io/library/postgres", "redis": "docker.io/library/redis"}[app]
 		fmt.Fprintf(w, `{"id":4,"digest":"%s@sha256:%s","tag":"v1.0.2"}`, repo, strings.Repeat("a", 64))
 	case r.Method == "GET" && strings.HasPrefix(rest, "operations/") && strings.HasSuffix(rest, "/events"):
-		fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\n")
+		app := strings.TrimSuffix(strings.TrimPrefix(rest, "operations/op-"), "/events")
+		state := "succeeded"
+		if f.failOp[app] {
+			state = "failed"
+		}
+		fmt.Fprintf(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: %s\ndata: {}\n\n", state)
 	case r.Method == "GET" && strings.HasPrefix(rest, "operations/op-"):
 		app := strings.TrimPrefix(rest, "operations/op-")
 		if f.failOp[app] {
