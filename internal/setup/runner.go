@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Runner runs shell scripts as root on the server being set up.
@@ -38,6 +39,8 @@ type Result struct {
 // maxCaptured is how much of each output stream is kept: the tail, because the end of an installer's output is what says why
 // it failed.
 const maxCaptured = 1 << 20
+
+const pipeGrace = 5 * time.Second
 
 var hostPattern = regexp.MustCompile(`^([a-z_][a-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$`)
 
@@ -135,6 +138,7 @@ func (r *Local) Run(ctx context.Context, script string, stdin io.Reader) (Result
 // could not start is an error.
 func runProcess(ctx context.Context, name string, args []string, stdin io.Reader) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = pipeGrace
 	cmd.Stdin = stdin
 	stdout, stderr := &tailBuffer{max: maxCaptured}, &tailBuffer{max: maxCaptured}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -142,9 +146,9 @@ func runProcess(ctx context.Context, name string, args []string, stdin io.Reader
 	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	var exit *exec.ExitError
 	switch {
-	case err == nil:
 	case ctx.Err() != nil:
 		return res, ctx.Err()
+	case err == nil:
 	case errors.As(err, &exit):
 		res.Code = exit.ExitCode()
 		if res.Code < 0 {

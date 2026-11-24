@@ -107,6 +107,9 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout, dir, intent)
 	}
+	if cmd == "agent" && len(args) > 0 && args[0] == "key-wrap" {
+		return runKeyWrap(args[1:], os.Stdin, out, errout)
+	}
 	if cmd == "agent" && len(args) > 0 && args[0] == "token" {
 		return runAgentToken(args[1:], out, errout)
 	}
