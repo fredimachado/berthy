@@ -418,21 +418,31 @@ func TestSetupStepStartsBeforeCancelledWork(t *testing.T) {
 		}}}, func(r setup.StepResult) { results <- r })
 	}()
 	<-entered
-	if got := <-started; got != "wait" {
-		t.Fatalf("start = %q", got)
+	var name string
+	var startedBeforeWork bool
+	select {
+	case name = <-started:
+		startedBeforeWork = true
+	default:
 	}
 	cancel()
-	if <-done {
+	ok := <-done
+	result := <-results
+	if !startedBeforeWork || name != "wait" {
+		t.Fatalf("start before work = %v, name %q", startedBeforeWork, name)
+	}
+	if ok {
 		t.Fatal("cancelled run succeeded")
 	}
-	if got := <-results; got.Step != "wait" || got.Status != setup.StatusFailed {
-		t.Fatalf("result = %+v", got)
+	if result.Step != "wait" || result.Status != setup.StatusFailed {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
 func TestSetupMixedStreamsAndVerbose(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	t.Setenv("NO_COLOR", "1")
+	forceProgressVT(t)
 	args := setupArgs(t, "--dry-run")
 	run := func(outTerminal, errTerminal bool, extra ...string) (string, string) {
 		withSetupRunner(t, freshNoDocker(t, "ops@s1"))

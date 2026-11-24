@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +19,8 @@ var progressWidth = func(w io.Writer) (int, error) {
 	width, _, err := term.GetSize(f.Fd())
 	return width, err
 }
+
+var progressVT = progressPlatformVT
 
 // progressLine owns the output while a step is pending.
 type progressLine struct {
@@ -37,9 +38,7 @@ type progressLine struct {
 
 func newProgressLine(out io.Writer, enabled bool) *progressLine {
 	p := &progressLine{out: out, enabled: enabled}
-	terminal := os.Getenv("TERM")
-	known := terminal == "linux" || strings.HasPrefix(terminal, "xterm") || strings.HasPrefix(terminal, "screen") || strings.HasPrefix(terminal, "tmux") || strings.HasPrefix(terminal, "rxvt")
-	if enabled && known {
+	if enabled && progressVT(out, os.Getenv("TERM")) {
 		width, err := progressWidth(out)
 		p.animate = err == nil && width >= 30
 		p.color = p.animate && os.Getenv("NO_COLOR") == ""
@@ -109,6 +108,8 @@ func (p *progressLine) Message(text string) {
 
 func (p *progressLine) Finish(status, detail string) {
 	p.Close()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	status = terminalSafe(status)
 	marker := setupGlyphs[status]
 	if p.enabled {
