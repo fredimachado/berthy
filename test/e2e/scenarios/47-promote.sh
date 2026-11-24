@@ -34,18 +34,20 @@ PYSQL
   if grep -Fxq -- "$generation" <<<"$owned"; then d service rm "$id" >/dev/null || return 1; fi
 }
 cleanup_destination() {
-  local collision labels
+  local collision labels collisions
   if [ -n "$preview_proxy_pid" ]; then kill "$preview_proxy_pid" 2>/dev/null || :; wait "$preview_proxy_pid" 2>/dev/null || :; fi
   stop_agent2
   cleanup_owned_services || return 1
-  if [ -s "$COLLISION_FILE" ]; then
-    collision=$(cat "$COLLISION_FILE")
-    labels=$(d service inspect --format '{{json .Spec.Labels}}' "$collision" 2>/dev/null) || labels=
+  # The daemon can create the intentional collision before the child records its ID.
+  collisions=$(d service ls --no-trunc --format '{{.ID}}' --filter "label=fixture.promotion.collision=$RUN_ID") || return 1
+  while IFS= read -r collision; do
+    [ -n "$collision" ] || continue
+    labels=$(d service inspect --format '{{json .Spec.Labels}}' "$collision" 2>/dev/null) || return 1
     if jq -e --arg marker "$RUN_ID" '.["fixture.promotion.collision"] == $marker' <<<"$labels" >/dev/null 2>&1; then
       d service rm "$collision" >/dev/null || return 1
     fi
-    rm -f "$COLLISION_FILE"
-  fi
+  done <<< "$collisions"
+  rm -f "$COLLISION_FILE"
 }
 cleanup() { local status=$?; trap - EXIT; cleanup_destination || status=1; exit "$status"; }
 trap cleanup EXIT
@@ -152,7 +154,7 @@ preview_proxy_pid=
 terminal_promote() {
   local name=$1 answer=$2 change=$3 expected=$4 config=${5:-$RUN/admin.json}
   python3 - "$BIN" "$ENVN" "$DEST" "$PROJECT" "$config" "$MAN" "$answer" "$change" "$expected" "$WEB_V1_DIGEST" "$LOG/promote-$name.log" "$RUN_ID-$name" "$RUN_ID" "$COLLISION_FILE" "$DOCKER_BIN" "$SOCK" "$E2E_ROOT/docker-config" <<'PY'
-import errno, os, pty, select, subprocess, sys, time
+import errno, os, pty, re, select, subprocess, sys, time
 binary, source, dest, project, config, manifest, answer, change, expected, digest, log, request_id, marker, collision_file, docker, socket, docker_config = sys.argv[1:]
 master, slave = pty.openpty()
 cmd = [binary, 'promote', 'web', '-e', dest, '--project', project, '--config', config, '--manifest-dir', manifest, '--from', source, '--request-id', request_id]
@@ -181,9 +183,11 @@ try:
                     if other.returncode: raise RuntimeError('concurrent fixture deploy failed')
                 if change == 'collision':
                     env = dict(os.environ, DOCKER_CONFIG=docker_config)
-                    created = subprocess.run([docker, '--host', 'unix://'+socket, 'service', 'create', '--name', project+'-'+dest+'-web-main', '--replicas', '0', '--no-resolve-image', '--label', 'fixture.promotion.collision='+marker, '--label', 'berthy.project='+project, '--label', 'berthy.environment='+dest, '--label', 'berthy.app=web', '--label', 'berthy.role=main', '--label', 'berthy.operation=foreign-'+marker, 'busybox:latest'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                    created = subprocess.run([docker, '--host', 'unix://'+socket, 'service', 'create', '--detach', '--name', project+'-'+dest+'-web-main', '--replicas', '0', '--no-resolve-image', '--label', 'fixture.promotion.collision='+marker, '--label', 'berthy.project='+project, '--label', 'berthy.environment='+dest, '--label', 'berthy.app=web', '--label', 'berthy.role=main', '--label', 'berthy.operation=foreign-'+marker, 'busybox:latest'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
                     if created.returncode: raise RuntimeError('collision fixture creation failed')
-                    with open(collision_file, 'wb') as f: f.write(created.stdout.strip()+b'\n')
+                    service_id = created.stdout.strip()
+                    if not re.fullmatch(rb'[a-z0-9]{25}', service_id): raise RuntimeError('invalid collision service ID')
+                    with open(collision_file, 'wb') as f: f.write(service_id+b'\n')
                 if change == 'source':
                     with open(os.path.join(manifest, 'berthy.' + dest + '.yml'), 'w') as f:
                         f.write('apps:\n  web:\n    env:\n      plain:\n        SNAPSHOT: after\n')
