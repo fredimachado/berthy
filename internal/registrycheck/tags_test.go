@@ -53,7 +53,7 @@ func TestTagsTrustsOnlyRegistryOrHubIssuer(t *testing.T) {
 					t.Error("rejected issuer received a request")
 				}
 				if calls == 2 {
-					if r.Header.Get("Authorization") != basicHeader || r.URL.Query().Get("scope") != "repository:acme/api:pull" {
+					if r.Header.Get("Authorization") != basicHeader || r.URL.Query().Get("scope") != "repository:acme/api:pull" || (tc.name == "hub" && (len(r.URL.Query()) != 2 || r.URL.Query().Get("service") != "registry.docker.io")) {
 						t.Error("wrong token request")
 					}
 					return response(r, 200, `{"token":"`+issued+`"}`, nil), nil
@@ -255,5 +255,114 @@ func TestTagsBasicAndAnonymousBearer(t *testing.T) {
 				t.Fatalf("listing failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestTagsLinkSyntax(t *testing.T) {
+	for _, link := range []string{`<?last=v1>; rel = "next"`, `<?last=v1,v2;foo=x>; title="a,b;c"; rel="next"`, `<?last=v1>; title="escaped\";,value"; rel="next"`} {
+		t.Run(link, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					w.Header().Set("Link", link)
+					fmt.Fprint(w, `{"name":"acme/api","tags":["v1"]}`)
+					return
+				}
+				fmt.Fprint(w, `{"name":"acme/api","tags":["v2"]}`)
+			}))
+			defer srv.Close()
+			tags, err := probe(srv).Tags(context.Background(), "acme/api")
+			if err != nil || calls != 2 || fmt.Sprint(tags) != "[v1 v2]" {
+				t.Fatalf("calls=%d tags=%v err=%v", calls, tags, err)
+			}
+		})
+	}
+}
+
+func TestTagsRejectsAmbiguousJSONFields(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"acme/api","tags":["v1"],"tags":[]}`,
+		`{"name":"acme/api","name":"acme/api","tags":[]}`,
+		`{"name":"acme/api","Tags":[],"tags":[]}`,
+		`{"Name":"acme/api","name":"acme/api","tags":[]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+			defer srv.Close()
+			tags, err := probe(srv).Tags(context.Background(), "acme/api")
+			if err == nil || tags != nil {
+				t.Fatalf("expected no result, got %v, %v", tags, err)
+			}
+		})
+	}
+}
+
+func TestTagsRejectsHubIssuerVariants(t *testing.T) {
+	for _, realm := range []string{"https://auth.docker.io/%74oken", "https://auth.docker.io/token?extra=value", "https://auth.docker.io/token?"} {
+		t.Run(realm, func(t *testing.T) {
+			calls := 0
+			p := registrycheck.Probe{Host: "docker.io", Username: user, Password: secret, HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls > 1 {
+					t.Error("rejected issuer received a request")
+				}
+				return response(r, 401, "", http.Header{"Www-Authenticate": []string{`Bearer realm="` + realm + `",service="registry.docker.io"`}}), nil
+			})}}
+			tags, err := p.Tags(context.Background(), "acme/api")
+			if err == nil || tags != nil || calls != 1 {
+				t.Fatalf("calls=%d, expected no result", calls)
+			}
+		})
+	}
+}
+
+func TestTagsRejectsMalformedLinks(t *testing.T) {
+	for _, link := range []string{`<?last=v1>; rel="next`, `<?last=v1>; rel = "next"; REL = "next"`, `<?last=v1>; rel="next"; title="bad"junk`, `<?last=v1>; rel="next",`} {
+		t.Run(link, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Link", link)
+				fmt.Fprint(w, `{"name":"acme/api","tags":["v1"]}`)
+			}))
+			defer srv.Close()
+			tags, err := probe(srv).Tags(context.Background(), "acme/api")
+			if err == nil || tags != nil {
+				t.Fatalf("expected no result, got %v, %v", tags, err)
+			}
+		})
+	}
+}
+
+func TestTagsAllowsUnknownJSONFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"name":"acme/api","tags":["v1"],"metadata":{"tags":["ignored"]}}`)
+	}))
+	defer srv.Close()
+	tags, err := probe(srv).Tags(context.Background(), "acme/api")
+	if err != nil || fmt.Sprint(tags) != "[v1]" {
+		t.Fatalf("tags=%v err=%v", tags, err)
+	}
+}
+
+func TestTagsSameOriginIssuerKeepsQuery(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			if r.URL.Query().Get("account") != "fixture" || r.URL.Query().Get("scope") != "repository:acme/api:pull" {
+				t.Error("token query missing expected parameters")
+			}
+			fmt.Fprint(w, `{"token":"`+issued+`"}`)
+		case r.Header.Get("Authorization") == "Bearer "+issued:
+			fmt.Fprint(w, `{"name":"acme/api","tags":[]}`)
+		default:
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+srv.URL+`/token?account=fixture"`)
+			w.WriteHeader(401)
+		}
+	}))
+	defer srv.Close()
+	tags, err := probe(srv).Tags(context.Background(), "acme/api")
+	if err != nil || tags == nil {
+		t.Fatalf("listing failed: %v", err)
 	}
 }

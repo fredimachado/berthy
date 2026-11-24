@@ -1,6 +1,7 @@
 package registrycheck
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -88,6 +89,9 @@ func (p Probe) Tags(ctx context.Context, repo string) ([]string, error) {
 					return nil, errors.New("untrusted registry token issuer")
 				}
 				q := realm.Query()
+				if !sameOrigin(origin, realm) {
+					q = url.Values{}
+				}
 				if params["service"] != "" {
 					q.Set("service", params["service"])
 				}
@@ -136,16 +140,9 @@ func (p Probe) Tags(ctx context.Context, repo string) ([]string, error) {
 		if status != 200 {
 			return nil, errors.New("registry listing request failed")
 		}
-		var result struct {
-			Name string          `json:"name"`
-			Tags json.RawMessage `json:"tags"`
-		}
-		if json.Unmarshal(body, &result) != nil || result.Name != repo || len(result.Tags) == 0 {
-			return nil, errors.New("invalid registry listing")
-		}
-		var values []string
-		if json.Unmarshal(result.Tags, &values) != nil {
-			return nil, errors.New("invalid registry listing")
+		values, nullTags, e := parseTagPage(body, repo)
+		if e != nil {
+			return nil, e
 		}
 		count += len(values)
 		if count > maxTags {
@@ -170,7 +167,7 @@ func (p Probe) Tags(ctx context.Context, repo string) ([]string, error) {
 			sort.Strings(out)
 			return out, nil
 		}
-		if string(result.Tags) == "null" || len(tags) == before {
+		if nullTags || len(tags) == before {
 			return nil, errors.New("registry pagination did not progress")
 		}
 		current = next
@@ -213,30 +210,179 @@ func trustedRealm(origin, realm *url.URL, service string) bool {
 	if sameOrigin(origin, realm) {
 		return true
 	}
-	return origin.Scheme == "https" && strings.EqualFold(origin.Hostname(), "registry-1.docker.io") && (origin.Port() == "" || origin.Port() == "443") && realm.Scheme == "https" && strings.EqualFold(realm.Hostname(), "auth.docker.io") && (realm.Port() == "" || realm.Port() == "443") && realm.Path == "/token" && service == "registry.docker.io"
+	return origin.Scheme == "https" && strings.EqualFold(origin.Hostname(), "registry-1.docker.io") && (origin.Port() == "" || origin.Port() == "443") && realm.Scheme == "https" && strings.EqualFold(realm.Hostname(), "auth.docker.io") && (realm.Port() == "" || realm.Port() == "443") && realm.EscapedPath() == "/token" && realm.RawQuery == "" && !realm.ForceQuery && service == "registry.docker.io"
+}
+
+// parseTagPage checks protocol fields before decoding their values; unknown fields remain compatible.
+func parseTagPage(body []byte, repo string) ([]string, bool, error) {
+	invalid := errors.New("invalid registry listing")
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil, false, invalid
+	}
+	var name string
+	var rawTags json.RawMessage
+	seenName, seenTags := false, false
+	for dec.More() {
+		tok, err = dec.Token()
+		if err != nil {
+			return nil, false, invalid
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil, false, invalid
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return nil, false, invalid
+		}
+		switch {
+		case strings.EqualFold(key, "name"):
+			if key != "name" || seenName || json.Unmarshal(raw, &name) != nil {
+				return nil, false, invalid
+			}
+			seenName = true
+		case strings.EqualFold(key, "tags"):
+			if key != "tags" || seenTags {
+				return nil, false, invalid
+			}
+			seenTags, rawTags = true, raw
+		}
+	}
+	if tok, err = dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, false, invalid
+	}
+	if dec.Decode(new(json.RawMessage)) != io.EOF || !seenName || !seenTags || name != repo {
+		return nil, false, invalid
+	}
+	var tags []string
+	if json.Unmarshal(rawTags, &tags) != nil {
+		return nil, false, invalid
+	}
+	return tags, string(rawTags) == "null", nil
+}
+
+// splitLink respects URI references and quoted strings, including quoted-pair escapes.
+func splitLink(s string, sep byte) ([]string, error) {
+	var parts []string
+	start := 0
+	angle, quoted, escaped := false, false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 32 && c != '\t' || c == 127 {
+			return nil, errors.New("invalid registry continuation")
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quoted {
+			if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if angle {
+			if c == '>' {
+				angle = false
+			} else if c == '<' {
+				return nil, errors.New("invalid registry continuation")
+			}
+			continue
+		}
+		switch c {
+		case '<':
+			angle = true
+		case '>':
+			return nil, errors.New("invalid registry continuation")
+		case '"':
+			quoted = true
+		default:
+			if c == sep {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if angle || quoted || escaped {
+		return nil, errors.New("invalid registry continuation")
+	}
+	return append(parts, s[start:]), nil
+}
+
+func linkToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))) {
+			return false
+		}
+	}
+	return true
+}
+
+func linkValue(s string) (string, bool) {
+	if !strings.HasPrefix(s, `"`) {
+		return s, linkToken(s)
+	}
+	if len(s) < 2 || s[len(s)-1] != '"' {
+		return "", false
+	}
+	var b strings.Builder
+	for i := 1; i < len(s)-1; i++ {
+		if s[i] == '"' {
+			return "", false
+		}
+		if s[i] == '\\' {
+			i++
+			if i >= len(s)-1 {
+				return "", false
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String(), true
 }
 
 func nextListing(headers []string, current, list *url.URL) (*url.URL, error) {
+	invalid := errors.New("invalid registry continuation")
 	var next *url.URL
 	for _, h := range headers {
-		// Registry continuation links have a single URI reference and rel parameter.
-		for _, part := range strings.Split(h, ",") {
-			part = strings.TrimSpace(part)
-			end := strings.Index(part, ">")
-			if !strings.HasPrefix(part, "<") || end < 0 {
-				return nil, errors.New("invalid registry continuation")
+		links, err := splitLink(h, ',')
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			parts, err := splitLink(link, ';')
+			if err != nil {
+				return nil, err
 			}
-			params := strings.Split(part[end+1:], ";")
-			isNext := false
-			hasRel := false
-			for _, p := range params {
-				k, v, ok := strings.Cut(strings.TrimSpace(p), "=")
-				if ok && strings.EqualFold(k, "rel") {
-					if hasRel {
-						return nil, errors.New("ambiguous registry continuation")
+			target := strings.TrimSpace(parts[0])
+			if len(target) < 2 || target[0] != '<' || target[len(target)-1] != '>' {
+				return nil, invalid
+			}
+			isNext, hasRel := false, false
+			for _, part := range parts[1:] {
+				key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+				key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+				if !ok || !linkToken(key) {
+					return nil, invalid
+				}
+				value, ok = linkValue(value)
+				if !ok {
+					return nil, invalid
+				}
+				if strings.EqualFold(key, "rel") {
+					if hasRel || len(strings.Fields(value)) == 0 {
+						return nil, invalid
 					}
 					hasRel = true
-					for _, rel := range strings.Fields(strings.Trim(v, `"`)) {
+					for _, rel := range strings.Fields(value) {
 						if strings.EqualFold(rel, "next") {
 							isNext = true
 						}
@@ -249,13 +395,13 @@ func nextListing(headers []string, current, list *url.URL) (*url.URL, error) {
 			if next != nil {
 				return nil, errors.New("ambiguous registry continuation")
 			}
-			ref, err := url.Parse(part[1:end])
+			ref, err := url.Parse(target[1 : len(target)-1])
 			if err != nil {
-				return nil, errors.New("invalid registry continuation")
+				return nil, invalid
 			}
 			u := current.ResolveReference(ref)
 			if u.User != nil || u.Fragment != "" || !sameOrigin(list, u) || u.Path != list.Path || u.RawPath != "" {
-				return nil, errors.New("invalid registry continuation")
+				return nil, invalid
 			}
 			next = u
 		}
