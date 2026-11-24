@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"berthy/internal/manifest"
+	"berthy/internal/engine"
 	"berthy/internal/state"
 )
 
@@ -34,32 +34,35 @@ func rolloutStatuses(t *testing.T, s *state.Store, opID string) [][2]string {
 	return out
 }
 
-func TestRolloutEventsMarkStartedAndReadyForSuccessfulRole(t *testing.T) {
-	s := openStore(t)
-	c := &Controller{Engine: &positiveEngine{}, Store: s, Environment: "test"}
-	one := 1
-	req := Request{
-		RequestID: "ok",
-		App:       "web",
-		Version:   "sha256:" + strings.Repeat("a", 64),
-		Manifest: manifest.Manifest{
-			Project: "proj", Network: "overlay",
-			Apps: map[string]manifest.App{"web": {
-				Kind: "image", Image: "example/web",
-				Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"},
-				Roles:  map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}},
-			}},
-		},
-	}
-	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin"}, req)
+func admitAndDrain(t *testing.T, c *Controller, req Request) state.Operation {
+	t.Helper()
+	ctx := context.Background()
+	op, _, err := admit(t, c, ctx, Actor{ID: "admin"}, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := waitOperation(t, s, op.ID)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Store.Operation(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestRolloutEventsMarkStartedAndReadyForSuccessfulRole(t *testing.T) {
+	c, s := diagController(t, newDiagFake())
+	got := admitAndDrain(t, c, Request{
+		RequestID: "ok",
+		App:       "web",
+		Version:   "sha256:" + strings.Repeat("a", 64),
+		Manifest:  webManifest(testDeployTimeout, nil),
+	})
 	if got.State != "succeeded" {
 		t.Fatalf("operation %s %q", got.State, got.Err)
 	}
-	statuses := rolloutStatuses(t, s, op.ID)
+	statuses := rolloutStatuses(t, s, got.ID)
 	want := [][2]string{{"web", "started"}, {"web", "ready"}}
 	if len(statuses) != len(want) {
 		t.Fatalf("rollout events %v", statuses)
@@ -69,15 +72,11 @@ func TestRolloutEventsMarkStartedAndReadyForSuccessfulRole(t *testing.T) {
 			t.Fatalf("rollout events %v", statuses)
 		}
 	}
-	events, err := s.EventsAfter(context.Background(), op.ID, 0, 100)
+	events, err := s.EventsAfter(context.Background(), got.ID, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := events[len(events)-1]
-	if last.Kind != "succeeded" {
-		t.Fatalf("final event %s before rollout ready: %s", last.Kind, last.Data)
-	}
-	var readyAt, finalAt int
+	readyAt, finalAt := -1, -1
 	for i, ev := range events {
 		if ev.Kind == "rollout" {
 			var data struct {
@@ -92,37 +91,26 @@ func TestRolloutEventsMarkStartedAndReadyForSuccessfulRole(t *testing.T) {
 			finalAt = i
 		}
 	}
-	if readyAt == 0 || finalAt <= readyAt {
+	if readyAt < 0 || finalAt < 0 || finalAt <= readyAt {
 		t.Fatalf("ready must precede final: ready@%d final@%d events=%v", readyAt, finalAt, statuses)
 	}
 }
 
 func TestRolloutEventsOmitReadyWhenRoleFails(t *testing.T) {
-	s := openStore(t)
-	c := &Controller{Engine: &positiveEngine{unhealthy: true}, Store: s, Environment: "test"}
-	one := 1
-	req := Request{
+	f := newDiagFake()
+	f.tasksFor = func(generation, _ string) []engine.ServiceTask { return failedTasks(generation, 3) }
+	f.diagnose = exitedContainers(3, "starting")
+	c, s := diagController(t, f)
+	got := admitAndDrain(t, c, Request{
 		RequestID: "bad",
 		App:       "web",
 		Version:   "sha256:" + strings.Repeat("a", 64),
-		Manifest: manifest.Manifest{
-			Project: "proj", Network: "overlay",
-			Apps: map[string]manifest.App{"web": {
-				Kind: "image", Image: "example/web",
-				Deploy: manifest.Deploy{DeployTimeout: "100ms", DrainTimeout: "1s"},
-				Roles:  map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}},
-			}},
-		},
-	}
-	op, _, err := admit(t, c, context.Background(), Actor{ID: "admin"}, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := waitOperation(t, s, op.ID)
+		Manifest:  webManifest(testDeployTimeout, nil),
+	})
 	if got.State != "failed" {
 		t.Fatalf("operation %s %q", got.State, got.Err)
 	}
-	statuses := rolloutStatuses(t, s, op.ID)
+	statuses := rolloutStatuses(t, s, got.ID)
 	want := [][2]string{{"web", "started"}}
 	if len(statuses) != len(want) || statuses[0] != want[0] {
 		t.Fatalf("rollout events %v, want started only", statuses)

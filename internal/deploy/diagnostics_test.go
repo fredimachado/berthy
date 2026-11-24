@@ -225,7 +225,7 @@ func TestFailedCreatedRoleKeepsTaskEvidenceBeforeTheServiceIsDeleted(t *testing.
 	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
 		t.Fatal(err)
 	}
-	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil))
 	want := "role web: task exited with code 1 (gave up after 3 failed starts)"
 	if op.State != "failed" || op.Err != "rollout failed and was cleaned up" || op.Reason != want {
 		t.Fatalf("operation %s %q reason %q", op.State, op.Err, op.Reason)
