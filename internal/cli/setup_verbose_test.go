@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"berthy/internal/api"
@@ -409,15 +410,33 @@ func TestSetupStepStartsBeforeCancelledWork(t *testing.T) {
 	entered := make(chan struct{})
 	results := make(chan setup.StepResult, 1)
 	done := make(chan bool, 1)
-	session := &setup.Session{Opts: setup.Options{StepStarted: func(name string) { started <- name }}}
+	var starts, reports atomic.Int32
+	session := &setup.Session{Opts: setup.Options{StepStarted: func(name string) {
+		starts.Add(1)
+		select {
+		case started <- name:
+		default:
+		}
+	}}}
 	go func() {
 		done <- setup.Run(ctx, session, []setup.Step{{Name: "wait", Run: func(ctx context.Context, _ *setup.Session) (string, string, error) {
 			close(entered)
 			<-ctx.Done()
 			return "", "", ctx.Err()
-		}}}, func(r setup.StepResult) { results <- r })
+		}}}, func(r setup.StepResult) {
+			reports.Add(1)
+			select {
+			case results <- r:
+			default:
+			}
+		})
 	}()
-	<-entered
+	var returnedEarly, ok bool
+	select {
+	case <-entered:
+	case ok = <-done:
+		returnedEarly = true
+	}
 	var name string
 	var startedBeforeWork bool
 	select {
@@ -426,16 +445,27 @@ func TestSetupStepStartsBeforeCancelledWork(t *testing.T) {
 	default:
 	}
 	cancel()
-	ok := <-done
-	result := <-results
-	if !startedBeforeWork || name != "wait" {
-		t.Fatalf("start before work = %v, name %q", startedBeforeWork, name)
+	if !returnedEarly {
+		ok = <-done
+	}
+	var result setup.StepResult
+	var reported bool
+	select {
+	case result = <-results:
+		reported = true
+	default:
+	}
+	if returnedEarly {
+		t.Fatal("run returned before the step began")
+	}
+	if !startedBeforeWork || name != "wait" || starts.Load() != 1 {
+		t.Fatalf("start before work = %v, name %q, calls %d", startedBeforeWork, name, starts.Load())
 	}
 	if ok {
 		t.Fatal("cancelled run succeeded")
 	}
-	if result.Step != "wait" || result.Status != setup.StatusFailed {
-		t.Fatalf("result = %+v", result)
+	if !reported || reports.Load() != 1 || result.Step != "wait" || result.Status != setup.StatusFailed {
+		t.Fatalf("reported = %v, calls %d, result = %+v", reported, reports.Load(), result)
 	}
 }
 
