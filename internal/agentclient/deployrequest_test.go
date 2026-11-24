@@ -106,7 +106,7 @@ func TestPrepareDeployOutsideAWorkTreeChangesNothing(t *testing.T) {
 }
 
 func TestPrepareDeployFilesAttributesComposeChanges(t *testing.T) {
-	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": composeManifest, "compose.yaml": "services: {}\n"})
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": strings.Replace(composeManifest, "compose.yaml", "./compose.yaml", 1), "compose.yaml": "services: {}\n"})
 	m, err := manifest.Load(dir, "dev")
 	if err != nil {
 		t.Fatal(err)
@@ -120,5 +120,10 @@ func TestPrepareDeployFilesAttributesComposeChanges(t *testing.T) {
 	co, err := PrepareDeployFiles(context.Background(), dir, "dev", m, []*deploy.Request{&image, &compose})
 	if err != nil || image.Modified || !compose.Modified || compose.ComposeFile != "services: {x: {}}\n" || len(co.Changed) != 1 {
 		t.Fatalf("preparation: %+v %+v %+v %v", image, compose, co, err)
+	}
+	strict := deploy.Request{App: "db"}
+	co, err = PrepareDeploy(dir, "dev", &strict)
+	if err != nil || !strict.Modified || strict.ComposeFile != "services: {x: {}}\n" || len(co.Changed) != 1 {
+		t.Fatalf("strict preparation: %+v %+v %v", strict, co, err)
 	}
 }

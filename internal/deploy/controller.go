@@ -272,7 +272,10 @@ func (c *Controller) Plan(ctx context.Context, actor Actor, req Request) (Plan, 
 	if err := c.checkNames(ctx, req); err != nil {
 		return Plan{}, err
 	}
-	if err := c.validatePin(ctx, req); err != nil {
+	if err := c.validatePin(req); err != nil {
+		return Plan{}, err
+	}
+	if err := c.checkExpectedApplied(ctx, req); err != nil {
 		return Plan{}, err
 	}
 	return c.plan(ctx, actor, req)
@@ -287,7 +290,7 @@ func (c *Controller) EffectiveProtected(ctx context.Context) (bool, error) {
 	return c.Protected || sticky, err
 }
 
-func (c *Controller) validatePin(ctx context.Context, req Request) error {
+func (c *Controller) validatePin(req Request) error {
 	if req.VersionTag == "" && req.ExpectedApplied == nil {
 		return nil
 	}
@@ -312,6 +315,10 @@ func (c *Controller) validatePin(ctx context.Context, req Request) error {
 			return errors.New("invalid image tag")
 		}
 	}
+	return nil
+}
+
+func (c *Controller) checkExpectedApplied(ctx context.Context, req Request) error {
 	if req.ExpectedApplied != nil {
 		if c.Store == nil {
 			return errors.New("state unavailable")
@@ -527,7 +534,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if err := c.checkNames(ctx, req); err != nil {
 		return state.Operation{}, false, err
 	}
-	if err := c.validatePin(ctx, req); err != nil {
+	if err := c.validatePin(req); err != nil {
 		return state.Operation{}, false, err
 	}
 	if req.KeepVersion || req.KeepDigest != "" {

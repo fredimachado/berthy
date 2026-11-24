@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -65,7 +66,7 @@ func PrepareDeployFiles(ctx context.Context, dir, env string, m *manifest.Manife
 				return gitcheck.Checkout{}, err
 			}
 			req.ComposeFile = file
-			paths[req] = filepath.ToSlash(manifest.FilePath(app.File))
+			paths[req] = path.Clean(filepath.ToSlash(manifest.FilePath(app.File)))
 			files = append(files, manifest.FilePath(app.File))
 		}
 	}

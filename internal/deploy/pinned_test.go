@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"berthy/internal/manifest"
@@ -30,7 +31,8 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{}
-	c := Controller{Engine: e, Store: store, Environment: "test", Protected: true}
+	obs := &recordingObserver{}
+	c := Controller{Engine: e, Store: store, Environment: "test", Protected: true, Observer: obs}
 	t.Cleanup(func() {
 		if err := c.Drain(ctx); err != nil {
 			t.Error(err)
@@ -54,6 +56,37 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	got, err := store.Operation(ctx, op.ID)
 	if err != nil || got.State != "succeeded" {
 		t.Fatalf("operation: %+v %v", got, err)
+	}
+	intents, err := store.Intents(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBarrier := false
+	for _, intent := range intents {
+		if intent.Kind != "barrier" {
+			continue
+		}
+		foundBarrier = true
+		var outcome state.Outcome
+		if err := json.Unmarshal(intent.Desired, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		if outcome.Release == nil || outcome.Release.Digest != plan.Image || outcome.Release.Tag != "v1" {
+			t.Fatalf("barrier release: %+v", outcome.Release)
+		}
+	}
+	if !foundBarrier {
+		t.Fatal("verification barrier missing")
+	}
+	starts := obs.starts()
+	if len(starts) != 1 || starts[0].OperationID != op.ID || starts[0].Version != "v1" || starts[0].Digest != digest {
+		t.Fatalf("observer starts: %+v", starts)
+	}
+	obs.mu.Lock()
+	ends := append([]OperationEvent(nil), obs.ended...)
+	obs.mu.Unlock()
+	if len(ends) != 1 || ends[0].OperationID != op.ID || ends[0].Version != "v1" || ends[0].Digest != digest {
+		t.Fatalf("observer ends: %+v", ends)
 	}
 	applied, err := store.Applied(ctx, "web")
 	if err != nil || applied.Tag != "v1" || applied.Digest != plan.Image {
@@ -160,5 +193,103 @@ func TestPinnedLabelReachesHookIdentity(t *testing.T) {
 	}
 	if spec.Image != plan.Image || !strings.HasSuffix(spec.Image, "@"+digest) {
 		t.Fatalf("hook image: %s", spec.Image)
+	}
+}
+
+func TestPinnedReplayAfterConcurrentCompletion(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	obs := &recordingObserver{}
+	c := &Controller{Store: store, Engine: &positiveEngine{}, Environment: "test", Protected: true, Observer: obs}
+	t.Cleanup(func() {
+		if err := c.Drain(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	type gateKey struct{}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	c.Foreign = func(ctx context.Context) (Foreign, error) {
+		if ctx.Value(gateKey{}) != nil {
+			close(entered)
+			<-release
+		}
+		return Foreign{}, nil
+	}
+	zero := int64(0)
+	req := Request{RequestID: "same", App: "web", Version: "sha256:" + strings.Repeat("a", 64), VersionTag: "v1", ExpectedApplied: &zero, Manifest: dockerManifest(nil)}
+	actor := Actor{ID: "actor"}
+	type result struct {
+		op    state.Operation
+		fresh bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		op, fresh, err := c.Admit(context.WithValue(ctx, gateKey{}, true), actor, req)
+		done <- result{op, fresh, err}
+	}()
+	<-entered
+	original, fresh, err := c.Admit(ctx, actor, req)
+	if err != nil || !fresh {
+		t.Fatalf("original: %v %v", fresh, err)
+	}
+	if err := c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := store.Applied(ctx, "web")
+	if err != nil || applied.ID == 0 {
+		t.Fatalf("applied: %+v %v", applied, err)
+	}
+	once.Do(func() { close(release) })
+	retry := <-done
+	if retry.err != nil || retry.fresh || retry.op.ID != original.ID {
+		t.Fatalf("retry: %+v, original %s", retry, original.ID)
+	}
+	if starts := obs.starts(); len(starts) != 1 {
+		t.Fatalf("operation starts: %+v", starts)
+	}
+	releases, err := store.History(ctx, "web")
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("releases: %+v %v", releases, err)
+	}
+	if _, err := c.Plan(ctx, actor, req); !errors.Is(err, state.ErrConflict) {
+		t.Fatalf("stale plan: %v", err)
+	}
+}
+
+func TestFailedPinnedOperationHistoryKeepsLabel(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	obs := &recordingObserver{}
+	c := &Controller{Store: store, Environment: "test", Observer: obs}
+	t.Cleanup(func() {
+		if err := c.Drain(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	digest := "sha256:" + strings.Repeat("a", 64)
+	req := Request{RequestID: "failed-pin", App: "web", Version: digest, VersionTag: "v1", Manifest: dockerManifest(nil)}
+	op, fresh, err := c.Admit(ctx, Actor{ID: "actor"}, req)
+	if err != nil || !fresh {
+		t.Fatalf("admission: %v %v", fresh, err)
+	}
+	if err := c.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Operation(ctx, op.ID)
+	if err != nil || got.State != "failed" {
+		t.Fatalf("operation: %+v %v", got, err)
+	}
+	rows, err := store.DeployHistory(ctx, "web")
+	if err != nil || len(rows) != 1 || rows[0].OperationID != op.ID || rows[0].Tag != "v1" {
+		t.Fatalf("history: %+v %v", rows, err)
+	}
+	obs.mu.Lock()
+	ends := append([]OperationEvent(nil), obs.ended...)
+	obs.mu.Unlock()
+	if len(ends) != 1 || ends[0].Version != "v1" || ends[0].Digest != digest {
+		t.Fatalf("failed observer: %+v", ends)
 	}
 }
