@@ -209,7 +209,6 @@ func TestPinnedReplayAfterConcurrentCompletion(t *testing.T) {
 	type gateKey struct{}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
 	c.Foreign = func(ctx context.Context) (Foreign, error) {
 		if ctx.Value(gateKey{}) != nil {
 			close(entered)
@@ -226,11 +225,21 @@ func TestPinnedReplayAfterConcurrentCompletion(t *testing.T) {
 		err   error
 	}
 	done := make(chan result, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		<-finished
+	})
 	go func() {
+		defer close(finished)
 		op, fresh, err := c.Admit(context.WithValue(ctx, gateKey{}, true), actor, req)
 		done <- result{op, fresh, err}
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case result := <-done:
+		t.Fatalf("retry returned before gate: %+v", result)
+	}
 	original, fresh, err := c.Admit(ctx, actor, req)
 	if err != nil || !fresh {
 		t.Fatalf("original: %v %v", fresh, err)
