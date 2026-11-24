@@ -171,8 +171,17 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 	if err := os.Mkdir(view, 0700); err != nil {
 		return nil, fmt.Errorf("checkout view unavailable: %w", err)
 	}
-	env := append(environment(), "GIT_INDEX_FILE="+filepath.Join(temp, "index"))
-	args := []string{"-C", view, "--git-dir=" + gitDir, "--work-tree=" + view, "-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false"}
+	hooks := filepath.Join(temp, "hooks")
+	if err := os.Mkdir(hooks, 0700); err != nil {
+		return nil, fmt.Errorf("checkout view unavailable: %w", err)
+	}
+	env := append(environment(), "GIT_INDEX_FILE="+filepath.Join(temp, "index"), "BERTHY_GIT_SOURCE_ROOT="+root)
+	args := []string{"-C", view, "--git-dir=" + gitDir, "--work-tree=" + view, "-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false", "-c", "core.hooksPath=" + hooks}
+	conversionArgs, err := sourceConversionConfig(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, conversionArgs...)
 	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, args...), "read-tree", head)...)
 	cmd.Dir, cmd.Env, cmd.WaitDelay = view, env, time.Second
 	diagnostics := &checkoutComparison{}
@@ -228,6 +237,71 @@ func CompareCaptured(ctx context.Context, dir, head string, files []CapturedFile
 		}
 	}
 	return changed, nil
+}
+
+// sourceConversionConfig keeps relative Git conversion settings rooted at the source checkout.
+func sourceConversionConfig(ctx context.Context, root string) ([]string, error) {
+	config := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root, "config", "--null"}, args...)...)
+		cmd.Env, cmd.WaitDelay = environment(), time.Second
+		output := &attributeBuffer{}
+		diagnostics := &checkoutComparison{}
+		cmd.Stdout, cmd.Stderr = output, diagnostics
+		err := cmd.Run()
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && output.Len() == 0 && !diagnostics.different {
+			return nil, nil
+		}
+		if err != nil || output.tooLarge || diagnostics.different {
+			return nil, fmt.Errorf("checkout conversion configuration unavailable")
+		}
+		if output.Len() == 0 || output.Bytes()[output.Len()-1] != 0 {
+			return nil, fmt.Errorf("invalid checkout conversion configuration")
+		}
+		return output.Bytes(), nil
+	}
+	var args []string
+	attr, err := config("--path", "--get", "core.attributesFile")
+	if err != nil {
+		return nil, err
+	}
+	if len(attr) > 0 {
+		value := string(attr[:len(attr)-1])
+		if strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("invalid checkout conversion configuration")
+		}
+		if value != "" && !filepath.IsAbs(value) {
+			value = filepath.Join(root, value)
+		}
+		args = append(args, "-c", "core.attributesFile="+value)
+	}
+	filters, err := config("--get-regexp", `^filter\..*\.(smudge|process)$`)
+	if err != nil {
+		return nil, err
+	}
+	commands := make(map[string]string)
+	for _, record := range bytes.Split(filters, []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		key, value, ok := bytes.Cut(record, []byte{'\n'})
+		if !ok || len(key) == 0 {
+			return nil, fmt.Errorf("invalid checkout conversion configuration")
+		}
+		commands[string(key)] = string(value)
+	}
+	keys := make([]string, 0, len(commands))
+	for key := range commands {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if commands[key] == "" {
+			continue
+		}
+		// Git runs filter commands through its shell; preserve the configured command verbatim.
+		args = append(args, "-c", key+`=cd -- "$BERTHY_GIT_SOURCE_ROOT" && `+commands[key])
+	}
+	return args, nil
 }
 
 // checkoutAttributes supplies the HEAD attribute files because older Git does not

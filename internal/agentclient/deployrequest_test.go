@@ -543,3 +543,115 @@ func TestCapturedCommittedIdentCheckout(t *testing.T) {
 		t.Fatalf("committed ident: modified %v, paths %v, err %v", req.Modified, co.Changed, err)
 	}
 }
+
+func TestCapturedRelativeGitConversionConfig(t *testing.T) {
+	overlay := "apps:\n  api:\n    env:\n      plain:\n        BUILD: \"$Id$\"\n"
+	for _, filter := range []bool{false, true} {
+		t.Run(fmt.Sprint(filter), func(t *testing.T) {
+			files := map[string]string{"berthy.yml": imageManifest, "berthy.dev.yml": overlay}
+			if filter {
+				files[".gitattributes"] = "berthy.dev.yml filter=local\n"
+			}
+			dir, _ := checkoutRepo(t, files)
+			if filter {
+				if err := os.WriteFile(filepath.Join(dir, "local-filter"), []byte("#!/bin/sh\ncat\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				git(t, dir, "config", "filter.local.smudge", "./local-filter")
+				git(t, dir, "config", "filter.local.clean", "cat")
+				git(t, dir, "config", "filter.local.required", "true")
+			} else {
+				if err := os.WriteFile(filepath.Join(dir, "local attrs $value"), []byte("berthy.dev.yml ident\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				git(t, dir, "config", "core.attributesFile", "local attrs $value")
+			}
+			if err := os.Remove(filepath.Join(dir, "berthy.dev.yml")); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "checkout", "--", "berthy.dev.yml")
+			before, err := gitcheck.Capture(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := manifest.LoadDetailed(dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !filter && !strings.HasPrefix(loaded.Manifest.Apps["api"].Env.Plain["BUILD"], "$Id: ") {
+				t.Fatal("relative attributes were not applied")
+			}
+			req := deploy.Request{App: "api"}
+			co, err := PrepareCapturedDeployFiles(context.Background(), dir, "dev", loaded, []*deploy.Request{&req}, before)
+			if err != nil || req.Modified || len(co.Changed) != 0 {
+				t.Fatalf("conversion: modified %v, paths %v, err %v", req.Modified, co.Changed, err)
+			}
+		})
+	}
+}
+
+func TestCapturedDoesNotRunLinkedWorktreeIndexHook(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, dir, "worktree", "add", "--detach", linked, "HEAD")
+	hooks := git(t, dir, "rev-parse", "--git-path", "hooks")
+	if !filepath.IsAbs(hooks) {
+		hooks = filepath.Join(dir, hooks)
+	}
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	script := "#!/bin/sh\nprintf ran > \"" + filepath.ToSlash(marker) + "\"\n"
+	if err := os.WriteFile(filepath.Join(hooks, "post-index-change"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, linked, "read-tree", "HEAD")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("control did not run post-index-change: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := git(t, linked, "rev-parse", "--git-path", "index")
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(linked, indexPath)
+	}
+	indexBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := gitcheck.Capture(context.Background(), linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.LoadDetailed(linked, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := deploy.Request{App: "api"}
+	_, err = PrepareCapturedDeployFiles(context.Background(), linked, "dev", loaded, []*deploy.Request{&req}, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("index hook ran during capture: %v", err)
+	}
+	indexAfter, err := os.ReadFile(indexPath)
+	if err != nil || !bytes.Equal(indexBefore, indexAfter) {
+		t.Fatalf("source index changed: %v", err)
+	}
+}
+
+func TestCapturedRelativeProcessRunsInSource(t *testing.T) {
+	dir, head := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest, ".gitattributes": "berthy.yml filter=local\n"})
+	if err := os.WriteFile(filepath.Join(dir, "local-process"), []byte("#!/bin/sh\n: > process-ran\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "config", "filter.local.process", "./local-process")
+	git(t, dir, "config", "filter.local.required", "true")
+	_, err := gitcheck.CompareCaptured(context.Background(), dir, head, []gitcheck.CapturedFile{{Path: "berthy.yml", Present: true, Bytes: []byte(imageManifest)}})
+	if err == nil {
+		t.Fatal("failed process filter was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "process-ran")); err != nil {
+		t.Fatalf("process did not run in source: %v", err)
+	}
+}
