@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,22 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	if !protected && policy != agentclient.ProtectionLegacyUnprotected {
 		return false, 0
 	}
+	if protected {
+		for i := range steps {
+			step := &steps[i]
+			if m.Apps[step.app].Kind != "image" || step.req.KeepVersion {
+				continue
+			}
+			if _, mutable := tags[step.app]; mutable {
+				continue
+			}
+			image, err := m.CheckImageDeploy(step.app, step.req.Version, true)
+			if err != nil {
+				return fail(err)
+			}
+			step.image = image
+		}
+	}
 	for i := range steps {
 		step := &steps[i]
 		tag, explicit := tags[step.app]
@@ -66,7 +83,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			if e = imagePlan(data, m, guard, "", tag); e != nil {
 				return fail(e.Error() + "; upgrade the agent or deploy an explicit digest")
 			}
-			step.preview = []byte(target.Redact(string(data)))
+			step.preview = data
 			continue
 		}
 		payload, _ := json.Marshal(api.ImageLookup{Manifest: *m, App: step.app, Tag: tag})
@@ -85,6 +102,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			return fail("invalid image tag lookup response")
 		}
 		step.req.Version, step.req.VersionTag = image, tag
+		step.image = image
 		if _, e = m.CheckImageDeploy(step.app, image, true); e != nil {
 			return fail(e)
 		}
@@ -106,9 +124,9 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		} else if status != http.StatusOK {
 			planErr = errors.New(target.Redact(agentclient.Message(status, data)))
 		}
-		image, tag := step.req.Version, step.req.VersionTag
+		image, tag := step.image, step.req.VersionTag
 		if step.req.KeepVersion {
-			image, tag = step.req.KeepDigest, step.tag
+			tag = step.tag
 		}
 		if planErr == nil {
 			planErr = batchPlan(data, m, f.env, step.req, image, tag)
@@ -120,13 +138,13 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			step.previewErr = planErr.Error()
 			continue
 		}
-		step.preview = []byte(target.Redact(string(data)))
+		step.preview = data
 	}
 	if f.dry {
 		return false, 0
 	}
 	for _, step := range steps {
-		if err := showImagePlan(out, errout, step.preview, false, "Deploy "+target.Project+"/"+target.Env+" app "+step.app); err != nil {
+		if err := showImagePlan(out, step.preview, target.Token, false, "Deploy "+target.Project+"/"+target.Env+" app "+step.app); err != nil {
 			return fail(err)
 		}
 	}
@@ -142,7 +160,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 
 func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request, image, tag string) error {
 	invalid := errors.New("invalid agent deploy plan")
-	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose")
+	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "remove", "destroy", "restore", "exec", "command")
 	if err != nil {
 		return invalid
 	}
@@ -156,23 +174,20 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		}
 	}
 	if m.Apps[req.App].Kind != "compose" {
-		// imagePlan requires a tag field; an omitted optional tag means empty.
-		if fields["tag"] == nil && tag == "" {
-			var obj map[string]json.RawMessage
-			if json.Unmarshal(data, &obj) != nil {
-				return invalid
-			}
-			obj["tag"] = json.RawMessage(`""`)
-			data, _ = json.Marshal(obj)
-		}
 		return imagePlan(data, m, req, image, tag)
 	}
-	var app, gotImage, gotTag string
+	for _, key := range []string{"remove", "destroy", "restore", "exec", "command"} {
+		if raw := fields[key]; raw != nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return invalid
+		}
+	}
+	var app string
+	var gotImage, gotTag *string
 	var roles []string
-	if json.Unmarshal(fields["app"], &app) != nil || app != req.App || json.Unmarshal(fields["image"], &gotImage) != nil || gotImage != "" || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || len(roles) != 0 {
+	if json.Unmarshal(fields["app"], &app) != nil || app != req.App || json.Unmarshal(fields["image"], &gotImage) != nil || gotImage == nil || *gotImage != "" || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || len(roles) != 0 {
 		return invalid
 	}
-	if fields["tag"] != nil && (json.Unmarshal(fields["tag"], &gotTag) != nil || gotTag != "") {
+	if fields["tag"] != nil && (json.Unmarshal(fields["tag"], &gotTag) != nil || gotTag == nil || *gotTag != "") {
 		return invalid
 	}
 	cf, err := exactFields(fields["compose"], "project", "services", "volumes", "blockers")
@@ -184,6 +199,7 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		return invalid
 	}
 	for _, field := range []string{"services", "volumes"} {
+		names := make(map[string]bool)
 		var entries []json.RawMessage
 		if json.Unmarshal(cf[field], &entries) != nil || entries == nil {
 			return invalid
@@ -191,13 +207,25 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		for _, entry := range entries {
 			item, err := exactFields(entry, "name", "action")
 			var name, action string
-			if err != nil || json.Unmarshal(item["name"], &name) != nil || json.Unmarshal(item["action"], &action) != nil || name == "" || action == "" {
+			if err != nil || json.Unmarshal(item["name"], &name) != nil || json.Unmarshal(item["action"], &action) != nil || name == "" || action == "" || names[name] {
 				return invalid
 			}
+			names[name] = true
 		}
 	}
 	if cf["blockers"] != nil && (json.Unmarshal(cf["blockers"], &plan.Blockers) != nil || plan.Blockers == nil) {
 		return invalid
+	}
+	if cf["blockers"] != nil {
+		var blockers []*string
+		if json.Unmarshal(cf["blockers"], &blockers) != nil {
+			return invalid
+		}
+		for _, blocker := range blockers {
+			if blocker == nil {
+				return invalid
+			}
+		}
 	}
 	if len(plan.Blockers) > 0 {
 		return errors.New("deploy plan has blockers")

@@ -123,11 +123,17 @@ expect_contains 'digest automation deploys B' "$spec" "$PRIVATE_REG/$PRIVATE_IMA
 # project and record its ownership before creating it.
 . "$RUN/digests.env"
 cat >> "$MAN/berthy.yml" <<YML
+  aux:
+    kind: image
+    image: $REG/e2e/web
+    depends_on: [web]
+    roles:
+      main: {}
   zstack:
     kind: compose
     file: batch-compose.yml
     stateful: true
-    depends_on: [web]
+    depends_on: [aux]
 YML
 cat > "$MAN/batch-compose.yml" <<YML
 services:
@@ -140,15 +146,16 @@ YML
 git -C "$MAN" add berthy.yml batch-compose.yml
 git -C "$MAN" commit -qm batch
 record_deploy "$PROJECT" "$ENVN" zstack --manifest-dir "$MAN" || { fail 'record batch ownership' 'fixture names unavailable'; finish; exit 1; }
-out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
+record_deploy "$PROJECT" "$ENVN" aux --manifest-dir "$MAN" || { fail 'record batch image ownership' 'fixture names unavailable'; finish; exit 1; }
+out=$(adm deploy --version web=stable --version "aux=$WEB_V1_DIGEST" --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
 expect_code 'preview image and Compose batch' 0 "$code" "$out"
-if jq -e '.apps | length == 2 and .[0].app == "web" and .[1].app == "zstack"' <<< "$out" >/dev/null; then pass 'batch preview preserves order'; else fail 'batch preview preserves order' 'unexpected plans'; fi
+if jq -e '.apps | length == 3 and .[0].app == "web" and .[1].app == "aux" and .[2].app == "zstack"' <<< "$out" >/dev/null; then pass 'batch preview preserves order'; else fail 'batch preview preserves order' 'unexpected plans'; fi
 terminal_batch() {
-python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" "$1" <<'PY'
+python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" "$1" "$WEB_V1_DIGEST" <<'PY'
 import errno, os, pty, select, subprocess, sys, time
-binary, env, config, manifest, mode = sys.argv[1:]
+binary, env, config, manifest, mode, digest = sys.argv[1:]
 master, slave = pty.openpty()
-proc = subprocess.Popen([binary, 'deploy', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'web=stable'], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+proc = subprocess.Popen([binary, 'deploy', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'web=stable', '--version', 'aux='+digest], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 data = bytearray()
 prompted = False
@@ -181,7 +188,7 @@ before=$(adm history web --json 2>&1 | jq 'length')
 sed -i 's/BATCH_MODE: one/BATCH_MODE: two/' "$MAN/batch-compose.yml"
 git -C "$MAN" add batch-compose.yml
 git -C "$MAN" commit -qm 'change Compose service'
-out=$(adm deploy --version web=stable --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
+out=$(adm deploy --version web=stable --version "aux=$WEB_V1_DIGEST" --manifest-dir "$MAN" --dry-run --json 2>&1); code=$?
 expect_code 'stateful Compose blocker refuses mixed batch' 1 "$code" "$out"
 expect_contains 'batch reports nested blocker' "$out" 'blocker'
 if terminal_batch blocked; then pass 'blocked batch refuses before confirmation'; else fail 'blocked batch refuses before confirmation' 'terminal batch failed'; fi

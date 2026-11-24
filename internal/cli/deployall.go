@@ -74,6 +74,7 @@ type deployStep struct {
 	req        deploy.Request
 	header     string
 	tag        string
+	image      string
 	preview    []byte
 	previewErr string
 }
@@ -208,7 +209,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 			fmt.Fprintln(errout, step.previewErr)
 			code = 1
 		} else if f.dry && step.preview != nil {
-			if err := showImagePlan(stdout, errout, step.preview, f.json, ""); err != nil {
+			if err := showImagePlan(stdout, step.preview, token, f.json, ""); err != nil {
 				fmt.Fprintln(errout, err)
 				code = 1
 			}
@@ -303,11 +304,18 @@ func checkKeptVersions(ctx context.Context, client *http.Client, target *agentcl
 			fmt.Fprintf(errout, "image app %s is not deployed yet: give --version %s=REF (nothing was deployed)\n", step.app, step.app)
 			missing = true
 		} else {
+			image, err := promotionImage(&step.req.Manifest, step.app, answer.Digest)
+			stored, parseErr := reference.ParseNormalizedNamed(answer.Digest)
+			if err != nil || parseErr != nil || stored.String() != answer.Digest || (answer.Tag != "" && reference.TagRegexp.FindString(answer.Tag) != answer.Tag) {
+				fmt.Fprintf(errout, "image app %s has an invalid applied release (nothing was deployed)\n", step.app)
+				return 1
+			}
 			// The agent refuses the deploy if the app runs another version by the time it deploys it, so what the header says is
 			// what is kept.
 			step.req.KeepDigest = answer.Digest
 			step.header = " (keeps " + terminalSafe(keptVersionName(answer)) + ")"
 			step.tag = answer.Tag
+			step.image = image
 		}
 	}
 	if missing {

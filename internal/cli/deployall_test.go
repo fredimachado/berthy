@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"berthy/internal/deploy"
+	"berthy/internal/manifest"
 )
 
 // allAppsManifest is a project of three image apps: api needs postgres and redis first.
@@ -51,6 +54,8 @@ type fakeDeployAgent struct {
 	lookupFail   string
 	lookups      []string
 	protected    bool // whether the agent is configured for a protected environment
+	plans        map[string]string
+	applied      map[string]string
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -107,6 +112,8 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 		f.deploys = append(f.deploys, body)
 		app, _ := body["app"].(string)
 		switch {
+		case body["dry_run"] == true && f.plans[app] != "":
+			fmt.Fprint(w, f.plans[app])
 		case body["dry_run"] == true && f.mixedPlans && app == "api":
 			fmt.Fprintf(w, `{"app":"api","image":"ghcr.io/acme/api@sha256:%s","tag":"v1","roles":["web"]}`, strings.Repeat("a", 64))
 		case body["dry_run"] == true && f.mixedPlans:
@@ -131,12 +138,17 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && strings.HasPrefix(rest, "applied/"):
 		f.reads = append(f.reads, r.URL.Path)
 		app := strings.TrimPrefix(rest, "applied/")
+		if answer := f.applied[app]; answer != "" {
+			fmt.Fprint(w, answer)
+			return
+		}
 		if f.undeployed[app] {
 			w.WriteHeader(404)
 			fmt.Fprint(w, `{"code":"not_deployed","message":"app is not deployed"}`)
 			return
 		}
-		fmt.Fprintf(w, `{"id":4,"digest":"example/%s@sha256:%s","tag":"v1.0.2"}`, app, strings.Repeat("a", 64))
+		repo := map[string]string{"api": "ghcr.io/acme/api", "postgres": "docker.io/library/postgres", "redis": "docker.io/library/redis"}[app]
+		fmt.Fprintf(w, `{"id":4,"digest":"%s@sha256:%s","tag":"v1.0.2"}`, repo, strings.Repeat("a", 64))
 	case r.Method == "GET" && strings.HasPrefix(rest, "operations/") && strings.HasSuffix(rest, "/events"):
 		fmt.Fprint(w, "id: 1\nevent: accepted\ndata: {}\n\n")
 	case r.Method == "GET" && strings.HasPrefix(rest, "operations/op-"):
@@ -336,7 +348,8 @@ func TestDeployAllKeepsTheVersionAnAppRunsNow(t *testing.T) {
 			t.Errorf("%v: want keep_version and no version", d)
 		}
 		// The digest the CLI read is the one the agent must still find applied.
-		if want := fmt.Sprintf("example/%s@sha256:%s", d["app"], strings.Repeat("a", 64)); d["keep_digest"] != want {
+		repo := map[string]string{"api": "ghcr.io/acme/api", "postgres": "docker.io/library/postgres", "redis": "docker.io/library/redis"}[d["app"].(string)]
+		if want := fmt.Sprintf("%s@sha256:%s", repo, strings.Repeat("a", 64)); d["keep_digest"] != want {
 			t.Errorf("%v: keep_digest %v, want %s", d["app"], d["keep_digest"], want)
 		}
 	}
@@ -578,5 +591,94 @@ func TestDeployAllLegacyGuardIncludesLaterComposeChanges(t *testing.T) {
 	}
 	if agent.deploys[0]["dry_run"] != true || agent.deploys[0]["modified"] != true || agent.deploys[1]["modified"] == true {
 		t.Fatalf("guard and actual: %v", agent.deploys)
+	}
+}
+
+func TestBatchReviewBareDigestPreview(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"zlast": fmt.Sprintf(`{"app":"zlast","image":"ghcr.io/acme/zlast@%s","roles":["web"]}`, digest)}}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--version", "zlast="+digest, "--dry-run", "--json")
+	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 || agent.deploys[1]["version"] != digest {
+		t.Fatalf("exit %d stdout %s stderr %s requests %v", code, out, errs, agent.deploys)
+	}
+}
+
+func TestBatchReviewInvalidLaterKeptRelease(t *testing.T) {
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	for _, answer := range []string{`{"id":1,"digest":"bad","tag":"v1"}`, fmt.Sprintf(`{"id":1,"digest":"ghcr.io/other/zlast@sha256:%s","tag":"v1"}`, strings.Repeat("a", 64)), fmt.Sprintf(`{"id":1,"digest":"ghcr.io/acme/zlast@sha256:%s","tag":"bad tag"}`, strings.Repeat("a", 64))} {
+		agent := &fakeDeployAgent{applied: map[string]string{"zlast": answer}}
+		dir, cfg := deployAllFixture(t, manifest, agent)
+		code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=sha256:"+strings.Repeat("a", 64))
+		if code == 0 || len(agent.deploys) != 0 {
+			t.Fatalf("answer %s: exit %d stderr %s requests %v", answer, code, errs, agent.apps())
+		}
+	}
+}
+
+func TestBatchReviewPreviewSelectionContainingToken(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	t.Setenv("BERTHY_TEST_TOKEN", "v1")
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+	if code == 0 || strings.Contains(out, "[redacted]") || !strings.Contains(errs, "cannot safely display") {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+}
+
+func TestBatchReviewComposeDecisionShapes(t *testing.T) {
+	m := &manifest.Manifest{Project: "demo", Apps: map[string]manifest.App{"z": {Kind: "compose"}}}
+	req := deploy.Request{App: "z"}
+	for _, extra := range []string{`"tag":null,`, `"remove":{},`, `"exec":{},`} {
+		data := `{"app":"z","image":"",` + extra + `"roles":[],"compose":{"project":"demo-dev-z","services":[],"volumes":[]}}`
+		if batchPlan([]byte(data), m, "dev", req, "", "") == nil {
+			t.Errorf("accepted %s", data)
+		}
+	}
+	for _, field := range []string{`"services":[{"name":"a","action":"keep"},{"name":"a","action":"create"}],"volumes":[]`, `"services":[],"volumes":[{"name":"v","action":"keep"},{"name":"v","action":"create"}]`} {
+		data := `{"app":"z","image":"","roles":[],"compose":{"project":"demo-dev-z",` + field + `}}`
+		if batchPlan([]byte(data), m, "dev", req, "", "") == nil {
+			t.Errorf("accepted %s", data)
+		}
+	}
+}
+
+func TestBatchReviewRejectsTaggedDigestUnderStickyProtection(t *testing.T) {
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	code, _, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--version", "zlast=ghcr.io/acme/zlast:old@sha256:"+strings.Repeat("a", 64), "--dry-run")
+	if code == 0 || len(agent.lookups) != 0 || len(agent.deploys) != 0 {
+		t.Fatalf("exit %d stderr %s lookups %v deploys %v", code, errs, agent.lookups, agent.apps())
+	}
+}
+
+func TestBatchReviewKeepsStoredDigestAndPreviewsCanonicalIdentity(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	stored := "ghcr.io/acme/zlast:old@sha256:" + hash
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true, applied: map[string]string{"zlast": fmt.Sprintf(`{"id":1,"digest":%q,"tag":"old"}`, stored)}, plans: map[string]string{"zlast": fmt.Sprintf(`{"app":"zlast","image":"ghcr.io/acme/zlast@sha256:%s","tag":"old","roles":["web"]}`, hash)}}
+	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	dir, cfg := deployAllFixture(t, manifest, agent)
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 || agent.deploys[1]["keep_digest"] != stored {
+		t.Fatalf("exit %d stdout %s stderr %s requests %v", code, out, errs, agent.deploys)
+	}
+}
+
+func TestBatchReviewDecodedPreviewRedaction(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		agent := &fakeDeployAgent{protected: true, mixedPlans: true, plans: map[string]string{"api": fmt.Sprintf(`{"app":"api","image":"ghcr.io/acme/api@sha256:%s","tag":"v1","roles":["web"],"notes":["\u0074est-token\u001b[31m"]}`, strings.Repeat("a", 64))}}
+		manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n"
+		dir, cfg := deployAllFixture(t, manifest, agent)
+		args := []string{"--version", "api=v1", "--dry-run"}
+		if jsonOutput {
+			args = append(args, "--json")
+		}
+		code, out, errs := deployAllCommand(t, dir, cfg, args...)
+		if code != 0 || strings.Contains(out, "test-token") || strings.ContainsRune(out, '\x1b') || !strings.Contains(out, "[redacted]") || (jsonOutput && !json.Valid([]byte(out))) {
+			t.Fatalf("json %t exit %d stdout %q stderr %q", jsonOutput, code, out, errs)
+		}
 	}
 }
