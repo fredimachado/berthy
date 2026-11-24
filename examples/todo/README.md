@@ -62,6 +62,18 @@ orders by `depends_on` (postgres and redis, then api):
 berthy deploy -e dev --config $CFG --version api=v1.0.1
 ```
 
+On protected `prod` with Berthy v0.6.0, list tags for `ghcr.io/acme/todo-api`,
+preview and confirm a tag at a terminal, or give an explicit digest for
+automation. Replace `v1.0.1` with a tag that `versions` prints:
+
+```bash
+berthy versions api -e prod --config $CFG
+berthy deploy api -e prod --config $CFG --version v1.0.1 --dry-run
+berthy deploy api -e prod --config $CFG --version v1.0.1
+berthy deploy api -e prod --config $CFG --version sha256:<64 hex characters> \
+  --commit "$(git rev-parse HEAD)"
+```
+
 Destroy confirms with the hosted environment name:
 
 ```bash
