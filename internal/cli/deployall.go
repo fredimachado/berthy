@@ -88,6 +88,7 @@ type deployAllEntry struct {
 
 // appliedRelease is the answer to the agent's read of the release an app runs now.
 type appliedRelease struct {
+	ID     int64  `json:"id"`
 	Digest string `json:"digest"`
 	Tag    string `json:"tag"`
 }
