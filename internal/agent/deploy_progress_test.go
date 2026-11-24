@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"berthy/internal/deploy"
 	"berthy/internal/state"
@@ -88,7 +89,11 @@ func TestStreamOperationDrainsCommittedFinalEvents(t *testing.T) {
 					t.Fatal(err)
 				}
 				unblock()
-				<-done
+				select {
+				case <-done:
+				case <-time.After(30 * time.Second):
+					t.Fatal("stream did not finish after the operation completed")
+				}
 				body := w.Body.String()
 				events, err := s.EventsAfter(ctx, op.ID, 0, 1000)
 				if err != nil {
