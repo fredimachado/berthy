@@ -92,7 +92,7 @@ cat > "$private/fresh.json" <<'JSON'
  {"wait_text":"deploy every app in depends_on order"}, {"snapshot":"complete"}, {"expect_exit":0}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
+if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >/dev/null 2>&1; then fail "fresh guided setup" "terminal driver failed"; exit 1; fi
 screen="$private/fresh/token.txt"
 # Preserve only the setup step names and status words from the real terminal frame.
 mkdir -p "$LOG/tui-guided-setup" || exit 1
