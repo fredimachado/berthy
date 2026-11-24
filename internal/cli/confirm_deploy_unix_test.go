@@ -108,12 +108,13 @@ func TestConfirmDeployCanonicalQuotedEnter(t *testing.T) {
 	if got.ok || got.err != nil {
 		t.Errorf("quoted Enter: ok=%v err=%v", got.ok, got.err)
 	}
-	transcript := make([]byte, len("y\r\n"))
-	if _, err := io.ReadFull(master, transcript); err != nil {
+	fd := int(master.Fd())
+	if err := unix.SetNonblock(fd, true); err != nil {
 		t.Fatal(err)
 	}
-	if string(transcript) != "y\r\n" {
-		t.Errorf("transcript = %q", transcript)
+	transcript := make([]byte, len("y\r\n"))
+	if n, err := unix.Read(fd, transcript); err != nil || n != len(transcript) || string(transcript) != "y\r\n" {
+		t.Errorf("transcript = %q n=%d err=%v", transcript, n, err)
 	}
 	after, err := term.GetState(tty.Fd())
 	if err != nil || !reflect.DeepEqual(before, after) {
