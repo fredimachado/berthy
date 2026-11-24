@@ -5,7 +5,7 @@ uses. They describe a small todo app as one project with two environments.
 Both can live on the same agent. Each environment has its own overlay network
 (`todo-dev`, `todo-prod`).
 
-These setup instructions use Berthy v0.4.0 or later.
+These setup instructions use Berthy v0.5.0 or later.
 
 | App | Kind | What it is |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Both print `manifest valid`.
 ## Setup and deploy
 
 Work from `examples/todo` so the manifest supplies the project. Setup writes
-the CLI configuration and saves the admin token in the local credential store. If it cannot confirm a save, it prints the token; keep it privately and set it in `BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). Use `--show-token` to print it as well. Setup saves a copy of the key as `~/.berthy/keys/berthy.todo.dev.<key ID>.key` (or `berthy.todo.prod.…`).
+the CLI configuration and saves the admin token in the local credential store. If it cannot confirm a save, it prints the token; keep it privately and set it in `BERTHY_TODO_DEV_TOKEN` (or `BERTHY_TODO_PROD_TOKEN` for prod). Use `--show-token` to print it as well.
 
 ```bash
 cd examples/todo
@@ -49,6 +49,11 @@ listen address and creates a second hosted environment with its own network:
 ```bash
 berthy setup -e prod --host ops@10.0.0.5 --config $CFG
 ```
+
+After each setup run, check `cli_key` for the saved file under `~/.berthy/keys`.
+Setup names it `berthy.todo.dev.<key-id>.key` or `berthy.todo.prod.<key-id>.key`.
+If `cli_key` says `not saved`, follow the first instruction under `next steps`.
+See the [key backup instructions](../../docs/user-guide.md#save-three-things).
 
 Set the secrets the guide lists, then deploy. Without an app name, deploy
 orders by `depends_on` (postgres and redis, then api):
