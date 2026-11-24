@@ -73,3 +73,20 @@ func TestReadOperationEventsEOFAndCopiedData(t *testing.T) {
 		t.Fatalf("last=%d events=%v err=%v", last, got, err)
 	}
 }
+
+func TestReadOperationEventsRejectsNumberedTerminalAndInvalidUTF8(t *testing.T) {
+	for name, frame := range map[string]string{
+		"numbered terminal":           "id: 8\nevent: terminal\ndata: {}\n\n",
+		"duplicate numbered terminal": "id: 7\nevent: terminal\ndata: {}\n\n",
+		"invalid UTF-8":               "id: 8\nevent: verify\ndata: {\"value\":\"\xff\"}\n\n",
+		"invalid UTF-8 terminal":      "event: terminal\ndata: {\"value\":\"\xff\"}\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			count := 0
+			last, err := readOperationEvents(strings.NewReader(frame), 7, func(operationEvent) { count++ })
+			if err == nil || err.Error() != "invalid operation event frame" || last != 7 || count != 0 {
+				t.Fatalf("last=%d count=%d err=%v", last, count, err)
+			}
+		})
+	}
+}

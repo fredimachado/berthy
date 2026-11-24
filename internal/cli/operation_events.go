@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type operationEvent struct {
@@ -21,29 +22,28 @@ func readOperationEvents(r io.Reader, after uint64, accept func(operationEvent))
 	const maxLine = 1 << 20
 	invalid := errors.New("invalid operation event frame")
 	oversized := errors.New("operation event line too large")
-	reader := bufio.NewReaderSize(r, maxLine+1)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(nil, maxLine+1)
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			if i+1 > maxLine {
+				return 0, nil, oversized
+			}
+			return i + 1, bytes.TrimSuffix(data[:i], []byte("\r")), nil
+		}
+		if atEOF && len(data) != 0 {
+			return 0, nil, io.ErrUnexpectedEOF
+		}
+		return 0, nil, nil
+	})
 	last = after
 	var event operationEvent
 	var idSet, kindSet, dataSet, pending bool
-	for {
-		line, readErr := reader.ReadSlice('\n')
-		if errors.Is(readErr, bufio.ErrBufferFull) || len(line) > maxLine {
-			return last, oversized
-		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				if pending || len(line) != 0 {
-					return last, io.ErrUnexpectedEOF
-				}
-				return last, nil
-			}
-			return last, readErr
-		}
-		line = line[:len(line)-1]
-		line = bytes.TrimSuffix(line, []byte("\r"))
+	for scanner.Scan() {
+		line := scanner.Bytes()
 		if len(line) == 0 {
 			if idSet || kindSet || dataSet {
-				if !kindSet || !dataSet || (!idSet && event.Kind != "terminal") || !json.Valid(event.Data) {
+				if !kindSet || !dataSet || (idSet && event.Kind == "terminal") || (!idSet && event.Kind != "terminal") || !utf8.Valid(event.Data) || !json.Valid(event.Data) {
 					return last, invalid
 				}
 				if !idSet || event.ID > last {
@@ -101,4 +101,14 @@ func readOperationEvents(r io.Reader, after uint64, accept func(operationEvent))
 			return last, invalid
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return last, oversized
+		}
+		return last, err
+	}
+	if pending {
+		return last, io.ErrUnexpectedEOF
+	}
+	return last, nil
 }
