@@ -298,6 +298,15 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 		case len(rest) == 1 && rest[0] == "agent":
 			host, _ := os.Hostname()
 			result = map[string]any{"project": c.Project, "environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
+			var effective any
+			if c.Protected || (deployment != nil && deployment.Protected) {
+				effective = true
+			} else if deployment != nil {
+				if value, err := deployment.EffectiveProtected(ctx); err == nil {
+					effective = value
+				}
+			}
+			result.(map[string]any)["effective_protected"] = effective
 		case len(rest) == 1 && rest[0] == "apps":
 			if e == nil {
 				err = fmt.Errorf("Docker unavailable")

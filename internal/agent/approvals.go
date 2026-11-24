@@ -237,6 +237,10 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 		writeError(failure, 503, "unavailable", "plan unavailable")
 		return nil, failure
 	}
+	managedRedact := redact
+	if token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found && token != "" {
+		redact = func(s string) string { return managedRedact(strings.ReplaceAll(s, token, "[redacted]")) }
+	}
 	plan, err := redactApprovalPlan(rest, method, rec.body.Bytes(), redact)
 	if err != nil {
 		failure := newCapture()
@@ -249,6 +253,23 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 // redactApprovalPlan preserves validated generation decisions while hiding dynamic metadata.
 func redactApprovalPlan(rest []string, method string, plan []byte, redact func(string) string) (json.RawMessage, error) {
 	kind := routeKind(rest, method)
+	if kind == "deploy" {
+		var decision struct {
+			Image string          `json:"image"`
+			Tag   string          `json:"tag"`
+			Diff  json.RawMessage `json:"diff"`
+		}
+		if json.Unmarshal(plan, &decision) != nil || redact(decision.Image) != decision.Image || redact(decision.Tag) != decision.Tag {
+			return nil, errors.New("image selection unavailable")
+		}
+		if len(decision.Diff) > 0 {
+			redacted, err := redactPlan(decision.Diff, redact)
+			original, originalErr := canonicalJSON(decision.Diff)
+			if err != nil || originalErr != nil || !bytes.Equal(redacted, original) {
+				return nil, errors.New("image selection unavailable")
+			}
+		}
+	}
 	if kind != "secret generate" && kind != "secret generate declared" {
 		return redactPlan(plan, redact)
 	}
@@ -343,12 +364,30 @@ func (g *approvalGate) protected(ctx context.Context) (bool, error) {
 // served as usual: the environment is not protected, or the request is a dry run.
 func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) bool {
 	ctx := r.Context()
+	manifestProtected := false
+	if len(rest) == 1 && rest[0] == "deploys" {
+		body, err := readBody(w, r)
+		if err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return true
+		}
+		var req deploy.Request
+		if err := decodeBody(w, withBody(r, r.Method, r.URL.Path, body), &req); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return true
+		}
+		if err := g.d.CheckSubmitted(ctx, deploy.Submitted{Manifest: req.Manifest}); err != nil {
+			operationError(w, err)
+			return true
+		}
+		manifestProtected = req.Manifest.Protected
+	}
 	protected, err := g.protected(ctx)
 	if err != nil {
 		writeError(w, 503, "state_unavailable", "state unavailable")
 		return true
 	}
-	if !protected {
+	if !protected && !manifestProtected {
 		return false
 	}
 	body, err := readBody(w, r)

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"time"
@@ -77,6 +78,8 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		ctx := r.Context()
 		sa := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
 		switch {
+		case len(rest) == 2 && rest[0] == "images":
+			serveImageLookup(w, r, d, rest[1])
 		case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
 			var req deploy.Request
 			if err := decodeBody(w, r, &req); err != nil {
@@ -375,6 +378,9 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			for _, op := range failures {
 				row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
+				if op.Tag != "" {
+					row["tag"] = op.Tag
+				}
 				if reason := safeReason(op.Reason); reason != "" {
 					row["reason"] = reason
 				}
@@ -394,7 +400,11 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			out := make([]map[string]any, 0, len(rows))
 			for _, a := range rows {
-				out = append(out, map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time})
+				row := map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time}
+				if a.Tag != "" {
+					row["tag"] = a.Tag
+				}
+				out = append(out, row)
 			}
 			json.NewEncoder(w).Encode(out)
 		case len(rest) == 1 && rest[0] == "lock":
@@ -635,6 +645,17 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
 		}
+		if len(rest) == 1 && rest[0] == "deploys" && r.Method == "POST" {
+			body, err := readBody(w, r)
+			if err != nil || !unambiguousJSON(body, reflect.TypeOf(deploy.Request{})) {
+				writeError(w, 400, "bad_request", "invalid request")
+				return
+			}
+		}
+		if rest[0] == "images" && actor.Agent {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
 		if rest[0] == "approvals" {
 			gate.serveApprovals(w, r, actor, scope, rest)
 			return
@@ -676,6 +697,8 @@ func historyDiffIDs(q url.Values) (id, base int64, ok bool) {
 // method is not GET changes something.
 func routeScope(rest []string, httpMethod string) (required, method string, ok bool) {
 	switch {
+	case len(rest) == 2 && rest[0] == "images" && (rest[1] == "resolve" || rest[1] == "tags"):
+		required, method = "admin", "POST"
 	case len(rest) == 1 && rest[0] == "deploys":
 		required = "deploy"
 		method = "POST"
