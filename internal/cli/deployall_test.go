@@ -595,6 +595,7 @@ func TestDeployAllLegacyGuardIncludesLaterComposeChanges(t *testing.T) {
 		}
 	}
 	git("init", "-q")
+	git("config", "core.autocrlf", "false")
 	git("add", "berthy.yml", "compose.yml")
 	git("commit", "-qm", "fixture")
 	if err := os.WriteFile(file, []byte("services: {}\n# changed\n"), 0600); err != nil {
