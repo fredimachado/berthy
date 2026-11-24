@@ -39,6 +39,19 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
 		return fail(err)
 	}
+	if protected {
+		for i := range steps {
+			step := &steps[i]
+			if !step.req.KeepVersion || step.previewErr != "" {
+				continue
+			}
+			step.req.Version = step.image
+			step.req.VersionTag = step.tag
+			step.req.ExpectedApplied = &step.appliedID
+			step.req.KeepVersion = false
+			step.req.KeepDigest = ""
+		}
+	}
 	if protected && !f.dry && !interactiveDeploy(f, out) {
 		return fail("deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
 	}

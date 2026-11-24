@@ -191,6 +191,83 @@ finally:
 PY
 }
 if terminal_batch yes; then pass 'confirmed image then Compose batch'; else fail 'confirmed image then Compose batch' 'terminal batch failed'; fi
+
+# Change only the kept release's tag while the batch is waiting for consent.
+if python3 - "$BIN" "$ENVN" "$PROJECT" "$RUN/admin.json" "$MAN" "$AGENT_LISTEN" <<'PY'
+import errno, json, os, pty, select, subprocess, sys, time, urllib.error, urllib.request, uuid
+binary, env, project, config, directory, listen = sys.argv[1:]
+prefix = '/v1/projects/' + project + '/environments/' + env + '/'
+base = 'http://' + listen
+token = os.environ['BERTHY_ADMIN_TOKEN']
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def request(method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method, headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    with opener.open(req, timeout=120) as response:
+        return json.load(response)
+def applied():
+    return request('GET', prefix + 'applied/aux')
+def history():
+    result = subprocess.run([binary, 'history', '-e', env, '--config', config, 'aux', '--json'], capture_output=True, check=True)
+    rows = json.loads(result.stdout)
+    if not isinstance(rows, list): raise RuntimeError('invalid history')
+    return rows
+manifest = json.loads(subprocess.run([binary, 'config', 'show', '-e', env, '--manifest-dir', directory, '--json'], capture_output=True, check=True).stdout)
+def retag(tag):
+    current = applied()
+    body = {'app':'aux', 'request_id':uuid.uuid4().hex, 'version':current['digest'], 'version_tag':tag, 'expected_applied':current['id'], 'manifest':manifest}
+    accepted = request('POST', prefix + 'deploys', body)
+    opid = accepted['operation_id']
+    event_path = prefix + 'operations/' + opid + '/events'
+    if accepted['events_url'] != event_path: raise RuntimeError('invalid event path')
+    req = urllib.request.Request(base + event_path, headers={'Authorization':'Bearer ' + token})
+    with opener.open(req, timeout=120) as stream:
+        for line in stream:
+            if line.strip() == b'event: terminal': break
+        else: raise RuntimeError('operation event stream ended early')
+    if request('GET', prefix + 'operations/' + opid).get('state') != 'succeeded': raise RuntimeError('tag-only deploy failed')
+    return applied()
+snapshot = retag('batch-a')
+if snapshot.get('tag') != 'batch-a': raise RuntimeError('initial kept label missing')
+master, slave = pty.openpty()
+proc = subprocess.Popen([binary, 'deploy', '-e', env, '--config', config, '--manifest-dir', directory, '--version', 'web=stable'], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+data = bytearray()
+try:
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 1)
+        if ready:
+            try: chunk = os.read(master, 65536)
+            except OSError as e:
+                if e.errno == errno.EIO: break
+                raise
+            if not chunk: break
+            data.extend(chunk)
+            if b'Proceed with this deploy? [y/N] ' in data: break
+        if proc.poll() is not None: raise RuntimeError('batch exited before confirmation')
+    else: raise RuntimeError('batch confirmation timed out')
+    if b'batch-a' not in data or snapshot['digest'].encode() not in data: raise RuntimeError('kept preview missing snapshot')
+    before = len(history())
+    newer = retag('batch-b')
+    if newer['id'] == snapshot['id'] or newer['digest'] != snapshot['digest'] or newer.get('tag') != 'batch-b': raise RuntimeError('tag-only release did not advance')
+    if len(history()) != before + 1: raise RuntimeError('tag-only release missing from history')
+    os.write(master, b'y\n')
+    while True:
+        try: chunk = os.read(master, 65536)
+        except OSError as e:
+            if e.errno == errno.EIO: break
+            raise
+        if not chunk: break
+        data.extend(chunk)
+    if proc.wait(timeout=120) == 0 or b'HTTP 409' not in data: raise RuntimeError('stale batch was not refused')
+    final = applied()
+    if final['id'] != newer['id'] or final['digest'] != newer['digest'] or final.get('tag') != 'batch-b' or len(history()) != before + 1: raise RuntimeError('stale batch changed kept release')
+finally:
+    if proc.poll() is None: proc.kill(); proc.wait()
+    os.close(master)
+PY
+then pass 'kept batch refuses a changed release'; else fail 'kept batch refuses a changed release' 'snapshot check failed'; fi
 before=''
 if before_json=$(adm history web --json 2>/dev/null) && before=$(jq -esr 'if length == 1 and (.[0] | type) == "array" then .[0] | length else error("invalid history") end' <<< "$before_json" 2>/dev/null); then
   pass 'read history before blocked batch'

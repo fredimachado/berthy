@@ -76,6 +76,7 @@ type deployStep struct {
 	header     string
 	tag        string
 	image      string
+	appliedID  int64
 	preview    []byte
 	previewErr string
 }
@@ -346,6 +347,7 @@ func checkKeptVersions(ctx context.Context, client *http.Client, target *agentcl
 				step.tag = tagged.Tag()
 			}
 			step.image = image
+			step.appliedID = answer.ID
 		}
 	}
 	if missing {

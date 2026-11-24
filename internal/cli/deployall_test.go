@@ -685,7 +685,7 @@ func TestBatchReviewKeepsStoredDigestAndPreviewsCanonicalIdentity(t *testing.T) 
 	manifest := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
 	dir, cfg := deployAllFixture(t, manifest, agent)
 	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
-	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 || agent.deploys[1]["keep_digest"] != stored {
+	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 || agent.deploys[1]["version"] != stored || agent.deploys[1]["version_tag"] != "old" || agent.deploys[1]["expected_applied"] != float64(1) || agent.deploys[1]["keep_digest"] != nil || agent.deploys[1]["keep_version"] != nil {
 		t.Fatalf("exit %d stdout %s stderr %s requests %v", code, out, errs, agent.deploys)
 	}
 }
@@ -1018,5 +1018,20 @@ func TestDeployAllProtectedDirtyTagRefusesBeforeRemoteReads(t *testing.T) {
 	want := "warning: the manifest has local changes: berthy.dev.yml\nthe manifest has local changes: commit them first: berthy.dev.yml (nothing was deployed)\n"
 	if code != 1 || out != "" || errs != want {
 		t.Fatalf("exit %d stdout %q stderr %q", code, out, errs)
+	}
+}
+
+func TestProtectedBatchKeptPreviewPinsAppliedRelease(t *testing.T) {
+	digest := "ghcr.io/acme/zlast@sha256:" + strings.Repeat("b", 64)
+	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zlast:\n    kind: image\n    image: ghcr.io/acme/zlast\n    depends_on: [api]\n    roles:\n      web: {}\n"
+	agent := &fakeDeployAgent{protected: true, mixedPlans: true, applied: map[string]string{"zlast": fmt.Sprintf(`{"id":4,"digest":%q,"tag":"stable"}`, digest)}, plans: map[string]string{"zlast": fmt.Sprintf(`{"app":"zlast","image":%q,"tag":"stable","roles":["web"]}`, digest)}}
+	dir, cfg := deployAllFixture(t, manifestText, agent)
+	code, out, errs := deployAllCommand(t, dir, cfg, "--version", "api=v1", "--dry-run", "--json")
+	if code != 0 || !json.Valid([]byte(out)) || len(agent.deploys) != 2 {
+		t.Fatalf("exit %d stdout %q stderr %q requests %v", code, out, errs, agent.deploys)
+	}
+	req := agent.deploys[1]
+	if req["version"] != digest || req["version_tag"] != "stable" || req["expected_applied"] != float64(4) || req["keep_version"] != nil || req["keep_digest"] != nil {
+		t.Fatalf("kept preview is not pinned: %v", req)
 	}
 }
