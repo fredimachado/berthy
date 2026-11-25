@@ -73,7 +73,8 @@ type Manifest struct {
 }
 
 type Server struct {
-	SSH string `json:"ssh" yaml:"ssh"`
+	SSH     string `json:"ssh" yaml:"ssh"`
+	Address string `json:"address,omitempty" yaml:"address,omitempty"` // optional: the server's private or VPN IP
 }
 
 type Ingress struct {

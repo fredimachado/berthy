@@ -3013,6 +3013,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `network` | name | `<project>-<environment>` | Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist. |
 | `servers` | map | none | Servers by name. Define them in the environment overlay when environments use different servers. |
 | `servers.<name>.ssh` | string | required | The SSH destination `berthy setup` connects to, such as `ops@10.0.0.5` or an alias from your SSH config. Setup uses it when the manifest names only this server, or with `--server <name>`. |
+| `servers.<name>.address` | string | none | The server's private or VPN IP address. On a first install `berthy setup` makes the agent listen on `<address>:7710` unless `--listen` says otherwise, and a later run refuses when the agent listens on another address. |
 | `protected` | boolean | `false` | Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval. |
 | `registries` | map | none | Registry credentials, by registry host. |
 | `secrets` | map | none | Secrets Berthy may generate, by name. Each must be read by an app. |

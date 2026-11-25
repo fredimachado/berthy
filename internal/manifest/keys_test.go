@@ -147,6 +147,7 @@ protected: true
 servers:
   pg:
     ssh: ops@deploy.example.com
+    address: 10.0.0.5
 min_version: 0.9.0
 timezone: Europe/Lisbon
 registries:

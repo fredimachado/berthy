@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,8 +38,15 @@ func (m *Manifest) Check() Problems {
 		if !identifier.MatchString(name) {
 			p.add(path, "invalid server name %q", name)
 		}
-		if !sshhost.Valid(m.Servers[name].SSH) {
+		srv := m.Servers[name]
+		if !sshhost.Valid(srv.SSH) {
 			p.add(path+".ssh", "%s.ssh: use USER@SERVER or SERVER", path)
+		}
+		if srv.Address != "" {
+			addr, err := netip.ParseAddr(srv.Address)
+			if err != nil || addr.Zone() != "" || addr.IsUnspecified() {
+				p.add(path+".address", "%s.address: use one IP address of the server, such as 10.0.0.5", path)
+			}
 		}
 	}
 	if len(m.Apps) == 0 {
