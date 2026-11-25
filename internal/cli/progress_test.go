@@ -56,8 +56,11 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 			t.Fatalf("unexpected spinner frames: first %q, second %q", first, second)
 		}
 		p.Message(func() { fmt.Fprintln(&out, "a message") })
-		if got, want := out.String(), second+"\r\x1b[2Ka message\n"; got != want {
-			t.Fatalf("message did not clear frame: %q, want %q", got, want)
+		p.mu.Lock()
+		afterMessage := out.String()
+		p.mu.Unlock()
+		if want := second + "\r\x1b[2Ka message\n"; afterMessage != want {
+			t.Fatalf("message did not clear frame: %q, want %q", afterMessage, want)
 		}
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
