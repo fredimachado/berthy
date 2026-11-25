@@ -101,7 +101,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			terminalShown = true
 		}
 		if ev.Kind == "rollout" {
-			if interactive && detail.Role != "" {
+			if progress.enabled && detail.Role != "" {
 				switch detail.Status {
 				case "started":
 					if started[detail.Role] {
@@ -142,7 +142,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		notFound = ""
 		streamURL := *base
 		streamURL.Path, streamURL.RawPath, streamURL.RawQuery = events, "", ""
-		if interactive {
+		if progress.enabled {
 			streamURL.RawQuery = "progress=1"
 		}
 		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -727,3 +727,57 @@ func TestOperationHintLeavesSafeIDsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployRolloutProgressWithRedirectedStdout(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceProgressVT(t)
+	oldTerminal, oldWidth := stderrTerminal, progressWidth
+	t.Cleanup(func() { stderrTerminal, progressWidth = oldTerminal, oldWidth })
+	synctest.Test(t, func(t *testing.T) {
+		var out, errs progressTestBuffer
+		stderrTerminal = func(w io.Writer) bool { return w == &errs }
+		progressWidth = func(w io.Writer) (int, error) {
+			if w == &errs {
+				return 100, nil
+			}
+			return 0, fmt.Errorf("pipe")
+		}
+		reader, writer := io.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan int, 1)
+		query := make(chan string, 1)
+		client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				query <- r.URL.RawQuery
+				return &http.Response{StatusCode: 200, Body: reader, Header: make(http.Header), Request: r}, nil
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"state":"succeeded"}`)), Header: make(http.Header), Request: r}, nil
+		})}
+		base, _ := url.Parse("http://agent.invalid")
+		go func() {
+			done <- watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
+		}()
+		defer func() { cancel(); writer.Close(); <-done }()
+		synctest.Wait()
+		if got := <-query; got != "progress=1" {
+			t.Fatalf("query = %q, want progress=1", got)
+		}
+		fmt.Fprint(writer, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: rollout\ndata: {\"role\":\"web\",\"status\":\"ready\"}\n\n")
+		synctest.Wait()
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if got := errs.String(); got != "\r\x1b[2K| deploying 1 ready of 1 started (0.2s)" {
+			t.Fatalf("frame = %q", got)
+		}
+		fmt.Fprint(writer, "id: 3\nevent: succeeded\ndata: {}\n\nevent: terminal\ndata: {}\n\n")
+		writer.Close()
+		synctest.Wait()
+		if got := out.String(); got != "accepted\nsucceeded\nterminal\nstate: succeeded\n" {
+			t.Fatalf("stdout = %q", got)
+		}
+		if got := errs.String(); got != "\r\x1b[2K| deploying 1 ready of 1 started (0.2s)\r\x1b[2K" {
+			t.Fatalf("stderr = %q", got)
+		}
+	})
+}
