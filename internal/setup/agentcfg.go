@@ -97,6 +97,7 @@ func (s *Session) resolveListen(ctx context.Context, f *Facts) error {
 			return errors.New("--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it")
 		}
 		s.Opts.ListenIP, s.Opts.ListenPort = s.Opts.DefaultListenIP, DefaultListenPort
+		s.listenFromManifest = true
 		probe := agent.Config{Environment: s.Opts.Env, Listen: s.Opts.listen(), Tokens: []agent.Token{{Digest: strings.Repeat("0", 64), Scope: "admin"}}}
 		if err := probe.Validate(); err != nil {
 			return fmt.Errorf("invalid address %s from the manifest: %v", s.Opts.listen(), err)

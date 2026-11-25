@@ -864,7 +864,7 @@ func TestResolveListen(t *testing.T) {
 		})
 		got, ok := runSteps(s)
 		r := lastResult(got)
-		if ok || r.Step != "check" || r.Detail != "172.31.250.99 is not assigned to this server: --listen needs one of its addresses" {
+		if ok || r.Step != "check" || r.Detail != "172.31.250.99 is not assigned to this server: the manifest's address for it must be one of its addresses" {
 			t.Fatalf("got %+v", got)
 		}
 	})

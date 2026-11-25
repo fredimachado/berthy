@@ -150,6 +150,8 @@ type Session struct {
 	staged      Staged // what this run staged for the service step
 	unitChanged bool
 	serverVer   *string // the version the agent binary on the server reports; "" when it says none
+	// listenFromManifest is set when resolveListen took DefaultListenIP because there was no --listen and no agent config.
+	listenFromManifest bool
 }
 
 // StepResult is what a step reported.
@@ -296,6 +298,9 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 	}
 	if !assigned {
+		if s.listenFromManifest {
+			return "", "", fmt.Errorf("%s is not assigned to this server: the manifest's address for it must be one of its addresses", s.Opts.ListenIP)
+		}
 		return "", "", fmt.Errorf("%s is not assigned to this server: --listen needs one of its addresses", s.Opts.ListenIP)
 	}
 	return StatusOK, fmt.Sprintf("linux %s, systemd, %s assigned", arch, s.Opts.ListenIP), nil
