@@ -50,7 +50,14 @@ func TestApproveReplanProgressAndRedaction(t *testing.T) {
 		go func() {
 			done <- runApprove(context.Background(), call, &http.Client{}, commandFlags{pos: []string{"ap1"}}, base, "/v1/", "secret", &out, &errs)
 		}()
-		defer func() { close(release); <-done }()
+		var releaseOnce sync.Once
+		returned := false
+		defer func() {
+			releaseOnce.Do(func() { close(release) })
+			if !returned {
+				<-done
+			}
+		}()
 		synctest.Wait()
 		if !strings.Contains(out.String(), "plan:") || strings.Contains(out.String(), "\x1b") {
 			t.Fatalf("before delay: %q", out.String())
@@ -60,17 +67,21 @@ func TestApproveReplanProgressAndRedaction(t *testing.T) {
 		if !strings.Contains(errs.String(), "approving") {
 			t.Fatalf("missing approval wait: %q", errs.String())
 		}
-		close(release)
-		release = make(chan struct{})
-		synctest.Wait()
-		if !strings.Contains(errs.String(), "[redacted]") || strings.Contains(errs.String(), "secret") {
-			t.Fatalf("diagnostic: %q", errs.String())
+		releaseOnce.Do(func() { close(release) })
+		got := <-done
+		returned = true
+		if got != 1 {
+			t.Fatalf("exit = %d", got)
 		}
-		before := out.String()
+		want := "\r\x1b[2K| approving (0.2s)\r\x1b[2Kagent returned HTTP 403: denied [redacted]\n"
+		if errs.String() != want {
+			t.Fatalf("diagnostic: %q, want %q", errs.String(), want)
+		}
+		beforeOut, beforeErr := out.String(), errs.String()
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if out.String() != before {
-			t.Fatal("write after response")
+		if out.String() != beforeOut || errs.String() != beforeErr {
+			t.Fatalf("write after response: stdout %q, stderr %q", out.String(), errs.String())
 		}
 	})
 }
