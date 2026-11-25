@@ -41,15 +41,15 @@ type Build struct {
 const DefaultListenPort = 7710
 
 type Options struct {
-	StepStarted     func(name string)
-	Local           bool                             // --local: this machine is the server and keeps no copy
-	KeyHome         string                           // this machine's home, or empty when unavailable
-	NewWrapKey      func() (*keywrap.Private, error) // nil uses keywrap.Generate
-	Env             string
-	Project         string // the project of the manifest the CLI read; empty when the directory has none
-	Network         string // the shared overlay network
-	ListenIP        net.IP // the address the agent listens on and Swarm advertises; nil to keep the one the server's agent has
-	ListenPort      int
+	StepStarted func(name string)
+	Local       bool                             // --local: this machine is the server and keeps no copy
+	KeyHome     string                           // this machine's home, or empty when unavailable
+	NewWrapKey  func() (*keywrap.Private, error) // nil uses keywrap.Generate
+	Env         string
+	Project     string // the project of the manifest the CLI read; empty when the directory has none
+	Network     string // the shared overlay network
+	ListenIP    net.IP // the address the agent listens on and Swarm advertises; nil to keep the one the server's agent has
+	ListenPort  int
 	// DefaultListenIP is the manifest's address for the server being set up, or nil. A first install listens on
 	// DefaultListenIP:DefaultListenPort when --listen is not given.
 	DefaultListenIP net.IP
