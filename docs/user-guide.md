@@ -350,7 +350,7 @@ A second run repairs what is missing and changes nothing else. It never replaces
 
 Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped.
 
-Put the server name, its SSH destination and its private address in the environment's overlay. `address` needs the release that ships it: set `min_version` to that release so an older CLI or agent is refused before the request. For example, in `berthy.prod.yml`:
+Put the server name, its SSH destination and its private address in the environment's overlay. `address` needs the release that ships it: set `min_version: 0.8.0` so an older CLI or agent is refused before the request. For example, in `berthy.prod.yml`:
 
 ```yaml
 servers:
