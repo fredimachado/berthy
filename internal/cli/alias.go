@@ -87,7 +87,7 @@ type aliasIntent struct {
 // --manifest-dir, and the command still has to find its project in that directory, not in the one it runs in. intent holds the
 // selectors extracted from the invocation for the dispatcher to check after the real parsers run.
 func expandAlias(cmd string, args []string) (expanded []string, dir string, intent *aliasIntent, ok bool, err error) {
-	dir, env, project, config := ".", "", "", ""
+	dir, env, project, config := manifest.DefaultDir(), "", "", ""
 	var envGiven, projectGiven, configGiven bool
 	var flags, manifestDir, rest []string
 	for i := 0; i < len(args); i++ {

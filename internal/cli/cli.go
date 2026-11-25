@@ -6,6 +6,7 @@ import (
 	"berthy/internal/api"
 	"berthy/internal/engine"
 	"berthy/internal/logs"
+	"berthy/internal/manifest"
 	"berthy/internal/mcp"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
@@ -37,8 +38,7 @@ import (
 
 func Run(args []string, out, errout io.Writer) int { return runIn(args, out, errout, ".", nil) }
 
-// runIn is Run for a command line that may have come from an alias. dir is the manifest directory a command that reads no manifest
-// looks in for its project: "." for a line the person typed, and for an expanded alias the directory the alias was found in.
+// runIn is Run for a command line that may have come from an alias. Expanded commands inherit the alias's manifest directory.
 // intent is non-nil only for an expanded alias: the dispatcher checks the real parsers against it before resolving a target.
 func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
 	if len(args) == 0 {
@@ -103,6 +103,9 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	if cmd == "state-restore" {
 		// Local: it reads a snapshot from object storage and needs no agent, so it runs when the server is gone.
 		return runStateRestore(args, out, errout)
+	}
+	if intent == nil && cmd != "agent" {
+		dir = manifest.DefaultDir()
 	}
 	if isDeploymentCommand(cmd) {
 		return runDeployment(cmd, args, out, errout, dir, intent)

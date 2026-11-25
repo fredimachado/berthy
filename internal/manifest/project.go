@@ -12,6 +12,18 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// DefaultDir prefers the working directory's base manifest. Only a missing base
+// permits the .berthy fallback. Callers that have an explicit directory use it directly.
+func DefaultDir() string {
+	if _, err := os.Lstat("berthy.yml"); !errors.Is(err, fs.ErrNotExist) {
+		return "."
+	}
+	if _, err := os.Lstat(filepath.Join(".berthy", "berthy.yml")); err == nil || errors.Is(err, fs.ErrPermission) {
+		return ".berthy"
+	}
+	return "."
+}
+
 // ProjectName reads the project of dir's berthy.yml without loading the manifest: the rest of the file may be wrong. ok is
 // false when dir has no berthy.yml. A berthy.yml whose project is missing or invalid is an error with ok true. An overlay is
 // not read: it cannot set the project (overlayMerge).

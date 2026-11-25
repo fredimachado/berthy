@@ -471,6 +471,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	if code := checkAliasIntent(errout, intent, f.env, f.project, f.config, f.dir, projectGiven, configGiven, f.dirSet); code != 0 {
 		return code
 	}
+	if !f.dirSet {
+		f.dir = dir
+	}
 	if cmd == "config" {
 		if len(f.pos) != 1 || (f.pos[0] != "show" && f.pos[0] != "validate") {
 			fmt.Fprintln(errout, "config requires show or validate")
@@ -530,19 +533,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return 1
 		}
 	}
-	projectDir := dir
-	if slices.Contains(f.given, "--manifest-dir") {
-		projectDir = f.dir
-	}
 	cfgPath, err := agentclient.ConfigPath(f.config)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: projectDir})
+	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: f.dir})
 	if err != nil {
 		if f.project == "" && (cmd == "deploy" || cmd == "apply" || (cmd == "ingress" && len(f.pos) > 0 && f.pos[0] == "apply")) {
-			if _, _, projectErr := manifest.ProjectName(projectDir); projectErr != nil {
+			if _, _, projectErr := manifest.ProjectName(f.dir); projectErr != nil {
 				if _, loadErr := manifest.Load(f.dir, f.env); loadErr != nil {
 					fmt.Fprintln(errout, loadErr)
 					return 1
@@ -580,10 +579,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		return runSecretList(f, u, prefix, token, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "set" {
-		return runSecretSetMissing(f, target, projectDir, out, errout)
+		return runSecretSetMissing(f, target, f.dir, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" {
-		return runSecretGenerateDeclared(f, target, projectDir, out, errout)
+		return runSecretGenerateDeclared(f, target, f.dir, out, errout)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -940,9 +939,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return code
 			}
 			if !req.Replace {
-				m, loadErr := manifest.Load(projectDir, f.env)
+				m, loadErr := manifest.Load(f.dir, f.env)
 				if loadErr != nil {
-					if _, statErr := os.Stat(filepath.Join(projectDir, "berthy.yml")); statErr == nil {
+					if _, statErr := os.Stat(filepath.Join(f.dir, "berthy.yml")); statErr == nil {
 						fmt.Fprintf(errout, "manifest not loaded: %v\n", loadErr)
 					}
 				} else if m.Project == target.Project && len(m.SecretReaders(req.Name)) > 0 {
@@ -951,7 +950,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 						if m.Apps[app].Kind != "compose" {
 							continue
 						}
-						file, err := agentclient.ReadComposeFile(projectDir, m.Apps[app].File)
+						file, err := agentclient.ReadComposeFile(f.dir, m.Apps[app].File)
 						if err != nil {
 							continue
 						}

@@ -92,7 +92,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run unless the manifest gives the server's address")
 	network := fset.String("network", "", "the shared network, when there is no manifest")
 	protected := fset.Bool("protected", false, "mark the environment as protected, when there is no manifest")
-	dir := fset.String("manifest-dir", ".", "directory of the manifest")
+	dir := fset.String("manifest-dir", manifest.DefaultDir(), "directory of the manifest")
 	binary := fset.String("binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
 	keyFile := fset.String("key-file", "", "a saved encryption key to install, when rebuilding a server")
 	newToken := fset.Bool("new-token", false, "add another admin token")

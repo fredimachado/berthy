@@ -382,7 +382,7 @@ Run from the application's repository, setup reads these values from the merged 
 | `--project <name>` | The project, required when the directory has no manifest |
 | `--network <name>` | The shared network, when the directory has no manifest |
 | `--protected` | Mark the environment as protected, when the directory has no manifest |
-| `--manifest-dir <dir>` | Where to read the manifest from. The default is the current directory. |
+| `--manifest-dir <dir>` | Read from this exact directory. By default, look for `./berthy.yml` first, then `./.berthy/berthy.yml`. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
 | `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
 | `--verbose` | Print each command setup sends, and its exit status, on standard error. With `--dry-run`, also the commands a real run would send. Never the token or the key. |
@@ -922,7 +922,7 @@ Every command goes through the agent's API except `setup`, which runs over SSH o
 | `restore <key> --exec <app> [--service <name> \| --role <name>] [--timeout <d>] -- <command>` | Restore a command backup by streaming it, decompressed, into the input of a command in a running container or a new one (`admin` scope; the checksum is checked before the command starts; `--dry-run` shows where it would run) | Yes |
 | `state-backup` | Take a snapshot of the agent's state now, wait for it to finish and exit 0 only when it succeeded (`admin` scope) | Yes |
 | `key rotate [--dry-run]` | Replace the key the agent's state is sealed with (`admin` scope, never an agent token; see "Encryption key") | Yes |
-| `state-restore [--project PROJECT] [--manifest-dir DIR] --endpoint URL --bucket NAME --object KEY --out DIR --key-file PATH` | Rebuild the agent's state from a state snapshot with the saved key, without an agent; the project is the flag, else the manifest in `--manifest-dir` (default `.`), else the only project that has the snapshot's environment among the bucket's object keys; the storage credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY` | No |
+| `state-restore [--project PROJECT] [--manifest-dir DIR] --endpoint URL --bucket NAME --object KEY --out DIR --key-file PATH` | Rebuild the agent's state from a state snapshot with the saved key, without an agent; the project is the flag, else the manifest in `--manifest-dir` (otherwise discovered from the working directory), else the only project that has the snapshot's environment among the bucket's object keys; the storage credentials come from `BERTHY_S3_ACCESS_KEY` and `BERTHY_S3_SECRET_KEY` | No |
 | `prune` | Remove old images and stopped containers now | Yes |
 | `destroy --confirm <project/environment> [--volumes] [--allow-recreate] [--tunnel]` | Remove every app, managed ingress, helpers, one-off containers and acquired images of the environment; volumes only with `--volumes`, the tunnel only with `--tunnel` and when clean (admin) | Yes |
 | `remove <app> [--volumes] [--allow-recreate]` | Delete an app's services or Compose project, its routes and DNS records, and its state; volumes only with `--volumes` (admin) | Yes |
@@ -976,7 +976,7 @@ When an action ends, the apps, the lock, the pending count, the approvals and th
 
 ### MCP server
 
-`berthy mcp -e <env> [--config <cli config>] [--manifest-dir <dir>]` runs a local MCP server over stdio that calls the agent API with the token it was given. The token comes only from the environment variable that the CLI configuration names for `<env>`, never from the credential store; use an agent token so its changes can be held for approval. It is never printed and never part of a tool result. Only protocol messages go to stdout; diagnostics go to stderr. `--manifest-dir` (default `.`) is where `deploy` reads the manifest, and a Compose app's file, from, exactly as `berthy deploy` does. The server shares the CLI's HTTP client and request code, so an AI agent sees what a person sees, with the same errors.
+`berthy mcp -e <env> [--config <cli config>] [--manifest-dir <dir>]` runs a local MCP server over stdio that calls the agent API with the token it was given. The token comes only from the environment variable that the CLI configuration names for `<env>`, never from the credential store; use an agent token so its changes can be held for approval. It is never printed and never part of a tool result. Only protocol messages go to stdout; diagnostics go to stderr. `--manifest-dir` (otherwise discovered from the working directory) is where `deploy` reads the manifest, and a Compose app's file, from, exactly as `berthy deploy` does. The server shares the CLI's HTTP client and request code, so an AI agent sees what a person sees, with the same errors.
 
 Tool names follow those of the Aspire MCP server, so an AI agent can ask a deployed environment the same questions it asks a local run. Each tool returns the agent's JSON as structured content (a list is wrapped in an object, `{"resources": [...]}`) and a short text: a summary line followed by the same JSON, or for `list_console_logs` the log lines. Every tool is read-only except `execute_resource_command`, and the tools say so in their MCP annotations.
 

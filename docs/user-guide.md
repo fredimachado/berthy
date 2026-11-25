@@ -373,7 +373,7 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--local` | Set up the server the command runs on. Use at most one of `--host`, `--server` and `--local`. |
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run unless setup picks the server from the manifest and that entry has `address` (`--host` and `--local` still need it). A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
 | `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
-| `--manifest-dir <dir>` | Where to read the manifest from. Default: the current directory. |
+| `--manifest-dir <dir>` | Read from this directory. By default, look for the base manifest in the current directory, then in its `.berthy` subdirectory. |
 | `--project <name>` | The project, required when the directory has no manifest. |
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
@@ -498,7 +498,7 @@ A backup, a credential, an alert or a host warning in trouble does not make `doc
 
 ### Step 2. Write the manifest
 
-The manifest is the YAML in your repository that says what you want. There is a base file and one overlay per environment.
+The manifest is the YAML in your repository that says what you want. Berthy looks for `./berthy.yml` first, then `./.berthy/berthy.yml`. The selected base file determines the directory for its environment overlay and Compose files. Pass `--manifest-dir DIR` to select an exact directory. The search stays within the working directory and its `.berthy` subdirectory.
 
 - `berthy.yml` holds what every environment shares.
 - `berthy.<environment>.yml` changes it for one environment. It is optional.
@@ -1039,7 +1039,7 @@ When given a name and standard input is a terminal, `berthy secret set` does the
 
 - **Agent.** First, Berthy asks the agent which secrets it holds. If the agent cannot be reached (`agent connection failed`) or refuses the agent token (for example `agent returned HTTP 401: unauthorized`), the command stops with exit code `1` before the prompt, so you never type a value for nothing.
 - **Replaces.** If NAME is already stored, Berthy says so before the guide. For a registry password it prints `NAME is stored as the password for ghcr.io. The new value replaces it.` For any other secret it prints `NAME is already stored. The new value replaces it.` When `--registry` is omitted, Berthy uses the stored registry for the guide and the check.
-- **Manifest.** Berthy reads the manifest in the current directory to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. If `berthy.yml` is there but does not load, Berthy prints `manifest not loaded: <reason>`, still asks for the value, and skips the check, which needs the manifest.
+- **Manifest.** Berthy reads the selected manifest to recognise the secret. `--manifest-dir DIR` reads another directory instead. With no manifest there, it still asks for the value. If `berthy.yml` is there but does not load, Berthy prints `manifest not loaded: <reason>`, still asks for the value, and skips the check, which needs the manifest.
 - **Guide.** For `--registry ghcr.io`, Berthy says the secret is the password it uses to pull images from ghcr.io, and prints a link to GitHub's form for a classic token with only `read:packages` selected and the note `berthy-<project>-<env>`. GitHub's container registry accepts only classic tokens, not fine-grained ones. For any other `--registry HOST` it prints one line saying what the secret is, with no link. For the secret that `ingress.cloudflare.api_token_secret` names, it prints a link to Cloudflare's token form with the permissions filled in ([step 7](#step-7-put-it-on-the-internet)).
 - **Hidden prompt.** It prints `Value of NAME (hidden):` and reads the value without showing it. Ctrl-C at the prompt cancels the command with exit code `130` and stores nothing. An empty value is refused with `no value entered`.
 - **Check.** Before it stores the value, Berthy tries the value against the service, from your machine:
@@ -1166,7 +1166,7 @@ berthy deploy postgres -e prod
 
 A Compose app takes **no** `--version`: the version is whatever its Compose file says. (`berthy deploy redis --version 7` is refused with `--version does not apply to a compose app`.)
 
-The CLI reads the Compose file from `--manifest-dir` (default: the current directory), sends it with the deploy, and follows the operation until it ends. When stderr is a supported terminal at least 30 columns wide, a delayed spinner covers the wait. Redirected output keeps the plain event names, then the operation's record:
+The CLI reads the Compose file from the selected manifest directory, sends it with the deploy, and follows the operation until it ends. When stderr is a supported terminal at least 30 columns wide, a delayed spinner covers the wait. Redirected output keeps the plain event names, then the operation's record:
 
 ```text
 app: redis
@@ -1365,7 +1365,7 @@ To turn both checks off for an app, set `deploy.verify: false`.
 | --- | --- |
 | `--version <ref>` | Image apps only. A tag, a digest (`sha256:...`) or a full reference. Required for image apps, refused for Compose apps. On a protected environment a human admin may give a tag. After checkout is frozen the CLI resolves that protected mutable tag before admission. Without an app, `--version <app>=<ref>` for each image app (repeatable), or a plain `<ref>` when the manifest has one image app. |
 | `--commit <sha>` | The commit the manifest and the image come from. Recorded with the release. Default: `HEAD` of the manifest directory's git checkout, when there is one. |
-| `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Default `.`. |
+| `--manifest-dir <dir>` | Where `berthy.yml`, the overlay and the Compose files are. Defaults to manifest discovery. |
 | `--dry-run` | Print the plan. Change nothing. |
 | `--allow-recreate` | Allow a `stateful` Compose app's services to be recreated. Needs an `admin` token. |
 | `--adopt` | Take over a service or Compose project that already runs, instead of creating one. Needs an `admin` token. |
@@ -1734,7 +1734,7 @@ changed the environment settings:
   alerts: changed
 ```
 
-`apply` reads the manifest in `--manifest-dir` (the current directory by default) and stores its environment settings. It deploys nothing and records no release, and the agent starts using the new settings within a minute. The dry run prints what would change in the same lines, and `no changes` when the settings are already what the manifest says. A secret shows by name, never by value. `--json` prints `{"changes": [...]}`.
+`apply` reads the manifest in the selected directory and stores its environment settings. It deploys nothing and records no release, and the agent starts using the new settings within a minute. The dry run prints what would change in the same lines, and `no changes` when the settings are already what the manifest says. A secret shows by name, never by value. `--json` prints `{"changes": [...]}`.
 
 What an app owns is not applied: its own `apps` entry, the `jobs` and `backups` that name it, and the probes whose `service` is that app change with its next deploy. A rollback of an app does not change the environment's settings, and it takes back only that app's own part.
 
@@ -2642,7 +2642,7 @@ Put this in the client's `.mcp.json` (adjust the paths):
 }
 ```
 
-The CLI configuration file is the same one as everywhere (`token_env` names the variable). The token comes only from the environment the client runs in; MCP never reads the credential store. Use an agent token made with `berthy token create --agent` so changes can be held for approval. It is never printed and never in a tool result. `--manifest-dir` (default `.`) is where `deploy` reads the manifest and a Compose app's file. The AI agent's `version` for `api` on prod must be a digest.
+The CLI configuration file is the same one as everywhere (`token_env` names the variable). The token comes only from the environment the client runs in; MCP never reads the credential store. Use an agent token made with `berthy token create --agent` so changes can be held for approval. It is never printed and never in a tool result. `--manifest-dir` (otherwise discovered from the working directory) is where `deploy` reads the manifest and a Compose app's file. The AI agent's `version` for `api` on prod must be a digest.
 
 The tools:
 
@@ -2843,7 +2843,7 @@ The order:
 
    | Flag | Meaning |
    | --- | --- |
-   | `--project <name>` | The project the snapshot belongs to. May be omitted when the manifest in `--manifest-dir` (default `.`) names it, or when only one project in the bucket has the snapshot's environment. |
+   | `--project <name>` | The project the snapshot belongs to. May be omitted when the manifest in `--manifest-dir` (otherwise discovered from the working directory) names it, or when only one project in the bucket has the snapshot's environment. |
    | `--manifest-dir <dir>` | Directory of the manifest, used when `--project` is omitted. |
    | `--endpoint <url>` | The S3-compatible endpoint. |
    | `--bucket <name>` | The bucket. |

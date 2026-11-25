@@ -32,7 +32,7 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 	fs := flag.NewFlagSet("state-restore", flag.ContinueOnError)
 	fs.SetOutput(errout)
 	projectFlag := fs.String("project", "", "project the snapshot belongs to")
-	manifestDir := fs.String("manifest-dir", ".", "directory of the manifest, used when --project is omitted")
+	manifestDir := fs.String("manifest-dir", manifest.DefaultDir(), "directory of the manifest, used when --project is omitted")
 	endpoint := fs.String("endpoint", "", "S3-compatible endpoint URL")
 	region := fs.String("region", "", "bucket region, when the storage needs one")
 	bucket := fs.String("bucket", "", "bucket name")

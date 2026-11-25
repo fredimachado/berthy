@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/manifest"
 	"berthy/internal/scope"
 
 	tea "charm.land/bubbletea/v2"
@@ -68,7 +69,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: "."})
+	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: manifest.DefaultDir()})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

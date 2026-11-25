@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/manifest"
 	"berthy/internal/scope"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -30,7 +31,7 @@ func (nopCloser) Close() error { return nil }
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var env, config, project string
 	var projectGiven bool
-	dir := "."
+	dir := manifest.DefaultDir()
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-e", "--config", "--manifest-dir", "--project":

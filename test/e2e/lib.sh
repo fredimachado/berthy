@@ -72,6 +72,8 @@ record_deploy() (
   local project=$1 env=$2 dir=. app= arg kind name tmp pending combined lock existing
   shift 2
   for arg in "$@"; do [ "$arg" = --dry-run ] && return 0; done
+  # Mirror the CLI lookup so the journal includes resources deployed from .berthy.
+  if [ ! -e berthy.yml ] && [ ! -L berthy.yml ] && [ -f .berthy/berthy.yml ]; then dir=.berthy; fi
   while [ $# -gt 0 ]; do
     case $1 in
       --manifest-dir) shift; [ $# -gt 0 ] || return 0; dir=$1 ;;
