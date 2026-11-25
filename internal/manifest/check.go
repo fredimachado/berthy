@@ -44,7 +44,7 @@ func (m *Manifest) Check() Problems {
 		}
 		if srv.Address != "" {
 			addr, err := netip.ParseAddr(srv.Address)
-			if err != nil || addr.Zone() != "" || addr.IsUnspecified() {
+			if err != nil || addr.Zone() != "" || addr.Unmap().IsUnspecified() {
 				p.add(path+".address", "%s.address: use one IP address of the server, such as 10.0.0.5", path)
 			}
 		}

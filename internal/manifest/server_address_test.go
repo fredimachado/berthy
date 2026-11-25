@@ -20,7 +20,7 @@ func TestServerAddress(t *testing.T) {
 		}
 	}
 	want := `servers.pg.address: use one IP address of the server, such as 10.0.0.5`
-	for _, bad := range []string{"10.0.0", "0.0.0.0", "::", "db.example.com", "fe80::1%eth0"} {
+	for _, bad := range []string{"10.0.0", "0.0.0.0", "::", "::ffff:0.0.0.0", "db.example.com", "fe80::1%eth0"} {
 		_, err := DecodeJSON([]byte(base(bad)))
 		var ps Problems
 		if err == nil || !errors.As(err, &ps) {
