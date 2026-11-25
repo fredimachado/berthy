@@ -63,13 +63,14 @@ func printJobs(out, errout io.Writer, body []byte, asJSON bool) int {
 			if r.Last.Detail != "" {
 				last += ": " + r.Last.Detail
 			}
+			last = terminalSafe(last)
 			t := r.Last.Started
 			if r.Last.Finished != nil {
 				t = *r.Last.Finished
 			}
 			when = t.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, target, schedule, next, last, when)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Name), terminalSafe(target), terminalSafe(schedule), next, last, when)
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)
@@ -267,12 +268,12 @@ func printRun(out, errout io.Writer, run api.JobRun, asJSON bool) int {
 		}
 		fmt.Fprintln(out, string(pretty))
 	} else {
-		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, run.Status)
+		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, terminalSafe(run.Status))
 		if run.ExitCode != nil {
 			fmt.Fprintf(out, "exit_code: %d\n", *run.ExitCode)
 		}
 		if run.Detail != "" {
-			fmt.Fprintf(out, "detail: %s\n", run.Detail)
+			fmt.Fprintf(out, "detail: %s\n", terminalSafe(run.Detail))
 		}
 		if run.HasOutput {
 			fmt.Fprintf(out, "output: berthy job logs %s\n", terminalSafe(run.Job))

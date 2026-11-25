@@ -45,6 +45,32 @@ func TestChecksPrintsATableOrJSON(t *testing.T) {
 	}
 }
 
+// TestPrintChecksMakesAgentTextTerminalSafe: a check's name, state and detail come from the
+// agent and must not rewrite the terminal; columns stay aligned.
+func TestPrintChecksMakesAgentTextTerminalSafe(t *testing.T) {
+	body := []byte(`[{"name":"probe:\u001b[2Jsite","state":"ok\u001b","detail":"HTTP \u001b[31m503","since":"2026-11-16T10:00:00Z"}]`)
+	var out, errout bytes.Buffer
+	if code := printChecks(&out, &errout, body, false); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	text := out.String()
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "NAME") || !strings.Contains(lines[0], "DETAIL") {
+		t.Fatalf("header:\n%s", text)
+	}
+	for _, want := range []string{`probe:\x1b[2Jsite`, `ok\x1b`, `HTTP \x1b[31m503`, "2026-11-16T10:00:00Z"} {
+		if !strings.Contains(lines[1], want) {
+			t.Errorf("row lacks %q: %q", want, lines[1])
+		}
+	}
+	if strings.Count(lines[1], "  ") < 3 {
+		t.Errorf("columns no longer aligned: %q", lines[1])
+	}
+}
+
 func TestChecksWithoutStatesSaysSo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `[]`)

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"berthy/internal/api"
 )
 
 const jobsBody = `[
@@ -145,6 +147,43 @@ func runJob(t *testing.T, a *jobAgent, extra ...string) (int, string, string) {
 	var out, errout bytes.Buffer
 	code := Run(args, &out, &errout)
 	return code, out.String(), errout.String()
+}
+
+// TestPrintJobsMakesAgentTextTerminalSafe: a last run's detail can carry escapes and newlines;
+// the row stays one line and no raw ESC reaches the terminal.
+func TestPrintJobsMakesAgentTextTerminalSafe(t *testing.T) {
+	body := []byte(`[{"name":"tick","app":"api","target":"web","schedule":"0 * * * *","timeout":"1h0m0s","last":{"id":1,"job":"tick","trigger":"manual","started":"2026-11-16T10:00:00Z","finished":"2026-11-16T10:00:01Z","status":"failed","detail":"boom\u001b[2J\nand more"}}]`)
+	var out, errout bytes.Buffer
+	if code := printJobs(&out, &errout, body, false); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	text := out.String()
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want header and one row, got %d lines:\n%s", len(lines), text)
+	}
+	if !strings.Contains(lines[1], `boom\x1b[2J and more`) {
+		t.Errorf("detail not sanitized: %q", lines[1])
+	}
+}
+
+// TestPrintRunMakesAgentTextTerminalSafe: status and detail from the agent must not rewrite the terminal.
+func TestPrintRunMakesAgentTextTerminalSafe(t *testing.T) {
+	run := api.JobRun{ID: 7, Job: "tick", Status: "failed\x1b[31m", Detail: "exit\x1b[0m status 3"}
+	var out, errout bytes.Buffer
+	if code := printRun(&out, &errout, run, false); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	text := out.String()
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	}
+	if !strings.Contains(text, `status: failed\x1b[31m`) || !strings.Contains(text, `detail: exit\x1b[0m status 3`) {
+		t.Fatalf("output: %q", text)
+	}
 }
 
 func TestJobRunWaitsForSuccess(t *testing.T) {

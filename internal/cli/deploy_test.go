@@ -12,7 +12,35 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"berthy/internal/manifest"
 )
+
+// TestPrintProblemsMakesAgentTextTerminalSafe: a problem's message can come from a manifest
+// key or value that carries control characters; print them as visible escapes.
+func TestPrintProblemsMakesAgentTextTerminalSafe(t *testing.T) {
+	var out bytes.Buffer
+	printProblems(&out, manifest.Problems{{File: "berthy.yml", Line: 2, Message: "bad\x1b[31m key"}})
+	text := out.String()
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	}
+	if !strings.Contains(text, `bad\x1b[31m key`) {
+		t.Fatalf("output: %q", text)
+	}
+}
+
+func TestPrintWarningsMakesAgentTextTerminalSafe(t *testing.T) {
+	var out bytes.Buffer
+	printWarnings(&out, manifest.Problems{{File: "berthy.yml", Line: 8, Path: "apps.api", Message: "warn\x1b[2Jing"}})
+	text := out.String()
+	if strings.Contains(text, "\x1b") {
+		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	}
+	if !strings.Contains(text, `warn\x1b[2Jing`) {
+		t.Fatalf("output: %q", text)
+	}
+}
 
 func TestConfigValidateOffline(t *testing.T) {
 	dir := t.TempDir()

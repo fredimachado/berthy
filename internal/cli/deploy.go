@@ -34,7 +34,7 @@ import (
 // printProblems writes every problem of a manifest, one per line with its file, line and path, and then how many there are.
 func printProblems(w io.Writer, problems manifest.Problems) {
 	for _, p := range problems {
-		fmt.Fprintln(w, p)
+		fmt.Fprintln(w, terminalSafe(p.String()))
 	}
 	if len(problems) == 1 {
 		fmt.Fprintln(w, "1 problem")
@@ -46,7 +46,7 @@ func printProblems(w io.Writer, problems manifest.Problems) {
 // printWarnings writes each warning of a valid manifest as a line of its own, with its place in the files.
 func printWarnings(w io.Writer, warnings manifest.Problems) {
 	for _, p := range warnings {
-		fmt.Fprintln(w, "warning: "+p.String())
+		fmt.Fprintln(w, "warning: "+terminalSafe(p.String()))
 	}
 }
 

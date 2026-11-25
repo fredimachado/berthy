@@ -429,13 +429,13 @@ func printText(w io.Writer, v any, indent string) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			v := x[k]
-			fmt.Fprintf(w, "%s%s: ", indent, k)
+			fmt.Fprintf(w, "%s%s: ", indent, terminalSafe(k))
 			switch v.(type) {
 			case map[string]any, []any:
 				fmt.Fprintln(w)
 				printText(w, v, indent+"  ")
 			default:
-				fmt.Fprintln(w, v)
+				fmt.Fprintln(w, terminalSafe(fmt.Sprint(v)))
 			}
 		}
 	case []any:
@@ -446,11 +446,11 @@ func printText(w io.Writer, v any, indent string) {
 				fmt.Fprintln(w)
 			default:
 				// A scalar is an item of the list, so it is marked and indented under its key.
-				fmt.Fprintf(w, "%s- %v\n", indent, v)
+				fmt.Fprintf(w, "%s- %s\n", indent, terminalSafe(fmt.Sprint(v)))
 			}
 		}
 	default:
-		fmt.Fprintln(w, x)
+		fmt.Fprintln(w, terminalSafe(fmt.Sprint(x)))
 	}
 }
 
@@ -596,7 +596,7 @@ func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tSTATE\tSINCE\tDETAIL")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.State, r.Since.UTC().Format(time.RFC3339), r.Detail)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", terminalSafe(r.Name), terminalSafe(r.State), r.Since.UTC().Format(time.RFC3339), terminalSafe(r.Detail))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(errout, err)

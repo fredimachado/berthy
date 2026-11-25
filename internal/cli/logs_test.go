@@ -198,3 +198,22 @@ func TestPrintTextListItems(t *testing.T) {
 		t.Fatalf("nested map changed: %q", out.String())
 	}
 }
+
+// TestPrintTextMakesAgentTextTerminalSafe: keys and scalar values from the agent can carry
+// control characters; the printer shows them as visible escapes and keeps the layout.
+func TestPrintTextMakesAgentTextTerminalSafe(t *testing.T) {
+	var out bytes.Buffer
+	printText(&out, map[string]any{
+		"detail":  "a\x1b[2Jb",
+		"list":    []any{"x\x1b]0;t\x07"},
+		"k\x1bey": 1,
+	}, "")
+	got := out.String()
+	want := "detail: a\\x1b[2Jb\nk\\x1bey: 1\nlist: \n  - x\\x1b]0;t\\x07\n"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("raw ESC reached the terminal:\n%q", got)
+	}
+}
