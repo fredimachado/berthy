@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,9 +56,23 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 			t.Fatalf("unexpected spinner frames: first %q, second %q", first, second)
 		}
 		p.Message(func() { fmt.Fprintln(&out, "a message") })
+		if got, want := out.String(), second+"\r\x1b[2Ka message\n"; got != want {
+			t.Fatalf("message did not clear frame: %q, want %q", got, want)
+		}
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		p.mu.Lock()
+		third := out.String()
+		p.mu.Unlock()
+		if want := second + "\r\x1b[2Ka message\n\r\x1b[2K- check (0.5s)"; third != want {
+			t.Fatalf("frame before finish: %q, want %q", third, want)
+		}
 		p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, true)
 		p.Close()
 		before := out.String()
+		if want := third + "\r\x1b[2Kok check       done (0.5s)\n"; before != want {
+			t.Fatalf("finish did not clear frame: %q, want %q", before, want)
+		}
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if out.String() != before {
@@ -286,7 +301,7 @@ func TestProgressWriterMatrix(t *testing.T) {
 				if !tc.outTerm && out.String() != "✓ check       done\n" {
 					t.Fatalf("plain result %q", out.String())
 				}
-				if tc.noColor && (strings.Contains(out.String(), "\x1b[0m") || strings.Contains(errout.String(), "\x1b[0m")) {
+				if tc.noColor && (regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(out.String()) || regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(errout.String())) {
 					t.Fatal("SGR under NO_COLOR")
 				}
 			})
