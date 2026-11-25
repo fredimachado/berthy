@@ -36,10 +36,10 @@ type Build struct {
 	Release  bool   // a release build: the server can download the same version
 }
 
-// Options are the choices of one run.
 // DefaultListenPort is the port a first install uses with DefaultListenIP when --listen is not given.
 const DefaultListenPort = 7710
 
+// Options are the choices of one run.
 type Options struct {
 	StepStarted func(name string)
 	Local       bool                             // --local: this machine is the server and keeps no copy
