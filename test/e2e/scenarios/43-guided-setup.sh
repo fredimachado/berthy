@@ -49,7 +49,7 @@ secrets:
     generate:
       format: hex
 YML
-printf 'servers:\n  primary:\n    ssh: ops@%s\n' "$server" > "$MAN/berthy.$ENVN.yml" || exit 1
+printf 'servers:\n  primary:\n    ssh: ops@%s\n    address: %s\n' "$server" "$ip" > "$MAN/berthy.$ENVN.yml" || exit 1
 cmd="$BIN setup -e $ENVN --manifest-dir $MAN --config $cfg"
 mkdir -p "$private/gate" "$LOG/tui-guided-setup" || exit 1
 mkfifo "$private/ssh-gate" || exit 1
@@ -159,7 +159,7 @@ cat > "$private/fresh.json" <<'JSON'
  {"wait_text":"deploy every app in depends_on order"}, {"snapshot":"complete"}, {"expect_exit":0}
 ]
 JSON
-if ! "$TUI_BIN" --command "$cmd --server primary --listen $ip:7710" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >"$private/fresh.err" 2>&1; then
+if ! "$TUI_BIN" --command "$cmd --server primary" --size 300x100 --script "$private/fresh.json" --out "$private/fresh" --timeout 180s >"$private/fresh.err" 2>&1; then
  note=$(keep_failure fresh)
  fail "fresh guided setup" "terminal driver failed (${note:-its output was not kept})"; exit 1
 fi
