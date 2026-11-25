@@ -70,8 +70,9 @@ func (s *Session) loadConfig(ctx context.Context) (*agent.File, error) {
 	return s.existing, nil
 }
 
-// resolveListen settles the address the agent listens on: --listen on a first run, the configuration's afterwards. A different
-// --listen than the configuration's is refused, because setup does not move the agent.
+// resolveListen settles the address the agent listens on: --listen on a first run, the configuration's afterwards, or the
+// manifest's address:7710 when neither is set. A different --listen than the configuration's is refused, because setup does
+// not move the agent. A manifest address that is not the configuration's IP is refused so the overlay stays truthful.
 func (s *Session) resolveListen(ctx context.Context, f *Facts) error {
 	cfg, err := s.loadConfig(ctx)
 	if err != nil {
@@ -85,11 +86,22 @@ func (s *Session) resolveListen(ctx context.Context, f *Facts) error {
 		if s.Opts.ListenIP != nil && (!s.Opts.ListenIP.Equal(ip) || s.Opts.ListenPort != port) {
 			return fmt.Errorf("the agent listens on %s; setup does not move it", cfg.Listen)
 		}
+		if s.Opts.DefaultListenIP != nil && !s.Opts.DefaultListenIP.Equal(ip) {
+			return fmt.Errorf("the agent listens on %s, not on the manifest's address %s: correct the server's address in the manifest", cfg.Listen, s.Opts.DefaultListenIP)
+		}
 		s.Opts.ListenIP, s.Opts.ListenPort = ip, port
 		return nil
 	}
 	if s.Opts.ListenIP == nil {
-		return errors.New("--listen ADDRESS:PORT is needed: this server has no agent configuration yet")
+		if s.Opts.DefaultListenIP == nil {
+			return errors.New("--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it")
+		}
+		s.Opts.ListenIP, s.Opts.ListenPort = s.Opts.DefaultListenIP, DefaultListenPort
+		probe := agent.Config{Environment: s.Opts.Env, Listen: s.Opts.listen(), Tokens: []agent.Token{{Digest: strings.Repeat("0", 64), Scope: "admin"}}}
+		if err := probe.Validate(); err != nil {
+			return fmt.Errorf("invalid address %s from the manifest: %v", s.Opts.listen(), err)
+		}
+		return nil
 	}
 	probe := agent.Config{Environment: s.Opts.Env, Listen: s.Opts.listen(), Tokens: []agent.Token{{Digest: strings.Repeat("0", 64), Scope: "admin"}}}
 	if err := probe.Validate(); err != nil {

@@ -792,6 +792,84 @@ func TestConfigOwnerAndModeAreRepairedInPlace(t *testing.T) {
 	}
 }
 
+func TestResolveListen(t *testing.T) {
+	exe := elfFile(t, emX86)
+	t.Run("defaults from the manifest address", func(t *testing.T) {
+		f := freshAgentServer(t)
+		s := agentSession(t, f, exe, false, func(o *Options) {
+			o.ListenIP, o.ListenPort = nil, 0
+			o.DefaultListenIP = net.ParseIP("10.0.0.5")
+		})
+		if err := s.resolveListen(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if s.Opts.listen() != "10.0.0.5:7710" {
+			t.Errorf("listen = %q", s.Opts.listen())
+		}
+	})
+	t.Run("--listen overrides the manifest address", func(t *testing.T) {
+		f := freshAgentServer(t)
+		s := agentSession(t, f, exe, false, func(o *Options) {
+			o.ListenIP, o.ListenPort = net.ParseIP("10.0.0.5"), 7711
+			o.DefaultListenIP = net.ParseIP("10.0.0.5")
+		})
+		if err := s.resolveListen(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if s.Opts.listen() != "10.0.0.5:7711" {
+			t.Errorf("listen = %q", s.Opts.listen())
+		}
+	})
+	t.Run("keeps the configuration port when the manifest address matches", func(t *testing.T) {
+		f := setUpAgent(t, exe)
+		cfg, _ := existingConfig(t, func(c *agent.Config) { c.Listen = "10.0.0.5:7711" })
+		f.config = cfg
+		s := agentSession(t, f, exe, false, func(o *Options) {
+			o.ListenIP, o.ListenPort = nil, 0
+			o.DefaultListenIP = net.ParseIP("10.0.0.5")
+		})
+		if err := s.resolveListen(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if s.Opts.listen() != "10.0.0.5:7711" {
+			t.Errorf("listen = %q", s.Opts.listen())
+		}
+	})
+	t.Run("refuses when the agent listens on another address than the manifest", func(t *testing.T) {
+		f := setUpAgent(t, exe)
+		s := agentSession(t, f, exe, false, func(o *Options) {
+			o.ListenIP, o.ListenPort = nil, 0
+			o.DefaultListenIP = net.ParseIP("10.0.0.6")
+		})
+		err := s.resolveListen(context.Background(), nil)
+		want := "the agent listens on " + listenIP + ":7710, not on the manifest's address 10.0.0.6: correct the server's address in the manifest"
+		if err == nil || err.Error() != want {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("needed when there is no configuration and no manifest address", func(t *testing.T) {
+		f := freshAgentServer(t)
+		s := agentSession(t, f, exe, false, func(o *Options) { o.ListenIP, o.ListenPort = nil, 0 })
+		err := s.resolveListen(context.Background(), nil)
+		want := "--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it"
+		if err == nil || err.Error() != want {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("a wrong manifest address fails the check step as a wrong --listen does", func(t *testing.T) {
+		f := freshAgentServer(t)
+		s := agentSession(t, f, exe, false, func(o *Options) {
+			o.ListenIP, o.ListenPort = nil, 0
+			o.DefaultListenIP = net.ParseIP("172.31.250.99")
+		})
+		got, ok := runSteps(s)
+		r := lastResult(got)
+		if ok || r.Step != "check" || r.Detail != "172.31.250.99 is not assigned to this server: --listen needs one of its addresses" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}
+
 func TestListenRules(t *testing.T) {
 	exe := elfFile(t, emX86)
 	t.Run("kept from the configuration when --listen is not given", func(t *testing.T) {
