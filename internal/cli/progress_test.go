@@ -10,6 +10,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"berthy/internal/setup"
+	"fmt"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -25,7 +27,7 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 		p := newProgressLine(&out, true)
 		defer p.Close()
 		p.Start("quick")
-		p.Finish("ok", "quick done")
+		p.Finish(&out, setup.StepResult{Step: "quick", Status: "ok", Detail: "quick done"}, true)
 		if strings.Contains(out.String(), "\033") {
 			t.Fatalf("short work flashed: %q", out.String())
 		}
@@ -52,8 +54,8 @@ func TestProgressShortLongAndClosed(t *testing.T) {
 		if first != "\r\x1b[2K| check (0.2s)" || second != first+"\r\x1b[2K/ check (0.3s)" {
 			t.Fatalf("unexpected spinner frames: first %q, second %q", first, second)
 		}
-		p.Message("a message")
-		p.Finish("ok", "done")
+		p.Message(func() { fmt.Fprintln(&out, "a message") })
+		p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, true)
 		p.Close()
 		before := out.String()
 		time.Sleep(time.Second)
@@ -106,7 +108,7 @@ func TestProgressTerminalPolicy(t *testing.T) {
 	}{
 		{"color", "xterm", "", 80, nil, true, true},
 		{"no color", "xterm", "1", 80, nil, true, false},
-		{"narrow", "xterm", "", 12, nil, false, false},
+		{"narrow", "xterm", "", 12, nil, false, true},
 		{"dumb", "dumb", "", 80, nil, false, false},
 		{"unknown terminal", "unknown", "", 80, nil, false, false},
 		{"unsupported", "xterm", "", 0, errors.New("size unavailable"), false, false},
@@ -117,11 +119,11 @@ func TestProgressTerminalPolicy(t *testing.T) {
 			progressWidth = func(io.Writer) (int, error) { return tc.width, tc.err }
 			var out bytes.Buffer
 			p := newProgressLine(&out, true)
-			if p.animate != tc.animate || p.color != tc.color {
-				t.Fatalf("animate=%v color=%v", p.animate, p.color)
+			if p.animate != tc.animate || styleFor(&out, true).color != tc.color {
+				t.Fatalf("animate=%v color=%v", p.animate, styleFor(&out, true).color)
 			}
 			p.Start("check")
-			p.Finish("failed", "unsafe\x1b[31m")
+			p.Finish(&out, setup.StepResult{Step: "check", Status: "failed", Detail: "unsafe\x1b[31m"}, true)
 			got := out.String()
 			if strings.Contains(got, "\x1b[31m") != tc.color {
 				t.Fatalf("color policy: %q", got)
@@ -147,7 +149,7 @@ func TestProgressElapsedUsesObservedTime(t *testing.T) {
 		p.Start("check")
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		p.Finish("ok", "done")
+		p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, true)
 		if !strings.Contains(out.String(), "2.0s") {
 			t.Fatalf("elapsed missing: %q", out.String())
 		}
@@ -155,7 +157,7 @@ func TestProgressElapsedUsesObservedTime(t *testing.T) {
 		p = newProgressLine(&out, false)
 		p.Start("check")
 		time.Sleep(2 * time.Second)
-		p.Finish("ok", "done")
+		p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, false)
 		if strings.Contains(out.String(), "2.0s") {
 			t.Fatalf("plain output gained elapsed: %q", out.String())
 		}
@@ -179,8 +181,8 @@ func TestProgressRefusesUnsupportedConsole(t *testing.T) {
 	var out bytes.Buffer
 	p := newProgressLine(&out, true)
 	p.Start("check")
-	p.Finish("ok", "done")
-	if p.animate || p.color || strings.Contains(out.String(), "\x1b") {
+	p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, true)
+	if p.animate || styleFor(&out, true).color || strings.Contains(out.String(), "\x1b") {
 		t.Fatalf("unsupported console: %q", out.String())
 	}
 }
@@ -210,7 +212,10 @@ func TestProgressSerializesFinishAndMessage(t *testing.T) {
 	p := newProgressLine(w, false)
 	p.Start("check")
 	finished, messaged := make(chan struct{}), make(chan struct{})
-	go func() { p.Finish("ok", "done"); close(finished) }()
+	go func() {
+		p.Finish(w, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, false)
+		close(finished)
+	}()
 	select {
 	case <-w.entered:
 	case <-finished:
@@ -221,11 +226,70 @@ func TestProgressSerializesFinishAndMessage(t *testing.T) {
 	if unlocked {
 		p.mu.Unlock()
 	}
-	go func() { p.Message("message"); close(messaged) }()
+	go func() { p.Message(func() { fmt.Fprintln(w, "message") }); close(messaged) }()
 	close(w.release)
 	<-finished
 	<-messaged
 	if unlocked || w.overlap.Load() {
 		t.Fatal("final line and message writes are not serialized")
+	}
+}
+
+func TestProgressWriterMatrix(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	oldWidth, oldVT := progressWidth, progressVT
+	defer func() { progressWidth, progressVT = oldWidth, oldVT }()
+	for _, tc := range []struct {
+		name                          string
+		outTerm, errTerm, vt, noColor bool
+		width                         int
+	}{
+		{"both", true, true, true, false, 80}, {"stdout", true, false, true, false, 80},
+		{"stderr", false, true, true, false, 80}, {"pipes", false, false, true, false, 80},
+		{"narrow", true, true, true, false, 20}, {"unsupported VT", true, true, false, false, 80},
+		{"no color", true, true, true, true, 80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.noColor {
+				t.Setenv("NO_COLOR", "1")
+			} else {
+				t.Setenv("NO_COLOR", "")
+			}
+			synctest.Test(t, func(t *testing.T) {
+				var out, errout bytes.Buffer
+				progressWidth = func(w io.Writer) (int, error) {
+					if w == &out && tc.outTerm || w == &errout && tc.errTerm {
+						return tc.width, nil
+					}
+					return 0, errors.New("pipe")
+				}
+				progressVT = func(io.Writer, string) bool { return tc.vt }
+				p := newProgressLine(&errout, tc.errTerm)
+				p.Start("check")
+				time.Sleep(249 * time.Millisecond)
+				synctest.Wait()
+				if errout.Len() != 0 || out.Len() != 0 {
+					t.Fatal("early output")
+				}
+				time.Sleep(time.Millisecond)
+				synctest.Wait()
+				frame := errout.String()
+				wantFrame := tc.errTerm && tc.vt && tc.width >= 30
+				if strings.Contains(frame, "\r\x1b[2K| check") != wantFrame {
+					t.Fatalf("frame %q", frame)
+				}
+				p.Finish(&out, setup.StepResult{Step: "check", Status: "ok", Detail: "done"}, tc.outTerm)
+				wantColor := tc.outTerm && tc.vt && !tc.noColor
+				if strings.Contains(out.String(), "\x1b[32m") != wantColor {
+					t.Fatalf("result %q", out.String())
+				}
+				if !tc.outTerm && out.String() != "✓ check       done\n" {
+					t.Fatalf("plain result %q", out.String())
+				}
+				if tc.noColor && (strings.Contains(out.String(), "\x1b[0m") || strings.Contains(errout.String(), "\x1b[0m")) {
+					t.Fatal("SGR under NO_COLOR")
+				}
+			})
+		})
 	}
 }

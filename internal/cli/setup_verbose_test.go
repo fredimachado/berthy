@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -515,5 +516,66 @@ func TestSetupMixedStreamsAndVerbose(t *testing.T) {
 	jsonTerminal, _ := run(true, false, "--json")
 	if jsonPlain != jsonTerminal {
 		t.Fatal("terminal changed JSON stdout")
+	}
+}
+
+type failingSetupRunner struct{}
+
+func (failingSetupRunner) Target() string { return "ops@s1" }
+func (failingSetupRunner) Run(context.Context, string, io.Reader) (setup.Result, error) {
+	return setup.Result{}, errors.New("runner failed")
+}
+
+func TestSetupEarlyFailureUsesStepResultFormat(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	oldTerminal, oldRunner := stderrTerminal, newSetupRunner
+	t.Cleanup(func() { stderrTerminal, newSetupRunner = oldTerminal, oldRunner })
+	for _, stage := range []string{"preflight", "runner", "step"} {
+		t.Run(stage, func(t *testing.T) {
+			config := filepath.Join(t.TempDir(), "config")
+			if stage == "preflight" {
+				if err := os.WriteFile(config, []byte("invalid json"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			newSetupRunner = func(string, bool) (setup.Runner, error) {
+				if stage == "runner" {
+					return nil, errors.New("runner failed")
+				}
+				return failingSetupRunner{}, nil
+			}
+			args := setupArgs(t, "--config", config)
+			run := func(terminal, jsonMode bool) string {
+				var out, errout bytes.Buffer
+				stderrTerminal = func(w io.Writer) bool { return terminal && w == &out }
+				flags := append([]string{}, args...)
+				if jsonMode {
+					flags = append(flags, "--json")
+				}
+				if code := runSetup(flags, &out, &errout); code != 1 {
+					t.Fatalf("exit %d: %s", code, errout.String())
+				}
+				return out.String()
+			}
+			word, glyph := run(true, false), run(false, false)
+			step := "connect"
+			if stage == "preflight" {
+				step = "check"
+			}
+			if !strings.HasPrefix(word, "failed "+step) || !strings.HasPrefix(glyph, "✖ "+step) {
+				t.Fatalf("word %q, glyph %q", word, glyph)
+			}
+			if stage != "step" && strings.Contains(strings.SplitN(word, "\n", 2)[0], "s)") {
+				t.Fatalf("early result has elapsed: %q", word)
+			}
+			plainJSON, terminalJSON := run(false, true), run(true, true)
+			if plainJSON != terminalJSON {
+				t.Fatalf("JSON differs: %q / %q", plainJSON, terminalJSON)
+			}
+			var report setupReport
+			if json.Unmarshal([]byte(plainJSON), &report) != nil || len(report.Steps) != 1 || report.Steps[0].Step != step || report.Steps[0].Status != setup.StatusFailed {
+				t.Fatalf("JSON report: %q", plainJSON)
+			}
+		})
 	}
 }

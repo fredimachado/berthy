@@ -50,9 +50,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		redact = append(redact, opt.extraTokens...)
 	}
 	interactive := !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(out)
-	progress := newProgressLine(out, interactive)
+	progress := newProgressLine(errout, !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(errout))
 	defer progress.Close()
-	if interactive {
+	if !asJSON && (cmd == "deploy" || cmd == "rollback") {
 		progress.Start("following deploy")
 	}
 	printResult := func(data []byte) {
@@ -125,20 +125,16 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				checks = append(checks, safeData)
 			}
 			if !asJSON {
-				if interactive {
-					progress.Message("  " + safeSecretText(detail.Step, redact...))
-				} else {
-					fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...))
-				}
+				progress.Message(func() { fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...)) })
 			}
 			return
 		}
 		if interactive {
 			if ev.Kind == "step" && detail.Step != "" {
-				progress.Message("  " + safeSecretText(detail.Step, redact...))
+				progress.Message(func() { fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...)) })
 			}
 		} else if !asJSON && !showsText(cmd, ev.Kind) {
-			fmt.Fprintln(out, safeSecretText(ev.Kind, redact...))
+			progress.Message(func() { fmt.Fprintln(out, safeSecretText(ev.Kind, redact...)) })
 		}
 	}
 	var notFound string

@@ -128,11 +128,10 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 		master.Close()
 		<-readDone
 	}()
-	var errs bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- runPromote(ctx, dstServer.Client(), dst, cfg, "staging", commandFlags{dir: dir, env: "prod", project: "demo", pos: []string{"api"}}, tty, &errs)
+		done <- runPromote(ctx, dstServer.Client(), dst, cfg, "staging", commandFlags{dir: dir, env: "prod", project: "demo", pos: []string{"api"}}, tty, tty)
 	}()
 	finished := false
 	defer func() {
@@ -149,7 +148,7 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 		}
 	case got := <-done:
 		finished = true
-		t.Fatalf("exit %d without watcher: %s", got, errs.String())
+		t.Fatalf("exit %d without watcher", got)
 	case <-time.After(2 * time.Minute):
 		t.Fatal("watcher request did not arrive")
 	}
@@ -162,6 +161,6 @@ func TestPromoteWatchesProgressOnRealTerminal(t *testing.T) {
 	got := <-done
 	finished = true
 	if got != 0 {
-		t.Fatalf("exit %d: %s", got, errs.String())
+		t.Fatalf("exit %d", got)
 	}
 }

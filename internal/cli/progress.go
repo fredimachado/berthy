@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"berthy/internal/setup"
+
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 )
@@ -27,7 +29,6 @@ type progressLine struct {
 	out     io.Writer
 	enabled bool
 	animate bool
-	color   bool
 	mu      sync.Mutex
 	label   string
 	started time.Time
@@ -41,7 +42,6 @@ func newProgressLine(out io.Writer, enabled bool) *progressLine {
 	if enabled && progressVT(out, os.Getenv("TERM")) {
 		width, err := progressWidth(out)
 		p.animate = err == nil && width >= 30
-		p.color = p.animate && os.Getenv("NO_COLOR") == ""
 	}
 	return p
 }
@@ -99,31 +99,28 @@ func (p *progressLine) clear() {
 	}
 }
 
-func (p *progressLine) Message(text string) {
+func (p *progressLine) Message(writeLine func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clear()
-	fmt.Fprintln(p.out, terminalSafe(text))
+	writeLine()
 }
 
-func (p *progressLine) Finish(status, detail string) {
+func (p *progressLine) Finish(out io.Writer, r setup.StepResult, words bool) {
 	p.Close()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	status = terminalSafe(status)
-	marker := setupGlyphs[status]
-	if p.enabled {
-		marker = status
-		if p.color {
-			color := map[string]string{"ok": "32", "changed": "32", "would_change": "36", "skipped": "33", "failed": "31"}[status]
-			if color != "" {
-				marker = "\033[" + color + "m" + marker + "\033[0m"
-			}
+	marker := setupGlyphs[r.Status]
+	if words {
+		marker = styleFor(out, true).Status(r.Status)
+		if p.label == terminalSafe(r.Step) && !p.started.IsZero() {
+			fmt.Fprintf(out, "%s %-10s  %s (%.1fs)\n", marker, terminalSafe(r.Step), terminalSafe(r.Detail), time.Since(p.started).Seconds())
+			p.label = ""
+			return
 		}
-		fmt.Fprintf(p.out, "%s %-10s  %s (%.1fs)\n", marker, p.label, terminalSafe(detail), time.Since(p.started).Seconds())
-		return
 	}
-	fmt.Fprintf(p.out, "%s %-10s  %s\n", marker, p.label, terminalSafe(detail))
+	fmt.Fprintf(out, "%s %-10s  %s\n", marker, terminalSafe(r.Step), terminalSafe(r.Detail))
+	p.label = ""
 }
 
 func (p *progressLine) Close() {

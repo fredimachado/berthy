@@ -1010,7 +1010,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			return 1
 		}
 	}
-	progress := newProgressLine(out, cmd == "deploy" && method == http.MethodPost && !f.dry && !f.json && stderrTerminal(out))
+	progress := newProgressLine(errout, cmd == "deploy" && method == http.MethodPost && !f.dry && !f.json && stderrTerminal(errout))
 	if progress.enabled {
 		progress.Start("deploying")
 	}

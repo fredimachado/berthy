@@ -36,7 +36,7 @@ func TestApproveReplanProgressAndRedaction(t *testing.T) {
 	t.Cleanup(func() { progressWidth = old })
 	synctest.Test(t, func(t *testing.T) {
 		var out progressTestBuffer
-		var errs bytes.Buffer
+		var errs progressTestBuffer
 		release := make(chan struct{})
 		done := make(chan int, 1)
 		call := func(method, endpoint, query string, body []byte) ([]byte, int, error) {
@@ -57,8 +57,8 @@ func TestApproveReplanProgressAndRedaction(t *testing.T) {
 		}
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
-		if !strings.Contains(out.String(), "approving") {
-			t.Fatalf("missing approval wait: %q", out.String())
+		if !strings.Contains(errs.String(), "approving") {
+			t.Fatalf("missing approval wait: %q", errs.String())
 		}
 		close(release)
 		release = make(chan struct{})

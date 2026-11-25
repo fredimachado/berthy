@@ -350,7 +350,7 @@ func TestDeployProgressCountsRealRoles(t *testing.T) {
 		})}
 		base, _ := url.Parse("http://agent.invalid")
 		var out progressTestBuffer
-		var errs bytes.Buffer
+		var errs progressTestBuffer
 		done := make(chan int, 1)
 		go func() {
 			done <- watchOperation(ctx, client, base, "token", "/v1/", "op", "/v1/operations/op/events", &out, &errs, false, "deploy", "dev", "demo")
@@ -364,35 +364,35 @@ func TestDeployProgressCountsRealRoles(t *testing.T) {
 		write(1, "web", "ready")
 		time.Sleep(249 * time.Millisecond)
 		synctest.Wait()
-		if out.Len() != 0 {
-			t.Fatalf("short wait flashed: %q", out.String())
+		if errs.Len() != 0 {
+			t.Fatalf("short wait flashed: %q", errs.String())
 		}
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
-		if !strings.Contains(out.String(), "1 ready of 1 started (0.2s)") {
-			t.Fatalf("ready first: %q", out.String())
+		if !strings.Contains(errs.String(), "1 ready of 1 started (0.2s)") {
+			t.Fatalf("ready first: %q", errs.String())
 		}
 		write(2, "web", "started")
 		write(3, "web", "ready")
 		write(4, "web", "unknown")
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
-		if !strings.Contains(out.String(), "1 ready of 1 started (0.3s)") {
-			t.Fatalf("duplicates reset timer: %q", out.String())
+		if !strings.Contains(errs.String(), "1 ready of 1 started (0.3s)") {
+			t.Fatalf("duplicates reset timer: %q", errs.String())
 		}
 		write(5, "worker", "started")
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
-		if !strings.Contains(out.String(), "1 ready of 2 started") {
-			t.Fatalf("distinct roles: %q", out.String())
+		if !strings.Contains(errs.String(), "1 ready of 2 started") {
+			t.Fatalf("distinct roles: %q", errs.String())
 		}
 		cancel()
 		writer.Close()
 		synctest.Wait()
-		before := out.String()
+		before := errs.String()
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if out.String() != before {
+		if errs.String() != before {
 			t.Fatal("write after close")
 		}
 		if !strings.Contains(errs.String(), "may continue") {
@@ -439,7 +439,7 @@ func TestDeploySubmissionDelayedProgress(t *testing.T) {
 	t.Cleanup(func() { progressWidth = old })
 	synctest.Test(t, func(t *testing.T) {
 		var out progressTestBuffer
-		var errs bytes.Buffer
+		var errs progressTestBuffer
 		release := make(chan struct{})
 		done := make(chan int, 1)
 		client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
@@ -454,13 +454,13 @@ func TestDeploySubmissionDelayedProgress(t *testing.T) {
 		synctest.Wait()
 		time.Sleep(249 * time.Millisecond)
 		synctest.Wait()
-		if out.Len() != 0 {
-			t.Fatalf("early output %q", out.String())
+		if errs.Len() != 0 {
+			t.Fatalf("early output %q", errs.String())
 		}
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
-		if !strings.Contains(out.String(), "deploying") {
-			t.Fatalf("missing pending frame: %q", out.String())
+		if !strings.Contains(errs.String(), "deploying") {
+			t.Fatalf("missing pending frame: %q", errs.String())
 		}
 		close(release)
 		release = make(chan struct{})
@@ -468,10 +468,10 @@ func TestDeploySubmissionDelayedProgress(t *testing.T) {
 		if !strings.Contains(errs.String(), "refused") {
 			t.Fatalf("diagnostic %q", errs.String())
 		}
-		before := out.String()
+		before := errs.String()
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if out.String() != before {
+		if errs.String() != before {
 			t.Fatal("write after response")
 		}
 	})

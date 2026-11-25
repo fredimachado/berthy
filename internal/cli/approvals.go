@@ -257,7 +257,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 			}
 		}
 	}
-	progress := newProgressLine(out, !f.json && stderrTerminal(out))
+	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	if progress.enabled {
 		progress.Start("approving")
 	}

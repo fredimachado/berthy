@@ -198,16 +198,13 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if *local {
 		report.Target = "this server"
 	}
-	progress := newProgressLine(out, !*asJSON && !*verbose && stderrTerminal(out))
+	progress := newProgressLine(errout, !*asJSON && !*verbose && stderrTerminal(errout))
+	words := !*verbose && stderrTerminal(out)
 	opts.StepStarted = progress.Start
 	show := func(r setup.StepResult) {
 		report.Steps = append(report.Steps, r)
 		if !*asJSON {
-			if progress.label == "" {
-				printSetupStep(out, r)
-			} else {
-				progress.Finish(r.Status, r.Detail)
-			}
+			progress.Finish(out, r, words)
 		}
 	}
 	var session *setup.Session
@@ -501,10 +498,6 @@ var setupGlyphs = map[string]string{
 	setup.StatusWouldChange: "·",
 	setup.StatusSkipped:     "–",
 	setup.StatusFailed:      "✖",
-}
-
-func printSetupStep(out io.Writer, r setup.StepResult) {
-	fmt.Fprintf(out, "%s %-10s  %s\n", setupGlyphs[r.Status], terminalSafe(r.Step), terminalSafe(r.Detail))
 }
 
 // setupSummary is the last line of the text output.
