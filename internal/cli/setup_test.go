@@ -628,6 +628,38 @@ func TestSetupListenIsOptionalWhenTheServerHasAConfiguration(t *testing.T) {
 	}
 }
 
+func TestSetupDefaultsListenFromTheManifestAddress(t *testing.T) {
+	dir := projectDir(t)
+	if err := os.WriteFile(filepath.Join(dir, "berthy.p5.yml"), []byte("servers:\n  pg:\n    ssh: ops@s1\n    address: 172.31.250.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := freshServer(t, "ops@s1")
+	withSetupRunner(t, server)
+	code, out, errout := runSetupCmd("-e", "p5", "--manifest-dir", dir, "--dry-run", "--json")
+	if code != 0 {
+		t.Fatalf("exit %d: %s\n%s", code, errout, out)
+	}
+	var got setupReport
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("%v:\n%s", err, out)
+	}
+	var check setup.StepResult
+	for _, s := range got.Steps {
+		if s.Step == "check" {
+			check = s
+		}
+	}
+	if check.Status != "ok" || !strings.Contains(check.Detail, "172.31.250.10 assigned") {
+		t.Fatalf("check = %+v\nreport = %s", check, out)
+	}
+	// --host does not take the manifest address: a first install still needs --listen.
+	withSetupRunner(t, freshServer(t, "ops@s1"))
+	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--manifest-dir", dir, "--dry-run", "--json")
+	if code != 1 || !strings.Contains(out, "--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
 func TestSetupPassesItsFlagsToTheSteps(t *testing.T) {
 	server := freshServer(t, "ops@s1")
 	withSetupRunner(t, server)
