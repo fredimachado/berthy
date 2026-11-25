@@ -652,11 +652,17 @@ func TestSetupDefaultsListenFromTheManifestAddress(t *testing.T) {
 	if check.Status != "ok" || !strings.Contains(check.Detail, "172.31.250.10 assigned") {
 		t.Fatalf("check = %+v\nreport = %s", check, out)
 	}
-	// --host does not take the manifest address: a first install still needs --listen.
+	// --host and --local do not take the manifest address: a first install still needs --listen.
+	needListen := "--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it"
 	withSetupRunner(t, freshServer(t, "ops@s1"))
 	code, out, _ = runSetupCmd("-e", "p5", "--host", "ops@s1", "--manifest-dir", dir, "--dry-run", "--json")
-	if code != 1 || !strings.Contains(out, "--listen ADDRESS:PORT is needed: this server has no agent configuration yet and the manifest gives no address for it") {
-		t.Fatalf("exit %d:\n%s", code, out)
+	if code != 1 || !strings.Contains(out, needListen) {
+		t.Fatalf("--host: exit %d:\n%s", code, out)
+	}
+	withSetupRunner(t, freshServer(t, "this server"))
+	code, out, _ = runSetupCmd("-e", "p5", "--local", "--manifest-dir", dir, "--dry-run", "--json")
+	if code != 1 || !strings.Contains(out, needListen) {
+		t.Fatalf("--local: exit %d:\n%s", code, out)
 	}
 }
 
