@@ -46,28 +46,32 @@ func TestChecksPrintsATableOrJSON(t *testing.T) {
 }
 
 // TestPrintChecksMakesAgentTextTerminalSafe: a check's name, state and detail come from the
-// agent and must not rewrite the terminal; columns stay aligned.
+// agent and must not rewrite the terminal; a tab in a non-final cell becomes spaces so columns stay under their headers.
 func TestPrintChecksMakesAgentTextTerminalSafe(t *testing.T) {
-	body := []byte(`[{"name":"probe:\u001b[2Jsite","state":"ok\u001b","detail":"HTTP \u001b[31m503","since":"2026-11-16T10:00:00Z"}]`)
+	body := []byte(`[{"name":"probe:\tsite","state":"ok\u001b","detail":"HTTP \u001b[31m503","since":"2026-11-16T10:00:00Z"}]`)
 	var out, errout bytes.Buffer
 	if code := printChecks(&out, &errout, body, false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 	text := out.String()
-	if strings.Contains(text, "\x1b") {
-		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	if strings.ContainsAny(text, "\x1b\t") {
+		t.Fatalf("raw ESC or tab reached the terminal:\n%q", text)
 	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], "NAME") || !strings.Contains(lines[0], "DETAIL") {
 		t.Fatalf("header:\n%s", text)
 	}
-	for _, want := range []string{`probe:\x1b[2Jsite`, `ok\x1b`, `HTTP \x1b[31m503`, "2026-11-16T10:00:00Z"} {
+	if !strings.Contains(lines[1], "probe:    site") {
+		t.Errorf("tab in name not shown as four spaces: %q", lines[1])
+	}
+	for _, want := range []string{`ok\x1b`, `HTTP \x1b[31m503`, "2026-11-16T10:00:00Z"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("row lacks %q: %q", want, lines[1])
 		}
 	}
-	if strings.Count(lines[1], "  ") < 3 {
-		t.Errorf("columns no longer aligned: %q", lines[1])
+	stateCol := strings.Index(lines[0], "STATE")
+	if stateCol < 0 || stateCol >= len(lines[1]) || !strings.HasPrefix(lines[1][stateCol:], "ok") {
+		t.Errorf("STATE cell not under its header (col %d):\nheader %q\nrow    %q", stateCol, lines[0], lines[1])
 	}
 }
 

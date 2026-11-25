@@ -149,24 +149,31 @@ func runJob(t *testing.T, a *jobAgent, extra ...string) (int, string, string) {
 	return code, out.String(), errout.String()
 }
 
-// TestPrintJobsMakesAgentTextTerminalSafe: a last run's detail can carry escapes and newlines;
-// the row stays one line and no raw ESC reaches the terminal.
+// TestPrintJobsMakesAgentTextTerminalSafe: a last run's detail can carry escapes and newlines, and a
+// tab in a non-final cell must become spaces so the row stays one line under the headers.
 func TestPrintJobsMakesAgentTextTerminalSafe(t *testing.T) {
-	body := []byte(`[{"name":"tick","app":"api","target":"web","schedule":"0 * * * *","timeout":"1h0m0s","last":{"id":1,"job":"tick","trigger":"manual","started":"2026-11-16T10:00:00Z","finished":"2026-11-16T10:00:01Z","status":"failed","detail":"boom\u001b[2J\nand more"}}]`)
+	body := []byte(`[{"name":"tick\tjob","app":"api","target":"web","schedule":"0 * * * *","timeout":"1h0m0s","last":{"id":1,"job":"tick","trigger":"manual","started":"2026-11-16T10:00:00Z","finished":"2026-11-16T10:00:01Z","status":"failed","detail":"boom\u001b[2J\nand more"}}]`)
 	var out, errout bytes.Buffer
 	if code := printJobs(&out, &errout, body, false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 	text := out.String()
-	if strings.Contains(text, "\x1b") {
-		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	if strings.ContainsAny(text, "\x1b\t") {
+		t.Fatalf("raw ESC or tab reached the terminal:\n%q", text)
 	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("want header and one row, got %d lines:\n%s", len(lines), text)
 	}
+	if !strings.Contains(lines[1], "tick    job") {
+		t.Errorf("tab in name not shown as four spaces: %q", lines[1])
+	}
 	if !strings.Contains(lines[1], `boom\x1b[2J and more`) {
 		t.Errorf("detail not sanitized: %q", lines[1])
+	}
+	targetCol := strings.Index(lines[0], "TARGET")
+	if targetCol < 0 || targetCol >= len(lines[1]) || !strings.HasPrefix(lines[1][targetCol:], "api/web") {
+		t.Errorf("TARGET cell not under its header (col %d):\nheader %q\nrow    %q", targetCol, lines[0], lines[1])
 	}
 }
 

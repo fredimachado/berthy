@@ -12,33 +12,85 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"berthy/internal/manifest"
 )
 
-// TestPrintProblemsMakesAgentTextTerminalSafe: a problem's message can come from a manifest
-// key or value that carries control characters; print them as visible escapes.
+// tabKeyBase is a valid image app plus a double-quoted key whose name carries a tab (YAML
+// decodes \t). That tab lands in a problem's Path and must be safe on the terminal.
+const tabKeyBase = `project: demo
+network: demo
+"bad\tkey": null
+apps:
+  api:
+    kind: image
+    image: alpine
+    roles:
+      web: {}
+`
+
+// TestPrintProblemsMakesAgentTextTerminalSafe: a tab in a manifest key reaches printProblems
+// through config validate; stderr stays one safe line per problem.
 func TestPrintProblemsMakesAgentTextTerminalSafe(t *testing.T) {
-	var out bytes.Buffer
-	printProblems(&out, manifest.Problems{{File: "berthy.yml", Line: 2, Message: "bad\x1b[31m key"}})
-	text := out.String()
-	if strings.Contains(text, "\x1b") {
-		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	dir := validateDir(t, tabKeyBase, "")
+	var out, errs bytes.Buffer
+	code := Run([]string{"config", "validate", "-e", "dev", "--manifest-dir", dir}, &out, &errs)
+	text := errs.String()
+	if code != 1 || out.Len() != 0 {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), text)
 	}
-	if !strings.Contains(text, `bad\x1b[31m key`) {
-		t.Fatalf("output: %q", text)
+	if strings.Contains(text, "\t") {
+		t.Fatalf("raw tab reached the terminal:\n%q", text)
+	}
+	if !strings.Contains(text, "bad    key") {
+		t.Fatalf("tab in path not shown as four spaces: %q", text)
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != 2 || lines[1] != "1 problem" {
+		t.Fatalf("want one problem line plus the count, got %q", text)
 	}
 }
 
+// TestPrintWarningsMakesAgentTextTerminalSafe: the same tabbed key in an overlay with no base
+// match is a warning Path; text output is safe, JSON still carries the real tab.
 func TestPrintWarningsMakesAgentTextTerminalSafe(t *testing.T) {
-	var out bytes.Buffer
-	printWarnings(&out, manifest.Problems{{File: "berthy.yml", Line: 8, Path: "apps.api", Message: "warn\x1b[2Jing"}})
-	text := out.String()
-	if strings.Contains(text, "\x1b") {
-		t.Fatalf("raw ESC reached the terminal:\n%q", text)
+	base := `project: demo
+network: demo
+apps:
+  api:
+    kind: image
+    image: alpine
+    roles:
+      web: {}
+`
+	dir := validateDir(t, base, `"bad\tkey": null`+"\n")
+	var out, errs bytes.Buffer
+	code := Run([]string{"config", "validate", "-e", "prod", "--manifest-dir", dir}, &out, &errs)
+	text := errs.String()
+	if code != 0 || out.String() != "manifest valid\n" {
+		t.Fatalf("exit %d stdout %q stderr %q", code, out.String(), text)
 	}
-	if !strings.Contains(text, `warn\x1b[2Jing`) {
-		t.Fatalf("output: %q", text)
+	if strings.Contains(text, "\t") {
+		t.Fatalf("raw tab reached the terminal:\n%q", text)
+	}
+	if !strings.Contains(text, "bad    key") {
+		t.Fatalf("tab in path not shown as four spaces: %q", text)
+	}
+	if lines := strings.Split(strings.TrimRight(text, "\n"), "\n"); len(lines) != 1 {
+		t.Fatalf("want one warning line, got %q", text)
+	}
+
+	out.Reset()
+	errs.Reset()
+	code = Run([]string{"config", "validate", "-e", "prod", "--manifest-dir", dir, "--json"}, &out, &errs)
+	var got struct {
+		Warnings []struct {
+			Path string `json:"path"`
+		} `json:"warnings"`
+	}
+	if code != 0 || errs.Len() != 0 || json.Unmarshal(out.Bytes(), &got) != nil || len(got.Warnings) != 1 {
+		t.Fatalf("json exit %d stdout %q stderr %q", code, out.String(), errs.String())
+	}
+	if got.Warnings[0].Path != "bad\tkey" {
+		t.Fatalf("json path: %q", got.Warnings[0].Path)
 	}
 }
 
