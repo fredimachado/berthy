@@ -256,7 +256,7 @@ func TestProgressWriterMatrix(t *testing.T) {
 				t.Setenv("NO_COLOR", "")
 			}
 			synctest.Test(t, func(t *testing.T) {
-				var out, errout bytes.Buffer
+				var out, errout progressTestBuffer
 				progressWidth = func(w io.Writer) (int, error) {
 					if w == &out && tc.outTerm || w == &errout && tc.errTerm {
 						return tc.width, nil
