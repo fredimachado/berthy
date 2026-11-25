@@ -207,7 +207,7 @@ On the server itself (for provisioning tools and images that already carry the b
 sudo berthy setup -e prod --local --listen 10.0.0.5:7710
 ```
 
-`--listen` is needed on the **first** run only, unless the manifest gives the server's `address` (then the agent listens on `<address>:7710` by default). After that the server's own agent configuration has the address, and a run with a **different** `--listen` is refused (`the agent listens on …; setup does not move it`).
+`--listen` is needed on the **first** run only. When setup picks the server from the manifest (no `--host`, no `--local`) and that entry has `address`, the agent listens on `<address>:7710` unless `--listen` says otherwise; `--host` and `--local` still need `--listen` on a first install. After that the server's own agent configuration has the address, and a run with a **different** `--listen` is refused (`the agent listens on …; setup does not move it`).
 
 The steps run in this order. Each one checks first and only acts when something is missing, and a failed step stops the run:
 
@@ -371,7 +371,7 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--host <user>@<server>` | Set up a remote server over SSH, at a destination the manifest does not need to name. |
 | `--server <name>` | Set up the server of that name from the manifest's `servers`. |
 | `--local` | Set up the server the command runs on. Use at most one of `--host`, `--server` and `--local`. |
-| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run unless the manifest gives the server's `address`. A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
+| `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run unless setup picks the server from the manifest and that entry has `address` (`--host` and `--local` still need it). A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
 | `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
 | `--manifest-dir <dir>` | Where to read the manifest from. Default: the current directory. |
 | `--project <name>` | The project, required when the directory has no manifest. |
@@ -414,7 +414,7 @@ berthy setup -e prod --project shop --host ops@10.0.0.5
 berthy setup -e prod --host ops@10.0.0.5
 ```
 
-`--listen` is only needed on the first run for that server, unless the manifest gives the server's `address`. Later runs keep the agent's address.
+`--listen` is only needed on the first run for that server. When setup picks the server from the manifest and that entry has `address`, it defaults to `<address>:7710`; `--host` and `--local` still need `--listen`. Later runs keep the agent's address.
 
 **Network.** With a manifest, the network comes from it when set, otherwise from the environment's default `<project>-<environment>`. Without a manifest, `--network` is optional and defaults the same way. Two hosted environments cannot share one network name. The todo example leaves `network` unset, so `todo/dev` uses `todo-dev` and `todo/prod` uses `todo-prod`. A Compose app joins that network with `name: ${BERTHY_NETWORK}`; Berthy writes the value into the Compose project's `.env`. To add another environment such as `stage` on the same agent:
 
@@ -3014,7 +3014,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `network` | name | `<project>-<environment>` | Override the environment network to adopt an existing overlay network. `berthy setup` creates it when it does not exist. |
 | `servers` | map | none | Servers by name. Define them in the environment overlay when environments use different servers. |
 | `servers.<name>.ssh` | string | required | The SSH destination `berthy setup` connects to, such as `ops@10.0.0.5` or an alias from your SSH config. Setup uses it when the manifest names only this server, or with `--server <name>`. |
-| `servers.<name>.address` | string | none | The server's private or VPN IP address. On a first install `berthy setup` makes the agent listen on `<address>:7710` unless `--listen` says otherwise, and a later run refuses when the agent listens on another address. |
+| `servers.<name>.address` | string | none | The server's private or VPN IP address. When setup picks this server from the manifest (no `--host`, no `--local`), a first install listens on `<address>:7710` unless `--listen` says otherwise; `--host` and `--local` still need `--listen`. A later run refuses when the agent listens on another address. |
 | `protected` | boolean | `false` | Protect the environment: digest-only deploys, and changes that an AI agent's token asks for are held for approval. |
 | `registries` | map | none | Registry credentials, by registry host. |
 | `secrets` | map | none | Secrets Berthy may generate, by name. Each must be read by an app. |
