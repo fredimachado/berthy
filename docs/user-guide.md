@@ -45,7 +45,7 @@ The files the guide uses are in [`examples/todo/`](../examples/todo/). They pass
 - Flags can come in any order, before or after the app name. The one exception is `exec` and `run`: everything after `--` is the command to run.
 - The exit code matters. `0` means done. `1` means failed. `2` means you typed the command wrong. `3` means an AI agent's change is held for approval. Scripts and CI should check it.
 - On a terminal, a changing remote command or `setup` prints one line to stderr before it does anything, dry runs included: `berthy: todo/prod at http://10.0.0.5:7710` for a remote command, or `berthy: todo/prod on ops@10.0.0.5` (or `on this server` with `--local`) for `setup`. When `BERTHY_ENV` chose the environment, the line ends with ` (environment from BERTHY_ENV)`. With stderr redirected, or under `--json` on stdout, nothing is added.
-- When stderr is a supported terminal at least 30 columns wide, longer preflights, setup steps and pending operations show a delayed spinner on stderr. Results, steps, tables and records stay on stdout, so `berthy deploy ... > result.txt` shows progress while the file receives plain text. Short waits stay quiet. Interactive deploy and rollback followers also show real role rollout milestones. Colour is decided per stream. `NO_COLOR` turns colour off, while the spinner still animates. Status words stay readable when the terminal is dumb or unsupported. A redirected stream keeps plain event text and never receives a progress frame. `--json` prints exactly one JSON object for that command shape. Ctrl+C stops following an already-admitted operation, prints its id with human-readable `diagnostics` and `cancel` scope for that environment, and the operation may continue on the agent.
+- Longer preflights, setup steps, and deploy and rollback operations show a delayed spinner on stderr. This requires a supported terminal at least 30 columns wide. Results, steps, tables and records stay on stdout, so `berthy deploy ... > result.txt` shows progress while the file receives plain text. Short waits stay quiet. Interactive deploy and rollback followers also show real role rollout milestones. Colour is decided per stream. `NO_COLOR` turns colour off, while the spinner still animates. Status words stay readable when the terminal is dumb or unsupported. A redirected stream keeps plain event text and never receives a progress frame. `--json` prints exactly one JSON object for that command shape. Ctrl+C stops following an already-admitted operation, prints its id with human-readable `diagnostics` and `cancel` scope for that environment, and the operation may continue on the agent.
 
 ---
 
@@ -1166,7 +1166,7 @@ berthy deploy postgres -e prod
 
 A Compose app takes **no** `--version`: the version is whatever its Compose file says. (`berthy deploy redis --version 7` is refused with `--version does not apply to a compose app`.)
 
-The CLI reads the Compose file from `--manifest-dir` (default: the current directory), sends it with the deploy, and follows the operation until it ends. When stderr is a terminal, a delayed spinner covers the wait. Redirected output keeps the plain event names, then the operation's record:
+The CLI reads the Compose file from `--manifest-dir` (default: the current directory), sends it with the deploy, and follows the operation until it ends. When stderr is a supported terminal at least 30 columns wide, a delayed spinner covers the wait. Redirected output keeps the plain event names, then the operation's record:
 
 ```text
 app: redis
