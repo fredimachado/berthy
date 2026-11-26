@@ -356,7 +356,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		printRefusal(errout, safeSecretText(agentclient.Message(resp.StatusCode, body), token), !jsonOutput)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(resp.StatusCode, body), token), !jsonOutput, agentclient.IsOlderAgent(resp))
 		return 1
 	}
 	if cmd == "checks" {
@@ -423,7 +423,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			if jsonOutput {
 				noteOut = errout
 			}
-			fmt.Fprintln(noteOut, styleFor(noteOut, !jsonOutput).paint(toneInfo, note))
+			fmt.Fprintln(noteOut, styleFor(noteOut, !jsonOutput).paint(toneInfo, "note:")+strings.TrimPrefix(note, "note:"))
 		}
 		for _, ch := range d.Checks {
 			if ch.Critical && !ch.OK {

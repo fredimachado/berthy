@@ -242,6 +242,15 @@ func SendRequest(ctx context.Context, c *http.Client, req *http.Request, token s
 // OlderAgentMessage is what a person is told when the agent runs a release that is older than this CLI.
 const OlderAgentMessage = "the agent runs an older release than this CLI; upgrade it with berthy setup"
 
+// olderAgentBody marks a response synthesized after the legacy endpoint probe succeeds.
+type olderAgentBody struct{ io.ReadCloser }
+
+// IsOlderAgent reports whether this response came from the local legacy probe.
+func IsOlderAgent(resp *http.Response) bool {
+	_, ok := resp.Body.(olderAgentBody)
+	return ok
+}
+
 // projectPath splits the path of a request to a hosted environment's API: what comes before /v1/projects/, and the environment.
 var projectPath = regexp.MustCompile(`^(.*)/v1/projects/[^/]+/environments/([^/]+)/`)
 
@@ -266,7 +275,7 @@ func olderAgent(ctx context.Context, c *http.Client, u *url.URL, token string, n
 	}
 	notFound.Body.Close()
 	body := `{"code":"not_found","message":"` + OlderAgentMessage + `"}`
-	notFound.Body = io.NopCloser(strings.NewReader(body))
+	notFound.Body = olderAgentBody{io.NopCloser(strings.NewReader(body))}
 	notFound.ContentLength = int64(len(body))
 	return notFound
 }

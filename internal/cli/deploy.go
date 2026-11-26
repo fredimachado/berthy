@@ -1064,7 +1064,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	progress := startWait(errout, !f.json, requestWaitLabel(cmd, f, method))
 	var requestErr bytes.Buffer
-	status, data, ok := askAgent(ctx, client, u, token, method, payload, &requestErr)
+	status, data, older, ok := askAgent(ctx, client, u, token, method, payload, &requestErr)
 	progress.Close()
 	if !ok {
 		_, _ = io.Copy(errout, &requestErr)
@@ -1107,7 +1107,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if status != http.StatusOK {
 		values := append([]string{token, f.redactToken}, enteredValues...)
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), values...), !f.json)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), values...), !f.json, older)
 		if payload != nil && agentclient.InvalidRequest(status, data) {
 			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
 				fmt.Fprintln(errout, styleFor(errout, !f.json).paint(toneInfo, terminalSafe(hint)))
@@ -1193,19 +1193,19 @@ func agentURL(base *url.URL, prefix, endpoint string) *url.URL {
 
 // askAgent sends one request to the agent at u with the token, with payload as its body when it is not nil, and reads the
 // answer. When the agent cannot be reached or its answer cannot be read, it prints why and returns ok false.
-func askAgent(ctx context.Context, client *http.Client, u *url.URL, token, method string, payload []byte, errout io.Writer) (status int, data []byte, ok bool) {
+func askAgent(ctx context.Context, client *http.Client, u *url.URL, token, method string, payload []byte, errout io.Writer) (status int, data []byte, older, ok bool) {
 	resp, err := agentclient.Send(ctx, client, method, u.String(), token, payload)
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
-		return 0, nil, false
+		return 0, nil, false, false
 	}
 	defer resp.Body.Close()
 	data, err = io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
 		fmt.Fprintln(errout, "invalid agent response")
-		return 0, nil, false
+		return 0, nil, false, false
 	}
-	return resp.StatusCode, data, true
+	return resp.StatusCode, data, agentclient.IsOlderAgent(resp), true
 }
 
 // newRequestID is a fresh random request ID, which the agent uses to recognize a retry of the same request.

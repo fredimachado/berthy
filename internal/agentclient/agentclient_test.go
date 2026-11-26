@@ -401,6 +401,9 @@ func TestARequestToAnAgentWithoutProjectsSaysToUpgradeIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	if !IsOlderAgent(resp) {
+		t.Fatal("successful legacy probe was not marked")
+	}
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusNotFound || Message(resp.StatusCode, body) != hint {
 		t.Fatalf("Send: %d %s", resp.StatusCode, body)

@@ -94,7 +94,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		fmt.Fprintln(errout, "the Compose files of the apps that read declared secrets do not fit in one request")
 		return res, declaredFailed
 	}
-	status, data, ok := askAgent(ctx, client, agentURL(target.Base, target.Prefix, "secrets/generate-declared"), target.Token, "POST", payload, errout)
+	status, data, older, ok := askAgent(ctx, client, agentURL(target.Base, target.Prefix, "secrets/generate-declared"), target.Token, "POST", payload, errout)
 	if !ok {
 		return res, declaredFailed
 	}
@@ -120,7 +120,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		return res, declaredFailed
 	}
 	if status != http.StatusOK {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !asJSON)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !asJSON, older)
 		return res, declaredFailed
 	}
 	if json.Unmarshal(data, &res) != nil || !validDeclaredAnswer(m, res) {

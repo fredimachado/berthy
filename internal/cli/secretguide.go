@@ -141,7 +141,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			payload, _ := json.Marshal(map[string]string{"name": n.Name, "value": value, "registry": n.Registry})
 			progress := startWait(errout, true, "storing secret")
 			var diagnostic bytes.Buffer
-			status, data, ok := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload, &diagnostic)
+			status, data, older, ok := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload, &diagnostic)
 			progress.Close()
 			_, _ = io.Copy(errout, &diagnostic)
 			if !ok {
@@ -155,7 +155,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				return remaining, guideFailed
 			}
 			if status != http.StatusOK {
-				printRefusal(errout, safeSecretText(agentclient.Message(status, data), value, wireSecret(value), target.Token), true)
+				printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), value, wireSecret(value), target.Token), true, older)
 				return remaining, guideFailed
 			}
 			var ack struct {

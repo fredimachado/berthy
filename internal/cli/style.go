@@ -10,13 +10,17 @@ import (
 )
 
 func printRefusal(errout io.Writer, safeMessage string, human bool) {
-	s := styleFor(errout, human)
+	fmt.Fprintln(errout, styleFor(errout, human).paint(toneError, safeMessage))
+}
+
+func printAgentRefusal(errout io.Writer, safeMessage string, human, older bool) {
 	lead := agentclient.Message(http.StatusNotFound, nil) + ": "
-	if safeMessage == lead+agentclient.OlderAgentMessage {
+	if older && safeMessage == lead+agentclient.OlderAgentMessage {
+		s := styleFor(errout, human)
 		fmt.Fprintln(errout, s.paint(toneError, lead)+s.paint(toneInfo, agentclient.OlderAgentMessage))
 		return
 	}
-	fmt.Fprintln(errout, s.paint(toneError, safeMessage))
+	printRefusal(errout, safeMessage, human)
 }
 
 type cliStyle struct{ color bool }

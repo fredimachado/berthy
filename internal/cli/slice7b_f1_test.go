@@ -22,7 +22,7 @@ func TestOlderAgentFallbackStylesOnlyFixedGuidance(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := ingressCLIConfig(t, server.URL)
-	for _, command := range []string{"ps", "restart"} {
+	for _, command := range []string{"ps", "restart", "token"} {
 		for _, jsonMode := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/json=%v", command, jsonMode), func(t *testing.T) {
 				var out, errs bytes.Buffer
@@ -30,6 +30,8 @@ func TestOlderAgentFallbackStylesOnlyFixedGuidance(t *testing.T) {
 				args := []string{command}
 				if command == "restart" {
 					args = append(args, "api")
+				} else if command == "token" {
+					args = append(args, "list")
 				}
 				args = append(args, "-e", "dev", "--config", cfg)
 				if jsonMode {
@@ -48,11 +50,13 @@ func TestOlderAgentFallbackStylesOnlyFixedGuidance(t *testing.T) {
 	}
 	t.Run("redaction", func(t *testing.T) {
 		t.Setenv("BERTHY_TEST_TOKEN", "release")
-		for _, command := range []string{"ps", "restart"} {
+		for _, command := range []string{"ps", "restart", "token"} {
 			var out, errs bytes.Buffer
 			args := []string{command}
 			if command == "restart" {
 				args = append(args, "api")
+			} else if command == "token" {
+				args = append(args, "list")
 			}
 			args = append(args, "-e", "dev", "--config", cfg)
 			code := Run(args, &out, &errs)
