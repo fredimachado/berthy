@@ -45,6 +45,7 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 					}
 				}()
 				entered := make(chan struct{}, 1)
+				enteredSecond := make(chan struct{}, 1)
 				base, _ := url.Parse("http://agent.invalid")
 				client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
 					body, status := `[{"id":7,"status":"succeeded"}]`, 200
@@ -69,6 +70,7 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 					if strings.Contains(r.URL.Path, "/runs") || kind == "cancellation" {
 						polls++
 						gate := release
+						signal := entered
 						if polls == 1 {
 							if kind == "cancellation" {
 								body = `{"state":"running"}`
@@ -77,8 +79,9 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 							}
 						} else {
 							gate = releaseSecond
+							signal = enteredSecond
 						}
-						reader = &waitBody{r.Context(), entered, gate, strings.NewReader(body)}
+						reader = &waitBody{r.Context(), signal, gate, strings.NewReader(body)}
 					}
 					return &http.Response{StatusCode: status, Header: make(http.Header), Body: reader, Request: r}, nil
 				})}
@@ -115,12 +118,17 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 				time.Sleep(2 * time.Second)
 				synctest.Wait()
 				select {
-				case <-entered:
+				case <-enteredSecond:
 				default:
 					cancel()
 					close(releaseSecond)
 					<-done
 					t.Fatal("second status request was not reached")
+				}
+				select {
+				case code := <-done:
+					t.Fatalf("second response was not gated: exit %d", code)
+				default:
 				}
 				if got := errout.String(); strings.HasSuffix(got, "\r\x1b[2K") || strings.Contains(got, "\r\x1b[2K\r\x1b[2K") || !strings.Contains(got, "waiting for "+kind) {
 					t.Errorf("progress did not span polls: %q", got)
@@ -258,50 +266,53 @@ func TestPollCancellationClearsProgress(t *testing.T) {
 func TestPollSelectsAdmittedRun(t *testing.T) {
 	for _, kind := range []string{"job", "backup", "state backup"} {
 		t.Run(kind, func(t *testing.T) {
-			ctx := context.Background()
-			base, _ := url.Parse("http://agent.invalid")
-			var queries []string
-			client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
-				body, status := `[]`, 200
-				if r.Method == "POST" {
-					status = 202
-					switch kind {
-					case "job":
-						body = `{"run_id":7}`
-					case "backup":
-						body = `{"backup_run_id":7}`
-					case "state backup":
-						body = `{"state_backup_run_id":7}`
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				base, _ := url.Parse("http://agent.invalid")
+				var queries []string
+				client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+					body, status := `[]`, 200
+					if r.Method == "POST" {
+						status = 202
+						switch kind {
+						case "job":
+							body = `{"run_id":7}`
+						case "backup":
+							body = `{"backup_run_id":7}`
+						case "state backup":
+							body = `{"state_backup_run_id":7}`
+						}
+					} else if strings.Contains(r.URL.Path, "/runs") {
+						queries = append(queries, r.URL.RawQuery)
+						body = `[{"id":9,"status":"failed"}]`
+						if r.URL.RawQuery == "limit=100" {
+							body = `[{"id":9,"status":"failed"},{"id":7,"status":"succeeded"}]`
+						}
 					}
-				} else if strings.Contains(r.URL.Path, "/runs") {
-					queries = append(queries, r.URL.RawQuery)
-					body = `[{"id":9,"status":"failed"}]`
-					if r.URL.RawQuery == "limit=100" {
-						body = `[{"id":9,"status":"failed"},{"id":7,"status":"succeeded"}]`
-					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})}
+				var out, errout progressTestBuffer
+				var code int
+				switch kind {
+				case "job":
+					code = runJobRun(ctx, client, base, "", "token", "task", false, &out, &errout)
+				case "backup":
+					code = runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &out, &errout)
+				case "state backup":
+					code = runStateBackup(ctx, client, base, "", "token", false, &out, &errout)
 				}
-				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
-			})}
-			var out, errout progressTestBuffer
-			var code int
-			switch kind {
-			case "job":
-				code = runJobRun(ctx, client, base, "", "token", "task", false, &out, &errout)
-			case "backup":
-				code = runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &out, &errout)
-			case "state backup":
-				code = runStateBackup(ctx, client, base, "", "token", false, &out, &errout)
-			}
-			if code != 0 || !strings.Contains(out.String(), "run: 7\nstatus: succeeded\n") {
-				t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
-			}
-			want := "limit=1,limit=100"
-			if kind == "state backup" {
-				want = "limit=100"
-			}
-			if strings.Join(queries, ",") != want {
-				t.Errorf("queries: %v want %s", queries, want)
-			}
+				if code != 0 || !strings.Contains(out.String(), "run: 7\nstatus: succeeded\n") {
+					t.Fatalf("exit %d out %q err %q", code, out.String(), errout.String())
+				}
+				want := "limit=1,limit=100"
+				if kind == "state backup" {
+					want = "limit=100"
+				}
+				if strings.Join(queries, ",") != want {
+					t.Errorf("queries: %v want %s", queries, want)
+				}
+			})
 		})
 	}
 }
@@ -318,7 +329,7 @@ func TestPollOutcomeProgress(t *testing.T) {
 	backupWaitLimit, jobWaitGrace, cancelWait = time.Second, 0, time.Second
 	t.Cleanup(func() { backupWaitLimit, jobWaitGrace, cancelWait = oldBackup, oldGrace, oldCancel })
 	for _, kind := range []string{"job", "backup", "state backup", "cancellation"} {
-		for _, scenario := range []string{"failure", "timeout", "retry", "json", "held"} {
+		for _, scenario := range []string{"failure", "timeout", "retry", "held"} {
 			if kind == "cancellation" && scenario == "held" {
 				continue
 			}
@@ -387,17 +398,16 @@ func TestPollOutcomeProgress(t *testing.T) {
 					})}
 					var combined progressTestBuffer
 					done := make(chan int, 1)
-					asJSON := scenario == "json"
 					go func() {
 						switch kind {
 						case "job":
-							done <- runJobRun(ctx, client, base, "", "token", "task", asJSON, &combined, &combined)
+							done <- runJobRun(ctx, client, base, "", "token", "task", false, &combined, &combined)
 						case "backup":
-							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", asJSON, &combined, &combined)
+							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &combined, &combined)
 						case "state backup":
-							done <- runStateBackup(ctx, client, base, "", "token", asJSON, &combined, &combined)
+							done <- runStateBackup(ctx, client, base, "", "token", false, &combined, &combined)
 						case "cancellation":
-							done <- reportCancel(ctx, client, base, "", "token", []byte(`{"operation_id":"op7","kind":"deploy","accepted":true}`), commandFlags{json: asJSON}, &combined, &combined)
+							done <- reportCancel(ctx, client, base, "", "token", []byte(`{"operation_id":"op7","kind":"deploy","accepted":true}`), commandFlags{}, &combined, &combined)
 						}
 					}()
 					synctest.Wait()
@@ -426,11 +436,7 @@ func TestPollOutcomeProgress(t *testing.T) {
 					time.Sleep(250 * time.Millisecond)
 					synctest.Wait()
 					before := combined.String()
-					if asJSON {
-						if strings.Contains(before, "\x1b") {
-							t.Errorf("JSON frame: %q", before)
-						}
-					} else if !strings.Contains(before, "waiting for "+kind) {
+					if !strings.Contains(before, "waiting for "+kind) {
 						t.Errorf("missing frame: %q", before)
 					}
 					close(gate)
@@ -459,30 +465,18 @@ func TestPollOutcomeProgress(t *testing.T) {
 					if scenario == "retry" && polls != 2 {
 						t.Errorf("retry polls=%d", polls)
 					}
-					if asJSON {
-						if strings.Contains(got, "\x1b") {
-							t.Errorf("JSON escape: %q", got)
-						}
-						if kind != "cancellation" && (!strings.Contains(got, `"id": 7`) || !strings.Contains(got, `"status": "succeeded"`)) {
-							t.Errorf("JSON result: %q", got)
-						}
-						if kind == "cancellation" && !strings.Contains(got, "operation op7 ended: failed") {
-							t.Errorf("cancel result: %q", got)
-						}
-					} else {
-						marker := "run: 7"
+					marker := "run: 7"
+					if kind == "cancellation" {
+						marker = "operation op7 ended:"
+					}
+					if scenario == "timeout" {
+						marker = "run 7 did not finish"
 						if kind == "cancellation" {
-							marker = "operation op7 ended:"
+							marker = "operation op7 has not ended"
 						}
-						if scenario == "timeout" {
-							marker = "run 7 did not finish"
-							if kind == "cancellation" {
-								marker = "operation op7 has not ended"
-							}
-						}
-						if !strings.Contains(got, "\r\x1b[2K"+marker) {
-							t.Errorf("clear before output: %q", got)
-						}
+					}
+					if !strings.Contains(got, "\r\x1b[2K"+marker) {
+						t.Errorf("clear before output: %q", got)
 					}
 					final := combined.String()
 					time.Sleep(time.Second)
@@ -493,5 +487,245 @@ func TestPollOutcomeProgress(t *testing.T) {
 				})
 			})
 		}
+	}
+}
+
+func TestPollFinalLookupErrorsClearProgress(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 80, nil }
+	t.Cleanup(func() { progressWidth = old })
+	for _, kind := range []string{"job", "backup", "state backup"} {
+		for _, scenario := range []string{"three errors", "reset failures", "missing record"} {
+			if kind == "state backup" && scenario == "missing record" {
+				continue
+			}
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					gate := make(chan struct{})
+					defer func() {
+						select {
+						case <-gate:
+						default:
+							close(gate)
+						}
+					}()
+					entered := make(chan struct{}, 1)
+					base, _ := url.Parse("http://agent.invalid")
+					var queries []string
+					client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+						body, status := `[]`, 200
+						if r.Method == "POST" {
+							status = 202
+							switch kind {
+							case "job":
+								body = `{"run_id":7}`
+							case "backup":
+								body = `{"backup_run_id":7}`
+							case "state backup":
+								body = `{"state_backup_run_id":7}`
+							}
+						}
+						isPoll := strings.Contains(r.URL.Path, "/runs")
+						if isPoll {
+							queries = append(queries, r.URL.RawQuery)
+							status = 503
+							body = `{}`
+							if scenario == "missing record" {
+								status = 200
+								body = `[{"id":9,"status":"succeeded"}]`
+							}
+							if scenario == "reset failures" && len(queries) == 3 {
+								status = 200
+								body = `[{"id":7,"status":"running"}]`
+							}
+						}
+						var rd io.ReadCloser = io.NopCloser(strings.NewReader(body))
+						if isPoll && len(queries) == 1 {
+							rd = &waitBody{r.Context(), entered, gate, strings.NewReader(body)}
+						}
+						return &http.Response{StatusCode: status, Header: make(http.Header), Body: rd, Request: r}, nil
+					})}
+					var output progressTestBuffer
+					done := make(chan int, 1)
+					go func() {
+						switch kind {
+						case "job":
+							done <- runJobRun(ctx, client, base, "", "token", "task", false, &output, &output)
+						case "backup":
+							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &output, &output)
+						case "state backup":
+							done <- runStateBackup(ctx, client, base, "", "token", false, &output, &output)
+						}
+					}()
+					synctest.Wait()
+					select {
+					case <-entered:
+					default:
+						cancel()
+						<-done
+						t.Fatal("first poll not reached")
+					}
+					time.Sleep(250 * time.Millisecond)
+					synctest.Wait()
+					if !strings.Contains(output.String(), "waiting for "+kind) {
+						t.Errorf("missing frame: %q", output.String())
+					}
+					close(gate)
+					time.Sleep(15 * time.Second)
+					synctest.Wait()
+					var code int
+					select {
+					case code = <-done:
+					default:
+						cancel()
+						<-done
+						t.Fatal("poll did not finish")
+					}
+					wantCount := 3
+					diagnostic := "run status unavailable\n"
+					if scenario == "reset failures" {
+						wantCount = 6
+					}
+					if scenario == "missing record" {
+						wantCount = 2
+						diagnostic = "run record unavailable\n"
+						if strings.Join(queries, ",") != "limit=1,limit=100" {
+							t.Errorf("fallback queries: %v", queries)
+						}
+					}
+					if code != 1 || len(queries) != wantCount {
+						t.Errorf("exit=%d queries=%v; want %d requests", code, queries, wantCount)
+					}
+					if got := output.String(); !strings.HasSuffix(got, "\r\x1b[2K"+diagnostic) {
+						t.Errorf("clear before diagnostic: %q", got)
+					}
+					final := output.String()
+					time.Sleep(time.Second)
+					synctest.Wait()
+					if output.String() != final {
+						t.Error("late write")
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestPollJSONOutput(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 80, nil }
+	t.Cleanup(func() { progressWidth = old })
+	want := map[string]string{
+		"job":          "{\n  \"id\": 7,\n  \"job\": \"\",\n  \"trigger\": \"\",\n  \"started\": \"0001-01-01T00:00:00Z\",\n  \"status\": \"succeeded\"\n}\n",
+		"backup":       "{\n  \"id\": 7,\n  \"backup\": \"\",\n  \"app\": \"\",\n  \"destination\": \"\",\n  \"key\": \"\",\n  \"trigger\": \"\",\n  \"started\": \"0001-01-01T00:00:00Z\",\n  \"status\": \"succeeded\"\n}\n",
+		"state backup": "{\n  \"id\": 7,\n  \"key\": \"\",\n  \"trigger\": \"\",\n  \"started\": \"0001-01-01T00:00:00Z\",\n  \"status\": \"succeeded\"\n}\n",
+		"cancellation": "{\n  \"accepted\": true,\n  \"kind\": \"deploy\",\n  \"operation_id\": \"op7\"\n}\n",
+	}
+	for _, kind := range []string{"job", "backup", "state backup", "cancellation"} {
+		t.Run(kind, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				gate := make(chan struct{})
+				defer func() {
+					select {
+					case <-gate:
+					default:
+						close(gate)
+					}
+				}()
+				entered := make(chan struct{}, 1)
+				base, _ := url.Parse("http://agent.invalid")
+				gets := 0
+				client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+					body, status := `[]`, 200
+					if r.Method == "GET" {
+						gets++
+					}
+					if r.Method == "POST" {
+						status = 202
+						switch kind {
+						case "job":
+							body = `{"run_id":7}`
+						case "backup":
+							body = `{"backup_run_id":7}`
+						case "state backup":
+							body = `{"state_backup_run_id":7}`
+						case "cancellation":
+							status = 200
+							body = `{"operation_id":"op7","kind":"deploy","accepted":true}`
+						}
+					}
+					gated := strings.Contains(r.URL.Path, "/runs") || kind == "cancellation" && r.Method == "POST"
+					if strings.Contains(r.URL.Path, "/runs") {
+						body = `[{"id":7,"status":"succeeded"}]`
+					}
+					var rd io.ReadCloser = io.NopCloser(strings.NewReader(body))
+					if gated {
+						rd = &waitBody{r.Context(), entered, gate, strings.NewReader(body)}
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: rd, Request: r}, nil
+				})}
+				var out, errout progressTestBuffer
+				done := make(chan int, 1)
+				go func() {
+					switch kind {
+					case "job":
+						done <- runJobRun(ctx, client, base, "", "token", "task", true, &out, &errout)
+					case "backup":
+						done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", true, &out, &errout)
+					case "state backup":
+						done <- runStateBackup(ctx, client, base, "", "token", true, &out, &errout)
+					case "cancellation":
+						done <- sendCommand(ctx, client, base, "/v1/", "token", "POST", "cancel", nil, commandFlags{json: true}, "cancel", &out, &errout)
+					}
+				}()
+				synctest.Wait()
+				select {
+				case <-entered:
+				default:
+					cancel()
+					<-done
+					t.Fatal("response body not reached")
+				}
+				time.Sleep(250 * time.Millisecond)
+				synctest.Wait()
+				if out.String() != "" || errout.String() != "" {
+					t.Errorf("pending stdout=%q stderr=%q", out.String(), errout.String())
+				}
+				close(gate)
+				synctest.Wait()
+				var code int
+				select {
+				case code = <-done:
+				default:
+					cancel()
+					<-done
+					t.Fatal("command did not finish")
+				}
+				if code != 0 || out.String() != want[kind] || errout.String() != "" {
+					t.Errorf("exit=%d stdout=%q want=%q stderr=%q", code, out.String(), want[kind], errout.String())
+				}
+				if kind == "cancellation" && gets != 0 {
+					t.Errorf("cancel JSON made %d GET requests", gets)
+				}
+				beforeOut, beforeErr := out.String(), errout.String()
+				time.Sleep(time.Second)
+				synctest.Wait()
+				if out.String() != beforeOut || errout.String() != beforeErr {
+					t.Error("late write")
+				}
+			})
+		})
 	}
 }
