@@ -21,6 +21,8 @@ import (
 )
 
 func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
 	for _, tc := range []struct {
 		answer               string
 		wantCode, admissions int
@@ -96,8 +98,16 @@ func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
 				if result.err != nil {
 					t.Fatal(result.err)
 				}
-				if strings.ContainsRune(result.text, '\x1b') || strings.Contains(result.text, "test-token") || !strings.Contains(result.text, "[redacted]") {
-					t.Error("interactive preview contains unsafe response text")
+				safe := result.text
+				for _, key := range []string{"app", "image", "notes", "roles", "tag"} {
+					span := "\x1b[2m" + key + "\x1b[0m: "
+					if strings.Count(safe, span) != 1 {
+						t.Errorf("expected one styled %s key in %q", key, result.text)
+					}
+					safe = strings.Replace(safe, span, key+": ", 1)
+				}
+				if strings.ContainsRune(safe, '\x1b') || strings.Contains(result.text, "test-token") || !strings.Contains(result.text, "[redacted]") || !strings.Contains(result.text, `start\x1b[2Kend`) {
+					t.Errorf("interactive preview contains unsafe response text: %q", result.text)
 				}
 			case code := <-done:
 				t.Fatalf("deploy exited %d before confirmation: %s", code, errs.String())
