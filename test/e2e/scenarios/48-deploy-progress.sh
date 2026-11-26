@@ -11,6 +11,7 @@ cp "$RUN/admin.json" "$selected_config" || exit 1
 id=
 driver_pid=
 started=
+request_id=
 cleanup() {
   # This fixture is exclusive to this project and environment.
   if [ -n "$driver_pid" ]; then
@@ -21,10 +22,11 @@ cleanup() {
     kill "$driver_pid" 2>/dev/null || true
     wait "$driver_pid" 2>/dev/null || true
   fi
-  if [ "$started" = yes ]; then
-    active=$(adm lock status --json 2>/dev/null | jq -r '.operation_id // empty')
-    if [ -n "$id" ] && [ "$active" = "$id" ]; then
-      adm cancel "$active" >/dev/null 2>&1 || echo 'could not cancel fixture operation' >&2
+  if [ "$started" = yes ] && [ -n "$request_id" ]; then
+    if ! owned=$(python3 "$(dirname "$0")/48-progress.py" --owned-operation "$RUN/state/state.db" "$ENVN" "$request_id"); then
+      echo 'could not recover fixture operation' >&2
+    elif [ -n "$owned" ]; then
+      adm cancel "$owned" >/dev/null 2>&1 || echo 'could not cancel fixture operation' >&2
     fi
   fi
 }

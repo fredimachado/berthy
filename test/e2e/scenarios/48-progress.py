@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scenario 48's gated progress fixtures; raw output stays in memory."""
 import errno
+import ctypes
 import fcntl
 import http.client
 import http.server
@@ -23,7 +24,7 @@ import tempfile
 import termios
 import threading
 import time
-import urllib.request
+import urllib.parse
 
 
 # Replayed through the pre-S3 CLI, with only the operation ID and start time variable.
@@ -47,6 +48,82 @@ def check_operation_id(data, path):
     assert re.fullmatch(rb'[0-9a-f]{32}\n', operation), 'validated operation ID missing'
     plain = re.sub(rb'\x1b\[[0-9;]*m', b'', data)
     assert re.findall(rb'(?m)^id: ([^\r\n]*)$', plain) == [operation[:-1]], 'result operation ID mismatch'
+
+
+def owned_operation(path, environment, request_id):
+    with sqlite3.connect('file:' + path + '?mode=ro', uri=True) as database:
+        rows = database.execute(
+            'SELECT o.id FROM operations o JOIN locks l ON l.operation_id=o.id AND l.environment=o.environment '
+            'WHERE o.environment=? AND o.request_id=? AND o.state=?',
+            (environment, request_id, 'running')).fetchall()
+    assert len(rows) <= 1, 'ambiguous fixture operation'
+    if not rows:
+        return ''
+    operation = rows[0][0]
+    assert re.fullmatch(r'[0-9a-f]{32}', operation), 'invalid fixture operation ID'
+    return operation
+
+
+def supervise_children():
+    PR_SET_CHILD_SUBREAPER = 36
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'cannot supervise fixture children')
+
+
+def stop_fixture_children():
+    # Subreaper ownership makes these unreaped PIDs our children, even after the driver kills its wrapper.
+    def deadline(signum, frame):
+        raise TimeoutError('fixture child cleanup timed out')
+
+    previous = signal.signal(signal.SIGALRM, deadline)
+    try:
+        for sig, seconds in ((signal.SIGTERM, 3), (signal.SIGKILL, 10)):
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            try:
+                signalled = set()
+                while True:
+                    with open('/proc/self/task/%d/children' % os.getpid()) as source:
+                        children = [int(pid) for pid in source.read().split()]
+                    if not children:
+                        return
+                    for pid in children:
+                        try:
+                            waited, _ = os.waitpid(pid, os.WNOHANG)
+                            if not waited and pid not in signalled:
+                                os.kill(pid, sig)
+                                signalled.add(pid)
+                        except ChildProcessError:
+                            pass
+                        except ProcessLookupError:
+                            pass
+                    try:
+                        os.waitpid(-1, 0)
+                    except ChildProcessError:
+                        pass
+            except TimeoutError:
+                if sig == signal.SIGKILL:
+                    raise
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+
+
+def cancel_retry(args, request_id):
+    binary, environment, project, config, _, _, _, _, _, state_db = args
+    operation = owned_operation(state_db, environment, request_id)
+    if operation:
+        result = subprocess.run([binary, 'cancel', operation, '-e', environment, '--project', project,
+                                 '--config', config], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=60)
+        if result.returncode:
+            raise RuntimeError('could not cancel owned retry operation')
+
+
+if len(sys.argv) > 1 and sys.argv[1] == '--owned-operation':
+    print(owned_operation(*sys.argv[2:]))
+    sys.exit(0)
 
 
 if len(sys.argv) > 1 and sys.argv[1] == '--transcript-selftest':
@@ -95,8 +172,7 @@ def driver_error(result):
 
 
 def retry_wrapper(args):
-    binary, environment, project, config, manifest, digest, docker, socket, docker_config, state_db, id_path = args
-    request_id = 's8-' + secrets.token_hex(16)
+    binary, environment, project, config, manifest, digest, docker, socket, docker_config, state_db, id_path, request_id = args
     attrs = termios.tcgetattr(0)
     docker_env = dict(os.environ, DOCKER_CONFIG=docker_config)
     docker_cmd = [docker, '--host', 'unix://' + socket]
@@ -238,6 +314,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-wrapper':
 
 if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
     driver, run, *args = sys.argv[2:]
+    supervise_children()
+    request_id = 's8-' + secrets.token_hex(16)
     screen_dir = os.path.join(run, 'progress-retry-screen')
     os.mkdir(screen_dir, 0o700)
     id_fd, id_path = tempfile.mkstemp(prefix='operation-', dir=screen_dir)
@@ -250,7 +328,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
                    {'wait_text': retry, 'timeout': '100s'}, {'snapshot': 'retry'},
                    {'keys': ['enter']}, {'wait_text': 'state: succeeded', 'timeout': '180s'},
                    {'snapshot': 'complete'}, {'expect_exit': 0, 'timeout': '100s'}], target)
-    wrapper = [sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + args + [id_path]
+    wrapper = [sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + args + [id_path, request_id]
+    success = False
     try:
         driven = subprocess.run([driver, '--command', ' '.join(shlex.quote(x) for x in wrapper),
                                  '--size', '200x60', '--script', steps_path, '--out', screen_dir,
@@ -276,13 +355,22 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
         assert not re.search(r'^[|/\\-] following deploy \(', complete, re.M), 'stale deploy frame'
         assert '<span style="color:#008000">succeeded</span>' in html, 'green deploy result missing'
         print('combined retry: clean live step, distinct attempts and final screen')
+        success = True
     finally:
-        shutil.rmtree(screen_dir)
+        try:
+            if not success:
+                try:
+                    stop_fixture_children()
+                finally:
+                    cancel_retry(args, request_id)
+        finally:
+            shutil.rmtree(screen_dir)
     sys.exit(0)
 
 
 if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
     args = sys.argv[2:]
+    supervise_children()
     retry = b'  pre-deploy command 1 failed; retrying (attempt 2 of 2)\n'
 
     def capture(stdout_tty, stderr_tty, binary=None):
@@ -292,6 +380,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
             return capture_with_id(stdout_tty, stderr_tty, binary, id_path)
 
     def capture_with_id(stdout_tty, stderr_tty, binary, id_path):
+        request_id = 's8-' + secrets.token_hex(16)
         control, control_slave = pty.openpty()
         selector = selectors.DefaultSelector()
         owned = []
@@ -309,23 +398,24 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
                 targets.append(subprocess.PIPE)
         env = dict(os.environ, TERM='xterm', NO_COLOR='', BERTHY_TOKEN_STORE='none')
         run_args = ([binary] + args[1:]) if binary else args
-        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + run_args + [id_path],
+        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + run_args + [id_path, request_id],
                                  stdin=control_slave, stdout=targets[0], stderr=targets[1],
                                  env=env, start_new_session=True)
-        os.close(control_slave)
-        streams = []
-        next_tty = iter(owned)
-        for index, tty in enumerate((stdout_tty, stderr_tty)):
-            if tty:
-                master, slave = next(next_tty)
-                os.close(slave)
-                streams.append(master)
-            else:
-                streams.append((child.stdout if index == 0 else child.stderr).fileno())
-            selector.register(streams[-1], selectors.EVENT_READ, index)
-        captured = [bytearray(), bytearray()]
-        first = second = False
+        success = False
         try:
+            os.close(control_slave)
+            streams = []
+            next_tty = iter(owned)
+            for index, tty in enumerate((stdout_tty, stderr_tty)):
+                if tty:
+                    master, slave = next(next_tty)
+                    os.close(slave)
+                    streams.append(master)
+                else:
+                    streams.append((child.stdout if index == 0 else child.stderr).fileno())
+                selector.register(streams[-1], selectors.EVENT_READ, index)
+            captured = [bytearray(), bytearray()]
+            first = second = False
             deadline = time.monotonic() + 360
             while selector.get_map():
                 if time.monotonic() >= deadline:
@@ -343,6 +433,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
                         selector.unregister(key.fd)
                         if (stdout_tty, stderr_tty)[key.data]:
                             os.close(key.fd)
+                if child.poll() is not None and child.returncode != 0:
+                    raise RuntimeError('retry wrapper exited before capture completed')
                 if not first and (b'following deploy (' in captured[1] if stderr_tty else b'accepted\n' in captured[0]):
                     os.write(control, b'\n')
                     first = True
@@ -351,16 +443,21 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
                     second = True
             assert child.wait(timeout=10) == 0 and first and second, 'retry capture did not finish'
             check_operation_id(bytes(captured[0]), id_path)
+            success = True
             return tuple(bytes(item) for item in captured)
         finally:
-            if child.poll() is None:
-                child.terminate()
-                child.wait(timeout=80)
-            for key in list(selector.get_map().values()):
-                selector.unregister(key.fd)
-                if (stdout_tty, stderr_tty)[key.data]:
-                    os.close(key.fd)
-            os.close(control)
+            try:
+                if not success:
+                    try:
+                        stop_fixture_children()
+                    finally:
+                        cancel_retry(run_args, request_id)
+            finally:
+                for key in list(selector.get_map().values()):
+                    selector.unregister(key.fd)
+                    if (stdout_tty, stderr_tty)[key.data]:
+                        os.close(key.fd)
+                os.close(control)
 
     out, err = capture(True, True)
     assert out.splitlines().count(retry.rstrip(b'\n')) == 1, 'split stdout retry line missing or duplicated'
@@ -396,9 +493,20 @@ if len(sys.argv) > 1 and sys.argv[1] == '--wrapper':
     child = subprocess.Popen(command, stdin=subprocess.DEVNULL)
     old_handlers = {sig: signal.signal(sig, stop_on_signal) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
+        address = urllib.parse.urlsplit(release)
+        def request(path):
+            connection = http.client.HTTPConnection(address.hostname, address.port, timeout=120)
+            try:
+                connection.request('GET', path)
+                response = connection.getresponse()
+                response.read()
+                assert response.status == 204, 'fixture gate refused request'
+            finally:
+                connection.close()
+        request('/__parked')
+        print('\r\x1b[2Kfixture-response-parked', flush=True)
         sys.stdin.readline()
-        with urllib.request.urlopen(release, timeout=10) as response:
-            response.read()
+        request('/__release')
         sys.exit(child.wait(timeout=120))
     finally:
         try:
@@ -424,6 +532,7 @@ def check(held, frame, out, err, code):
 binary, run, project, environment, origin, driver = sys.argv[1:]
 host, port = origin.rsplit(':', 1)
 gate, reached = threading.Event(), threading.Event()
+driver_released, gate_timed_out = threading.Event(), threading.Event()
 run_ids = []
 
 
@@ -435,7 +544,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.forward()
 
     def do_GET(self):
+        if self.path == '/__parked':
+            self.send_response(204 if reached.wait(100) and not gate.is_set() else 409)
+            self.end_headers()
+            return
         if self.path == '/__release':
+            if not reached.is_set() or gate.is_set():
+                self.send_response(409)
+                self.end_headers()
+                return
+            driver_released.set()
             gate.set()
             self.send_response(204)
             self.end_headers()
@@ -460,7 +578,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 match = any(row.get('id') == run_ids[-1] for row in json.loads(body))
             if match and not reached.is_set():
                 reached.set()
-                gate.wait(120)
+                if not gate.wait(120):
+                    gate_timed_out.set()
+                    return
             self.send_response(response.status)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -656,10 +776,13 @@ try:
 
     gate.clear()
     reached.clear()
+    driver_released.clear()
+    gate_timed_out.clear()
     screen_dir = os.path.join(run, 'progress-read-screen')
     os.mkdir(screen_dir, 0o700)
     steps_path = os.path.join(screen_dir, 'steps.json')
     steps = [
+        {'wait_text': 'fixture-response-parked', 'timeout': '100s'},
         {'wait_text': 'waiting for app (', 'timeout': '100s'},
         {'snapshot': 'pending'}, {'keys': ['enter']},
         {'wait_text': 'healthy', 'timeout': '100s'},
@@ -676,7 +799,7 @@ try:
                                  '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR=',
                                  '--redact-env', 'BERTHY_ADMIN_TOKEN'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, timeout=200)
-        assert driven.returncode == 0 and reached.is_set(), 'combined wait driver failed: ' + driver_error(driven)
+        assert driven.returncode == 0 and reached.is_set() and driver_released.is_set() and not gate_timed_out.is_set(), 'combined wait driver failed: ' + driver_error(driven)
         with open(os.path.join(screen_dir, 'pending.txt')) as source:
             pending = source.read()
         with open(os.path.join(screen_dir, 'complete.txt')) as source:
@@ -747,11 +870,14 @@ try:
 
     gate.clear()
     reached.clear()
+    driver_released.clear()
+    gate_timed_out.clear()
     job_dir = os.path.join(run, 'progress-job-screen')
     os.mkdir(job_dir, 0o700)
     job_steps = os.path.join(job_dir, 'steps.json')
     with open(job_steps, 'w') as target:
-        json.dump([{'wait_text': 'waiting for job (', 'timeout': '100s'},
+        json.dump([{'wait_text': 'fixture-response-parked', 'timeout': '100s'},
+                   {'wait_text': 'waiting for job (', 'timeout': '100s'},
                    {'snapshot': 'pending'}, {'keys': ['enter']},
                    {'wait_text': 'status: succeeded', 'timeout': '100s'},
                    {'wait_text': 'exit_code: 0', 'timeout': '100s'},
@@ -765,7 +891,7 @@ try:
                                  '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR=',
                                  '--redact-env', 'BERTHY_ADMIN_TOKEN'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, timeout=200)
-        assert driven.returncode == 0 and reached.is_set(), 'combined job driver failed: ' + driver_error(driven)
+        assert driven.returncode == 0 and reached.is_set() and driver_released.is_set() and not gate_timed_out.is_set(), 'combined job driver failed: ' + driver_error(driven)
         assert len(run_ids) == 1, 'job admission ID missing or duplicated'
         with open(os.path.join(job_dir, 'pending.txt')) as source:
             pending = source.read()
