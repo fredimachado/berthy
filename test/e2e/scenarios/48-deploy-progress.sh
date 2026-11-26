@@ -13,15 +13,19 @@ driver_pid=
 started=
 cleanup() {
   # This fixture is exclusive to this project and environment.
-  if [ "$started" = yes ]; then
-    active=$(adm lock status --json 2>/dev/null | jq -r '.operation_id // empty')
-    if [ -n "$active" ] && { [ -z "$id" ] || [ "$active" = "$id" ]; }; then
-      adm cancel "$active" >/dev/null 2>&1 || echo 'could not cancel fixture operation' >&2
-    fi
-  fi
   if [ -n "$driver_pid" ]; then
+    # The wrapper is the driver's own child and stops its CLI before exit.
+    for wrapper_pid in $(ps -o pid= --ppid "$driver_pid" 2>/dev/null); do
+      kill -TERM "$wrapper_pid" 2>/dev/null || true
+    done
     kill "$driver_pid" 2>/dev/null || true
     wait "$driver_pid" 2>/dev/null || true
+  fi
+  if [ "$started" = yes ]; then
+    active=$(adm lock status --json 2>/dev/null | jq -r '.operation_id // empty')
+    if [ -n "$id" ] && [ "$active" = "$id" ]; then
+      adm cancel "$active" >/dev/null 2>&1 || echo 'could not cancel fixture operation' >&2
+    fi
   fi
 }
 trap cleanup EXIT
@@ -116,14 +120,15 @@ cat > "$RUN/progress-steps.json" <<'JSON'
   {"wait_text":"following deploy (", "timeout":"100s"},
   {"snapshot":"pending"},
   {"keys":["ctrl+c"]},
-  {"wait_text":"berthy cancel ", "timeout":"100s"},
+  {"wait_text":"fixture-watcher-exited", "timeout":"100s"},
   {"snapshot":"interrupted"},
   {"expect_exit":1, "timeout":"100s"}
 ]
 JSON
 stamp=$(date +%s)
+request_id="s8-interrupt-$(openssl rand -hex 16)"
 started=yes
-"$TUI_BIN" --command "${S8_CLI:-$BIN} deploy web -e $ENVN --config '$selected_config' --version $WEB_V1_DIGEST --manifest-dir $MAN" \
+"$TUI_BIN" --command "python3 '$(dirname "$0")/48-progress.py' --interrupt-wrapper '${S8_CLI:-$BIN}' deploy web -e $ENVN --config '$selected_config' --version $WEB_V1_DIGEST --manifest-dir $MAN --request-id $request_id" \
   --size 400x40 --script "$RUN/progress-steps.json" --out "$RUN/progress-pty" --timeout 180s \
   --env TERM=xterm --env NO_COLOR=1 --redact-env BERTHY_ADMIN_TOKEN >"$RUN/progress-driver.out" 2>&1 &
 driver_pid=$!
@@ -142,6 +147,18 @@ id=$(printf '%s' "$event" | jq -r '.Attributes["berthy.operation"] // empty' 2>/
 container=$(printf '%s' "$event" | jq -r '.ID // empty' 2>/dev/null)
 if [[ ! $id =~ ^[0-9a-f]{32}$ || ! $container =~ ^[0-9a-f]{64}$ ]]; then
   fail 'observe the scoped pre-deploy hook' 'no matching Docker start event'
+  finish
+fi
+if ! python3 - "$RUN/state/state.db" "$ENVN" "$id" "$request_id" <<'PY'
+import sqlite3, sys
+path, environment, operation, request = sys.argv[1:]
+with sqlite3.connect('file:' + path + '?mode=ro', uri=True) as db:
+    row = db.execute('SELECT request_id FROM operations WHERE environment=? AND id=?', (environment, operation)).fetchone()
+sys.exit(0 if row == (request,) else 1)
+PY
+then
+  id=
+  fail 'observe the scoped pre-deploy hook' 'event does not belong to the admitted fixture request'
   finish
 fi
 pass 'observe the scoped pre-deploy hook'

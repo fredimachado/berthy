@@ -619,7 +619,7 @@ func TestPollFinalLookupErrorsClearProgress(t *testing.T) {
 
 func TestPollJSONOutput(t *testing.T) {
 	t.Setenv("TERM", "xterm")
-	t.Setenv("NO_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
 	forceStderrTerminal(t, true)
 	forceProgressVT(t)
 	old := progressWidth

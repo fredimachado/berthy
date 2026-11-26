@@ -19,6 +19,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -27,6 +28,26 @@ import urllib.request
 
 def stop_on_signal(signum, frame):
     raise InterruptedError('fixture stopped')
+
+
+if len(sys.argv) > 1 and sys.argv[1] == '--interrupt-wrapper':
+    signal.signal(signal.SIGINT, lambda signum, frame: None)
+    signal.signal(signal.SIGTERM, stop_on_signal)
+    def child_interrupt():
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+    child = subprocess.Popen(sys.argv[2:], preexec_fn=child_interrupt)
+    try:
+        code = child.wait()
+        print('fixture-watcher-exited', flush=True)
+        sys.exit(code if code >= 0 else 128 - code)
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
 
 
 def driver_error(result):
@@ -193,7 +214,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
     try:
         driven = subprocess.run([driver, '--command', ' '.join(shlex.quote(x) for x in wrapper),
                                  '--size', '200x60', '--script', steps_path, '--out', screen_dir,
-                                 '--timeout', '360s', '--env', 'TERM=xterm', '--env', 'NO_COLOR='],
+                                 '--timeout', '360s', '--env', 'TERM=xterm', '--env', 'NO_COLOR=',
+                                 '--redact-env', 'BERTHY_ADMIN_TOKEN'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=380)
         assert driven.returncode == 0, 'retry screen driver failed: ' + driver_error(driven)
         with open(os.path.join(screen_dir, 'pending.txt')) as source:
@@ -222,7 +244,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
     args = sys.argv[2:]
     retry = b'  pre-deploy command 1 failed; retrying (attempt 2 of 2)\n'
 
-    def capture(stdout_tty, stderr_tty):
+    def capture(stdout_tty, stderr_tty, binary=None):
         control, control_slave = pty.openpty()
         selector = selectors.DefaultSelector()
         owned = []
@@ -239,7 +261,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
             else:
                 targets.append(subprocess.PIPE)
         env = dict(os.environ, TERM='xterm', NO_COLOR='', BERTHY_TOKEN_STORE='none')
-        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + args,
+        run_args = ([binary] + args[1:]) if binary else args
+        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + run_args,
                                  stdin=control_slave, stdout=targets[0], stderr=targets[1],
                                  env=env, start_new_session=True)
         os.close(control_slave)
@@ -292,18 +315,26 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
             os.close(control)
 
     out, err = capture(True, True)
-    assert out.count(retry) == 1 and b'state: \x1b[32msucceeded\x1b[0m' in out, 'split terminal result missing'
+    assert out.splitlines().count(retry.rstrip(b'\n')) == 1, 'split stdout retry line missing or duplicated'
+    assert b'\x1b[2mstate\x1b[0m: \x1b[32msucceeded\x1b[0m\n' in out, 'split stdout styled state line missing'
     assert b'following deploy (' not in out and b'\x1b[2K' not in out, 'progress escaped onto stdout'
-    assert b'following deploy (' in err and err.endswith(b'\r\x1b[2K') and retry not in err, 'split stderr progress wrong'
+    assert b'following deploy (' in err, 'split stderr spinner missing'
+    assert err.endswith(b'\r\x1b[2K'), 'split stderr final clear missing'
+    assert retry not in err and b'succeeded' not in err, 'retry or result escaped onto stderr'
     piped_out, piped_err = capture(False, False)
     mixed_out, mixed_err = capture(False, True)
+    legacy_binary = os.environ.get('S8_LEGACY_CLI')
+    assert legacy_binary and os.path.isfile(legacy_binary) and os.access(legacy_binary, os.X_OK), 'S8_LEGACY_CLI must name the pre-S3 CLI'
+    legacy_out, legacy_err = capture(False, False, legacy_binary)
     assert b'\x1b' not in piped_out + piped_err + mixed_out, 'escape on a pipe'
     assert b'following deploy (' in mixed_err and mixed_err.endswith(b'\r\x1b[2K'), 'mixed stderr progress wrong'
     assert b'\nstep\n' in piped_out and b'\nstep\n' in mixed_out, 'legacy step event missing'
     assert b'state: succeeded\n' in piped_out and b'state: succeeded\n' in mixed_out, 'plain deploy result missing'
     def stable_transcript(data):
         return re.sub(rb'(?m)^(id|started): [^\n]*$', rb'\1: <dynamic>', data)
-    assert stable_transcript(piped_out) == stable_transcript(mixed_out), 'legacy plain transcript differs'
+    assert b'\x1b' not in legacy_out + legacy_err, 'escape in legacy pipes'
+    assert stable_transcript(piped_out) == stable_transcript(legacy_out), 'both-pipe transcript differs from legacy'
+    assert stable_transcript(mixed_out) == stable_transcript(legacy_out), 'mixed transcript differs from legacy'
     print('retry descriptors: split terminals, pipes and mixed streams')
     sys.exit(0)
 
@@ -516,7 +547,18 @@ try:
     command = [binary, 'wait', 'web', '--healthy', '-e', environment, '--config', config, '--json']
     piped = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, env=env, timeout=120)
-    assert piped.returncode == 0 and piped.stdout == expected, 'piped healthy JSON differs'
+    assert piped.returncode == 0, 'piped healthy JSON command failed'
+    for name, value in os.environ.items():
+        if name.startswith('BERTHY_') and 'TOKEN' in name and name != 'BERTHY_TOKEN_STORE' and value:
+            assert value.encode() not in piped.stdout + piped.stderr, 'credential in healthy JSON capture'
+    with tempfile.TemporaryDirectory(dir=run) as comparison:
+        expected_path = os.path.join(comparison, 'expected')
+        actual_path = os.path.join(comparison, 'actual')
+        with open(expected_path, 'wb') as target:
+            target.write(expected)
+        with open(actual_path, 'wb') as target:
+            target.write(piped.stdout)
+        assert subprocess.run(['cmp', '-s', expected_path, actual_path], timeout=30).returncode == 0, 'piped healthy JSON differs'
     assert b'\x1b' not in piped.stdout + piped.stderr, 'escape in piped JSON'
     json_masters, json_slaves = [], []
     for _ in range(2):
@@ -583,7 +625,8 @@ try:
     try:
         driven = subprocess.run([driver, '--command', ' '.join(shlex.quote(x) for x in wrapper),
                                  '--size', '120x40', '--script', steps_path, '--out', screen_dir,
-                                 '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR='],
+                                 '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR=',
+                                 '--redact-env', 'BERTHY_ADMIN_TOKEN'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, timeout=200)
         assert driven.returncode == 0 and reached.is_set(), 'combined wait driver failed: ' + driver_error(driven)
         with open(os.path.join(screen_dir, 'pending.txt')) as source:
@@ -671,7 +714,8 @@ try:
     try:
         driven = subprocess.run([driver, '--command', ' '.join(shlex.quote(x) for x in wrapper),
                                  '--size', '120x40', '--script', job_steps, '--out', job_dir,
-                                 '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR='],
+                                 '--timeout', '180s', '--env', 'TERM=xterm', '--env', 'NO_COLOR=',
+                                 '--redact-env', 'BERTHY_ADMIN_TOKEN'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, timeout=200)
         assert driven.returncode == 0 and reached.is_set(), 'combined job driver failed: ' + driver_error(driven)
         assert len(run_ids) == 1, 'job admission ID missing or duplicated'
