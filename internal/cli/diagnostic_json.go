@@ -31,7 +31,7 @@ func redactDiagnosticJSONWith(data []byte, registryOnly bool, redact func(string
 		}
 		switch v := tok.(type) {
 		case string:
-			if !registryOnly || path == "diagnostic" || path == "registry" || path == "services_error" || path == "services.item" || path == "services.name" || path == "services.error" {
+			if !registryOnly || path == "diagnostic" {
 				safe := redact(v)
 				if safe != v {
 					encoded, _ := json.Marshal(safe)
@@ -51,17 +51,15 @@ func redactDiagnosticJSONWith(data []byte, registryOnly bool, redact func(string
 						return &json.UnmarshalTypeError{}
 					}
 					child := "other"
-					if path == "diagnostic" || path == "registry" || path == "services_error" || path == "services" || path == "services.name" || path == "services.error" {
+					if path == "diagnostic" {
 						child = "diagnostic"
 					} else if path == "root" {
 						for _, field := range []string{"registry", "services_error", "services"} {
 							if strings.EqualFold(name, field) {
-								child = field
+								child = "diagnostic"
 								break
 							}
 						}
-					} else if path == "services.item" {
-						child = "diagnostic"
 					}
 					if err := value(child); err != nil {
 						return err
@@ -72,9 +70,7 @@ func redactDiagnosticJSONWith(data []byte, registryOnly bool, redact func(string
 			case '[':
 				for dec.More() {
 					child := "other"
-					if path == "services" {
-						child = "services.item"
-					} else if path == "diagnostic" || path == "registry" || path == "services_error" || path == "services.item" || path == "services.name" || path == "services.error" {
+					if path == "diagnostic" {
 						child = "diagnostic"
 					}
 					if err := value(child); err != nil {

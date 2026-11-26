@@ -33,6 +33,31 @@ func TestR1MalformedRegistrySubtree(t *testing.T) {
 	}
 }
 
+func TestScalarServicesFallbackRedactsCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"registry":"registry.example","services":"fixture-token","other":"unchanged"}`)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	for _, asJSON := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json-%t", asJSON), func(t *testing.T) {
+			var out, errs bytes.Buffer
+			code := sendCommand(context.Background(), server.Client(), base, "/", "fixture-token", "POST", "secrets", nil, commandFlags{pos: []string{"set", "PASS"}, json: asJSON}, "secret", &out, &errs)
+			if code != 0 || strings.Contains(out.String()+errs.String(), "fixture-token") || !strings.Contains(out.String(), "[redacted]") || !strings.Contains(out.String(), "unchanged") {
+				t.Error("scalar services fallback exposed a credential or changed the response")
+			}
+		})
+	}
+}
+
+func TestRegistryDiagnosticDescendantsPreserveOtherFields(t *testing.T) {
+	input := `{"other":{"message":"token"},"registry":{"nested":["token",{"key":"token"}]},"services_error":[{"nested":"token"}],"services":[["token"],{"child":{"leaf":"token"}}],"n":1e+100}`
+	want := `{"other":{"message":"token"},"registry":{"nested":["[redacted]",{"key":"[redacted]"}]},"services_error":[{"nested":"[redacted]"}],"services":[["[redacted]"],{"child":{"leaf":"[redacted]"}}],"n":1e+100}`
+	if string(redactRegistryJSON([]byte(input), "token")) != want {
+		t.Error("diagnostic descendant redaction changed unrelated fields, types or order")
+	}
+}
+
 func TestR1InheritedRegistryDisplay(t *testing.T) {
 	fakeTerminal(t, "value")
 	for _, asJSON := range []bool{false, true} {

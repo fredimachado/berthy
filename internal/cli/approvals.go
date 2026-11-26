@@ -116,12 +116,7 @@ type heldApproval struct {
 	Plan    json.RawMessage `json:"plan"`
 }
 
-// reportHeld handles the answer to a change when the agent held it for approval: it tells the person what is held and
-// returns exitHeld. held is false when the answer is not that, and nothing is printed.
-func reportHeld(data []byte, out, errout io.Writer, asJSON bool) (code int, held bool) {
-	return reportHeldMarkers(data, out, errout, asJSON, nil)
-}
-
+// reportHeldMarkers reports a held change; held is false when the response is not a hold.
 func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, values ...string) (code int, held bool) {
 	return reportHeldWithRedactor(data, out, errout, asJSON, markers, func(s string) string { return redactSecretText(s, values...) })
 }
@@ -145,10 +140,6 @@ func reportHeldWithRedactor(data []byte, out, errout io.Writer, asJSON bool, mar
 	fmt.Fprintln(out, line)
 	printPlanMarkers(out, redactDiagnosticJSONWith(h.Plan, false, redact), markers)
 	return exitHeld, true
-}
-
-func redactHeldJSON(data []byte, values ...string) []byte {
-	return redactDiagnosticJSON(data, false, values...)
 }
 
 // printPlan prints a plan under a "plan:" heading.

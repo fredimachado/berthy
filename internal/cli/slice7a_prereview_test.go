@@ -54,8 +54,19 @@ func TestHeldDiagnosticSpansPreserveProtocol(t *testing.T) {
 	if !held || code != exitHeld || out.String() != pretty.String()+"\n" || errs.String() != "held for approval: ap1 (expires 2026-11-18T12:00:00Z)\n" {
 		t.Error("held response changed fields, ordering or exit")
 	}
-	if got := redactHeldJSON([]byte(input), "absent"); string(got) != input {
+	out.Reset()
+	errs.Reset()
+	code, held = reportHeldMarkers([]byte(input), &out, &errs, true, nil, "absent")
+	pretty.Reset()
+	if json.Indent(&pretty, []byte(input), "", "  ") != nil {
+		t.Fatal("bad fixture")
+	}
+	if !held || code != exitHeld || out.String() != pretty.String()+"\n" {
 		t.Error("safe held bytes changed")
+	}
+	pretty.Reset()
+	if json.Indent(&pretty, []byte(want), "", "  ") != nil {
+		t.Fatal("bad fixture")
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted); fmt.Fprint(w, input) }))
 	defer server.Close()
