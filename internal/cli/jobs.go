@@ -174,10 +174,15 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 		fmt.Fprintln(errout, "usage: job run NAME | job logs NAME [--run ID] | job cancel NAME")
 		return 2
 	}
-	name := url.PathEscape(f.pos[1])
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
+	return runJobRun(ctx, agentclient.NewHTTPClient(), base, prefix, token, f.pos[1], f.json, out, errout)
+}
+
+func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, token, name string, asJSON bool, out, errout io.Writer) int {
+	jobName := name
+	name = url.PathEscape(name)
+	call := agentclient.Caller(ctx, client, base, prefix, token)
 	data, status, err := call("POST", "jobs/"+name+"/run", "")
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
@@ -190,7 +195,7 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
-	if code, held := reportHeld(data, out, errout, f.json); held {
+	if code, held := reportHeld(data, out, errout, asJSON); held {
 		return code
 	}
 	if json.Unmarshal(data, &started) != nil || started.RunID == 0 {
@@ -203,7 +208,7 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 		var list []api.JobStatus
 		if json.Unmarshal(data, &list) == nil {
 			for _, j := range list {
-				if d, e := time.ParseDuration(j.Timeout); j.Name == f.pos[1] && e == nil {
+				if d, e := time.ParseDuration(j.Timeout); j.Name == jobName && e == nil {
 					timeout = d
 				}
 			}
@@ -242,7 +247,7 @@ func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, err
 		default:
 			failures = 0
 			if run.Status != "running" {
-				return printRun(out, errout, run, f.json)
+				return printRun(out, errout, run, asJSON)
 			}
 		}
 		if time.Now().After(deadline) {

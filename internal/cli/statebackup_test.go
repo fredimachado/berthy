@@ -52,7 +52,7 @@ func (a *stateAgent) handler(t *testing.T) http.Handler {
 	})
 }
 
-func runStateBackup(t *testing.T, a *stateAgent) (int, string, string) {
+func runStateBackupFixture(t *testing.T, a *stateAgent) (int, string, string) {
 	t.Helper()
 	old := backupPollInterval
 	backupPollInterval = time.Millisecond
@@ -68,7 +68,7 @@ const succeededStateBackup = `[{"id":7,"key":"berthy-state/dev/20261116T100000Z.
 
 func TestStateBackupWaitsForTheSnapshotAndPrintsIt(t *testing.T) {
 	a := &stateAgent{finishAt: 3, final: succeededStateBackup}
-	code, out, errout := runStateBackup(t, a)
+	code, out, errout := runStateBackupFixture(t, a)
 	if code != 0 {
 		t.Fatalf("exit %d out %q err %q", code, out, errout)
 	}
@@ -84,7 +84,7 @@ func TestStateBackupWaitsForTheSnapshotAndPrintsIt(t *testing.T) {
 
 func TestStateBackupExitsNonZeroWhenTheSnapshotFails(t *testing.T) {
 	failed := `[{"id":7,"key":"berthy-state/dev/x.db","trigger":"manual","started":"2026-11-16T10:00:00Z","finished":"2026-11-16T10:00:02Z","status":"failed","detail":"upload failed: access denied"}]`
-	code, out, _ := runStateBackup(t, &stateAgent{finishAt: 1, final: failed})
+	code, out, _ := runStateBackupFixture(t, &stateAgent{finishAt: 1, final: failed})
 	if code == 0 || !strings.Contains(out, "detail: upload failed: access denied") {
 		t.Fatalf("exit %d out %q", code, out)
 	}

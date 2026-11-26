@@ -170,7 +170,11 @@ func runStateBackupCommand(f commandFlags, base *url.URL, prefix, token string, 
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
+	return runStateBackup(ctx, agentclient.NewHTTPClient(), base, prefix, token, f.json, out, errout)
+}
+
+func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, prefix, token string, asJSON bool, out, errout io.Writer) int {
+	call := agentclient.Caller(ctx, client, base, prefix, token)
 	data, status, err := call("POST", "state-backup", "")
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
@@ -180,7 +184,7 @@ func runStateBackupCommand(f commandFlags, base *url.URL, prefix, token string, 
 		fmt.Fprintln(errout, agentclient.Message(status, data))
 		return 1
 	}
-	if code, held := reportHeld(data, out, errout, f.json); held {
+	if code, held := reportHeld(data, out, errout, asJSON); held {
 		return code
 	}
 	var started struct {
@@ -204,7 +208,7 @@ func runStateBackupCommand(f commandFlags, base *url.URL, prefix, token string, 
 			failures = 0
 			for _, run := range runs {
 				if run.ID == started.RunID && run.Status != "running" {
-					return printStateBackupRun(out, errout, run, f.json)
+					return printStateBackupRun(out, errout, run, asJSON)
 				}
 			}
 		}
