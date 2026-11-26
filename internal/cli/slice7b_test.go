@@ -34,7 +34,11 @@ func TestUsageStyleAfterModeResolution(t *testing.T) {
 	for _, args := range [][]string{{"setup", "--bad", "--json"}, {"setup", "--json", "--bad"}} {
 		errs.Reset()
 		code := Run(args, &out, &errs)
-		if code != 2 || strings.Contains(errs.String(), "\x1b") || !strings.Contains(errs.String(), "flag provided but not defined: -bad") {
+		want := "flag provided but not defined: -bad\n" +
+			"usage: berthy setup -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
+			"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
+			"                    [--no-install-docker] [--dry-run] [--json] [--verbose]\n"
+		if code != 2 || errs.String() != want {
 			t.Fatalf("%v: %d %q", args, code, errs.String())
 		}
 	}

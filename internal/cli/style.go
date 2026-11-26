@@ -3,11 +3,20 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+
+	"berthy/internal/agentclient"
 )
 
 func printRefusal(errout io.Writer, safeMessage string, human bool) {
-	fmt.Fprintln(errout, styleFor(errout, human).paint(toneError, safeMessage))
+	s := styleFor(errout, human)
+	lead := agentclient.Message(http.StatusNotFound, nil) + ": "
+	if safeMessage == lead+agentclient.OlderAgentMessage {
+		fmt.Fprintln(errout, s.paint(toneError, lead)+s.paint(toneInfo, agentclient.OlderAgentMessage))
+		return
+	}
+	fmt.Fprintln(errout, s.paint(toneError, safeMessage))
 }
 
 type cliStyle struct{ color bool }
