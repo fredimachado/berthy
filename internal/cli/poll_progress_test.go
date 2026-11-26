@@ -122,7 +122,7 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 					<-done
 					t.Fatal("second status request was not reached")
 				}
-				if got := errout.String(); strings.HasSuffix(got, "\r\x1b[2K") || !strings.Contains(got, "waiting for "+kind) {
+				if got := errout.String(); strings.HasSuffix(got, "\r\x1b[2K") || strings.Contains(got, "\r\x1b[2K\r\x1b[2K") || !strings.Contains(got, "waiting for "+kind) {
 					t.Errorf("progress did not span polls: %q", got)
 				}
 				close(releaseSecond)
@@ -303,5 +303,195 @@ func TestPollSelectsAdmittedRun(t *testing.T) {
 				t.Errorf("queries: %v want %s", queries, want)
 			}
 		})
+	}
+}
+
+func TestPollOutcomeProgress(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	oldWidth := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 80, nil }
+	t.Cleanup(func() { progressWidth = oldWidth })
+	oldBackup, oldGrace, oldCancel := backupWaitLimit, jobWaitGrace, cancelWait
+	backupWaitLimit, jobWaitGrace, cancelWait = time.Second, 0, time.Second
+	t.Cleanup(func() { backupWaitLimit, jobWaitGrace, cancelWait = oldBackup, oldGrace, oldCancel })
+	for _, kind := range []string{"job", "backup", "state backup", "cancellation"} {
+		for _, scenario := range []string{"failure", "timeout", "retry", "json", "held"} {
+			if kind == "cancellation" && scenario == "held" {
+				continue
+			}
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					gate := make(chan struct{})
+					defer func() {
+						select {
+						case <-gate:
+						default:
+							close(gate)
+						}
+					}()
+					entered := make(chan struct{}, 1)
+					base, _ := url.Parse("http://agent.invalid")
+					polls := 0
+					client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+						status, body := 200, `[]`
+						if r.Method == "POST" {
+							status = 202
+							switch kind {
+							case "job":
+								body = `{"run_id":7}`
+							case "backup":
+								body = `{"backup_run_id":7}`
+							case "state backup":
+								body = `{"state_backup_run_id":7}`
+							}
+							if scenario == "held" {
+								body = `{"approval_id":"a7","expires":"2030-01-01T00:00:00Z"}`
+							}
+						}
+						if kind == "job" && strings.HasSuffix(r.URL.Path, "/jobs") {
+							body = `[{"name":"task","timeout":"1s"}]`
+						}
+						gated := strings.Contains(r.URL.Path, "/runs") || kind == "cancellation"
+						if gated {
+							polls++
+							state := "succeeded"
+							if scenario == "failure" {
+								state = "failed"
+							}
+							if scenario == "timeout" {
+								state = "running"
+							}
+							if kind == "cancellation" {
+								if state == "succeeded" || state == "failed" {
+									state = "failed"
+								}
+								body = `{"state":"` + state + `"}`
+							} else {
+								body = `[{"id":7,"status":"` + state + `"}]`
+							}
+							if scenario == "retry" && polls == 1 {
+								status = 503
+								body = `{}`
+							}
+						}
+						var rd io.ReadCloser = io.NopCloser(strings.NewReader(body))
+						if gated && polls == 1 {
+							rd = &waitBody{r.Context(), entered, gate, strings.NewReader(body)}
+						}
+						return &http.Response{StatusCode: status, Header: make(http.Header), Body: rd, Request: r}, nil
+					})}
+					var combined progressTestBuffer
+					done := make(chan int, 1)
+					asJSON := scenario == "json"
+					go func() {
+						switch kind {
+						case "job":
+							done <- runJobRun(ctx, client, base, "", "token", "task", asJSON, &combined, &combined)
+						case "backup":
+							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", asJSON, &combined, &combined)
+						case "state backup":
+							done <- runStateBackup(ctx, client, base, "", "token", asJSON, &combined, &combined)
+						case "cancellation":
+							done <- reportCancel(ctx, client, base, "", "token", []byte(`{"operation_id":"op7","kind":"deploy","accepted":true}`), commandFlags{json: asJSON}, &combined, &combined)
+						}
+					}()
+					synctest.Wait()
+					if scenario == "held" {
+						var code int
+						select {
+						case code = <-done:
+						default:
+							cancel()
+							close(gate)
+							<-done
+							t.Fatal("held admission continued polling")
+						}
+						if code != exitHeld || !strings.Contains(combined.String(), "held for approval: a7") || strings.Contains(combined.String(), "\x1b") || polls != 0 {
+							t.Fatalf("held: exit %d polls %d output %q", code, polls, combined.String())
+						}
+						return
+					}
+					select {
+					case <-entered:
+					default:
+						cancel()
+						<-done
+						t.Fatal("status body not entered")
+					}
+					time.Sleep(250 * time.Millisecond)
+					synctest.Wait()
+					before := combined.String()
+					if asJSON {
+						if strings.Contains(before, "\x1b") {
+							t.Errorf("JSON frame: %q", before)
+						}
+					} else if !strings.Contains(before, "waiting for "+kind) {
+						t.Errorf("missing frame: %q", before)
+					}
+					close(gate)
+					time.Sleep(3 * time.Second)
+					synctest.Wait()
+					var code int
+					select {
+					case code = <-done:
+					default:
+						cancel()
+						<-done
+						t.Fatal("poll did not finish")
+					}
+					got := combined.String()
+					if scenario == "timeout" {
+						if code != 1 || !strings.Contains(got, "did not finish in time") && !strings.Contains(got, "has not ended yet") {
+							t.Errorf("timeout exit %d: %q", code, got)
+						}
+					} else if scenario == "failure" && kind != "cancellation" {
+						if code != 1 || !strings.Contains(got, "status: failed") {
+							t.Errorf("failure exit %d: %q", code, got)
+						}
+					} else if code != 0 {
+						t.Errorf("exit %d: %q", code, got)
+					}
+					if scenario == "retry" && polls != 2 {
+						t.Errorf("retry polls=%d", polls)
+					}
+					if asJSON {
+						if strings.Contains(got, "\x1b") {
+							t.Errorf("JSON escape: %q", got)
+						}
+						if kind != "cancellation" && (!strings.Contains(got, `"id": 7`) || !strings.Contains(got, `"status": "succeeded"`)) {
+							t.Errorf("JSON result: %q", got)
+						}
+						if kind == "cancellation" && !strings.Contains(got, "operation op7 ended: failed") {
+							t.Errorf("cancel result: %q", got)
+						}
+					} else {
+						marker := "run: 7"
+						if kind == "cancellation" {
+							marker = "operation op7 ended:"
+						}
+						if scenario == "timeout" {
+							marker = "run 7 did not finish"
+							if kind == "cancellation" {
+								marker = "operation op7 has not ended"
+							}
+						}
+						if !strings.Contains(got, "\r\x1b[2K"+marker) {
+							t.Errorf("clear before output: %q", got)
+						}
+					}
+					final := combined.String()
+					time.Sleep(time.Second)
+					synctest.Wait()
+					if combined.String() != final {
+						t.Error("late write")
+					}
+				})
+			})
+		}
 	}
 }
