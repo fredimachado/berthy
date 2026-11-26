@@ -58,8 +58,8 @@ type Config struct {
 	Tokens      []Token `json:"tokens"`
 	// clock is the time source of the approvals. Tests set it; nil means the system clock.
 	clock func() time.Time
-	// cloudflareHTTP is the HTTP client the doctor's Cloudflare checks use; nil means the cloudflare package's default.
-	// Tests set it to reach a fake without a network.
+	// cloudflareHTTP is the HTTP client of the Cloudflare token check, for both the doctor and the monitor; nil means the
+	// cloudflare package's default. Tests set it to reach a fake without a network.
 	cloudflareHTTP *http.Client
 }
 
