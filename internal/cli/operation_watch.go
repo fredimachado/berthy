@@ -42,6 +42,30 @@ func operationHintArg(word string, config bool) string {
 	return shellWord(word)
 }
 
+func watchLabel(cmd string) string {
+	switch cmd {
+	case "deploy", "rollback", "restart", "scale", "prune", "exec", "run", "remove", "destroy", "restore":
+		return "following " + cmd
+	case "ingress":
+		return "following ingress apply"
+	default:
+		return "following operation"
+	}
+}
+
+func verifyMarker(status string) string {
+	switch status {
+	case "ok":
+		return "✓"
+	case "warn":
+		return "!"
+	case "unknown":
+		return "?"
+	default:
+		return ""
+	}
+}
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, options ...operationWatchOptions) int {
 	var config string
 	redact := []string{token}
@@ -49,11 +73,11 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		config = opt.config
 		redact = append(redact, opt.extraTokens...)
 	}
-	interactive := !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(out)
-	progress := newProgressLine(errout, !asJSON && (cmd == "deploy" || cmd == "rollback") && stderrTerminal(errout))
+	interactive := !asJSON && stderrTerminal(out)
+	progress := newProgressLine(errout, !asJSON && stderrTerminal(errout))
 	defer progress.Close()
-	if !asJSON && (cmd == "deploy" || cmd == "rollback") {
-		progress.Start("following deploy")
+	if !asJSON {
+		progress.Start(watchLabel(cmd))
 	}
 	printResult := func(data []byte) {
 		if !asJSON {
@@ -101,7 +125,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			terminalShown = true
 		}
 		if ev.Kind == "rollout" {
-			if progress.enabled && detail.Role != "" {
+			if progress.enabled && (cmd == "deploy" || cmd == "rollback") && detail.Role != "" {
 				switch detail.Status {
 				case "started":
 					if started[detail.Role] {
@@ -116,24 +140,28 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 				default:
 					return
 				}
-				progress.Start(fmt.Sprintf("deploying %d ready of %d started", len(ready), len(started)))
+				verb := "deploying"
+				if cmd == "rollback" {
+					verb = "rolling back"
+				}
+				progress.Start(fmt.Sprintf("%s %d ready of %d started", verb, len(ready), len(started)))
 			}
 			return
 		}
-		if showsText(cmd, ev.Kind) && detail.Step != "" {
-			if ev.Kind == "verify" {
-				checks = append(checks, safeData)
-			}
+		if ev.Kind == "verify" && detail.Step != "" {
+			checks = append(checks, safeData)
+		}
+		if detail.Step != "" && ((interactive && (ev.Kind == "step" || ev.Kind == "verify")) || (!interactive && showsText(cmd, ev.Kind))) {
 			if !asJSON {
-				progress.Message(func() { fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...)) })
+				line := safeSecretText(detail.Step, redact...)
+				if interactive && ev.Kind == "verify" {
+					if marker := verifyMarker(detail.Status); marker != "" {
+						line = styleFor(out, true).paint(statusTone(detail.Status), marker) + " " + line
+					}
+				}
+				progress.Message(func() { fmt.Fprintln(out, "  "+line) })
 			}
-			return
-		}
-		if interactive {
-			if ev.Kind == "step" && detail.Step != "" {
-				progress.Message(func() { fmt.Fprintln(out, "  "+safeSecretText(detail.Step, redact...)) })
-			}
-		} else if !asJSON && !showsText(cmd, ev.Kind) {
+		} else if !interactive && !asJSON && !showsText(cmd, ev.Kind) {
 			progress.Message(func() { fmt.Fprintln(out, safeSecretText(ev.Kind, redact...)) })
 		}
 	}
@@ -142,7 +170,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		notFound = ""
 		streamURL := *base
 		streamURL.Path, streamURL.RawPath, streamURL.RawQuery = events, "", ""
-		if progress.enabled {
+		if progress.enabled && (cmd == "deploy" || cmd == "rollback") {
 			streamURL.RawQuery = "progress=1"
 		}
 		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
