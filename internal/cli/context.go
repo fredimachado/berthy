@@ -147,24 +147,34 @@ func runContextAdd(args []string, out, errout io.Writer) int {
 	return 0
 }
 
-// parseToken returns the token of what was typed or piped: one line. One trailing LF or CRLF is dropped (PowerShell ends
-// a piped string with CRLF). Anything else that holds a CR or LF, and an empty token, is refused.
-func parseToken(data []byte) (string, error) {
+// oneLine returns data without one trailing LF or CRLF (PowerShell ends a piped string with CRLF). ok is false when what
+// is left still holds a CR or LF. It is the one place that decides what a piped single-line value is.
+func oneLine(data []byte) (line []byte, ok bool) {
 	switch {
 	case len(data) >= 2 && data[len(data)-2] == '\r' && data[len(data)-1] == '\n':
 		data = data[:len(data)-2]
 	case len(data) >= 1 && data[len(data)-1] == '\n':
 		data = data[:len(data)-1]
 	}
-	if len(data) == 0 {
-		return "", errors.New("no token entered")
-	}
 	for _, b := range data {
 		if b == '\n' || b == '\r' {
-			return "", errors.New("the token must be one line")
+			return nil, false
 		}
 	}
-	return string(data), nil
+	return data, true
+}
+
+// parseToken returns the token of what was typed or piped: one line. One trailing LF or CRLF is dropped (PowerShell ends
+// a piped string with CRLF). Anything else that holds a CR or LF, and an empty token, is refused.
+func parseToken(data []byte) (string, error) {
+	line, ok := oneLine(data)
+	switch {
+	case !ok:
+		return "", errors.New("the token must be one line")
+	case len(line) == 0:
+		return "", errors.New("no token entered")
+	}
+	return string(line), nil
 }
 
 // saveContextToken reads a token from the terminal or standard input and stores it under the entry's key. The configuration

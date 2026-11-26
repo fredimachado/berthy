@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"berthy/internal/agent"
@@ -263,7 +262,12 @@ func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored f
 			fmt.Fprintln(errout, "secret input unavailable or too large")
 			return "", "", 1
 		}
-		return strings.TrimSuffix(string(data), "\n"), f.registry, 0
+		value, ok := oneLine(data)
+		if !ok {
+			fmt.Fprintln(errout, "the secret must be one line: a piped value may end with one LF or CRLF")
+			return "", "", 1
+		}
+		return string(value), f.registry, 0
 	}
 	name := f.pos[1]
 	held, ok := stored()
