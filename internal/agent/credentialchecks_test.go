@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -298,15 +300,21 @@ func TestCloudflareOutageIsNotARefusal(t *testing.T) {
 		}
 	}
 
-	f := cftest.New("cf-token-1", "acct")
-	cfg, srv := cloudflareCredentialConfig(t, f)
-	srv.Close()
+	// Refused without a listener: a closed port can be handed to another test's
+	// server, so the dialer returns ECONNREFUSED instead of closing a fake.
+	cfg := monitoringConfig("")
+	cfg.CloudflareAPIURL = "http://127.0.0.1"
+	cfg.cloudflareHTTP = &http.Client{Transport: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+		},
+	}}
 	s := openIngressStore(t)
 	setIngress(t, s)
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
 	checks, _ := credentialDoctor(t, cfg, s)
 	if c := checks["cloudflare_token"]; c.OK || c.Critical || c.Detail != "could not be asked: connection refused" {
-		t.Errorf("closed server: %+v", c)
+		t.Errorf("connection refused: %+v", c)
 	}
 }
 
