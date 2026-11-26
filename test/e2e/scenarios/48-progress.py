@@ -41,6 +41,14 @@ def check_transcript(data):
     return stable_transcript(data) == LEGACY_DEPLOY
 
 
+def check_operation_id(data, path):
+    with open(path, 'rb') as source:
+        operation = source.read()
+    assert re.fullmatch(rb'[0-9a-f]{32}\n', operation), 'validated operation ID missing'
+    plain = re.sub(rb'\x1b\[[0-9;]*m', b'', data)
+    assert re.findall(rb'(?m)^id: ([^\r\n]*)$', plain) == [operation[:-1]], 'result operation ID mismatch'
+
+
 if len(sys.argv) > 1 and sys.argv[1] == '--transcript-selftest':
     sample = LEGACY_DEPLOY.replace(b'<id>', b'a' * 32).replace(b'<started>', b'2026-01-01T00:00:00Z')
     assert check_transcript(sample), 'legacy fixture rejected'
@@ -87,7 +95,7 @@ def driver_error(result):
 
 
 def retry_wrapper(args):
-    binary, environment, project, config, manifest, digest, docker, socket, docker_config, state_db = args
+    binary, environment, project, config, manifest, digest, docker, socket, docker_config, state_db, id_path = args
     request_id = 's8-' + secrets.token_hex(16)
     attrs = termios.tcgetattr(0)
     docker_env = dict(os.environ, DOCKER_CONFIG=docker_config)
@@ -154,6 +162,8 @@ def retry_wrapper(args):
                 if row != (request_id,):
                     continue
                 operation = candidate
+                with open(id_path, 'w', encoding='ascii') as target:
+                    target.write(operation + '\n')
             if candidate != operation or container in containers:
                 continue
             containers.append(container)
@@ -230,6 +240,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
     driver, run, *args = sys.argv[2:]
     screen_dir = os.path.join(run, 'progress-retry-screen')
     os.mkdir(screen_dir, 0o700)
+    id_fd, id_path = tempfile.mkstemp(prefix='operation-', dir=screen_dir)
+    os.close(id_fd)
     steps_path = os.path.join(screen_dir, 'steps.json')
     retry = 'pre-deploy command 1 failed; retrying (attempt 2 of 2)'
     with open(steps_path, 'w') as target:
@@ -238,7 +250,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
                    {'wait_text': retry, 'timeout': '100s'}, {'snapshot': 'retry'},
                    {'keys': ['enter']}, {'wait_text': 'state: succeeded', 'timeout': '180s'},
                    {'snapshot': 'complete'}, {'expect_exit': 0, 'timeout': '100s'}], target)
-    wrapper = [sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + args
+    wrapper = [sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + args + [id_path]
     try:
         driven = subprocess.run([driver, '--command', ' '.join(shlex.quote(x) for x in wrapper),
                                  '--size', '200x60', '--script', steps_path, '--out', screen_dir,
@@ -260,6 +272,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-screen':
         assert not re.search(r'^[|/\\-] following deploy \(', before_retry, re.M), 'frame was not cleared before retry'
         assert sum(line.strip() == retry for line in complete.splitlines()) == 1, 'retry duplicated'
         assert 'state: succeeded' in complete, 'deploy result missing'
+        check_operation_id(complete.encode('utf-8'), id_path)
         assert not re.search(r'^[|/\\-] following deploy \(', complete, re.M), 'stale deploy frame'
         assert '<span style="color:#008000">succeeded</span>' in html, 'green deploy result missing'
         print('combined retry: clean live step, distinct attempts and final screen')
@@ -273,6 +286,12 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
     retry = b'  pre-deploy command 1 failed; retrying (attempt 2 of 2)\n'
 
     def capture(stdout_tty, stderr_tty, binary=None):
+        with tempfile.TemporaryDirectory(prefix='s8-operation-', dir=os.path.dirname(args[-1])) as directory:
+            id_fd, id_path = tempfile.mkstemp(dir=directory)
+            os.close(id_fd)
+            return capture_with_id(stdout_tty, stderr_tty, binary, id_path)
+
+    def capture_with_id(stdout_tty, stderr_tty, binary, id_path):
         control, control_slave = pty.openpty()
         selector = selectors.DefaultSelector()
         owned = []
@@ -290,7 +309,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
                 targets.append(subprocess.PIPE)
         env = dict(os.environ, TERM='xterm', NO_COLOR='', BERTHY_TOKEN_STORE='none')
         run_args = ([binary] + args[1:]) if binary else args
-        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + run_args,
+        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), '--retry-wrapper'] + run_args + [id_path],
                                  stdin=control_slave, stdout=targets[0], stderr=targets[1],
                                  env=env, start_new_session=True)
         os.close(control_slave)
@@ -331,6 +350,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
                     os.write(control, b'\n')
                     second = True
             assert child.wait(timeout=10) == 0 and first and second, 'retry capture did not finish'
+            check_operation_id(bytes(captured[0]), id_path)
             return tuple(bytes(item) for item in captured)
         finally:
             if child.poll() is None:
@@ -754,7 +774,8 @@ try:
         with open(os.path.join(job_dir, 'complete.html')) as source:
             html = source.read()
         assert re.search(r'^[|/\\-] waiting for job \(', pending, re.M), 'combined job frame missing'
-        assert ('run: %s' % run_ids[0]) in complete and 'status: succeeded' in complete and 'exit_code: 0' in complete, 'wrong job result'
+        assert complete.splitlines().count('run: %s' % run_ids[0]) == 1, 'wrong job run ID'
+        assert 'status: succeeded' in complete and 'exit_code: 0' in complete, 'wrong job result'
         assert 'waiting for job (' not in complete, 'stale job frame'
         assert '<span style="color:#008000">succeeded</span>' in html, 'green job result missing'
         print('combined job: admitted ID, pending frame and final screen')
