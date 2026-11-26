@@ -121,7 +121,7 @@ func askCloudflare(ctx context.Context, c Config, s *state.Store, ingress state.
 	if err != nil {
 		return credentialAnswer{verdict: credentialUnasked, reason: "secret unavailable"}
 	}
-	cf := &cloudflare.Client{BaseURL: c.CloudflareAPIURL, Token: string(value)}
+	cf := &cloudflare.Client{BaseURL: c.CloudflareAPIURL, Token: string(value), HTTP: c.cloudflareHTTP}
 	st, err := cf.TokenStatus(ctx, ingress.AccountID)
 	switch {
 	case err == nil && st.Status == "active":
