@@ -16,6 +16,12 @@ const (
 	dataDir        = "/var/lib/berthy"
 )
 
+const guardUnit = "berthy-activation-guard"
+const guardPath = "/run/berthy-activation-guard.sh"
+const disarmScript = "systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true\n"
+
+func guardDelay(secs int) int { return 2*secs + 60 }
+
 const defaultHealthTimeout = 30 * time.Second
 
 // Staged says what a run left next to the live files for Activate to put in place: the binary as /usr/local/bin/berthy.new
@@ -88,52 +94,71 @@ func wholeSeconds(d time.Duration) int {
 // Only the agent's process restarts: no app is touched.
 func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeout time.Duration) error {
 	var out string
+	secs := wholeSeconds(timeout)
+	armed := false
+	prevCfg := false
+	prevBin := false
 	outcome := ConfigPrevious
-	if swap := swapScript(staged); swap != "" {
+	guarded := func(err error) error {
+		if armed {
+			if prevCfg && outcome != ConfigPrevious {
+				outcome = ConfigUnconfirmed
+			}
+			err = fmt.Errorf("%w; %s", err, guardText(prevBin || prevCfg, true, secs))
+		}
+		return activationFailure(err, outcome)
+	}
+	if swap := swapScript(staged, secs); swap != "" {
 		if err := ctx.Err(); err != nil {
 			return activationFailure(fmt.Errorf("putting the new agent in place: %w", err), outcome)
 		}
-		res, err := r.Run(ctx, swap, nil)
+		res, err := r.Run(ctx, swap, strings.NewReader(guardScript(binPath, configPath, staged, listen, secs)))
 		if err != nil {
 			if staged.Config {
 				outcome = ConfigUnconfirmed
 			}
-			return activationFailure(fmt.Errorf("putting the new agent in place: %w", err), outcome)
+			return activationFailure(fmt.Errorf("putting the new agent in place: %w; %s", err, guardText(true, false, secs)), outcome)
 		}
 		if res.Code != 0 {
 			if staged.Config {
 				outcome = ConfigUnconfirmed
 			}
-			return activationFailure(fmt.Errorf("putting the new agent in place: %s", failureText(res)), outcome)
+			return activationFailure(fmt.Errorf("putting the new agent in place: %s; %s", failureText(res), guardText(true, false, secs)), outcome)
 		}
 		if staged.Config {
 			outcome = ConfigRetained
 		}
+		armed = true
 		out = string(res.Stdout)
 	}
-	prevBin := staged.Binary && strings.Contains(out, "prev_bin=yes")
-	prevCfg := staged.Config && strings.Contains(out, "prev_cfg=yes")
+	prevBin = staged.Binary && strings.Contains(out, "prev_bin=yes")
+	prevCfg = staged.Config && strings.Contains(out, "prev_cfg=yes")
 
-	secs := wholeSeconds(timeout)
 	up, err := restartAndWait(ctx, r, listen, secs)
 	if err != nil {
-		return activationFailure(err, outcome)
+		return guarded(err)
 	}
 	if up {
+		if armed {
+			disarm(ctx, r)
+		}
 		return nil
 	}
 
 	journal, err := journalTail(ctx, r)
 	if err != nil {
-		return activationFailure(err, outcome)
+		return guarded(err)
 	}
 	if !prevBin && !prevCfg {
 		res, err := r.Run(ctx, "systemctl stop berthy", nil)
 		if err != nil {
-			return activationFailure(fmt.Errorf("stopping the agent: %w", err), outcome)
+			return guarded(fmt.Errorf("stopping the agent: %w", err))
 		}
 		if res.Code != 0 {
-			return activationFailure(fmt.Errorf("stopping the agent: %s", failureText(res)), outcome)
+			return guarded(fmt.Errorf("stopping the agent: %s", failureText(res)))
+		}
+		if armed {
+			disarm(ctx, r)
 		}
 		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigOutcome: outcome}
 	}
@@ -150,13 +175,13 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return activationFailure(fmt.Errorf("putting the previous agent back: %w", err), outcome)
+		return guarded(fmt.Errorf("putting the previous agent back: %w", err))
 	}
 	if res.Code != 0 {
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return &ActivateError{Message: withLog("the new agent did not come up and the previous one could not be put back: "+failureText(res), journal), ConfigOutcome: outcome}
+		return guarded(fmt.Errorf("%s", withLog("the new agent did not come up and the previous one could not be put back: "+failureText(res), journal)))
 	}
 	if prevCfg {
 		outcome = ConfigPrevious
@@ -164,7 +189,10 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	msg := "the new agent did not come up; the previous one was put back"
 	again, err := restartAndWait(ctx, r, listen, secs)
 	if err != nil {
-		return activationFailure(err, outcome)
+		return guarded(err)
+	}
+	if armed {
+		disarm(ctx, r)
 	}
 	if !again {
 		msg += ", but it does not answer either"
@@ -174,21 +202,58 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 
 // swapScript puts the staged binary and configuration in place, keeping the previous ones as .prev and printing which it kept. It
 // is "" when nothing is staged.
-func swapScript(staged Staged) string {
+func guardText(kept, certain bool, secs int) string {
+	action := "stops it"
+	if kept {
+		action = "puts the previous agent back"
+	}
+	prefix := "the server"
+	if !certain {
+		prefix = "the swap may have armed a guard: the server"
+	}
+	return fmt.Sprintf("%s restarts the agent %d seconds after the swap and %s if it does not answer", prefix, guardDelay(secs), action)
+}
+func disarm(ctx context.Context, r Runner) { _, _ = r.Run(ctx, disarmScript, nil) }
+func armScript(secs int) string {
+	return "(umask 077; cat > " + guardPath + ")\n" +
+		"systemctl stop " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
+		"systemctl reset-failed " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
+		fmt.Sprintf("systemd-run --quiet --unit=%s --on-active=%ds --timer-property=AccuracySec=1s /bin/sh %s \"$prev_bin\" \"$prev_cfg\"\n", guardUnit, guardDelay(secs), guardPath)
+}
+func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
+	var s strings.Builder
+	s.WriteString("up() { (\n" + restartScript(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit 0; fi\n")
+	if staged.Binary {
+		s.WriteString("if [ \"$1\" = yes ] && [ -e " + shellQuote(bin+".prev") + " ]; then mv -f " + shellQuote(bin+".prev") + " " + shellQuote(bin) + "; fi\n")
+	}
+	if staged.Config {
+		s.WriteString("if [ \"$2\" = yes ] && [ -e " + shellQuote(cfg+".prev") + " ]; then mv -f " + shellQuote(cfg+".prev") + " " + shellQuote(cfg) + "; fi\n")
+	}
+	s.WriteString("up\n")
+	return s.String()
+}
+func swapScript(staged Staged, secs int) string {
 	if !staged.Binary && !staged.Config {
 		return ""
 	}
-	var swap strings.Builder
-	swap.WriteString("set -e\n")
+	var s strings.Builder
+	s.WriteString("set -e\nprev_bin=no; prev_cfg=no\n")
+	for _, f := range []struct {
+		enabled    bool
+		path, name string
+	}{{staged.Binary, binPath, "prev_bin"}, {staged.Config, configPath, "prev_cfg"}} {
+		if f.enabled {
+			s.WriteString("if [ -e " + f.path + " ]; then cp -p " + f.path + " " + f.path + ".prev; echo " + f.name + "=yes; " + f.name + "=yes; else rm -f " + f.path + ".prev; fi\n")
+		}
+	}
+	s.WriteString(armScript(secs))
 	if staged.Binary {
-		swap.WriteString("if [ -e " + binPath + " ]; then cp -p " + binPath + " " + binPath + ".prev; echo prev_bin=yes; fi\n")
-		swap.WriteString("mv -f " + binPath + ".new " + binPath + "\n")
+		s.WriteString("mv -f " + binPath + ".new " + binPath + "\n")
 	}
 	if staged.Config {
-		swap.WriteString("if [ -e " + configPath + " ]; then cp -p " + configPath + " " + configPath + ".prev; echo prev_cfg=yes; fi\n")
-		swap.WriteString("mv -f " + configPath + ".new " + configPath + "\n")
+		s.WriteString("mv -f " + configPath + ".new " + configPath + "\n")
 	}
-	return swap.String()
+	return s.String()
 }
 
 // restartScript restarts the service and waits until the agent answers on listen, for secs seconds at most.
@@ -203,8 +268,9 @@ func restartScript(listen string, secs int) string {
 // up, so a dry run does not list them.
 func activateScripts(staged Staged, listen string, timeout time.Duration) []string {
 	var out []string
-	if swap := swapScript(staged); swap != "" {
-		out = append(out, swap)
+	if swap := swapScript(staged, wholeSeconds(timeout)); swap != "" {
+		out = append(out, swap, restartScript(listen, wholeSeconds(timeout)), disarmScript)
+		return out
 	}
 	return append(out, restartScript(listen, wholeSeconds(timeout)))
 }

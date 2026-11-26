@@ -1185,7 +1185,7 @@ func TestActivateSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := f.scripts()
-	if len(s) != 2 {
+	if len(s) != 3 {
 		t.Fatalf("scripts = %q", s)
 	}
 	for _, want := range []string{
@@ -1206,7 +1206,7 @@ func TestActivateSucceeds(t *testing.T) {
 	if reset < 0 || reset > restart {
 		t.Errorf("reset-failed does not come before the restart:\n%s", s[1])
 	}
-	if f.ran("journalctl") || f.ran("systemctl stop") {
+	if f.ran("journalctl") || f.ran("systemctl stop berthy\n") {
 		t.Errorf("a rollback ran")
 	}
 }
@@ -1256,20 +1256,22 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 			order = append(order, "journal")
 		case strings.Contains(sc, ".prev") && strings.Contains(sc, "mv -f"):
 			order = append(order, "back")
+		case sc == disarmScript:
+			order = append(order, "disarm")
 		case strings.Contains(sc, "systemctl restart"):
 			order = append(order, "restart")
 		default:
 			order = append(order, "other")
 		}
 	}
-	if strings.Join(order, " ") != "swap restart journal back restart" {
+	if strings.Join(order, " ") != "swap restart journal back restart disarm" {
 		t.Fatalf("order = %v", order)
 	}
 	back := f.calls[3].script
 	if !strings.Contains(back, "mv -f /usr/local/bin/berthy.prev /usr/local/bin/berthy") || !strings.Contains(back, "mv -f /etc/berthy/agent.json.prev /etc/berthy/agent.json") {
 		t.Errorf("rollback = %q", back)
 	}
-	if f.ran("systemctl stop") {
+	if f.ran("systemctl stop berthy\n") {
 		t.Errorf("the service was stopped although the previous agent was put back")
 	}
 }
