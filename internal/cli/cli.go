@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -32,7 +33,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 )
 
@@ -618,10 +618,17 @@ const shortIDLength = 12
 // logLine is one log record as a line: time, source and message. The source is the role and the container's short id
 // (the 12 characters docker ps and the container's host name show), so a line can be matched to the replica that answered.
 // A stderr line is marked. Control characters in the message are made safe as everywhere else in the CLI (terminalSafe).
-func logLine(r logs.Record) string {
-	line := r.Timestamp.UTC().Format(time.RFC3339) + " " + logSource(r) + " "
+func logLine(r logs.Record, s cliStyle) string {
+	source := logSource(r)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(source))
+	palette := [...]string{"31", "32", "33", "34", "35", "36", "91", "92", "93", "94", "95", "96"}
+	if s.color && source != "" {
+		source = "\x1b[" + palette[h.Sum32()%uint32(len(palette))] + "m" + source + "\x1b[0m"
+	}
+	line := s.paint(toneMuted, r.Timestamp.UTC().Format(time.RFC3339)) + " " + source + " "
 	if r.Stream == "stderr" {
-		line += "[stderr] "
+		line += s.paint(toneError, "[stderr]") + " "
 	}
 	return line + terminalSafe(r.Message)
 }
@@ -653,14 +660,16 @@ func printLogLines(out, errout io.Writer, body []byte) int {
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
+	s := styleFor(out, true)
 	for _, r := range rows {
-		fmt.Fprintln(out, logLine(r))
+		fmt.Fprintln(out, logLine(r, s))
 	}
 	return 0
 }
 
 func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	failed := false
+	s := styleFor(out, !jsonOutput)
 	err := agentclient.ReadEvents(ctx, r, func(event, payload string) error {
 		switch event {
 		case "done":
@@ -680,7 +689,7 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 				return agentclient.ErrInvalidEvent
 			}
 			if !jsonOutput {
-				fmt.Fprintln(out, logLine(v))
+				fmt.Fprintln(out, logLine(v, s))
 				return nil
 			}
 		case "stats":
@@ -751,12 +760,13 @@ func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 		fmt.Fprintln(out, "no checks yet")
 		return 0
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tSINCE\tDETAIL")
+	s := styleFor(out, true)
+	var table cliTable
+	table.header(s, "NAME", "STATE", "SINCE", "DETAIL")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", terminalSafe(r.Name), terminalSafe(r.State), r.Since.UTC().Format(time.RFC3339), terminalSafe(r.Detail))
+		table.row(terminalSafe(r.Name), s.Status(r.State), s.paint(toneMuted, r.Since.UTC().Format(time.RFC3339)), terminalSafe(r.Detail))
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}

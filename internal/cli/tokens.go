@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"berthy/internal/agent"
@@ -192,8 +191,9 @@ func printTokens(out, errout io.Writer, data []byte) int {
 		}
 		return t.UTC().Format("2006-01-02")
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSCOPE\tAGENT\tORIGIN\tCREATED\tEXPIRES\tLAST USED")
+	s := styleFor(out, true)
+	var table cliTable
+	table.header(s, "NAME", "SCOPE", "AGENT", "ORIGIN", "CREATED", "EXPIRES", "LAST USED")
 	for _, r := range rows {
 		agentFlag, expires, used := "no", date(r.Expires, "never"), "never"
 		if r.Agent {
@@ -205,9 +205,9 @@ func printTokens(out, errout io.Writer, data []byte) int {
 		if r.LastUsed != nil {
 			used = api.HumanAge(max(now.Sub(*r.LastUsed), 0)) + " ago"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Name), terminalSafe(r.Scope), agentFlag, terminalSafe(r.Origin), date(r.Created, "-"), expires, used)
+		table.row(terminalSafe(r.Name), terminalSafe(r.Scope), agentFlag, terminalSafe(r.Origin), s.paint(toneMuted, date(r.Created, "-")), s.paint(toneMuted, expires), s.paint(toneMuted, used))
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}

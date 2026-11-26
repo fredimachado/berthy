@@ -120,7 +120,7 @@ func TestLogLineIsOneReadableLine(t *testing.T) {
 		{"control characters are made safe", logs.Record{Identity: logs.Identity{Role: "web", ContainerID: "f77449eeec32abcdef"}, Timestamp: at, Stream: "stdout", Message: "warn\x1b]0;pwned\x07\tslow\nnext"},
 			`2026-11-17T02:07:50Z web.f77449eeec32 warn\x1b]0;pwned\x07    slow next`},
 	} {
-		if got := logLine(tc.rec); got != tc.want {
+		if got := logLine(tc.rec, cliStyle{}); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
 		}
 	}

@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"berthy/internal/agentclient"
@@ -46,8 +45,9 @@ func printJobs(out, errout io.Writer, body []byte, asJSON bool) int {
 		fmt.Fprintln(out, "no jobs")
 		return 0
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTARGET\tSCHEDULE\tNEXT\tLAST\tWHEN")
+	s := styleFor(out, true)
+	var table cliTable
+	table.header(s, "NAME", "TARGET", "SCHEDULE", "NEXT", "LAST", "WHEN")
 	for _, r := range rows {
 		target := r.App
 		if r.Target != "" {
@@ -59,20 +59,19 @@ func printJobs(out, errout io.Writer, body []byte, asJSON bool) int {
 		}
 		last, when := "-", "-"
 		if r.Last != nil {
-			last = r.Last.Status
+			last = s.Status(r.Last.Status)
 			if r.Last.Detail != "" {
-				last += ": " + r.Last.Detail
+				last += ": " + terminalSafe(r.Last.Detail)
 			}
-			last = terminalSafe(last)
 			t := r.Last.Started
 			if r.Last.Finished != nil {
 				t = *r.Last.Finished
 			}
 			when = t.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Name), terminalSafe(target), terminalSafe(schedule), next, last, when)
+		table.row(terminalSafe(r.Name), terminalSafe(target), terminalSafe(schedule), s.paint(toneMuted, next), last, s.paint(toneMuted, when))
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}

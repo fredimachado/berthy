@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"text/tabwriter"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/credstore"
@@ -301,15 +300,16 @@ func runContextList(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(out, string(b))
 		return 0
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	s := styleFor(out, true)
+	var table cliTable
 	for _, r := range rows {
 		set := "no"
 		if r.TokenSet {
 			set = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Project), terminalSafe(r.Environment), terminalSafe(r.URL), terminalSafe(r.TokenEnv), set, r.storedStatus)
+		table.row(terminalSafe(r.Project), terminalSafe(r.Environment), terminalSafe(r.URL), terminalSafe(r.TokenEnv), set, s.Status(r.storedStatus))
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}

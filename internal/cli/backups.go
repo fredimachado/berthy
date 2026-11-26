@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"berthy/internal/agentclient"
@@ -48,12 +47,13 @@ func printBackups(out, errout io.Writer, body []byte, asJSON bool) int {
 		fmt.Fprintln(out, "no backups")
 		return 0
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "BACKUP\tAPP\tVOLUME\tSIZE\tFINISHED\tSHA256\tKEY")
+	s := styleFor(out, true)
+	var table cliTable
+	table.header(s, "BACKUP", "APP", "VOLUME", "SIZE", "FINISHED", "SHA256", "KEY")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.Backup), terminalSafe(r.App), volumeOrCommand(r.Volume), api.HumanSize(r.Size), r.Finished.UTC().Format(time.RFC3339), terminalSafe(r.SHA256), terminalSafe(r.Key))
+		table.row(terminalSafe(r.Backup), terminalSafe(r.App), volumeOrCommand(r.Volume), api.HumanSize(r.Size), s.paint(toneMuted, r.Finished.UTC().Format(time.RFC3339)), s.paint(toneMuted, terminalSafe(r.SHA256)), terminalSafe(r.Key))
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}

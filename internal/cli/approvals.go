@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"berthy/internal/agent"
@@ -314,11 +313,12 @@ func printApprovals(out, errout io.Writer, data []byte, all, asJSON bool) int {
 		return 0
 	}
 	now := approvalsNow()
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	s := styleFor(out, true)
+	var table cliTable
 	if all {
-		fmt.Fprintln(tw, "ID\tAGE\tEXPIRES IN\tACTOR\tSTATUS\tDECIDED BY\tSUMMARY")
+		table.header(s, "ID", "AGE", "EXPIRES IN", "ACTOR", "STATUS", "DECIDED BY", "SUMMARY")
 	} else {
-		fmt.Fprintln(tw, "ID\tAGE\tEXPIRES IN\tACTOR\tSUMMARY")
+		table.header(s, "ID", "AGE", "EXPIRES IN", "ACTOR", "SUMMARY")
 	}
 	for _, r := range rows {
 		expires := "-"
@@ -331,12 +331,12 @@ func printApprovals(out, errout io.Writer, data []byte, all, asJSON bool) int {
 			if r.DecidedBy != "" {
 				decided = terminalSafe(r.DecidedBy)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.ID), age, expires, terminalSafe(r.Actor), terminalSafe(r.Status), decided, terminalSafe(r.Summary))
+			table.row(terminalSafe(r.ID), s.paint(toneMuted, age), s.paint(toneMuted, expires), terminalSafe(r.Actor), s.Status(r.Status), decided, terminalSafe(r.Summary))
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", terminalSafe(r.ID), age, expires, terminalSafe(r.Actor), terminalSafe(r.Summary))
+			table.row(terminalSafe(r.ID), s.paint(toneMuted, age), s.paint(toneMuted, expires), terminalSafe(r.Actor), terminalSafe(r.Summary))
 		}
 	}
-	if err := tw.Flush(); err != nil {
+	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
@@ -348,7 +348,7 @@ func printApprovals(out, errout io.Writer, data []byte, all, asJSON bool) int {
 		app, _ := plan["app"].(string)
 		if diff, ok := takeDiff(plan); ok {
 			fmt.Fprintf(out, "\n%s: changes of %s\n", terminalSafe(r.ID), terminalSafe(app))
-			printStyledDiff(out, "  ", diff, styleFor(out, true))
+			printStyledDiff(out, "  ", diff, s)
 		}
 	}
 	return 0
