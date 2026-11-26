@@ -16,9 +16,13 @@ import (
 	"time"
 )
 
+// dialFunc opens one connection to Docker. The HTTP client and an exec or attach session both use it.
+type dialFunc func(ctx context.Context) (net.Conn, error)
+
 type Engine struct {
 	client *http.Client
-	socket string
+	// dial opens every connection to Docker: the HTTP client's and an exec or attach session's.
+	dial dialFunc
 	// hub reads Docker's event feed for the callers of Watch. It is set by NewEventHub before anything watches; nil means no
 	// events, and callers poll.
 	hub *EventHub
@@ -33,10 +37,17 @@ func New(socket string) *Engine {
 	if socket == "" {
 		socket = "/var/run/docker.sock"
 	}
-	tr := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: inspectWorkers, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	return newEngine(func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	})
+}
+
+// newEngine builds an Engine whose connections come from dial. Tests in this package pass a TCP loopback dialer.
+func newEngine(dial dialFunc) *Engine {
+	tr := &http.Transport{Proxy: nil, MaxIdleConnsPerHost: inspectWorkers, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dial(ctx)
 	}}
-	return &Engine{client: &http.Client{Transport: tr, Timeout: 5 * time.Second}, socket: socket}
+	return &Engine{client: &http.Client{Transport: tr, Timeout: 5 * time.Second}, dial: dial}
 }
 func (e *Engine) Get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://docker"+func() string {

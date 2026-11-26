@@ -90,8 +90,7 @@ func (e *Engine) upgrade(ctx context.Context, method, path string, body []byte) 
 	}
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "tcp")
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", e.socket)
+	conn, err := e.dial(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, nil, nil, ctx.Err()
