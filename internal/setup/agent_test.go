@@ -1197,7 +1197,7 @@ func TestActivateSucceeds(t *testing.T) {
 			t.Errorf("swap lacks %q:\n%s", want, s[0])
 		}
 	}
-	for _, want := range []string{"systemctl restart berthy", "http://" + listenIP + ":7710/healthz", "curl", "wget", "-lt 3", "systemctl is-failed"} {
+	for _, want := range []string{"systemctl restart berthy", "http://" + listenIP + ":7710/healthz", "curl", "wget", "date +%s", "systemctl is-failed"} {
 		if !strings.Contains(s[1], want) {
 			t.Errorf("restart lacks %q:\n%s", want, s[1])
 		}

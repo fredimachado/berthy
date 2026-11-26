@@ -61,7 +61,7 @@ func activationFailure(err error, outcome ConfigOutcome) error {
 }
 
 // getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.
-const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 3 -o /dev/null "$1" >/dev/null 2>&1; else wget -q -T 3 -O /dev/null "$1" >/dev/null 2>&1; fi; }
+const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time "$2" -o /dev/null "$1" >/dev/null 2>&1; else wget -q -T "$2" -O /dev/null "$1" >/dev/null 2>&1; fi; }
 `
 
 // healthURL is where the agent answers whether it is up.
@@ -71,12 +71,14 @@ func healthURL(listen string) string { return "http://" + listen + "/healthz" }
 // up.
 func waitScript(url string, secs int) string {
 	return getFunc +
-		"i=0\n" +
-		fmt.Sprintf("while [ \"$i\" -lt %d ]; do\n", secs) +
-		"  if get " + shellQuote(url) + "; then exit 0; fi\n" +
+		fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
+		"while :; do\n" +
+		"  left=$((end - $(date +%s)))\n" +
+		"  [ \"$left\" -gt 0 ] || break\n" +
+		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
+		"  if get " + shellQuote(url) + " \"$probe\"; then exit 0; fi\n" +
 		"  if systemctl is-failed --quiet berthy; then exit 1; fi\n" +
 		"  sleep 1\n" +
-		"  i=$((i+1))\n" +
 		"done\n" +
 		"exit 1\n"
 }
