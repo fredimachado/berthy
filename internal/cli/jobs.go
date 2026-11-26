@@ -182,7 +182,8 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 	jobName := name
 	name = url.PathEscape(name)
 	call := agentclient.Caller(ctx, client, base, prefix, token)
-	data, status, err := call("POST", "jobs/"+name+"/run", "")
+	result, err := agentclient.DoResult(ctx, client, base, prefix, token, "POST", "jobs/"+name+"/run", "", nil)
+	data, status := result.Data, result.Status
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
@@ -191,7 +192,7 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 		RunID int64 `json:"run_id"`
 	}
 	if status != http.StatusAccepted {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON, result.Older)
 		return 1
 	}
 	if code, held := reportHeldMarkers(data, out, errout, asJSON, nil, token); held {

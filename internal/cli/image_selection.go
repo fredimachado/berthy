@@ -491,7 +491,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		printRefusal(errout, terminalSafe(err.Error()), !f.json)
+		printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
 		return 1
 	}
 	if (policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected) && len(co.Changed) != 0 {
@@ -584,14 +584,15 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	preview.DryRun = true
 	payload, _ := json.Marshal(preview)
 	progress.Start("Planning deploy")
-	data, status, err = agentclient.Do(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
+	result, err := agentclient.DoResult(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
+	data, status = result.Data, result.Status
 	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, "deploy preview failed")
 		return 1
 	}
 	if status != http.StatusOK {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !f.json)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !f.json, result.Older)
 		return 1
 	}
 	if err := imagePlan(data, m, req, image, tag); err != nil {

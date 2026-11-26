@@ -88,8 +88,8 @@ func reportCancel(ctx context.Context, client *http.Client, base *url.URL, prefi
 // runJobCancel runs "job cancel NAME": it asks the agent to stop the run of the job that is in progress. A job has at most one run
 // at a time, so its name says which.
 func runJobCancel(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
-	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
-	data, status, err := call("POST", "jobs/"+url.PathEscape(f.pos[1])+"/cancel", "")
+	result, err := agentclient.DoResult(ctx, agentclient.NewHTTPClient(), base, prefix, token, "POST", "jobs/"+url.PathEscape(f.pos[1])+"/cancel", "", nil)
+	data, status := result.Data, result.Status
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
@@ -100,7 +100,7 @@ func runJobCancel(ctx context.Context, f commandFlags, base *url.URL, prefix, to
 		}
 	}
 	if status != http.StatusOK {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json, result.Older)
 		return 1
 	}
 	if f.json {

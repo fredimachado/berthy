@@ -258,7 +258,8 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		return fail(err)
 	}
 	progress.Start("planning promotion")
-	data, status, err := agentclient.Do(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", "", payload)
+	result, err := agentclient.DoResult(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", "", payload)
+	data, status := result.Data, result.Status
 	progress.Close()
 	redact := func(s string) string { return safeSecretText(s, snapshot.source.Token, dst.Token) }
 	if err != nil {
@@ -266,7 +267,7 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 		return 1
 	}
 	if status != http.StatusOK {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), snapshot.source.Token, dst.Token), !f.json)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), snapshot.source.Token, dst.Token), !f.json, result.Older)
 		if status == http.StatusBadRequest || status == http.StatusNotFound {
 			fmt.Fprintln(errout, "promotion may require a newer agent; upgrade with berthy setup or deploy an explicit digest")
 		}

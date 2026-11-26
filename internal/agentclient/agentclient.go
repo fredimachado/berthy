@@ -280,6 +280,13 @@ func olderAgent(ctx context.Context, c *http.Client, u *url.URL, token string, n
 	return notFound
 }
 
+// Result keeps local probe provenance alongside the response that produced it.
+type Result struct {
+	Data   []byte
+	Status int
+	Older  bool
+}
+
 // Caller returns a function that sends a request without a body to the agent under prefix and reads the answer, at most 1 MiB
 // of it.
 func Caller(ctx context.Context, client *http.Client, base *url.URL, prefix, token string) func(method, path, query string) ([]byte, int, error) {
@@ -288,20 +295,33 @@ func Caller(ctx context.Context, client *http.Client, base *url.URL, prefix, tok
 	}
 }
 
+// CallerResult retains the local legacy probe result for display.
+func CallerResult(ctx context.Context, client *http.Client, base *url.URL, prefix, token string) func(method, path, query string) (Result, error) {
+	return func(method, path, query string) (Result, error) {
+		return DoResult(ctx, client, base, prefix, token, method, path, query, nil)
+	}
+}
+
 // Do sends one request to the agent under prefix and reads the answer, at most 1 MiB of it. A nil body sends none.
 func Do(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, path, query string, body []byte) ([]byte, int, error) {
+	r, err := DoResult(ctx, client, base, prefix, token, method, path, query, body)
+	return r.Data, r.Status, err
+}
+
+// DoResult sends one request and retains the local legacy probe result.
+func DoResult(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, path, query string, body []byte) (Result, error) {
 	u := *base
 	u.Path, u.RawQuery = prefix+path, query
 	resp, err := Send(ctx, client, method, u.String(), token, body)
 	if err != nil {
-		return nil, 0, err
+		return Result{}, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
-		return nil, 0, ErrInvalidResponse
+		return Result{}, ErrInvalidResponse
 	}
-	return data, resp.StatusCode, nil
+	return Result{Data: data, Status: resp.StatusCode, Older: IsOlderAgent(resp)}, nil
 }
 
 // Message describes a refused agent request. The agent message is shown only when it is safe to print.

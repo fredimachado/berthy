@@ -191,19 +191,8 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	client := agentclient.NewHTTPClient()
-	call := func(method, endpoint, query string, body []byte) ([]byte, int, error) {
-		u := *base
-		u.Path, u.RawQuery = prefix+endpoint, query
-		resp, err := agentclient.Send(ctx, client, method, u.String(), token, body)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer resp.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-		if err != nil || len(data) > 1<<20 {
-			return nil, 0, fmt.Errorf("invalid agent response")
-		}
-		return data, resp.StatusCode, nil
+	call := func(method, endpoint, query string, body []byte) (agentclient.Result, error) {
+		return agentclient.DoResult(ctx, client, base, prefix, token, method, endpoint, query, body)
 	}
 	switch cmd {
 	case "approvals":
@@ -211,13 +200,14 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 		if f.all {
 			query = ""
 		}
-		data, status, err := call("GET", "approvals", query, nil)
+		result, err := call("GET", "approvals", query, nil)
+		data, status := result.Data, result.Status
 		if err != nil {
 			fmt.Fprintln(errout, "agent connection failed")
 			return 1
 		}
 		if status != http.StatusOK {
-			printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
+			printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json, result.Older)
 			return 1
 		}
 		return printApprovals(out, errout, data, f.all, f.json)
@@ -226,13 +216,14 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 		if f.message != "" {
 			body, _ = json.Marshal(map[string]string{"reason": f.message})
 		}
-		data, status, err := call("POST", "approvals/"+url.PathEscape(f.pos[0])+"/reject", "", body)
+		result, err := call("POST", "approvals/"+url.PathEscape(f.pos[0])+"/reject", "", body)
+		data, status := result.Data, result.Status
 		if err != nil {
 			fmt.Fprintln(errout, "agent connection failed")
 			return 1
 		}
 		if status != http.StatusOK {
-			printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
+			printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json, result.Older)
 			return 1
 		}
 		if f.json {
@@ -241,14 +232,22 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 		fmt.Fprintf(out, "rejected: %s\n", terminalSafe(f.pos[0]))
 		return 0
 	}
-	return runApprove(ctx, call, client, f, base, prefix, token, out, errout)
+	return runApproveResult(ctx, call, client, f, base, prefix, token, out, errout)
 }
 
 // runApprove shows what is approved, then approves it and follows what the agent does with it.
 func runApprove(ctx context.Context, call func(method, endpoint, query string, body []byte) ([]byte, int, error), client *http.Client, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+	return runApproveResult(ctx, func(method, endpoint, query string, body []byte) (agentclient.Result, error) {
+		data, status, err := call(method, endpoint, query, body)
+		return agentclient.Result{Data: data, Status: status}, err
+	}, client, f, base, prefix, token, out, errout)
+}
+
+func runApproveResult(ctx context.Context, call func(method, endpoint, query string, body []byte) (agentclient.Result, error), client *http.Client, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	id := f.pos[0]
 	kind := ""
-	if data, status, err := call("GET", "approvals", "", nil); err == nil && status == http.StatusOK {
+	if r, err := call("GET", "approvals", "", nil); err == nil && r.Status == http.StatusOK {
+		data := r.Data
 		var rows []approvalRow
 		if json.Unmarshal(data, &rows) == nil {
 			for _, r := range rows {
@@ -267,7 +266,8 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 	if progress.enabled {
 		progress.Start("approving")
 	}
-	data, status, err := call("POST", "approvals/"+url.PathEscape(id)+"/approve", "", nil)
+	result, err := call("POST", "approvals/"+url.PathEscape(id)+"/approve", "", nil)
+	data, status := result.Data, result.Status
 	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
@@ -287,7 +287,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, operationWatchOptions{config: f.config})
 	}
 	if status != http.StatusOK && status != http.StatusAccepted {
-		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
+		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json, result.Older)
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)

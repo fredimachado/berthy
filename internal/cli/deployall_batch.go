@@ -30,7 +30,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		printRefusal(errout, terminalSafe(err.Error()), !f.json)
+		printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
 		return true, 1
 	}
 	protected := m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected
@@ -113,13 +113,15 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		}
 		payload, _ := json.Marshal(api.ImageLookup{Manifest: *m, App: step.app, Tag: tag})
 		progress.Start("Resolving image tag")
-		data, status, e := agentclient.Do(ctx, client, target.Base, target.Prefix, target.Token, "POST", "images/resolve", "", payload)
+		result, e := agentclient.DoResult(ctx, client, target.Base, target.Prefix, target.Token, "POST", "images/resolve", "", payload)
+		data, status := result.Data, result.Status
 		progress.Close()
 		if e != nil {
 			return fail("image tag lookup failed")
 		}
 		if status != http.StatusOK {
-			return fail(agentclient.Message(status, data))
+			printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !f.json, result.Older)
+			return true, 1
 		}
 		fields, e := exactFields(data, "image", "tag")
 		var image, gotTag string
@@ -144,7 +146,8 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		preview.DryRun = true
 		payload, _ := json.Marshal(preview)
 		progress.Start("Planning deploy")
-		data, status, e := agentclient.Do(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
+		result, e := agentclient.DoResult(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "", payload)
+		data, status := result.Data, result.Status
 		progress.Close()
 		var planErr error
 		if e != nil {
@@ -161,9 +164,14 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		}
 		if planErr != nil {
 			if !f.dry {
+				if result.Older {
+					printAgentRefusal(errout, safeSecretText(planErr.Error(), target.Token), !f.json, true)
+					return true, 1
+				}
 				return fail(planErr)
 			}
 			step.previewErr = planErr.Error()
+			step.previewOlder = result.Older
 			continue
 		}
 		step.preview = data

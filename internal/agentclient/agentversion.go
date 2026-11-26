@@ -26,16 +26,33 @@ const (
 	ProtectionLegacyProtected
 )
 
+type protectionRefusal struct {
+	message string
+}
+
+func (e *protectionRefusal) Error() string { return e.message }
+
+// IsOlderAgentError reports whether an agent protection refusal came from the local legacy probe.
+func IsOlderAgentError(err error) bool {
+	var refusal *protectionRefusal
+	return errors.As(err, &refusal)
+}
+
 // AgentProtection reads a scoped, unambiguous protection capability from the agent.
 func AgentProtection(ctx context.Context, c *http.Client, t *Target) (Protection, error) {
 	client := *c
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	data, status, err := Do(ctx, &client, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
+	result, err := DoResult(ctx, &client, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
+	data, status := result.Data, result.Status
 	if err != nil {
 		return ProtectionUnknown, errors.New("agent protection lookup failed")
 	}
 	if status != http.StatusOK {
-		return ProtectionUnknown, errors.New(t.Redact(Message(status, data)))
+		message := t.Redact(Message(status, data))
+		if result.Older {
+			return ProtectionUnknown, &protectionRefusal{message: message}
+		}
+		return ProtectionUnknown, errors.New(message)
 	}
 	if !utf8.Valid(data) {
 		return ProtectionUnknown, ErrInvalidResponse

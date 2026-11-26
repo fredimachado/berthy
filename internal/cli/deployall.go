@@ -71,14 +71,15 @@ func parseAllVersions(m *manifest.Manifest, values []string) (allVersions, error
 
 // deployStep is one app of a deploy without an app: its request, ready to send, and what its header says about the version.
 type deployStep struct {
-	app        string
-	req        deploy.Request
-	header     string
-	tag        string
-	image      string
-	appliedID  int64
-	preview    []byte
-	previewErr string
+	app          string
+	req          deploy.Request
+	header       string
+	tag          string
+	image        string
+	appliedID    int64
+	preview      []byte
+	previewErr   string
+	previewOlder bool
 }
 
 // deployAllEntry is what the --json document of a deploy without an app says about one app: how its deploy ended and what
@@ -200,7 +201,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if !m.Protected {
 			policy, err = agentclient.AgentProtection(ctx, client, target)
 			if err != nil {
-				printRefusal(errout, terminalSafe(err.Error()), !f.json)
+				printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
 				return 1
 			}
 		}
@@ -230,7 +231,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		}
 		code := 0
 		if f.dry && step.previewErr != "" {
-			printRefusal(errout, safeSecretText(step.previewErr, target.Token), !f.json)
+			printAgentRefusal(errout, safeSecretText(step.previewErr, target.Token), !f.json, step.previewOlder)
 			code = 1
 		} else if f.dry && step.preview != nil {
 			heading := ""

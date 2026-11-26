@@ -165,9 +165,12 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			progress.Message(func() { fmt.Fprintln(out, safeSecretText(ev.Kind, redact...)) })
 		}
 	}
-	var notFound string
+	var notFound struct {
+		message  string
+		response *http.Response
+	}
 	stream := func() error {
-		notFound = ""
+		notFound.message = ""
 		streamURL := *base
 		streamURL.Path, streamURL.RawPath, streamURL.RawQuery = events, "", ""
 		if progress.enabled && (cmd == "deploy" || cmd == "rollback") {
@@ -193,7 +196,8 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			notFound = safeSecretText(agentclient.Message(resp.StatusCode, body), redact...)
+			notFound.message = safeSecretText(agentclient.Message(resp.StatusCode, body), redact...)
+			notFound.response = resp
 			return fmt.Errorf("operation stream unavailable")
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -215,9 +219,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 	}
 	for {
 		streamErr := stream()
-		if notFound != "" {
+		if notFound.message != "" {
 			progress.Close()
-			printRefusal(errout, notFound, !asJSON)
+			printAgentRefusal(errout, notFound.message, !asJSON, agentclient.IsOlderAgent(notFound.response))
 			return 1
 		}
 		if ctx.Err() != nil {
