@@ -975,6 +975,39 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	return sendCommand(ctx, client, u, prefix, token, method, endpoint, body, f, cmd, out, errout)
 }
 
+func requestWaitLabel(cmd string, f commandFlags, method string) string {
+	key, ok := changeKey(cmd, f.pos)
+	if !ok {
+		return ""
+	}
+	switch key {
+	case "wait":
+		return "waiting for app"
+	case "ingress status":
+		return "reading ingress status"
+	case "alerts test":
+		return "testing alerts"
+	case "key rotate":
+		if f.dry {
+			return "checking key rotation"
+		}
+		return "rotating key"
+	case "secret set":
+		if f.dry {
+			return "checking secret"
+		}
+		return "storing secret"
+	case "deploy":
+		if method == http.MethodPost {
+			if f.dry {
+				return "checking deploy"
+			}
+			return "deploying"
+		}
+	}
+	return ""
+}
+
 // sendCommand sends one change or read request to the agent and follows what the agent answers: a held approval, an
 // operation to watch to its end, or a result to print. It is what runDeployment does once it has built the request. base is
 // the agent's URL, which it does not change.
@@ -1009,10 +1042,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			return 1
 		}
 	}
-	progress := newProgressLine(errout, cmd == "deploy" && method == http.MethodPost && !f.dry && !f.json && stderrTerminal(errout))
-	if progress.enabled {
-		progress.Start("deploying")
-	}
+	progress := startWait(errout, !f.json, requestWaitLabel(cmd, f, method))
 	var requestErr bytes.Buffer
 	status, data, ok := askAgent(ctx, client, u, token, method, payload, &requestErr)
 	progress.Close()

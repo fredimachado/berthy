@@ -24,6 +24,14 @@ var progressWidth = func(w io.Writer) (int, error) {
 
 var progressVT = progressPlatformVT
 
+func startWait(errout io.Writer, human bool, label string) *progressLine {
+	p := newProgressLine(errout, human && label != "" && stderrTerminal(errout))
+	if label != "" {
+		p.Start(label)
+	}
+	return p
+}
+
 // progressLine owns the output while a step is pending.
 type progressLine struct {
 	out     io.Writer

@@ -136,7 +136,9 @@ func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, 
 		if f.backup != "" {
 			query = url.Values{"backup": {f.backup}}.Encode()
 		}
+		progress := startWait(errout, !f.json, "reading backups")
 		data, status, err := call("GET", "backups", query)
+		progress.Close()
 		if err != nil {
 			fmt.Fprintln(errout, "agent connection failed")
 			return 1

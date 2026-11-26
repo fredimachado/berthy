@@ -337,16 +337,20 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 }
 
 func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, stream, jsonOutput bool, out, errout io.Writer) int {
+	progress := startWait(errout, !jsonOutput && !stream, "reading "+cmd)
 	resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
 	if err != nil {
+		progress.Close()
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
 	}
 	defer resp.Body.Close()
 	if stream && resp.StatusCode == 200 {
+		progress.Close()
 		return readStream(ctx, resp.Body, out, errout, jsonOutput)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, "agent response could not be read")
 		return 1

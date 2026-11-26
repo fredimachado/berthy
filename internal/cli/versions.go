@@ -36,7 +36,10 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	if err := agentclient.CheckAgentVersion(ctx, c, t, *m); err != nil {
+	progress := startWait(errout, !f.json, "reading versions")
+	err = agentclient.CheckAgentVersion(ctx, c, t, *m)
+	progress.Close()
+	if err != nil {
 		fmt.Fprintln(errout, t.Redact(err.Error()))
 		return 1
 	}
@@ -45,7 +48,9 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 		fmt.Fprintln(errout, "invalid manifest")
 		return 1
 	}
+	progress = startWait(errout, !f.json, "reading versions")
 	data, status, err := agentclient.Do(ctx, c, t.Base, t.Prefix, t.Token, "POST", "images/tags", "", body)
+	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, t.Redact(err.Error()))
 		return 1
