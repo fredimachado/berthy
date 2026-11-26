@@ -215,6 +215,7 @@ func guardText(kept, certain bool, secs int) string {
 	prefix := "the server"
 	if !certain {
 		prefix = "the swap may have armed a guard: the server"
+		action = "puts the previous agent back or stops it when there is none"
 	}
 	return fmt.Sprintf("%s restarts the agent %d seconds after the swap and %s if it does not answer", prefix, guardDelay(secs), action)
 }
@@ -240,7 +241,7 @@ trap - EXIT
 // guardScript checks the agent and restores the previous files if needed.
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
-	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit 0; fi\n")
+	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit $?; fi\n")
 	if staged.Binary {
 		s.WriteString("if [ \"$1\" = yes ] && [ -e " + shellQuote(bin+".prev") + " ]; then mv -f " + shellQuote(bin+".prev") + " " + shellQuote(bin) + "; fi\n")
 	}
