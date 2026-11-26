@@ -137,7 +137,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			if ctx.Err() != nil {
 				return remaining, guideFailed
 			}
-			value, result := askSecret(g, fmt.Sprintf("Value of %s (hidden, Enter skips): ", name), read, errout)
+			value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden, Enter skips): ", name), read, errout, true)
 			if ctx.Err() != nil {
 				return remaining, guideFailed
 			}

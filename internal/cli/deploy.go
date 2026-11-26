@@ -921,7 +921,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				stored := func() ([]storedSecret, bool) {
 					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, errout)
 				}
-				value, registry, code := secretValue(f, errout, stored)
+				value, registry, code := secretValue(ctx, f, errout, stored)
 				if code != 0 {
 					return code
 				}

@@ -255,7 +255,7 @@ type storedSecret struct {
 // end, as before, and the registry is the flag's. At a terminal it first asks the agent what it holds (stored; ok is false
 // when the agent could not say, and has printed why), says when the value replaces a stored one, prints the guide, asks,
 // and reads the value hidden. code is non-zero when there is no value to store.
-func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool)) (value, registry string, code int) {
+func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool)) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, api.MaxSecretValue+1))
@@ -291,7 +291,7 @@ func secretValue(f commandFlags, errout io.Writer, stored func() ([]storedSecret
 		}
 	}
 	g := guideFor(m, f.env, name, registry)
-	value, result := askSecret(g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout)
+	value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout, !f.json)
 	if result == askEmpty {
 		fmt.Fprintln(errout, "no value entered")
 	}
@@ -311,7 +311,7 @@ const (
 )
 
 // askSecret prints the guide, reads a hidden value and checks it.
-func askSecret(g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer) (string, askResult) {
+func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer, humanProgress bool) (string, askResult) {
 	for _, line := range g.intro {
 		fmt.Fprintln(errout, line)
 	}
@@ -327,7 +327,7 @@ func askSecret(g secretGuide, prompt string, read func() ([]byte, error), errout
 	}
 	value := string(line)
 	if g.check != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		res := g.check(ctx, value)
 		for _, n := range res.notes {
