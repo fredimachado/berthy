@@ -333,13 +333,17 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	if watch || follow {
 		client.Timeout = 0
 	}
-	resp, err := agentclient.Send(ctx, &client, "GET", u.String(), token, nil)
+	return runReadRequest(ctx, &client, &u, token, cmd, watch || follow, jsonOutput, out, errout)
+}
+
+func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, stream, jsonOutput bool, out, errout io.Writer) int {
+	resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
 	if err != nil {
 		fmt.Fprintln(errout, "agent connection failed")
 		return 1
 	}
 	defer resp.Body.Close()
-	if (watch || follow) && resp.StatusCode == 200 {
+	if stream && resp.StatusCode == 200 {
 		return readStream(ctx, resp.Body, out, errout, jsonOutput)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
