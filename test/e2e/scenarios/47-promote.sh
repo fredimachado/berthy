@@ -361,7 +361,7 @@ export BERTHY_PROMOTION_AGENT_TOKEN
 unset created
 jq --arg project "$PROJECT" --arg env "$DEST" '.projects[$project].environments[$env].token_env = "BERTHY_PROMOTION_AGENT_TOKEN"' "$RUN/admin.json" > "$RUN/promote-agent.json" || { fail 'write fixture agent config' 'jq failed'; finish; }
 if terminal_promote held y none 3 "$RUN/promote-agent.json"; then pass 'destination agent token holds promotion'; else fail 'destination agent token holds promotion' 'terminal driver failed'; finish; fi
-id=$(sed -n 's/.*held for approval: \([^ ]*\) .*/\1/p' "$LOG/promote-held.log" | tr -d '\r' | head -n 1)
+id=$(sed -n -e "s/$(printf '\033')\\[[0-9;]*m//g" -e 's/.*held for approval: \([^ ]*\) .*/\1/p' "$LOG/promote-held.log" | tr -d '\r' | head -n 1)
 [ -n "$id" ] || { fail 'held promotion names approval' 'approval ID missing'; finish; }
 out=$(cmd "$DEST" approve "$id" 2>&1); code=$?
 expect_code 'approve held promotion' 0 "$code" "$out"
