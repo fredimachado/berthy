@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -104,18 +103,9 @@ func TestAttachDemultiplexesStdoutAndKeepsStderr(t *testing.T) {
 }
 
 func TestAttachSendsStdinAndHalfClosesIt(t *testing.T) {
-	// On Windows AF_UNIX, a peer Read that overlaps CloseWrite can miss EOF even after
-	// CloseWrite returns nil (golang/go#49352). Wait for the client's CloseWrite before
-	// the fake daemon's ReadAll so the test asserts the half-close without that race.
-	stdinClosed := make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(stdinClosed) })
-	defer unblock()
 	as := newAttachServer(t, func(conn net.Conn, br io.Reader) {
 		// Docker keeps the container's stdin open until the client's write side ends, and only then does the container
 		// finish. A server that never sees the end of stdin never answers.
-		if runtime.GOOS == "windows" {
-			<-stdinClosed
-		}
 		b, _ := io.ReadAll(br)
 		io.WriteString(conn, frame(1, "got:"+string(b)))
 	})
@@ -139,7 +129,6 @@ func TestAttachSendsStdinAndHalfClosesIt(t *testing.T) {
 	if err = in.Close(); err != nil {
 		t.Fatal(err)
 	}
-	unblock()
 	got, err := io.ReadAll(out)
 	if err != nil || string(got) != "got:abcdef" {
 		t.Fatalf("stdout %q %v", got, err)
