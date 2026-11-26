@@ -149,7 +149,7 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 				}
 			}
 			os.WriteFile(filepath.Join(tools, "systemctl"), []byte("#!/bin/sh\necho \"$*\" >> \"$CALLS\"\ncase \"$1\" in is-failed) exit 0;; esac\nexit 0\n"), 0700)
-			curl := "#!/bin/sh\nexit 1\n"
+			curl := "#!/bin/sh\nif [ -f \"$CALLS.probed\" ]; then exit 0; fi\ntouch \"$CALLS.probed\"\nexit 1\n"
 			if tc.answer {
 				curl = "#!/bin/sh\nexit 0\n"
 			}
@@ -162,16 +162,18 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 			}
 			cmd := exec.Command("sh", "-c", script, "guard", tc.prev, tc.prev)
 			cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+filepath.Join(dir, "calls"))
-			if out, err := cmd.CombinedOutput(); err != nil && tc.name != "rollback" && tc.name != "prev gone" {
+			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("guard failed: %v %s", err, out)
 			}
-			got, _ := os.ReadFile(bin)
 			want := "new"
 			if tc.name == "rollback" {
 				want = "old"
 			}
-			if string(got) != want {
-				t.Fatalf("binary = %s", got)
+			for _, path := range []string{bin, cfg} {
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("%s = %s: %v", path, got, err)
+				}
 			}
 			calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 			if tc.name == "first install" && !strings.Contains(string(calls), "stop berthy") {
@@ -197,10 +199,7 @@ func TestGuardMessageOnUnresolvedActivation(t *testing.T) {
 			}
 		})
 	}
-	for _, stage := range []string{"", "stop error"} {
-		if stage == "stop error" {
-			continue
-		}
+	for _, stage := range []string{""} {
 		r := &outcomeRunner{stage: stage}
 		err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
 		if err == nil || strings.Contains(err.Error(), "62 seconds") {
