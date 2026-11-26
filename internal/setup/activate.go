@@ -114,11 +114,12 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		}
 		return activationFailure(err, outcome)
 	}
-	if swap := swapScript(staged, secs); swap != "" {
+	guard := guardScript(binPath, configPath, staged, listen, secs)
+	if swap := swapScript(staged, secs, len(guard)); swap != "" {
 		if err := ctx.Err(); err != nil {
 			return activationFailure(fmt.Errorf("putting the new agent in place: %w", err), outcome)
 		}
-		res, err := r.Run(ctx, swap, strings.NewReader(guardScript(binPath, configPath, staged, listen, secs)))
+		res, err := r.Run(ctx, swap, strings.NewReader(guard))
 		if err != nil {
 			if staged.Config {
 				outcome = ConfigUnconfirmed
@@ -223,8 +224,15 @@ func guardText(kept, certain bool, secs int) string {
 func disarm(ctx context.Context, r Runner) { _, _ = r.Run(ctx, disarmScript, nil) }
 
 // armScript writes the guard from stdin and starts its timer.
-func armScript(secs int) string {
-	return "(umask 077; cat > " + guardPath + ")\n" +
+func armScript(secs, size int) string {
+	return fmt.Sprintf(`umask 077
+guard_tmp=$(mktemp %s.XXXXXX)
+trap 'rm -f "$guard_tmp"' EXIT
+cat > "$guard_tmp"
+[ "$(wc -c < "$guard_tmp")" -eq %d ]
+mv -f "$guard_tmp" %s
+trap - EXIT
+`, guardPath, size, guardPath) +
 		"systemctl stop " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
 		"systemctl reset-failed " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
 		fmt.Sprintf("systemd-run --quiet --unit=%s --on-active=%ds --timer-property=AccuracySec=1s /bin/sh %s \"$prev_bin\" \"$prev_cfg\"\n", guardUnit, guardDelay(secs), guardPath)
@@ -246,7 +254,7 @@ func guardScript(bin, cfg string, staged Staged, listen string, secs int) string
 
 // swapScript arms the guard and puts staged files in place, keeping previous ones as .prev and printing which it kept.
 // It is empty when nothing is staged.
-func swapScript(staged Staged, secs int) string {
+func swapScript(staged Staged, secs, guardSize int) string {
 	if !staged.Binary && !staged.Config {
 		return ""
 	}
@@ -260,7 +268,7 @@ func swapScript(staged Staged, secs int) string {
 			s.WriteString("if [ -e " + f.path + " ]; then cp -p " + f.path + " " + f.path + ".prev; echo " + f.name + "=yes; " + f.name + "=yes; else rm -f " + f.path + ".prev; fi\n")
 		}
 	}
-	s.WriteString(armScript(secs))
+	s.WriteString(armScript(secs, guardSize))
 	if staged.Binary {
 		s.WriteString("mv -f " + binPath + ".new " + binPath + "\n")
 	}
@@ -282,7 +290,9 @@ func restartScript(listen string, secs int) string {
 // up, so a dry run does not list them.
 func activateScripts(staged Staged, listen string, timeout time.Duration) []string {
 	var out []string
-	if swap := swapScript(staged, wholeSeconds(timeout)); swap != "" {
+	secs := wholeSeconds(timeout)
+	guard := guardScript(binPath, configPath, staged, listen, secs)
+	if swap := swapScript(staged, secs, len(guard)); swap != "" {
 		out = append(out, swap, restartScript(listen, wholeSeconds(timeout)), disarmScript)
 		return out
 	}
