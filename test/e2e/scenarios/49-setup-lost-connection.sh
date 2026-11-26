@@ -25,8 +25,12 @@ trap cleanup EXIT
 bash "$fixture" start "$server" >/dev/null || exit 1
 ip=$(bash "$fixture" ip "$server") || exit 1
 cfg="$RUN/lost-connection.json"
-out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary "$BIN" --json 2>/dev/null); code=$?
-if [ "$code" -ne 0 ]; then fail "initial setup" "setup failed"; exit 1; fi
+setup_failure() {
+ jq -r '.steps[]? | select(.status == "failed") | "\(.step): \(.detail)"' <<<"$out" >&2 2>/dev/null || true
+ cat "$1" >&2
+}
+out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary "$BIN" --json 2>"$private/initial.stderr"); code=$?
+if [ "$code" -ne 0 ]; then fail "initial setup" "setup failed"; setup_failure "$private/initial.stderr"; exit 1; fi
 unset out
 old=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
 export SSH_STATE="$private/state"
@@ -40,8 +44,9 @@ case "$*" in *'mv -f /usr/local/bin/berthy.new'*) /usr/bin/ssh -F "$FS_HOME/.ssh
 exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
 SH
 chmod 700 "$FS_HOME/bin/ssh"
-out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary /bin/false --json 2>/dev/null); code=$?
+out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary /bin/false --json 2>"$private/upgrade.stderr"); code=$?
 expect_code "upgrade loses connection" 1 "$code"
+if [ "$code" -ne 1 ]; then setup_failure "$private/upgrade.stderr"; fi
 if [ ! -f "$SSH_STATE.dropped" ] || [ -f "$SSH_STATE.wrong" ]; then fail "restart connection dropped" "unexpected SSH call order"; fi
 if [[ $out == *"server restarts the agent"* && $out != *"may have armed"* ]]; then pass "guard reported"; else fail "guard reported" "missing confirmed guard description"; fi
 unset out

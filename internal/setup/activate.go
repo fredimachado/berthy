@@ -16,10 +16,16 @@ const (
 	dataDir        = "/var/lib/berthy"
 )
 
+// guardUnit names the transient rollback unit.
 const guardUnit = "berthy-activation-guard"
+
+// guardPath holds the root-only guard script on tmpfs.
 const guardPath = "/run/berthy-activation-guard.sh"
+
+// disarmScript stops the timer without stopping a running guard.
 const disarmScript = "systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true\n"
 
+// guardDelay allows time for activation and its own rollback.
 func guardDelay(secs int) int { return 2*secs + 60 }
 
 const defaultHealthTimeout = 30 * time.Second
@@ -200,8 +206,7 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	return &ActivateError{Message: withLog(msg, journal), ConfigOutcome: outcome}
 }
 
-// swapScript puts the staged binary and configuration in place, keeping the previous ones as .prev and printing which it kept. It
-// is "" when nothing is staged.
+// guardText describes the recovery that may still run on the server.
 func guardText(kept, certain bool, secs int) string {
 	action := "stops it"
 	if kept {
@@ -213,13 +218,19 @@ func guardText(kept, certain bool, secs int) string {
 	}
 	return fmt.Sprintf("%s restarts the agent %d seconds after the swap and %s if it does not answer", prefix, guardDelay(secs), action)
 }
+
+// disarm stops the timer and ignores the result.
 func disarm(ctx context.Context, r Runner) { _, _ = r.Run(ctx, disarmScript, nil) }
+
+// armScript writes the guard from stdin and starts its timer.
 func armScript(secs int) string {
 	return "(umask 077; cat > " + guardPath + ")\n" +
 		"systemctl stop " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
 		"systemctl reset-failed " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
 		fmt.Sprintf("systemd-run --quiet --unit=%s --on-active=%ds --timer-property=AccuracySec=1s /bin/sh %s \"$prev_bin\" \"$prev_cfg\"\n", guardUnit, guardDelay(secs), guardPath)
 }
+
+// guardScript checks the agent and restores the previous files if needed.
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
 	s.WriteString("up() { (\n" + restartScript(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit 0; fi\n")
@@ -232,6 +243,9 @@ func guardScript(bin, cfg string, staged Staged, listen string, secs int) string
 	s.WriteString("up\n")
 	return s.String()
 }
+
+// swapScript arms the guard and puts staged files in place, keeping previous ones as .prev and printing which it kept.
+// It is empty when nothing is staged.
 func swapScript(staged Staged, secs int) string {
 	if !staged.Binary && !staged.Config {
 		return ""
@@ -263,7 +277,7 @@ func restartScript(listen string, secs int) string {
 		"systemctl restart berthy 2>&1 || exit 1\n" + waitScript(healthURL(listen), secs)
 }
 
-// activateScripts are the scripts Activate sends when the new agent comes up: the swap, when something is staged, and the restart.
+// activateScripts lists the swap and disarm when staged, and the restart, for a successful activation.
 // A dry run lists them. The scripts that put the previous agent back, and the journal, run only when the new agent does not come
 // up, so a dry run does not list them.
 func activateScripts(staged Staged, listen string, timeout time.Duration) []string {

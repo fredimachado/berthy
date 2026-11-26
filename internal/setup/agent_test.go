@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1206,7 +1207,7 @@ func TestActivateSucceeds(t *testing.T) {
 	if reset < 0 || reset > restart {
 		t.Errorf("reset-failed does not come before the restart:\n%s", s[1])
 	}
-	if f.ran("journalctl") || f.ran("systemctl stop berthy\n") {
+	if f.ran("journalctl") || slices.Contains(f.scripts(), "systemctl stop berthy") {
 		t.Errorf("a rollback ran")
 	}
 }
@@ -1271,7 +1272,7 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 	if !strings.Contains(back, "mv -f /usr/local/bin/berthy.prev /usr/local/bin/berthy") || !strings.Contains(back, "mv -f /etc/berthy/agent.json.prev /etc/berthy/agent.json") {
 		t.Errorf("rollback = %q", back)
 	}
-	if f.ran("systemctl stop berthy\n") {
+	if slices.Contains(f.scripts(), "systemctl stop berthy") {
 		t.Errorf("the service was stopped although the previous agent was put back")
 	}
 }
@@ -1307,7 +1308,7 @@ func TestActivateOnAFirstInstallLeavesTheAgentStopped(t *testing.T) {
 	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || ae.ConfigOutcome != ConfigRetained {
 		t.Errorf("error = %+v", ae)
 	}
-	if !f.ran("systemctl stop berthy") || f.restarts != 1 {
+	if !slices.Contains(f.scripts(), "systemctl stop berthy") || f.restarts != 1 {
 		t.Errorf("scripts = %q", f.scripts())
 	}
 }
