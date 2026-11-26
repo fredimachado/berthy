@@ -144,24 +144,7 @@ func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers 
 }
 
 func redactHeldJSON(data []byte, values ...string) []byte {
-	if len(values) == 0 {
-		return data
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var doc any
-	if dec.Decode(&doc) != nil {
-		return data
-	}
-	original, err := json.Marshal(doc)
-	if err != nil {
-		return data
-	}
-	safe, err := json.Marshal(redactOperationJSON(doc, values...))
-	if err != nil || bytes.Equal(original, safe) {
-		return data
-	}
-	return safe
+	return redactDiagnosticJSON(data, false, values...)
 }
 
 // printPlan prints a plan under a "plan:" heading.

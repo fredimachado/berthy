@@ -1132,7 +1132,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			return 0
 		}
 	}
-	if cmd == "secret" && len(f.pos) > 0 && f.pos[0] == "set" && !f.dry {
+	if cmd == "secret" && len(f.pos) > 0 && f.pos[0] == "set" {
 		data = redactRegistryJSON(data, append([]string{token}, enteredValues...)...)
 	}
 	if cmd == "secret" && f.pos[0] == "import" && !f.json {

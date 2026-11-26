@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -497,44 +496,5 @@ func printRegistrySet(out io.Writer, reply secretSetReply, values ...string) boo
 
 // redactRegistryJSON changes only diagnostic strings; other fields and types remain agent-owned.
 func redactRegistryJSON(data []byte, values ...string) []byte {
-	var doc map[string]any
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if dec.Decode(&doc) != nil || doc == nil {
-		return data
-	}
-	changed := false
-	redactField := func(m map[string]any, key string) {
-		for field, v := range m {
-			if !strings.EqualFold(field, key) {
-				continue
-			}
-			if s, ok := v.(string); ok {
-				r := redactSecretText(s, values...)
-				if r != s {
-					m[field], changed = r, true
-				}
-			}
-		}
-	}
-	redactField(doc, "registry")
-	redactField(doc, "services_error")
-	for key, value := range doc {
-		if strings.EqualFold(key, "services") {
-			if services, ok := value.([]any); ok {
-				for _, service := range services {
-					if row, ok := service.(map[string]any); ok {
-						redactField(row, "name")
-						redactField(row, "error")
-					}
-				}
-			}
-		}
-	}
-	if changed {
-		if safe, err := json.Marshal(doc); err == nil {
-			return safe
-		}
-	}
-	return data
+	return redactDiagnosticJSON(data, true, values...)
 }
