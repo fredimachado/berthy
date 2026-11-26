@@ -75,7 +75,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 		}
 	}
 	endpoint := agentURL(target.Base, target.Prefix, "secrets")
-	held, ok := storedSecrets(ctx, client, endpoint, target.Token, errout)
+	held, ok := storedSecrets(ctx, client, endpoint, target.Token, errout, true)
 	if !ok {
 		return nil, guideFailed
 	}
@@ -122,21 +122,11 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 		for i := range g.intro {
 			g.intro[i] = terminalSafe(g.intro[i])
 		}
-		if check := g.check; check != nil {
-			g.check = func(checkCtx context.Context, value string) checkResult {
-				res := check(checkCtx, value)
-				for i := range res.notes {
-					res.notes[i] = safeSecretText(res.notes[i], value, target.Token)
-				}
-				res.refusal = safeSecretText(res.refusal, value, target.Token)
-				return res
-			}
-		}
 		for {
 			if ctx.Err() != nil {
 				return remaining, guideFailed
 			}
-			value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden, Enter skips): ", name), read, errout, true)
+			value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden, Enter skips): ", name), read, errout, true, target.Token)
 			if ctx.Err() != nil {
 				return remaining, guideFailed
 			}
@@ -168,7 +158,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				return remaining, guideFailed
 			}
 			if status != http.StatusOK {
-				fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), value, target.Token))
+				printRefusal(errout, safeSecretText(agentclient.Message(status, data), value, target.Token), true)
 				return remaining, guideFailed
 			}
 			var ack struct {
@@ -184,13 +174,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			}
 			reply := secretSetReply{Ok: ack.Ok, Registry: registry, Services: ack.Services, ServicesError: ack.ServicesError}
 			if n.Registry != "" {
-				reply.Registry = safeSecretText(reply.Registry, value, target.Token)
-				reply.ServicesError = safeSecretText(reply.ServicesError, value, target.Token)
-				for i := range reply.Services {
-					reply.Services[i].Name = safeSecretText(reply.Services[i].Name, value, target.Token)
-					reply.Services[i].Error = safeSecretText(reply.Services[i].Error, value, target.Token)
-				}
-				if printRegistrySet(out, reply) {
+				if printRegistrySet(out, reply, value, target.Token) {
 					fmt.Fprintln(out, "Run berthy secret set NAME --registry HOST with the same targeting flags to retry the services that were not updated.")
 				}
 			} else {

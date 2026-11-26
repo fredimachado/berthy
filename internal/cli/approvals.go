@@ -122,15 +122,15 @@ func reportHeld(data []byte, out, errout io.Writer, asJSON bool) (code int, held
 	return reportHeldMarkers(data, out, errout, asJSON, nil)
 }
 
-func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone) (code int, held bool) {
+func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, values ...string) (code int, held bool) {
 	var h heldApproval
 	if json.Unmarshal(data, &h) != nil || h.ID == "" {
 		return 0, false
 	}
-	line := fmt.Sprintf("held for approval: %s (expires %s)", terminalSafe(h.ID), h.Expires.UTC().Format(time.RFC3339))
+	line := fmt.Sprintf("held for approval: %s (expires %s)", safeSecretText(h.ID, values...), safeSecretText(h.Expires.UTC().Format(time.RFC3339), values...))
 	if asJSON {
 		var pretty bytes.Buffer
-		if json.Indent(&pretty, data, "", "  ") != nil {
+		if json.Indent(&pretty, redactHeldJSON(data, values...), "", "  ") != nil {
 			fmt.Fprintln(errout, "invalid agent response")
 			return 1, true
 		}
@@ -139,8 +139,29 @@ func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers 
 		return exitHeld, true
 	}
 	fmt.Fprintln(out, line)
-	printPlanMarkers(out, h.Plan, markers)
+	printPlanMarkers(out, redactHeldJSON(h.Plan, values...), markers)
 	return exitHeld, true
+}
+
+func redactHeldJSON(data []byte, values ...string) []byte {
+	if len(values) == 0 {
+		return data
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var doc any
+	if dec.Decode(&doc) != nil {
+		return data
+	}
+	original, err := json.Marshal(doc)
+	if err != nil {
+		return data
+	}
+	safe, err := json.Marshal(redactOperationJSON(doc, values...))
+	if err != nil || bytes.Equal(original, safe) {
+		return data
+	}
+	return safe
 }
 
 // printPlan prints a plan under a "plan:" heading.
@@ -218,7 +239,7 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 			return 1
 		}
 		if status != http.StatusOK {
-			fmt.Fprintln(errout, agentclient.Message(status, data))
+			printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 			return 1
 		}
 		return printApprovals(out, errout, data, f.all, f.json)
@@ -233,7 +254,7 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 			return 1
 		}
 		if status != http.StatusOK {
-			fmt.Fprintln(errout, agentclient.Message(status, data))
+			printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 			return 1
 		}
 		if f.json {
@@ -288,7 +309,7 @@ func runApprove(ctx context.Context, call func(method, endpoint, query string, b
 		return watchOperation(ctx, client, base, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, operationWatchOptions{config: f.config})
 	}
 	if status != http.StatusOK && status != http.StatusAccepted {
-		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 		return 1
 	}
 	return printResponse(out, errout, data, f.json)

@@ -40,7 +40,7 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 	err = agentclient.CheckAgentVersion(ctx, c, t, *m)
 	progress.Close()
 	if err != nil {
-		fmt.Fprintln(errout, t.Redact(err.Error()))
+		printRefusal(errout, safeSecretText(err.Error(), t.Token), !f.json)
 		return 1
 	}
 	body, err := json.Marshal(api.ImageLookup{Manifest: *m, App: f.pos[0]})
@@ -64,7 +64,7 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 		return 1
 	case http.StatusOK:
 	default:
-		fmt.Fprintln(errout, t.Redact(agentclient.Message(status, data)))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), t.Token), !f.json)
 		return 1
 	}
 	result, valid := decodeImageTags(data)

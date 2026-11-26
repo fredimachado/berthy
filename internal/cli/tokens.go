@@ -118,7 +118,7 @@ func runTokenCommand(f commandFlags, base *url.URL, prefix, token string, out, e
 		return 1
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 		return 1
 	}
 	if f.json {

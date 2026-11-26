@@ -46,7 +46,7 @@ func TestSecretWaitStartsAfterHiddenRead(t *testing.T) {
 		defer func() { inputOnce.Do(func() { close(input) }); checkOnce.Do(func() { close(check) }); <-done }()
 		g := secretGuide{check: func(ctx context.Context, value string) checkResult { <-check; return checkResult{refusal: "refused"} }}
 		go func() {
-			_, result := askSecret(context.Background(), g, "prompt: ", func() ([]byte, error) { <-input; return []byte("fixture"), nil }, &errs, true)
+			_, result := askSecret(context.Background(), g, "prompt: ", func() ([]byte, error) { <-input; return []byte("fixture"), nil }, &errs, true, "")
 			done <- result
 		}()
 		synctest.Wait()
@@ -459,7 +459,7 @@ func TestSecretCheckerParentCancellationClearsWait(t *testing.T) {
 			return checkResult{refusal: "cancelled"}
 		}}
 		go func() {
-			_, res := askSecret(ctx, g, "prompt: ", func() ([]byte, error) { return []byte("fixture-value"), nil }, &errs, true)
+			_, res := askSecret(ctx, g, "prompt: ", func() ([]byte, error) { return []byte("fixture-value"), nil }, &errs, true, "")
 			done <- res
 		}()
 		synctest.Wait()

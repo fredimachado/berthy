@@ -356,7 +356,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 		return 1
 	}
 	if resp.StatusCode != 200 {
-		fmt.Fprintln(errout, agentclient.Message(resp.StatusCode, body))
+		printRefusal(errout, safeSecretText(agentclient.Message(resp.StatusCode, body), token), !jsonOutput)
 		return 1
 	}
 	if cmd == "checks" {

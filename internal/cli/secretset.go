@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -255,7 +256,7 @@ type storedSecret struct {
 // end, as before, and the registry is the flag's. At a terminal it first asks the agent what it holds (stored; ok is false
 // when the agent could not say, and has printed why), says when the value replaces a stored one, prints the guide, asks,
 // and reads the value hidden. code is non-zero when there is no value to store.
-func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool)) (value, registry string, code int) {
+func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool), token string) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, api.MaxSecretValue+1))
@@ -291,7 +292,7 @@ func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored f
 		}
 	}
 	g := guideFor(m, f.env, name, registry)
-	value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout, !f.json)
+	value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout, !f.json, token)
 	if result == askEmpty {
 		fmt.Fprintln(errout, "no value entered")
 	}
@@ -311,7 +312,7 @@ const (
 )
 
 // askSecret prints the guide, reads a hidden value and checks it.
-func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer, humanProgress bool) (string, askResult) {
+func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer, humanProgress bool, token string) (string, askResult) {
 	for _, line := range g.intro {
 		fmt.Fprintln(errout, line)
 	}
@@ -333,10 +334,10 @@ func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([
 		res := g.check(ctx, value)
 		progress.Close()
 		for _, n := range res.notes {
-			fmt.Fprintln(errout, n)
+			fmt.Fprintln(errout, safeSecretText(n, value, token))
 		}
 		if res.refusal != "" {
-			fmt.Fprintln(errout, "not stored: "+res.refusal)
+			printRefusal(errout, "not stored: "+safeSecretText(res.refusal, value, token), humanProgress)
 			return "", askRefused
 		}
 	}
@@ -345,13 +346,13 @@ func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([
 
 // storedSecrets asks the agent which secrets it holds, at u. ok is false when the agent did not answer with the list, and the
 // reason has been printed.
-func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token string, errout io.Writer) ([]storedSecret, bool) {
+func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token string, errout io.Writer, human bool) ([]storedSecret, bool) {
 	status, data, ok := askAgent(ctx, client, u, token, http.MethodGet, nil, errout)
 	if !ok {
 		return nil, false
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), human)
 		return nil, false
 	}
 	var rows []json.RawMessage
@@ -461,35 +462,79 @@ func generatedSize(n int, format string) string {
 
 // printSecretSet says what the agent did with the services of a registry password it stored. It returns false, printing
 // nothing, when the answer names no registry: that is a plain secret, which the generic printer prints.
-func printSecretSet(out io.Writer, data []byte) bool {
+func printSecretSet(out io.Writer, data []byte, values ...string) bool {
 	var reply secretSetReply
 	if json.Unmarshal(data, &reply) != nil || reply.Registry == "" {
 		return false
 	}
-	if printRegistrySet(out, reply) {
+	if printRegistrySet(out, reply, values...) {
 		fmt.Fprintln(out, "Run the command again to retry the services that were not updated.")
 	}
 	return true
 }
 
-func printRegistrySet(out io.Writer, reply secretSetReply) bool {
-	registry := terminalSafe(reply.Registry)
+func printRegistrySet(out io.Writer, reply secretSetReply, values ...string) bool {
+	registry := safeSecretText(reply.Registry, values...)
 	fmt.Fprintln(out, "ok: true")
 	retry := false
 	switch {
 	case reply.ServicesError != "":
-		fmt.Fprintln(out, "services not updated: "+terminalSafe(reply.ServicesError))
+		fmt.Fprintln(out, "services not updated: "+safeSecretText(reply.ServicesError, values...))
 		retry = true
 	case len(reply.Services) == 0:
 		fmt.Fprintln(out, "no running service pulls from "+registry+" yet")
 	}
 	for _, s := range reply.Services {
 		if s.Updated {
-			fmt.Fprintln(out, terminalSafe(s.Name)+": now pulls from "+registry+" with the new password")
+			fmt.Fprintln(out, safeSecretText(s.Name, values...)+": now pulls from "+registry+" with the new password")
 			continue
 		}
-		fmt.Fprintln(out, terminalSafe(s.Name)+": not updated ("+terminalSafe(s.Error)+")")
+		fmt.Fprintln(out, safeSecretText(s.Name, values...)+": not updated ("+safeSecretText(s.Error, values...)+")")
 		retry = true
 	}
 	return retry
+}
+
+// redactRegistryJSON changes only diagnostic strings; other fields and types remain agent-owned.
+func redactRegistryJSON(data []byte, values ...string) []byte {
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if dec.Decode(&doc) != nil || doc == nil {
+		return data
+	}
+	changed := false
+	redactField := func(m map[string]any, key string) {
+		for field, v := range m {
+			if !strings.EqualFold(field, key) {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				r := redactSecretText(s, values...)
+				if r != s {
+					m[field], changed = r, true
+				}
+			}
+		}
+	}
+	redactField(doc, "registry")
+	redactField(doc, "services_error")
+	for key, value := range doc {
+		if strings.EqualFold(key, "services") {
+			if services, ok := value.([]any); ok {
+				for _, service := range services {
+					if row, ok := service.(map[string]any); ok {
+						redactField(row, "name")
+						redactField(row, "error")
+					}
+				}
+			}
+		}
+	}
+	if changed {
+		if safe, err := json.Marshal(doc); err == nil {
+			return safe
+		}
+	}
+	return data
 }

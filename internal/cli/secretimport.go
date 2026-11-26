@@ -122,7 +122,7 @@ func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	held, ok := storedSecrets(ctx, agentclient.NewHTTPClient(), agentURL(u, prefix, "secrets"), token, errout)
+	held, ok := storedSecrets(ctx, agentclient.NewHTTPClient(), agentURL(u, prefix, "secrets"), token, errout, !f.json)
 	if !ok {
 		return 1
 	}

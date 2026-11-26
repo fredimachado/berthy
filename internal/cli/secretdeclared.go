@@ -80,7 +80,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		return empty, declaredAnswered
 	}
 	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-		fmt.Fprintln(errout, safeSecretText(e.Error(), target.Token))
+		printRefusal(errout, safeSecretText(e.Error(), target.Token), !asJSON)
 		return res, declaredFailed
 	}
 	files := declaredComposeFiles(m, dir)
@@ -120,7 +120,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		return res, declaredFailed
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), target.Token))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !asJSON)
 		return res, declaredFailed
 	}
 	if json.Unmarshal(data, &res) != nil || !validDeclaredAnswer(m, res) {

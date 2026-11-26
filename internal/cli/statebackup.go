@@ -185,7 +185,7 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 		return 1
 	}
 	if status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON)
 		return 1
 	}
 	if code, held := reportHeld(data, out, errout, asJSON); held {

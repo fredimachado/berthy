@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 )
+
+func printRefusal(errout io.Writer, safeMessage string, human bool) {
+	fmt.Fprintln(errout, styleFor(errout, human).paint(toneError, safeMessage))
+}
 
 type cliStyle struct{ color bool }
 type cliTone uint8

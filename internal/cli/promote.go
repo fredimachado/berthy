@@ -27,7 +27,7 @@ type promotionSnapshot struct {
 }
 
 // readApplied accepts absence only from a complete, unambiguous not_deployed response.
-func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app string) (appliedRelease, bool, error) {
+func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app string, extraTokens ...string) (appliedRelease, bool, error) {
 	var result appliedRelease
 	u := *t.Base
 	u.Path = t.Prefix + "applied/" + url.PathEscape(app)
@@ -48,7 +48,7 @@ func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app
 		return result, false, agentclient.ErrInvalidResponse
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		return result, false, errors.New(t.Redact(agentclient.Message(resp.StatusCode, data)))
+		return result, false, errors.New(safeSecretText(agentclient.Message(resp.StatusCode, data), append([]string{t.Token}, extraTokens...)...))
 	}
 	fields, ok := appliedFields(data)
 	if !ok {
@@ -59,7 +59,7 @@ func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app
 		if v, ok := fields["code"]; ok && json.Unmarshal(v, &code) == nil && code == "not_deployed" && fields["message"] != nil && json.Unmarshal(fields["message"], &message) == nil && message != "" && fields["id"] == nil && fields["digest"] == nil && fields["tag"] == nil {
 			return result, false, nil
 		}
-		return result, false, errors.New(t.Redact(agentclient.Message(resp.StatusCode, data)))
+		return result, false, errors.New(safeSecretText(agentclient.Message(resp.StatusCode, data), append([]string{t.Token}, extraTokens...)...))
 	}
 	if fields["code"] != nil || fields["id"] == nil || fields["digest"] == nil || bytes.Equal(bytes.TrimSpace(fields["id"]), []byte("null")) || bytes.Equal(bytes.TrimSpace(fields["digest"]), []byte("null")) || json.Unmarshal(fields["id"], &result.ID) != nil || result.ID <= 0 || json.Unmarshal(fields["digest"], &result.Digest) != nil || result.Digest == "" {
 		return appliedRelease{}, false, agentclient.ErrInvalidResponse
@@ -125,7 +125,7 @@ func selectPromotion(ctx context.Context, c *http.Client, dst *agentclient.Targe
 	if err != nil {
 		return snapshot, err
 	}
-	source, found, err := readApplied(ctx, c, src, app)
+	source, found, err := readApplied(ctx, c, src, app, dst.Token)
 	if err != nil {
 		return snapshot, fmt.Errorf("source: %s", dst.Redact(err.Error()))
 	}
@@ -139,7 +139,7 @@ func selectPromotion(ctx context.Context, c *http.Client, dst *agentclient.Targe
 	if source.Tag != "" && reference.TagRegexp.FindString(source.Tag) != source.Tag {
 		return snapshot, errors.New("invalid source release tag")
 	}
-	dest, found, err := readApplied(ctx, c, dst, app)
+	dest, found, err := readApplied(ctx, c, dst, app, src.Token)
 	if err != nil {
 		return snapshot, fmt.Errorf("destination: %s", src.Redact(err.Error()))
 	}
@@ -175,7 +175,7 @@ func promotionImage(m *manifest.Manifest, app, image string) (string, error) {
 }
 
 func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cfgPath, from string, f commandFlags, out, errout io.Writer) int {
-	fail := func(err error) int { fmt.Fprintln(errout, dst.Redact(err.Error())); return 1 }
+	fail := func(err error) int { printRefusal(errout, safeSecretText(err.Error(), dst.Token), !f.json); return 1 }
 	if len(f.pos) != 1 || from == "" || from == dst.Env {
 		fmt.Fprintln(errout, "promotion needs an app and a different source environment")
 		return 2
@@ -254,12 +254,12 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	progress.Start("planning promotion")
 	data, status, err := agentclient.Do(ctx, c, dst.Base, dst.Prefix, dst.Token, "POST", "deploys", "", payload)
 	progress.Close()
-	redact := func(s string) string { return snapshot.source.Redact(dst.Redact(s)) }
+	redact := func(s string) string { return safeSecretText(s, snapshot.source.Token, dst.Token) }
 	if err != nil {
 		return fail(errors.New(redact(err.Error())))
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, redact(agentclient.Message(status, data)))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), snapshot.source.Token, dst.Token), !f.json)
 		if status == http.StatusBadRequest || status == http.StatusNotFound {
 			fmt.Fprintln(errout, "promotion may require a newer agent; upgrade with berthy setup or deploy an explicit digest")
 		}

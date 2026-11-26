@@ -596,6 +596,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	method := "GET"
 	endpoint := ""
 	var body any
+	var enteredValues []string
 	switch cmd {
 	case "deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy":
 		if cmd == "deploy" && len(f.pos) == 0 {
@@ -720,7 +721,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 1
 			}
 			if e := agentclient.CheckAgentVersion(ctx, client, target, req.Manifest); e != nil {
-				fmt.Fprintln(errout, e)
+				printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
 				return 1
 			}
 		}
@@ -744,7 +745,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return 2
 		}
 		if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-			fmt.Fprintln(errout, e)
+			printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
 			return 1
 		}
 		// The request carries the checkout's commit and local-changes flag as a deploy does.
@@ -866,7 +867,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 2
 			}
 			if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-				fmt.Fprintln(errout, e)
+				printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
 				return 1
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
@@ -919,15 +920,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
 				stored := func() ([]storedSecret, bool) {
-					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, errout)
+					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, errout, !f.json)
 				}
-				value, registry, code := secretValue(ctx, f, errout, stored)
+				value, registry, code := secretValue(ctx, f, errout, stored, token)
 				if code != 0 {
 					return code
 				}
 				endpoint = "secrets"
 				method = "POST"
 				body = map[string]any{"name": f.pos[1], "value": value, "registry": registry, "dry_run": f.dry}
+				enteredValues = append(enteredValues, value)
 			} else {
 				endpoint = "secrets/" + url.PathEscape(f.pos[1])
 				method = "DELETE"
@@ -972,7 +974,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	if cmd == "wait" {
 		client = agentclient.WithTimeout(client, 11*time.Minute)
 	}
-	return sendCommand(ctx, client, u, prefix, token, method, endpoint, body, f, cmd, out, errout)
+	return sendCommand(ctx, client, u, prefix, token, method, endpoint, body, f, cmd, out, errout, enteredValues...)
 }
 
 func requestWaitLabel(cmd string, f commandFlags, method string) string {
@@ -1011,7 +1013,7 @@ func requestWaitLabel(cmd string, f commandFlags, method string) string {
 // sendCommand sends one change or read request to the agent and follows what the agent answers: a held approval, an
 // operation to watch to its end, or a result to print. It is what runDeployment does once it has built the request. base is
 // the agent's URL, which it does not change.
-func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, endpoint string, body any, f commandFlags, cmd string, out, errout io.Writer) int {
+func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, endpoint string, body any, f commandFlags, cmd string, out, errout io.Writer, enteredValues ...string) int {
 	u := agentURL(base, prefix, endpoint)
 	if cmd == "wait" {
 		q := u.Query()
@@ -1063,7 +1065,8 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		data = safe
 	}
 	if status == http.StatusAccepted {
-		if code, held := reportHeldMarkers(data, out, errout, f.json, promotionMarkers); held {
+		heldValues := append([]string{token, f.redactToken}, enteredValues...)
+		if code, held := reportHeldMarkers(data, out, errout, f.json, promotionMarkers, heldValues...); held {
 			return code
 		}
 		var accepted struct {
@@ -1079,10 +1082,11 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 			fmt.Fprintln(errout, "invalid operation events URL")
 			return 1
 		}
-		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, operationWatchOptions{config: f.config, extraTokens: []string{f.redactToken}})
+		return watchOperation(ctx, client, u, token, prefix, accepted.ID, accepted.Events, out, errout, f.json, cmd, f.env, f.project, operationWatchOptions{config: f.config, extraTokens: append([]string{f.redactToken}, enteredValues...)})
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, safeSecretText(agentclient.Message(status, data), token, f.redactToken))
+		values := append([]string{token, f.redactToken}, enteredValues...)
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), values...), !f.json)
 		if payload != nil && agentclient.InvalidRequest(status, data) {
 			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
 				fmt.Fprintln(errout, hint)
@@ -1124,9 +1128,12 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		return printApply(out, errout, data, f.dry)
 	}
 	if cmd == "secret" && f.pos[0] == "set" && !f.dry && !f.json {
-		if printSecretSet(out, data) {
+		if printSecretSet(out, data, append([]string{token}, enteredValues...)...) {
 			return 0
 		}
+	}
+	if cmd == "secret" && len(f.pos) > 0 && f.pos[0] == "set" && !f.dry {
+		data = redactRegistryJSON(data, append([]string{token}, enteredValues...)...)
 	}
 	if cmd == "secret" && f.pos[0] == "import" && !f.json {
 		return printSecretImport(out, errout, data, f.dry)

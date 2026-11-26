@@ -217,7 +217,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		streamErr := stream()
 		if notFound != "" {
 			progress.Close()
-			fmt.Fprintln(errout, notFound)
+			printRefusal(errout, notFound, !asJSON)
 			return 1
 		}
 		if ctx.Err() != nil {

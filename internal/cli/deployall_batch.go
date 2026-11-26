@@ -21,7 +21,10 @@ import (
 
 // prepareBatchTags completes all policy, registry and plan reads before any admission.
 func prepareBatchTags(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, m *manifest.Manifest, co gitcheck.Checkout, steps []deployStep, tags map[string]string, out, errout io.Writer) (bool, int) {
-	fail := func(err any) (bool, int) { fmt.Fprintln(errout, err); return true, 1 }
+	fail := func(err any) (bool, int) {
+		printRefusal(errout, safeSecretText(fmt.Sprint(err), target.Token), !f.json)
+		return true, 1
+	}
 	progress := newProgressLine(errout, !f.json && stderrTerminal(errout))
 	progress.Start("Checking agent policy")
 	policy, err := agentclient.AgentProtection(ctx, client, target)
@@ -92,7 +95,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			if e != nil {
 				guardErr = "legacy agent check failed"
 			} else if status != http.StatusOK {
-				guardErr = target.Redact(agentclient.Message(status, data))
+				guardErr = safeSecretText(agentclient.Message(status, data), target.Token)
 			} else if e = imagePlan(data, m, guard, "", tag); e != nil {
 				guardErr = e.Error()
 			}
@@ -115,7 +118,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			return fail("image tag lookup failed")
 		}
 		if status != http.StatusOK {
-			return fail(target.Redact(agentclient.Message(status, data)))
+			return fail(agentclient.Message(status, data))
 		}
 		fields, e := exactFields(data, "image", "tag")
 		var image, gotTag string
@@ -146,7 +149,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		if e != nil {
 			planErr = errors.New("deploy preview failed")
 		} else if status != http.StatusOK {
-			planErr = errors.New(target.Redact(agentclient.Message(status, data)))
+			planErr = errors.New(safeSecretText(agentclient.Message(status, data), target.Token))
 		}
 		image, tag := step.image, step.req.VersionTag
 		if step.req.KeepVersion {
@@ -337,7 +340,7 @@ func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclie
 			case err != nil:
 				guardErr = errors.New("legacy agent check failed; upgrade the agent or deploy an explicit digest")
 			case status != http.StatusOK:
-				guardErr = errors.New(target.Redact(agentclient.Message(status, data)) + "; upgrade the agent or deploy an explicit digest")
+				guardErr = errors.New(safeSecretText(agentclient.Message(status, data), target.Token) + "; upgrade the agent or deploy an explicit digest")
 			default:
 				if err := legacyKeptPlan(data, m, *step); err != nil {
 					guardErr = err

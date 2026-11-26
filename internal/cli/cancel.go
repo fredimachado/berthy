@@ -100,7 +100,7 @@ func runJobCancel(ctx context.Context, f commandFlags, base *url.URL, prefix, to
 		}
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 		return 1
 	}
 	if f.json {

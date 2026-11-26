@@ -481,7 +481,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		fmt.Fprintln(errout, target.Redact(err.Error()))
+		printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 		return 1
 	}
 	if (policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected) && len(co.Changed) != 0 {
@@ -492,7 +492,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	err = agentclient.CheckAgentVersion(ctx, client, target, *m)
 	progress.Close()
 	if err != nil {
-		fmt.Fprintln(errout, target.Redact(err.Error()))
+		printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 		return 1
 	}
 	protected := m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected
@@ -511,7 +511,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 			if e != nil {
 				fmt.Fprintln(errout, "legacy agent check failed; upgrade the agent or deploy an explicit digest")
 			} else {
-				fmt.Fprintf(errout, "%s; upgrade the agent or deploy an explicit digest\n", target.Redact(agentclient.Message(status, data)))
+				printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token)+"; upgrade the agent or deploy an explicit digest", !f.json)
 			}
 			return 1
 		}
@@ -555,7 +555,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 		} else if status == http.StatusNotFound {
 			fmt.Fprintln(errout, "image tag lookup is unavailable; upgrade the agent or deploy an explicit digest")
 		} else {
-			fmt.Fprintln(errout, target.Redact(agentclient.Message(status, data)))
+			printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !f.json)
 		}
 		return 1
 	}
@@ -581,7 +581,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 		return 1
 	}
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, target.Redact(agentclient.Message(status, data)))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), target.Token), !f.json)
 		return 1
 	}
 	if err := imagePlan(data, m, req, image, tag); err != nil {

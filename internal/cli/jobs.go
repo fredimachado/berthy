@@ -123,7 +123,7 @@ func runJobLogs(f commandFlags, base *url.URL, prefix, token string, out, errout
 	}
 	var logs api.JobLogs
 	if status != http.StatusOK {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json)
 		return 1
 	}
 	if json.Unmarshal(data, &logs) != nil || logs.RunID == 0 {
@@ -191,7 +191,7 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 		RunID int64 `json:"run_id"`
 	}
 	if status != http.StatusAccepted {
-		fmt.Fprintln(errout, agentclient.Message(status, data))
+		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON)
 		return 1
 	}
 	if code, held := reportHeld(data, out, errout, asJSON); held {

@@ -189,7 +189,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		}
 	}
 	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-		fmt.Fprintln(errout, target.Redact(e.Error()))
+		printRefusal(errout, safeSecretText(e.Error(), target.Token), !f.json)
 		return 1
 	}
 	if code := checkKeptVersions(ctx, client, target, steps, errout); code != 0 {
@@ -230,7 +230,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		}
 		code := 0
 		if f.dry && step.previewErr != "" {
-			fmt.Fprintln(errout, step.previewErr)
+			printRefusal(errout, safeSecretText(step.previewErr, target.Token), !f.json)
 			code = 1
 		} else if f.dry && step.preview != nil {
 			heading := ""
