@@ -335,3 +335,62 @@ func TestReadWaitClearsBeforeReadFailure(t *testing.T) {
 		}
 	})
 }
+
+func TestWaitCommandClearsBeforeReadFailure(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 80, nil }
+	t.Cleanup(func() { progressWidth = old })
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		release := make(chan struct{})
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+			}
+		}()
+		entered := make(chan struct{}, 1)
+		c := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &waitBody{r.Context(), entered, release, brokenWaitReader{}}, Request: r}, nil
+		})}
+		u, _ := url.Parse("http://agent.invalid")
+		var out, errs progressTestBuffer
+		done := make(chan int, 1)
+		go func() {
+			done <- sendCommand(ctx, c, u, "/v1/", "token", "GET", "wait", nil, commandFlags{}, "wait", &out, &errs)
+		}()
+		<-entered
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if got := errs.String(); got != "\r\x1b[2K| waiting for app (0.2s)" {
+			t.Errorf("frame=%q", got)
+		}
+		close(release)
+		released = true
+		synctest.Wait()
+		if code := <-done; code != 1 {
+			t.Errorf("exit=%d", code)
+		}
+		want := "\r\x1b[2K| waiting for app (0.2s)\r\x1b[2Kinvalid agent response\n"
+		if got := errs.String(); got != want {
+			t.Errorf("stderr=%q want %q", got, want)
+		}
+		if got := out.String(); got != "" {
+			t.Errorf("stdout=%q", got)
+		}
+		before := errs.String()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if got := errs.String(); got != before {
+			t.Errorf("late stderr=%q", got)
+		}
+		if got := out.String(); got != "" {
+			t.Errorf("late stdout=%q", got)
+		}
+	})
+}
