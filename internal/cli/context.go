@@ -11,14 +11,47 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sync"
 	"text/tabwriter"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/credstore"
 )
 
-var contextStoreContext = func() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt)
+var contextStoreContext = func() (context.Context, func() bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	done, result := make(chan struct{}), make(chan bool, 1)
+	go func() {
+		interrupted := false
+		select {
+		case <-interrupt:
+			interrupted = true
+			cancel()
+			<-done
+		case <-done:
+			// signal.Stop has finished, so this drains any interrupt delivered before teardown.
+			select {
+			case <-interrupt:
+				interrupted = true
+			default:
+			}
+		}
+		result <- interrupted
+	}()
+	var once sync.Once
+	var interrupted bool
+	stop := func() bool {
+		once.Do(func() {
+			signal.Stop(interrupt)
+			close(done)
+			interrupted = <-result
+			cancel()
+		})
+		return interrupted
+	}
+	return ctx, stop
 }
 
 const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--save-token] [--config FILE]\n" +
@@ -163,7 +196,7 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 	progress := startWait(errout, true, "saving credential")
 	err = store.Set(agentclient.StoreKey(project, env, entry), token)
 	progress.Close()
-	if ctx.Err() != nil {
+	if stop() {
 		return 130
 	}
 	if err != nil {
@@ -212,14 +245,14 @@ func runContextList(args []string, out, errout io.Writer) int {
 		storedStatus string
 	}
 	var rows []row
-	ctx, stop := contextStoreContext()
-	defer stop()
-	store := agentclient.Tokens(ctx)
 	projects := make([]string, 0, len(c.Projects))
 	for name := range c.Projects {
 		projects = append(projects, name)
 	}
 	slices.Sort(projects)
+	ctx, stop := contextStoreContext()
+	defer stop()
+	store := agentclient.Tokens(ctx)
 	progress := startWait(errout, !*asJSON, "checking credentials")
 	for _, project := range projects {
 		envs := make([]string, 0, len(c.Projects[project].Environments))
@@ -235,6 +268,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 				_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
 				if ctx.Err() != nil {
 					progress.Close()
+					stop()
 					return 130
 				}
 				if storeErr == nil {
@@ -252,6 +286,9 @@ func runContextList(args []string, out, errout io.Writer) int {
 		}
 	}
 	progress.Close()
+	if stop() {
+		return 130
+	}
 	if len(rows) == 0 {
 		return 0
 	}
@@ -324,7 +361,7 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		progress := startWait(errout, true, "deleting credential")
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
 		progress.Close()
-		if ctx.Err() != nil {
+		if stop() {
 			return 130
 		}
 		if err != nil {

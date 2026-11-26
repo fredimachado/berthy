@@ -368,7 +368,7 @@ func TestContextStoreInterruptClearsAndStops(t *testing.T) {
 				var out, errs progressTestBuffer
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				contextStoreContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+				contextStoreContext = func() (context.Context, func() bool) { return ctx, func() bool { return ctx.Err() != nil } }
 				gate, entered := make(chan struct{}), make(chan struct{}, 1)
 				var once sync.Once
 				s.Block = gate
@@ -481,6 +481,129 @@ func TestSecretCheckerParentCancellationClearsWait(t *testing.T) {
 		}
 		if !strings.HasSuffix(errs.String(), "\r\x1b[2Knot stored: cancelled\n") {
 			t.Errorf("clear and diagnostic: %q", errs.String())
+		}
+	})
+}
+
+func TestContextStoreStopsBeforeResult(t *testing.T) {
+	oldContext, oldHidden, oldStore := contextStoreContext, hiddenInput, agentclient.TokenStore
+	defer func() { contextStoreContext, hiddenInput, agentclient.TokenStore = oldContext, oldHidden, oldStore }()
+	hiddenInput = func() (func() ([]byte, error), bool) {
+		return func() ([]byte, error) { return []byte("fixture"), nil }, true
+	}
+	for _, mode := range []string{"set", "list", "remove"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			original := []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`)
+			if err := os.WriteFile(cfg, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			s := credtest.NewMemory()
+			entry := agentclient.Environment{URL: "http://localhost", TokenEnv: "SLICE4C_TOKEN"}
+			if err := s.Set(agentclient.StoreKey("demo", "dev", entry), "fixture"); err != nil {
+				t.Fatal(err)
+			}
+			agentclient.TokenStore = s
+			stopped := false
+			contextStoreContext = func() (context.Context, func() bool) {
+				ctx, cancel := context.WithCancel(context.Background())
+				var once sync.Once
+				return ctx, func() bool {
+					once.Do(func() {
+						if mode == "remove" {
+							data, err := os.ReadFile(cfg)
+							if err != nil || string(data) != string(original) {
+								t.Error("config changed before signal teardown")
+							}
+						}
+						stopped = true
+						cancel()
+					})
+					return false
+				}
+			}
+			var output, errs progressTestBuffer
+			out := promotionTestWriter{write: func(p []byte) (int, error) {
+				if !stopped {
+					t.Error("result written before signal teardown")
+				}
+				return output.Write(p)
+			}}
+			var code int
+			switch mode {
+			case "set":
+				code = saveContextToken("demo", "dev", entry, out, &errs)
+			case "list":
+				code = runContextList([]string{"--config", cfg}, out, &errs)
+			case "remove":
+				code = runContextRemove([]string{"--project", "demo", "-e", "dev", "--config", cfg, "--delete-token"}, out, &errs)
+			}
+			if code != 0 || !stopped || output.Len() == 0 {
+				t.Errorf("exit %d stopped %v output %q stderr %q", code, stopped, output.String(), errs.String())
+			}
+		})
+	}
+}
+
+func TestContextInterruptDuringFinalClear(t *testing.T) {
+	slice4cTerminal(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldContext, oldStore, oldWait := contextStoreContext, agentclient.TokenStore, agentclient.StoreWait
+	s := credtest.NewMemory()
+	agentclient.TokenStore, agentclient.StoreWait = s, 5*time.Second
+	defer func() {
+		contextStoreContext, agentclient.TokenStore, agentclient.StoreWait = oldContext, oldStore, oldWait
+	}()
+	synctest.Test(t, func(t *testing.T) {
+		var out, errs progressTestBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		contextStoreContext = func() (context.Context, func() bool) { return ctx, func() bool { return ctx.Err() != nil } }
+		gate, clearGate, clearEntered := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+		var storeOnce, clearOnce sync.Once
+		s.Block = gate
+		done := make(chan int, 1)
+		returned := false
+		defer func() {
+			cancel()
+			storeOnce.Do(func() { close(gate) })
+			clearOnce.Do(func() { close(clearGate) })
+			if !returned {
+				<-done
+			}
+			s.Wait()
+		}()
+		writer := promotionTestWriter{write: func(p []byte) (int, error) {
+			if string(p) == "\r\x1b[2K" {
+				clearEntered <- struct{}{}
+				<-clearGate
+			}
+			return errs.Write(p)
+		}}
+		go func() { done <- runContextList([]string{"--config", cfg}, &out, writer) }()
+		synctest.Wait()
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(errs.String(), "checking credentials") {
+			t.Fatalf("missing frame: %q", errs.String())
+		}
+		storeOnce.Do(func() { close(gate) })
+		synctest.Wait()
+		select {
+		case <-clearEntered:
+		default:
+			t.Fatal("final clear not entered")
+		}
+		cancel()
+		clearOnce.Do(func() { close(clearGate) })
+		if code := <-done; code != 130 {
+			t.Errorf("exit %d, want 130", code)
+		}
+		returned = true
+		if !strings.HasSuffix(errs.String(), "\r\x1b[2K") || out.String() != "" {
+			t.Errorf("stdout %q stderr %q", out.String(), errs.String())
 		}
 	})
 }
