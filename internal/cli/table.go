@@ -32,6 +32,11 @@ func (t *cliTable) write(w io.Writer, s cliStyle) error {
 		}
 	}
 	for _, row := range t.rows {
+		end := len(row)
+		for end > 0 && row[end-1] == "" {
+			end--
+		}
+		row = row[:end]
 		for i, cell := range row {
 			if _, err := io.WriteString(w, cell); err != nil {
 				return err

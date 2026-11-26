@@ -48,8 +48,8 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 		{"tokens", "NAME\tSCOPE\tAGENT\tORIGIN\tCREATED\tEXPIRES\tLAST USED\n界\tadmin\tno\t\t-\t2000-01-02 (expired)\tnever\né\tadmin\tno\t\t-\tnever\tnever\n", func(o, e io.Writer) int {
 			return printTokens(o, e, []byte(`[{"name":"界","scope":"admin","expires":"2000-01-02T00:00:00Z"},{"name":"é","scope":"admin"}]`))
 		}},
-		{"backups", "BACKUP\tAPP\tVOLUME\tSIZE\tFINISHED\tSHA256\tKEY\n界\tapp\tcommand\t0 B\t2026-01-01T00:00:00Z\tdigest\t\né\tapp\tcommand\t0 B\t2026-01-01T00:00:00Z\t\t\n", func(o, e io.Writer) int {
-			return printBackups(o, e, []byte(`[{"backup":"界","app":"app","finished":"2026-01-01T00:00:00Z","sha256":"digest"},{"backup":"é","app":"app","finished":"2026-01-01T00:00:00Z"}]`), false)
+		{"backups", "BACKUP\tAPP\tVOLUME\tSIZE\tFINISHED\tSHA256\tKEY\n界\tapp\tcommand\t0 B\t2026-01-01T00:00:00Z\tdigest\t\né\tapp\tcommand\t0 B\t2026-01-01T00:00:00Z\t\t\nthird\tapp\tcommand\t0 B\t2026-01-01T00:00:00Z\t\tlast\n", func(o, e io.Writer) int {
+			return printBackups(o, e, []byte(`[{"backup":"界","app":"app","finished":"2026-01-01T00:00:00Z","sha256":"digest"},{"backup":"é","app":"app","finished":"2026-01-01T00:00:00Z"},{"backup":"third","app":"app","finished":"2026-01-01T00:00:00Z","key":"last"}]`), false)
 		}},
 		{"context", "demo\tlab\thttps://example.invalid\tSLICE6_MISSING\tno\tunknown\ndemo\tprod\thttps://example.invalid\t\tno\tunknown\n", func(o, e io.Writer) int { return runContextList([]string{"--config", cfg}, o, e) }},
 	}
@@ -66,6 +66,12 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 			}
 			if out.String() != want.String() {
 				t.Errorf("plain got %q want %q", out.String(), want.String())
+			}
+			if tc.name == "checks" {
+				const legacy = "NAME  STATE    SINCE                 DETAIL\n界     healthy  2026-01-01T00:00:00Z  ok\né    failed   2026-01-01T00:00:00Z  \n"
+				if out.String() != legacy {
+					t.Errorf("checks legacy bytes: %q", out.String())
+				}
 			}
 			out.Reset()
 			slice5Destination(t, &out)
@@ -102,6 +108,9 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 			var aligned strings.Builder
 			for _, raw := range rawRows {
 				cells := strings.Split(raw, "\t")
+				for len(cells) > 0 && cells[len(cells)-1] == "" {
+					cells = cells[:len(cells)-1]
+				}
 				for i, cell := range cells {
 					aligned.WriteString(cell)
 					if i < len(cells)-1 {
@@ -112,6 +121,15 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 			}
 			if got := ansi.Strip(out.String()); got != aligned.String() {
 				t.Errorf("display columns got %q want %q", got, aligned.String())
+			}
+			if tc.name == "checks" && !strings.HasSuffix(out.String(), "\x1b[2m2026-01-01T00:00:00Z\x1b[0m\n") {
+				t.Errorf("checks trailing padding: %q", out.String())
+			}
+			if tc.name == "backups" {
+				lines := strings.Split(out.String(), "\n")
+				if len(lines) != 5 || !strings.HasSuffix(lines[1], "\x1b[2mdigest\x1b[0m") || !strings.HasSuffix(lines[2], "\x1b[2m2026-01-01T00:00:00Z\x1b[0m") || !strings.HasSuffix(lines[3], "  last") {
+					t.Errorf("backup empty cells: %q", out.String())
+				}
 			}
 			if tc.name == "jobs" && !strings.Contains(out.String(), "\x1b[31mfailed\x1b[0m: detail") {
 				t.Errorf("job detail styling: %q", out.String())
@@ -145,6 +163,21 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 				t.Errorf("exit %d output %q stderr %q", code, out.String(), errs.String())
 			}
 		})
+	}
+}
+
+func TestCLITablePreservesCellWhitespace(t *testing.T) {
+	var table cliTable
+	table.row("left", "", "value  ", "", "")
+	table.row("", "", "")
+	table.row("longer", "middle", "end")
+	var out bytes.Buffer
+	if err := table.write(&out, cliStyle{color: true}); err != nil {
+		t.Fatal(err)
+	}
+	const want = "left            value  \n\nlonger  middle  end\n"
+	if out.String() != want {
+		t.Errorf("got %q want %q", out.String(), want)
 	}
 }
 
