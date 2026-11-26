@@ -929,7 +929,7 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 Setup runs this guide at a terminal when it has an admin token. Run `berthy secret set -e prod` at a terminal to generate the declared secrets and enter each remaining value in turn. Enter skips a value; the command exits 1 while anything remains unmet. Add `--manifest-dir DIR` to choose the manifest.
 
-`berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input, with one trailing newline stripped, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
+`berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input: one trailing LF or CRLF is stripped, any other line break is refused, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
 
 ```bash
 # The registry token: a GitHub token that can read packages. Note --registry.
