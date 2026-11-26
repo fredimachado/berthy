@@ -80,6 +80,7 @@ func waitScriptOnSuccess(url string, secs int, success string) string {
 		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
 		"  if get " + shellQuote(url) + " \"$probe\"; then " + success + "; fi\n" +
 		"  if systemctl is-failed --quiet berthy; then exit 1; fi\n" +
+		"  [ \"$(date +%s)\" -lt \"$end\" ] || break\n" +
 		"  sleep 1\n" +
 		"done\n" +
 		"exit 1\n"

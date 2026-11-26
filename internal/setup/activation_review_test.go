@@ -78,10 +78,10 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 }
 func TestWaitScriptUsesElapsedDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
-	shellTool(t, tools, "date", `n=0; [ ! -f "$CLOCK" ] || n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"; echo "$n"`)
-	shellTool(t, tools, "curl", `echo "$*" >> "$CALLS"; exit 1`)
+	shellTool(t, tools, "date", `[ ! -f "$CLOCK" ] || cat "$CLOCK"; [ -f "$CLOCK" ] || echo 0`)
+	shellTool(t, tools, "curl", `echo "$*" >> "$CALLS"; n=0; [ ! -f "$CLOCK" ] || n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"; exit 1`)
 	shellTool(t, tools, "systemctl", "exit 1")
-	shellTool(t, tools, "sleep", "exit 0")
+	shellTool(t, tools, "sleep", `n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"`)
 	_ = runShell(t, waitScript("http://x", 3), "", tools, dir)
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
@@ -133,5 +133,18 @@ func TestRestartDoesNotConfirmWhenTimerStopFails(t *testing.T) {
 	shellTool(t, tools, "curl", "exit 0")
 	if err := runShell(t, restartScript("x", 1), "", tools, dir); err == nil {
 		t.Fatal("restart confirmed after timer stop failed")
+	}
+}
+
+func TestWaitDoesNotSleepAfterDeadline(t *testing.T) {
+	dir, tools := shellFixture(t)
+	shellTool(t, tools, "date", `[ ! -f "$CLOCK" ] || cat "$CLOCK"; [ -f "$CLOCK" ] || echo 0`)
+	shellTool(t, tools, "curl", `echo 3 > "$CLOCK"; exit 1`)
+	shellTool(t, tools, "systemctl", "exit 1")
+	shellTool(t, tools, "sleep", `echo slept >> "$CALLS"`)
+	_ = runShell(t, waitScript("http://x", 3), "", tools, dir)
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	if strings.Contains(string(calls), "slept") {
+		t.Fatal("slept after the deadline")
 	}
 }
