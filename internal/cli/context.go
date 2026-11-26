@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"text/tabwriter"
@@ -15,6 +16,10 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/credstore"
 )
+
+var contextStoreContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt)
+}
 
 const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--save-token] [--config FILE]\n" +
 	"       berthy context list [--config FILE] [--json]\n" +
@@ -152,10 +157,15 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	store := agentclient.Tokens(context.Background())
+	ctx, stop := contextStoreContext()
+	defer stop()
+	store := agentclient.Tokens(ctx)
 	progress := startWait(errout, true, "saving credential")
 	err = store.Set(agentclient.StoreKey(project, env, entry), token)
 	progress.Close()
+	if ctx.Err() != nil {
+		return 130
+	}
 	if err != nil {
 		if errors.Is(err, credstore.ErrGivenUp) {
 			fmt.Fprintf(errout, "could not confirm the save in the %s; set $%s instead\n", store.Name(), entry.TokenEnv)
@@ -202,7 +212,9 @@ func runContextList(args []string, out, errout io.Writer) int {
 		storedStatus string
 	}
 	var rows []row
-	store := agentclient.Tokens(context.Background())
+	ctx, stop := contextStoreContext()
+	defer stop()
+	store := agentclient.Tokens(ctx)
 	projects := make([]string, 0, len(c.Projects))
 	for name := range c.Projects {
 		projects = append(projects, name)
@@ -221,6 +233,10 @@ func runContextList(args []string, out, errout io.Writer) int {
 			stored := false
 			if agentclient.StoreUsable(project, env, e) {
 				_, storeErr := store.Get(agentclient.StoreKey(project, env, e))
+				if ctx.Err() != nil {
+					progress.Close()
+					return 130
+				}
 				if storeErr == nil {
 					status = "stored"
 					stored = true
@@ -302,10 +318,15 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 			fmt.Fprintln(errout, "unknown environment or missing token_env")
 			return 1
 		}
-		store := agentclient.Tokens(context.Background())
+		ctx, stop := contextStoreContext()
+		defer stop()
+		store := agentclient.Tokens(ctx)
 		progress := startWait(errout, true, "deleting credential")
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
 		progress.Close()
+		if ctx.Err() != nil {
+			return 130
+		}
 		if err != nil {
 			message := "the stored token was not deleted"
 			if errors.Is(err, credstore.ErrGivenUp) {

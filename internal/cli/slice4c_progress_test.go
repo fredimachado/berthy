@@ -19,6 +19,12 @@ import (
 	"berthy/internal/manifest"
 )
 
+// Start the process signal receiver outside any synctest bubble.
+func init() {
+	_, stop := contextStoreContext()
+	stop()
+}
+
 func slice4cTerminal(t *testing.T) {
 	t.Helper()
 	t.Setenv("TERM", "xterm")
@@ -281,7 +287,7 @@ func TestContextCredentialWritesClearBeforeResult(t *testing.T) {
 			agentclient.TokenStore, agentclient.StoreWait = s, 5*time.Second
 			defer func() { agentclient.TokenStore, agentclient.StoreWait = oldStore, oldWait }()
 			synctest.Test(t, func(t *testing.T) {
-				var out, errs progressTestBuffer
+				var combined progressTestBuffer
 				gate, entered := make(chan struct{}), make(chan struct{}, 1)
 				var once sync.Once
 				s.Block = gate
@@ -297,31 +303,184 @@ func TestContextCredentialWritesClearBeforeResult(t *testing.T) {
 				}()
 				go func() {
 					if mode == "set" {
-						done <- saveContextToken("demo", "dev", entry, &out, &errs)
+						done <- saveContextToken("demo", "dev", entry, &combined, &combined)
 					} else {
-						done <- runContextRemove([]string{"--project", "demo", "-e", "dev", "--config", cfg, "--delete-token"}, &out, &errs)
+						done <- runContextRemove([]string{"--project", "demo", "-e", "dev", "--config", cfg, "--delete-token"}, &combined, &combined)
 					}
 				}()
-				<-entered
 				synctest.Wait()
+				select {
+				case <-entered:
+				default:
+					t.Fatal("credential write did not enter the store")
+				}
 				time.Sleep(250 * time.Millisecond)
 				synctest.Wait()
 				label := "saving credential"
 				if mode == "delete" {
 					label = "deleting credential"
 				}
-				if !strings.Contains(errs.String(), label) {
-					t.Errorf("missing frame: %q", errs.String())
+				if !strings.Contains(combined.String(), label) {
+					t.Errorf("missing frame: %q", combined.String())
 				}
 				once.Do(func() { close(gate) })
 				if got := <-done; got != 0 {
 					t.Errorf("exit %d", got)
 				}
 				returned = true
-				if !strings.HasSuffix(errs.String(), "\r\x1b[2K") || !strings.Contains(out.String(), "the token of demo/dev") || strings.Contains(out.String()+errs.String(), "fixture-value") {
-					t.Errorf("stdout %q stderr %q", out.String(), errs.String())
+				result := "saved the token of demo/dev"
+				if mode == "delete" {
+					result = "deleted the token of demo/dev"
+				}
+				if got := combined.String(); !strings.Contains(got, "\r\x1b[2K"+result) || strings.Contains(got, "fixture-value") {
+					t.Errorf("combined output %q", got)
 				}
 			})
 		})
 	}
+}
+
+func TestContextStoreInterruptClearsAndStops(t *testing.T) {
+	slice4cTerminal(t)
+	oldHidden, oldContext := hiddenInput, contextStoreContext
+	hiddenInput = func() (func() ([]byte, error), bool) {
+		return func() ([]byte, error) { return []byte("fixture-value"), nil }, true
+	}
+	defer func() { hiddenInput, contextStoreContext = oldHidden, oldContext }()
+	for _, mode := range []string{"add", "list", "remove"} {
+		t.Run(mode, func(t *testing.T) {
+			s := credtest.NewMemory()
+			entry := agentclient.Environment{URL: "http://localhost", TokenEnv: "SLICE4C_TOKEN"}
+			if err := s.Set(agentclient.StoreKey("demo", "dev", entry), "fixture-value"); err != nil {
+				t.Fatal(err)
+			}
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			original := []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`)
+			if mode != "add" {
+				if err := os.WriteFile(cfg, original, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			oldStore, oldWait := agentclient.TokenStore, agentclient.StoreWait
+			agentclient.TokenStore, agentclient.StoreWait = s, 5*time.Second
+			defer func() { agentclient.TokenStore, agentclient.StoreWait = oldStore, oldWait }()
+			synctest.Test(t, func(t *testing.T) {
+				var out, errs progressTestBuffer
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				contextStoreContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+				gate, entered := make(chan struct{}), make(chan struct{}, 1)
+				var once sync.Once
+				s.Block = gate
+				s.OnCall = func() { entered <- struct{}{} }
+				done := make(chan int, 1)
+				returned := false
+				defer func() {
+					cancel()
+					once.Do(func() { close(gate) })
+					if !returned {
+						<-done
+					}
+					s.Wait()
+				}()
+				go func() {
+					switch mode {
+					case "add":
+						done <- runContextAdd([]string{"--project", "demo", "-e", "dev", "--url", "http://localhost", "--token-env", "SLICE4C_TOKEN", "--config", cfg, "--save-token"}, &out, &errs)
+					case "list":
+						done <- runContextList([]string{"--config", cfg}, &out, &errs)
+					case "remove":
+						done <- runContextRemove([]string{"--project", "demo", "-e", "dev", "--config", cfg, "--delete-token"}, &out, &errs)
+					}
+				}()
+				synctest.Wait()
+				select {
+				case <-entered:
+				default:
+					t.Fatal("store call not entered")
+				}
+				time.Sleep(250 * time.Millisecond)
+				synctest.Wait()
+				if !strings.Contains(errs.String(), "credential") {
+					t.Errorf("no frame: %q", errs.String())
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case code := <-done:
+					returned = true
+					if code != 130 {
+						t.Errorf("exit = %d, want 130", code)
+					}
+				default:
+					t.Fatal("interrupted command did not return")
+				}
+				if !strings.HasSuffix(errs.String(), "\r\x1b[2K") {
+					t.Errorf("missing final clear: %q", errs.String())
+				}
+				if strings.Contains(out.String(), "saved the token") || strings.Contains(out.String(), "deleted the token") || (mode == "list" && out.String() != "") {
+					t.Errorf("unexpected success: %q", out.String())
+				}
+				data, err := os.ReadFile(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "remove" && string(data) != string(original) {
+					t.Error("interrupted removal changed config")
+				}
+				if mode == "add" && !strings.Contains(string(data), "demo") {
+					t.Error("added config entry lost")
+				}
+			})
+		})
+	}
+}
+
+func TestSecretCheckerParentCancellationClearsWait(t *testing.T) {
+	slice4cTerminal(t)
+	synctest.Test(t, func(t *testing.T) {
+		var errs progressTestBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan askResult, 1)
+		release := make(chan struct{})
+		returned := false
+		defer func() {
+			close(release)
+			if !returned {
+				<-done
+			}
+		}()
+		g := secretGuide{check: func(ctx context.Context, _ string) checkResult {
+			select {
+			case <-ctx.Done():
+			case <-release:
+			}
+			return checkResult{refusal: "cancelled"}
+		}}
+		go func() {
+			_, res := askSecret(ctx, g, "prompt: ", func() ([]byte, error) { return []byte("fixture-value"), nil }, &errs, true)
+			done <- res
+		}()
+		synctest.Wait()
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(errs.String(), "checking secret") {
+			t.Errorf("missing frame: %q", errs.String())
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case got := <-done:
+			returned = true
+			if got != askRefused {
+				t.Errorf("result %v", got)
+			}
+		default:
+			t.Fatal("checker did not observe parent cancellation")
+		}
+		if !strings.HasSuffix(errs.String(), "\r\x1b[2Knot stored: cancelled\n") {
+			t.Errorf("clear and diagnostic: %q", errs.String())
+		}
+	})
 }
