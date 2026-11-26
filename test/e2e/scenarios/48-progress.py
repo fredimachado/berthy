@@ -26,6 +26,34 @@ import time
 import urllib.request
 
 
+# Replayed through the pre-S3 CLI, with only the operation ID and start time variable.
+LEGACY_DEPLOY = (b'accepted\nstep\nsucceeded\nterminal\napp: web\ncommit: s8-fixture\n'
+                 b'id: <id>\nkind: deploy\nstarted: <started>\nstate: succeeded\n')
+
+
+def stable_transcript(data):
+    data = re.sub(rb'(?m)^id: [0-9a-f]{32}$', b'id: <id>', data)
+    return re.sub(rb'(?m)^started: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$',
+                  b'started: <started>', data)
+
+
+def check_transcript(data):
+    return stable_transcript(data) == LEGACY_DEPLOY
+
+
+if len(sys.argv) > 1 and sys.argv[1] == '--transcript-selftest':
+    sample = LEGACY_DEPLOY.replace(b'<id>', b'a' * 32).replace(b'<started>', b'2026-01-01T00:00:00Z')
+    assert check_transcript(sample), 'legacy fixture rejected'
+    for original, changed in ((b'step\n', b'changed\n'), (b'step\n', b''),
+                              (b'step\n', b'step\nstep\n'),
+                              (b'kind: deploy\n', b'kind: rollback\n'),
+                              (b'kind: deploy\n', b''),
+                              (b'kind: deploy\n', b'kind: deploy\nkind: deploy\n')):
+        assert not check_transcript(sample.replace(original, changed, 1)), 'transcript drift accepted'
+    print('legacy transcript: changed, missing and duplicate events and fields rejected')
+    sys.exit(0)
+
+
 def stop_on_signal(signum, frame):
     raise InterruptedError('fixture stopped')
 
@@ -86,7 +114,7 @@ def retry_wrapper(args):
         termios.tcsetattr(0, termios.TCSANOW, quiet)
         child = subprocess.Popen([binary, 'deploy', 'web', '-e', environment, '--project', project,
                                   '--config', config, '--manifest-dir', manifest, '--version', digest,
-                                  '--request-id', request_id],
+                                  '--commit', 's8-fixture', '--request-id', request_id],
                                  stdin=subprocess.DEVNULL)
     except BaseException:
         termios.tcsetattr(0, termios.TCSANOW, attrs)
@@ -323,18 +351,18 @@ if len(sys.argv) > 1 and sys.argv[1] == '--retry-captures':
     assert retry not in err and b'succeeded' not in err, 'retry or result escaped onto stderr'
     piped_out, piped_err = capture(False, False)
     mixed_out, mixed_err = capture(False, True)
-    legacy_binary = os.environ.get('S8_LEGACY_CLI')
-    assert legacy_binary and os.path.isfile(legacy_binary) and os.access(legacy_binary, os.X_OK), 'S8_LEGACY_CLI must name the pre-S3 CLI'
-    legacy_out, legacy_err = capture(False, False, legacy_binary)
     assert b'\x1b' not in piped_out + piped_err + mixed_out, 'escape on a pipe'
     assert b'following deploy (' in mixed_err and mixed_err.endswith(b'\r\x1b[2K'), 'mixed stderr progress wrong'
     assert b'\nstep\n' in piped_out and b'\nstep\n' in mixed_out, 'legacy step event missing'
     assert b'state: succeeded\n' in piped_out and b'state: succeeded\n' in mixed_out, 'plain deploy result missing'
-    def stable_transcript(data):
-        return re.sub(rb'(?m)^(id|started): [^\n]*$', rb'\1: <dynamic>', data)
-    assert b'\x1b' not in legacy_out + legacy_err, 'escape in legacy pipes'
-    assert stable_transcript(piped_out) == stable_transcript(legacy_out), 'both-pipe transcript differs from legacy'
-    assert stable_transcript(mixed_out) == stable_transcript(legacy_out), 'mixed transcript differs from legacy'
+    assert check_transcript(piped_out), 'both-pipe transcript differs from pinned legacy'
+    assert check_transcript(mixed_out), 'mixed transcript differs from pinned legacy'
+    legacy_binary = os.environ.get('S8_LEGACY_CLI')
+    if legacy_binary:
+        assert os.path.isfile(legacy_binary) and os.access(legacy_binary, os.X_OK), 'S8_LEGACY_CLI is not executable'
+        legacy_out, legacy_err = capture(False, False, legacy_binary)
+        assert b'\x1b' not in legacy_out + legacy_err, 'escape in legacy pipes'
+        assert check_transcript(legacy_out), 'old CLI transcript differs from pinned legacy'
     print('retry descriptors: split terminals, pipes and mixed streams')
     sys.exit(0)
 
