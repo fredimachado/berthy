@@ -62,8 +62,9 @@ cat > "$RUN/progress-steps.json" <<'JSON'
   {"wait_text":"following deploy (", "timeout":"100s"},
   {"snapshot":"pending"},
   {"keys":["ctrl+c"]},
-  {"expect_exit":1, "timeout":"100s"},
-  {"snapshot":"interrupted"}
+  {"wait_text":"berthy cancel ", "timeout":"100s"},
+  {"snapshot":"interrupted"},
+  {"expect_exit":1, "timeout":"100s"}
 ]
 JSON
 stamp=$(date +%s)
