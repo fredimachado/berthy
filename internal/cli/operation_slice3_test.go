@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -19,7 +21,7 @@ func TestOperationTerminalStepMatrix(t *testing.T) {
 	t.Cleanup(func() { stderrTerminal, progressWidth, progressVT = oldTerm, oldWidth, oldVT })
 	progressWidth = func(io.Writer) (int, error) { return 80, nil }
 	progressVT = func(io.Writer, string) bool { return true }
-	events := "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: step\ndata: {\"step\":\"hello token\\u001b\"}\n\nid: 3\nevent: verify\ndata: {\"step\":\"good\",\"status\":\"ok\"}\n\nid: 4\nevent: verify\ndata: {\"step\":\"caution\",\"status\":\"warn\"}\n\nid: 5\nevent: verify\ndata: {\"step\":\"unsure\",\"status\":\"unknown\"}\n\nid: 6\nevent: verify\ndata: {\"step\":\"plain\"}\n\nid: 7\nevent: succeeded\ndata: {}\n\nevent: terminal\ndata: {}\n\n"
+	events := "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: step\ndata: {\"step\":\"hello token\\u001b\"}\n\nid: 3\nevent: verify\ndata: {\"step\":\"good token\\u001b\",\"status\":\"ok\"}\n\nid: 4\nevent: verify\ndata: {\"step\":\"caution\",\"status\":\"warn\"}\n\nid: 5\nevent: verify\ndata: {\"step\":\"unsure\",\"status\":\"unknown\"}\n\nid: 6\nevent: verify\ndata: {\"step\":\"plain\"}\n\nid: 7\nevent: succeeded\ndata: {}\n\nevent: terminal\ndata: {}\n\n"
 	for _, cmd := range []string{"deploy", "rollback", "restart", "scale", "prune", "exec", "run", "remove", "destroy", "restore", "ingress", "unrecognized"} {
 		for _, mode := range []string{"terminal", "pipe", "json"} {
 			t.Run(cmd+"/"+mode, func(t *testing.T) {
@@ -44,24 +46,40 @@ func TestOperationTerminalStepMatrix(t *testing.T) {
 					t.Fatalf("exit %d: %s", code, errs.String())
 				}
 				got := out.String()
+				child := ""
+				if cmd == "exec" || cmd == "run" {
+					child = "raw\x1b[31m"
+				}
 				if mode == "terminal" {
-					want := "  hello [redacted]\\x1b\n  ✓ good\n  ! caution\n  ? unsure\n  plain\n"
-					if !strings.HasPrefix(got, want) {
-						t.Errorf("human steps = %q, want prefix %q", got, want)
+					want := "  hello [redacted]\\x1b\n  ✓ good [redacted]\\x1b\n  ! caution\n  ? unsure\n  plain\n" + child + "state: succeeded\n"
+					if got != want {
+						t.Errorf("human transcript = %q, want %q", got, want)
 					}
 				} else if mode == "pipe" {
 					first := "accepted\nstep\n"
-					if reportsSteps(cmd) {
+					if cmd == "remove" || cmd == "destroy" || cmd == "restore" {
 						first = "accepted\n  hello [redacted]\\x1b\n"
 					}
-					if !strings.HasPrefix(got, first+"  good\n  caution\n  unsure\n  plain\nsucceeded\nterminal\n") {
-						t.Errorf("legacy pipe = %q", got)
+					want := first + "  good [redacted]\\x1b\n  caution\n  unsure\n  plain\nsucceeded\nterminal\n" + child + "state: succeeded\n"
+					if got != want {
+						t.Errorf("legacy pipe = %q, want %q", got, want)
 					}
-				} else if !strings.Contains(got, `"checks":`) || !strings.Contains(got, `"status": "ok"`) {
-					t.Errorf("JSON checks = %q", got)
-				}
-				if mode != "json" && (cmd == "exec" || cmd == "run") && !strings.Contains(got, "raw\x1b[31m") {
-					t.Errorf("raw output lost: %q", got)
+				} else {
+					var result struct {
+						Checks []map[string]any `json:"checks"`
+					}
+					if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+						t.Fatalf("decode JSON: %v", err)
+					}
+					want := []map[string]any{
+						{"status": "ok", "step": "good [redacted]\x1b"},
+						{"status": "warn", "step": "caution"},
+						{"status": "unknown", "step": "unsure"},
+						{"step": "plain"},
+					}
+					if !reflect.DeepEqual(result.Checks, want) {
+						t.Errorf("JSON checks = %#v, want %#v", result.Checks, want)
+					}
 				}
 			})
 		}
