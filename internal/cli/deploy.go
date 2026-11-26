@@ -1130,7 +1130,18 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	if cmd == "secret" && f.pos[0] == "generate" && !f.json {
 		return printSecretGenerate(out, errout, data, f.dry, f.replaceGenerated)
 	}
-	return printResponse(out, errout, data, f.json)
+	shape := shapeGeneric
+	switch cmd {
+	case "wait":
+		shape = shapeWait
+	case "audit":
+		shape = shapeAudit
+	case "ingress":
+		if len(f.pos) > 0 && f.pos[0] == "status" {
+			shape = shapeIngress
+		}
+	}
+	return printResponseShape(out, errout, data, f.json, shape)
 }
 
 // agentURL returns base with the path of endpoint under prefix. base is not changed.
@@ -1167,6 +1178,10 @@ func newRequestID() (string, error) {
 }
 
 func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
+	return printResponseShape(out, errout, b, asJSON, shapeGeneric)
+}
+
+func printResponseShape(out, errout io.Writer, b []byte, asJSON bool, shape textShape) int {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
@@ -1178,7 +1193,7 @@ func printResponse(out, errout io.Writer, b []byte, asJSON bool) int {
 		pretty, _ := json.MarshalIndent(v, "", "  ")
 		fmt.Fprintln(out, string(pretty))
 	} else {
-		printText(out, v, "")
+		printStyledText(out, v, "", styleFor(out, true), shape)
 	}
 	return 0
 }

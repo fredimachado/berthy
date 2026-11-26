@@ -390,7 +390,20 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			}
 			fmt.Fprintf(out, "cli: %s\nagent: %s\n", version.String(), agentVersion)
 		}
-		printText(out, v, "")
+		shape := shapeGeneric
+		switch cmd {
+		case "doctor":
+			shape = shapeDoctor
+		case "ps":
+			shape = shapeApps
+		case "describe":
+			shape = shapeApp
+		case "df":
+			shape = shapeDF
+		case "stats":
+			shape = shapeStats
+		}
+		printStyledText(out, v, "", styleFor(out, true), shape)
 	}
 
 	if cmd == "doctor" {
@@ -430,7 +443,35 @@ func runProbeHelper(errout io.Writer) int {
 	return 0
 }
 
+type textShape uint8
+
+const (
+	shapeGeneric textShape = iota
+	shapeOperation
+	shapeDoctor
+	shapeChecks
+	shapeCheck
+	shapeApps
+	shapeApp
+	shapeRoles
+	shapeRole
+	shapeReplicas
+	shapeReplica
+	shapeDF
+	shapeWait
+	shapeAudit
+	shapeIngress
+	shapeTunnel
+	shapeStats
+	shapeContainers
+	shapeContainer
+)
+
 func printText(w io.Writer, v any, indent string) {
+	printStyledText(w, v, indent, styleFor(w, true), shapeGeneric)
+}
+
+func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textShape) {
 	switch x := v.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(x))
@@ -440,23 +481,75 @@ func printText(w io.Writer, v any, indent string) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			v := x[k]
-			fmt.Fprintf(w, "%s%s: ", indent, terminalSafe(k))
+			fmt.Fprintf(w, "%s%s: ", indent, s.paint(toneMuted, terminalSafe(k)))
+			child := shapeGeneric
+			switch {
+			case shape == shapeIngress && k == "tunnel":
+				child = shapeTunnel
+			case shape == shapeStats && k == "containers":
+				child = shapeContainers
+			case shape == shapeDoctor && k == "checks":
+				if _, ok := v.([]any); ok {
+					child = shapeChecks
+				}
+			case shape == shapeApp && k == "roles":
+				child = shapeRoles
+			case shape == shapeRole && k == "replicas":
+				child = shapeReplicas
+			}
 			switch v.(type) {
 			case map[string]any, []any:
 				fmt.Fprintln(w)
-				printText(w, v, indent+"  ")
+				printStyledText(w, v, indent+"  ", s, child)
 			default:
-				fmt.Fprintln(w, terminalSafe(fmt.Sprint(v)))
+				value := terminalSafe(fmt.Sprint(v))
+				tone := tonePlain
+				switch {
+				case shape == shapeOperation && k == "state", shape == shapeWait && k == "status", shape == shapeReplica && (k == "state" || k == "health"), shape == shapeDF && (k == "host_status" || k == "docker_status"), shape == shapeAudit && k == "outcome", shape == shapeTunnel && k == "status":
+					tone = statusTone(fmt.Sprint(v))
+				case (shape == shapeStats && k == "docker_error" || shape == shapeContainer && k == "error") && value != "":
+					tone = toneError
+				case shape == shapeOperation && (k == "error" || k == "reason") && value != "":
+					tone = toneError
+				case shape == shapeCheck && (k == "name" || k == "ok"):
+					ok, valid := x["ok"].(bool)
+					critical, validCritical := x["critical"].(bool)
+					if valid && validCritical {
+						if ok {
+							tone = toneOK
+						} else if critical {
+							tone = toneError
+						} else {
+							tone = toneWarning
+						}
+					}
+				}
+				fmt.Fprintln(w, s.paint(tone, value))
 			}
 		}
 	case []any:
+		child := shape
+		switch shape {
+		case shapeChecks:
+			child = shapeCheck
+		case shapeApps:
+			child = shapeApp
+		case shapeRoles:
+			child = shapeRole
+		case shapeReplicas:
+			child = shapeReplica
+		case shapeContainers:
+			child = shapeContainer
+		}
 		for _, v := range x {
 			switch v.(type) {
-			case map[string]any, []any:
-				printText(w, v, indent)
+			case map[string]any:
+				printStyledText(w, v, indent, s, child)
+				fmt.Fprintln(w)
+			case []any:
+				printStyledText(w, v, indent, s, shapeGeneric)
 				fmt.Fprintln(w)
 			default:
-				// A scalar is an item of the list, so it is marked and indented under its key.
 				fmt.Fprintf(w, "%s- %s\n", indent, terminalSafe(fmt.Sprint(v)))
 			}
 		}
@@ -557,7 +650,7 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 			}
 			fmt.Fprintln(out, compact.String())
 		} else {
-			printText(out, v, "")
+			printStyledText(out, v, "", styleFor(out, true), shapeStats)
 		}
 		return nil
 	})

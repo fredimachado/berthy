@@ -6,33 +6,48 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"berthy/internal/deploy"
 )
 
-// takeDiffLines removes the diff from a decoded plan and returns it as text lines, made safe for a terminal: a plain value
-// comes from a manifest, which an AI agent may have sent. It returns nil, and leaves the plan as it is, when the plan has no diff.
-func takeDiffLines(plan map[string]any) []string {
+func takeDiff(plan map[string]any) (deploy.Diff, bool) {
 	raw, ok := plan["diff"]
 	if !ok {
-		return nil
+		return deploy.Diff{}, false
 	}
 	b, err := json.Marshal(raw)
 	var d deploy.Diff
 	if err != nil || json.Unmarshal(b, &d) != nil {
-		return nil
+		return deploy.Diff{}, false
 	}
 	delete(plan, "diff")
-	lines := d.Lines()
-	for i, l := range lines {
-		lines[i] = terminalSafe(l)
-	}
-	return lines
+	return d, true
 }
 
-func printLines(out io.Writer, indent string, lines []string) {
-	for _, l := range lines {
-		fmt.Fprintln(out, indent+l)
+func printStyledDiff(w io.Writer, indent string, d deploy.Diff, s cliStyle) {
+	lines := d.Lines()
+	for i, line := range lines {
+		if !d.New && len(d.Changes) > 0 && i < len(d.Changes) && strings.HasSuffix(line, d.Changes[i].Change) {
+			change := d.Changes[i].Change
+			area := line[:len(line)-len(change)]
+			tone := tonePlain
+			if strings.HasPrefix(change, "+ ") {
+				tone = toneOK
+			} else if strings.HasPrefix(change, "- ") {
+				tone = toneError
+			} else if strings.HasPrefix(change, "~ ") {
+				tone = toneWarning
+			}
+			if tone != tonePlain {
+				change = s.paint(tone, terminalSafe(change[:2])) + terminalSafe(change[2:])
+			} else {
+				change = terminalSafe(change)
+			}
+			fmt.Fprintln(w, indent+s.paint(toneMuted, terminalSafe(area))+change)
+		} else {
+			fmt.Fprintln(w, indent+terminalSafe(line))
+		}
 	}
 }
 
@@ -51,15 +66,15 @@ func printDryRun(out, errout io.Writer, b []byte) int {
 		printText(out, v, "")
 		return 0
 	}
-	lines := takeDiffLines(plan)
-	if lines == nil {
+	diff, ok := takeDiff(plan)
+	if !ok {
 		printText(out, plan, "")
 		return 0
 	}
 	app, _ := plan["app"].(string)
 	delete(plan, "app")
 	fmt.Fprintln(out, terminalSafe(app))
-	printLines(out, "  ", lines)
+	printStyledDiff(out, "  ", diff, styleFor(out, true))
 	if len(plan) > 0 {
 		printText(out, plan, "")
 	}
@@ -73,9 +88,7 @@ func printDiff(out, errout io.Writer, b []byte) int {
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
-	for _, l := range d.Lines() {
-		fmt.Fprintln(out, terminalSafe(l))
-	}
+	printStyledDiff(out, "", d, styleFor(out, true))
 	return 0
 }
 

@@ -414,16 +414,17 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 		if heading != "" {
 			fmt.Fprintln(&buf, terminalSafe(heading))
 		}
-		lines := takeDiffLines(plan)
-		if lines == nil {
-			printText(&buf, plan, "")
+		s := styleFor(out, true)
+		diff, ok := takeDiff(plan)
+		if !ok {
+			printStyledText(&buf, plan, "", s, shapeGeneric)
 		} else {
 			app, _ := plan["app"].(string)
 			delete(plan, "app")
 			fmt.Fprintln(&buf, app)
-			printLines(&buf, "  ", lines)
+			printStyledDiff(&buf, "  ", diff, s)
 			if len(plan) > 0 {
-				printText(&buf, plan, "")
+				printStyledText(&buf, plan, "", s, shapeGeneric)
 			}
 		}
 	}

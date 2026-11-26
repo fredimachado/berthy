@@ -81,7 +81,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 	}
 	printResult := func(data []byte) {
 		if !asJSON {
-			printResponse(out, errout, data, false)
+			printResponseShape(out, errout, data, false, shapeOperation)
 			return
 		}
 		var pretty bytes.Buffer
