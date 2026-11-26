@@ -119,3 +119,19 @@ func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 		t.Fatal("guard hid failed stop")
 	}
 }
+
+func TestFailedRecoveryKeepsTheGuardArmed(t *testing.T) {
+	r := &guardRunner{}
+	err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "62 seconds") || strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
+		t.Fatalf("unresolved recovery: %v; %q", err, r.calls)
+	}
+}
+func TestRestartDoesNotConfirmWhenTimerStopFails(t *testing.T) {
+	dir, tools := shellFixture(t)
+	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; esac; exit 0`)
+	shellTool(t, tools, "curl", "exit 0")
+	if err := runShell(t, restartScript("x", 1), "", tools, dir); err == nil {
+		t.Fatal("restart confirmed after timer stop failed")
+	}
+}
