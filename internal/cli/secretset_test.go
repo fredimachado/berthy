@@ -313,6 +313,89 @@ func TestSecretSetFromAPipeIsUnchanged(t *testing.T) {
 	}
 }
 
+// TestSecretSetFromAPipeAcceptsOneTrailingLineEnd checks that a piped value may end with one LF, one CRLF, or neither, and
+// the agent receives the value without that terminator.
+func TestSecretSetFromAPipeAcceptsOneTrailingLineEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stdin string
+	}{
+		{"PowerShell CRLF", "postgres://db\r\n"},
+		{"trailing LF", "postgres://db\n"},
+		{"no terminator", "postgres://db"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []string
+			server := recordingAgent(&bodies)
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			withStdin(t, tc.stdin)
+			var out, errout bytes.Buffer
+			if code := Run([]string{"secret", "set", "DB_URL", "-e", "dev", "--config", cfg}, &out, &errout); code != 0 {
+				t.Fatalf("exit %d: %s", code, errout.String())
+			}
+			if len(bodies) != 1 {
+				t.Fatalf("requests %d, want 1: %q", len(bodies), bodies)
+			}
+			i := strings.Index(bodies[0], "{")
+			if i < 0 {
+				t.Fatalf("no JSON body in %q", bodies[0])
+			}
+			var req struct {
+				Value string `json:"value"`
+			}
+			if err := json.Unmarshal([]byte(bodies[0][i:]), &req); err != nil {
+				t.Fatalf("decode %q: %v", bodies[0][i:], err)
+			}
+			if req.Value != "postgres://db" {
+				t.Fatalf("value %q, want %q", req.Value, "postgres://db")
+			}
+		})
+	}
+}
+
+// TestSecretSetFromAPipeRefusesALineBreakInTheValue checks that a piped value with any remaining CR or LF is refused with
+// exit 1, no request to the agent, empty stdout, and a stderr line that names the rule without echoing the value.
+func TestSecretSetFromAPipeRefusesALineBreakInTheValue(t *testing.T) {
+	const marker = "s3cr3t-part"
+	for _, tc := range []struct {
+		name  string
+		stdin string
+	}{
+		{"LF in the middle", marker + "\nother"},
+		{"CRLF then more", marker + "\r\nother\r\n"},
+		{"CR in the middle", marker + "\rx"},
+		{"trailing CR only", marker + "\r"},
+		{"two LFs", marker + "\n\n"},
+		{"two CRLFs", marker + "\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []string
+			server := recordingAgent(&bodies)
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			withStdin(t, tc.stdin)
+			var out, errout bytes.Buffer
+			if code := Run([]string{"secret", "set", "DB_URL", "-e", "dev", "--config", cfg}, &out, &errout); code != 1 {
+				t.Fatalf("exit %d, want 1: %s", code, errout.String())
+			}
+			if len(bodies) != 0 {
+				t.Fatalf("requests %q, want none", bodies)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout %q, want empty", out.String())
+			}
+			errText := errout.String()
+			if !strings.Contains(errText, "the secret must be one line") {
+				t.Fatalf("stderr %q, want the one-line rule", errText)
+			}
+			if strings.Contains(errText, marker) {
+				t.Fatalf("stderr %q, must not echo the value", errText)
+			}
+		})
+	}
+}
+
 // fakeCloudflare starts an in-memory Cloudflare account that accepts token and holds zones, and points the CLI at it. It
 // returns the account, so a test can break its endpoints, and a counter of the requests the account received.
 func fakeCloudflare(t *testing.T, token string, zones ...string) (*cftest.Fake, *atomic.Int32) {
