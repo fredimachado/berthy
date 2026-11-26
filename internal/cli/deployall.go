@@ -189,7 +189,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		}
 	}
 	if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-		printRefusal(errout, safeSecretText(e.Error(), target.Token), !f.json)
+		printRefusal(errout, terminalSafe(e.Error()), !f.json)
 		return 1
 	}
 	if code := checkKeptVersions(ctx, client, target, steps, errout, f.json); code != 0 {
@@ -200,7 +200,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if !m.Protected {
 			policy, err = agentclient.AgentProtection(ctx, client, target)
 			if err != nil {
-				printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
+				printRefusal(errout, terminalSafe(err.Error()), !f.json)
 				return 1
 			}
 		}
@@ -325,7 +325,7 @@ func checkKeptVersions(ctx context.Context, client *http.Client, target *agentcl
 		}
 		answer, found, err := readApplied(ctx, client, target, step.app)
 		if err != nil {
-			printRefusal(errout, safeSecretText(err.Error(), target.Token)+" (nothing was deployed)", !asJSON)
+			printRefusal(errout, err.Error()+" (nothing was deployed)", !asJSON)
 			return 1
 		}
 		if !found {

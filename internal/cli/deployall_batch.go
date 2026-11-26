@@ -30,7 +30,8 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		return fail(target.Redact(err.Error()))
+		printRefusal(errout, terminalSafe(err.Error()), !f.json)
+		return true, 1
 	}
 	protected := m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected
 	if protected && len(co.Changed) > 0 {
@@ -95,7 +96,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 			if e != nil {
 				guardErr = "legacy agent check failed"
 			} else if status != http.StatusOK {
-				guardErr = safeSecretText(agentclient.Message(status, data), target.Token)
+				guardErr = agentclient.Message(status, data)
 			} else if e = imagePlan(data, m, guard, "", tag); e != nil {
 				guardErr = e.Error()
 			}
@@ -149,7 +150,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 		if e != nil {
 			planErr = errors.New("deploy preview failed")
 		} else if status != http.StatusOK {
-			planErr = errors.New(safeSecretText(agentclient.Message(status, data), target.Token))
+			planErr = errors.New(agentclient.Message(status, data))
 		}
 		image, tag := step.image, step.req.VersionTag
 		if step.req.KeepVersion {
@@ -329,7 +330,7 @@ func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclie
 		var guardErr error
 		switch {
 		case m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected:
-			guardErr = fmt.Errorf("image app %s keeps a tagged digest; deploy an explicit digest", terminalSafe(target.Redact(step.app)))
+			guardErr = fmt.Errorf("image app %s keeps a tagged digest; deploy an explicit digest", step.app)
 		case policy == agentclient.ProtectionLegacyUnprotected:
 			guard := step.req
 			guard.DryRun = true
@@ -340,7 +341,7 @@ func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclie
 			case err != nil:
 				guardErr = errors.New("legacy agent check failed; upgrade the agent or deploy an explicit digest")
 			case status != http.StatusOK:
-				guardErr = errors.New(safeSecretText(agentclient.Message(status, data), target.Token) + "; upgrade the agent or deploy an explicit digest")
+				guardErr = errors.New(agentclient.Message(status, data) + "; upgrade the agent or deploy an explicit digest")
 			default:
 				if err := legacyKeptPlan(data, m, *step); err != nil {
 					guardErr = err

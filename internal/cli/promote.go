@@ -123,11 +123,11 @@ func selectPromotion(ctx context.Context, c *http.Client, dst *agentclient.Targe
 	}
 	src, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: dst.Project, Environment: from})
 	if err != nil {
-		return snapshot, err
+		return snapshot, errors.New(safeSecretText(err.Error(), dst.Token))
 	}
 	source, found, err := readApplied(ctx, c, src, app, dst.Token)
 	if err != nil {
-		return snapshot, fmt.Errorf("source: %s", dst.Redact(err.Error()))
+		return snapshot, fmt.Errorf("source: %w", err)
 	}
 	if !found {
 		return snapshot, errors.New("source app is not deployed")
@@ -141,7 +141,7 @@ func selectPromotion(ctx context.Context, c *http.Client, dst *agentclient.Targe
 	}
 	dest, found, err := readApplied(ctx, c, dst, app, src.Token)
 	if err != nil {
-		return snapshot, fmt.Errorf("destination: %s", src.Redact(err.Error()))
+		return snapshot, fmt.Errorf("destination: %w", err)
 	}
 	if found {
 		current, err := promotionImage(m, app, dest.Digest)
@@ -227,6 +227,11 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	err = refuseLocalChanges(ctx, c, dst, m.Protected, co)
 	if err == nil {
 		err = agentclient.CheckAgentVersion(ctx, c, dst, *m)
+		if err != nil {
+			progress.Close()
+			printRefusal(errout, terminalSafe(err.Error()), !f.json)
+			return 1
+		}
 	}
 	progress.Close()
 	if err != nil {
@@ -239,7 +244,8 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	snapshot, err := selectPromotion(ctx, c, dst, cfgPath, from, m, req.App)
 	progress.Close()
 	if err != nil {
-		return fail(err)
+		printRefusal(errout, err.Error(), !f.json)
+		return 1
 	}
 	req.Version, req.VersionTag = snapshot.image, snapshot.tag
 	expected := snapshot.expectedID
@@ -256,7 +262,8 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	progress.Close()
 	redact := func(s string) string { return safeSecretText(s, snapshot.source.Token, dst.Token) }
 	if err != nil {
-		return fail(errors.New(redact(err.Error())))
+		printRefusal(errout, redact(err.Error()), !f.json)
+		return 1
 	}
 	if status != http.StatusOK {
 		printRefusal(errout, safeSecretText(agentclient.Message(status, data), snapshot.source.Token, dst.Token), !f.json)
@@ -275,7 +282,8 @@ func runPromote(ctx context.Context, c *http.Client, dst *agentclient.Target, cf
 	}
 	heading := fmt.Sprintf("Source: %s release %d\nDestination: %s/%s app %s\nImage: %s\nTag: %s", from, snapshot.sourceID, dst.Project, dst.Env, req.App, req.Version, req.VersionTag)
 	if err := showImagePlan(out, data, dst.Token, f.json, heading, snapshot.source.Token); err != nil {
-		return fail(errors.New(safeSecretText(err.Error(), dst.Token, snapshot.source.Token)))
+		printRefusal(errout, safeSecretText(err.Error(), dst.Token, snapshot.source.Token), !f.json)
+		return 1
 	}
 
 	if err := ctx.Err(); err != nil {

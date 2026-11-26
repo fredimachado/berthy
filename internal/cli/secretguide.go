@@ -187,12 +187,27 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 func redactSecretText(text string, values ...string) string {
 	values = append([]string(nil), values...)
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	for _, value := range values {
-		if value != "" {
-			text = strings.ReplaceAll(text, value, "[redacted]")
+	var result strings.Builder
+	var write func(string, int)
+	write = func(part string, index int) {
+		if index == len(values) || values[index] == "" {
+			result.WriteString(part)
+			return
+		}
+		value := values[index]
+		for {
+			i := strings.Index(part, value)
+			if i < 0 {
+				write(part, index+1)
+				return
+			}
+			write(part[:i], index+1)
+			result.WriteString("[redacted]")
+			part = part[i+len(value):]
 		}
 	}
-	return text
+	write(text, 0)
+	return result.String()
 }
 
 func safeSecretText(text string, values ...string) string {

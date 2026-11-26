@@ -40,7 +40,7 @@ func runVersions(ctx context.Context, c *http.Client, t *agentclient.Target, f c
 	err = agentclient.CheckAgentVersion(ctx, c, t, *m)
 	progress.Close()
 	if err != nil {
-		printRefusal(errout, safeSecretText(err.Error(), t.Token), !f.json)
+		printRefusal(errout, terminalSafe(err.Error()), !f.json)
 		return 1
 	}
 	body, err := json.Marshal(api.ImageLookup{Manifest: *m, App: f.pos[0]})

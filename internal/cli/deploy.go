@@ -721,7 +721,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 1
 			}
 			if e := agentclient.CheckAgentVersion(ctx, client, target, req.Manifest); e != nil {
-				printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
+				printRefusal(errout, terminalSafe(e.Error()), !f.json)
 				return 1
 			}
 		}
@@ -745,7 +745,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return 2
 		}
 		if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-			printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
+			printRefusal(errout, terminalSafe(e.Error()), !f.json)
 			return 1
 		}
 		// The request carries the checkout's commit and local-changes flag as a deploy does.
@@ -867,7 +867,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 2
 			}
 			if e := agentclient.CheckAgentVersion(ctx, client, target, *m); e != nil {
-				printRefusal(errout, safeSecretText(e.Error(), token), !f.json)
+				printRefusal(errout, terminalSafe(e.Error()), !f.json)
 				return 1
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
@@ -1069,6 +1069,9 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 	}
 	if status == http.StatusAccepted {
 		heldValues := append([]string{token, f.redactToken}, enteredValues...)
+		if f.redactToken != "" {
+			heldValues = nil
+		}
 		if code, held := reportHeldMarkers(data, out, errout, f.json, promotionMarkers, heldValues...); held {
 			return code
 		}

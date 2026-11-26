@@ -382,7 +382,17 @@ func safePromotionResponse(data []byte, tokens ...string) ([]byte, error) {
 		return nil, err
 	}
 	if envelope, ok := safe.(map[string]any); ok && envelope["approval_id"] != nil && envelope["plan"] != nil {
-		plan, err := redactDeployValue(envelope["plan"], true, tokens...)
+		var original map[string]json.RawMessage
+		if json.Unmarshal(data, &original) != nil {
+			return nil, errors.New("invalid agent response")
+		}
+		var originalPlan any
+		planDecoder := json.NewDecoder(bytes.NewReader(original["plan"]))
+		planDecoder.UseNumber()
+		if planDecoder.Decode(&originalPlan) != nil {
+			return nil, errors.New("invalid agent response")
+		}
+		plan, err := redactDeployValue(originalPlan, true, tokens...)
 		if err != nil {
 			return nil, err
 		}
@@ -481,7 +491,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
+		printRefusal(errout, terminalSafe(err.Error()), !f.json)
 		return 1
 	}
 	if (policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected) && len(co.Changed) != 0 {
@@ -492,7 +502,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	err = agentclient.CheckAgentVersion(ctx, client, target, *m)
 	progress.Close()
 	if err != nil {
-		printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
+		printRefusal(errout, terminalSafe(err.Error()), !f.json)
 		return 1
 	}
 	protected := m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected
