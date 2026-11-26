@@ -1,0 +1,307 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"berthy/internal/agentclient"
+	"berthy/internal/credstore/credtest"
+	"berthy/internal/manifest"
+)
+
+func slice4cTerminal(t *testing.T) {
+	t.Helper()
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "1")
+	forceStderrTerminal(t, true)
+	forceProgressVT(t)
+	old := progressWidth
+	progressWidth = func(io.Writer) (int, error) { return 100, nil }
+	t.Cleanup(func() { progressWidth = old })
+}
+
+func TestSecretWaitStartsAfterHiddenRead(t *testing.T) {
+	slice4cTerminal(t)
+	synctest.Test(t, func(t *testing.T) {
+		var errs progressTestBuffer
+		input, check := make(chan struct{}), make(chan struct{})
+		var inputOnce, checkOnce sync.Once
+		done := make(chan askResult, 1)
+		defer func() { inputOnce.Do(func() { close(input) }); checkOnce.Do(func() { close(check) }); <-done }()
+		g := secretGuide{check: func(ctx context.Context, value string) checkResult { <-check; return checkResult{refusal: "refused"} }}
+		go func() {
+			_, result := askSecret(context.Background(), g, "prompt: ", func() ([]byte, error) { <-input; return []byte("fixture"), nil }, &errs, true)
+			done <- result
+		}()
+		synctest.Wait()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if got := errs.String(); got != "prompt: " {
+			t.Errorf("hidden input: %q", got)
+		}
+		inputOnce.Do(func() { close(input) })
+		synctest.Wait()
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(errs.String(), "checking secret") {
+			t.Errorf("missing checker frame: %q", errs.String())
+		}
+		checkOnce.Do(func() { close(check) })
+		synctest.Wait()
+		if !strings.HasSuffix(errs.String(), "\r\x1b[2Knot stored: refused\n") {
+			t.Errorf("final diagnostic: %q", errs.String())
+		}
+	})
+}
+
+func TestGuideRequestErrorAfterProgressClear(t *testing.T) {
+	slice4cTerminal(t)
+	dir := secretManifestDir(t, "project: demo\nnetwork: overlay\napps:\n  api:\n    kind: image\n    image: example.com/api\n    env:\n      secret: [API_KEY]\n    roles:\n      web:\n        port: 8080\n")
+	m, err := manifest.Load(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := url.Parse("http://agent.invalid")
+	for _, failure := range []string{"connection", "body"} {
+		t.Run(failure, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var out, errs progressTestBuffer
+				gate := make(chan struct{})
+				var once sync.Once
+				done := make(chan guideResult, 1)
+				defer func() { once.Do(func() { close(gate) }); <-done }()
+				client := &http.Client{Transport: progressRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodGet {
+						return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("[]"))}, nil
+					}
+					if failure == "connection" {
+						<-gate
+						return nil, errors.New("fixture failure")
+					}
+					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &slice4cFailBody{gate}}, nil
+				})}
+				go func() {
+					_, result := guideSecrets(context.Background(), client, &agentclient.Target{Base: base, Prefix: "/v1/", Token: "fixture-token"}, m, dir, "dev", func() ([]byte, error) { return []byte("fixture-value"), nil }, &out, &errs)
+					done <- result
+				}()
+				synctest.Wait()
+				time.Sleep(250 * time.Millisecond)
+				synctest.Wait()
+				if !strings.Contains(errs.String(), "storing secret") {
+					t.Errorf("missing submission frame: %q", errs.String())
+				}
+				once.Do(func() { close(gate) })
+				synctest.Wait()
+				diagnostic := "agent connection failed\n"
+				if failure == "body" {
+					diagnostic = "invalid agent response\n"
+				}
+				got := errs.String()
+				if !strings.HasSuffix(got, "\r\x1b[2K"+diagnostic) || strings.Count(got, diagnostic) != 1 {
+					t.Errorf("final diagnostic: %q", got)
+				}
+				time.Sleep(time.Second)
+				synctest.Wait()
+				if errs.String() != got {
+					t.Error("write after diagnostic")
+				}
+			})
+		})
+	}
+}
+
+type slice4cFailBody struct{ gate <-chan struct{} }
+
+func (b *slice4cFailBody) Read([]byte) (int, error) {
+	<-b.gate
+	return 0, errors.New("fixture failure")
+}
+func (*slice4cFailBody) Close() error { return nil }
+
+func TestContextListShowsSlowStoreWait(t *testing.T) {
+	slice4cTerminal(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SLICE4C_TOKEN", "")
+	s := credtest.NewMemory()
+	entry := agentclient.Environment{URL: "http://localhost", TokenEnv: "SLICE4C_TOKEN"}
+	if err := s.Set(agentclient.StoreKey("demo", "dev", entry), "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	oldStore, oldWait := agentclient.TokenStore, agentclient.StoreWait
+	agentclient.TokenStore, agentclient.StoreWait = s, 5*time.Second
+	t.Cleanup(func() { agentclient.TokenStore, agentclient.StoreWait = oldStore, oldWait })
+	synctest.Test(t, func(t *testing.T) {
+		var out, errs progressTestBuffer
+		gate, entered := make(chan struct{}), make(chan struct{}, 1)
+		var once sync.Once
+		s.Block = gate
+		s.OnCall = func() { entered <- struct{}{} }
+		done := make(chan int, 1)
+		defer func() { once.Do(func() { close(gate) }); <-done; s.Wait(); s.Block = nil; s.OnCall = nil }()
+		go func() { done <- runContextList([]string{"--config", cfg}, &out, &errs) }()
+		<-entered
+		synctest.Wait()
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if !strings.Contains(errs.String(), "checking credentials") {
+			t.Errorf("missing store frame: %q", errs.String())
+		}
+		once.Do(func() { close(gate) })
+		synctest.Wait()
+		if !strings.HasSuffix(errs.String(), "\r\x1b[2K") || !strings.Contains(out.String(), "stored") {
+			t.Errorf("final stdout %q stderr %q", out.String(), errs.String())
+		}
+	})
+}
+
+func TestContextListWaitModes(t *testing.T) {
+	slice4cTerminal(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SLICE4C_TOKEN", "")
+	for _, mode := range []string{"quick", "timeout", "json"} {
+		t.Run(mode, func(t *testing.T) {
+			s := credtest.NewMemory()
+			oldStore, oldWait := agentclient.TokenStore, agentclient.StoreWait
+			agentclient.TokenStore, agentclient.StoreWait = s, time.Second
+			defer func() { agentclient.TokenStore, agentclient.StoreWait = oldStore, oldWait }()
+			synctest.Test(t, func(t *testing.T) {
+				var out, errs progressTestBuffer
+				gate := make(chan struct{})
+				var once sync.Once
+				if mode != "quick" {
+					s.Block = gate
+				}
+				done := make(chan int, 1)
+				returned := false
+				defer func() {
+					once.Do(func() { close(gate) })
+					if !returned {
+						<-done
+					}
+					s.Wait()
+				}()
+				args := []string{"--config", cfg}
+				if mode == "json" {
+					args = append(args, "--json")
+				}
+				go func() { done <- runContextList(args, &out, &errs) }()
+				synctest.Wait()
+				if mode != "quick" {
+					time.Sleep(250 * time.Millisecond)
+					synctest.Wait()
+				}
+				if mode == "timeout" {
+					if !strings.Contains(errs.String(), "checking credentials") {
+						t.Errorf("missing frame: %q", errs.String())
+					}
+					time.Sleep(time.Second)
+					synctest.Wait()
+				}
+				if mode == "json" {
+					if errs.String() != "" {
+						t.Errorf("JSON wait: %q", errs.String())
+					}
+					once.Do(func() { close(gate) })
+				}
+				if got := <-done; got != 0 {
+					t.Errorf("exit %d", got)
+				}
+				returned = true
+				if mode == "quick" && errs.String() != "" {
+					t.Errorf("quick wait: %q", errs.String())
+				}
+				if mode == "timeout" && (!strings.HasSuffix(errs.String(), "\r\x1b[2K") || !strings.Contains(out.String(), "unknown")) {
+					t.Errorf("timeout stdout %q stderr %q", out.String(), errs.String())
+				}
+				if mode == "json" && (strings.Contains(out.String(), "\x1b") || !strings.Contains(out.String(), `"token_stored": false`)) {
+					t.Errorf("JSON output: %q", out.String())
+				}
+			})
+		})
+	}
+}
+
+func TestContextCredentialWritesClearBeforeResult(t *testing.T) {
+	slice4cTerminal(t)
+	oldHidden := hiddenInput
+	hiddenInput = func() (func() ([]byte, error), bool) {
+		return func() ([]byte, error) { return []byte("fixture-value"), nil }, true
+	}
+	defer func() { hiddenInput = oldHidden }()
+	for _, mode := range []string{"set", "delete"} {
+		t.Run(mode, func(t *testing.T) {
+			s := credtest.NewMemory()
+			entry := agentclient.Environment{URL: "http://localhost", TokenEnv: "SLICE4C_TOKEN"}
+			if mode == "delete" {
+				if err := s.Set(agentclient.StoreKey("demo", "dev", entry), "fixture-value"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(cfg, []byte(`{"projects":{"demo":{"environments":{"dev":{"url":"http://localhost","token_env":"SLICE4C_TOKEN"}}}}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			oldStore, oldWait := agentclient.TokenStore, agentclient.StoreWait
+			agentclient.TokenStore, agentclient.StoreWait = s, 5*time.Second
+			defer func() { agentclient.TokenStore, agentclient.StoreWait = oldStore, oldWait }()
+			synctest.Test(t, func(t *testing.T) {
+				var out, errs progressTestBuffer
+				gate, entered := make(chan struct{}), make(chan struct{}, 1)
+				var once sync.Once
+				s.Block = gate
+				s.OnCall = func() { entered <- struct{}{} }
+				done := make(chan int, 1)
+				returned := false
+				defer func() {
+					once.Do(func() { close(gate) })
+					if !returned {
+						<-done
+					}
+					s.Wait()
+				}()
+				go func() {
+					if mode == "set" {
+						done <- saveContextToken("demo", "dev", entry, &out, &errs)
+					} else {
+						done <- runContextRemove([]string{"--project", "demo", "-e", "dev", "--config", cfg, "--delete-token"}, &out, &errs)
+					}
+				}()
+				<-entered
+				synctest.Wait()
+				time.Sleep(250 * time.Millisecond)
+				synctest.Wait()
+				label := "saving credential"
+				if mode == "delete" {
+					label = "deleting credential"
+				}
+				if !strings.Contains(errs.String(), label) {
+					t.Errorf("missing frame: %q", errs.String())
+				}
+				once.Do(func() { close(gate) })
+				if got := <-done; got != 0 {
+					t.Errorf("exit %d", got)
+				}
+				returned = true
+				if !strings.HasSuffix(errs.String(), "\r\x1b[2K") || !strings.Contains(out.String(), "the token of demo/dev") || strings.Contains(out.String()+errs.String(), "fixture-value") {
+					t.Errorf("stdout %q stderr %q", out.String(), errs.String())
+				}
+			})
+		})
+	}
+}

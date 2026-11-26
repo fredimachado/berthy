@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -122,9 +123,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			g.intro[i] = terminalSafe(g.intro[i])
 		}
 		if check := g.check; check != nil {
-			g.check = func(_ context.Context, value string) checkResult {
-				checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
+			g.check = func(checkCtx context.Context, value string) checkResult {
 				res := check(checkCtx, value)
 				for i := range res.notes {
 					res.notes[i] = safeSecretText(res.notes[i], value, target.Token)
@@ -153,7 +152,11 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				break
 			}
 			payload, _ := json.Marshal(map[string]string{"name": n.Name, "value": value, "registry": n.Registry})
-			status, data, ok := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload, errout)
+			progress := startWait(errout, true, "storing secret")
+			var diagnostic bytes.Buffer
+			status, data, ok := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload, &diagnostic)
+			progress.Close()
+			_, _ = io.Copy(errout, &diagnostic)
 			if !ok {
 				return remaining, guideFailed
 			}

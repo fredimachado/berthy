@@ -67,7 +67,9 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
+	progress := startWait(errout, true, "finding project")
 	project, err := resolveStateRestoreProject(ctx, *projectFlag, *manifestDir, parts[1], store)
+	progress.Close()
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		var disc *projectDiscoveryError
@@ -80,8 +82,10 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "object key must start with PROJECT/ENVIRONMENT/")
 		return 2
 	}
+	progress = startWait(errout, true, "restoring state")
 	rep, err := statebackup.Restore(ctx, statebackup.RestoreOptions{Endpoint: *endpoint, Region: *region, Bucket: *bucket, Object: *object,
 		Out: *dir, KeyFile: *keyFile, Project: project, Environment: parts[1], AccessKey: access, SecretKey: secret})
+	progress.Close()
 	var mismatch *statebackup.KeyMismatchError
 	switch {
 	case errors.As(err, &mismatch):

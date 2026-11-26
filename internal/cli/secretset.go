@@ -329,7 +329,9 @@ func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([
 	if g.check != nil {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+		progress := startWait(errout, humanProgress, "checking secret")
 		res := g.check(ctx, value)
+		progress.Close()
 		for _, n := range res.notes {
 			fmt.Fprintln(errout, n)
 		}

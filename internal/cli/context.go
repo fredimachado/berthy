@@ -153,7 +153,10 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 		return 1
 	}
 	store := agentclient.Tokens(context.Background())
-	if err := store.Set(agentclient.StoreKey(project, env, entry), token); err != nil {
+	progress := startWait(errout, true, "saving credential")
+	err = store.Set(agentclient.StoreKey(project, env, entry), token)
+	progress.Close()
+	if err != nil {
 		if errors.Is(err, credstore.ErrGivenUp) {
 			fmt.Fprintf(errout, "could not confirm the save in the %s; set $%s instead\n", store.Name(), entry.TokenEnv)
 		} else {
@@ -205,6 +208,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 		projects = append(projects, name)
 	}
 	slices.Sort(projects)
+	progress := startWait(errout, !*asJSON, "checking credentials")
 	for _, project := range projects {
 		envs := make([]string, 0, len(c.Projects[project].Environments))
 		for name := range c.Projects[project].Environments {
@@ -231,6 +235,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 			})
 		}
 	}
+	progress.Close()
 	if len(rows) == 0 {
 		return 0
 	}
@@ -298,7 +303,9 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 			return 1
 		}
 		store := agentclient.Tokens(context.Background())
+		progress := startWait(errout, true, "deleting credential")
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
+		progress.Close()
 		if err != nil {
 			message := "the stored token was not deleted"
 			if errors.Is(err, credstore.ErrGivenUp) {
