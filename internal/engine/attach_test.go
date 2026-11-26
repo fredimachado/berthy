@@ -39,11 +39,7 @@ type attachServer struct {
 func newAttachServer(t *testing.T, serve func(conn net.Conn, br io.Reader)) *attachServer {
 	t.Helper()
 	as := &attachServer{t: t}
-	socket := filepath.Join(t.TempDir(), "d.sock")
-	l, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Skipf("no Unix sockets here: %v", err)
-	}
+	l := listenFakeDocker(t)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/v1.44/containers/c1/attach" {
 			t.Errorf("request %s %s", r.Method, r.URL)
@@ -59,14 +55,14 @@ func newAttachServer(t *testing.T, serve func(conn net.Conn, br io.Reader)) *att
 			t.Errorf("hijack: %v", err)
 			return
 		}
-		defer closeAfterPause(conn)
+		defer conn.Close()
 		io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 		serve(conn, brw)
 	}))
 	srv.Listener = l
 	srv.Start()
 	t.Cleanup(srv.Close)
-	as.engine = New(socket)
+	as.engine = engineFor(l)
 	return as
 }
 
@@ -74,15 +70,6 @@ func attachCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	return ctx
-}
-
-// closeAfterPause closes the connection of a test server a moment after the server's last write. A Windows Unix socket that
-// is closed right after a write can lose its end of stream, so the peer's read waits for ever (about 1 in 40 tries in a plain
-// Go client and server; a pause of a few milliseconds before the close made it never happen in thousands). Linux does not
-// need the pause. Every test server that writes and then closes uses it, as a defer right after the hijack or the accept.
-func closeAfterPause(conn net.Conn) {
-	time.Sleep(20 * time.Millisecond)
-	conn.Close()
 }
 
 func TestAttachDemultiplexesStdoutAndKeepsStderr(t *testing.T) {
@@ -274,23 +261,20 @@ func TestAttachStopsWhenTheContextEnds(t *testing.T) {
 }
 
 func TestAttachReportsADockerRefusal(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "d.sock")
-	l, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Skipf("no Unix sockets here: %v", err)
-	}
+	l := listenFakeDocker(t)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"No such container: c1"}`, http.StatusNotFound)
 	}))
 	srv.Listener = l
 	srv.Start()
 	defer srv.Close()
-	_, _, _, err = New(socket).Attach(attachCtx(t), "c1", false)
+	e := engineFor(l)
+	_, _, _, err := e.Attach(attachCtx(t), "c1", false)
 	var se *StatusError
 	if !errors.As(err, &se) || se.Code != 404 {
 		t.Fatalf("error %v", err)
 	}
-	if _, _, _, err = New(socket).Attach(attachCtx(t), "bad id/..", false); err == nil {
+	if _, _, _, err = e.Attach(attachCtx(t), "bad id/..", false); err == nil {
 		t.Fatal("invalid identifier accepted")
 	}
 	if _, _, _, err = New(filepath.Join(t.TempDir(), "none.sock")).Attach(attachCtx(t), "c1", false); err == nil {
