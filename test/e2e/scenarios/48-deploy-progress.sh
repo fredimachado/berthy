@@ -1,6 +1,7 @@
 #!/bin/bash
 # A blocked hook keeps the admitted deploy alive while its terminal watcher is interrupted.
 set -uo pipefail
+umask 077
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 unset BERTHY_CONFIG
@@ -25,6 +26,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+{ base_manifest; cat <<'YML'
+jobs:
+  s8:
+    app: web
+    command: ["sh", "-c", "exit 0"]
+    timeout: 5m
+YML
+} | write_manifest
+
 # The orchestrator compares exact cross-version transcripts separately.
 text=$(ci deploy web --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code 'direct digest deploy (text)' 0 "$code" "$text"
@@ -35,6 +45,50 @@ if [[ $text == *$'\033'* ]] || [[ $text == *'deploying ('* ]]; then fail 'text h
 json=$(ci deploy web --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" --json 2>"$RUN/progress-json.err"); code=$?
 expect_code 'direct digest deploy (JSON)' 0 "$code" "$(cat "$RUN/progress-json.err")"
 if printf '%s' "$json" | jq -e '.state == "succeeded"' >/dev/null && [[ $json != *$'\033'* ]] && [[ $json != *'deploying ('* ]]; then pass 'JSON is one result without animation'; else fail 'JSON is one result without animation' 'invalid result or terminal progress'; fi
+
+if python3 "$(dirname "$0")/48-progress.py" "${S8_CLI:-$BIN}" "$RUN" "$PROJECT" "$ENVN" "$AGENT_LISTEN" "$TUI_BIN"; then
+  pass 'held healthy wait on terminal descriptors'
+else
+  fail 'held healthy wait on terminal descriptors' 'read gate assertion failed'
+  [ "${S8_BASELINE_MODE:-}" = 1 ] || finish
+fi
+
+if [ "${S8_BASELINE_MODE:-}" != 1 ]; then
+cat <<YML | write_manifest
+project: $PROJECT
+network: $NETWORK
+apps:
+  web:
+    kind: image
+    image: $REG/e2e/web
+    hooks:
+      pre_deploy:
+        - run: ["sh", "-c", "mkfifo /tmp/berthy-progress; echo fixture-fifo-ready; read code < /tmp/berthy-progress; exit \$code"]
+          retries: 1
+          timeout: 5m
+    roles:
+      main:
+        health:
+          test: ["CMD", "true"]
+          interval: 2s
+          timeout: 2s
+          start_period: 1s
+          retries: 3
+YML
+record_deploy "$PROJECT" "$ENVN" web --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" || exit 1
+if python3 "$(dirname "$0")/48-progress.py" --retry-screen "$TUI_BIN" "$RUN" "${S8_CLI:-$BIN}" "$ENVN" "$PROJECT" "$selected_config" "$MAN" "$WEB_V1_DIGEST" "$DOCKER_BIN" "$SOCK" "$E2E_ROOT/docker-config" "$RUN/state/state.db"; then
+  pass 'retry step on combined terminal'
+else
+  fail 'retry step on combined terminal' 'retry fixture assertion failed'
+  finish
+fi
+if python3 "$(dirname "$0")/48-progress.py" --retry-captures "${S8_CLI:-$BIN}" "$ENVN" "$PROJECT" "$selected_config" "$MAN" "$WEB_V1_DIGEST" "$DOCKER_BIN" "$SOCK" "$E2E_ROOT/docker-config" "$RUN/state/state.db"; then
+  pass 'retry step and progress on their own descriptors'
+else
+  fail 'retry step and progress on their own descriptors' 'retry descriptor assertion failed'
+  finish
+fi
+fi
 
 cat <<YML | write_manifest
 project: $PROJECT
@@ -69,7 +123,7 @@ cat > "$RUN/progress-steps.json" <<'JSON'
 JSON
 stamp=$(date +%s)
 started=yes
-"$TUI_BIN" --command "$BIN deploy web -e $ENVN --config '$selected_config' --version $WEB_V1_DIGEST --manifest-dir $MAN" \
+"$TUI_BIN" --command "${S8_CLI:-$BIN} deploy web -e $ENVN --config '$selected_config' --version $WEB_V1_DIGEST --manifest-dir $MAN" \
   --size 400x40 --script "$RUN/progress-steps.json" --out "$RUN/progress-pty" --timeout 180s \
   --env TERM=xterm --env NO_COLOR=1 --redact-env BERTHY_ADMIN_TOKEN >"$RUN/progress-driver.out" 2>&1 &
 driver_pid=$!
