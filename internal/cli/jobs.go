@@ -202,6 +202,8 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
+	progress := startWait(errout, !asJSON, "waiting for job")
+	defer progress.Close()
 	// The wait lasts as long as the job's timeout and a grace for the agent to record the result.
 	timeout := 24 * time.Hour
 	if data, status, err = call("GET", "jobs", ""); err == nil && status == http.StatusOK {
@@ -238,25 +240,30 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 		switch {
 		case !ok:
 			if failures++; failures >= 3 {
+				progress.Close()
 				fmt.Fprintln(errout, "run status unavailable")
 				return 1
 			}
 		case !found:
+			progress.Close()
 			fmt.Fprintln(errout, "run record unavailable")
 			return 1
 		default:
 			failures = 0
 			if run.Status != "running" {
+				progress.Close()
 				return printRun(out, errout, run, asJSON)
 			}
 		}
 		if time.Now().After(deadline) {
+			progress.Close()
 			fmt.Fprintf(errout, "run %d did not finish in time; see berthy jobs\n", started.RunID)
 			return 1
 		}
 		select {
 		case <-time.After(jobPollInterval):
 		case <-ctx.Done():
+			progress.Close()
 			fmt.Fprintf(errout, "stopped waiting; run %d continues on the agent\n", started.RunID)
 			return 1
 		}
@@ -273,7 +280,7 @@ func printRun(out, errout io.Writer, run api.JobRun, asJSON bool) int {
 		}
 		fmt.Fprintln(out, string(pretty))
 	} else {
-		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, terminalSafe(run.Status))
+		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, styleFor(out, true).Status(run.Status))
 		if run.ExitCode != nil {
 			fmt.Fprintf(out, "exit_code: %d\n", *run.ExitCode)
 		}

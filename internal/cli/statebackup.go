@@ -194,6 +194,8 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
+	progress := startWait(errout, !asJSON, "waiting for state backup")
+	defer progress.Close()
 	deadline := time.Now().Add(backupWaitLimit)
 	failures := 0
 	for {
@@ -201,6 +203,7 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 		var runs []api.StateBackupRun
 		if err != nil || status != http.StatusOK || json.Unmarshal(data, &runs) != nil {
 			if failures++; failures >= 3 {
+				progress.Close()
 				fmt.Fprintln(errout, "run status unavailable")
 				return 1
 			}
@@ -208,17 +211,20 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 			failures = 0
 			for _, run := range runs {
 				if run.ID == started.RunID && run.Status != "running" {
+					progress.Close()
 					return printStateBackupRun(out, errout, run, asJSON)
 				}
 			}
 		}
 		if time.Now().After(deadline) {
+			progress.Close()
 			fmt.Fprintf(errout, "run %d did not finish in time\n", started.RunID)
 			return 1
 		}
 		select {
 		case <-time.After(backupPollInterval):
 		case <-ctx.Done():
+			progress.Close()
 			fmt.Fprintf(errout, "stopped waiting; run %d continues on the agent\n", started.RunID)
 			return 1
 		}
@@ -235,7 +241,7 @@ func printStateBackupRun(out, errout io.Writer, run api.StateBackupRun, asJSON b
 		}
 		fmt.Fprintln(out, string(pretty))
 	} else {
-		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, terminalSafe(run.Status))
+		fmt.Fprintf(out, "run: %d\nstatus: %s\n", run.ID, styleFor(out, true).Status(run.Status))
 		if run.Status == "succeeded" {
 			fmt.Fprintf(out, "key: %s\nsize: %d\nsha256: %s\n", terminalSafe(run.Key), run.Size, terminalSafe(run.SHA256))
 		}

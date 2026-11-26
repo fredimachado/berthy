@@ -47,6 +47,8 @@ func reportCancel(ctx context.Context, client *http.Client, base *url.URL, prefi
 		return 1
 	}
 	fmt.Fprintf(out, "cancel accepted for %s\n", what)
+	progress := startWait(errout, !f.json, "waiting for cancellation")
+	defer progress.Close()
 	call := agentclient.Caller(ctx, client, base, prefix, token)
 	deadline := time.Now().Add(cancelWait)
 	for {
@@ -57,6 +59,7 @@ func reportCancel(ctx context.Context, client *http.Client, base *url.URL, prefi
 			Error  string `json:"error"`
 		}
 		if err == nil && status == http.StatusOK && json.Unmarshal(raw, &op) == nil && op.State != "" && op.State != "running" {
+			progress.Close()
 			line := fmt.Sprintf("operation %s ended: %s", terminalSafe(plan.ID), terminalSafe(op.State))
 			if op.Reason != "" {
 				line += " (" + terminalSafe(op.Reason) + ")"
@@ -68,12 +71,14 @@ func reportCancel(ctx context.Context, client *http.Client, base *url.URL, prefi
 			return 1
 		}
 		if time.Now().After(deadline) {
+			progress.Close()
 			fmt.Fprintf(errout, "operation %s has not ended yet; see berthy lock status\n", terminalSafe(plan.ID))
 			return 1
 		}
 		select {
 		case <-time.After(cancelPoll):
 		case <-ctx.Done():
+			progress.Close()
 			fmt.Fprintf(errout, "stopped waiting; operation %s goes on ending on the agent\n", terminalSafe(plan.ID))
 			return 1
 		}

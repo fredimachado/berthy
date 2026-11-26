@@ -87,7 +87,7 @@ func printBackupRun(out, errout io.Writer, run api.BackupRun, asJSON bool) int {
 		}
 		fmt.Fprintln(out, string(pretty))
 	} else {
-		fmt.Fprintf(out, "run: %d\nstatus: %s\nbackup: %s\n", run.ID, terminalSafe(run.Status), terminalSafe(run.Backup))
+		fmt.Fprintf(out, "run: %d\nstatus: %s\nbackup: %s\n", run.ID, styleFor(out, true).Status(run.Status), terminalSafe(run.Backup))
 		if run.Status == "succeeded" {
 			fmt.Fprintf(out, "key: %s\nsize: %d\nsha256: %s\n", terminalSafe(run.Key), run.Size, terminalSafe(run.SHA256))
 		}
@@ -178,6 +178,8 @@ func runBackupRun(ctx context.Context, call func(method, path, query string) ([]
 		fmt.Fprintln(errout, "invalid agent response")
 		return 1
 	}
+	progress := startWait(errout, !asJSON, "waiting for backup")
+	defer progress.Close()
 	deadline := time.Now().Add(backupWaitLimit)
 	find := func(limit string) (api.BackupRun, bool, bool) {
 		data, status, err := call("GET", "backups/"+escaped+"/runs", "limit="+limit)
@@ -202,25 +204,30 @@ func runBackupRun(ctx context.Context, call func(method, path, query string) ([]
 		switch {
 		case !ok:
 			if failures++; failures >= 3 {
+				progress.Close()
 				fmt.Fprintln(errout, "run status unavailable")
 				return 1
 			}
 		case !found:
+			progress.Close()
 			fmt.Fprintln(errout, "run record unavailable")
 			return 1
 		default:
 			failures = 0
 			if run.Status != "running" {
+				progress.Close()
 				return printBackupRun(out, errout, run, asJSON)
 			}
 		}
 		if time.Now().After(deadline) {
+			progress.Close()
 			fmt.Fprintf(errout, "run %d did not finish in time; see berthy backup list\n", started.RunID)
 			return 1
 		}
 		select {
 		case <-time.After(backupPollInterval):
 		case <-ctx.Done():
+			progress.Close()
 			fmt.Fprintf(errout, "stopped waiting; run %d continues on the agent\n", started.RunID)
 			return 1
 		}
