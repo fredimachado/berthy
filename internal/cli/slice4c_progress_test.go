@@ -150,19 +150,39 @@ func TestContextListShowsSlowStoreWait(t *testing.T) {
 		s.Block = gate
 		s.OnCall = func() { entered <- struct{}{} }
 		done := make(chan int, 1)
-		defer func() { once.Do(func() { close(gate) }); <-done; s.Wait(); s.Block = nil; s.OnCall = nil }()
+		returned := false
+		defer func() {
+			once.Do(func() { close(gate) })
+			if !returned {
+				<-done
+			}
+			s.Wait()
+			s.Block = nil
+			s.OnCall = nil
+		}()
 		go func() { done <- runContextList([]string{"--config", cfg}, &out, &errs) }()
-		<-entered
 		synctest.Wait()
+		select {
+		case <-entered:
+		default:
+			t.Fatal("credential lookup did not enter the store")
+		}
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
 		if !strings.Contains(errs.String(), "checking credentials") {
 			t.Errorf("missing store frame: %q", errs.String())
 		}
 		once.Do(func() { close(gate) })
-		synctest.Wait()
-		if !strings.HasSuffix(errs.String(), "\r\x1b[2K") || !strings.Contains(out.String(), "stored") {
-			t.Errorf("final stdout %q stderr %q", out.String(), errs.String())
+		code := <-done
+		returned = true
+		if code != 0 {
+			t.Errorf("exit = %d, want 0", code)
+		}
+		if got, want := out.String(), "demo  dev  http://localhost  SLICE4C_TOKEN  no  stored\n"; got != want {
+			t.Errorf("row = %q, want %q", got, want)
+		}
+		if !strings.HasSuffix(errs.String(), "\r\x1b[2K") {
+			t.Errorf("missing final clear: %q", errs.String())
 		}
 	})
 }
