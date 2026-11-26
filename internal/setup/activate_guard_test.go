@@ -194,6 +194,9 @@ func TestGuardMessageOnUnresolvedActivation(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "62 seconds") {
 				t.Fatalf("guard message missing: %v", err)
 			}
+			if strings.HasPrefix(stage, "swap") && !strings.Contains(err.Error(), "or stops it when there is none") {
+				t.Fatalf("missing first-install outcome: %v", err)
+			}
 			if strings.Contains(err.Error(), "may have armed") != strings.HasPrefix(stage, "swap") {
 				t.Fatalf("wrong certainty: %v", err)
 			}
