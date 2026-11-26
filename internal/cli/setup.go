@@ -121,7 +121,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
 	*env = resolvedEnv
 	usage := func(format string, a ...any) int {
-		fmt.Fprintf(errout, format+"\n", a...)
+		printRefusal(errout, fmt.Sprintf(format, a...), !*asJSON)
 		fmt.Fprintln(errout, setupUsage)
 		return 2
 	}
@@ -178,7 +178,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	if *local {
 		where = "on this server"
 	}
-	printBanner(errout, scope.ID{Project: from.project, Environment: *env}, where, envFromVariable)
+	printBanner(errout, scope.ID{Project: from.project, Environment: *env}, where, envFromVariable, !*asJSON)
 	preflightErr := checkSetupTokenEnv(from.project, *env, *cliConfig)
 	keyHome := ""
 	if !*local {
@@ -217,7 +217,16 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		session = &setup.Session{R: runner, Opts: opts, DryRun: *dry}
 		if *verbose {
 			// The log prints to standard error as the run goes; the report reads the same log for each step's commands.
-			session.Log = setup.NewCommandLog(errout)
+			logStyle := styleFor(errout, !*asJSON)
+			session.Log = setup.NewStyledCommandLog(errout, setup.CommandLogStyle{
+				Prompt: func(v string) string { return logStyle.paint(toneAccent, v) },
+				Exit: func(code int, v string) string {
+					if code == 0 {
+						return logStyle.paint(toneOK, v)
+					}
+					return logStyle.paint(toneError, v)
+				},
+			})
 			session.R = setup.Recording(runner, session.Log)
 		}
 		report.OK = setup.Run(ctx, session, setup.Steps(), show)
@@ -246,9 +255,9 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		secretStep.declared = len(from.manifest.Secrets) > 0
 	}
 	if !*asJSON {
-		fmt.Fprintln(out, setupSummary(report))
+		fmt.Fprintln(out, setupSummary(report, styleFor(out, true)))
 		if report.Token != "" {
-			fmt.Fprintf(out, "\nadmin token for %s (shown once, store it now): %s\n", terminalSafe(from.project+"/"+*env), report.Token)
+			fmt.Fprintf(out, "\nadmin token for %s (%s): %s\n", terminalSafe(from.project+"/"+*env), styleFor(out, true).paint(toneWarning, "shown once, store it now"), report.Token)
 		}
 		if report.OK && !*dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
 			if read, ok := hiddenInput(); ok {
@@ -278,7 +287,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 	} else {
 		if len(report.NextSteps) > 0 {
-			fmt.Fprintln(out, "\nnext steps:")
+			fmt.Fprintln(out, "\n"+styleFor(out, true).paint(toneInfo, "next steps:"))
 			for i, step := range report.NextSteps {
 				fmt.Fprintf(out, "  %d. %s\n", i+1, terminalSafe(step))
 			}
@@ -501,7 +510,7 @@ var setupGlyphs = map[string]string{
 }
 
 // setupSummary is the last line of the text output.
-func setupSummary(r setupReport) string {
+func setupSummary(r setupReport, s cliStyle) string {
 	prefix := fmt.Sprintf("setup of %s on %s: ", terminalSafe(r.Project+"/"+r.Environment), terminalSafe(r.Target))
 	if !r.OK {
 		failed := "connect"
@@ -510,10 +519,10 @@ func setupSummary(r setupReport) string {
 				failed = s.Step
 			}
 		}
-		return prefix + "failed at " + terminalSafe(failed)
+		return prefix + s.paint(toneError, "failed at") + " " + terminalSafe(failed)
 	}
 	if !r.DryRun {
-		return prefix + "done"
+		return prefix + s.paint(toneOK, "done")
 	}
 	n := 0
 	for _, s := range r.Steps {

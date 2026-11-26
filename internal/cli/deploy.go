@@ -31,22 +31,37 @@ import (
 	"github.com/distribution/reference"
 )
 
-// printProblems writes every problem of a manifest, one per line with its file, line and path, and then how many there are.
-func printProblems(w io.Writer, problems manifest.Problems) {
-	for _, p := range problems {
-		fmt.Fprintln(w, terminalSafe(p.String()))
+func problemText(p manifest.Problem, s cliStyle) string {
+	location := p.File
+	if location != "" && p.Line > 0 {
+		location += fmt.Sprintf(":%d", p.Line)
+		if p.Column > 0 {
+			location += fmt.Sprintf(":%d", p.Column)
+		}
 	}
-	if len(problems) == 1 {
-		fmt.Fprintln(w, "1 problem")
-		return
+	p.File = ""
+	if location != "" {
+		return s.paint(toneAccent, terminalSafe(location)) + ": " + terminalSafe(p.String())
 	}
-	fmt.Fprintf(w, "%d problems\n", len(problems))
+	return terminalSafe(p.String())
 }
 
-// printWarnings writes each warning of a valid manifest as a line of its own, with its place in the files.
+func printProblems(w io.Writer, problems manifest.Problems, human bool) {
+	s := styleFor(w, human)
+	for _, p := range problems {
+		fmt.Fprintln(w, problemText(p, s))
+	}
+	count := fmt.Sprintf("%d problems", len(problems))
+	if len(problems) == 1 {
+		count = "1 problem"
+	}
+	fmt.Fprintln(w, s.paint(toneError, count))
+}
+
 func printWarnings(w io.Writer, warnings manifest.Problems) {
+	s := styleFor(w, true)
 	for _, p := range warnings {
-		fmt.Fprintln(w, "warning: "+terminalSafe(p.String()))
+		fmt.Fprintln(w, s.paint(toneWarning, "warning:")+" "+problemText(p, s))
 	}
 }
 
@@ -60,14 +75,14 @@ func printOrigins(w io.Writer, origins []manifest.Origin) {
 	left := make([]string, len(origins))
 	width := 0
 	for i, o := range origins {
-		left[i] = o.Path + ": " + originValue(o.Value)
+		left[i] = terminalSafe(o.Path) + ": " + originValue(o.Value)
 		width = max(width, utf8.RuneCountInString(left[i]))
 	}
 	width = min(width, originColumn)
 	for i, o := range origins {
 		where := "default"
 		if o.File != "" {
-			where = fmt.Sprintf("%s:%d", o.File, o.Line)
+			where = fmt.Sprintf("%s:%d", terminalSafe(o.File), o.Line)
 		}
 		fmt.Fprintf(w, "%-*s  %s\n", width, left[i], where)
 	}
@@ -414,57 +429,57 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	f.env, f.envFromVariable = agentclient.EnvironmentName(f.env, slices.Contains(f.given, "-e"))
 	if !scope.ValidEnvironment(f.env) {
 		if f.envFromVariable {
-			fmt.Fprintln(errout, "BERTHY_ENV is not a valid environment")
+			printRefusal(errout, "BERTHY_ENV is not a valid environment", !f.json)
 			return 2
 		}
-		fmt.Fprintln(errout, "valid -e environment required")
+		printRefusal(errout, "valid -e environment required", !f.json)
 		return 2
 	}
 	projectGiven := slices.Contains(f.given, "--project")
 	if projectGiven && !scope.ValidProject(f.project) {
-		fmt.Fprintln(errout, "valid --project required")
+		printRefusal(errout, "valid --project required", !f.json)
 		return 2
 	}
 	if f.volumes && cmd != "remove" && cmd != "destroy" {
-		fmt.Fprintln(errout, "--volumes applies to remove and destroy only")
+		printRefusal(errout, "--volumes applies to remove and destroy only", !f.json)
 		return 2
 	}
 	if f.all && cmd != "approvals" {
-		fmt.Fprintln(errout, "--all applies to approvals only")
+		printRefusal(errout, "--all applies to approvals only", !f.json)
 		return 2
 	}
 	if (f.tunnel || f.confirm != "") && cmd != "destroy" {
-		fmt.Fprintln(errout, "--tunnel and --confirm apply to destroy only")
+		printRefusal(errout, "--tunnel and --confirm apply to destroy only", !f.json)
 		return 2
 	}
 	if cmd == "destroy" && len(f.pos) != 0 {
-		fmt.Fprintln(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment")
+		printRefusal(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment", !f.json)
 		return 2
 	}
 	if cmd == "key" && (len(f.pos) != 1 || f.pos[0] != "rotate") {
-		fmt.Fprintln(errout, "usage: key rotate -e ENV [--dry-run] [--json]")
+		printRefusal(errout, "usage: key rotate -e ENV [--dry-run] [--json]", !f.json)
 		return 2
 	}
 	if (f.backup != "" && cmd != "backup") || ((f.into != "" || f.exec != "") && cmd != "restore") {
-		fmt.Fprintln(errout, "--backup applies to backup list, and --into and --exec to restore")
+		printRefusal(errout, "--backup applies to backup list, and --into and --exec to restore", !f.json)
 		return 2
 	}
 	if flag, key := refusedFlag(cmd, f); flag != "" {
-		fmt.Fprintf(errout, "%s is not a flag of %s\n", flag, key)
+		printRefusal(errout, fmt.Sprintf("%s is not a flag of %s", flag, key), !f.json)
 		return 2
 	}
 	if cmd == "secret" && len(f.pos) == 1 && (f.pos[0] == "generate" || f.pos[0] == "set") && len(f.command) > 0 {
-		fmt.Fprintln(errout, "this command accepts no arguments after --")
+		printRefusal(errout, "this command accepts no arguments after --", !f.json)
 		return 2
 	}
 	if cmd == "promote" {
 		if len(f.pos) != 1 || !scope.ValidEnvironment(f.from) || f.from == f.env || countFlag(f.given, "--from") != 1 {
-			fmt.Fprintln(errout, "promote requires one app and one different valid --from environment")
+			printRefusal(errout, "promote requires one app and one different valid --from environment", !f.json)
 			return 2
 		}
 	}
 	if cmd == "versions" && len(f.pos) != 1 {
-		fmt.Fprintln(errout, "versions requires one app")
+		printRefusal(errout, "versions requires one app", !f.json)
 		return 2
 	}
 	configGiven := slices.Contains(f.given, "--config")
@@ -476,14 +491,14 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	if cmd == "config" {
 		if len(f.pos) != 1 || (f.pos[0] != "show" && f.pos[0] != "validate") {
-			fmt.Fprintln(errout, "config requires show or validate")
+			printRefusal(errout, "config requires show or validate", !f.json)
 			return 2
 		}
 		loaded, err := manifest.LoadDetailed(f.dir, f.env)
 		if err != nil {
 			var problems manifest.Problems
 			if f.pos[0] == "validate" && errors.As(err, &problems) {
-				printProblems(errout, problems)
+				printProblems(errout, problems, !f.json)
 				return 1
 			}
 			fmt.Fprintln(errout, err)
@@ -505,7 +520,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return printResponse(out, errout, b, true)
 			}
 			printWarnings(errout, warnings)
-			fmt.Fprintln(out, "manifest valid")
+			fmt.Fprintln(out, styleFor(out, true).paint(toneOK, "manifest valid"))
 			return 0
 		}
 		if f.origin {
@@ -554,10 +569,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	f.project = target.Project
 	u, token, prefix := target.Base, target.Token, target.Prefix
 	if key, ok := changeKey(cmd, f.pos); ok && !slices.Contains(readOnlyCommands, key) {
-		printBanner(errout, scope.ID{Project: f.project, Environment: f.env}, "at "+u.String(), f.envFromVariable)
+		printBanner(errout, scope.ID{Project: f.project, Environment: f.env}, "at "+u.String(), f.envFromVariable, !f.json)
 	}
 	if cmd == "destroy" && f.confirm != (scope.ID{Project: f.project, Environment: f.env}).String() {
-		fmt.Fprintln(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment")
+		printRefusal(errout, "destroy takes no app, and --confirm must name the project and the environment, as project/environment", !f.json)
 		return 2
 	}
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
@@ -603,15 +618,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			return runDeployAll(f, target, out, errout)
 		}
 		if cmd != "prune" && cmd != "destroy" && len(f.pos) != 1 || (cmd == "prune" || cmd == "destroy") && len(f.pos) != 0 {
-			fmt.Fprintln(errout, "command requires an app")
+			printRefusal(errout, "command requires an app", !f.json)
 			return 2
 		}
 		if cmd == "deploy" && len(f.versions) > 1 {
-			fmt.Fprintln(errout, "--version given more than once")
+			printRefusal(errout, "--version given more than once", !f.json)
 			return 2
 		}
 		if cmd == "deploy" && len(f.versions) == 1 && strings.Contains(f.versions[0], "=") {
-			fmt.Fprintln(errout, "--version APP=REF is for deploy without an app")
+			printRefusal(errout, "--version APP=REF is for deploy without an app", !f.json)
 			return 2
 		}
 		var req deploy.Request
@@ -643,36 +658,36 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		if f.to != "" {
 			req.TargetRelease, err = strconv.ParseInt(f.to, 10, 64)
 			if err != nil || req.TargetRelease < 1 {
-				fmt.Fprintln(errout, "invalid --to")
+				printRefusal(errout, "invalid --to", !f.json)
 				return 2
 			}
 		}
 		if f.replicas != "" {
 			v, e := strconv.Atoi(f.replicas)
 			if e != nil {
-				fmt.Fprintln(errout, "invalid --replicas")
+				printRefusal(errout, "invalid --replicas", !f.json)
 				return 2
 			}
 			if v < 0 {
-				fmt.Fprintln(errout, "invalid --replicas: must be 0 or more")
+				printRefusal(errout, "invalid --replicas: must be 0 or more", !f.json)
 				return 2
 			}
 			req.Replicas = &v
 		}
 		if cmd == "scale" && req.Replicas == nil {
-			fmt.Fprintln(errout, "scale requires --replicas")
+			printRefusal(errout, "scale requires --replicas", !f.json)
 			return 2
 		}
 		if cmd == "exec" && f.role != "" && f.service != "" {
-			fmt.Fprintln(errout, "--role and --service cannot be combined")
+			printRefusal(errout, "--role and --service cannot be combined", !f.json)
 			return 2
 		}
 		if cmd == "exec" && len(req.Command) == 0 {
-			fmt.Fprintln(errout, "exec requires a command after --")
+			printRefusal(errout, "exec requires a command after --", !f.json)
 			return 2
 		}
 		if cmd == "run" && len(req.Command) == 0 {
-			fmt.Fprintln(errout, "run requires a command after --")
+			printRefusal(errout, "run requires a command after --", !f.json)
 			return 2
 		}
 		// A dry run shows what would run, so -i changes nothing about it.
@@ -703,10 +718,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			if e != nil {
 				switch {
 				case errors.Is(e, agentclient.ErrVersionRequired):
-					fmt.Fprintln(errout, "deploy requires --version")
+					printRefusal(errout, "deploy requires --version", !f.json)
 					return 2
 				case errors.Is(e, agentclient.ErrVersionNotAllowed):
-					fmt.Fprintln(errout, "--version does not apply to a compose app")
+					printRefusal(errout, "--version does not apply to a compose app", !f.json)
 					return 2
 				}
 				fmt.Fprintln(errout, e)
@@ -733,7 +748,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		body = req
 	case "apply":
 		if len(f.pos) != 0 {
-			fmt.Fprintln(errout, "usage: apply -e ENV [--manifest-dir DIR] [--dry-run] [--json]")
+			printRefusal(errout, "usage: apply -e ENV [--manifest-dir DIR] [--dry-run] [--json]", !f.json)
 			return 2
 		}
 		m, e := manifest.Load(f.dir, f.env)
@@ -766,15 +781,15 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	case "restore":
 		// A restore fills a new volume, or feeds a command in a running container: exactly one of the two.
 		if len(f.pos) != 1 || f.pos[0] == "" || (f.into == "") == (f.exec == "") || f.exec != "" && len(f.command) == 0 {
-			fmt.Fprintln(errout, "usage: restore KEY --into VOLUME [--dry-run] | restore KEY --exec APP [--service NAME | --role NAME] [--timeout 1h] [--dry-run] -- COMMAND...")
+			printRefusal(errout, "usage: restore KEY --into VOLUME [--dry-run] | restore KEY --exec APP [--service NAME | --role NAME] [--timeout 1h] [--dry-run] -- COMMAND...", !f.json)
 			return 2
 		}
 		if f.into != "" && (f.role != "" || f.service != "" || f.timeout != "" || len(f.command) > 0) {
-			fmt.Fprintln(errout, "--role, --service, --timeout and a command belong to restore --exec")
+			printRefusal(errout, "--role, --service, --timeout and a command belong to restore --exec", !f.json)
 			return 2
 		}
 		if f.role != "" && f.service != "" {
-			fmt.Fprintln(errout, "--role and --service cannot be combined")
+			printRefusal(errout, "--role and --service cannot be combined", !f.json)
 			return 2
 		}
 		id := f.id
@@ -793,20 +808,20 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	case "history", "wait":
 		if cmd == "history" && f.diff != "" {
 			if len(f.pos) < 1 || len(f.pos) > 2 || !releaseNumber(f.diff) || len(f.pos) == 2 && !releaseNumber(f.pos[1]) {
-				fmt.Fprintln(errout, "usage: history APP --diff RELEASE [BASE]")
+				printRefusal(errout, "usage: history APP --diff RELEASE [BASE]", !f.json)
 				return 2
 			}
 			endpoint = "history/" + url.PathEscape(f.pos[0]) + "/diff"
 			break
 		}
 		if len(f.pos) != 1 {
-			fmt.Fprintln(errout, "command requires an app")
+			printRefusal(errout, "command requires an app", !f.json)
 			return 2
 		}
 		endpoint = cmd + "/" + url.PathEscape(f.pos[0])
 	case "diagnostics":
 		if len(f.pos) != 1 || f.pos[0] == "" {
-			fmt.Fprintln(errout, "usage: diagnostics OPERATION_ID -e ENV [--json]")
+			printRefusal(errout, "usage: diagnostics OPERATION_ID -e ENV [--json]", !f.json)
 			return 2
 		}
 		endpoint = "operations/" + url.PathEscape(f.pos[0]) + "/diagnostics"
@@ -820,19 +835,19 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			endpoint = "lock"
 		} else if len(f.pos) == 1 && (f.pos[0] == "acquire" || f.pos[0] == "release") {
 			if f.pos[0] == "acquire" && f.message == "" {
-				fmt.Fprintln(errout, "lock acquire requires -m")
+				printRefusal(errout, "lock acquire requires -m", !f.json)
 				return 2
 			}
 			endpoint = "lock/" + f.pos[0]
 			method = "POST"
 			body = map[string]any{"message": f.message, "dry_run": f.dry}
 		} else {
-			fmt.Fprintln(errout, "invalid lock command")
+			printRefusal(errout, "invalid lock command", !f.json)
 			return 2
 		}
 	case "cancel":
 		if len(f.pos) != 1 || f.pos[0] == "" {
-			fmt.Fprintln(errout, "usage: cancel OPERATION_ID -e ENV [--dry-run] [--json]")
+			printRefusal(errout, "usage: cancel OPERATION_ID -e ENV [--dry-run] [--json]", !f.json)
 			return 2
 		}
 		endpoint = "operations/" + url.PathEscape(f.pos[0]) + "/cancel"
@@ -840,11 +855,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		body = map[string]any{"dry_run": f.dry}
 	case "recovery":
 		if len(f.pos) != 2 || f.pos[0] != "resolve" || f.pos[1] == "" {
-			fmt.Fprintln(errout, "usage: recovery resolve OPERATION_ID -m REASON")
+			printRefusal(errout, "usage: recovery resolve OPERATION_ID -m REASON", !f.json)
 			return 2
 		}
 		if f.message == "" {
-			fmt.Fprintln(errout, "recovery resolve requires -m")
+			printRefusal(errout, "recovery resolve requires -m", !f.json)
 			return 2
 		}
 		endpoint = "operations/" + url.PathEscape(f.pos[1]) + "/resolve"
@@ -852,7 +867,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		body = map[string]any{"reason": f.message, "dry_run": f.dry}
 	case "ingress":
 		if len(f.pos) != 1 || (f.pos[0] != "apply" && f.pos[0] != "status") {
-			fmt.Fprintln(errout, "usage: ingress apply|status")
+			printRefusal(errout, "usage: ingress apply|status", !f.json)
 			return 2
 		}
 		if f.pos[0] == "status" {
@@ -892,7 +907,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		}
 	case "alerts":
 		if len(f.pos) != 1 || f.pos[0] != "test" {
-			fmt.Fprintln(errout, "usage: alerts test")
+			printRefusal(errout, "usage: alerts test", !f.json)
 			return 2
 		}
 		endpoint = "alerts/test"
@@ -906,7 +921,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			endpoint = "secrets"
 		} else if len(f.pos) == 1 && f.pos[0] == "import" {
 			if stdinTerminal() {
-				fmt.Fprintln(errout, "pipe NAME=value lines into secret import: standard input is a terminal")
+				printRefusal(errout, "pipe NAME=value lines into secret import: standard input is a terminal", !f.json)
 				return 2
 			}
 			imp, err := readSecretImport(f.dry)
@@ -967,7 +982,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			method = "POST"
 			body = req
 		} else {
-			fmt.Fprintln(errout, "invalid secret command")
+			printRefusal(errout, "invalid secret command", !f.json)
 			return 2
 		}
 	}
@@ -1095,7 +1110,7 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		printRefusal(errout, safeSecretText(agentclient.Message(status, data), values...), !f.json)
 		if payload != nil && agentclient.InvalidRequest(status, data) {
 			if hint := agentclient.OlderAgentHint(ctx, client, &agentclient.Target{Env: f.env, Base: base, Prefix: prefix, Token: token}); hint != "" {
-				fmt.Fprintln(errout, hint)
+				fmt.Fprintln(errout, styleFor(errout, !f.json).paint(toneInfo, terminalSafe(hint)))
 			}
 		}
 		return 1

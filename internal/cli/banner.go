@@ -23,11 +23,12 @@ var stderrTerminal = func(w io.Writer) bool {
 
 // printBanner prints "berthy: <id> <where>" to errout when errout is a terminal, with the BERTHY_ENV note when
 // fromVariable. where is "at <agent URL>" for a remote command and "on <target>" for setup.
-func printBanner(errout io.Writer, id scope.ID, where string, fromVariable bool) {
+func printBanner(errout io.Writer, id scope.ID, where string, fromVariable, human bool) {
 	if !stderrTerminal(errout) {
 		return
 	}
-	line := "berthy: " + terminalSafe(id.String()) + " " + terminalSafe(where)
+	s := styleFor(errout, human)
+	line := s.paint(toneAccent, "berthy:") + " " + s.paint(toneBold, terminalSafe(id.String())) + " " + s.paint(toneMuted, terminalSafe(where))
 	if fromVariable {
 		line += " (environment from BERTHY_ENV)"
 	}

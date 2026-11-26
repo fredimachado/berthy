@@ -28,6 +28,9 @@ func printRemovePlan(out, errout io.Writer, data []byte) int {
 		if len(items) == 0 {
 			return
 		}
+		if title == "volumes to delete:" || title == "blockers:" {
+			title = styleFor(out, true).paint(toneError, title)
+		}
 		fmt.Fprintln(out, title)
 		for _, item := range items {
 			fmt.Fprintln(out, "  "+terminalSafe(item))
@@ -68,6 +71,9 @@ func printDestroyPlan(out, errout io.Writer, data []byte, env string) int {
 		if len(items) == 0 {
 			return
 		}
+		if title == "blockers:" {
+			title = styleFor(out, true).paint(toneError, title)
+		}
 		fmt.Fprintln(out, title)
 		for _, item := range items {
 			fmt.Fprintln(out, "  "+terminalSafe(item))
@@ -88,7 +94,7 @@ func printDestroyPlan(out, errout io.Writer, data []byte, env string) int {
 			fmt.Fprintln(out, "  "+terminalSafe(routeLine(ch)))
 		}
 		for _, v := range a.Volumes {
-			fmt.Fprintln(out, "  volume to delete: "+terminalSafe(v))
+			fmt.Fprintln(out, "  "+styleFor(out, true).paint(toneError, "volume to delete:")+" "+terminalSafe(v))
 		}
 		for _, v := range a.KeptVolumes {
 			fmt.Fprintln(out, "  volume kept: "+terminalSafe(v))

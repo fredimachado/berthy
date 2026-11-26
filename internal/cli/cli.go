@@ -237,19 +237,19 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	}
 	env, envFromVariable := agentclient.EnvironmentName(env, envGiven)
 	if env == "" {
-		fmt.Fprintln(errout, "remote commands require -e")
+		printRefusal(errout, "remote commands require -e", !jsonOutput)
 		return 2
 	}
 	if !scope.ValidEnvironment(env) {
 		if envFromVariable {
-			fmt.Fprintln(errout, "BERTHY_ENV is not a valid environment")
+			printRefusal(errout, "BERTHY_ENV is not a valid environment", !jsonOutput)
 			return 2
 		}
-		fmt.Fprintln(errout, "valid -e environment required")
+		printRefusal(errout, "valid -e environment required", !jsonOutput)
 		return 2
 	}
 	if projectGiven && !scope.ValidProject(project) {
-		fmt.Fprintln(errout, "valid --project required")
+		printRefusal(errout, "valid --project required", !jsonOutput)
 		return 2
 	}
 	if code := checkAliasIntent(errout, intent, env, project, config, dir, projectGiven, configGiven, false); code != 0 {
@@ -272,7 +272,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		endpoint = "apps"
 	case "describe":
 		if len(positional) != 1 {
-			fmt.Fprintln(errout, "describe requires an app")
+			printRefusal(errout, "describe requires an app", !jsonOutput)
 			return 2
 		}
 		endpoint = "apps/" + url.PathEscape(positional[0])
@@ -280,7 +280,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		endpoint = "stats"
 	case "logs":
 		if len(positional) != 1 {
-			fmt.Fprintln(errout, "logs requires an app")
+			printRefusal(errout, "logs requires an app", !jsonOutput)
 			return 2
 		}
 		endpoint = "apps/" + url.PathEscape(positional[0]) + "/logs"
@@ -291,7 +291,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	case "agent-info":
 		endpoint = "agent"
 	default:
-		fmt.Fprintln(errout, "unknown command")
+		printRefusal(errout, "unknown command", !jsonOutput)
 		return 2
 	}
 	u.Path = target.Prefix + endpoint
@@ -423,7 +423,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			if jsonOutput {
 				noteOut = errout
 			}
-			fmt.Fprintln(noteOut, note)
+			fmt.Fprintln(noteOut, styleFor(noteOut, !jsonOutput).paint(toneInfo, note))
 		}
 		for _, ch := range d.Checks {
 			if ch.Critical && !ch.OK {

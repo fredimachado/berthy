@@ -13,9 +13,21 @@ import (
 // what a script prints. A nil CommandLog records nothing, which is what a run that is not verbose has.
 type CommandLog struct {
 	w      io.Writer
+	style  CommandLogStyle
 	step   string   // the step whose scripts are recorded
 	headed bool     // whether the step's header has been printed
 	cmds   []string // the scripts of step, in order
+}
+
+// CommandLogStyle decorates the prompt and exit status without changing recorded scripts.
+type CommandLogStyle struct {
+	Prompt func(string) string
+	Exit   func(int, string) string
+}
+
+// NewStyledCommandLog prints command markers using the optional callbacks.
+func NewStyledCommandLog(w io.Writer, s CommandLogStyle) *CommandLog {
+	return &CommandLog{w: w, style: s}
 }
 
 // NewCommandLog is a log that prints to w.
@@ -70,7 +82,11 @@ func (l *CommandLog) exited(res Result, err error) {
 		fmt.Fprintf(l.w, "→ could not run: %s\n", clean(err.Error()))
 		return
 	}
-	fmt.Fprintf(l.w, "→ exit %d\n", res.Code)
+	line := fmt.Sprintf("→ exit %d", res.Code)
+	if l.style.Exit != nil {
+		line = l.style.Exit(res.Code, line)
+	}
+	fmt.Fprintln(l.w, line)
 }
 
 // show records script as a command of the current step and prints it, under the step's header when it is the step's first.
@@ -81,11 +97,15 @@ func (l *CommandLog) show(script string) {
 		fmt.Fprintf(l.w, "# %s\n", l.step)
 		l.headed = true
 	}
+	prompt := "$"
+	if l.style.Prompt != nil {
+		prompt = l.style.Prompt(prompt)
+	}
 	for _, line := range strings.Split(strings.TrimSuffix(script, "\n"), "\n") {
 		if line == "" {
-			fmt.Fprintln(l.w, "$")
+			fmt.Fprintln(l.w, prompt)
 		} else {
-			fmt.Fprintf(l.w, "$ %s\n", line)
+			fmt.Fprintf(l.w, "%s %s\n", prompt, line)
 		}
 	}
 }

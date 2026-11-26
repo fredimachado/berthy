@@ -169,7 +169,7 @@ func runTokenCommand(f commandFlags, base *url.URL, prefix, token string, out, e
 		fmt.Fprintf(out, "would create token %s (%s)\n", terminalSafe(made.Name), strings.Join(facts, ", "))
 		return 0
 	}
-	fmt.Fprintf(out, "token %s (%s), shown once, store it now: %s\n", terminalSafe(made.Name), strings.Join(facts, ", "), terminalSafe(made.Token))
+	fmt.Fprintf(out, "token %s (%s), %s: %s\n", terminalSafe(made.Name), strings.Join(facts, ", "), styleFor(out, true).paint(toneWarning, "shown once, store it now"), terminalSafe(made.Token))
 	return 0
 }
 

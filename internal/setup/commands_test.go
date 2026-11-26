@@ -299,3 +299,24 @@ func TestVerboseLogOfAKeyFileInstallNeverHoldsTheKey(t *testing.T) {
 		}
 	}
 }
+
+func TestStyledCommandLogPreservesRecording(t *testing.T) {
+	var out bytes.Buffer
+	log := NewStyledCommandLog(&out, CommandLogStyle{Prompt: func(s string) string { return "[" + s + "]" }, Exit: func(_ int, s string) string { return "[" + s + "]" }})
+	log.begin("test")
+	r := Recording(funcRunner{run: func(string, io.Reader) Result { return Result{Code: 3, Stdout: []byte("hidden-output")} }}, log)
+	_, err := r.Run(context.Background(), "echo hello", strings.NewReader("hidden-input"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "# test\n[$] echo hello\n[→ exit 3]\n"; got != want {
+		t.Fatalf("got %q", got)
+	}
+	log.exited(Result{Code: 0}, nil)
+	if !strings.Contains(out.String(), "[→ exit 0]\n") {
+		t.Fatal(out.String())
+	}
+	if got := log.end(); !reflect.DeepEqual(*got, []string{"echo hello"}) {
+		t.Fatal(got)
+	}
+}

@@ -137,7 +137,7 @@ func reportHeldWithRedactor(data []byte, out, errout io.Writer, asJSON bool, mar
 		fmt.Fprintln(errout, line)
 		return exitHeld, true
 	}
-	fmt.Fprintln(out, line)
+	fmt.Fprintln(out, styleFor(out, true).paint(toneWarning, "held for approval")+strings.TrimPrefix(line, "held for approval"))
 	printPlanMarkers(out, redactDiagnosticJSONWith(h.Plan, false, redact), markers)
 	return exitHeld, true
 }

@@ -245,7 +245,7 @@ func decodeGuideHeld(data []byte) (heldApproval, bool) {
 }
 
 func printGuideHeldHeading(out io.Writer, h heldApproval, values ...string) {
-	fmt.Fprintf(out, "held for approval: %s (expires %s)\n", safeSecretText(h.ID, values...), safeSecretText(h.Expires.UTC().Format(time.RFC3339), values...))
+	fmt.Fprintf(out, "%s: %s (expires %s)\n", styleFor(out, true).paint(toneWarning, "held for approval"), safeSecretText(h.ID, values...), safeSecretText(h.Expires.UTC().Format(time.RFC3339), values...))
 }
 
 func printGuideHeld(out io.Writer, h heldApproval, plan []byte, values ...string) {
