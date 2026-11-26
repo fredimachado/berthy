@@ -93,6 +93,7 @@ func TestRestartDisarmsOnlyAfterHealthAnswers(t *testing.T) {
 	for _, answer := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unhealthy", true: "healthy"}[answer], func(t *testing.T) {
 			dir, tools := shellFixture(t)
+			shellTool(t, tools, "date", "echo 0")
 			shellTool(t, tools, "systemctl", `echo "$*" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`)
 			curl := "exit 1"
 			if answer {
@@ -112,6 +113,7 @@ func TestRestartDisarmsOnlyAfterHealthAnswers(t *testing.T) {
 }
 func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 	dir, tools := shellFixture(t)
+	shellTool(t, tools, "date", "echo 0")
 	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; is-failed) exit 0;; esac; exit 0`)
 	shellTool(t, tools, "curl", "exit 1")
 	err := runShell(t, guardScript("/bin/x", "/etc/x", Staged{Binary: true}, "x", 1)+"\n", "", tools, dir)
@@ -129,6 +131,7 @@ func TestFailedRecoveryKeepsTheGuardArmed(t *testing.T) {
 }
 func TestRestartDoesNotConfirmWhenTimerStopFails(t *testing.T) {
 	dir, tools := shellFixture(t)
+	shellTool(t, tools, "date", "echo 0")
 	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; esac; exit 0`)
 	shellTool(t, tools, "curl", "exit 0")
 	if err := runShell(t, restartScript("x", 1), "", tools, dir); err == nil {

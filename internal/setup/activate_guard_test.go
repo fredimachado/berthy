@@ -154,6 +154,7 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 				curl = "#!/bin/sh\nexit 0\n"
 			}
 			os.WriteFile(filepath.Join(tools, "curl"), []byte(curl), 0700)
+			os.WriteFile(filepath.Join(tools, "date"), []byte("#!/bin/sh\necho 0\n"), 0700)
 			r := &guardRunner{stage: "up"}
 			_ = Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
 			script := strings.ReplaceAll(strings.ReplaceAll(r.input, binPath, bin), configPath, cfg)
