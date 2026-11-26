@@ -1186,7 +1186,7 @@ func TestActivateSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := f.scripts()
-	if len(s) != 3 {
+	if len(s) != 2 {
 		t.Fatalf("scripts = %q", s)
 	}
 	for _, want := range []string{
@@ -1265,7 +1265,7 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 			order = append(order, "other")
 		}
 	}
-	if strings.Join(order, " ") != "swap restart journal back restart disarm" {
+	if strings.Join(order, " ") != "swap restart journal back restart" {
 		t.Fatalf("order = %v", order)
 	}
 	back := f.calls[3].script

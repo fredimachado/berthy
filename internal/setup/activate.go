@@ -69,14 +69,16 @@ func healthURL(listen string) string { return "http://" + listen + "/healthz" }
 
 // waitScript succeeds as soon as url answers, and fails when secs seconds pass, or earlier when systemd has given the service
 // up.
-func waitScript(url string, secs int) string {
+func waitScript(url string, secs int) string { return waitScriptOnSuccess(url, secs, "exit 0") }
+
+func waitScriptOnSuccess(url string, secs int, success string) string {
 	return getFunc +
 		fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
 		"while :; do\n" +
 		"  left=$((end - $(date +%s)))\n" +
 		"  [ \"$left\" -gt 0 ] || break\n" +
 		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
-		"  if get " + shellQuote(url) + " \"$probe\"; then exit 0; fi\n" +
+		"  if get " + shellQuote(url) + " \"$probe\"; then " + success + "; fi\n" +
 		"  if systemctl is-failed --quiet berthy; then exit 1; fi\n" +
 		"  sleep 1\n" +
 		"done\n" +
@@ -143,14 +145,11 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	prevBin = staged.Binary && strings.Contains(out, "prev_bin=yes")
 	prevCfg = staged.Config && strings.Contains(out, "prev_cfg=yes")
 
-	up, err := restartAndWait(ctx, r, listen, secs)
+	up, err := restartAndWait(ctx, r, listen, secs, armed)
 	if err != nil {
 		return guarded(err)
 	}
 	if up {
-		if armed {
-			disarm(ctx, r)
-		}
 		return nil
 	}
 
@@ -196,15 +195,13 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		outcome = ConfigPrevious
 	}
 	msg := "the new agent did not come up; the previous one was put back"
-	again, err := restartAndWait(ctx, r, listen, secs)
+	again, err := restartAndWait(ctx, r, listen, secs, armed)
 	if err != nil {
 		return guarded(err)
 	}
-	if armed {
-		disarm(ctx, r)
-	}
 	if !again {
 		msg += ", but it does not answer either"
+		return guarded(fmt.Errorf("%s", withLog(msg, journal)))
 	}
 	return &ActivateError{Message: withLog(msg, journal), ConfigOutcome: outcome}
 }
@@ -243,7 +240,7 @@ trap - EXIT
 // guardScript checks the agent and restores the previous files if needed.
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
-	s.WriteString("up() { (\n" + restartScript(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit 0; fi\n")
+	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\nif up; then exit 0; fi\nif [ \"$1\" != yes ] && [ \"$2\" != yes ]; then systemctl stop berthy; exit 0; fi\n")
 	if staged.Binary {
 		s.WriteString("if [ \"$1\" = yes ] && [ -e " + shellQuote(bin+".prev") + " ]; then mv -f " + shellQuote(bin+".prev") + " " + shellQuote(bin) + "; fi\n")
 	}
@@ -282,12 +279,24 @@ func swapScript(staged Staged, secs, guardSize int) string {
 
 // restartScript restarts the service and waits until the agent answers on listen, for secs seconds at most.
 func restartScript(listen string, secs int) string {
-	// reset-failed clears the start limit a crash loop used up, or the restart would be refused as too quick.
-	return "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
-		"systemctl restart berthy 2>&1 || exit 1\n" + waitScript(healthURL(listen), secs)
+	return restartScriptWithGuard(listen, secs, true)
 }
 
-// activateScripts lists the swap and disarm when staged, and the restart, for a successful activation.
+func restartScriptWithoutGuard(listen string, secs int) string {
+	return restartScriptWithGuard(listen, secs, false)
+}
+
+func restartScriptWithGuard(listen string, secs int, guarded bool) string {
+	success := "exit 0"
+	if guarded {
+		success = "systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || exit 1; exit 0"
+	}
+	// reset-failed clears the start limit a crash loop used up.
+	return "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
+		"systemctl restart berthy 2>&1 || exit 1\n" + waitScriptOnSuccess(healthURL(listen), secs, success)
+}
+
+// activateScripts lists the swap when staged and the restart for a successful activation.
 // A dry run lists them. The scripts that put the previous agent back, and the journal, run only when the new agent does not come
 // up, so a dry run does not list them.
 func activateScripts(staged Staged, listen string, timeout time.Duration) []string {
@@ -295,15 +304,15 @@ func activateScripts(staged Staged, listen string, timeout time.Duration) []stri
 	secs := wholeSeconds(timeout)
 	guard := guardScript(binPath, configPath, staged, listen, secs)
 	if swap := swapScript(staged, secs, len(guard)); swap != "" {
-		out = append(out, swap, restartScript(listen, wholeSeconds(timeout)), disarmScript)
+		out = append(out, swap, restartScript(listen, secs))
 		return out
 	}
-	return append(out, restartScript(listen, wholeSeconds(timeout)))
+	return append(out, restartScriptWithoutGuard(listen, secs))
 }
 
 // restartAndWait restarts the service and reports whether the agent answered within the given seconds.
-func restartAndWait(ctx context.Context, r Runner, listen string, secs int) (bool, error) {
-	res, err := r.Run(ctx, restartScript(listen, secs), nil)
+func restartAndWait(ctx context.Context, r Runner, listen string, secs int, guarded bool) (bool, error) {
+	res, err := r.Run(ctx, restartScriptWithGuard(listen, secs, guarded), nil)
 	if err != nil {
 		return false, fmt.Errorf("restarting the agent: %w", err)
 	}

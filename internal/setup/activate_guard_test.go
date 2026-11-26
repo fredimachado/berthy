@@ -36,7 +36,7 @@ func (r *guardRunner) Run(_ context.Context, script string, stdin io.Reader) (Re
 		if r.stage == "lost" {
 			return Result{}, errors.New("connection lost")
 		}
-		if r.stage == "up" {
+		if r.stage == "up" || r.stage == "recover" && r.restarts == 2 {
 			return Result{}, nil
 		}
 		return Result{Code: 1}, nil
@@ -82,12 +82,12 @@ func TestActivateDisarmsTheGuardWhenTheNewAgentAnswers(t *testing.T) {
 	if err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 3 || !strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
+	if len(r.calls) != 2 || !strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
 		t.Fatalf("no disarm: %q", r.calls)
 	}
 }
 func TestActivateDisarmsTheGuardAfterPuttingThePreviousAgentBack(t *testing.T) {
-	r := &guardRunner{}
+	r := &guardRunner{stage: "recover"}
 	_ = Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
 	if !strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
 		t.Fatalf("no disarm: %q", r.calls)
@@ -202,7 +202,7 @@ func TestGuardMessageOnUnresolvedActivation(t *testing.T) {
 			}
 		})
 	}
-	for _, stage := range []string{""} {
+	for _, stage := range []string{"recovery answers"} {
 		r := &outcomeRunner{stage: stage}
 		err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
 		if err == nil || strings.Contains(err.Error(), "62 seconds") {

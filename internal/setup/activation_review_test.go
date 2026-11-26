@@ -123,7 +123,7 @@ func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 func TestFailedRecoveryKeepsTheGuardArmed(t *testing.T) {
 	r := &guardRunner{}
 	err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "62 seconds") || strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
+	if err == nil || !strings.Contains(err.Error(), "62 seconds") || r.calls[len(r.calls)-1] == disarmScript {
 		t.Fatalf("unresolved recovery: %v; %q", err, r.calls)
 	}
 }

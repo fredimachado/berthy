@@ -130,6 +130,9 @@ func (r *outcomeRunner) Run(_ context.Context, script string, _ io.Reader) (Resu
 		return Result{}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
 		r.restarts++
+		if r.stage == "recovery answers" && r.restarts == 2 {
+			return Result{}, nil
+		}
 		if r.stage == "restart error" || r.stage == "after rollback" && r.restarts == 2 {
 			return Result{}, errors.New("transport lost")
 		}
