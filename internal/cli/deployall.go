@@ -192,7 +192,7 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		printRefusal(errout, safeSecretText(e.Error(), target.Token), !f.json)
 		return 1
 	}
-	if code := checkKeptVersions(ctx, client, target, steps, errout); code != 0 {
+	if code := checkKeptVersions(ctx, client, target, steps, errout, f.json); code != 0 {
 		return code
 	}
 	if len(tags) == 0 && hasTaggedKept(steps) {
@@ -200,12 +200,12 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 		if !m.Protected {
 			policy, err = agentclient.AgentProtection(ctx, client, target)
 			if err != nil {
-				fmt.Fprintln(errout, target.Redact(err.Error()))
+				printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 				return 1
 			}
 		}
 		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
-			fmt.Fprintln(errout, err)
+			printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 			return 1
 		}
 	}
@@ -316,7 +316,7 @@ func capturedDocument(b []byte) (json.RawMessage, error) {
 // checkKeptVersions asks the agent, with a read that changes nothing, for the release of every image app that keeps its version.
 // An app that was never deployed has none, and the agent would refuse it only when its turn came, after the apps before it
 // were deployed, so it is refused here, before anything is sent. The apps' headers say which version each keeps.
-func checkKeptVersions(ctx context.Context, client *http.Client, target *agentclient.Target, steps []deployStep, errout io.Writer) int {
+func checkKeptVersions(ctx context.Context, client *http.Client, target *agentclient.Target, steps []deployStep, errout io.Writer, asJSON bool) int {
 	missing := false
 	for i := range steps {
 		step := &steps[i]
@@ -325,17 +325,17 @@ func checkKeptVersions(ctx context.Context, client *http.Client, target *agentcl
 		}
 		answer, found, err := readApplied(ctx, client, target, step.app)
 		if err != nil {
-			fmt.Fprintf(errout, "%s (nothing was deployed)\n", err)
+			printRefusal(errout, safeSecretText(err.Error(), target.Token)+" (nothing was deployed)", !asJSON)
 			return 1
 		}
 		if !found {
-			fmt.Fprintf(errout, "image app %s is not deployed yet: give --version %s=REF (nothing was deployed)\n", step.app, step.app)
+			printRefusal(errout, fmt.Sprintf("image app %s is not deployed yet: give --version %s=REF (nothing was deployed)", terminalSafe(step.app), terminalSafe(step.app)), !asJSON)
 			missing = true
 		} else {
 			image, err := promotionImage(&step.req.Manifest, step.app, answer.Digest)
 			stored, parseErr := reference.ParseNormalizedNamed(answer.Digest)
 			if err != nil || parseErr != nil || stored.String() != answer.Digest || (answer.Tag != "" && reference.TagRegexp.FindString(answer.Tag) != answer.Tag) {
-				fmt.Fprintf(errout, "image app %s has an invalid applied release (nothing was deployed)\n", step.app)
+				printRefusal(errout, fmt.Sprintf("image app %s has an invalid applied release (nothing was deployed)", terminalSafe(step.app)), !asJSON)
 				return 1
 			}
 			// The agent refuses the deploy if the app runs another version by the time it deploys it, so what the header says is

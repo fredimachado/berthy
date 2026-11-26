@@ -130,7 +130,7 @@ func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
-	redact := func(s string) string { return safeSecretText(s, token) }
+	redact := func(s string) string { return redactSecretText(s, token) }
 	switch {
 	case len(f.pos) == 1 && f.pos[0] == "list":
 		query := ""
@@ -145,7 +145,7 @@ func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, 
 			return 1
 		}
 		if status != http.StatusOK {
-			printRefusal(errout, redact(agentclient.Message(status, data)), !f.json)
+			printRefusal(errout, terminalSafe(redact(agentclient.Message(status, data))), !f.json)
 			return 1
 		}
 		return printBackups(out, errout, data, f.json)
@@ -166,10 +166,10 @@ func runBackupRun(ctx context.Context, call func(method, path, query string) ([]
 		return 1
 	}
 	if status != http.StatusAccepted {
-		printRefusal(errout, redact(agentclient.Message(status, data)), !asJSON)
+		printRefusal(errout, terminalSafe(redact(agentclient.Message(status, data))), !asJSON)
 		return 1
 	}
-	if code, held := reportHeld(data, out, errout, asJSON); held {
+	if code, held := reportHeldWithRedactor(data, out, errout, asJSON, nil, redact); held {
 		return code
 	}
 	var started struct {

@@ -123,14 +123,18 @@ func reportHeld(data []byte, out, errout io.Writer, asJSON bool) (code int, held
 }
 
 func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, values ...string) (code int, held bool) {
+	return reportHeldWithRedactor(data, out, errout, asJSON, markers, func(s string) string { return redactSecretText(s, values...) })
+}
+
+func reportHeldWithRedactor(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, redact func(string) string) (code int, held bool) {
 	var h heldApproval
 	if json.Unmarshal(data, &h) != nil || h.ID == "" {
 		return 0, false
 	}
-	line := fmt.Sprintf("held for approval: %s (expires %s)", safeSecretText(h.ID, values...), safeSecretText(h.Expires.UTC().Format(time.RFC3339), values...))
+	line := fmt.Sprintf("held for approval: %s (expires %s)", terminalSafe(redact(h.ID)), terminalSafe(redact(h.Expires.UTC().Format(time.RFC3339))))
 	if asJSON {
 		var pretty bytes.Buffer
-		if json.Indent(&pretty, redactHeldJSON(data, values...), "", "  ") != nil {
+		if json.Indent(&pretty, redactDiagnosticJSONWith(data, false, redact), "", "  ") != nil {
 			fmt.Fprintln(errout, "invalid agent response")
 			return 1, true
 		}
@@ -139,7 +143,7 @@ func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers 
 		return exitHeld, true
 	}
 	fmt.Fprintln(out, line)
-	printPlanMarkers(out, redactHeldJSON(h.Plan, values...), markers)
+	printPlanMarkers(out, redactDiagnosticJSONWith(h.Plan, false, redact), markers)
 	return exitHeld, true
 }
 

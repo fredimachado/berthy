@@ -1014,6 +1014,9 @@ func requestWaitLabel(cmd string, f commandFlags, method string) string {
 // operation to watch to its end, or a result to print. It is what runDeployment does once it has built the request. base is
 // the agent's URL, which it does not change.
 func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix, token, method, endpoint string, body any, f commandFlags, cmd string, out, errout io.Writer, enteredValues ...string) int {
+	for _, value := range append([]string(nil), enteredValues...) {
+		enteredValues = append(enteredValues, wireSecret(value))
+	}
 	u := agentURL(base, prefix, endpoint)
 	if cmd == "wait" {
 		q := u.Query()

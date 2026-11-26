@@ -119,9 +119,6 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			}
 		}
 		g := guideFor(m, env, n.Name, n.Registry)
-		for i := range g.intro {
-			g.intro[i] = terminalSafe(g.intro[i])
-		}
 		for {
 			if ctx.Err() != nil {
 				return remaining, guideFailed
@@ -158,7 +155,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 				return remaining, guideFailed
 			}
 			if status != http.StatusOK {
-				printRefusal(errout, safeSecretText(agentclient.Message(status, data), value, target.Token), true)
+				printRefusal(errout, safeSecretText(agentclient.Message(status, data), value, wireSecret(value), target.Token), true)
 				return remaining, guideFailed
 			}
 			var ack struct {
@@ -174,7 +171,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			}
 			reply := secretSetReply{Ok: ack.Ok, Registry: registry, Services: ack.Services, ServicesError: ack.ServicesError}
 			if n.Registry != "" {
-				if printRegistrySet(out, reply, value, target.Token) {
+				if printRegistrySet(out, reply, value, wireSecret(value), target.Token) {
 					fmt.Fprintln(out, "Run berthy secret set NAME --registry HOST with the same targeting flags to retry the services that were not updated.")
 				}
 			} else {
@@ -262,6 +259,7 @@ func reportGuideDeclaredHeld(data []byte, out io.Writer, token string) bool {
 
 // reportGuideHeld validates the store plan against the request before displaying it.
 func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, token string) bool {
+	values := []string{value, wireSecret(value), token}
 	h, ok := decodeGuideHeld(data)
 	if !ok {
 		return false
@@ -286,7 +284,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, t
 		}
 	}
 	if redacted {
-		printGuideHeldHeading(out, h, value, token)
+		printGuideHeldHeading(out, h, values...)
 		fmt.Fprintln(out, "plan details were redacted")
 		return true
 	}
@@ -302,9 +300,9 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, t
 		return false
 	}
 	safe := map[string]any{
-		"action":   safeSecretText(*plan.Action, value, token),
-		"name":     safeSecretText(*plan.Name, value, token),
-		"registry": safeSecretText(*plan.Registry, value, token),
+		"action":   safeSecretText(*plan.Action, values...),
+		"name":     safeSecretText(*plan.Name, values...),
+		"registry": safeSecretText(*plan.Registry, values...),
 		"exists":   *plan.Exists,
 	}
 	if len(plan.ServicesError) != 0 {
@@ -312,7 +310,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, t
 		if string(plan.ServicesError) == "null" || json.Unmarshal(plan.ServicesError, &message) != nil {
 			return false
 		}
-		safe["services_error"] = safeSecretText(message, value, token)
+		safe["services_error"] = safeSecretText(message, values...)
 	}
 	if len(plan.Services) != 0 {
 		var services []string
@@ -320,7 +318,7 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, t
 			return false
 		}
 		for i := range services {
-			services[i] = safeSecretText(services[i], value, token)
+			services[i] = safeSecretText(services[i], values...)
 		}
 		safe["services"] = services
 	}
@@ -328,6 +326,6 @@ func reportGuideHeld(data []byte, value, name, registry string, out io.Writer, t
 	if err != nil {
 		return false
 	}
-	printGuideHeld(out, h, encoded, value, token)
+	printGuideHeld(out, h, encoded, values...)
 	return true
 }

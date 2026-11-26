@@ -106,7 +106,7 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 			fmt.Fprintln(errout, "invalid agent response")
 			return res, declaredFailed
 		}
-		if code, held := reportHeld(data, out, errout, asJSON); held {
+		if code, held := reportHeldMarkers(data, out, errout, asJSON, nil, target.Token); held {
 			if code != exitHeld {
 				return res, declaredFailed
 			}

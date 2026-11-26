@@ -188,7 +188,7 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON)
 		return 1
 	}
-	if code, held := reportHeld(data, out, errout, asJSON); held {
+	if code, held := reportHeldMarkers(data, out, errout, asJSON, nil, token); held {
 		return code
 	}
 	var started struct {

@@ -274,7 +274,7 @@ func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored f
 	if i := slices.IndexFunc(held, func(s storedSecret) bool { return s.Name == name }); i >= 0 {
 		prior := held[i]
 		if prior.Registry != "" {
-			fmt.Fprintf(errout, "%s is stored as the password for %s. The new value replaces it.\n", name, prior.Registry)
+			fmt.Fprintf(errout, "%s is stored as the password for %s. The new value replaces it.\n", name, safeSecretText(prior.Registry, token))
 		} else {
 			fmt.Fprintf(errout, "%s is already stored. The new value replaces it.\n", name)
 		}
@@ -313,7 +313,7 @@ const (
 // askSecret prints the guide, reads a hidden value and checks it.
 func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([]byte, error), errout io.Writer, humanProgress bool, token string) (string, askResult) {
 	for _, line := range g.intro {
-		fmt.Fprintln(errout, line)
+		fmt.Fprintln(errout, safeSecretText(line, token))
 	}
 	fmt.Fprint(errout, prompt)
 	line, err := read()
@@ -333,14 +333,21 @@ func askSecret(ctx context.Context, g secretGuide, prompt string, read func() ([
 		res := g.check(ctx, value)
 		progress.Close()
 		for _, n := range res.notes {
-			fmt.Fprintln(errout, safeSecretText(n, value, token))
+			fmt.Fprintln(errout, safeSecretText(n, value, wireSecret(value), token))
 		}
 		if res.refusal != "" {
-			printRefusal(errout, "not stored: "+safeSecretText(res.refusal, value, token), humanProgress)
+			printRefusal(errout, "not stored: "+safeSecretText(res.refusal, value, wireSecret(value), token), humanProgress)
 			return "", askRefused
 		}
 	}
 	return value, askGot
+}
+
+func wireSecret(value string) string {
+	encoded, _ := json.Marshal(value)
+	var wire string
+	_ = json.Unmarshal(encoded, &wire)
+	return wire
 }
 
 // storedSecrets asks the agent which secrets it holds, at u. ok is false when the agent did not answer with the list, and the

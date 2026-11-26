@@ -95,7 +95,7 @@ func runJobCancel(ctx context.Context, f commandFlags, base *url.URL, prefix, to
 		return 1
 	}
 	if status == http.StatusAccepted {
-		if code, held := reportHeld(data, out, errout, f.json); held {
+		if code, held := reportHeldMarkers(data, out, errout, f.json, nil, token); held {
 			return code
 		}
 	}

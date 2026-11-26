@@ -40,7 +40,7 @@ func readApplied(ctx context.Context, c *http.Client, t *agentclient.Target, app
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return result, false, errors.New(t.Redact(err.Error()))
+		return result, false, errors.New(safeSecretText(err.Error(), append([]string{t.Token}, extraTokens...)...))
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))

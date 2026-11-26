@@ -8,6 +8,10 @@ import (
 
 // redactDiagnosticJSON preserves the original JSON and any trailing bytes, changing only selected string values.
 func redactDiagnosticJSON(data []byte, registryOnly bool, values ...string) []byte {
+	return redactDiagnosticJSONWith(data, registryOnly, func(s string) string { return redactSecretText(s, values...) })
+}
+
+func redactDiagnosticJSONWith(data []byte, registryOnly bool, redact func(string) string) []byte {
 	type edit struct {
 		start, end int
 		value      []byte
@@ -27,11 +31,11 @@ func redactDiagnosticJSON(data []byte, registryOnly bool, values ...string) []by
 		}
 		switch v := tok.(type) {
 		case string:
-			if !registryOnly || path == "registry" || path == "services_error" || path == "services.item" || path == "services.name" || path == "services.error" {
-				safe := redactSecretText(v, values...)
+			if !registryOnly || path == "diagnostic" || path == "registry" || path == "services_error" || path == "services.item" || path == "services.name" || path == "services.error" {
+				safe := redact(v)
 				if safe != v {
 					encoded, _ := json.Marshal(safe)
-					edits = append(edits, edit{start, int(dec.InputOffset()), encoded})
+					edits = append(edits, edit{start, int(dec.InputOffset()), []byte(escapeJSONC1(string(encoded)))})
 				}
 			}
 		case json.Delim:
@@ -47,7 +51,9 @@ func redactDiagnosticJSON(data []byte, registryOnly bool, values ...string) []by
 						return &json.UnmarshalTypeError{}
 					}
 					child := "other"
-					if path == "root" {
+					if path == "diagnostic" || path == "registry" || path == "services_error" || path == "services" || path == "services.name" || path == "services.error" {
+						child = "diagnostic"
+					} else if path == "root" {
 						for _, field := range []string{"registry", "services_error", "services"} {
 							if strings.EqualFold(name, field) {
 								child = field
@@ -55,12 +61,7 @@ func redactDiagnosticJSON(data []byte, registryOnly bool, values ...string) []by
 							}
 						}
 					} else if path == "services.item" {
-						for _, field := range []string{"name", "error"} {
-							if strings.EqualFold(name, field) {
-								child = "services." + field
-								break
-							}
-						}
+						child = "diagnostic"
 					}
 					if err := value(child); err != nil {
 						return err
@@ -73,6 +74,8 @@ func redactDiagnosticJSON(data []byte, registryOnly bool, values ...string) []by
 					child := "other"
 					if path == "services" {
 						child = "services.item"
+					} else if path == "diagnostic" || path == "registry" || path == "services_error" || path == "services.item" || path == "services.name" || path == "services.error" {
+						child = "diagnostic"
 					}
 					if err := value(child); err != nil {
 						return err

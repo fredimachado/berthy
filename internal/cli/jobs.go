@@ -194,7 +194,7 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 		printRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !asJSON)
 		return 1
 	}
-	if code, held := reportHeld(data, out, errout, asJSON); held {
+	if code, held := reportHeldMarkers(data, out, errout, asJSON, nil, token); held {
 		return code
 	}
 	if json.Unmarshal(data, &started) != nil || started.RunID == 0 {
