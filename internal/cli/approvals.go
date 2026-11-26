@@ -120,6 +120,10 @@ type heldApproval struct {
 // reportHeld handles the answer to a change when the agent held it for approval: it tells the person what is held and
 // returns exitHeld. held is false when the answer is not that, and nothing is printed.
 func reportHeld(data []byte, out, errout io.Writer, asJSON bool) (code int, held bool) {
+	return reportHeldMarkers(data, out, errout, asJSON, nil)
+}
+
+func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone) (code int, held bool) {
 	var h heldApproval
 	if json.Unmarshal(data, &h) != nil || h.ID == "" {
 		return 0, false
@@ -136,12 +140,16 @@ func reportHeld(data []byte, out, errout io.Writer, asJSON bool) (code int, held
 		return exitHeld, true
 	}
 	fmt.Fprintln(out, line)
-	printPlan(out, h.Plan)
+	printPlanMarkers(out, h.Plan, markers)
 	return exitHeld, true
 }
 
 // printPlan prints a plan under a "plan:" heading.
 func printPlan(out io.Writer, plan json.RawMessage) {
+	printPlanMarkers(out, plan, nil)
+}
+
+func printPlanMarkers(out io.Writer, plan json.RawMessage, markers []cliTone) {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(plan))
 	dec.UseNumber()
@@ -152,7 +160,7 @@ func printPlan(out io.Writer, plan json.RawMessage) {
 	if m, ok := v.(map[string]any); ok {
 		if diff, ok := takeDiff(m); ok {
 			fmt.Fprintln(out, "  diff:")
-			printStyledDiff(out, "    ", diff, styleFor(out, true))
+			printStyledDiffMarkers(out, "    ", diff, styleFor(out, true), markers)
 		}
 	}
 	printText(out, v, "  ")

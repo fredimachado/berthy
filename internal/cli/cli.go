@@ -402,6 +402,9 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			shape = shapeDF
 		case "stats":
 			shape = shapeStats
+			if u.Query().Get("since") != "" {
+				shape = shapeStatsSamples
+			}
 		}
 		printStyledText(out, v, "", styleFor(out, true), shape)
 	}
@@ -460,6 +463,7 @@ const (
 	shapeDF
 	shapeWait
 	shapeAudit
+	shapeAuditRow
 	shapeHistory
 	shapeHistoryRow
 	shapeLock
@@ -468,6 +472,7 @@ const (
 	shapeIngress
 	shapeTunnel
 	shapeStats
+	shapeStatsSamples
 	shapeContainers
 	shapeContainer
 )
@@ -479,6 +484,10 @@ func printText(w io.Writer, v any, indent string) {
 func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textShape) {
 	switch x := v.(type) {
 	case map[string]any:
+		switch shape {
+		case shapeAudit, shapeStatsSamples, shapeHistory, shapeSecrets, shapeChecks, shapeApps, shapeRoles, shapeReplicas, shapeContainers:
+			shape = shapeGeneric
+		}
 		keys := make([]string, 0, len(x))
 		for k := range x {
 			keys = append(keys, k)
@@ -510,7 +519,7 @@ func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textSh
 				value := terminalSafe(fmt.Sprint(v))
 				tone := tonePlain
 				switch {
-				case shape == shapeHistoryRow && k == "state", shape == shapeOperation && k == "state", shape == shapeWait && k == "status", shape == shapeReplica && (k == "state" || k == "health"), shape == shapeDF && (k == "host_status" || k == "docker_status"), shape == shapeAudit && k == "outcome", shape == shapeTunnel && k == "status":
+				case shape == shapeHistoryRow && k == "state", shape == shapeOperation && k == "state", shape == shapeWait && k == "status", shape == shapeReplica && (k == "state" || k == "health"), shape == shapeDF && (k == "host_status" || k == "docker_status"), shape == shapeAuditRow && k == "outcome", shape == shapeIngress && k == "cloudflare", shape == shapeTunnel && k == "status":
 					tone = statusTone(fmt.Sprint(v))
 				case shape == shapeHistoryRow && k == "reason" && value != "":
 					tone = toneError
@@ -547,8 +556,12 @@ func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textSh
 			}
 		}
 	case []any:
-		child := shape
+		child := shapeGeneric
 		switch shape {
+		case shapeAudit:
+			child = shapeAuditRow
+		case shapeStatsSamples:
+			child = shapeStats
 		case shapeHistory:
 			child = shapeHistoryRow
 		case shapeSecrets:

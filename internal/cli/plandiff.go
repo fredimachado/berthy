@@ -25,21 +25,59 @@ func takeDiff(plan map[string]any) (deploy.Diff, bool) {
 	return d, true
 }
 
+func diffMarker(change string) cliTone {
+	switch {
+	case strings.HasPrefix(change, "+ "):
+		return toneOK
+	case strings.HasPrefix(change, "- "):
+		return toneError
+	case strings.HasPrefix(change, "~ "):
+		return toneWarning
+	default:
+		return tonePlain
+	}
+}
+
+// diffMarkers retains only classification from redacted, unsanitized text.
+func diffMarkers(data []byte, held bool, tokens ...string) []cliTone {
+	var plan map[string]any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if dec.Decode(&plan) != nil || dec.Decode(new(any)) != io.EOF {
+		return []cliTone{}
+	}
+	if held {
+		plan, _ = plan["plan"].(map[string]any)
+	}
+	d, ok := takeDiff(plan)
+	if !ok {
+		return []cliTone{}
+	}
+	tones := make([]cliTone, len(d.Changes))
+	for i, c := range d.Changes {
+		tones[i] = diffMarker(redactSecretText(c.Change, tokens...))
+	}
+	return tones
+}
+
 func printStyledDiff(w io.Writer, indent string, d deploy.Diff, s cliStyle) {
+	printStyledDiffMarkers(w, indent, d, s, nil)
+}
+
+func printStyledDiffMarkers(w io.Writer, indent string, d deploy.Diff, s cliStyle, markers []cliTone) {
 	lines := d.Lines()
 	for i, line := range lines {
 		if !d.New && len(d.Changes) > 0 && i < len(d.Changes) && strings.HasSuffix(line, d.Changes[i].Change) {
 			change := d.Changes[i].Change
 			area := line[:len(line)-len(change)]
-			tone := tonePlain
-			if strings.HasPrefix(change, "+ ") {
-				tone = toneOK
-			} else if strings.HasPrefix(change, "- ") {
-				tone = toneError
-			} else if strings.HasPrefix(change, "~ ") {
-				tone = toneWarning
+			tone := diffMarker(change)
+			if markers != nil {
+				tone = tonePlain
+				if i < len(markers) {
+					tone = markers[i]
+				}
 			}
-			if tone != tonePlain {
+			if tone != tonePlain && len(change) >= 2 {
 				change = s.paint(tone, terminalSafe(change[:2])) + terminalSafe(change[2:])
 			} else {
 				change = terminalSafe(change)

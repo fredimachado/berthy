@@ -1050,16 +1050,20 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		_, _ = io.Copy(errout, &requestErr)
 		return 1
 	}
+	var promotionMarkers []cliTone
 	if f.redactToken != "" && (status == http.StatusOK || status == http.StatusAccepted) {
 		safe, err := safePromotionResponse(data, token, f.redactToken)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
 		}
+		if status == http.StatusAccepted {
+			promotionMarkers = diffMarkers(data, true, token, f.redactToken)
+		}
 		data = safe
 	}
 	if status == http.StatusAccepted {
-		if code, held := reportHeld(data, out, errout, f.json); held {
+		if code, held := reportHeldMarkers(data, out, errout, f.json, promotionMarkers); held {
 			return code
 		}
 		var accepted struct {

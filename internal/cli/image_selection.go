@@ -422,7 +422,7 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 			app, _ := plan["app"].(string)
 			delete(plan, "app")
 			fmt.Fprintln(&buf, app)
-			printStyledDiff(&buf, "  ", diff, s)
+			printStyledDiffMarkers(&buf, "  ", diff, s, diffMarkers(data, false, append([]string{token}, extra...)...))
 			if len(plan) > 0 {
 				printStyledText(&buf, plan, "", s, shapeGeneric)
 			}
