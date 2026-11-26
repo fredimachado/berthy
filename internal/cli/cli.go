@@ -460,6 +460,11 @@ const (
 	shapeDF
 	shapeWait
 	shapeAudit
+	shapeHistory
+	shapeHistoryRow
+	shapeLock
+	shapeSecrets
+	shapeSecretRow
 	shapeIngress
 	shapeTunnel
 	shapeStats
@@ -505,8 +510,22 @@ func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textSh
 				value := terminalSafe(fmt.Sprint(v))
 				tone := tonePlain
 				switch {
-				case shape == shapeOperation && k == "state", shape == shapeWait && k == "status", shape == shapeReplica && (k == "state" || k == "health"), shape == shapeDF && (k == "host_status" || k == "docker_status"), shape == shapeAudit && k == "outcome", shape == shapeTunnel && k == "status":
+				case shape == shapeHistoryRow && k == "state", shape == shapeOperation && k == "state", shape == shapeWait && k == "status", shape == shapeReplica && (k == "state" || k == "health"), shape == shapeDF && (k == "host_status" || k == "docker_status"), shape == shapeAudit && k == "outcome", shape == shapeTunnel && k == "status":
 					tone = statusTone(fmt.Sprint(v))
+				case shape == shapeHistoryRow && k == "reason" && value != "":
+					tone = toneError
+				case shape == shapeSecretRow && k == "name":
+					if _, ok := v.(string); ok {
+						tone = toneAccent
+					}
+				case shape == shapeLock && k == "locked":
+					if locked, ok := v.(bool); ok {
+						if locked {
+							tone = toneWarning
+						} else {
+							tone = toneOK
+						}
+					}
 				case (shape == shapeStats && k == "docker_error" || shape == shapeContainer && k == "error") && value != "":
 					tone = toneError
 				case shape == shapeOperation && (k == "error" || k == "reason") && value != "":
@@ -530,6 +549,10 @@ func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textSh
 	case []any:
 		child := shape
 		switch shape {
+		case shapeHistory:
+			child = shapeHistoryRow
+		case shapeSecrets:
+			child = shapeSecretRow
 		case shapeChecks:
 			child = shapeCheck
 		case shapeApps:
@@ -544,7 +567,25 @@ func printStyledText(w io.Writer, v any, indent string, s cliStyle, shape textSh
 		for _, v := range x {
 			switch v.(type) {
 			case map[string]any:
-				printStyledText(w, v, indent, s, child)
+				rowShape := child
+				row := v.(map[string]any)
+				switch child {
+				case shapeHistoryRow:
+					_, app := row["app"].(string)
+					_, kind := row["kind"].(string)
+					_, id := row["operation_id"].(string)
+					_, state := row["state"].(string)
+					if !app || !kind || !id || !state {
+						rowShape = shapeGeneric
+					}
+				case shapeSecretRow:
+					_, name := row["name"].(string)
+					_, registry := row["registry"].(string)
+					if !name || !registry {
+						rowShape = shapeGeneric
+					}
+				}
+				printStyledText(w, v, indent, s, rowShape)
 				fmt.Fprintln(w)
 			case []any:
 				printStyledText(w, v, indent, s, shapeGeneric)

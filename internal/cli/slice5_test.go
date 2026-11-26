@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"berthy/internal/deploy"
 )
 
 func slice5Destination(t *testing.T, dst io.Writer) {
@@ -85,6 +83,15 @@ func TestKeyedTextStylesOnlySemanticFields(t *testing.T) {
 	if strings.Contains(out.String(), "\x1b[31mfailed") || !strings.Contains(out.String(), "failed") {
 		t.Errorf("manifest: %q", out.String())
 	}
+	var plain bytes.Buffer
+	errs.Reset()
+	if code := Run([]string{"config", "show", "-e", "dev", "--manifest-dir", dir}, &plain, &errs); code != 0 {
+		t.Fatalf("plain config: %d %s", code, errs.String())
+	}
+	wantConfig := "apps: \n  web: \n    deploy: \n      deploy_timeout: 120s\n      drain_timeout: 30s\n      retain: 5\n      start_attempts: 3\n    env: \n      plain: \n        status: failed\n    hooks: \n    image: alpine\n    kind: image\n    roles: \n      web: \n        replicas: 1\nnetwork: demo\nproject: demo\nprotected: false\n"
+	if plain.String() != wantConfig {
+		t.Errorf("plain config = %q, want %q", plain.String(), wantConfig)
+	}
 	// The watcher owns the operation record; its opaque nested object stays generic.
 	out.Reset()
 	errs.Reset()
@@ -100,45 +107,133 @@ func TestKeyedTextStylesOnlySemanticFields(t *testing.T) {
 	if !strings.Contains(out.String(), "\x1b[31mfailed\x1b[0m") || !strings.Contains(out.String(), "\x1b[31mbad\\x1b\x1b[0m") || strings.Count(out.String(), "\x1b[31mfailed\x1b[0m") != 1 {
 		t.Errorf("operation: %q errors %q", out.String(), errs.String())
 	}
+	plain.Reset()
+	errs.Reset()
+	watchOperation(context.Background(), client, base, "token", "/v1/", "op", "/v1/operations/op/events", &plain, &errs, false, "restart", "dev", "demo")
+	if want := "nested: \n  state: failed\nreason: bad\\x1b\nstate: failed\n"; plain.String() != want {
+		t.Errorf("plain operation = %q, want %q", plain.String(), want)
+	}
 
 }
 
 func TestDiffStylesStructuredMarkers(t *testing.T) {
-	var out, errs bytes.Buffer
+	var out, plain, errs bytes.Buffer
 	slice5Destination(t, &out)
-	data := []byte(`{"changes":[{"area":"env","change":"+ FOO"},{"area":"web","change":"replicas 2 -> 1"},{"area":"env","change":"~ X -> + value"}]}`)
-	if printDiff(&out, &errs, data) != 0 {
+	data := []byte(`{"changes":[{"area":"a\u001b","change":"- old"},{"area":"env","change":"x + value"},{"area":"env","change":"+ added"},{"area":"web","change":"replicas 2 -> 1"},{"area":"env","change":"~ X -> + value"}]}`)
+	if printDiff(&out, &errs, data) != 0 || printDiff(&plain, &errs, data) != 0 {
 		t.Fatal(errs.String())
 	}
-	for _, want := range []string{"\x1b[32m+ \x1b[0mFOO", "\x1b[33m~ \x1b[0mX -> + value", "replicas 2 -> 1"} {
+	if want := "a\\x1b       - old\nenv      x + value\nenv      + added\nweb      replicas 2 -> 1\nenv      ~ X -> + value\n"; plain.String() != want {
+		t.Errorf("plain diff = %q, want %q", plain.String(), want)
+	}
+	for _, want := range []string{"\x1b[31m- \x1b[0mold", "\x1b[32m+ \x1b[0madded", "\x1b[33m~ \x1b[0mX -> + value", "a\\x1b", "replicas 2 -> 1"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %q", want, out.String())
 		}
 	}
-	var plain bytes.Buffer
-	d := deploy.Diff{Changes: []deploy.DiffChange{{Area: "a\x1b", Change: "- old"}, {Area: "env", Change: "x + value"}, {Area: "env", Change: "+ added"}}}
-	printStyledDiff(&plain, "  ", d, cliStyle{})
-	if got, want := plain.String(), "  a\\x1b       - old\n  env      x + value\n  env      + added\n"; got != want {
-		t.Errorf("plain diff = %q, want %q", got, want)
+	if strings.Contains(out.String(), "x \x1b[32m+") {
+		t.Errorf("marker inside value styled: %q", out.String())
 	}
-	var styled bytes.Buffer
-	printStyledDiff(&styled, "", d, cliStyle{color: true})
-	if !strings.Contains(styled.String(), "\x1b[31m- \x1b[0mold") || strings.Contains(styled.String(), "x \x1b[32m+") || !strings.Contains(styled.String(), "a\\x1b") {
-		t.Errorf("styled diff: %q", styled.String())
-	}
-	for _, tc := range []struct {
-		d    deploy.Diff
-		want string
-	}{{deploy.Diff{New: true}, "new app\n"}, {deploy.Diff{Same: true}, "no changes: the same release would be recorded\n"}} {
-		styled.Reset()
-		printStyledDiff(&styled, "", tc.d, cliStyle{color: true})
-		if styled.String() != tc.want {
-			t.Errorf("special diff: %q", styled.String())
+	for _, tc := range []struct{ data, want string }{{`{"new":true}`, "new app\n"}, {`{"same":true}`, "no changes: the same release would be recorded\n"}} {
+		out.Reset()
+		if printDiff(&out, &errs, []byte(tc.data)) != 0 || out.String() != tc.want {
+			t.Errorf("special diff = %q, want %q", out.String(), tc.want)
 		}
 	}
-	malformed := map[string]any{"diff": "invalid"}
-	if _, ok := takeDiff(malformed); ok || malformed["diff"] != "invalid" {
-		t.Errorf("malformed diff removed: %#v", malformed)
+	plain.Reset()
+	if printDryRun(&plain, &errs, []byte(`{"app":"api","diff":"invalid","status":"failed"}`)) != 0 {
+		t.Fatal(errs.String())
+	}
+	if want := "app: api\ndiff: invalid\nstatus: failed\n"; plain.String() != want {
+		t.Errorf("malformed fallback = %q, want %q", plain.String(), want)
+	}
+}
+
+func TestKnownRecordEntryStyles(t *testing.T) {
+	var out, plain, errs bytes.Buffer
+	slice5Destination(t, &out)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/history/api"):
+			io.WriteString(w, `[{"app":"api","kind":"deploy","operation_id":"op1","state":"failed","reason":"bad","extra":{"state":"failed"}}]`)
+		case strings.HasSuffix(r.URL.Path, "/lock"):
+			io.WriteString(w, `{"locked":true,"holder":"operator","reason":"freeze","extra":{"locked":true}}`)
+		case strings.HasSuffix(r.URL.Path, "/secrets"):
+			io.WriteString(w, `[{"name":"API_KEY","registry":"registry.example"}]`)
+		default:
+			io.WriteString(w, `{}`)
+		}
+	}))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := apiManifestDir(t)
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		span, want string
+	}{
+		{"history", []string{"history", "api"}, "\x1b[31mfailed\x1b[0m", "app: api\nextra: \n  state: failed\nkind: deploy\noperation_id: op1\nreason: bad\nstate: failed\n\n"},
+		{"lock", []string{"lock", "status"}, "\x1b[33mtrue\x1b[0m", "extra: \n  locked: true\nholder: operator\nlocked: true\nreason: freeze\n"},
+		{"secrets", []string{"secret", "list"}, "\x1b[35mAPI_KEY\x1b[0m", "name: API_KEY\nregistry: registry.example\n\n"},
+		{"manifest secrets", []string{"secret", "list", "--manifest-dir", dir}, "\x1b[35mAPI_KEY\x1b[0m", "name: API_KEY\nregistry: registry.example\n\nevery secret the manifest needs is stored\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out.Reset()
+			plain.Reset()
+			errs.Reset()
+			args := append(append([]string{}, tc.args...), "-e", "dev", "--config", cfg)
+			if code := Run(args, &out, &errs); code != 0 {
+				t.Fatalf("exit %d: %s", code, errs.String())
+			}
+			if !strings.Contains(out.String(), tc.span) {
+				t.Errorf("missing %q in %q", tc.span, out.String())
+			}
+			if tc.name == "history" && strings.Count(out.String(), "\x1b[31mfailed\x1b[0m") != 1 {
+				t.Errorf("nested value styled: %q", out.String())
+			}
+			if tc.name == "lock" && strings.Count(out.String(), "\x1b[33mtrue\x1b[0m") != 1 {
+				t.Errorf("nested value styled: %q", out.String())
+			}
+			if code := Run(args, &plain, &errs); code != 0 || plain.String() != tc.want {
+				t.Errorf("plain exit %d = %q, want %q; %s", code, plain.String(), tc.want, errs.String())
+			}
+			out.Reset()
+			plain.Reset()
+			jsonArgs := append(append([]string{}, args...), "--json")
+			if a, b := Run(jsonArgs, &out, &errs), Run(jsonArgs, &plain, &errs); a != 0 || b != 0 || out.String() != plain.String() || strings.Contains(out.String(), "\x1b") {
+				t.Errorf("json outputs %q / %q (exits %d / %d): %s", out.String(), plain.String(), a, b, errs.String())
+			}
+		})
+	}
+	out.Reset()
+	errs.Reset()
+	if printHistory(&out, &errs, []byte(`{"state":"failed","name":"API_KEY"}`)) != 0 || strings.Contains(out.String(), "\x1b[31mfailed") || strings.Contains(out.String(), "\x1b[35mAPI_KEY") {
+		t.Errorf("history fallback: %q", out.String())
+	}
+
+	// An unrecognized row in a collection must not acquire a known shape.
+	out.Reset()
+	errs.Reset()
+	if printHistory(&out, &errs, []byte(`[{"state":"failed","other":"unknown"}]`)) != 0 || strings.Contains(out.String(), "\x1b[31mfailed") {
+		t.Errorf("unknown history row: %q", out.String())
+	}
+	unknown := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{"name":"API_KEY","status":"failed"}]`)
+	}))
+	defer unknown.Close()
+	unknownConfig := ingressCLIConfig(t, unknown.URL)
+	out.Reset()
+	errs.Reset()
+	if code := Run([]string{"secret", "list", "-e", "dev", "--config", unknownConfig}, &out, &errs); code != 0 || strings.Contains(out.String(), "\x1b[35mAPI_KEY") || strings.Contains(out.String(), "\x1b[31mfailed") {
+		t.Errorf("unknown secret row: %d %q %q", code, out.String(), errs.String())
+	}
+	free := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"locked":false}`) }))
+	defer free.Close()
+	freeConfig := ingressCLIConfig(t, free.URL)
+	out.Reset()
+	errs.Reset()
+	if code := Run([]string{"lock", "status", "-e", "dev", "--config", freeConfig}, &out, &errs); code != 0 || !strings.Contains(out.String(), "\x1b[32mfalse\x1b[0m") {
+		t.Errorf("free lock: %d %q %q", code, out.String(), errs.String())
 	}
 
 }

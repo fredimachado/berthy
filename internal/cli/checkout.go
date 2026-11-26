@@ -44,7 +44,11 @@ func printHistory(out, errout io.Writer, b []byte) int {
 		return 1
 	}
 	markModifiedRows(v)
-	printText(out, v, "")
+	shape := shapeGeneric
+	if _, ok := v.([]any); ok {
+		shape = shapeHistory
+	}
+	printStyledText(out, v, "", styleFor(out, true), shape)
 	return 0
 }
 

@@ -1136,6 +1136,14 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		shape = shapeWait
 	case "audit":
 		shape = shapeAudit
+	case "lock":
+		if len(f.pos) == 0 || len(f.pos) == 1 && f.pos[0] == "status" {
+			shape = shapeLock
+		}
+	case "secret":
+		if len(f.pos) == 1 && f.pos[0] == "list" {
+			shape = shapeSecrets
+		}
 	case "ingress":
 		if len(f.pos) > 0 && f.pos[0] == "status" {
 			shape = shapeIngress

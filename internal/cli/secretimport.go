@@ -146,7 +146,7 @@ func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout
 		safeHeld[i] = storedSecret{Name: terminalSafe(item.Name), Registry: terminalSafe(item.Registry)}
 	}
 	b, _ := json.Marshal(safeHeld)
-	if code := printResponse(out, errout, b, false); code != 0 {
+	if code := printResponseShape(out, errout, b, false, shapeSecrets); code != 0 {
 		return code
 	}
 	if len(missing) == 0 {
