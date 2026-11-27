@@ -369,44 +369,12 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	attempts := app.Deploy.StartAttemptLimit()
 	hold := c.monitorHold()
 	startupDeadline := time.Now().Add(budget)
-	// unwind takes the rollout back after a failure or a cancel, with the roles in touched changed.
-	unwind := func(e error, touched []roleWork) {
-		// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
-		var gaveUp *errStartAttempts
-		errors.As(e, &gaveUp)
-		outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, touched)
-		allowance := serviceCleanupAllowance
-		if len(touched) > 0 {
-			allowance = touched[len(touched)-1].recoveryAllowance
-		}
-		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), allowance)
-		recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
-		recoveryCancel()
-		if recoveryErr != nil {
-			for _, message := range compensationMessages(recoveryErr) {
-				if c.Log != nil {
-					c.Log(message)
-				}
-				c.storeDiagnostics(context.Background(), op.ID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}}, "")
-			}
-			outcome.State = "recovery_required"
-			outcome.Err = "rollout recovery required"
-			return
-		}
-		outcome.State = "failed"
-		for _, done := range touched {
-			if done.intent.Kind == "update" {
-				outcome.State = "rolled_back"
-				break
-			}
-		}
-		outcome.Err = "rollout failed and was cleaned up"
-	}
+	d := deployRun{opID: op.ID, prepared: prepared, work: work, outcome: outcome}
 	var releaseBindings []state.Binding
 	for n, w := range work {
 		if !time.Now().Before(startupDeadline) {
-			unwind(errors.New("service health deadline exceeded"), work[:n])
-			return
+			c.unwindDeploy(ctx, &d, errors.New("service health deadline exceeded"), work[:n])
+			return d.outcome, planned
 		}
 		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
 		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
@@ -428,8 +396,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			if errors.As(e, &before) {
 				touched = n
 			}
-			unwind(e, work[:touched])
-			return
+			c.unwindDeploy(ctx, &d, e, work[:touched])
+			return d.outcome, planned
 		}
 		startupDeadline = startupDeadline.Add(hold)
 		releaseBindings = append(releaseBindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
@@ -443,44 +411,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	verifyCtx, stopVerify := context.WithDeadline(ctx, deadline)
 	defer stopVerify()
-	steps, e := c.Store.Intents(verifyCtx, op.ID)
-	if e != nil {
-		outcome.State = "recovery_required"
-		outcome.Err = "verification unavailable"
-		return
-	}
-	seen := make(map[int]bool)
-	for _, i := range steps {
-		if i.Kind != "create" && i.Kind != "update" {
-			continue
-		}
-		if i.Ordinal < 0 || i.Ordinal >= len(work) || seen[i.Ordinal] {
-			outcome.State = "recovery_required"
-			outcome.Err = "verification unavailable"
-			return
-		}
-		expected := work[i.Ordinal].intent
-		if i.Kind != expected.Kind || i.Role != expected.Role || i.Name != expected.Name || i.Generation != expected.Generation || i.ServiceID != expected.ServiceID {
-			outcome.State = "recovery_required"
-			outcome.Err = "verification unavailable"
-			return
-		}
-		seen[i.Ordinal] = true
-	}
-	if len(seen) != len(work) {
-		outcome.State = "recovery_required"
-		outcome.Err = "verification unavailable"
-		return
-	}
-	if e = c.verifyRollout(verifyCtx, steps); e != nil {
-		var failed finalRolloutFailure
-		if errors.As(e, &failed) {
-			unwind(e, work)
-			return
-		}
-		outcome.State = "recovery_required"
-		outcome.Err = "verification unavailable"
-		return
+	if !c.verifyDeployRoles(ctx, verifyCtx, &d) {
+		return d.outcome, planned
 	}
 	manifestJSON, err := json.Marshal(req.Manifest)
 	if err != nil {
@@ -504,9 +436,9 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	// commands follow. A cancel that was accepted before it takes the rollout back instead.
 	if e = c.cross(verifyCtx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
 		if isCancelled(e) {
-			outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
-			unwind(e, work)
-			return
+			d.outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
+			c.unwindDeploy(ctx, &d, e, work)
+			return d.outcome, planned
 		}
 		outcome = state.Outcome{State: "recovery_required", Err: "verification barrier unavailable", SchemaBefore: before, SchemaAfter: after}
 		return
