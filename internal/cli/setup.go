@@ -151,6 +151,10 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		report.OK = setup.Run(ctx, session, steps, show)
 	}
 	progress.Close()
+	return writeSetupReport(ctx, f, from, report, session, out, errout)
+}
+
+func writeSetupReport(ctx context.Context, f setupFlags, from setupFrom, report setupReport, session *setup.Session, out, errout io.Writer) int {
 	// A failed run also shows an uncertain token because the server may have kept its configuration.
 	if !f.remove && session != nil && session.Token != "" && (session.TokenLive && (!session.TokenStored || f.showToken) || !report.OK && session.TokenUncertain) {
 		report.Token = session.Token
