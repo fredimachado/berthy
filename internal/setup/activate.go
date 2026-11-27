@@ -10,6 +10,7 @@ import (
 // Where the agent lives on the server.
 const (
 	binPath        = "/usr/local/bin/berthy"
+	guardProbePath = binPath + ".setup-probe"
 	agentConfigDir = "/etc/berthy"
 	configPath     = "/etc/berthy/agent.json"
 	unitPath       = "/etc/systemd/system/berthy.service"
@@ -64,6 +65,39 @@ const (
 
 func activationFailure(err error, outcome ConfigOutcome) error {
 	return &ActivateError{Message: err.Error(), Cause: err, ConfigOutcome: outcome}
+}
+
+const probeAsAgent = "setpriv --reuid=berthy --regid=berthy --clear-groups "
+
+func selectProbeScript(staged Staged) string {
+	candidates := shellQuote(binPath) + " " + shellQuote(guardProbePath)
+	if staged.Binary {
+		candidates = shellQuote(binPath+".new") + " " + candidates
+	}
+	return `can_probe() (
+  marker=$(mktemp) || exit 1
+  trap 'rm -f "$marker"' EXIT
+  ulimit -f 1 || exit 1
+  timeout --kill-after=1s 3s ` + probeAsAgent + `"$1" agent setup-probe version </dev/null >"$marker" || exit 1
+  printf 'berthy-setup-probe/1\n' | cmp -s - "$marker"
+)
+for probe_bin in ` + candidates + `; do
+  if [ -x "$probe_bin" ] && can_probe "$probe_bin" 2>/dev/null; then break; fi
+  probe_bin=
+done
+if [ -z "$probe_bin" ]; then echo 'a probe-capable Berthy build is needed' >&2; exit 1; fi
+`
+}
+
+// prepareProbeScript retains a capable executable across the live and previous binary renames.
+func prepareProbeScript(staged Staged) string {
+	return "# prepare setup probe\n" + selectProbeScript(staged) + "retained=" + shellQuote(guardProbePath) + "\n" + `
+[ "$probe_bin" != "$retained" ] || exit 0
+publish_failed() { echo 'cannot publish the setup probe' >&2; exit 1; }
+tmp=$(mktemp "$retained.XXXXXX") || publish_failed
+trap 'rm -f "$tmp"' EXIT
+install -o root -g root -m 0755 -- "$probe_bin" "$tmp" && mv -fT -- "$tmp" "$retained" || publish_failed
+`
 }
 
 // getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.

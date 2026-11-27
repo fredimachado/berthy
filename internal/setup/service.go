@@ -65,6 +65,9 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		text = "enable berthy.service"
 	}
 	if s.DryRun {
+		if restart {
+			s.Log.Would(prepareProbeScript(s.staged))
+		}
 		if s.unitChanged {
 			s.Log.Would(unitScript())
 		}
@@ -77,6 +80,14 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 			}
 		}
 		return StatusWouldChange, "would " + text, nil
+	}
+	if restart {
+		if _, err := s.change(ctx, "preparing the setup probe", prepareProbeScript(s.staged)); err != nil {
+			return "", "", activationFailure(err, ConfigPrevious)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", "", activationFailure(fmt.Errorf("preparing the setup probe: %w", err), ConfigPrevious)
+		}
 	}
 	if s.unitChanged {
 		res, err := s.R.Run(ctx, unitScript(), bytes.NewReader(unit))

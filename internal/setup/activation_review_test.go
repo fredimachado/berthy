@@ -22,6 +22,7 @@ func shellFixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	shellTool(t, tools, "flock", "exit 0")
+	shellTool(t, tools, "setpriv", `shift 3; exec "$@"`)
 	return d, tools
 }
 func shellTool(t *testing.T, tools, name, body string) {

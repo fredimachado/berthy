@@ -131,6 +131,8 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 		return Result{Code: code}, nil
 	case strings.HasPrefix(script, "journalctl"):
 		return Result{Stdout: []byte(f.journal)}, nil
+	case strings.HasPrefix(script, "# prepare setup probe"):
+		return Result{}, nil
 	case strings.Contains(script, "-H @-"):
 		return Result{Stdout: []byte(f.doctorBody), Code: f.doctorCode}, nil
 	case strings.Contains(script, "systemctl is-failed"):
@@ -1252,7 +1254,7 @@ func TestServiceStep(t *testing.T) {
 		f.probe = with(without(f.probe, "service_active="), "service_active=inactive")
 		got, ok := runSteps(agentSession(t, f, exe, false, nil))
 		r := stepOf(t, got, "service")
-		if !ok || r.Status != StatusChanged || r.Detail != "started berthy.service" || f.ran("mv -f") {
+		if !ok || r.Status != StatusChanged || r.Detail != "started berthy.service" || f.ran("prev_bin=no; prev_cfg=no") {
 			t.Fatalf("service = %+v ok=%v", r, ok)
 		}
 	})
