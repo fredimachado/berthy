@@ -1,6 +1,7 @@
 package agentclient
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -250,25 +251,25 @@ func TestConfigPathFailsWithoutAnyLocation(t *testing.T) {
 func TestPrepareDeployFillsTheRequestFromTheManifestDirectory(t *testing.T) {
 	image := writeComposeProject(t, imageManifest, "")
 	req := deploy.Request{App: "api", Version: "1.0"}
-	if _, err := PrepareDeploy(image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.ComposeFile != "" {
+	if _, err := PrepareDeploy(context.Background(), image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.ComposeFile != "" {
 		t.Fatalf("image: %v %+v", err, req)
 	}
 	compose := writeComposeProject(t, composeManifest, "services: {}\n")
 	req = deploy.Request{App: "db"}
-	if _, err := PrepareDeploy(compose, "dev", &req); err != nil || req.ComposeFile != "services: {}\n" {
+	if _, err := PrepareDeploy(context.Background(), compose, "dev", &req); err != nil || req.ComposeFile != "services: {}\n" {
 		t.Fatalf("compose: %v %+v", err, req)
 	}
 	var usage UsageError
 	req = deploy.Request{App: "api"}
-	if _, err := PrepareDeploy(image, "dev", &req); !errors.Is(err, ErrVersionRequired) {
+	if _, err := PrepareDeploy(context.Background(), image, "dev", &req); !errors.Is(err, ErrVersionRequired) {
 		t.Fatalf("image without version: %v", err)
 	}
 	req = deploy.Request{App: "db", Version: "1"}
-	if _, err := PrepareDeploy(compose, "dev", &req); !errors.Is(err, ErrVersionNotAllowed) {
+	if _, err := PrepareDeploy(context.Background(), compose, "dev", &req); !errors.Is(err, ErrVersionNotAllowed) {
 		t.Fatalf("compose with version: %v", err)
 	}
 	req = deploy.Request{App: "api", Version: "1"}
-	if _, err := PrepareDeploy(t.TempDir(), "dev", &req); err == nil || errors.As(err, &usage) {
+	if _, err := PrepareDeploy(context.Background(), t.TempDir(), "dev", &req); err == nil || errors.As(err, &usage) {
 		t.Fatalf("missing manifest: %v", err)
 	}
 }
@@ -367,7 +368,7 @@ func mustParse(t *testing.T, raw string) *url.URL {
 func TestPrepareDeployAcceptsAnImageAppThatKeepsItsVersion(t *testing.T) {
 	image := writeComposeProject(t, imageManifest, "")
 	req := deploy.Request{App: "api", KeepVersion: true}
-	if _, err := PrepareDeploy(image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.Version != "" {
+	if _, err := PrepareDeploy(context.Background(), image, "dev", &req); err != nil || req.Manifest.Project != "demo" || req.Version != "" {
 		t.Fatalf("keep version: %v %+v", err, req)
 	}
 }

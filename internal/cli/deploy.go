@@ -713,7 +713,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 					return runSingleTagDeploy(ctx, client, target, f, loaded, req, selected, checkoutBefore, out, errout)
 				}
 			}
-			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
+			co, e := agentclient.PrepareDeploy(ctx, f.dir, f.env, &req)
 			if e != nil {
 				switch {
 				case errors.Is(e, agentclient.ErrVersionRequired):
@@ -764,7 +764,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		}
 		// The request carries the checkout's commit and local-changes flag as a deploy does.
 		stamp := deploy.Request{Commit: f.commit}
-		co, e := agentclient.StampCheckout(f.dir, f.env, &stamp)
+		co, e := agentclient.StampCheckout(ctx, f.dir, f.env, &stamp)
 		if e != nil {
 			fmt.Fprintln(errout, e)
 			return 1
@@ -885,7 +885,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 1
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
-			co, e := agentclient.StampCheckout(f.dir, f.env, &req)
+			co, e := agentclient.StampCheckout(ctx, f.dir, f.env, &req)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1

@@ -40,7 +40,7 @@ func CheckManifestProject(dir, have, want string) error {
 // Compose app, its Compose file. req.App and req.Version are set. It refuses an image app without a version (unless it keeps
 // the version it runs, req.KeepVersion, which the agent resolves), a Compose app with one, and an image that the manifest
 // does not allow for the app. Then it stamps the request from the checkout (see StampCheckout) and returns what git said.
-func PrepareDeploy(dir, env string, req *deploy.Request) (gitcheck.Checkout, error) {
+func PrepareDeploy(ctx context.Context, dir, env string, req *deploy.Request) (gitcheck.Checkout, error) {
 	m, err := manifest.Load(dir, env)
 	if err != nil {
 		return gitcheck.Checkout{}, err
@@ -52,7 +52,7 @@ func PrepareDeploy(dir, env string, req *deploy.Request) (gitcheck.Checkout, err
 	} else if err := checkImageVersion(m, req); err != nil {
 		return gitcheck.Checkout{}, err
 	}
-	return PrepareDeployFiles(context.Background(), dir, env, m, []*deploy.Request{req})
+	return PrepareDeployFiles(ctx, dir, env, m, []*deploy.Request{req})
 }
 
 // inspectDeployFiles permits a deterministic checkout switch during status in tests.
@@ -193,9 +193,9 @@ func checkImageVersion(m *manifest.Manifest, req *deploy.Request) error {
 // StampCheckout asks git about the manifest files for env in dir, and about extra (the files of dir the request reads
 // besides them), and sets the request's commit and modified flag from the answer. The commit is HEAD unless the request
 // already names one. Outside a work tree, or with git missing, the request keeps no commit and is not modified.
-func StampCheckout(dir, env string, req *deploy.Request, extra ...string) (gitcheck.Checkout, error) {
+func StampCheckout(ctx context.Context, dir, env string, req *deploy.Request, extra ...string) (gitcheck.Checkout, error) {
 	files := append(manifest.Files(env), extra...)
-	co, err := gitcheck.Inspect(context.Background(), dir, files)
+	co, err := gitcheck.Inspect(ctx, dir, files)
 	if err != nil {
 		return co, err
 	}
