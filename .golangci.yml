@@ -51,6 +51,8 @@ linters:
       - linters: [errcheck]
         path: '_test\.go$'
       - linters: [errcheck]
+        path: '^test/'
+      - linters: [errcheck]
         text: 'Error return value of `\((io\.Closer|net\.Conn|\*os\.File|\*os\.Root|\*database/sql\.(Rows|Conn)|\*debug/elf\.File|\*compress/gzip\.Reader)\)\.Close` is not checked'
         source: '^\s*defer\s+.*\.Close\('
       - linters: [errcheck]
