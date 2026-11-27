@@ -32,9 +32,15 @@ func newResumeFixture(t *testing.T, state string) resumeFixture {
 }
 func (f resumeFixture) run(t *testing.T, script string, args ...string) (int, string, string, string) {
 	t.Helper()
+	return f.runInput(t, script, nil, args...)
+}
+
+func (f resumeFixture) runInput(t *testing.T, script string, input io.Reader, args ...string) (int, string, string, string) {
+	t.Helper()
 	script = strings.NewReplacer(guardState, f.state, guardLock, f.lock, guardProbePath, filepath.Join(f.tools, "berthy.setup-probe")).Replace(script)
 	cmd := exec.Command("sh", append([]string{"-c", script, "guard"}, args...)...)
 	cmd.Env = append(os.Environ(), "PATH="+f.tools+":"+os.Getenv("PATH"), "STATE="+f.state, "CALLS="+f.calls, "BIN="+f.bin, "CLOCK="+filepath.Join(f.dir, "clock"))
+	cmd.Stdin = input
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {

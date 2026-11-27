@@ -63,7 +63,8 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 			shellTool(t, tools, "systemd-run", "echo armed >> \"$CALLS\"")
 			r := &guardRunner{stage: "up"}
 			_ = Activate(context.Background(), r, "x", Staged{Binary: true}, time.Second)
-			script := strings.NewReplacer(binPath, bin, guardPath, guard, guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(r.calls[0])
+			script := strings.NewReplacer(binPath, bin, guardPath, guard, guardState, filepath.Join(dir, "state"),
+				guardLock, filepath.Join(dir, "lock"), guardReason, filepath.Join(dir, "reason")).Replace(r.calls[0])
 			input := r.input
 			if truncated {
 				input = input[:len(input)/2]
@@ -87,6 +88,7 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 		})
 	}
 }
+
 func TestWaitScriptUsesElapsedDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
 	shellClock(t, tools)

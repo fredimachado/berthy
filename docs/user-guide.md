@@ -406,7 +406,7 @@ The agent's configuration is plain JSON. Its keys are listed in the [reference](
 
 #### More than one project or environment on a server
 
-`berthy setup` on a server that already runs an agent adds another hosted environment: its own state, key, admin token and network. Other hosted environments on the agent are unchanged. Setup rewrites `agent.json` and restarts the shared agent for everyone on the server. It saves the new admin token for the entry, or prints it if the save is unavailable or unconfirmed.
+`berthy setup` on a server that already runs an agent adds another hosted environment with its own state, key, admin token and network. Setup rewrites `agent.json` and restarts the shared agent. It confirms the addition only when the new systemd invocation answers `/healthz` and reports that the new environment started. If the new environment fails, setup reports the reason and restores the previous configuration. It saves the new admin token for a confirmed entry, or prints it if the save is unavailable or unconfirmed.
 
 ```bash
 # Another project on the same server (no berthy.yml in this directory):
@@ -426,11 +426,13 @@ berthy setup -e stage --host ops@10.0.0.5
 
 Two projects with the same environment name are fine: `todo/prod` and `shop/prod` both work on one agent. So do two environments of one project, such as `todo/prod` and `todo/stage`, once each has its own network. Docker names carry both project and environment (`todo-prod-api-web`, `shop-prod-api-web`), so they do not collide. The CLI picks the project with `--project`, or from the manifest directory you run in.
 
+When an existing environment cannot open its state or complete recovery, the other environments keep serving. A token the agent can still verify for the failed environment gets HTTP 503 with the reason. The setup admin token in `agent.json` still works. The agent can verify state-issued tokens only while it can read the token records. Unverifiable tokens get the same HTTP 401 response as an unknown environment. Run `berthy doctor` on a running environment to see the failed pair. After repairing the state or key, restart the agent to clear the finding. Operations that need ownership evidence from the unreadable state remain unavailable until it can be read.
+
 There is no command that removes a hosted environment from a server. After `destroy`, stop the agent, remove that entry from `agent.json` and its directory under `/var/lib/berthy/environments/`, then start the agent again only if at least one hosted environment remains. An `agent.json` with no environments is refused.
 
 #### Alerts about the server
 
-Host checks (disk, memory, Docker, public ports, reboot) still run inside every hosted environment's monitor. Each environment evaluates them independently and sends any resulting alerts to all of its configured channels (Telegram, webhook, or both). An environment with no channel configured sends none. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project in those messages, are planned: #55, #56.
+Host checks (disk, memory, Docker, public ports, reboot) run inside every hosted environment's monitor. Each environment evaluates them independently and sends any resulting alerts to its configured Telegram and webhook channels. A startup failure produces a critical `hosted:<project>/<environment>` alert from each running environment with an alert channel. After repair and restart, the same check sends recovery. Most alert and telemetry records identify the environment without its project. Server-level alert channels and project names in those records are planned in #55 and #56.
 
 #### Another laptop
 

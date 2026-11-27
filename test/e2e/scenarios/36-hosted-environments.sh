@@ -7,8 +7,8 @@
 #      project) each admin token answers only on its own URL, and a command that does not say which project is refused;
 #   4. the restarts lost nothing: the release of step 1 is in the history;
 #   5. an agent.json of an earlier release is refused with a message that says so;
-#   6. a state directory twice, and a claimed state given to another project or to another environment, stop the agent, and
-#      the log names the directory and the owner;
+#   6. a state directory twice stops the agent. A claimed state given to another pair fails that pair with HTTP 503,
+#      while the healthy pair still answers;
 #   7. a hosted environment without a key file stops the agent.
 # Then the fixture's own agent.json comes back, and the agent starts and serves the release of step 1.
 set -uo pipefail
@@ -106,13 +106,24 @@ refused "a state directory twice" "duplicate state_dir"
 restore || exit 1
 
 cp -a "$RUN/state-$SECOND-$ENVN" "$RUN/state-copy" && cp "$RUN/key-$SECOND-$ENVN" "$RUN/key-copy" || exit 1
-# The copies need token entries of their own: agent.json refuses a digest twice.
-fresh_entry() { "$BIN" agent token --project "$1" -e "$2" --name admin --scope admin | sed -n '3p'; }
-write_fragment "$PROJECT-three" "$ENVN" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "$PROJECT-three" "$ENVN")" && write_agent_config || exit 1
-refused "a claimed state given to another project" "state in $RUN/state-copy: state belongs to $SECOND/$ENVN, not $PROJECT-three/$ENVN"
+misassigned() {
+  local project=$1 env=$2 credentials token entry reply out code
+  credentials=$("$BIN" agent token --project "$project" -e "$env" --name admin --scope admin) || return 1
+  token=$(sed -n 's/^token: //p' <<< "$credentials")
+  entry=$(sed -n '3p' <<< "$credentials")
+  write_fragment "$project" "$env" "$RUN/state-copy" "$RUN/key-copy" "$entry" && write_agent_config || return 1
+  start_agent || return 1
+  out=$(env_cmd "$PROJECT" "$ENVN" agent-info --json 2>&1); code=$?
+  expect_code "healthy pair answers with $project/$env misassigned" 0 "$code" "$out"
+  reply=$(curl_local -w '\n%{http_code}' -H "Authorization: Bearer $token" "$(api "$project" "$env")agent")
+  expect_eq "$project/$env returns HTTP 503" 503 "${reply##*$'\n'}"
+  expect_eq "$project/$env returns its startup failure" "environment_failed: $project/$env: state belongs to another environment" \
+    "$(jq -r '.code + ": " + .message' <<< "${reply%$'\n'*}")"
+  stop_agent
+}
+misassigned "$PROJECT-three" "$ENVN" || exit 1
 restore || exit 1
-write_fragment "$SECOND" "${ENVN}c" "$RUN/state-copy" "$RUN/key-copy" "$(fresh_entry "$SECOND" "${ENVN}c")" && write_agent_config || exit 1
-refused "a claimed state given to another environment" "state in $RUN/state-copy: state belongs to $SECOND/$ENVN, not $SECOND/${ENVN}c"
+misassigned "$SECOND" "${ENVN}c" || exit 1
 restore || exit 1
 
 # 7. A hosted environment without a key file.

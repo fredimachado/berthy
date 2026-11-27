@@ -23,6 +23,14 @@ type journalExitRunner struct {
 	journalCode, rollbackCode int
 }
 
+func TestJournalTailKeepsStartupDiagnosticsLocal(t *testing.T) {
+	r := &agentFake{journal: "shop/lab: cannot open state [startup detail] open /private/key: no such file\nserving stopped\n"}
+	text, err := journalTail(context.Background(), r)
+	if err != nil || text != "shop/lab: cannot open state | serving stopped" {
+		t.Fatalf("journal tail = %q, %v", text, err)
+	}
+}
+
 func (r *journalExitRunner) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
 	if strings.HasPrefix(script, "journalctl") {
 		r.calls = append(r.calls, script)

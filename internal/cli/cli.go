@@ -206,7 +206,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}()
 		defer func() { cancel(); <-eventsDone }()
 		collector := metrics.New(metrics.NewHostReader(), eng)
-		// Every environment's state is open and claimed before any of them starts, and the server listens only after all started.
+		// The server listens after the startup result for every hosted environment is settled.
 		host, err := agent.Open(agent.Shared{Engine: eng, Collector: collector, Log: func(msg string) { fmt.Fprintln(errout, msg) }}, f)
 		if err != nil {
 			fmt.Fprintln(errout, err)
@@ -217,6 +217,12 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		if err = host.Start(ctx); err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
+		}
+		if path := os.Getenv("BERTHY_STARTUP_RESULT"); path != "" {
+			if err := publishStartupResult(host, path, os.Getenv("INVOCATION_ID")); err != nil {
+				fmt.Fprintln(errout, "publishing startup result:", err)
+				return 1
+			}
 		}
 		server := http.Server{Addr: f.Listen, Handler: host, ReadHeaderTimeout: 5 * time.Second}
 		shutdown := make(chan struct{})

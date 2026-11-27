@@ -81,6 +81,18 @@ func newTokenSource(c Config, s *state.Store) *tokenSource {
 	return &tokenSource{cfg: c, store: s, written: map[string]time.Time{}}
 }
 
+func failedEnvironmentHandler(c Config, store *state.Store, reason string) http.Handler {
+	tokens := newTokenSource(c, store)
+	message := c.ID().String() + ": " + reason
+	return serveAPI(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, status := tokens.identify(r); status != http.StatusOK {
+			refuseToken(w, http.StatusUnauthorized)
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "environment_failed", message)
+	}))
+}
+
 const tokenUseInterval = time.Minute
 
 // entries returns every token, the file's first, then the state's oldest first, expired ones included. When the state cannot

@@ -63,6 +63,8 @@ type Config struct {
 	// peers and probes. Nil means a net.Dialer and each client's default. Tests set it to refuse a connection without a
 	// closed port.
 	dial monitor.DialFunc
+	// startupChecks reads the host's startup result. A standalone environment has no host result.
+	startupChecks func() []api.Check
 }
 
 // outboundHTTP returns the HTTP client for those services: nil, which is each package's default, unless a test set dial.
@@ -462,6 +464,13 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 				}
 			}
 			checks = append(checks, hostDoctorChecks(r.Context(), e, c.Listen)...)
+			if c.startupChecks != nil {
+				for _, check := range c.startupChecks() {
+					if !check.OK {
+						checks = append(checks, check)
+					}
+				}
+			}
 			result = map[string]any{"checks": checks}
 		default:
 			writeError(w, 404, "not_found", "not found")

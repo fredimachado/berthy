@@ -14,42 +14,34 @@ import (
 
 type slowStartRunner struct {
 	*agentFake
-	t          *testing.T
-	dir, tools string
+	startupFixture
+	t *testing.T
 }
 
 func (r *slowStartRunner) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
 	res, err := r.agentFake.Run(ctx, script, stdin)
 	if strings.Contains(script, "systemctl restart berthy") {
-		wait := strings.NewReplacer(guardLock, filepath.Join(r.dir, "lock"), guardState, filepath.Join(r.dir, "state"),
-			guardProbePath, filepath.Join(r.tools, "probe")).Replace(script)
-		if runShell(r.t, wait, "", r.tools, r.dir) != nil {
-			res.Code = 1
-		}
+		code, out, _, _ := r.run(r.t, script)
+		res.Code, res.Stdout = code, []byte(out)
 	}
 	return res, err
 }
 
 func TestServiceKeepsAgentThatAnswersAfter45Seconds(t *testing.T) {
-	dir, tools := shellFixture(t)
-	shellClock(t, tools)
-	shellTool(t, tools, "systemctl", `echo "$*" >> "$CALLS"; case "$1" in show) echo active;; esac`)
-	shellTool(t, tools, "probe", `
+	record := startupRecord(newInvocation, "shop/p5\tstarted\t\n", "1")
+	fixture := newStartupFixture(t, record, "", "0AFA1FAC:1E1E") // listenIP:7710 in /proc/net/tcp
+	shellTool(t, fixture.tools, "berthy.setup-probe", `
 n=$(date +%s)
 [ "$n" -ge 45 ] || exit 1
 echo "agent answered at second $n" >> "$CALLS"`)
-	state := filepath.Join(dir, "state")
-	if err := os.WriteFile(state, []byte("pending\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	f := freshAgentServer(t)
-	r := &slowStartRunner{agentFake: f, t: t, dir: dir, tools: tools}
+	r := &slowStartRunner{agentFake: f, startupFixture: fixture, t: t}
 	s := agentSession(t, r, elfFile(t, emX86), false, nil)
 	steps, ok := runSteps(s)
 	service := stepOf(t, steps, "service")
-	word, _ := os.ReadFile(state)
-	clock, _ := os.ReadFile(filepath.Join(dir, "clock"))
-	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	word, _ := os.ReadFile(fixture.state)
+	clock, _ := os.ReadFile(filepath.Join(fixture.dir, "clock"))
+	calls, _ := os.ReadFile(fixture.calls)
 	recovered := slices.ContainsFunc(f.scripts(), func(script string) bool {
 		return strings.HasPrefix(script, "/bin/sh "+guardPath+" ") || script == "systemctl stop berthy"
 	}) || strings.Contains(string(calls), "stop berthy\n")

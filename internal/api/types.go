@@ -8,6 +8,8 @@ type App struct {
 	Ref   AppRef      `json:"ref"`
 	Roles []Role      `json:"roles"`
 	Jobs  []JobStatus `json:"jobs,omitempty"`
+	// ServiceID identifies the Swarm service in the Docker inventory snapshot.
+	ServiceID string `json:"-"`
 	// Backups are the backups of the manifest that belong to the app, with their ages.
 	Backups []BackupStatus `json:"backups,omitempty"`
 	// Drift lists, one line each, what runs differently from the applied release, such as "api/web: replicas 3, release says 2".

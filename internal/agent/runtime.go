@@ -158,6 +158,14 @@ func (r *Runtime) ownContainer(labels map[string]string, own map[state.Claim]boo
 // fails, Close still releases what it started.
 func (r *Runtime) Start(ctx context.Context) error {
 	ctx, r.cancel = context.WithCancel(ctx)
+	if err := r.recoverForStart(ctx); err != nil {
+		return errors.New(StartupRecovery.String())
+	}
+	r.startWorkers(ctx)
+	return nil
+}
+
+func (r *Runtime) recoverForStart(ctx context.Context) error {
 	r.reportsDone = make(chan struct{})
 	go func() {
 		defer close(r.reportsDone)
@@ -167,7 +175,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	err := r.deployment.Recover(recoveryCtx)
 	done()
 	if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
-		return errors.New("deployment recovery failed")
+		return err
 	}
 	// Recover reports the first move into recovery_required as success, so the lock is checked as well.
 	if op, activeErr := r.deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {
@@ -182,6 +190,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err != nil {
 		r.logf("session and job container cleanup failed")
 	}
+	return nil
+}
+
+func (r *Runtime) startWorkers(ctx context.Context) {
 	r.recoveryDone = make(chan struct{})
 	go func() {
 		defer close(r.recoveryDone)
@@ -205,7 +217,6 @@ func (r *Runtime) Start(ctx context.Context) error {
 			r.exporter.Run(ctx)
 		}()
 	}
-	return nil
 }
 
 // CloseSessions closes the open interactive sessions: http.Server.Shutdown does not track a connection a handler took over.
@@ -241,6 +252,10 @@ func (r *Runtime) wait() {
 		cancelWait()
 	}
 	// The queued records and messages are sent before the store closes.
+	r.waitReports()
+}
+
+func (r *Runtime) waitReports() {
 	awaitWorker(r.reportsDone)
 	if r.reports != nil {
 		r.reports.Wait()

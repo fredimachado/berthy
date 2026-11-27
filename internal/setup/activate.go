@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"berthy/internal/agent"
+	"berthy/internal/scope"
 )
 
 // Where the agent lives on the server.
@@ -39,6 +42,7 @@ func guardDelay(secs int) int { return 2*secs + 60 }
 // and the configuration as /etc/berthy/agent.json.new.
 type Staged struct {
 	Binary, Config bool
+	Added          *scope.ID
 }
 
 // ActivateError is the failure of Activate: the new agent did not come up. Message already says what was put back and carries
@@ -109,6 +113,15 @@ func waitScriptOnSuccess(probeBin, listen string, secs int, success string) stri
 
 // waitForProbe uses the selected probe_bin for the whole wait.
 func waitForProbe(listen string, secs int, success string) string {
+	return waitScriptWithProbe(healthProbeCommand(listen, `"${probe}s"`), secs, success)
+}
+
+func healthProbeCommand(listen, timeout string) string {
+	return probeAsAgent + "\"$probe_bin\" agent setup-probe health --listen " + shellQuote(listen) +
+		" --timeout " + timeout + " </dev/null >/dev/null 2>&1"
+}
+
+func waitScriptWithProbe(probe string, secs int, success string) string {
 	return fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
 		"while :; do\n" +
 		"  active_state=$(systemctl show --property=ActiveState --value berthy) || exit 1\n" +
@@ -116,8 +129,7 @@ func waitForProbe(listen string, secs int, success string) string {
 		"  left=$((end - $(date +%s)))\n" +
 		"  [ \"$left\" -gt 0 ] || break\n" +
 		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
-		"  if " + probeAsAgent + "\"$probe_bin\" agent setup-probe health --listen " + shellQuote(listen) +
-		" --timeout \"${probe}s\" </dev/null >/dev/null 2>&1; then " + success + "; fi\n" +
+		"  if " + probe + "; then " + success + "; fi\n" +
 		"  [ \"$(date +%s)\" -lt \"$end\" ] || break\n" +
 		"  sleep 1\n" +
 		"done\n" +
@@ -183,18 +195,20 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	}
 	prevBin = staged.Binary && strings.Contains(out, "prev_bin=yes")
 	prevCfg = staged.Config && strings.Contains(out, "prev_cfg=yes")
-	res, err := r.Run(ctx, restartScriptWithGuard(listen, secs, armed), nil)
+	res, err := r.Run(ctx, restartScriptWithGuard(listen, secs, armed, staged.Added), nil)
 	if err != nil {
 		return guarded(fmt.Errorf("restarting the agent: %w", err))
 	}
+	detail := parseGuardReason(res.Stdout, staged.Added)
 	if armed && res.Code == guardDecided {
 		result := parseGuardState(res.Stdout)
-		journal := ""
 		switch result {
 		case guardRestored, guardRestoredDown, guardStopped, guardStopFailed, guardRestoreFailed:
-			journal, _ = journalTail(ctx, r)
+			if detail == "" {
+				detail, _ = journalTail(ctx, r)
+			}
 		}
-		return guardOutcome(result, prevCfg, outcome, journal)
+		return guardOutcome(result, prevCfg, outcome, detail)
 	}
 	if armed && res.Code == guardRecordFailed {
 		if prevCfg {
@@ -205,9 +219,11 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	if res.Code == 0 {
 		return nil
 	}
-	journal, err := journalTail(ctx, r)
-	if err != nil {
-		return guarded(err)
+	if detail == "" {
+		detail, err = journalTail(ctx, r)
+		if err != nil && staged.Added == nil {
+			return guarded(err)
+		}
 	}
 	if !armed {
 		res, err := r.Run(ctx, "systemctl stop berthy", nil)
@@ -217,7 +233,7 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		if res.Code != 0 {
 			return activationFailure(fmt.Errorf("stopping the agent: %s", failureText(res)), outcome)
 		}
-		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigOutcome: outcome}
+		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", detail), ConfigOutcome: outcome}
 	}
 	binArg, cfgArg := "no", "no"
 	if prevBin {
@@ -231,16 +247,19 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return activationFailure(fmt.Errorf("%s: %w", recoveryUncertain, err), outcome)
+		return activationFailure(fmt.Errorf("%s: %w", withLog(recoveryUncertain, detail), err), outcome)
+	}
+	if reason := parseGuardReason(res.Stdout, staged.Added); reason != "" {
+		detail = reason
 	}
 	result := parseGuardState(res.Stdout)
 	if result == guardNoWord {
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return &ActivateError{Message: withLog(recoveryUncertain, journal), ConfigOutcome: outcome}
+		return &ActivateError{Message: withLog(recoveryUncertain, detail), ConfigOutcome: outcome}
 	}
-	return guardOutcome(result, prevCfg, outcome, journal)
+	return guardOutcome(result, prevCfg, outcome, detail)
 }
 
 type guardResult uint8
@@ -339,17 +358,17 @@ func stateHelpers() string {
 		"printf '%s\\n' \"$1\" > \"$tmp\" && mv -f \"$tmp\" " + guardState + "; }\n"
 }
 
-func stateCheck(guard bool) string {
+func stateCheck(guard bool, report string) string {
 	s := "state=$(cat " + guardState + " 2>/dev/null) || state=running\n"
 	if guard {
 		return s + "case \"$state\" in\n" +
 			"  pending|recovering) ;;\n" +
-			"  confirmed|kept|restored|restored-down|stopped|stop-failed|restore-failed) printf 'guard=%s\\n' \"$state\"; exit 0 ;;\n" +
+			"  confirmed|kept|restored|restored-down|stopped|stop-failed|restore-failed) printf 'guard=%s\\n' \"$state\"; " + report + "exit 0 ;;\n" +
 			"  *) printf 'guard=%s\\n' \"${state:-running}\"; exit 1 ;;\n" +
 			"esac\n"
 	}
 	return s + "if [ \"$state\" = recovering ]; then exit 1; fi\n" +
-		fmt.Sprintf("if [ \"$state\" != pending ]; then printf 'guard=%%s\\n' \"${state:-running}\"; exit %d; fi\n", guardDecided)
+		fmt.Sprintf("if [ \"$state\" != pending ]; then printf 'guard=%%s\\n' \"${state:-running}\"; %sexit %d; fi\n", report, guardDecided)
 }
 
 // armScript writes the guard from stdin and starts its timer.
@@ -364,17 +383,27 @@ trap - EXIT
 `, guardPath, size, guardPath) +
 		"systemctl stop " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
 		"systemctl reset-failed " + guardUnit + ".timer " + guardUnit + ".service >/dev/null 2>&1 || true\n" +
-		"exec 9>" + guardLock + "\nflock 9\n" + stateHelpers() + "set_state pending\n" +
+		"exec 9>" + guardLock + "\nflock 9\nrm -f " + guardReason + "\n" + stateHelpers() + "set_state pending\n" +
 		fmt.Sprintf("systemd-run --quiet --unit=%s --on-active=%ds --timer-property=AccuracySec=1s /bin/sh %s \"$prev_bin\" \"$prev_cfg\"\n", guardUnit, guardDelay(secs), guardPath)
 }
 
 // guardScript serializes a health decision and any recovery with setup.
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
-	s.WriteString("exec 9>" + guardLock + "\nflock 9 || exit 1\n" + stateHelpers() + stateCheck(true))
+	reason, report, pending := "", "", ""
+	if staged.Added != nil {
+		reason, report = reasonHelpers(*staged.Added), "report_reason; "
+		pending = " && ! validated_reason >/dev/null 2>&1"
+	}
+	s.WriteString("exec 9>" + guardLock + "\nflock 9 || exit 1\n" + stateHelpers() + reason + stateCheck(true, report))
 	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\n")
-	s.WriteString("result() { set_state \"$1\" || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; printf 'guard=%s\\n' \"$1\"; }\n")
-	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ] && up >/dev/null 2>&1; then result kept; exit 0; fi\n")
+	candidate := "up"
+	if staged.Added != nil {
+		s.WriteString("candidate_up() { (\n" + restartScriptWithGuard(listen, secs, false, staged.Added) + "); }\n")
+		candidate = "candidate_up"
+	}
+	s.WriteString("result() { set_state \"$1\" || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; printf 'guard=%s\\n' \"$1\"; " + report + "}\n")
+	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ]" + pending + " && " + candidate + " >/dev/null 2>&1; then result kept; exit 0; fi\n")
 	s.WriteString("set_state recovering || exit 1\n")
 	s.WriteString("if [ \"$1\" != yes ] && [ \"$2\" != yes ]; then if systemctl stop berthy >/dev/null 2>&1; then result stopped; exit 0; else result stop-failed; exit 1; fi; fi\n")
 	if staged.Binary {
@@ -415,22 +444,34 @@ func swapScript(staged Staged, secs, guardSize int) string {
 
 // restartScript restarts the service and waits until the agent answers on listen, for secs seconds at most.
 func restartScript(listen string, secs int) string {
-	return restartScriptWithGuard(listen, secs, true)
+	return restartScriptWithGuard(listen, secs, true, nil)
 }
 
 func restartScriptWithoutGuard(listen string, secs int) string {
-	return restartScriptWithGuard(listen, secs, false)
+	return restartScriptWithGuard(listen, secs, false, nil)
 }
 
-func restartScriptWithGuard(listen string, secs int, guarded bool) string {
+func restartScriptWithGuard(listen string, secs int, guarded bool, added *scope.ID) string {
 	success := "exit 0"
 	prefix := ""
+	reason, report := "", ""
+	if added != nil {
+		reason, report = reasonHelpers(*added), "report_reason; "
+	}
 	if guarded {
-		prefix = "exec 9>" + guardLock + "\n" + fmt.Sprintf("flock -w %d 9 || { echo guard=running; exit %d; }\n", secs, guardDecided) + stateHelpers() + stateCheck(false)
+		prefix = "exec 9>" + guardLock + "\n" + fmt.Sprintf("flock -w %d 9 || { echo guard=running; exit %d; }\n", secs, guardDecided) + stateHelpers() + reason + stateCheck(false, report)
 		success = fmt.Sprintf("set_state confirmed || exit %d; systemctl stop %s.timer >/dev/null 2>&1 || true; exit 0", guardRecordFailed, guardUnit)
+	} else {
+		prefix = reason
+	}
+	wait := waitScriptOnSuccess(guardProbePath, listen, secs, success)
+	if added != nil {
+		prefix += candidateProbe(listen, *added)
+		prefix += "old_invocation=$(systemctl show --property=InvocationID --value berthy 2>/dev/null) || exit 1\n"
+		wait = "probe_bin=" + shellQuote(guardProbePath) + "\n" + waitScriptWithProbe("candidate_health \"$probe\"", secs, success)
 	}
 	return prefix + "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
-		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(guardProbePath, listen, secs, success)
+		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + wait
 }
 
 // activateScripts lists the swap when staged and the restart for a successful activation.
@@ -441,7 +482,7 @@ func activateScripts(staged Staged, listen string, timeout time.Duration) []stri
 	secs := wholeSeconds(timeout)
 	guard := guardScript(binPath, configPath, staged, listen, secs)
 	if swap := swapScript(staged, secs, len(guard)); swap != "" {
-		out = append(out, swap, restartScript(listen, secs))
+		out = append(out, swap, restartScriptWithGuard(listen, secs, true, staged.Added))
 		return out
 	}
 	return append(out, restartScriptWithoutGuard(listen, secs))
@@ -453,6 +494,13 @@ func journalTail(ctx context.Context, r Runner) (string, error) {
 	res, err := r.Run(ctx, "journalctl -u berthy -n 20 --no-pager -o cat 2>&1", nil)
 	if err != nil {
 		return "", fmt.Errorf("reading the agent's log: %w", err)
+	}
+	for _, stream := range []*[]byte{&res.Stdout, &res.Stderr} {
+		lines := strings.Split(string(*stream), "\n")
+		for i, line := range lines {
+			lines[i], _, _ = strings.Cut(line, agent.StartupDiagnosticSeparator)
+		}
+		*stream = []byte(strings.Join(lines, "\n"))
 	}
 	return lastLines(res, 20), nil
 }
