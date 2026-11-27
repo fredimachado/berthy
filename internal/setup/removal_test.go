@@ -27,6 +27,7 @@ type removalRunner struct {
 	recordConfirmationErr       bool
 	daemonCode, pathsCode       int
 	onSwap                      func()
+	stateClean, networkGone     bool
 }
 
 func newRemovalRunner(t *testing.T) (*removalRunner, Options) {
@@ -92,11 +93,32 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 	case strings.HasPrefix(script, "# verify removal Docker service\n"):
 		return Result{Code: r.daemonCode}, nil
 	case strings.Contains(script, "network ls"):
+		if r.networkGone {
+			return result("")
+		}
 		return result(removalTestNetworkID + " alpha-dev\n")
 	case strings.Contains(script, "network inspect"):
 		return result(removalNetworkJSON(removalTestNetworkID, "{}"))
 	case strings.Contains(script, "container ls -aq"), strings.Contains(script, "service ls -q"):
 		return result("")
+	case strings.Contains(script, "network rm"):
+		r.mutations = append(r.mutations, "network")
+		r.networkGone = true
+		return result(removalTestNetworkID + "\n")
+	case strings.HasPrefix(script, "# remove state and keys\n"):
+		if r.stateClean {
+			return result("clean\n")
+		}
+		r.mutations = append(r.mutations, "state")
+		r.stateClean = true
+		return result("changed\n")
+	case strings.HasPrefix(script, "# clear removal record\n"):
+		if !r.stateClean || !r.networkGone {
+			r.t.Fatal("record cleared before server cleanup")
+		}
+		r.mutations = append(r.mutations, "clear")
+		r.record = nil
+		return Result{}, nil
 	case strings.HasPrefix(script, "# write removal record\n"):
 		var rec removal
 		b := payload()
@@ -159,7 +181,14 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 func runRemoval(r *removalRunner, opts Options, purge, preview bool) (*Session, string) {
 	s := &Session{R: r, Opts: opts, DryRun: preview}
 	var failure string
-	Run(context.Background(), s, RemovalSteps(purge), func(res StepResult) {
+	steps := RemovalSteps(purge)
+	for i, step := range steps {
+		if step.Name == "service" {
+			steps = steps[:i+1]
+			break
+		}
+	}
+	Run(context.Background(), s, steps, func(res StepResult) {
 		if res.Status == StatusFailed {
 			failure = res.Detail
 		}

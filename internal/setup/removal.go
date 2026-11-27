@@ -10,7 +10,7 @@ import (
 	"berthy/internal/scope"
 )
 
-// RemovalSteps verifies and unhosts the selected environment.
+// RemovalSteps verifies, unhosts and cleans up the selected environment.
 func RemovalSteps(purge bool) []Step {
 	return []Step{
 		{"connect", connectStep},
@@ -19,6 +19,9 @@ func RemovalSteps(purge bool) []Step {
 		}},
 		{"config", stageRemoval},
 		{"service", activateRemoval},
+		{"state", removeStateStep},
+		{"network", removeNetworkStep},
+		{"cli_config", removeCLIConfigStep},
 	}
 }
 
