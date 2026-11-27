@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// UptimeProbeTarget is the mounted executable path inside a Swarm task.
+const UptimeProbeTarget = "/.berthy/berthy"
+
 // Key documents one manifest key. Keys is the only place a key's meaning is written down: the user guide's reference,
 // `berthy docs` and the JSON Schema are generated from it, and a test keeps it in step with the Manifest type and with
 // Validate. To add a manifest key, add its field to the type and its Key here, then run: go generate ./internal/manifest
