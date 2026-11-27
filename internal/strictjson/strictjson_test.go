@@ -441,7 +441,7 @@ func FuzzStrictRequestBody(f *testing.F) {
 	f.Add(uint8(len(validBodies)+1), []byte(`[{"a":1},{"a":2}]`))
 	for shape := range bodyShapes() {
 		for _, body := range []string{
-			`{"a":1,"a":2}`, `{"a":1,"a":2}`, `{"A":1}`, `{"DRY_RUN":1}`, `{"app":"x","app":"y"}`, `{"kind":"exec","Kind":"run"}`,
+			`{"a":1,"a":2}`, `{"a":1,"\u0061":2}`, `{"A":1}`, `{"DRY_RUN":1}`, `{"app":"x","app":"y"}`, `{"kind":"exec","Kind":"run"}`,
 			`null`, `[]`, `"x"`, `1`, ``, `{} {}`, `{"a":`, `{"raw":[{"a":1,"a":2}]}`, `{"custom":{"value":"a","value":"b"}}`,
 			`{"manifest":{"apps":{"api":{"kind":"image","kind":"image"}}}}`,
 		} {
