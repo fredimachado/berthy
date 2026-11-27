@@ -86,9 +86,9 @@
   Name services and image digests, never container ids.
   The gate asks a route for its plan out of band (`asPlan`), never by rewriting
   the body, and `decodeBody` turns that into the body's `dry_run`; a route
-  reads its body only through `decodeBody` or `decodeOptionalBody`. Every
-  request body is decoded by `internal/strictjson`: one JSON object, keys
-  matched to fields only by their exact name, no key twice at any depth.
+  reads its body only through `decodeBody` or `decodeOptionalBody`. A route
+  that takes a body decodes it with `internal/strictjson`: one JSON object,
+  keys matched to fields only by their exact name, no key twice at any depth.
   Preserve decision fields when redacting metadata so approval comparison
   can detect a changed outcome.
 - Each manifest key is defined once, in `internal/manifest/keys.go`. The guide

@@ -1468,7 +1468,7 @@ The approvals API: `GET /v1/projects/<project>/environments/<env>/approvals[?sta
 
 ### Other guardrails
 
-- **Strict request bodies.** The agent reads every request body as one JSON object whose keys are the exact field names (`app`, not `App`), with no key twice at any depth. Any other body, `null` included, is refused with `400` and `invalid request`, for every token. The keys of a user's map, such as variable names, are kept as written. A cancel, a token revoke and a reject also accept an empty body (no bytes, or only spaces, tabs and line breaks).
+- **Strict request bodies.** After checking the token, its scope and the method, the agent reads a body for a route that takes one as a JSON object whose keys are the exact field names (`app`, not `App`), with no key twice at any depth. For any token that reaches body decoding, any other body, `null` included, is refused with `400` and `invalid request`, and is never held for approval. The keys of a user's map, such as variable names, are kept as written. A cancel, a token revoke and a reject also accept an empty body (no bytes, or only spaces, tabs and line breaks). Routes that take no body ignore one: `approvals/<id>/approve`, `backups/<name>/run`, `jobs/<name>/run`, `jobs/<name>/cancel`, `state-backup` and `alerts/test`.
 - **Explicit environment.** No command that changes something runs without `-e`.
 - **Dry run everywhere.** The plan a person approves is the same plan `--dry-run` prints, and `approve` checks that it still is before it runs the request.
 - **Deploy lock.** A manual lock freezes an environment for everyone, people and AI agents alike.
