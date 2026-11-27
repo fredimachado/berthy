@@ -54,13 +54,17 @@ func generateSecret(r io.Reader, n int, format string) (string, error) {
 	return "", errors.New("unknown format")
 }
 
+func (rt *routeRuntime) handleSecretGenerate(call routeCall, read readRouteBody[api.SecretGenerate]) {
+	serveSecretGenerate(call.w, call.r, rt.d, call.stateActor(), read)
+}
+
 // serveSecretGenerate answers POST secrets/generate. The agent makes the value from crypto/rand and stores it, so the value never
 // leaves the agent: the answer and the dry run name the secret, its length and its format, and never hold a value. A stored
 // secret is refused unless the request replaces it, and a registry password is refused always.
-func serveSecretGenerate(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor) {
+func serveSecretGenerate(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor, read readRouteBody[api.SecretGenerate]) {
 	ctx := r.Context()
-	var req api.SecretGenerate
-	if decodeBody(w, r, &req) != nil {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
@@ -118,9 +122,13 @@ func serveSecretGenerate(w http.ResponseWriter, r *http.Request, d *deploy.Contr
 	json.NewEncoder(w).Encode(api.SecretGenerated{Name: req.Name, Bytes: n, Format: format, Replaced: replaced})
 }
 
-func serveSecretsGenerateDeclared(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor) {
-	var req api.SecretsGenerateDeclared
-	if decodeBody(w, r, &req) != nil {
+func (rt *routeRuntime) handleSecretsGenerateDeclared(call routeCall, read readRouteBody[api.SecretsGenerateDeclared]) {
+	serveSecretsGenerateDeclared(call.w, call.r, rt.d, call.stateActor(), read)
+}
+
+func serveSecretsGenerateDeclared(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor, read readRouteBody[api.SecretsGenerateDeclared]) {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}

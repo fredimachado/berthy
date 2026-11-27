@@ -69,19 +69,17 @@ type readRouteBody[T any] func() (T, error)
 
 func jsonRoute[T any](row envRoute, endpoint func(*routeRuntime, routeCall, readRouteBody[T])) envRoute {
 	row.body = reflect.TypeFor[T]()
-	if endpoint != nil {
-		row.handle = func(rt *routeRuntime, call routeCall) {
-			endpoint(rt, call, func() (T, error) {
-				var value T
-				var err error
-				if call.row.optionalBody {
-					err = decodeOptionalBody(call.w, call.r, &value)
-				} else {
-					err = decodeBody(call.w, call.r, &value)
-				}
-				return value, err
-			})
-		}
+	row.handle = func(rt *routeRuntime, call routeCall) {
+		endpoint(rt, call, func() (T, error) {
+			var value T
+			var err error
+			if call.row.optionalBody {
+				err = decodeOptionalBody(call.w, call.r, &value)
+			} else {
+				err = decodeBody(call.w, call.r, &value)
+			}
+			return value, err
+		})
 	}
 	return row
 }
@@ -121,21 +119,21 @@ func declaredRoutes() []envRoute {
 		{pattern: "wait/{app}", method: "GET", scope: "read", handle: (*routeRuntime).handleWait},
 		{pattern: "applied/{app}", method: "GET", scope: "read", handle: (*routeRuntime).handleApplied},
 		{pattern: "audit", method: "GET", scope: "read", handle: (*routeRuntime).handleAudit},
-		{pattern: "lock", method: "GET", scope: "read"},
-		jsonRoute[lockBody](envRoute{pattern: "lock/acquire", method: "POST", scope: "deploy", kind: "lock acquire", gateDryRun: true, summary: summarizeKind}, nil),
-		jsonRoute[lockBody](envRoute{pattern: "lock/release", method: "POST", scope: "deploy", kind: "lock release", gateDryRun: true, summary: summarizeKind}, nil),
+		{pattern: "lock", method: "GET", scope: "read", handle: (*routeRuntime).handleLockStatus},
+		jsonRoute[lockBody](envRoute{pattern: "lock/acquire", method: "POST", scope: "deploy", kind: "lock acquire", gateDryRun: true, summary: summarizeKind}, (*routeRuntime).handleLockAcquire),
+		jsonRoute[lockBody](envRoute{pattern: "lock/release", method: "POST", scope: "deploy", kind: "lock release", gateDryRun: true, summary: summarizeKind}, (*routeRuntime).handleLockRelease),
 
 		// For other methods on the collection, the expected method is POST.
-		{pattern: "secrets", method: "GET", scope: "admin"},
-		jsonRoute[secretBody](envRoute{pattern: "secrets", method: "POST", scope: "admin", kind: "secret set", gateDryRun: true, summary: summarizeName}, nil),
-		jsonRoute[api.SecretImport](envRoute{pattern: "secrets/import", method: "POST", scope: "admin", kind: "secret import", gateDryRun: true, summary: summarizeImport}, nil),
-		jsonRoute[api.SecretGenerate](envRoute{pattern: "secrets/generate", method: "POST", scope: "admin", kind: "secret generate", gateDryRun: true, summary: summarizeName}, nil),
-		jsonRoute[api.SecretsGenerateDeclared](envRoute{pattern: "secrets/generate-declared", method: "POST", scope: "admin", kind: "secret generate declared", gateDryRun: true, summary: fixedSummary("generate the declared secrets")}, nil),
+		{pattern: "secrets", method: "GET", scope: "admin", handle: (*routeRuntime).handleSecretList},
+		jsonRoute[secretBody](envRoute{pattern: "secrets", method: "POST", scope: "admin", kind: "secret set", gateDryRun: true, summary: summarizeName}, (*routeRuntime).handleSecretSet),
+		jsonRoute[api.SecretImport](envRoute{pattern: "secrets/import", method: "POST", scope: "admin", kind: "secret import", gateDryRun: true, summary: summarizeImport}, (*routeRuntime).handleSecretImport),
+		jsonRoute[api.SecretGenerate](envRoute{pattern: "secrets/generate", method: "POST", scope: "admin", kind: "secret generate", gateDryRun: true, summary: summarizeName}, (*routeRuntime).handleSecretGenerate),
+		jsonRoute[api.SecretsGenerateDeclared](envRoute{pattern: "secrets/generate-declared", method: "POST", scope: "admin", kind: "secret generate declared", gateDryRun: true, summary: fixedSummary("generate the declared secrets")}, (*routeRuntime).handleSecretsGenerateDeclared),
 		// DELETE applies even when the name matches one of the literal POST paths.
-		jsonRoute[secretBody](envRoute{pattern: "secrets/{name}", method: "DELETE", scope: "admin", kind: "secret delete", gateDryRun: true, summary: summarizeTarget}, nil),
+		jsonRoute[secretBody](envRoute{pattern: "secrets/{name}", method: "DELETE", scope: "admin", kind: "secret delete", gateDryRun: true, summary: summarizeTarget}, (*routeRuntime).handleSecretDelete),
 		jsonRoute[deploy.Request](envRoute{pattern: "ingress/apply", method: "POST", scope: "deploy", kind: "ingress apply", gateDryRun: true, summary: summarizeKind}, (*routeRuntime).handleIngressApply),
 		{pattern: "ingress/status", method: "GET", scope: "read", handle: (*routeRuntime).handleIngressStatus},
-		{pattern: "checks", method: "GET", scope: "read"},
+		{pattern: "checks", method: "GET", scope: "read", handle: (*routeRuntime).handleChecks},
 		{pattern: "jobs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobs},
 		{pattern: "jobs/{name}/runs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobRuns},
 		{pattern: "jobs/{name}/run", method: "POST", scope: "deploy", kind: "job run", summary: summarizeTarget, describeTarget: true, handle: (*routeRuntime).handleJobRun},
@@ -150,7 +148,7 @@ func declaredRoutes() []envRoute {
 		jsonRoute[restoreBody](envRoute{pattern: "restore", method: "POST", scope: "admin", kind: "restore", gateDryRun: true, summary: summarizeRestore}, (*routeRuntime).handleRestore),
 		jsonRoute[dryRunBody](envRoute{pattern: "key/rotate", method: "POST", scope: "admin"}, (*routeRuntime).serveKeyRotate),
 		jsonRoute[session.Request](envRoute{pattern: "sessions", method: "POST", scope: "admin", lane: sessionRoute}, (*routeRuntime).serveSession),
-		{pattern: "alerts/test", method: "POST", scope: "deploy", kind: "alerts test", summary: summarizeKind},
+		{pattern: "alerts/test", method: "POST", scope: "deploy", kind: "alerts test", summary: summarizeKind, handle: (*routeRuntime).handleAlertsTest},
 
 		// For other methods on the collection, the expected method is POST.
 		{pattern: "tokens", method: "GET", scope: "admin", handle: (*routeRuntime).handleTokens},

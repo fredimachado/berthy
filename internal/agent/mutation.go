@@ -127,7 +127,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		if actor.Agent && method != "GET" && gate.hold(w, r, actor, rest) {
 			return
 		}
-		rt.dispatchOrdinary(call)
+		row.handle(rt, call)
 	}))
 }
 
@@ -138,198 +138,207 @@ func (rt *routeRuntime) serveOrdinary(w http.ResponseWriter, r *http.Request, ac
 		writeError(w, 501, "unavailable", "operation unavailable")
 		return
 	}
-	rt.dispatchOrdinary(routeCall{w: w, r: r, actor: actor, rest: rest, row: row})
+	row.handle(rt, routeCall{w: w, r: r, actor: actor, rest: rest, row: row})
 }
 
-func (rt *routeRuntime) dispatchOrdinary(call routeCall) {
-	if call.row.handle != nil {
-		call.row.handle(rt, call)
+func (rt *routeRuntime) handleLockStatus(call routeCall) {
+	w, ctx, d := call.w, call.r.Context(), rt.d
+	l, err := d.Store.Lock(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		json.NewEncoder(w).Encode(map[string]bool{"locked": false})
 		return
 	}
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
+}
 
-	// Only routes whose endpoints have yet to move use the original dispatcher.
-	w, r, actor, rest := call.w, call.r, call.actor, call.rest
-	c, d := rt.c, rt.d
-	ctx := r.Context()
+func (rt *routeRuntime) handleLockAcquire(call routeCall, read readRouteBody[lockBody]) {
+	rt.changeLock(call, read, func(req lockBody) error {
+		return rt.d.Store.AcquireManual(call.r.Context(), call.stateActor(), call.actor.Name, req.Message)
+	})
+}
+
+func (rt *routeRuntime) handleLockRelease(call routeCall, read readRouteBody[lockBody]) {
+	rt.changeLock(call, read, func(lockBody) error {
+		return rt.d.Store.ReleaseManual(call.r.Context(), call.stateActor())
+	})
+}
+
+func (rt *routeRuntime) changeLock(call routeCall, read readRouteBody[lockBody], change func(lockBody) error) {
+	w, ctx, d := call.w, call.r.Context(), rt.d
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	if req.DryRun {
+		_, lockErr := d.Store.Lock(ctx)
+		if lockErr != nil && !errors.Is(lockErr, sql.ErrNoRows) {
+			operationError(w, lockErr)
+			return
+		}
+		plan := map[string]any{"action": call.row.kind, "currently_locked": lockErr == nil}
+		if req.Message != "" {
+			plan["message"] = req.Message
+		}
+		json.NewEncoder(w).Encode(plan)
+		return
+	}
+	err = change(req)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+func (rt *routeRuntime) handleSecretList(call routeCall) {
+	w, ctx, d := call.w, call.r.Context(), rt.d
+	rows, err := d.Store.Secrets(ctx)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	out := make([]map[string]string, 0, len(rows))
+	for _, v := range rows {
+		out = append(out, map[string]string{"name": v.Name, "registry": v.Registry})
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleSecretSet(call routeCall, read readRouteBody[secretBody]) {
+	rt.changeSecret(call, read, false)
+}
+
+func (rt *routeRuntime) handleSecretDelete(call routeCall, read readRouteBody[secretBody]) {
+	rt.changeSecret(call, read, true)
+}
+
+func (rt *routeRuntime) changeSecret(call routeCall, read readRouteBody[secretBody], deleting bool) {
+	w, ctx, d := call.w, call.r.Context(), rt.d
 	sa := call.stateActor()
-	switch {
-	case len(rest) == 1 && rest[0] == "lock":
-		l, err := d.Store.Lock(ctx)
-		if errors.Is(err, sql.ErrNoRows) {
-			json.NewEncoder(w).Encode(map[string]bool{"locked": false})
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	if deleting {
+		req.Name = call.rest[1]
+	}
+	if req.Name == "" {
+		writeError(w, 400, "bad_request", "name required")
+		return
+	}
+	if req.Name == manifest.TunnelTokenSecret {
+		writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
+		return
+	}
+	// A set that names no registry keeps the one the stored secret has, so rotating a registry password does not turn
+	// it into a plain secret.
+	exists := false
+	if req.DryRun || (!deleting && req.Registry == "") {
+		stored, listErr := d.Store.Secrets(ctx)
+		if listErr != nil {
+			operationError(w, listErr)
 			return
 		}
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
-	case rest[0] == "lock":
-		var req lockBody
-		if decodeBody(w, r, &req) != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		if req.DryRun {
-			_, lockErr := d.Store.Lock(ctx)
-			if lockErr != nil && !errors.Is(lockErr, sql.ErrNoRows) {
-				operationError(w, lockErr)
-				return
+		for _, info := range stored {
+			if info.Name == req.Name {
+				exists = true
+				if !deleting && req.Registry == "" {
+					req.Registry = info.Registry
+				}
 			}
-			plan := map[string]any{"action": "lock " + rest[1], "currently_locked": lockErr == nil}
-			if req.Message != "" {
-				plan["message"] = req.Message
+		}
+	}
+	if req.DryRun {
+		plan := map[string]any{"action": call.row.kind, "name": req.Name, "exists": exists}
+		if !deleting {
+			plan["registry"] = req.Registry
+			if req.Registry != "" {
+				if names, listErr := d.RegistryServices(ctx, req.Registry); listErr != nil {
+					plan["services_error"] = listErr.Error()
+				} else {
+					plan["services"] = append([]string{}, names...)
+				}
 			}
-			json.NewEncoder(w).Encode(plan)
-			return
 		}
-		var err error
-		if rest[1] == "acquire" {
-			err = d.Store.AcquireManual(ctx, sa, actor.Name, req.Message)
-		} else {
-			err = d.Store.ReleaseManual(ctx, sa)
-		}
-		if err != nil {
-			operationError(w, err)
-			return
-		}
+		json.NewEncoder(w).Encode(plan)
+		return
+	}
+	if deleting {
+		err = d.Store.DeleteSecret(ctx, sa, req.Name)
+	} else {
+		err = d.Store.PutSecret(ctx, sa, state.SecretInfo{Name: req.Name, Registry: req.Registry}, []byte(req.Value))
+	}
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	if deleting || req.Registry == "" {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && r.Method == "POST":
-		serveSecretImport(w, r, d, sa)
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && r.Method == "POST":
-		serveSecretGenerate(w, r, d, sa)
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && r.Method == "POST":
-		serveSecretsGenerateDeclared(w, r, d, sa)
-	case rest[0] == "secrets" && r.Method == "GET":
-		rows, err := d.Store.Secrets(ctx)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		out := make([]map[string]string, 0, len(rows))
-		for _, v := range rows {
-			out = append(out, map[string]string{"name": v.Name, "registry": v.Registry})
-		}
-		json.NewEncoder(w).Encode(out)
-	case rest[0] == "secrets":
-		var req secretBody
-		if decodeBody(w, r, &req) != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		if len(rest) == 2 {
-			req.Name = rest[1]
-		}
-		if req.Name == "" {
-			writeError(w, 400, "bad_request", "name required")
-			return
-		}
-		if req.Name == manifest.TunnelTokenSecret {
-			writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
-			return
-		}
-		// A set that names no registry keeps the one the stored secret has, so rotating a registry password does not turn
-		// it into a plain secret.
-		exists := false
-		if req.DryRun || (r.Method != "DELETE" && req.Registry == "") {
-			stored, listErr := d.Store.Secrets(ctx)
-			if listErr != nil {
-				operationError(w, listErr)
-				return
-			}
-			for _, info := range stored {
-				if info.Name == req.Name {
-					exists = true
-					if r.Method != "DELETE" && req.Registry == "" {
-						req.Registry = info.Registry
-					}
-				}
-			}
-		}
-		if req.DryRun {
-			plan := map[string]any{"action": "secret set", "name": req.Name, "exists": exists}
-			if r.Method == "DELETE" {
-				plan["action"] = "secret delete"
-			} else {
-				plan["registry"] = req.Registry
-				if req.Registry != "" {
-					if names, listErr := d.RegistryServices(ctx, req.Registry); listErr != nil {
-						plan["services_error"] = listErr.Error()
-					} else {
-						plan["services"] = append([]string{}, names...)
-					}
-				}
-			}
-			json.NewEncoder(w).Encode(plan)
-			return
-		}
-		var err error
-		if r.Method == "DELETE" {
-			err = d.Store.DeleteSecret(ctx, sa, req.Name)
-		} else {
-			err = d.Store.PutSecret(ctx, sa, state.SecretInfo{Name: req.Name, Registry: req.Registry}, []byte(req.Value))
-		}
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		if r.Method == "DELETE" || req.Registry == "" {
-			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-			return
-		}
-		// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
-		answer := map[string]any{"ok": true, "registry": req.Registry}
-		refreshed, refreshErr := d.RefreshRegistryAuth(ctx, req.Registry)
-		outcome := "succeeded"
-		if refreshErr != nil {
-			answer["services_error"] = refreshErr.Error()
-			outcome = "failed"
-		} else {
-			answer["services"] = append([]deploy.RegistryRefresh{}, refreshed...)
-			for _, s := range refreshed {
-				if !s.Updated {
-					outcome = "failed"
-				}
-			}
-		}
-		if refreshErr != nil || len(refreshed) > 0 {
-			d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
-		}
-		json.NewEncoder(w).Encode(answer)
-	case len(rest) == 1 && rest[0] == "checks":
-		rows, err := d.Store.Checks(ctx)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		out := make([]map[string]any, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
-		}
-		json.NewEncoder(w).Encode(out)
-	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-		results, sendErr := sendTestAlert(ctx, c, d.Store)
-		outcome := "succeeded"
-		if sendErr != nil {
-			outcome = "failed"
-		}
-		for _, res := range results {
-			if !res.OK {
+		return
+	}
+	// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
+	answer := map[string]any{"ok": true, "registry": req.Registry}
+	refreshed, refreshErr := d.RefreshRegistryAuth(ctx, req.Registry)
+	outcome := "succeeded"
+	if refreshErr != nil {
+		answer["services_error"] = refreshErr.Error()
+		outcome = "failed"
+	} else {
+		answer["services"] = append([]deploy.RegistryRefresh{}, refreshed...)
+		for _, s := range refreshed {
+			if !s.Updated {
 				outcome = "failed"
 			}
 		}
-		if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		if sendErr != nil {
-			alertError(w, sendErr)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
-	default:
-		writeError(w, 501, "unavailable", "operation unavailable")
 	}
+	if refreshErr != nil || len(refreshed) > 0 {
+		d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
+	}
+	json.NewEncoder(w).Encode(answer)
+}
+
+func (rt *routeRuntime) handleChecks(call routeCall) {
+	w, ctx, d := call.w, call.r.Context(), rt.d
+	rows, err := d.Store.Checks(ctx)
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleAlertsTest(call routeCall) {
+	w, ctx, c, d := call.w, call.r.Context(), rt.c, rt.d
+	sa := call.stateActor()
+	results, sendErr := sendTestAlert(ctx, c, d.Store)
+	outcome := "succeeded"
+	if sendErr != nil {
+		outcome = "failed"
+	}
+	for _, res := range results {
+		if !res.OK {
+			outcome = "failed"
+		}
+	}
+	if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	if sendErr != nil {
+		alertError(w, sendErr)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
 }
 
 func (rt *routeRuntime) handleAdmission(call routeCall, read readRouteBody[deploy.Request]) {
@@ -722,13 +731,17 @@ func tokenActor(t Token, sum [32]byte, remote string) deploy.Actor {
 	return deploy.Actor{ID: id, Name: name, Remote: remote, Admin: t.Scope == "admin", Agent: t.Agent}
 }
 
+func (rt *routeRuntime) handleSecretImport(call routeCall, read readRouteBody[api.SecretImport]) {
+	serveSecretImport(call.w, call.r, rt.d, call.stateActor(), read)
+}
+
 // serveSecretImport answers POST secrets/import. A dry run plans the import by its names alone. A real import stores every
 // entry in one transaction, so a failure stores none. A name stored as a registry password is refused: a plain write would
 // turn that password into a plain secret.
-func serveSecretImport(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor) {
+func serveSecretImport(w http.ResponseWriter, r *http.Request, d *deploy.Controller, sa state.Actor, read readRouteBody[api.SecretImport]) {
 	ctx := r.Context()
-	var req api.SecretImport
-	if decodeBody(w, r, &req) != nil {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}

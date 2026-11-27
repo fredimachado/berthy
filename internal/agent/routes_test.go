@@ -143,6 +143,9 @@ func TestRouteDefinitions(t *testing.T) {
 		row := &envRoutes[i]
 		key := row.method + " " + row.pattern
 		t.Run(key, func(t *testing.T) {
+			if row.handle == nil {
+				t.Errorf("%s has no handler", key)
+			}
 			rest := strings.Split(row.pattern, "/")
 			for i, segment := range rest {
 				if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
