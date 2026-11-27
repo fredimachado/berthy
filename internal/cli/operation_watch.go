@@ -10,11 +10,8 @@ import (
 	"net/url"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
-
-	"berthy/internal/agentclient"
 )
 
 type operationWatchOptions struct {
@@ -166,47 +163,6 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			progress.Message(func() { fmt.Fprintln(out, safeSecretText(ev.Kind, redact...)) })
 		}
 	}
-	var notFound struct {
-		message  string
-		response *http.Response
-	}
-	stream := func() error {
-		notFound.message = ""
-		streamURL := *base
-		streamURL.Path, streamURL.RawPath, streamURL.RawQuery = events, "", ""
-		if progress.enabled && (cmd == "deploy" || cmd == "rollback") {
-			streamURL.RawQuery = "progress=1"
-		}
-		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, streamURL.String(), nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		if cursor != 0 {
-			req.Header.Set("Last-Event-ID", strconv.FormatUint(cursor, 10))
-		}
-		resp, err := agentclient.SendRequest(streamCtx, c, req, token)
-		if err != nil {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			notFound.message = safeSecretText(agentclient.Message(resp.StatusCode, body), redact...)
-			notFound.response = resp
-			return fmt.Errorf("operation stream unavailable")
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("operation stream unavailable")
-		}
-		cursor, err = readOperationEvents(resp.Body, cursor, accept)
-		return err
-	}
 	interrupted := func() int {
 		progress.Close()
 		suffix := fmt.Sprintf(" -e %s --project %s", safeSecretText(env, redact...), safeSecretText(project, redact...))
@@ -221,40 +177,24 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		}
 		return 1
 	}
+	reader := watchReader{client: c, base: base, token: token, prefix: prefix, id: id, events: events}
+	requestProgress := progress.enabled && (cmd == "deploy" || cmd == "rollback")
 	for {
-		streamErr := stream()
-		if notFound.message != "" {
+		last, refusal, older, streamErr := reader.stream(ctx, cursor, requestProgress, accept)
+		cursor = last
+		if refusal != "" {
 			progress.Close()
-			printAgentRefusal(errout, notFound.message, !asJSON, agentclient.IsOlderAgent(notFound.response))
+			printAgentRefusal(errout, safeSecretText(refusal, redact...), !asJSON, older)
 			return 1
 		}
 		if ctx.Err() != nil {
 			return interrupted()
 		}
-		statusURL := *base
-		statusURL.Path, statusURL.RawPath, statusURL.RawQuery = prefix+"operations/"+url.PathEscape(id), "", ""
-		status, statusErr := agentclient.Send(ctx, c, http.MethodGet, statusURL.String(), token, nil)
-		var data []byte
-		var state string
-		if statusErr == nil {
-			var e error
-			data, e = io.ReadAll(io.LimitReader(status.Body, (1<<20)+1))
-			status.Body.Close()
-			var v struct {
-				State string `json:"state"`
-			}
-			if e == nil && len(data) <= 1<<20 && status.StatusCode == http.StatusOK && json.Unmarshal(data, &v) == nil {
-				switch v.State {
-				case "running", "succeeded", "failed", "rolled_back", "interrupted", "recovery_required":
-					state = v.State
-				}
-			}
-		} else if status != nil {
-			status.Body.Close()
-		}
+		state, data := reader.status(ctx)
 		if state != "" && state != "running" {
 			if streamErr != nil || !finals[state] {
-				replayErr := stream()
+				last, _, _, replayErr := reader.stream(ctx, cursor, requestProgress, accept)
+				cursor = last
 				if replayErr != nil || !finals[state] {
 					progress.Close()
 					fmt.Fprintf(errout, "incomplete event delivery for operation %s (state %s)\n", safeSecretText(id, redact...), state)
@@ -273,25 +213,13 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			data, _ = json.Marshal(doc)
 			exitCode := 0
 			if cmd == "exec" || cmd == "run" {
-				outputURL := *base
-				outputURL.Path, outputURL.RawPath, outputURL.RawQuery = prefix+"operations/"+url.PathEscape(id)+"/output", "", ""
-				output, e := agentclient.Send(ctx, c, http.MethodGet, outputURL.String(), token, nil)
-				if e != nil {
+				result, err := reader.output(ctx, state)
+				if err != nil {
 					fmt.Fprintln(errout, cmd+" output unavailable")
 					return 1
 				}
-				b, e := io.ReadAll(io.LimitReader(output.Body, (1<<20)+1))
-				output.Body.Close()
-				if output.StatusCode == http.StatusNotFound && state == "failed" {
+				if result == nil {
 					printResult(data)
-					return 1
-				}
-				var result struct {
-					Output   string `json:"output"`
-					ExitCode int    `json:"exit_code"`
-				}
-				if e != nil || len(b) > 1<<20 || output.StatusCode != http.StatusOK || json.Unmarshal(b, &result) != nil {
-					fmt.Fprintln(errout, cmd+" output unavailable")
 					return 1
 				}
 				exitCode = result.ExitCode
