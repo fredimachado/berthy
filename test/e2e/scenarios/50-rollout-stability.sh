@@ -74,8 +74,7 @@ try:
         container = event['Actor']['ID']
         action = event.get('Action', '')
         if action == 'health_status: healthy':
-            image = subprocess.run(base + ['inspect', '--format', '{{.Config.Image}}', container], text=True, capture_output=True)
-            if image.returncode == 0 and digest in image.stdout:
+            if digest in event['Actor']['Attributes'].get('image', ''):
                 healthy.add(container)
         if action == 'die' and container in healthy and event['Actor']['Attributes'].get('exitCode') not in ('0', '', None):
             sys.exit(0)

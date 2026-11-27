@@ -88,15 +88,20 @@ func isZeroSpecValue(v any) bool {
 	return false
 }
 
+type beforeServiceMutation struct{ err error }
+
+func (e beforeServiceMutation) Error() string { return e.err.Error() }
+func (e beforeServiceMutation) Unwrap() error { return e.err }
+
 func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i state.Intent, auth *engine.RegistryAuth) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return beforeServiceMutation{err}
 	}
 	if err := j.RecordIntent(ctx, op, i); err != nil {
-		return err
+		return beforeServiceMutation{err}
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return beforeServiceMutation{err}
 	}
 	if i.Kind == "create" {
 		_, err := e.CreateService(ctx, i.Desired, auth)
@@ -109,10 +114,10 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 	} else if i.Kind == "update" {
 		live, err := e.InspectService(ctx, i.Name)
 		if err := ctx.Err(); err != nil {
-			return err
+			return beforeServiceMutation{err}
 		}
 		if err != nil || live.ID != i.ServiceID || !sameSpec(live.Spec, i.Before) {
-			return errors.New("service changed before update")
+			return beforeServiceMutation{errors.New("service changed before update")}
 		}
 		if err = e.UpdateService(ctx, live.ID, live.Version, i.Desired, auth); err != nil {
 			live, inspectErr := e.InspectService(ctx, i.Name)
@@ -121,7 +126,7 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 			}
 		}
 	} else {
-		return errors.New("invalid service intent")
+		return beforeServiceMutation{errors.New("invalid service intent")}
 	}
 	return j.MarkStep(ctx, op, i.Ordinal, "issued", json.RawMessage(`{}`))
 }
@@ -339,18 +344,18 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
-		return "", errors.New("service health deadline exceeded")
+		return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
 	}
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
 	if err := j.RecordIntent(startupCtx, op, i); err != nil {
 		if startupCtx.Err() != nil {
-			return "", errors.New("service health deadline exceeded")
+			return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
 		}
-		return "", err
+		return "", beforeServiceMutation{err}
 	}
 	if startupCtx.Err() != nil {
-		return "", errors.New("service health deadline exceeded")
+		return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
 	}
 	createdID, err := e.CreateService(startupCtx, i.Desired, auth)
 	if err != nil || createdID == "" {
@@ -391,13 +396,18 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
-		return errors.New("service health deadline exceeded")
+		return beforeServiceMutation{errors.New("service health deadline exceeded")}
 	}
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
 	if err := applyIntent(startupCtx, j, e, op, i, auth); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return errors.New("service health deadline exceeded")
+			deadline := errors.New("service health deadline exceeded")
+			var before beforeServiceMutation
+			if errors.As(err, &before) {
+				return beforeServiceMutation{deadline}
+			}
+			return deadline
 		}
 		return err
 	}

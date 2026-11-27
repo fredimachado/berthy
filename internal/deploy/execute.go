@@ -386,8 +386,12 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		stopRoll()
 		stopRole()
 		if e != nil {
-			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
-			unwind(e, work[:n+1])
+			touched := n + 1
+			var before beforeServiceMutation
+			if errors.As(e, &before) {
+				touched = n
+			}
+			unwind(e, work[:touched])
 			return
 		}
 		startupDeadline = startupDeadline.Add(hold)

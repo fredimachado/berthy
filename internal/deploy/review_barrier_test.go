@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
@@ -163,5 +164,105 @@ func TestUnwindIgnoresUntouchedUpdate(t *testing.T) {
 	}
 	if _, err = s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("lock after compensation: %v", err)
+	}
+}
+
+type slowPreUpdateEngine struct {
+	*budgetEngine
+	blocked   bool
+	stoppedAt time.Time
+}
+
+func (f *slowPreUpdateEngine) InspectService(ctx context.Context, ref string) (engine.ServiceSnapshot, error) {
+	if !f.blocked && !f.start.IsZero() && ref == "proj-test-web-b" && time.Since(f.start) >= 5*time.Second {
+		f.blocked = true
+		<-ctx.Done()
+		f.stoppedAt = time.Now()
+		return engine.ServiceSnapshot{}, ctx.Err()
+	}
+	return f.budgetEngine.InspectService(ctx, ref)
+}
+
+func TestUnwindIgnoresUpdateStoppedBeforeMutation(t *testing.T) {
+	s := openStore(t)
+	base := &budgetEngine{boundFake: &boundFake{}}
+	ctx := context.Background()
+	prior, _, err := s.Admit(ctx, state.Admission{RequestID: "prior-b", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(budgetManifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := json.RawMessage(`{"Name":"proj-test-web-b","TaskTemplate":{"ContainerSpec":{"Image":"example/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","Labels":{"berthy.operation":"previous"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: digestOfLetter("b"), Manifest: raw, Bindings: []state.Binding{{App: "web", Role: "b", Name: "proj-test-web-b", ServiceID: "old-b"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	base.add("old-b", old)
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: "inspection-cutoff", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &slowPreUpdateEngine{budgetEngine: base}
+	c := &Controller{Store: s, Engine: f, Environment: "test"}
+	synctest.Test(t, func(t *testing.T) {
+		c.execute(ctx, op, Actor{ID: "a", Admin: true}, Request{RequestID: "inspection-cutoff", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
+	})
+	if !f.blocked || f.stoppedAt.Sub(f.start) != 15*time.Second {
+		t.Fatalf("pre-update inspection blocked=%v stopped at %v", f.blocked, f.stoppedAt.Sub(f.start))
+	}
+	if base.updates != 0 {
+		t.Fatalf("update mutation calls = %d", base.updates)
+	}
+	intents, err := s.Intents(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawB := false
+	for _, i := range intents {
+		if i.Role == "b" && i.Kind == "update" {
+			sawB = true
+		}
+	}
+	if !sawB {
+		t.Fatal("update intent was not recorded before inspection")
+	}
+	live, err := base.boundFake.InspectService(ctx, "proj-test-web-a")
+	if err == nil {
+		t.Fatalf("created role not removed: %+v", live)
+	}
+	live, err = base.boundFake.InspectService(ctx, "proj-test-web-b")
+	if err != nil || !sameSpec(live.Spec, old) {
+		t.Fatalf("old role changed: %+v %v", live, err)
+	}
+	op, err = s.Operation(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.State != "failed" {
+		t.Fatalf("operation state=%s, want failed for create-only compensation", op.State)
+	}
+	if _, err = s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("lock after compensation: %v", err)
+	}
+}
+
+type uncertainUpdateFake struct{ mutationFake }
+
+func (f *uncertainUpdateFake) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
+	if err := f.mutationFake.UpdateService(ctx, id, version, spec, auth); err != nil {
+		return err
+	}
+	f.inspectErr = errors.New("inspection unavailable")
+	return errors.New("update outcome unavailable")
+}
+func TestUncertainUpdateIsTreatedAsTouched(t *testing.T) {
+	before, desired := json.RawMessage(`{"Name":"svc","version":"old"}`), json.RawMessage(`{"Name":"svc","version":"new"}`)
+	f := &uncertainUpdateFake{mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}}}
+	err := applyIntent(context.Background(), &journalFake{}, f, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Before: before, Desired: desired}, nil)
+	var beforeMutation beforeServiceMutation
+	if err == nil || errors.As(err, &beforeMutation) || f.updateVersion == 0 {
+		t.Fatalf("error=%v update version=%d", err, f.updateVersion)
 	}
 }
