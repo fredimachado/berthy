@@ -100,6 +100,21 @@ func TestDoctorNotesWhenTheAgentHasBuildMetadata(t *testing.T) {
 	}
 }
 
+func TestDoctorSkipsNoteWhenOnlyBuildMetadataDiffers(t *testing.T) {
+	stampCLI(t, "v1.3.0+build.1")
+	server := doctorVersionServer(t, "v1.3.0+build.2", false)
+	var out, errout bytes.Buffer
+	if code := Run([]string{"doctor", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "agent: v1.3.0+build.2\n") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "note:") || strings.Contains(errout.String(), "note:") {
+		t.Fatalf("noted equal-precedence builds:\n%s", out.String())
+	}
+}
+
 func TestDoctorNeverWarnsAboutADevBuild(t *testing.T) {
 	for _, tc := range []struct{ cli, agent string }{
 		{"dev", "v0.9.0"},

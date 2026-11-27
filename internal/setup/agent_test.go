@@ -39,8 +39,9 @@ type agentFake struct {
 	keyAnswer  func(context.Context, []byte) (Result, error)
 	probe      []string
 	config     string // what reading the agent's configuration returns
-	version    string // what the installed binary's version command prints
-	versionErr error  // when set, the version probe fails with a transport error
+	version     string // what the installed binary's version command prints
+	versionErr  error  // when set, the version probe fails with a transport error
+	versionCode int    // when non-zero, the version probe returns that exit code with a nil error
 
 	prevBin, prevCfg bool  // what the swap finds already installed
 	waits            []int // exit codes of the successive restart-and-wait scripts; the rest are 0
@@ -85,6 +86,9 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	case script == binPath+" version 2>/dev/null":
 		if f.versionErr != nil {
 			return Result{}, f.versionErr
+		}
+		if f.versionCode != 0 {
+			return Result{Code: f.versionCode}, nil
 		}
 		return Result{Stdout: []byte(f.version)}, nil
 	case strings.Contains(script, "cat > "+binPath+".new"):
@@ -1094,6 +1098,32 @@ func TestBinaryStep(t *testing.T) {
 			}
 			if f.ran(binPath + ".new") {
 				t.Errorf("uploaded after a version probe transport error")
+			}
+		})
+	}
+	for _, dry := range []bool{false, true} {
+		name := "a version probe exit 255 fails without staging"
+		if dry {
+			name = "a dry run fails a version probe exit 255 without staging"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setUpAgent(t, x86)
+			f.versionCode = 255
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+			s := agentSession(t, f, x86, dry, func(o *Options) {
+				o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
+			})
+			var got []StepResult
+			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
+			r := stepOf(t, got, "binary")
+			if r.Status != StatusFailed || !strings.Contains(r.Detail, "reading the agent version") {
+				t.Fatalf("binary = %+v", r)
+			}
+			if s.staged.Binary {
+				t.Errorf("staged.Binary = true")
+			}
+			if f.ran(binPath + ".new") {
+				t.Errorf("uploaded after a version probe exit 255")
 			}
 		})
 	}
