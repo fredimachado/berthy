@@ -4,12 +4,65 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"berthy/internal/deploy"
 	"berthy/internal/session"
 )
+
+func TestDeepBodiesUseLinearMemory(t *testing.T) {
+	const depth = 3000
+	key := strings.Repeat("k", 90)
+	nested := strings.Repeat(`{"`+key+`":`, depth) + `0` + strings.Repeat("}", depth)
+	body := []byte(`{"value":` + nested + `}`)
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  error
+	}{
+		{"string", &struct {
+			Value string `json:"value"`
+		}{}, ErrInvalid},
+		{"any", &struct {
+			Value any `json:"value"`
+		}{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			err := Unmarshal(body, tc.value)
+			runtime.ReadMemStats(&after)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error: %v, want %v", err, tc.want)
+			}
+			allocated := after.TotalAlloc - before.TotalAlloc
+			limit := uint64(len(body)) * 64
+			t.Logf("body=%d allocated=%d limit=%d", len(body), allocated, limit)
+			if allocated > limit {
+				t.Errorf("allocated %d bytes for %d-byte body; limit %d", allocated, len(body), limit)
+			}
+		})
+	}
+}
+
+func TestDeepRepeatedKeyNamesTheFullPath(t *testing.T) {
+	const depth = 256
+	key := `a"b\c`
+	quoted := strconv.Quote(key)
+	body := `{"value":` + strings.Repeat(`{`+quoted+`:`, depth) + `{"duplicate":"secret-value","duplicate":"other"}` + strings.Repeat("}", depth) + `}`
+	var got struct {
+		Value any `json:"value"`
+	}
+	err := Unmarshal([]byte(body), &got)
+	want := `$["value"]` + strings.Repeat("["+quoted+"]", depth) + `["duplicate"]: ` + ErrRepeatedKey.Error()
+	if !errors.Is(err, ErrRepeatedKey) || err.Error() != want {
+		t.Fatalf("wrong error path: %v", err)
+	}
+}
 
 type customJSON struct{ Value string }
 

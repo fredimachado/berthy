@@ -42,7 +42,7 @@ func Unmarshal(data []byte, v any) error {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	if err := walk(dec, t, "$"); err != nil {
+	if err := walk(dec, t, nil); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(data, v); err != nil {
@@ -58,7 +58,7 @@ func Unmarshal(data []byte, v any) error {
 
 // fieldPath takes only names from the target type, never text supplied by an unmarshaler.
 func fieldPath(t reflect.Type, field string) string {
-	path := "$"
+	var path []string
 	for _, name := range strings.Split(field, ".") {
 		t = targetType(t)
 		for t != nil && (t.Kind() == reflect.Map || t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
@@ -75,10 +75,19 @@ func fieldPath(t reflect.Type, field string) string {
 		if !ok {
 			return "$"
 		}
-		path += "[" + fmt.Sprintf("%q", name) + "]"
+		path = append(path, name)
 		t = child
 	}
-	return path
+	return formatPath(path)
+}
+
+func formatPath(path []string) string {
+	var b strings.Builder
+	b.WriteByte('$')
+	for _, key := range path {
+		fmt.Fprintf(&b, "[%q]", key)
+	}
+	return b.String()
 }
 
 // targetType removes pointers, but preserves custom and interface values as opaque.
@@ -96,10 +105,10 @@ func targetType(t reflect.Type) reflect.Type {
 	return nil
 }
 
-func walk(dec *json.Decoder, typ reflect.Type, path string) error {
+func walk(dec *json.Decoder, typ reflect.Type, path []string) error {
 	tok, err := dec.Token()
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, ErrInvalid)
+		return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
 	}
 	typ = targetType(typ)
 	switch tok {
@@ -108,19 +117,19 @@ func walk(dec *json.Decoder, typ reflect.Type, path string) error {
 		if typ != nil && typ.Kind() == reflect.Struct {
 			fields, err = structFields(typ)
 			if err != nil {
-				return fmt.Errorf("%s: %w", path, err)
+				return fmt.Errorf("%s: %w", formatPath(path), err)
 			}
 		}
 		seen := make(map[string]bool)
 		for dec.More() {
 			keyToken, err := dec.Token()
 			if err != nil {
-				return fmt.Errorf("%s: %w", path, ErrInvalid)
+				return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
 			}
 			key := keyToken.(string)
-			childPath := path + "[" + fmt.Sprintf("%q", key) + "]"
+			childPath := append(path, key)
 			if seen[key] {
-				return fmt.Errorf("%s: %w", childPath, ErrRepeatedKey)
+				return fmt.Errorf("%s: %w", formatPath(childPath), ErrRepeatedKey)
 			}
 			seen[key] = true
 			var child reflect.Type
@@ -128,7 +137,7 @@ func walk(dec *json.Decoder, typ reflect.Type, path string) error {
 				var ok bool
 				child, ok = fields[key]
 				if !ok {
-					return fmt.Errorf("%s: %w", childPath, ErrUnknownKey)
+					return fmt.Errorf("%s: %w", formatPath(childPath), ErrUnknownKey)
 				}
 			} else if typ != nil && typ.Kind() == reflect.Map {
 				child = typ.Elem()
@@ -151,7 +160,7 @@ func walk(dec *json.Decoder, typ reflect.Type, path string) error {
 		_, err = dec.Token()
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, ErrInvalid)
+		return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
 	}
 	return nil
 }
