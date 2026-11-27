@@ -126,6 +126,13 @@ func (d *destroyDocker) ComposeContainers(context.Context, string) ([]engine.Com
 	return append([]engine.ComposeContainer(nil), d.project...), nil
 }
 
+func (d *destroyDocker) InspectContainer(ctx context.Context, id string) (engine.ContainerSnapshot, error) {
+	if id == "database" {
+		return runningComposeSnapshot(id), nil
+	}
+	return d.volumeDocker.InspectContainer(ctx, id)
+}
+
 func (d *destroyDocker) InspectVolume(context.Context, string) (string, map[string]string, error) {
 	return "local", nil, nil
 }

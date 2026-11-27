@@ -59,7 +59,7 @@ type fakeCompose struct {
 }
 
 // psRunning is `compose ps --all --format json` for one running container without a health check.
-const psRunning = `{"ExitCode":0,"Health":"","Service":"database","State":"running","Status":"Up 3 seconds"}`
+const psRunning = `{"ID":"database","ExitCode":0,"Health":"","Service":"database","State":"running","Status":"Up 3 seconds"}`
 
 // psRuns counts the ps polls of the deploy.
 func (f *fakeCompose) psRuns() int {
@@ -206,6 +206,28 @@ func (d *composeDocker) ProjectVolumes(context.Context, string) ([]string, error
 
 func (d *composeDocker) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {
 	return d.containers, nil
+}
+
+func (d *composeDocker) InspectContainer(_ context.Context, id string) (engine.ContainerSnapshot, error) {
+	snapshot := runningComposeSnapshot(id)
+	switch id {
+	case "database", "job-running", workerID:
+	case "web":
+		snapshot.Health = "healthy"
+	case "web-starting":
+		snapshot.Health = "starting"
+	case "job":
+		zero := 0
+		snapshot.State, snapshot.Running, snapshot.Health, snapshot.ExitCode = "exited", false, "", &zero
+	default:
+		return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
+	}
+	return snapshot, nil
+}
+
+func runningComposeSnapshot(id string) engine.ContainerSnapshot {
+	zero := 0
+	return engine.ContainerSnapshot{ID: id, State: "running", Running: true, Health: "none", RestartCount: &zero}
 }
 
 func (d *composeDocker) VolumeExists(_ context.Context, name string) (bool, error) {
