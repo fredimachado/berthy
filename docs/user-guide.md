@@ -444,7 +444,9 @@ Setup removes the selected entry from `agent.json` and briefly restarts the shar
 
 An unused environment network is removed. A network still used by a container or service is reported as kept. If setup cannot establish that Docker is already running, it stops instead of opening the Docker socket. After server cleanup, setup removes a local context it can verify belongs to the selected server. If the address is ambiguous, such as a loopback URL through an SSH tunnel, setup keeps the entry and prints the explicit context removal command. If the local write fails, retry the same removal to finish the update.
 
-If the live configuration changes before removal was activated and the pair is still hosted, setup checks it again and starts a fresh removal. If the configuration changes after activation, setup names the pending record under `/etc/berthy` and stops. Keep that record. Retry with the verified post-removal configuration if it is safe to restore, or use the recorded identities to finish cleanup manually before deleting the record.
+If the live configuration changes before removal was activated and the pair is still hosted, setup checks the recorded resource identities before refreshing the removal record. If a resource was replaced, setup stops and names the record. On the server, verify the pair is still hosted and identify its files and network. If you intend to remove the current resources, move the record to a secure backup before retrying.
+
+If the configuration changes after activation, setup names the pending record under `/etc/berthy` and stops. Keep that record. Retry with the verified post-removal configuration if it is safe to restore, or use the recorded identities to finish cleanup manually before deleting the record.
 
 To delete an OS-stored token too, run `berthy context remove --project todo -e prod --delete-token` **after destroy and before setup removal**, while the context still identifies the stored credential. Include the same `--config` flag if you used one. Setup removal can finish when the local entry is already gone.
 

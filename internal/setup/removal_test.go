@@ -26,6 +26,7 @@ type removalRunner struct {
 	restartCode, recoveryCode   int
 	recordConfirmationErr       bool
 	daemonCode, pathsCode       int
+	appliedAppsCode             int
 	failTimer, restoreScheduled bool
 	onSwap                      func()
 	stateClean, networkGone     bool
@@ -84,7 +85,7 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 			return Result{Code: 3}, nil
 		}
 		return result(r.guard + "\n")
-	case strings.HasPrefix(script, "# recover orphaned removal guard\n"):
+	case strings.HasPrefix(script, "# check for orphaned removal guard\n"):
 		if r.restoreScheduled || r.guard != "pending" || !strings.Contains(script, shellQuote(configDigest(r.live))) {
 			return Result{Code: 1}, nil
 		}
@@ -97,7 +98,7 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 		if !strings.Contains(script, "'/custom/target/state'") {
 			r.t.Fatalf("probe did not use configured state: %q", script)
 		}
-		return result("empty\n")
+		return Result{Code: r.appliedAppsCode, Stdout: []byte("empty\n")}, nil
 	case strings.HasPrefix(script, "# inspect removal paths\n"):
 		return Result{Code: r.pathsCode, Stdout: []byte(r.paths)}, nil
 	case strings.HasPrefix(script, "# verify removal Docker service\n"):

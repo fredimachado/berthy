@@ -327,7 +327,9 @@ It ends by printing the next steps: keep the key copy setup saved and store anot
 
 Removal stages only the reduced agent configuration and preserves the exact bytes of every surviving hosted entry. It restarts the shared service under the activation guard and starts cleanup only after confirmation. A pending removal record ties recovery to the configuration digests and filesystem identities. Retry uses those identities and refuses a replacement directory or key.
 
-If the live configuration changes while the record is still unactivated and still hosts the pair, a new removal replaces the stale record after preflight succeeds. If the configuration changes after activation, setup refuses to proceed and names the pending record. Keep it until the verified post-removal configuration can be restored safely for a retry, or until manual cleanup using the recorded identities is complete.
+If the live configuration changes while the record is still unactivated and still hosts the pair, removal refreshes the stale record only after preflight verifies the recorded paths and resource identities. A replacement blocks the retry. To retire the old record, verify the pair is still hosted and identify its current files and network, then move the record to a secure backup before retrying if you intend to remove those resources.
+
+If the configuration changes after activation, setup refuses to proceed and names the pending record. Keep it until the verified post-removal configuration can be restored safely for a retry, or until manual cleanup using the recorded identities is complete.
 
 By default, removal archives the closed state at `<state_dir>.removed-<UTC timestamp>` and reports the path. `--purge` deletes that removal's state. The server key and its rotation files are removed in either case. Earlier archives and operator key copies are preserved. Recovering encrypted values from an archive requires the matching saved key. A configured overlay is removed by its verified ID only if unused. Removal reports a referenced network as kept and refuses to open a socket when it cannot verify that its Docker daemon is running.
 

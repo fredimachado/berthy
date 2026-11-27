@@ -67,6 +67,7 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 		return "", "", err
 	}
 	generation := configDigest(s.existingRaw)
+	refreshRecord := false
 	if pending != nil {
 		switch {
 		case generation == pending.CandidateSHA:
@@ -80,13 +81,13 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 			if s.hosted() == nil {
 				return "", "", errors.New("the agent configuration changed since this removal started")
 			}
-			pending = nil
+			refreshRecord = true
 		case purge != (pending.Archive == ""):
 			return "", "", errors.New("this removal was started with a different purge choice")
 		}
 	}
 	if guard, err := settledRemovalGuard(ctx, s.R); err != nil {
-		if guard != "pending" || pending == nil || !recoverOrphanedRemovalGuard(ctx, s, pending.OriginalSHA) {
+		if guard != "pending" || pending == nil || !orphanedRemovalGuard(ctx, s.R, pending.OriginalSHA) {
 			return "", "", err
 		}
 	}
@@ -97,21 +98,21 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 	rec := removal{ID: id, StateDir: target.StateDir, KeyFile: target.KeyFile, Network: target.Network,
 		OriginalSHA: generation, CandidateSHA: configDigest(candidate)}
 	if !purge {
-		if pending == nil {
+		if pending == nil || refreshRecord {
 			rec.Archive = rec.StateDir + ".removed-" + s.Opts.now().Format(removalTime)
 		} else {
 			rec.Archive = pending.Archive
 		}
 	}
-	if pending != nil && !sameRemovalTarget(rec, *pending) {
-		return "", "", errors.New("the removal record does not match the selected configuration")
+	if pending != nil && (!sameRemovalTarget(rec, *pending) || !refreshRecord && rec.CandidateSHA != pending.CandidateSHA) {
+		return "", "", retireRemovalRecord(id, "the removal record does not match the selected configuration")
 	}
 	rec, err = inspectRemovalPaths(ctx, s.R, rec, *cfg)
 	if err != nil {
 		return "", "", err
 	}
 	if pending != nil && !sameRemovalFiles(rec, *pending) {
-		return "", "", errors.New("the removal file identities changed since this removal started")
+		return "", "", retireRemovalRecord(id, "the removal file identities changed since this removal started")
 	}
 	if err := requireNoAppliedApps(ctx, s.R, id, rec.StateDir); err != nil {
 		return "", "", err
@@ -129,14 +130,14 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 		s.removalNetwork = &network
 	}
 	if pending != nil && rec.NetworkID != pending.NetworkID {
-		return "", "", errors.New("the configured Docker network changed since this removal started")
+		return "", "", retireRemovalRecord(id, "the configured Docker network changed since this removal started")
 	}
 	if local, err := agentclient.ConfigPath(s.Opts.CLIConfig); err == nil {
 		if _, err := ReadCLIConfig(local); err != nil {
 			return "", "", err
 		}
 	}
-	if pending == nil && !s.DryRun {
+	if (pending == nil || refreshRecord) && !s.DryRun {
 		if err := writeRemovalRecord(ctx, s.R, rec); err != nil {
 			return "", "", err
 		}
@@ -147,8 +148,11 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 }
 
 func sameRemovalTarget(a, b removal) bool {
-	return a.ID == b.ID && a.StateDir == b.StateDir && a.KeyFile == b.KeyFile && a.Network == b.Network &&
-		a.OriginalSHA == b.OriginalSHA && a.CandidateSHA == b.CandidateSHA
+	return a.ID == b.ID && a.StateDir == b.StateDir && a.KeyFile == b.KeyFile && a.Network == b.Network
+}
+
+func retireRemovalRecord(id scope.ID, reason string) error {
+	return fmt.Errorf("%s. On the server, verify the pair is still hosted and identify which files and network belong to it. If you intend to remove the current resources, move the record aside from %s to a secure backup before retrying", reason, removalRecordPath(id))
 }
 
 func sameRemovalFiles(a, b removal) bool {
@@ -173,8 +177,8 @@ func settledRemovalGuard(ctx context.Context, r Runner) (string, error) {
 }
 
 // The swap holds this same lock from the pending write through timer registration and the configuration swap.
-func recoverOrphanedRemovalGuard(ctx context.Context, s *Session, original string) bool {
-	script := "# recover orphaned removal guard\nset -eu\n" + removalStat +
+func orphanedRemovalGuard(ctx context.Context, r Runner, original string) bool {
+	script := "# check for orphaned removal guard\nset -eu\n" + removalStat +
 		"exec 9<" + shellQuote(guardLock) + "\nflock -n 9\n" +
 		"state=" + shellQuote(guardState) + "\nstat_entry \"$state\"\n" +
 		"case \"$entry\" in *\" 0 600 1 regular file\") ;; *) exit 1;; esac\n" +
@@ -185,10 +189,7 @@ func recoverOrphanedRemovalGuard(ctx context.Context, s *Session, original strin
 		"[ -z \"$units\" ]\n" +
 		"jobs=$(systemctl list-jobs --plain --no-legend --no-pager)\n" +
 		"printf '%s\\n' \"$jobs\" | awk '$2 == \"" + guardUnit + ".timer\" || $2 == \"" + guardUnit + ".service\" { found = 1 } END { exit found }'\n"
-	if !s.DryRun {
-		script += "rm -- " + shellQuote(guardState) + "\n"
-	}
-	res, err := s.R.Run(ctx, script, nil)
+	res, err := r.Run(ctx, script, nil)
 	return err == nil && res.Code == 0 && len(res.Stdout) == 0 && len(res.Stderr) == 0
 }
 
