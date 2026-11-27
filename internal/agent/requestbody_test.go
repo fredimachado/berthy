@@ -18,6 +18,12 @@ import (
 	"berthy/internal/state"
 )
 
+type commandPlanRestorer struct{ deploy.VolumeRestorer }
+
+func (commandPlanRestorer) CheckRestoreCommand(_ context.Context, key string) (deploy.RestorePlan, error) {
+	return deploy.RestorePlan{Key: key, Backup: "command", App: "api"}, nil
+}
+
 func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 	rows := gateRows(t, false)
 	fields := map[string]string{"deploy": "image", "rollback": "image", "restart": "roles", "scale": "roles", "exec": "exec", "run": "command", "prune": "roles", "remove": "remove", "destroy": "destroy", "restore": "restore", "apply": "changes", "ingress apply": "ingress", "secret set": "action", "secret delete": "action", "secret import": "action", "secret generate": "action", "secret generate declared": "action", "lock acquire": "action", "lock release": "action", "recovery resolve": "resolved", "cancel": "accepted"}
@@ -168,6 +174,61 @@ func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 				t.Errorf("%s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
 			}
 		}
+	})
+	t.Run("restore command map", func(t *testing.T) {
+		row := rows["restore"]
+		f := row.fixture(t)
+		row.setup(f)
+		f.ctrl.Restorer = commandPlanRestorer{f.ctrl.Restorer}
+		body := map[string]any{"key": "backup.gz", "app": "api", "service": "", "role": "web", "command": []string{"cat"}, "timeout": "", "dry_run": true, "request_id": "r"}
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := f.call("POST", "/restore", apAdminToken, string(b))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"restore":`) {
+			t.Fatalf("restore command: %d %s", w.Code, w.Body.String())
+		}
+	})
+	for _, kind := range []string{"restart", "rollback"} {
+		t.Run("tui execute/"+kind, func(t *testing.T) {
+			row := rows[kind]
+			f := row.fixture(t)
+			row.setup(f)
+			body := map[string]any{"app": "api", "request_id": "r", "dry_run": false}
+			if kind == "restart" {
+				body["role"] = "web"
+			} else {
+				body["target_release"] = 1
+			}
+			b, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := f.call("POST", row.path, apAdminToken, string(b))
+			var result struct {
+				ID string `json:"operation_id"`
+			}
+			if w.Code != 202 || json.Unmarshal(w.Body.Bytes(), &result) != nil || result.ID == "" {
+				t.Fatalf("execute: %d %s", w.Code, w.Body.String())
+			}
+			if stream := f.waitTerminal(result.ID); !strings.Contains(stream, "event: terminal") {
+				t.Fatalf("terminal: %s", stream)
+			}
+		})
+	}
+	t.Run("cancel map", func(t *testing.T) {
+		f := newApprovalFixture(t, false, nil)
+		id, _ := runningRun(t, f)
+		body, err := json.Marshal(map[string]any{"dry_run": false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := f.call("POST", "/operations/"+id+"/cancel", apAdminToken, string(body))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"accepted":true`) {
+			t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+		}
+		f.waitTerminal(id)
 	})
 }
 
