@@ -6,7 +6,9 @@
 #   - a deploy over it: it ends promptly and clears the warning (the health wait reacts to the container's events);
 #   - a container of a Compose service killed: its down check names the exit code at once, still unconfirmed (die event);
 #   - a Compose service that keeps dying and that Docker keeps starting again: its restart check warns, and the chat hears of
-#     it (die events; each one gives the monitor the restart count it needs to see growth).
+#     it (die events; each one gives the monitor the restart count it needs to see growth);
+#   - an agent restart while that loop continues: the restart check turns unknown while it warms up, and the chat gets no
+#     false recovery.
 # The checks decide as before; the events only make them run early. The out-of-memory kill (oom event) is covered by a unit
 # test: the WSL kernel of the harness gives a container swap, so a memory limit makes it swap instead of dying.
 set -uo pipefail
@@ -135,5 +137,22 @@ text=$(tg_messages | jq -r '[.[] | select(.text | contains("restarted "))][0].te
 echo "  message: $(printf '%s' "$text" | tr '\n' '|')"
 expect_contains "the chat heard of the restart loop" "$text" "$ENVN $loop: a replica restarted "
 expect_contains "the alert gives the window" "$text" " times in 10 minutes"
+
+# 5. An agent restart while the loop continues must not send a false recovery: the watch answers unknown until it has
+# watched for one restart window again.
+tg_reset
+stop_agent
+start_agent >/dev/null 2>&1; code=$?
+expect_code "the agent restarts while the crash loop continues" 0 "$code"
+took=$(wait_check "$loop" detail "watching restarts since agent start" 45); code=$?
+if [ "$code" -eq 0 ]; then pass "the restart check warmed up as unknown $took s after the agent restart"; else fail "the restart check warmed up as unknown within 45s of the agent restart" "$(adm checks 2>&1)"; fi
+expect_eq "the restart check is unknown during warm-up" "unknown" "$(check_field "$loop" state)"
+out=$(adm doctor 2>&1)
+expect_contains "doctor shows the warm-up detail" "$out" "watching restarts since agent start"
+for _ in $(seq 1 10); do
+  [ "$(tg_messages | jq -r '[.[] | select(.text | contains("recovered"))] | length')" -ge 1 ] && break
+  sleep 1
+done
+expect_eq "no recovery reaches the chat during warm-up" 0 "$(tg_messages | jq -r '[.[] | select(.text | contains("recovered"))] | length')"
 
 finish
