@@ -147,8 +147,9 @@ expect_code "the agent restarts while the crash loop continues" 0 "$code"
 took=$(wait_check "$loop" detail "watching restarts since agent start" 45); code=$?
 if [ "$code" -eq 0 ]; then pass "the restart check warmed up as unknown $took s after the agent restart"; else fail "the restart check warmed up as unknown within 45s of the agent restart" "$(adm checks 2>&1)"; fi
 expect_eq "the restart check is unknown during warm-up" "unknown" "$(check_field "$loop" state)"
-out=$(adm doctor 2>&1)
-expect_contains "doctor shows the warm-up detail" "$out" "watching restarts since agent start"
+# Restart-loop conditions show in berthy checks (doctor does not list them).
+out=$(adm checks 2>&1)
+expect_contains "checks shows the warm-up detail" "$out" "watching restarts since agent start"
 for _ in $(seq 1 10); do
   [ "$(tg_messages | jq -r '[.[] | select(.text | contains("recovered"))] | length')" -ge 1 ] && break
   sleep 1
