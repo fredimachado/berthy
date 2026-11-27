@@ -18,7 +18,8 @@ import (
 	"unicode/utf8"
 )
 
-const maxComposeOutput = 1 << 20
+// MaxComposeOutput is the byte limit for Compose output, excluding stderr's extra byte of context.
+const MaxComposeOutput = 1 << 20
 
 // composeProject matches the project names the Compose CLI accepts.
 var composeProject = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
@@ -49,17 +50,15 @@ type boundedBuffer struct {
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	if room := b.max - b.buf.Len(); room > 0 {
-		if len(p) > room {
-			p = p[:room]
-		}
-		b.buf.Write(p)
+		b.buf.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
 }
 
 // Run executes `<Command> -p <Project> --project-directory <Dir> -f <Dir>/compose.yaml --env-file <Dir>/.env <Args...>`
 // with a minimal environment: PATH, HOME set to Dir, DOCKER_HOST, COMPOSE_STATUS_STDOUT and DOCKER_CONFIG when set.
-// Each stream keeps at most 1 MiB. Errors never include the environment file or the command output.
+// Stdout keeps its first MaxComposeOutput bytes. Stderr keeps its last MaxComposeOutput+1 bytes so callers can detect
+// truncation and use the extra byte as context. Errors never include the environment file or the command output.
 // The command runs in its own process group. Cancelling ctx kills the whole group, and on Linux the command also
 // dies with the agent, so a Compose CLI never outlives the agent that started it.
 func (c Compose) Run(ctx context.Context, r ComposeRun) (stdout, stderr []byte, err error) {
@@ -84,20 +83,22 @@ func (c Compose) Run(ctx context.Context, r ComposeRun) (stdout, stderr []byte, 
 		cmd.Env = append(cmd.Env, "DOCKER_CONFIG="+r.DockerConfig)
 	}
 	cmd.WaitDelay = 10 * time.Second
-	var out, errOut boundedBuffer
-	out.max, errOut.max = maxComposeOutput, maxComposeOutput
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err = cmd.Run(); err != nil {
+	out := boundedBuffer{max: MaxComposeOutput}
+	errOut := NewTailBuffer(MaxComposeOutput + 1)
+	cmd.Stdout, cmd.Stderr = &out, errOut
+	err = cmd.Run()
+	stdout, stderr = out.buf.Bytes(), errOut.bytes()
+	if err != nil {
 		if ctx.Err() != nil {
-			return out.buf.Bytes(), errOut.buf.Bytes(), ctx.Err()
+			return stdout, stderr, ctx.Err()
 		}
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return out.buf.Bytes(), errOut.buf.Bytes(), fmt.Errorf("compose exited with status %d", exit.ExitCode())
+			return stdout, stderr, fmt.Errorf("compose exited with status %d", exit.ExitCode())
 		}
-		return out.buf.Bytes(), errOut.buf.Bytes(), errors.New("compose could not run")
+		return stdout, stderr, errors.New("compose could not run")
 	}
-	return out.buf.Bytes(), errOut.buf.Bytes(), nil
+	return stdout, stderr, nil
 }
 
 // Version runs the Compose CLI's version command with HOME set to home, as the agent runs it, and returns the first

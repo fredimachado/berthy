@@ -2,8 +2,10 @@
 package scope
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -55,6 +57,34 @@ func Parse(s string) (ID, error) {
 
 // Slug is project.environment, for the names of Berthy's own containers. Neither part may contain a dot.
 func (id ID) Slug() string { return id.Project + "." + id.Environment }
+
+const tokenHexDigits = "0123456789abcdef"
+const tokenHexLength = 64
+
+func (id ID) tokenPrefix() string { return "bty." + id.Slug() + "." }
+
+// TokenExpression matches an issued bearer token for this environment without anchoring it to the input.
+func (id ID) TokenExpression() string {
+	return regexp.QuoteMeta(id.tokenPrefix()) + "[" + tokenHexDigits + "]{" + strconv.Itoa(tokenHexLength) + "}"
+}
+
+// TokenSuffixOverlap returns the longest proper suffix of a possible token at the start of data. A truncated stream may
+// start inside either the scope prefix or the hex payload.
+func (id ID) TokenSuffixOverlap(data []byte) int {
+	prefix := id.tokenPrefix()
+	size := len(prefix) + tokenHexLength
+	for cut := max(1, size-len(data)); cut < size; cut++ {
+		fixed := prefix[min(cut, len(prefix)):]
+		if !bytes.HasPrefix(data, []byte(fixed)) {
+			continue
+		}
+		n := size - cut
+		if bytes.IndexFunc(data[len(fixed):n], func(r rune) bool { return !strings.ContainsRune(tokenHexDigits, r) }) < 0 {
+			return n
+		}
+	}
+	return 0
+}
 
 // APIPath is the hosted environment's API prefix, with the names as they are.
 func (id ID) APIPath() string {

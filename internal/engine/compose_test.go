@@ -1,14 +1,18 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+const composeStderrEnd = "final stderr error\xff\n"
 
 // TestComposeHelperProcess is the fake Compose CLI the runner tests execute. It runs only when the sentinel argument is
 // present, and reports the arguments and environment it received as JSON.
@@ -29,6 +33,15 @@ func TestComposeHelperProcess(t *testing.T) {
 		os.Stdout.WriteString("Docker Compose version v9.9.9\nsecond line\n")
 	case contains(rest, "fail"):
 		os.Stderr.WriteString("password=SECRET-VALUE")
+		os.Exit(3)
+	case contains(rest, "fail-with-stderr"):
+		size, err := strconv.Atoi(rest[len(rest)-1])
+		if err != nil || size < len(composeStderrEnd) {
+			os.Exit(2)
+		}
+		os.Stdout.WriteString("stdout marker\n")
+		os.Stderr.WriteString(strings.Repeat("ab", size/2)[:size-len(composeStderrEnd)])
+		os.Stderr.WriteString(composeStderrEnd)
 		os.Exit(3)
 	case contains(rest, "flood"):
 		os.Stdout.Write([]byte(strings.Repeat("a", 2<<20)))
@@ -117,13 +130,53 @@ func TestComposeRunErrorNeverCarriesOutput(t *testing.T) {
 	}
 }
 
+func TestComposeRunKeepsFinalStderrOnFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int
+		keep int
+	}{
+		{"at_limit", MaxComposeOutput, MaxComposeOutput},
+		{"one_over", MaxComposeOutput + 1, MaxComposeOutput + 1},
+		{"more_than_two_windows", 2*MaxComposeOutput + 6, MaxComposeOutput + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, stderr, err := helperCompose().Run(context.Background(), ComposeRun{
+				Project: "shop-db", Dir: t.TempDir(), Args: []string{"fail-with-stderr", strconv.Itoa(tc.size)},
+			})
+			if err == nil || err.Error() != "compose exited with status 3" {
+				t.Fatalf("error %v", err)
+			}
+			if string(out) != "stdout marker\n" {
+				t.Fatalf("stdout %q", out)
+			}
+			if len(stderr) != tc.keep {
+				t.Errorf("stderr kept %d bytes, want %d", len(stderr), tc.keep)
+			}
+			raw := strings.Repeat("ab", tc.size/2)[:tc.size-len(composeStderrEnd)] + composeStderrEnd
+			if !bytes.Equal(stderr, []byte(raw[tc.size-tc.keep:])) {
+				t.Error("stderr does not match the raw suffix ending in the final error")
+			}
+		})
+	}
+}
+
+func TestBoundedBufferConsumesWriteAcrossLimit(t *testing.T) {
+	b := boundedBuffer{max: 2}
+	b.Write([]byte("a"))
+	n, err := b.Write([]byte("bcd"))
+	if n != 3 || err != nil || b.buf.String() != "ab" {
+		t.Fatalf("write returned %d, %v and kept %q, want 3, nil and ab", n, err, b.buf.String())
+	}
+}
+
 func TestComposeRunCapsEachStream(t *testing.T) {
 	out, _, err := helperCompose().Run(context.Background(), ComposeRun{Project: "shop-db", Dir: t.TempDir(), Args: []string{"flood"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != maxComposeOutput {
-		t.Fatalf("stdout kept %d bytes, want %d", len(out), maxComposeOutput)
+	if len(out) != MaxComposeOutput {
+		t.Fatalf("stdout kept %d bytes, want %d", len(out), MaxComposeOutput)
 	}
 }
 
