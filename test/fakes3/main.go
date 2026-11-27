@@ -42,17 +42,23 @@ type failRule struct {
 	status int
 }
 
+// hold makes requests for op wait until it is released. A new arm releases the previous hold.
+type hold struct {
+	op      string
+	release chan struct{} // closed by clearHold or by the next arm
+	entered chan struct{} // closed when the first matching request starts waiting
+	once    sync.Once
+	waiting int // guarded by fake.mu
+}
+
 type fake struct {
 	bucket  string
 	backend *s3mem.Backend
 	s3      http.Handler
 
-	mu          sync.Mutex
-	holdCond    *sync.Cond
-	rule        *failRule
-	holdOp      string
-	holdCh      chan struct{} // closed by DELETE /_fake/hold; nil when no hold is armed
-	holdWaiting int           // requests blocked in waitHold for the armed op
+	mu   sync.Mutex
+	rule *failRule
+	hold *hold // nil when no hold is armed
 }
 
 func newFake(bucket string) (*fake, error) {
@@ -60,9 +66,7 @@ func newFake(bucket string) (*fake, error) {
 	if err := backend.CreateBucket(bucket); err != nil {
 		return nil, err
 	}
-	f := &fake{bucket: bucket, backend: backend, s3: gofakes3.New(backend).Server()}
-	f.holdCond = sync.NewCond(&f.mu)
-	return f, nil
+	return &fake{bucket: bucket, backend: backend, s3: gofakes3.New(backend).Server()}, nil
 }
 
 func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,30 +89,30 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.s3.ServeHTTP(w, r)
 }
 
-// waitHold blocks while a hold is armed for op. The mutex is not held across the wait, so DELETE /_fake/hold can release it.
-// holdWaiting counts requests inside the wait so GET /_fake/hold and tests can see that a match is blocked before the S3 handler runs.
+// waitHold blocks while a hold is armed for op. It captures that hold so a later arm's waiter
+// count is separate. The mutex is not held across the wait, so DELETE /_fake/hold can release it.
 func (f *fake) waitHold(op string) {
 	f.mu.Lock()
-	ch, holdOp := f.holdCh, f.holdOp
-	if ch == nil || holdOp != op {
+	h := f.hold
+	if h == nil || h.op != op {
 		f.mu.Unlock()
 		return
 	}
-	f.holdWaiting++
-	f.holdCond.Broadcast()
+	h.waiting++
+	h.once.Do(func() { close(h.entered) })
+	release := h.release
 	f.mu.Unlock()
-	<-ch
+	<-release
 	f.mu.Lock()
-	f.holdWaiting--
-	f.holdCond.Broadcast()
+	h.waiting--
 	f.mu.Unlock()
 }
 
-// waiting is how many matching requests are blocked in waitHold.
-func (f *fake) waiting() int {
+// currentHold is the armed hold, or nil. Tests synchronize on its entered channel.
+func (f *fake) currentHold() *hold {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.holdWaiting
+	return f.hold
 }
 
 // s3Op names the operation a request performs when it is one that a failure can be injected into, and is empty otherwise.
@@ -182,7 +186,11 @@ func (f *fake) control(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			f.mu.Lock()
-			view := holdView{Op: f.holdOp, Waiting: f.holdWaiting}
+			view := holdView{}
+			if f.hold != nil {
+				view.Op = f.hold.op
+				view.Waiting = f.hold.waiting
+			}
 			f.mu.Unlock()
 			writeJSON(w, view, nil)
 		case http.MethodPost:
@@ -259,11 +267,14 @@ func (f *fake) setHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
-	if f.holdCh != nil {
-		close(f.holdCh)
+	if f.hold != nil {
+		close(f.hold.release)
 	}
-	f.holdOp = req.Op
-	f.holdCh = make(chan struct{})
+	f.hold = &hold{
+		op:      req.Op,
+		release: make(chan struct{}),
+		entered: make(chan struct{}),
+	}
 	f.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -271,11 +282,9 @@ func (f *fake) setHold(w http.ResponseWriter, r *http.Request) {
 func (f *fake) clearHold() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.holdCh != nil {
-		close(f.holdCh)
-		f.holdCh = nil
-		f.holdOp = ""
-		f.holdCond.Broadcast()
+	if f.hold != nil {
+		close(f.hold.release)
+		f.hold = nil
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -48,34 +47,50 @@ func startFakeTCP(t *testing.T) (*fake, string) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: f}
-	// LIFO: clear the hold before closing so a blocked UploadPart does not outlive the listener.
+	// Runs before registerWorkerJoin (LIFO). Release so waitHold returns, then close the server.
 	t.Cleanup(func() {
+		f.clearHold()
 		srv.Close()
 		ln.Close()
 	})
-	t.Cleanup(f.clearHold)
 	go srv.Serve(ln)
 	return f, "http://" + ln.Addr().String()
 }
 
-// waitHoldEntered waits until a matching request is blocked in waitHold, or fails if done finishes first
-// (which is what happens when waitHold is removed).
-func waitHoldEntered(t *testing.T, f *fake, done <-chan error) {
+// workerJoin receives the worker's one result. Register it before startFakeTCP so LIFO joins
+// after the hold is released and the server is closed. Bind the channel after the worker starts;
+// if the test fails before that, done stays nil and join is a no-op.
+type workerJoin struct {
+	done chan error
+	took bool
+}
+
+func registerWorkerJoin(t *testing.T) *workerJoin {
 	t.Helper()
-	entered := make(chan struct{})
-	go func() {
-		f.mu.Lock()
-		for f.holdWaiting < 1 {
-			f.holdCond.Wait()
+	j := &workerJoin{}
+	t.Cleanup(func() {
+		if j.done != nil && !j.took {
+			<-j.done
 		}
-		f.mu.Unlock()
-		close(entered)
-	}()
-	select {
-	case <-entered:
-	case err := <-done:
-		t.Fatalf("upload finished without entering hold: %v", err)
+	})
+	return j
+}
+
+func (j *workerJoin) bind(done chan error) { j.done = done }
+
+func (j *workerJoin) take() error {
+	err := <-j.done
+	j.took = true
+	return err
+}
+
+// do is for worker goroutines: it must not call t.Fatal, which would exit without signalling.
+func do(method, url, body string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
+	return http.DefaultClient.Do(req)
 }
 
 func holdWaitingAt(t *testing.T, base string) holdView {
@@ -186,9 +201,14 @@ func TestTransientServerErrorIsRetriedByTheClient(t *testing.T) {
 }
 
 func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
+	j := registerWorkerJoin(t)
 	f, base := startFakeTCP(t)
 	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("arm hold: %d", resp.StatusCode)
+	}
+	h := f.currentHold()
+	if h == nil {
+		t.Fatal("hold was not armed")
 	}
 	s, err := objectstore.New(objectstore.Config{Endpoint: base, Bucket: testBucket, AccessKey: testAccessKey, SecretKey: testSecretKey})
 	if err != nil {
@@ -196,12 +216,19 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
+		var err error
+		defer func() { done <- err }()
 		src := bytes.Repeat([]byte("h"), 20<<20)
-		_, err := s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
-		done <- err
+		_, err = s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
 	}()
+	j.bind(done)
 	// Synchronize on UploadPart entering waitHold, not on CreateMultipartUpload (which happens before the hold).
-	waitHoldEntered(t, f, done)
+	select {
+	case <-h.entered:
+	case err := <-done:
+		j.took = true
+		t.Fatalf("upload finished without entering hold: %v", err)
+	}
 	if view := holdWaitingAt(t, base); view.Waiting < 1 || view.Op != "UploadPart" {
 		t.Fatalf("hold view while blocked: %+v", view)
 	}
@@ -211,13 +238,14 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 	}
 	select {
 	case err := <-done:
+		j.took = true
 		t.Fatalf("upload finished while held: %v", err)
 	default:
 	}
 	if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("clear hold: %d", resp.StatusCode)
 	}
-	if err := <-done; err != nil {
+	if err := j.take(); err != nil {
 		t.Fatalf("upload after release: %v", err)
 	}
 	if objs := objectsAt(t, base, ""); len(objs) != 1 || objs[0]["key"] != "held.bin" {
@@ -226,6 +254,7 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 }
 
 func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
+	j := registerWorkerJoin(t)
 	f, base := startFakeTCP(t)
 	for _, body := range []string{
 		`{"op":"HeadBucket"}`,
@@ -239,38 +268,91 @@ func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
 	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("arm hold: %d", resp.StatusCode)
 	}
-	// Non-matching ops must finish without entering the hold. If a regression held them, waiting
-	// would rise and this fails instead of hanging on the blocked request.
+	h := f.currentHold()
+	if h == nil {
+		t.Fatal("hold was not armed")
+	}
+	// Non-matching ops must finish without entering the hold. If a regression held them, entered
+	// fires and this fails instead of hanging on the blocked request.
 	done := make(chan error, 1)
 	go func() {
-		put := send(t, http.MethodPut, base+"/"+testBucket+"/other.txt", "ok")
+		var err error
+		defer func() { done <- err }()
+		put, err := do(http.MethodPut, base+"/"+testBucket+"/other.txt", "ok")
+		if err != nil {
+			return
+		}
+		defer put.Body.Close()
 		if put.StatusCode != http.StatusOK {
-			done <- fmt.Errorf("seed put: %d", put.StatusCode)
+			err = fmt.Errorf("seed put: %d", put.StatusCode)
 			return
 		}
-		got := send(t, http.MethodGet, base+"/"+testBucket+"/other.txt", "")
+		got, err := do(http.MethodGet, base+"/"+testBucket+"/other.txt", "")
+		if err != nil {
+			return
+		}
+		defer got.Body.Close()
 		if got.StatusCode != http.StatusOK {
-			done <- fmt.Errorf("GetObject under UploadPart hold: %d", got.StatusCode)
+			err = fmt.Errorf("GetObject under UploadPart hold: %d", got.StatusCode)
 			return
 		}
-		done <- nil
 	}()
-	for {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
-				t.Fatalf("clear: %d", resp.StatusCode)
-			}
-			return
-		default:
-			if f.waiting() >= 1 {
-				t.Fatal("a non-matching request is waiting in the UploadPart hold")
-			}
-			runtime.Gosched()
+	j.bind(done)
+	select {
+	case <-h.entered:
+		t.Fatal("a non-matching request entered the UploadPart hold")
+	case err := <-done:
+		j.took = true
+		if err != nil {
+			t.Fatal(err)
 		}
+	}
+}
+
+func TestArmingASecondHoldReportsOnlyTheNewWaiters(t *testing.T) {
+	j := registerWorkerJoin(t)
+	f, base := startFakeTCP(t)
+	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("arm hold: %d", resp.StatusCode)
+	}
+	h1 := f.currentHold()
+	if h1 == nil {
+		t.Fatal("hold was not armed")
+	}
+	s, err := objectstore.New(objectstore.Config{Endpoint: base, Bucket: testBucket, AccessKey: testAccessKey, SecretKey: testSecretKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		var err error
+		defer func() { done <- err }()
+		src := bytes.Repeat([]byte("h"), 20<<20)
+		_, err = s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
+	}()
+	j.bind(done)
+	select {
+	case <-h1.entered:
+	case err := <-done:
+		j.took = true
+		t.Fatalf("upload finished without entering hold: %v", err)
+	}
+	if view := holdWaitingAt(t, base); view.Op != "UploadPart" || view.Waiting < 1 {
+		t.Fatalf("hold view while blocked: %+v", view)
+	}
+	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"PutObject"}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("re-arm: %d", resp.StatusCode)
+	}
+	h2 := f.currentHold()
+	if h2 == nil || h2 == h1 {
+		t.Fatalf("re-arm should install a new hold, got %v after %v", h2, h1)
+	}
+	view := holdWaitingAt(t, base)
+	if view.Op != "PutObject" {
+		t.Fatalf("GET op after re-arm: %+v", view)
+	}
+	if view.Waiting != 0 {
+		t.Fatalf("GET waiting after re-arm reports leftover waiters: %+v", view)
 	}
 }
 
