@@ -18,7 +18,7 @@ func TestRemovalRejectsUnsafePathsBeforeStaging(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("uses Linux stat and mount information")
 	}
-	for _, name := range []string{"disjoint", "archive exists", "destination overlaps peer", "peer alias overlaps", "target alias", "purge crosses mount", "unreadable key stat"} {
+	for _, name := range []string{"disjoint", "archive exists", "destination overlaps peer", "peer alias overlaps", "ambiguous peer alias", "target alias", "purge crosses mount", "unreadable key stat"} {
 		t.Run(name, func(t *testing.T) {
 			root, tools := shellFixture(t)
 			stateDir := filepath.Join(root, "custom", "state")
@@ -60,6 +60,9 @@ func TestRemovalRejectsUnsafePathsBeforeStaging(t *testing.T) {
 			case "peer alias overlaps":
 				peerDir = filepath.Join(root, "peer-link")
 				link(peerDir, stateDir)
+			case "ambiguous peer alias":
+				peerDir = filepath.Join(root, "peer-link")
+				link(peerDir, filepath.Join(root, "unrelated\n", "peer"))
 			case "target alias":
 				alias := filepath.Join(root, "alias")
 				link(alias, filepath.Dir(stateDir))

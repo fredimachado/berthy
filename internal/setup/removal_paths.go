@@ -128,16 +128,16 @@ owner=$(id -u berthy)
 	}
 	script += "stat_entry " + shellQuote(dest) + "\n[ \"$entry\" = absent ]\n"
 	for _, peer := range peers {
-		script += "realpath -m -- " + shellQuote(peer) + "\n"
+		script += "realpath -zm -- " + shellQuote(peer) + "\n"
 	}
 	script += "awk '{print $5}' /proc/self/mountinfo\n"
 
 	res, err := runner.Run(ctx, script, nil)
-	if err != nil || res.Code != 0 || len(res.Stderr) != 0 || !strings.HasSuffix(string(res.Stdout), "\n") {
+	if err != nil || res.Code != 0 || len(res.Stderr) != 0 || len(res.Stdout) >= maxCaptured || !strings.HasSuffix(string(res.Stdout), "\n") {
 		return rec, errors.New("could not verify the removal state, key paths or unused destination")
 	}
-	lines := strings.Split(strings.TrimSuffix(string(res.Stdout), "\n"), "\n")
-	if len(lines) < 5+len(peers) {
+	lines := strings.SplitN(string(res.Stdout), "\n", 5)
+	if len(lines) != 5 {
 		return rec, errors.New("incomplete removal path check")
 	}
 	var identities [4]*fileIdentity
@@ -153,14 +153,20 @@ owner=$(id -u berthy)
 		}
 		identities[i] = &fileIdentity{Device: d, Inode: n}
 	}
-	for _, peer := range lines[4 : 4+len(peers)] {
+	rest := lines[4]
+	for range peers {
+		peer, tail, ok := strings.Cut(rest, "\x00")
+		if !ok {
+			return rec, errors.New("incomplete removal path check")
+		}
 		if err := checkOverlap(peer); err != nil {
 			return rec, err
 		}
+		rest = tail
 	}
 	unescape := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
 	rootMount := false
-	for _, mount := range lines[4+len(peers):] {
+	for _, mount := range strings.Split(strings.TrimSuffix(rest, "\n"), "\n") {
 		mount = unescape.Replace(mount)
 		if !path.IsAbs(mount) {
 			return rec, errors.New("could not verify the server's mount table")

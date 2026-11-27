@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const removalTestPaths = "12 34\n12 35\n12 36\nabsent\n/peer/state\n/peer/key\n/peer/key.next\n/peer/key.prev\n/\n"
+const removalTestPaths = "12 34\n12 35\n12 36\nabsent\n/peer/state\x00/peer/key\x00/peer/key.next\x00/peer/key.prev\x00/\n"
 const removalTestNetworkID = "wcxk9hlk7pka26iwkly94laa0"
 
 type removalRunner struct {
