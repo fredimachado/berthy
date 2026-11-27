@@ -23,7 +23,11 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	lock := filepath.Join(dir, "lock")
 	calls := filepath.Join(dir, "calls")
 	if word != "" || mode == "empty-state" {
-		if err := os.WriteFile(state, []byte(word+"\n"), 0600); err != nil {
+		content := []byte(word + "\n")
+		if mode == "empty-state" {
+			content = nil
+		}
+		if err := os.WriteFile(state, content, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
