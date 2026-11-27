@@ -381,12 +381,9 @@ func TestSetupVerboseNeverShowsTheTokenOrTheKey(t *testing.T) {
 		for _, sc := range server.scripts {
 			assertAbsent(t, "a script", sc, []string{envToken})
 		}
-		sent := false
-		for _, in := range server.stdins {
-			sent = sent || bytes.Contains(in, []byte(envToken))
-		}
-		if !sent {
-			t.Fatal("the token did not reach the server on stdin: the test proves nothing")
+		doctor := indexOfScript(t, server, "agent setup-probe doctor")
+		if !bytes.Equal(server.stdins[doctor], []byte(envToken+"\n")) {
+			t.Fatal("doctor did not receive the token alone on stdin")
 		}
 		assertAbsent(t, "stdout", out, []string{envToken})
 		assertAbsent(t, "the verbose log", errout, []string{envToken})
