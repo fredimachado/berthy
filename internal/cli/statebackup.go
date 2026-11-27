@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -60,7 +59,7 @@ func runStateRestore(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "object key must start with PROJECT/ENVIRONMENT/")
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := commandContext()
 	defer stop()
 	store, err := objectstore.New(objectstore.Config{Endpoint: *endpoint, Region: *region, Bucket: *bucket, AccessKey: access, SecretKey: secret})
 	if err != nil {
@@ -167,13 +166,11 @@ func projectsWithEnvironment(ctx context.Context, store objectstore.Store, envir
 
 // runStateBackupCommand runs "state-backup": it asks the agent for a state snapshot now, waits for the run to finish, and prints
 // it. It exits 0 only when the snapshot succeeded.
-func runStateBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runStateBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	if len(f.pos) != 0 {
 		fmt.Fprintln(errout, "state-backup takes no arguments")
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	return runStateBackup(ctx, agentclient.NewHTTPClient(), base, prefix, token, f.json, out, errout)
 }
 

@@ -1,57 +1,20 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
-	"sync"
 
 	"berthy/internal/agentclient"
 	"berthy/internal/credstore"
 )
 
-var contextStoreContext = func() (context.Context, func() bool) {
-	ctx, cancel := context.WithCancel(context.Background())
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	done, result := make(chan struct{}), make(chan bool, 1)
-	go func() {
-		interrupted := false
-		select {
-		case <-interrupt:
-			interrupted = true
-			cancel()
-			<-done
-		case <-done:
-			// signal.Stop has finished, so this drains any interrupt delivered before teardown.
-			select {
-			case <-interrupt:
-				interrupted = true
-			default:
-			}
-		}
-		result <- interrupted
-	}()
-	var once sync.Once
-	var interrupted bool
-	stop := func() bool {
-		once.Do(func() {
-			signal.Stop(interrupt)
-			close(done)
-			interrupted = <-result
-			cancel()
-		})
-		return interrupted
-	}
-	return ctx, stop
-}
+var contextStoreContext = commandContext
 
 const contextUsage = "usage: berthy context add --project PROJECT -e ENV --url URL --token-env VAR [--save-token] [--config FILE]\n" +
 	"       berthy context list [--config FILE] [--json]\n" +
@@ -183,12 +146,15 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 	read, interactive := hiddenInput()
 	var data []byte
 	var err error
+	if !interactive {
+		data, err = io.ReadAll(os.Stdin)
+	}
+	ctx, stop := contextStoreContext()
+	defer stop()
 	if interactive {
 		fmt.Fprintf(errout, "Token of %s/%s (hidden): ", project, env)
-		data, err = read()
+		data, err = read(ctx)
 		fmt.Fprintln(errout)
-	} else {
-		data, err = io.ReadAll(os.Stdin)
 	}
 	if err != nil {
 		fmt.Fprintln(errout, "no token entered")
@@ -199,14 +165,12 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	ctx, stop := contextStoreContext()
-	defer stop()
 	store := agentclient.Tokens(ctx)
 	progress := startWait(errout, true, "saving credential")
 	err = store.Set(agentclient.StoreKey(project, env, entry), token)
 	progress.Close()
 	if stop() {
-		return 130
+		return credentialSignalStatus(ctx)
 	}
 	if err != nil {
 		if errors.Is(err, credstore.ErrGivenUp) {
@@ -278,7 +242,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 				if ctx.Err() != nil {
 					progress.Close()
 					stop()
-					return 130
+					return credentialSignalStatus(ctx)
 				}
 				if storeErr == nil {
 					status = "stored"
@@ -296,7 +260,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 	}
 	progress.Close()
 	if stop() {
-		return 130
+		return credentialSignalStatus(ctx)
 	}
 	if len(rows) == 0 {
 		return 0
@@ -372,7 +336,7 @@ func runContextRemove(args []string, out, errout io.Writer) int {
 		removed, err := store.Delete(agentclient.StoreKey(*project, *env, entry))
 		progress.Close()
 		if stop() {
-			return 130
+			return credentialSignalStatus(ctx)
 		}
 		if err != nil {
 			message := "the stored token was not deleted"

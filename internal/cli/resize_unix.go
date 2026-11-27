@@ -33,5 +33,4 @@ func terminalResizes(ctx context.Context, _ uintptr) <-chan struct{} {
 	return events
 }
 
-// terminationSignals are the signals that end the CLI while the terminal is raw: a terminated process, or a closed terminal window.
-var terminationSignals = []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
+var terminationSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}

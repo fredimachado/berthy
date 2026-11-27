@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/charmbracelet/x/term"
 
@@ -51,7 +49,11 @@ func runInteractive(ctx context.Context, t *agentclient.Target, req session.Requ
 		return 1
 	}
 	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	stop := context.AfterFunc(ctx, func() {
+		if _, signaled := context.Cause(ctx).(commandSignal); !req.TTY || !signaled {
+			conn.Close()
+		}
+	})
 	defer stop()
 	w := session.NewWriter(conn)
 	if req.TTY {
@@ -60,27 +62,10 @@ func runInteractive(ctx context.Context, t *agentclient.Target, req session.Requ
 			fmt.Fprintln(errout, "cannot put the terminal in raw mode")
 			return 1
 		}
-		// The process exits next, so a failed restore has nowhere to be reported.
 		restore := func() { _ = term.Restore(in.Fd(), state) }
-		defer restore()
-		// Ctrl-C is a byte for the remote while the terminal is raw, but a terminated CLI or a closed window must not leave the
-		// person's terminal raw: restore it, drop the connection and exit as a shell reports a signal, 128 plus its number.
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, terminationSignals...)
-		defer signal.Stop(signals)
-		go func() {
-			sig, ok := <-signals
-			if !ok {
-				return
-			}
-			restore()
-			conn.Close()
-			code := 1
-			if n, isNumber := sig.(syscall.Signal); isNumber {
-				code = 128 + int(n)
-			}
-			exitProcess(code)
-		}()
+		// Remote output can block the frame loop even after the connection closes.
+		finish := restoreOnCommandSignal(ctx, restore, func() { _ = conn.Close() })
+		defer finish()
 		go func() {
 			for range terminalResizes(ctx, screen.Fd()) {
 				if size := terminalSize(screen.Fd()); size != nil {

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -210,37 +209,57 @@ func cloudflareGuide(name, token string, dns bool) secretGuide {
 
 // hiddenInput returns a function that reads one line from standard input without showing it.
 // ok is false when standard input is not a terminal. It is a variable so tests can stand in for the terminal.
-var hiddenInput = func() (read func() ([]byte, error), ok bool) {
+var hiddenInput = func() (read func(context.Context) ([]byte, error), ok bool) {
 	fd := os.Stdin.Fd()
 	if !term.IsTerminal(fd) {
 		return nil, false
 	}
-	return func() ([]byte, error) { return readHidden(fd) }, true
+	return func(ctx context.Context) ([]byte, error) { return readHidden(ctx, fd) }, true
 }
 
-// readHidden reads one line from the terminal fd with echo off. term.ReadPassword turns echo back on only when it returns,
-// so a Ctrl-C while it waits restores the terminal itself and exits with 130.
-func readHidden(fd uintptr) ([]byte, error) {
+// readHidden changes the mode before arming cleanup. The reader that follows
+// never changes the mode, so it cannot disable echo again after restoration.
+func readHidden(ctx context.Context, fd uintptr) ([]byte, error) {
 	state, err := term.GetState(fd)
 	if err != nil {
 		return nil, err
 	}
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	defer signal.Stop(interrupt)
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-interrupt:
-			// The process exits next, so a failed restore has nowhere to be reported.
-			_ = term.Restore(fd, state)
-			fmt.Fprintln(os.Stderr)
-			os.Exit(130)
-		case <-done:
+	if err := setHiddenMode(fd); err != nil {
+		return nil, err
+	}
+	restore := restoreOnCommandSignal(ctx, func() { _ = term.Restore(fd, state) }, func() { fmt.Fprintln(os.Stderr) })
+	defer restore()
+	return readHiddenLine(fd)
+}
+
+// readPasswordLine keeps the input behavior of term.ReadPassword after the
+// platform code sets the mode. It consumes only one line.
+func readPasswordLine(read func([]byte) (int, error), end byte) ([]byte, error) {
+	var input []byte
+	var b [1]byte
+	for {
+		n, err := read(b[:])
+		if n <= 0 {
+			if err == nil {
+				err = io.EOF
+			}
+			if err == io.EOF && len(input) > 0 {
+				err = nil
+			}
+			return input, err
 		}
-	}()
-	return term.ReadPassword(fd)
+		switch b[0] {
+		case end:
+			return input, nil
+		case '\r', '\n':
+		case '\b':
+			if len(input) > 0 {
+				input = input[:len(input)-1]
+			}
+		default:
+			input = append(input, b[0])
+		}
+	}
 }
 
 // storedSecret is one secret the agent holds, as GET secrets lists it: its name, and the registry whose password it is, or
@@ -250,6 +269,30 @@ type storedSecret struct {
 	Registry string `json:"registry"`
 }
 
+var pipeSignalAfterFunc = context.AfterFunc
+
+// exitOnPipeSignal ends an unsubmitted secret read even when its producer keeps stdin open.
+func exitOnPipeSignal(ctx context.Context) func() {
+	exit := func() {
+		if s, ok := context.Cause(ctx).(commandSignal); ok {
+			exitProcess(128 + int(s.Signal))
+		}
+	}
+	done := make(chan struct{})
+	stop := pipeSignalAfterFunc(ctx, func() {
+		defer close(done)
+		exit()
+	})
+	return func() {
+		if stop() {
+			// EOF can disarm the callback after the signal cause was published.
+			exit()
+			return
+		}
+		<-done
+	}
+}
+
 // secretValue returns the value `secret set` stores and the registry it is for. From a pipe it reads standard input to its
 // end, as before, and the registry is the flag's. At a terminal it first asks the agent what it holds (stored; ok is false
 // when the agent could not say, and has printed why), says when the value replaces a stored one, prints the guide, asks,
@@ -257,7 +300,12 @@ type storedSecret struct {
 func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool), token string) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
+		stop := exitOnPipeSignal(ctx)
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, api.MaxSecretValue+1))
+		stop()
+		if ctx.Err() != nil {
+			return "", "", 1
+		}
 		if e != nil || len(data) > api.MaxSecretValue {
 			fmt.Fprintln(errout, "secret input unavailable or too large")
 			return "", "", 1
@@ -299,7 +347,7 @@ func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored f
 		}
 	}
 	g := guideFor(m, f.env, name, registry)
-	value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden): ", name), read, errout, !f.json, token)
+	value, result := askSecret(ctx, g, fmt.Sprintf("Value of %s (hidden): ", name), func() ([]byte, error) { return read(ctx) }, errout, !f.json, token)
 	if result == askEmpty {
 		fmt.Fprintln(errout, "no value entered")
 	}

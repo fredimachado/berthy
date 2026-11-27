@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +98,7 @@ func nextCell(j api.JobStatus) string {
 
 // runJobLogs runs "job logs NAME [--run ID]": it prints the output kept of a failed or timed-out run, the newest one that kept
 // any unless a run is named. The run's line goes to stderr, so the output can be piped.
-func runJobLogs(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runJobLogs(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	query := ""
 	if f.run != "" {
 		if n, err := strconv.ParseInt(f.run, 10, 64); err != nil || n < 1 {
@@ -109,8 +107,6 @@ func runJobLogs(f commandFlags, base *url.URL, prefix, token string, out, errout
 		}
 		query = "run=" + url.QueryEscape(f.run)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
 	data, status, err := call("GET", "jobs/"+url.PathEscape(f.pos[1])+"/logs", query)
 	if err != nil {
@@ -160,21 +156,17 @@ func runJobLogs(f commandFlags, base *url.URL, prefix, token string, out, errout
 
 // runJobCommand runs "job run NAME": it asks the agent to start the job, waits for the run to finish, and prints the
 // result. It exits 0 only when the run succeeded. "job logs NAME" shows what a failed run printed.
-func runJobCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runJobCommand(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	if len(f.pos) == 2 && f.pos[0] == "logs" && f.pos[1] != "" {
-		return runJobLogs(f, base, prefix, token, out, errout)
+		return runJobLogs(ctx, f, base, prefix, token, out, errout)
 	}
 	if len(f.pos) == 2 && f.pos[0] == "cancel" && f.pos[1] != "" {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
 		return runJobCancel(ctx, f, base, prefix, token, out, errout)
 	}
 	if len(f.pos) != 2 || f.pos[0] != "run" || f.pos[1] == "" {
 		fmt.Fprintln(errout, "usage: job run NAME | job logs NAME [--run ID] | job cancel NAME")
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	return runJobRun(ctx, agentclient.NewHTTPClient(), base, prefix, token, f.pos[1], f.json, out, errout)
 }
 

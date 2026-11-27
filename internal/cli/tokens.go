@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
@@ -64,7 +62,7 @@ type tokenRow struct {
 }
 
 // runTokenCommand runs "token create NAME", "token list" and "token revoke NAME".
-func runTokenCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runTokenCommand(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(errout, tokenUsage)
 		return 2
@@ -107,8 +105,6 @@ func runTokenCommand(f commandFlags, base *url.URL, prefix, token string, out, e
 	default:
 		return usage()
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	var payload []byte
 	if body != nil {
 		payload, _ = json.Marshal(body)

@@ -3,6 +3,7 @@ package agentclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,9 +54,32 @@ func git(t *testing.T, dir string, args ...string) string {
 func TestPrepareDeployRecordsHeadOfACleanCheckout(t *testing.T) {
 	dir, head := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
 	req := deploy.Request{App: "api", Version: "1.0"}
-	co, err := PrepareDeploy(dir, "dev", &req)
+	co, err := PrepareDeploy(context.Background(), dir, "dev", &req)
 	if err != nil || req.Commit != head || req.Modified || !co.InWorkTree || len(co.Changed) != 0 {
 		t.Fatalf("clean checkout: %v %+v %+v", err, req, co)
+	}
+}
+
+func TestDeployPreparationHonorsCanceledContext(t *testing.T) {
+	dir, _ := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
+	for _, tc := range []struct {
+		name    string
+		prepare func(context.Context, string, string, *deploy.Request) (gitcheck.Checkout, error)
+	}{
+		{"PrepareDeploy", PrepareDeploy},
+		{"StampCheckout", func(ctx context.Context, dir, env string, req *deploy.Request) (gitcheck.Checkout, error) {
+			return StampCheckout(ctx, dir, env, req)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			req := deploy.Request{App: "api", Version: "1.0", Modified: true}
+			_, err := tc.prepare(ctx, dir, "dev", &req)
+			if !errors.Is(err, context.Canceled) || req.Commit != "" || !req.Modified {
+				t.Fatalf("canceled preparation: error=%v, commit=%q, modified=%v; want context.Canceled and no checkout stamp", err, req.Commit, req.Modified)
+			}
+		})
 	}
 }
 
@@ -65,7 +89,7 @@ func TestPrepareDeployMarksAnEditedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := deploy.Request{App: "api", Version: "1.0"}
-	co, err := PrepareDeploy(dir, "dev", &req)
+	co, err := PrepareDeploy(context.Background(), dir, "dev", &req)
 	if err != nil || req.Commit != head || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"berthy.yml"}) {
 		t.Fatalf("edited manifest: %v %+v %+v", err, req, co)
 	}
@@ -74,7 +98,7 @@ func TestPrepareDeployMarksAnEditedManifest(t *testing.T) {
 func TestPrepareDeployKeepsAGivenCommit(t *testing.T) {
 	dir, head := checkoutRepo(t, map[string]string{"berthy.yml": imageManifest})
 	req := deploy.Request{App: "api", Version: "1.0", Commit: "deadbeef"}
-	if _, err := PrepareDeploy(dir, "dev", &req); err != nil || req.Commit != "deadbeef" || req.Modified {
+	if _, err := PrepareDeploy(context.Background(), dir, "dev", &req); err != nil || req.Commit != "deadbeef" || req.Modified {
 		t.Fatalf("given commit: %v %+v (HEAD is %s)", err, req, head)
 	}
 }
@@ -85,7 +109,7 @@ func TestPrepareDeployChecksTheOverlayAndTheComposeFileOfTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := deploy.Request{App: "db"}
-	co, err := PrepareDeploy(dir, "dev", &req)
+	co, err := PrepareDeploy(context.Background(), dir, "dev", &req)
 	if err != nil || !req.Modified || !reflect.DeepEqual(co.Changed, []string{"berthy.dev.yml"}) {
 		t.Fatalf("untracked overlay: %v %+v %+v", err, req, co)
 	}
@@ -93,7 +117,7 @@ func TestPrepareDeployChecksTheOverlayAndTheComposeFileOfTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	req = deploy.Request{App: "db"}
-	co, err = PrepareDeploy(dir, "dev", &req)
+	co, err = PrepareDeploy(context.Background(), dir, "dev", &req)
 	if err != nil || !reflect.DeepEqual(co.Changed, []string{"berthy.dev.yml", "compose.yaml"}) || req.ComposeFile != "services: {x: {}}\n" {
 		t.Fatalf("compose file: %v %+v %+v", err, req, co)
 	}
@@ -102,7 +126,7 @@ func TestPrepareDeployChecksTheOverlayAndTheComposeFileOfTheApp(t *testing.T) {
 func TestPrepareDeployOutsideAWorkTreeChangesNothing(t *testing.T) {
 	dir := writeComposeProject(t, imageManifest, "")
 	req := deploy.Request{App: "api", Version: "1.0"}
-	co, err := PrepareDeploy(dir, "dev", &req)
+	co, err := PrepareDeploy(context.Background(), dir, "dev", &req)
 	if err != nil || req.Commit != "" || req.Modified || co.InWorkTree {
 		t.Fatalf("outside a work tree: %v %+v %+v", err, req, co)
 	}
@@ -125,7 +149,7 @@ func TestPrepareDeployFilesAttributesComposeChanges(t *testing.T) {
 		t.Fatalf("preparation: %+v %+v %+v %v", image, compose, co, err)
 	}
 	strict := deploy.Request{App: "db"}
-	co, err = PrepareDeploy(dir, "dev", &strict)
+	co, err = PrepareDeploy(context.Background(), dir, "dev", &strict)
 	if err != nil || !strict.Modified || strict.ComposeFile != "services: {x: {}}\n" || len(co.Changed) != 1 {
 		t.Fatalf("strict preparation: %+v %+v %v", strict, co, err)
 	}

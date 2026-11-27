@@ -266,8 +266,8 @@ func TestContextListWaitModes(t *testing.T) {
 func TestContextCredentialWritesClearBeforeResult(t *testing.T) {
 	slice4cTerminal(t)
 	oldHidden := hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) { return []byte("fixture-value"), nil }, true
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) { return []byte("fixture-value"), nil }, true
 	}
 	defer func() { hiddenInput = oldHidden }()
 	for _, mode := range []string{"set", "delete"} {
@@ -343,8 +343,8 @@ func TestContextCredentialWritesClearBeforeResult(t *testing.T) {
 func TestContextStoreInterruptClearsAndStops(t *testing.T) {
 	slice4cTerminal(t)
 	oldHidden, oldContext := hiddenInput, contextStoreContext
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) { return []byte("fixture-value"), nil }, true
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) { return []byte("fixture-value"), nil }, true
 	}
 	defer func() { hiddenInput, contextStoreContext = oldHidden, oldContext }()
 	for _, mode := range []string{"add", "list", "remove"} {
@@ -488,8 +488,8 @@ func TestSecretCheckerParentCancellationClearsWait(t *testing.T) {
 func TestContextStoreStopsBeforeResult(t *testing.T) {
 	oldContext, oldHidden, oldStore := contextStoreContext, hiddenInput, agentclient.TokenStore
 	defer func() { contextStoreContext, hiddenInput, agentclient.TokenStore = oldContext, oldHidden, oldStore }()
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) { return []byte("fixture"), nil }, true
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) { return []byte("fixture"), nil }, true
 	}
 	for _, mode := range []string{"set", "list", "remove"} {
 		t.Run(mode, func(t *testing.T) {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -192,7 +193,7 @@ func TestGuideStopsWhenAStoreIsHeld(t *testing.T) {
 
 func TestSecretSetWithoutANameAndNoTerminalIsRefused(t *testing.T) {
 	old := hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) { return nil, false }
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) { return nil, false }
 	t.Cleanup(func() { hiddenInput = old })
 	var bodies []string
 	server := recordingAgent(&bodies)

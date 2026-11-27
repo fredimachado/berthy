@@ -135,7 +135,7 @@ func TestSetupInterruptedHandoverDoesNotStartSecretsGuide(t *testing.T) {
 	server.keyAnswer = func(context.Context, []byte) (setup.Result, error) { cancel(); return setup.Result{}, context.Canceled }
 	withSetupRunner(t, server)
 	called := false
-	hiddenInput = func() (func() ([]byte, error), bool) { called = true; return nil, false }
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) { called = true; return nil, false }
 	var out, errout bytes.Buffer
 	code := runSetupWithContext(ctx, []string{"-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--network", "p5net", "--manifest-dir", projectDir(t), "--config", filepath.Join(t.TempDir(), "cli.json")}, &out, &errout)
 	if code != 0 || called || !strings.Contains(out.String(), "not saved: interrupted") || !strings.Contains(out.String(), "next steps:") || strings.Contains(out.String(), "\nsecrets:") {

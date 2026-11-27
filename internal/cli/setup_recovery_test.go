@@ -17,9 +17,9 @@ import (
 
 type setupInterruptedServer struct {
 	*setupServer
-	cancel  context.CancelFunc
-	staged  []byte
-	sawHash bool
+	interrupt func(context.Context) error
+	staged    []byte
+	sawHash   bool
 }
 
 type setupUncertainServer struct {
@@ -152,8 +152,7 @@ func (s *setupInterruptedServer) Run(ctx context.Context, script string, stdin i
 		stdin = bytes.NewReader(data)
 	}
 	if strings.Contains(script, "systemctl restart berthy") {
-		s.cancel()
-		return setup.Result{}, context.Canceled
+		return setup.Result{}, s.interrupt(ctx)
 	}
 	if script == "sha256sum /etc/berthy/agent.json" {
 		s.sawHash = true
@@ -167,7 +166,10 @@ func TestSetupShowsRetainedTokenAfterInterruptedActivation(t *testing.T) {
 	withSetupRunner(t, base)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	server := &setupInterruptedServer{setupServer: base, cancel: cancel}
+	server := &setupInterruptedServer{setupServer: base, interrupt: func(context.Context) error {
+		cancel()
+		return context.Canceled
+	}}
 	newSetupRunner = func(string, bool) (setup.Runner, error) { return server, nil }
 	store := credtest.NewMemory()
 	old := agentclient.TokenStore

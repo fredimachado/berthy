@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"slices"
@@ -414,6 +413,9 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 	return "", key
 }
 
+// captureDeployCheckout is the first checkout read for a single mutable-tag deploy.
+var captureDeployCheckout = gitcheck.Capture
+
 // runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
 // intent is non-nil for an expanded alias: after ordinary validation, the parsed selectors must match it.
 func runDeployment(cmd string, args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
@@ -539,10 +541,12 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		b, _ := json.Marshal(loaded.Manifest)
 		return printResponse(out, errout, b, f.json)
 	}
+	ctx, stop := commandContext()
+	defer stop()
 	var checkoutBefore gitcheck.Identity
 	// A mutable tag needs the identity from before target resolution or manifest loading reads the checkout.
 	if cmd == "deploy" && len(f.pos) == 1 && len(f.versions) == 1 && !strings.Contains(f.versions[0], "@") && !bareSHA256(f.versions[0]) {
-		checkoutBefore, err = gitcheck.Capture(context.Background(), f.dir)
+		checkoutBefore, err = captureDeployCheckout(ctx, f.dir)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
@@ -553,7 +557,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: f.dir})
+	target, err := agentclient.ResolveContext(ctx, cfgPath, agentclient.Selector{Project: f.project, Environment: f.env, ManifestDir: f.dir})
 	if err != nil {
 		if f.project == "" && (cmd == "deploy" || cmd == "apply" || (cmd == "ingress" && len(f.pos) > 0 && f.pos[0] == "apply")) {
 			if _, _, projectErr := manifest.ProjectName(f.dir); projectErr != nil {
@@ -576,31 +580,29 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		return 2
 	}
 	if cmd == "approvals" || cmd == "approve" || cmd == "reject" {
-		return runApprovalCommand(cmd, f, u, prefix, token, out, errout)
+		return runApprovalCommand(ctx, cmd, f, u, prefix, token, out, errout)
 	}
 	if cmd == "token" {
-		return runTokenCommand(f, u, prefix, token, out, errout)
+		return runTokenCommand(ctx, f, u, prefix, token, out, errout)
 	}
 	if cmd == "job" {
-		return runJobCommand(f, u, prefix, token, out, errout)
+		return runJobCommand(ctx, f, u, prefix, token, out, errout)
 	}
 	if cmd == "backup" {
-		return runBackupCommand(f, u, prefix, token, out, errout)
+		return runBackupCommand(ctx, f, u, prefix, token, out, errout)
 	}
 	if cmd == "state-backup" {
-		return runStateBackupCommand(f, u, prefix, token, out, errout)
+		return runStateBackupCommand(ctx, f, u, prefix, token, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "list" && slices.Contains(f.given, "--manifest-dir") {
-		return runSecretList(f, u, prefix, token, out, errout)
+		return runSecretList(ctx, f, u, prefix, token, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "set" {
-		return runSecretSetMissing(f, target, f.dir, out, errout)
+		return runSecretSetMissing(ctx, f, target, f.dir, out, errout)
 	}
 	if cmd == "secret" && len(f.pos) == 1 && f.pos[0] == "generate" {
-		return runSecretGenerateDeclared(f, target, f.dir, out, errout)
+		return runSecretGenerateDeclared(ctx, f, target, f.dir, out, errout)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	client := agentclient.NewHTTPClient()
 	if cmd == "promote" {
 		return runPromote(ctx, client, target, cfgPath, f.from, f, out, errout)
@@ -615,7 +617,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	switch cmd {
 	case "deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy":
 		if cmd == "deploy" && len(f.pos) == 0 {
-			return runDeployAll(f, target, out, errout)
+			return runDeployAll(ctx, f, target, out, errout)
 		}
 		if cmd != "prune" && cmd != "destroy" && len(f.pos) != 1 || (cmd == "prune" || cmd == "destroy") && len(f.pos) != 0 {
 			printRefusal(errout, "command requires an app", !f.json)
@@ -714,7 +716,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 					return runSingleTagDeploy(ctx, client, target, f, loaded, req, selected, checkoutBefore, out, errout)
 				}
 			}
-			co, e := agentclient.PrepareDeploy(f.dir, f.env, &req)
+			co, e := agentclient.PrepareDeploy(ctx, f.dir, f.env, &req)
 			if e != nil {
 				switch {
 				case errors.Is(e, agentclient.ErrVersionRequired):
@@ -765,7 +767,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		}
 		// The request carries the checkout's commit and local-changes flag as a deploy does.
 		stamp := deploy.Request{Commit: f.commit}
-		co, e := agentclient.StampCheckout(f.dir, f.env, &stamp)
+		co, e := agentclient.StampCheckout(ctx, f.dir, f.env, &stamp)
 		if e != nil {
 			fmt.Fprintln(errout, e)
 			return 1
@@ -886,7 +888,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				return 1
 			}
 			req := deploy.Request{Manifest: *m, RequestID: f.id, DryRun: f.dry, ReplaceExisting: f.replace, Commit: f.commit}
-			co, e := agentclient.StampCheckout(f.dir, f.env, &req)
+			co, e := agentclient.StampCheckout(ctx, f.dir, f.env, &req)
 			if e != nil {
 				fmt.Fprintln(errout, e)
 				return 1
@@ -924,7 +926,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				printRefusal(errout, "pipe NAME=value lines into secret import: standard input is a terminal", !f.json)
 				return 2
 			}
-			imp, err := readSecretImport(f.dry)
+			imp, err := readSecretImport(ctx, f.dry)
 			if err != nil {
 				fmt.Fprintln(errout, err)
 				return 1

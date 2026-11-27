@@ -86,7 +86,7 @@ func TestR1SpecializedHeldCredentials(t *testing.T) {
 				code := 0
 				switch kind {
 				case "backup":
-					code = runBackupCommand(commandFlags{pos: []string{"run", "task"}, json: asJSON}, base, "/", "fixture-token", &out, &errs)
+					code = runBackupCommand(ctx, commandFlags{pos: []string{"run", "task"}, json: asJSON}, base, "/", "fixture-token", &out, &errs)
 				case "job":
 					code = runJobRun(ctx, server.Client(), base, "/", "fixture-token", "task", asJSON, &out, &errs)
 				case "cancel":

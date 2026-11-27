@@ -1,11 +1,14 @@
 package agentclient
 
 import (
-	"berthy/internal/credstore"
-	"berthy/internal/credstore/credtest"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+	"testing/synctest"
+
+	"berthy/internal/credstore"
+	"berthy/internal/credstore/credtest"
 )
 
 func TestFindTokenPrefersTheVariable(t *testing.T) {
@@ -58,6 +61,48 @@ func TestResolveUsesTheStoredToken(t *testing.T) {
 	if err != nil || target.Token != "stored" {
 		t.Fatalf("%+v %v", target, err)
 	}
+}
+
+func TestResolveContextCancelsBlockedStore(t *testing.T) {
+	t.Setenv("BERTHY_TEST_TOKEN", "")
+	path := writeConfig(t, cfgDev)
+	synctest.Test(t, func(t *testing.T) {
+		store := credtest.NewMemory()
+		entered, release := make(chan struct{}), make(chan struct{})
+		store.OnCall, store.Block = func() { close(entered) }, release
+		old := TokenStore
+		TokenStore = store
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, err := ResolveContext(ctx, path, Selector{Environment: "dev"})
+			result <- err
+		}()
+		defer func() {
+			cancel()
+			close(release)
+			<-done
+			store.Wait()
+			TokenStore = old
+		}()
+		select {
+		case <-entered:
+		case err := <-result:
+			t.Fatalf("resolve returned before entering the store: %v", err)
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("resolve succeeded after cancellation")
+			}
+		default:
+			t.Fatal("resolve did not return while the credential store was blocked")
+		}
+	})
 }
 func TestTheDefaultTokenStoreIsNone(t *testing.T) {
 	if TokenStore != credstore.None() {

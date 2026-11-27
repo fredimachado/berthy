@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -215,6 +216,9 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 		shownID := safeSecretText(id, redact...)
 		argID := operationHintArg(shownID, false)
 		fmt.Fprintf(errout, "watch interrupted; operation %s may continue\ninspect: berthy diagnostics %s%s\ncancel: berthy cancel %s%s\n", shownID, argID, suffix, argID, suffix)
+		if s, ok := context.Cause(ctx).(commandSignal); ok && s.Signal != os.Interrupt {
+			return 128 + int(s.Signal)
+		}
 		return 1
 	}
 	for {

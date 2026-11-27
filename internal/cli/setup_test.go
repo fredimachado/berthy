@@ -197,7 +197,7 @@ func withSetupRunner(t *testing.T, server *setupServer) *[2]any {
 	// Setup writes the CLI configuration when it is not told where, so each test gets a user configuration directory of its own.
 	isolatedUserConfig(t)
 	saved, savedHidden := newSetupRunner, hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) { return nil, false }
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) { return nil, false }
 	t.Cleanup(func() { newSetupRunner, hiddenInput = saved, savedHidden })
 	made := &[2]any{}
 	newSetupRunner = func(host string, local bool) (setup.Runner, error) {
@@ -1207,7 +1207,7 @@ func TestSetupGuideOutcomes(t *testing.T) {
 			withSetupRunner(t, server)
 			reads := fakeTerminal(t, tc.input)
 			if !tc.terminal {
-				hiddenInput = func() (func() ([]byte, error), bool) { return nil, false }
+				hiddenInput = func() (func(context.Context) ([]byte, error), bool) { return nil, false }
 			}
 			calls := 0
 			agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

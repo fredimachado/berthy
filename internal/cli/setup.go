@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -75,7 +74,7 @@ type setupReport struct {
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
 // step is ok or changed (or would change, in a dry run), 1 that a step failed, 2 that the command line is wrong.
 func runSetup(args []string, out, errout io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := commandContext()
 	defer stop()
 	return runSetupWithContext(ctx, args, out, errout)
 }
@@ -265,7 +264,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 				base, _ := url.Parse(session.AgentURL())
 				target := &agentclient.Target{Project: id.Project, Env: id.Environment, Base: base, Prefix: id.APIPath(), Token: session.AdminToken()}
 				fmt.Fprintln(out, "\nsecrets:")
-				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, read, out, errout)
+				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, func() ([]byte, error) { return read(ctx) }, out, errout)
 				secretStep.guided = result == guideDone
 				for _, need := range unmet {
 					secretStep.unmet = append(secretStep.unmet, need.Name)

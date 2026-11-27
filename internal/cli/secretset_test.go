@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,8 +27,8 @@ func fakeTerminal(t *testing.T, line string) *atomic.Int32 {
 	t.Helper()
 	var reads atomic.Int32
 	old := hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) {
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) {
 			reads.Add(1)
 			return []byte(line), nil
 		}, true
@@ -40,8 +41,8 @@ func fakeTerminalLines(t *testing.T, lines ...string) *atomic.Int32 {
 	t.Helper()
 	var reads atomic.Int32
 	old := hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) {
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) {
 			i := int(reads.Add(1)) - 1
 			if i >= len(lines) {
 				return nil, io.EOF
