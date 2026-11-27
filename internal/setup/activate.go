@@ -61,7 +61,7 @@ func activationFailure(err error, outcome ConfigOutcome) error {
 }
 
 // getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.
-const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time "$2" -o /dev/null "$1" >/dev/null 2>&1; else wget -q -T "$2" -O /dev/null "$1" >/dev/null 2>&1; fi; }
+const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time "$2" -o /dev/null "$1" >/dev/null 2>&1; else timeout "$2" wget --tries=1 -q -T "$2" -O /dev/null "$1" >/dev/null 2>&1; fi; }
 `
 
 // healthURL is where the agent answers whether it is up.
