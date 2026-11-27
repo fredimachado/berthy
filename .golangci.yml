@@ -20,6 +20,12 @@ linters:
               desc: Use internal/credstore for OS credential access.
     errcheck:
       check-blank: true
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*database/sql.Tx).Rollback
+        - (*net/http.ResponseController).SetWriteDeadline
     forbidigo:
       analyze-types: true
       exclude-godoc-examples: false
@@ -41,6 +47,14 @@ linters:
     paths:
       - '^third_party/'
     rules:
+      - linters: [errcheck]
+        path: '_test\.go$'
+      - linters: [errcheck]
+        text: 'Error return value of .*\.Close` is not checked'
+        source: '^\s*defer\s+.*\.Close\('
+      - linters: [errcheck]
+        text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
+        source: 'json\.NewEncoder\(w\)\.Encode\('
       - linters: [forbidigo]
         text: 'Test sleeps must use an event or a fake clock\.'
         path-except: '_test\.go$'
