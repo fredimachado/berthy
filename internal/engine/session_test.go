@@ -26,7 +26,7 @@ type dockerCall struct {
 	Body         string
 }
 
-// fakeDocker is a Docker daemon on a Unix socket that answers by route ("METHOD /path") and records what it was asked.
+// fakeDocker is a Docker daemon on TCP loopback that answers by route ("METHOD /path") and records what it was asked.
 type fakeDocker struct {
 	t      *testing.T
 	engine *Engine
@@ -34,14 +34,28 @@ type fakeDocker struct {
 	calls  []dockerCall
 }
 
+// listenFakeDocker listens on TCP loopback for a fake Docker. Engine tests use TCP rather than a Unix socket because
+// Windows AF_UNIX can lose the end of stream after a write (#49).
+func listenFakeDocker(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	return l
+}
+
+func engineFor(l net.Listener) *Engine {
+	addr := l.Addr().String()
+	return newEngine(func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	})
+}
+
 func newFakeDocker(t *testing.T, routes map[string]http.HandlerFunc) *fakeDocker {
 	t.Helper()
 	f := &fakeDocker{t: t}
-	socket := filepath.Join(t.TempDir(), "d.sock")
-	l, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Skipf("no Unix sockets here: %v", err)
-	}
+	l := listenFakeDocker(t)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -58,7 +72,7 @@ func newFakeDocker(t *testing.T, routes map[string]http.HandlerFunc) *fakeDocker
 	srv.Listener = l
 	srv.Start()
 	t.Cleanup(srv.Close)
-	f.engine = New(socket)
+	f.engine = engineFor(l)
 	return f
 }
 
@@ -88,7 +102,7 @@ func switchTo(t *testing.T, serve func(conn net.Conn, br io.Reader)) http.Handle
 			t.Errorf("hijack: %v", err)
 			return
 		}
-		defer closeAfterPause(conn)
+		defer conn.Close()
 		io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 		serve(conn, brw)
 	}
@@ -430,7 +444,7 @@ func TestNewStreamWrapsAConnection(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer closeAfterPause(c)
+		defer c.Close()
 		b, _ := io.ReadAll(c)
 		c.Write(bytes.ToUpper(b))
 	}()
