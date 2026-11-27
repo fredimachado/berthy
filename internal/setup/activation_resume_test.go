@@ -27,7 +27,7 @@ func newResumeFixture(t *testing.T, state string) resumeFixture {
 	shellTool(t, tools, "date", "echo 0")
 	shellTool(t, tools, "systemctl", `word=$(/bin/cat "$STATE"); echo "systemctl $* state=$word" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`)
 	shellTool(t, tools, "curl", `echo "curl" >> "$CALLS"; exit 0`)
-	shellTool(t, tools, "mv", `echo "mv $*" >> "$CALLS"; exec /bin/mv "$@"`)
+	shellTool(t, tools, "mv", `word=$(/bin/cat "$STATE"); echo "mv $* state=$word" >> "$CALLS"; exec /bin/mv "$@"`)
 	return f
 }
 func (f resumeFixture) run(t *testing.T, script string, args ...string) (int, string, string, string) {
@@ -63,7 +63,7 @@ func TestGuardResumesInterruptedRecovery(t *testing.T) {
 	cfg, _ := os.ReadFile(f.cfg)
 	restart := strings.Index(calls, "systemctl restart berthy")
 	move := strings.Index(calls, "mv -f "+f.cfg+".prev "+f.cfg)
-	if code != 0 || state != "restored" || string(cfg) != "old-cfg" || move < 0 || restart < move || strings.Count(calls, "systemctl restart berthy") != 1 {
+	if code != 0 || state != "restored" || string(cfg) != "old-cfg" || move < 0 || !strings.Contains(calls, "mv -f "+f.cfg+".prev "+f.cfg+" state=recovering") || restart < move || strings.Count(calls, "systemctl restart berthy") != 1 {
 		t.Fatalf("code=%d output=%q state=%q cfg=%q calls=%q", code, out, state, cfg, calls)
 	}
 }
@@ -79,7 +79,7 @@ func TestGuardNowRunsRecoveryBeforeRestart(t *testing.T) {
 			if previous {
 				move := strings.Index(calls, "mv -f "+f.bin+".prev "+f.bin)
 				restart := strings.Index(calls, "systemctl restart berthy")
-				if code != 0 || state != "restored" || move < 0 || restart < move || strings.Count(calls, "systemctl restart berthy") != 1 {
+				if code != 0 || state != "restored" || move < 0 || !strings.Contains(calls, "mv -f "+f.bin+".prev "+f.bin+" state=recovering") || restart < move || strings.Count(calls, "systemctl restart berthy") != 1 {
 					t.Fatalf("code=%d out=%q state=%q calls=%q", code, out, state, calls)
 				}
 			} else if code != 0 || state != "stopped" || !strings.Contains(calls, "systemctl stop berthy state=recovering") || strings.Contains(calls, "systemctl restart berthy") {
@@ -169,6 +169,8 @@ func TestPriorRecoveryResultSurvivesJournalError(t *testing.T) {
 		{"restored", "previous one was put back", ConfigPrevious},
 		{"restored-down", "does not answer either", ConfigPrevious},
 		{"stopped", "left stopped", ConfigRetained},
+		{"stop-failed", "could not be stopped", ConfigUnconfirmed},
+		{"restore-failed", "could not be put back", ConfigUnconfirmed},
 	} {
 		t.Run(tc.word, func(t *testing.T) {
 			r := &stateResultRunner{word: tc.word, journalErr: errors.New("journal unavailable")}
