@@ -60,11 +60,12 @@ expect_contains 'v1 serves nginx' "$out" nginx
 
 manifest crash | write_manifest
 request="stability-$(openssl rand -hex 16)"
-timeout 90 python3 -u - "$DOCKER_BIN" "$SOCK" "$svc" "$WEB_V2_DIGEST" > "$LOG/stability-docker-events.jsonl" <<'PY' &
+stamp=$(date +%s)
+timeout 90 python3 -u - "$DOCKER_BIN" "$SOCK" "$svc" "$WEB_V2_DIGEST" "$stamp" > "$LOG/stability-docker-events.jsonl" <<'PY' &
 import json, subprocess, sys
-docker, sock, service, digest = sys.argv[1:]
+docker, sock, service, digest, stamp = sys.argv[1:]
 base = [docker, '--host', 'unix://' + sock]
-proc = subprocess.Popen(base + ['events', '--filter', 'type=container', '--filter', 'label=com.docker.swarm.service.name=' + service, '--format', '{{json .}}'], stdout=subprocess.PIPE, text=True)
+proc = subprocess.Popen(base + ['events', '--since', stamp, '--filter', 'type=container', '--filter', 'label=com.docker.swarm.service.name=' + service, '--format', '{{json .}}'], stdout=subprocess.PIPE, text=True)
 healthy = set()
 try:
     for line in proc.stdout:

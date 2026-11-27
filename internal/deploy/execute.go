@@ -359,7 +359,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			return
 		}
 		outcome.State = "failed"
-		for _, done := range work {
+		for _, done := range touched {
 			if done.intent.Kind == "update" {
 				outcome.State = "rolled_back"
 				break
@@ -453,11 +453,10 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = "release recording failed"
 		return
 	}
-	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
-	barrier, e := json.Marshal(outcome)
+	candidate := state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
+	barrier, e := json.Marshal(candidate)
 	if e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
+		outcome = state.Outcome{State: "recovery_required", Err: "release recording failed", SchemaBefore: before, SchemaAfter: after}
 		return
 	}
 	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy
@@ -468,11 +467,10 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			unwind(e, work)
 			return
 		}
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification barrier unavailable"
+		outcome = state.Outcome{State: "recovery_required", Err: "verification barrier unavailable", SchemaBefore: before, SchemaAfter: after}
 		return
 	}
+	outcome = candidate
 	// The publish follows the barrier. A crash during it leaves the operation to recovery, which keeps the release. The
 	// next deploy or ingress apply brings any route or record it missed in line.
 	publishErr := c.publishIngress(ctx, op.ID, ing, req.ReplaceExisting)

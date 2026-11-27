@@ -190,6 +190,8 @@ type Controller struct {
 	Outside *http.Client
 	// rolloutHold lets tests skip the monitor; nil uses the production duration.
 	rolloutHold *time.Duration
+	// barrierWrite lets tests hold a barrier journal write until its context ends.
+	barrierWrite func(context.Context, string, state.Intent) error
 	// outsidePause is the wait between two tries of the outside check. Zero is the default; tests shorten it.
 	outsidePause time.Duration
 }
