@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -149,6 +150,59 @@ func TestDeployProgressCancellationNamesOperation(t *testing.T) {
 	got := <-done
 	if got != 1 || !strings.Contains(errs.String(), "op") || !strings.Contains(errs.String(), "berthy diagnostics") || !strings.Contains(errs.String(), "berthy cancel") || !strings.Contains(errs.String(), "may continue") {
 		t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
+	}
+}
+
+func TestWatchOperationTerminationStatus(t *testing.T) {
+	type testCase struct {
+		name  string
+		cause error
+		code  int
+	}
+	cases := []testCase{
+		{"TERM", commandSignal{syscall.SIGTERM}, 143},
+		{"INT", commandSignal{syscall.SIGINT}, 1},
+		{"plain cancellation", nil, 1},
+	}
+	if runtime.GOOS != "windows" {
+		cases = append(cases, testCase{"HUP", commandSignal{syscall.SIGHUP}, 129})
+	}
+	const wantHints = "watch interrupted; operation op may continue\n" +
+		"inspect: berthy diagnostics op -e dev --project demo --config 'selected config.json'\n" +
+		"cancel: berthy cancel op -e dev --project demo --config 'selected config.json'\n"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forceStderrTerminal(t, false)
+			arrived := make(chan struct{}, 1)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/operations/op/events" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				arrived <- struct{}{}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			defer cancel(nil)
+			base, _ := url.Parse(server.URL)
+			var errs bytes.Buffer
+			done := make(chan int, 1)
+			go func() {
+				done <- watchOperation(ctx, server.Client(), base, "token", "/v1/", "op", "/v1/operations/op/events",
+					io.Discard, &errs, false, "deploy", "dev", "demo", operationWatchOptions{config: "selected config.json"})
+			}()
+			select {
+			case <-arrived:
+			case code := <-done:
+				t.Fatalf("watch exited %d before requesting events", code)
+			}
+			cancel(tc.cause)
+			if code := <-done; code != tc.code || errs.String() != wantHints {
+				t.Errorf("exit %d, want %d; stderr %q, want %q", code, tc.code, errs.String(), wantHints)
+			}
+		})
 	}
 }
 
