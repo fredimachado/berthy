@@ -632,18 +632,12 @@ Berthy names the Swarm service `<project>-<environment>-<app>-<role>`. The API's
 
 Quote the number in `max-file`, as the example does. A role with `logging` gets exactly those options, and no default is added to them. Any other driver, such as `journald`, gets nothing from Berthy unless the role sets `logging`. Compose apps keep their own logging settings: set `logging` in the Compose file. Berthy does not rewrite that file, so `doctor` warns (`compose_log_limit`) about each service of a deployed Compose app that logs as json-file with no `max-size`. When the service's driver is the server's default driver, the server's `log-opts` `max-size` counts too, even if the service sets other options.
 
-**The health check** is a command that runs *inside* the container, with the same fields Docker uses:
+**The health check** for a Swarm image role takes one of `test` and `uptime`. Omit `health` to inherit the image's check.
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `test` | The command. It starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. | required |
-| `interval` | Time between checks. | `30s` |
-| `timeout` | Longest one check may take. | `30s` |
-| `start_period` | Grace time after start. Failures in it do not count. | `0s` |
-| `start_interval` | Check more often during the start period. Check that your Docker version supports it for Swarm services. | Docker's |
-| `retries` | Failures in a row before the container is unhealthy. | `3` |
+- Use `test` for a command that runs inside the container and returns exit 0 when healthy. Start the list with `CMD` or `CMD-SHELL`. The image must contain the command (`curl` here).
+- Use `health: {uptime: 20s}` for a worker that should keep PID 1 alive for at least 20 seconds. Berthy supplies the executable for this check. Keep named volume mounts outside `/.berthy`. When switching from a command check in an overlay, set `test: null` alongside `uptime`.
 
-The image must contain the command (`curl` here). A new version is first noticed healthy about one `interval` after it starts, so every deploy takes at least that long.
+The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fit inside the app's shared `deploy_timeout`. Run `berthy docs roles` for all health check fields and defaults.
 
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
 

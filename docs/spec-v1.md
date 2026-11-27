@@ -234,14 +234,12 @@ protected: true
 
 ### Health checks
 
-A role's health check is a command run inside the container, with the same fields Docker uses.
+A Swarm image role selects exactly one health check form, `test` or `uptime`. An omitted `health` inherits the image's check. Compose apps use the health checks configured in Compose or the image.
 
-The fields are `test` (a command that starts with `CMD` or `CMD-SHELL`; exit code 0 means healthy), `interval`, `timeout`, `start_period`, `start_interval` and `retries`. Their types and defaults are in the generated reference (`berthy docs roles`).
+The common fields are `interval`, `timeout`, `start_period`, `start_interval` and `retries`. Write durations with units, such as `15s`. The generated reference (`berthy docs roles`) lists the types and defaults.
 
-- Durations are written as `15s`, not in nanoseconds.
-- The check runs inside the container, so the image must contain the command.
-- With the example values a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`.
-- A healthy container is first noticed about one `interval` after start, so every deploy takes at least that long. An optional `start_interval` checks more often during the start period; confirm the installed Docker version supports it for Swarm services before using it.
+- **Command.** `test` starts with `CMD` or `CMD-SHELL` and succeeds on exit 0. The command runs inside the container and must be present in the image. With the example values, a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`. Confirm Swarm support in your Docker version before using `start_interval`.
+- **Uptime.** A positive `uptime` specifies how long PID 1 must stay alive. The default interval is `uptime` plus 100 ms, with zero grace. A shorter interval defaults `start_period` to `uptime` plus 100 ms. A positive grace must cover that sum. Zero grace requires an interval that covers it. An explicit `start_interval` must equal `interval`. With grace, the first eligible poll must fall strictly before `deploy_timeout` on both the ordinary interval and Docker's five-second startup cadence. With zero grace, the interval itself must fit. Roles using uptime reserve `/.berthy` and its descendants as mount targets.
 
 ### Environment variables
 
