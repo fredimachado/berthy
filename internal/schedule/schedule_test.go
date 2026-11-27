@@ -1,6 +1,10 @@
 package schedule
 
 import (
+	"fmt"
+	"maps"
+	"math/bits"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +211,115 @@ func TestMinutesHandsOutEachUTCMinuteOnce(t *testing.T) {
 	zone := time.FixedZone("x", 3600)
 	if _, ok = m.Claim(time.Date(2026, 11, 16, 13, 5, 30, 0, zone)); ok {
 		t.Fatal("the same UTC minute in another zone was handed out")
+	}
+}
+
+// firstOccurrenceByCalendar is the oracle for Next: it walks the calendar days of the nine years that begin at the minute
+// after from (a minute that starts a year) and applies the day rule to the parsed masks itself. On the first eligible day
+// the occurrence is the first allowed hour and the first allowed minute. It returns the zero time when no day is eligible.
+func firstOccurrenceByCalendar(s Schedule, from time.Time) time.Time {
+	start := from.Add(time.Minute)
+	for day := start; day.Before(start.AddDate(9, 0, 0)); day = day.AddDate(0, 0, 1) {
+		if s.month&(1<<uint(day.Month())) == 0 {
+			continue
+		}
+		inMonth := s.dom&(1<<uint(day.Day())) != 0
+		onWeekday := s.dow&(1<<uint(day.Weekday())) != 0
+		eligible := inMonth && onWeekday
+		if !s.domAny && !s.dowAny {
+			eligible = inMonth || onWeekday
+		}
+		if eligible {
+			return time.Date(day.Year(), day.Month(), day.Day(), bits.TrailingZeros64(s.hour), bits.TrailingZeros64(s.minute), 0, 0, time.UTC)
+		}
+	}
+	return time.Time{}
+}
+
+// scheduleFrom is the last minute before a new year, so the nine-year window the fuzz target checks starts on a year boundary.
+var scheduleFrom = time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)
+
+// knownSchedules are expressions with a known first occurrence after scheduleFrom (zero where none exists within nine years).
+var knownSchedules = map[string]time.Time{
+	"* * * * *":             time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+	"*/15 9-17 * * MON-FRI": time.Date(2027, 1, 1, 9, 0, 0, 0, time.UTC),
+	"0 0 1 JAN,jul *":       time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+	"30 2 * * 7":            time.Date(2027, 1, 3, 2, 30, 0, 0, time.UTC),
+	"@daily":                time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+	"@hourly":               time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+	"5/15 * * * *":          time.Date(2027, 1, 1, 0, 5, 0, 0, time.UTC),
+	"0 2/6 * * *":           time.Date(2027, 1, 1, 2, 0, 0, 0, time.UTC),
+	"0 0 */2 * MON":         time.Date(2027, 1, 11, 0, 0, 0, 0, time.UTC),
+	"0 0 13 * FRI":          time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+	"0 0 29 2 *":            time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTC),
+	"0 0 30 2 *":            {},
+	"0 0 31 4 *":            {},
+}
+
+func FuzzSchedule(f *testing.F) {
+	for _, expr := range slices.Sorted(maps.Keys(knownSchedules)) {
+		f.Add(expr)
+	}
+	for _, expr := range []string{
+		"60 * * * *", "* * * *", "*/0 * * * *", "5-1 * * * *", "* * * * 8", "@reboot", "", "a b c d e", "* * 0 * *",
+		"* * * 13 *", "* * * * MON-", "1-", "-", "*/", "/5 * * * *", "1,,2 * * * *", ",1 * * * *", "*-5 * * * *",
+		"1-2-3 * * * *", "99999999999999999999 * * * *", "+5 * * * *", "-1 * * * *", "*/99999999999999999999 * * * *",
+		"MON * * * *", "* * * * MONDAY", "@", "@daily *", "* * * * * *", "\t\n", "*/-1 * * * *",
+		"1,1,1,1,1,1,1,1 * * * *", "1,1,1,1,1,1,1,x * * * *", "0 0 29 FEB MON", "0 0 31 * 7",
+	} {
+		f.Add(expr)
+	}
+	f.Fuzz(func(t *testing.T, expr string) {
+		known, isKnown := knownSchedules[expr]
+		s, err := Parse(expr)
+		if err != nil {
+			if isKnown {
+				t.Fatalf("Parse(%q) refused a known expression: %v", expr, err)
+			}
+			return
+		}
+		if s.String() != expr {
+			t.Fatalf("String() = %q, want %q", s.String(), expr)
+		}
+		want := firstOccurrenceByCalendar(s, scheduleFrom)
+		if isKnown && !want.Equal(known) {
+			t.Fatalf("%q: the calendar oracle says %v, the known answer is %v", expr, want, known)
+		}
+		got := s.Next(scheduleFrom)
+		if !got.Equal(want) {
+			t.Fatalf("%q: Next(%v) = %v, want %v", expr, scheduleFrom, got, want)
+		}
+		if got.IsZero() {
+			return
+		}
+		if !got.After(scheduleFrom) || got.Second() != 0 || got.Nanosecond() != 0 || got.Location() != time.UTC {
+			t.Fatalf("%q: Next = %v is not a later minute in UTC", expr, got)
+		}
+		if !s.Matches(got) {
+			t.Fatalf("%q: Matches(%v) is false for the schedule's own occurrence", expr, got)
+		}
+	})
+}
+
+// BenchmarkScheduleParseScaling measures Parse alone on comma lists that double in length. Parse visits each list item once
+// and each item expands to at most 60 values, so ns/B should stay level as the input grows; "list" is all valid items,
+// "bad-last" is the same list with a malformed last item.
+func BenchmarkScheduleParseScaling(b *testing.B) {
+	for _, family := range []struct {
+		name string
+		last string
+	}{{"list", "5"}, {"bad-last", "x"}} {
+		for items := 1 << 6; items <= 1<<17; items <<= 1 {
+			expr := strings.Repeat("5,", items) + family.last + " * * * *"
+			b.Run(fmt.Sprintf("%s/%d", family.name, items), func(b *testing.B) {
+				b.SetBytes(int64(len(expr)))
+				b.ReportAllocs()
+				for range b.N {
+					Parse(expr)
+				}
+				b.ReportMetric(float64(len(expr)), "input-B")
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(len(expr)), "ns/B")
+			})
+		}
 	}
 }
