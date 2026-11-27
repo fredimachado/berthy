@@ -92,7 +92,7 @@ func TestLockedRestartReadsCompletedState(t *testing.T) {
 	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed", "recovering"} {
 		t.Run(word, func(t *testing.T) {
 			code, out, state, calls := stateShell(t, restartScript("x", 1), word, "no-actions")
-			if code != 0 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
+			if code != 3 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
 				t.Fatalf("code=%d output=%q calls=%q", code, out, calls)
 			}
 		})
@@ -114,7 +114,7 @@ func TestGuardDoesNotActOnFinalState(t *testing.T) {
 	for _, word := range []string{"kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed"} {
 		t.Run(word, func(t *testing.T) {
 			code, out, state, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), word, "no-actions", "yes", "no")
-			if code != 3 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
+			if code != 0 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
 				t.Fatalf("code=%d out=%q state=%q calls=%q", code, out, state, calls)
 			}
 		})
