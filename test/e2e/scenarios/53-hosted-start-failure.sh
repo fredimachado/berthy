@@ -120,4 +120,105 @@ else
   fail "startup recovery webhook" "missing recovery for $check_name"
 fi
 
+# Run setup against the Docker-equipped fixture selected by FS_IMAGE, with its own SSH home.
+private=$(mktemp -d "$RUN/hosted-setup.XXXXXX") || exit 1
+export FS_HOME="$private/home" FS_DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config"
+export HOME="$FS_HOME"
+mkdir -p "$FS_HOME/bin" "$private/empty" || exit 1
+ln -s "$DOCKER_BIN" "$FS_HOME/bin/docker" || exit 1
+export PATH="$FS_HOME/bin:$PATH"
+fixture="$REPO/test/fakeserver/fakeserver.sh"
+scope=$(printf '%s' "$PROJECT/$ENVN" | sha256sum | cut -c1-8)
+nonce=$(printf '%s' "$private" | sha256sum | cut -c1-16)
+export FS_OWNER="$nonce"
+server="h$scope-$nonce"
+existing=$(d ps -aq --no-trunc --filter "name=^/${server}\$") || exit 1
+[ -z "$existing" ] || { fail "start disposable setup server" "container name already exists"; finish; }
+volumes=$(d volume ls -q) || exit 1
+for volume in "$server-docker" "$server-containerd"; do
+  if grep -Fxq -- "$volume" <<< "$volumes"; then fail "start disposable setup server" "volume name already exists"; finish; fi
+done
+cleanup_setup() {
+  bash "$fixture" rm "$server" >/dev/null 2>&1 || echo "could not remove setup fixture" >&2
+  rm -rf "$private"
+}
+trap cleanup_setup EXIT
+bash "$fixture" start "$server" || { fail "start disposable setup server" "fixture did not start"; finish; }
+remote() { bash "$fixture" exec "$server" "$@"; }
+ip=$(bash "$fixture" ip "$server") || exit 1
+remote systemctl start docker || { fail "start fixture Docker" "select a Docker-equipped FS_IMAGE"; finish; }
+
+cfg="$private/cli.json"
+setup_cmd=("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --binary "$BIN"
+  --manifest-dir "$private/empty" --config "$cfg" --no-install-docker --json)
+setup_report() {
+  local token_pattern='"token":[[:space:]]*"(bty\.[a-z0-9._-]+)"'
+  setup_token=
+  if [[ $out =~ $token_pattern ]]; then
+    setup_token=${BASH_REMATCH[1]}
+    out=${out//"$setup_token"/[redacted]}
+    BASH_REMATCH=()
+  fi
+}
+out=$("${setup_cmd[@]}" --project "$PROJECT" </dev/null); code=$?
+setup_report
+expect_code "install the first hosted pair through setup" 0 "$code" "$out"
+[ "$code" -eq 0 ] && [ -n "$setup_token" ] || { fail "read first setup credential" "setup did not return a credential"; finish; }
+first_token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env' "$cfg") || exit 1
+export "$first_token_env=$setup_token"
+unset setup_token
+remote cat /etc/berthy/agent.json > "$private/previous.json" || exit 1
+
+pair=/var/lib/berthy/environments/$SECOND/$ENVN
+remote sh -ec '
+  install -d -o berthy -g berthy -m 0700 "$1" "$1/state"
+  install -o berthy -g berthy -m 0600 /dev/null "$1/key"
+  head -c 32 /dev/urandom > "$1/key"
+  install -o berthy -g berthy -m 0600 /dev/null "$1/state/state.db"
+  printf "invalid SQLite database\n" > "$1/state/state.db"
+' sh "$pair" || exit 1
+out=$("${setup_cmd[@]}" --project "$SECOND" </dev/null); code=$?
+setup_report
+expect_code "setup rejects the addition with unreadable state" 1 "$code" "$out"
+service=$(jq -r '.steps[] | select(.step == "service" and .status == "failed") | .detail' <<< "$out")
+expect_contains "service reports the added pair and startup reason" "$service" "$SECOND/$ENVN: cannot open state"
+if [ -z "$setup_token" ]; then
+  pass "setup does not report a live token for the rolled-back addition"
+else
+  fail "setup does not report a live token for the rolled-back addition" "failed setup returned a token"
+fi
+unset setup_token
+if cmp -s "$private/previous.json" <(remote cat /etc/berthy/agent.json); then
+  pass "setup restores the previous server configuration byte for byte"
+else
+  fail "setup restores the previous server configuration byte for byte" "configuration differs"
+fi
+if jq -e --arg p "$SECOND" --arg e "$ENVN" '.projects[$p].environments[$e] == null' "$cfg" >/dev/null; then
+  pass "the rolled-back pair is absent from the CLI configuration"
+else
+  fail "the rolled-back pair is absent from the CLI configuration" "context exists"
+fi
+out=$("$BIN" agent-info -e "$ENVN" --project "$PROJECT" --config "$cfg" 2>&1); code=$?
+expect_code "the first pair's credential still works after rollback" 0 "$code" "$out"
+
+startup_dir=/run/berthy-startup
+group=$(remote id -g berthy) || exit 1
+expect_eq "startup directory ownership and mode" "0:$group:750" "$(remote stat -c '%u:%g:%a' "$startup_dir")"
+expect_eq "startup result ownership and mode" "0:$group:620" "$(remote stat -c '%u:%g:%a' "$startup_dir/result")"
+invocation=$(remote systemctl show --property=InvocationID --value berthy) || exit 1
+snapshot=$(remote cat "$startup_dir/result") || exit 1
+expect_eq "restored service writes its invocation and started pair" \
+  "$(printf 'berthy-startup-v1\t%s\t1\n%s/%s\tstarted\t\ncomplete' "$invocation" "$PROJECT" "$ENVN")" "$snapshot"
+
+remote rm -- "$pair/state/state.db" || exit 1
+out=$("${setup_cmd[@]}" --project "$SECOND" </dev/null); code=$?
+setup_report
+unset setup_token "$first_token_env"
+expect_code "setup confirms the repaired addition" 0 "$code" "$out"
+if jq -e --arg p "$SECOND" --arg e "$ENVN" '.projects[$p].environments[$e].url | type == "string"' "$cfg" >/dev/null; then
+  pass "the repaired pair is present in the CLI configuration"
+else
+  fail "the repaired pair is present in the CLI configuration" "context missing"
+fi
+
 finish
