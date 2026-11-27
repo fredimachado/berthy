@@ -144,3 +144,139 @@ func TestProtectedTagConfirmFreezesDigestAndCheckout(t *testing.T) {
 		})
 	}
 }
+
+func TestProtectedDeployDiffPrecedesConfirmation(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	for _, tc := range []struct {
+		answer string
+		code   int
+	}{{"n", 1}, {"y", 0}} {
+		t.Run(tc.answer, func(t *testing.T) {
+			var moved atomic.Bool
+			var lookups atomic.Int32
+			requests := make(chan fieldDeployCall, 8)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/agent"):
+					fmt.Fprint(w, `{"project":"demo","environment":"dev","protected":true,"effective_protected":true}`)
+				case strings.HasSuffix(r.URL.Path, "/images/resolve"):
+					lookups.Add(1)
+					image := fieldDiffImage
+					if moved.Load() {
+						image = strings.Replace(image, strings.Repeat("a", 64), strings.Repeat("b", 64), 1)
+					}
+					fmt.Fprintf(w, `{"image":%q,"tag":"stable"}`, image)
+				case strings.HasSuffix(r.URL.Path, "/deploys"):
+					var req deploy.Request
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Error(err)
+						return
+					}
+					requests <- fieldDeployCall{r.URL.RawQuery, req}
+					if req.DryRun {
+						detail := ""
+						if r.URL.RawQuery == "diff=fields" {
+							detail = replicaFieldDiff
+						}
+						fmt.Fprint(w, fieldImagePlan("stable", changedFieldDiff, detail))
+					} else {
+						fmt.Fprint(w, `{}`)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			dir, head := checkoutRepo(t, map[string]string{"berthy.yml": "protected: true\n" + versionsManifest})
+			args := []string{"deploy", "api", "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--version", "stable"}
+			var control, withFlag, jsonErrs bytes.Buffer
+			if code := Run(append(append([]string(nil), args...), "--json", "--dry-run"), &control, &jsonErrs); code != 0 {
+				t.Fatalf("JSON control: exit %d: %s", code, &jsonErrs)
+			}
+			if code := Run(append(append([]string(nil), args...), "--json", "--dry-run", "--diff"), &withFlag, &jsonErrs); code != 0 || withFlag.String() != control.String() {
+				t.Errorf("JSON --diff: exit %d: %s", code, &jsonErrs)
+			}
+			for len(requests) > 0 {
+				if call := <-requests; call.query != "" || !call.req.DryRun {
+					t.Errorf("JSON changed request: %+v", call)
+				}
+			}
+			lookups.Store(0)
+
+			master, tty, err := pty.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := os.Stdin
+			os.Stdin = tty
+			ready, stopped, readerDone := make(chan string, 2), make(chan struct{}), make(chan struct{})
+			var code int
+			var errs bytes.Buffer
+			defer func() {
+				master.Close()
+				<-stopped
+				tty.Close()
+				<-readerDone
+				os.Stdin = previous
+			}()
+			go func() {
+				defer close(stopped)
+				code = Run(append(args, "--diff"), tty, &errs)
+			}()
+			const prompt = "Proceed with this deploy? [y/N] "
+			go func() {
+				defer close(readerDone)
+				reader := bufio.NewReader(master)
+				var seen strings.Builder
+				for {
+					c, err := reader.ReadByte()
+					if err != nil {
+						return
+					}
+					seen.WriteByte(c)
+					if strings.HasSuffix(seen.String(), prompt) {
+						ready <- seen.String()
+					}
+				}
+			}()
+			select {
+			case output := <-ready:
+				output = strings.ReplaceAll(output, "\r\n", "\n")
+				if strings.Count(output, fieldHeading) != 1 || !strings.Contains(output, "- replicas: 2\n      + replicas: 3") || !strings.Contains(output, fieldDiffImage) {
+					t.Errorf("preview before prompt: %q", output)
+				}
+			case <-stopped:
+				t.Fatalf("exit %d before confirmation: %s", code, &errs)
+			}
+			moved.Store(true)
+			if _, err := fmt.Fprintln(master, tc.answer); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-ready:
+				t.Fatal("deploy prompted twice")
+			case <-stopped:
+			}
+			wantCalls := 1
+			if tc.code == 0 {
+				wantCalls++
+			}
+			if code != tc.code || lookups.Load() != 1 || len(requests) != wantCalls {
+				t.Fatalf("exit %d, lookups %d, requests %d: %s", code, lookups.Load(), len(requests), &errs)
+			}
+			preview := <-requests
+			if preview.query != "diff=fields" || !preview.req.DryRun || preview.req.Version != fieldDiffImage {
+				t.Errorf("preview: %+v", preview)
+			}
+			if tc.code == 0 {
+				actual := <-requests
+				req := actual.req
+				if actual.query != "" || req.DryRun || req.Version != fieldDiffImage || req.VersionTag != "stable" || req.ExpectedApplied == nil || *req.ExpectedApplied != 17 || req.Commit != head {
+					t.Errorf("admitted: %+v", actual)
+				}
+			}
+		})
+	}
+}

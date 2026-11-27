@@ -98,7 +98,10 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	} else if tag != "" {
 		return errors.New("invalid agent deploy plan")
 	}
-	if json.Unmarshal(fields["app"], &app) != nil || json.Unmarshal(fields["image"], &gotImage) != nil || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || app != req.App || gotTag != tag || !pinnedImage(m, req.App, gotImage) || (image != "" && gotImage != image) {
+	if json.Unmarshal(fields["app"], &app) != nil || json.Unmarshal(fields["image"], &gotImage) != nil || json.Unmarshal(fields["roles"], &roles) != nil || roles == nil || app != req.App || gotTag != tag || (image != "" && gotImage != image) {
+		return errors.New("invalid agent deploy plan")
+	}
+	if !pinnedImage(m, req.App, gotImage) && !checkedTaggedDigest(m, req, image, tag) {
 		return errors.New("invalid agent deploy plan")
 	}
 	expected, exists := m.Apps[req.App]
@@ -129,16 +132,28 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	if raw := fields["ingress"]; raw != nil && !validDeployIngress(raw) {
 		return errors.New("invalid agent deploy plan")
 	}
-	if raw := fields["blockers"]; raw != nil {
-		var blockers []string
-		if json.Unmarshal(raw, &blockers) != nil || blockers == nil {
-			return errors.New("invalid agent deploy plan")
-		}
-		if len(blockers) != 0 {
-			return errors.New("deploy plan has blockers")
-		}
+	blockers, err := readDeployBlockers(fields["blockers"])
+	if err != nil {
+		return err
+	}
+	if len(blockers) != 0 {
+		return blockers
 	}
 	return nil
+}
+
+// checkedTaggedDigest permits the exact tag-plus-digest the operator supplied on an unprotected deploy.
+func checkedTaggedDigest(m *manifest.Manifest, req deploy.Request, image, tag string) bool {
+	if image == "" || req.Version == "" || req.VersionTag != "" || m.Protected {
+		return false
+	}
+	ref, err := m.ImageReference(req.App, req.Version)
+	if err != nil || ref.String() != image {
+		return false
+	}
+	tagged, taggedOK := ref.(reference.NamedTagged)
+	canonical, pinned := ref.(reference.Canonical)
+	return taggedOK && pinned && tagged.Tag() == tag && canonical.Digest().Algorithm() == "sha256"
 }
 
 // validStringList requires a non-null array of non-null strings.
@@ -438,6 +453,10 @@ func showImagePlan(out io.Writer, data []byte, token string, asJSON bool, headin
 			}
 		}
 	}
+	return writeDeployOutput(out, &buf)
+}
+
+func writeDeployOutput(out io.Writer, buf *bytes.Buffer) error {
 	n, err := out.Write(buf.Bytes())
 	if err == nil && n != buf.Len() {
 		err = io.ErrShortWrite
@@ -510,6 +529,9 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 		fmt.Fprintln(errout, "protected tag deployment requires an agent upgrade or an explicit digest")
 		return 1
 	}
+	if f.deployDiff && !f.json && !protected {
+		return runDeployFieldPreview(ctx, client, target, f, req, false, out, errout)
+	}
 	if policy == agentclient.ProtectionLegacyUnprotected {
 		guard := req
 		guard.DryRun = true
@@ -579,6 +601,9 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	if _, err := m.CheckImageDeploy(req.App, req.Version, true); err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
+	}
+	if f.deployDiff && !f.json {
+		return runDeployFieldPreview(ctx, client, target, f, req, true, out, errout)
 	}
 	preview := req
 	preview.DryRun = true

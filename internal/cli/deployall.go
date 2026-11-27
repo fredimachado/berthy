@@ -238,6 +238,8 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 				fmt.Fprintln(errout, err)
 				code = 1
 			}
+		} else if f.dry && f.deployDiff && !f.json && len(steps) == 1 && !step.req.KeepVersion {
+			code = runDeployFieldPreview(ctx, client, target, f, step.req, false, stdout, errout)
 		} else {
 			code = sendCommand(ctx, client, base, prefix, token, "POST", "deploys", step.req, f, "deploy", stdout, errout)
 		}

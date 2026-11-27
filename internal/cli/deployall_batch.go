@@ -196,21 +196,12 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 
 func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request, image, tag, token string, asJSON bool) error {
 	invalid := errors.New("invalid agent deploy plan")
+	if m.Apps[req.App].Kind != "compose" {
+		return imagePlan(data, m, req, image, tag)
+	}
 	fields, err := exactFields(data, "app", "image", "tag", "roles", "blockers", "compose", "diff", "remove", "destroy", "restore", "exec", "command")
 	if err != nil {
 		return invalid
-	}
-	if raw := fields["blockers"]; raw != nil {
-		var b []string
-		if json.Unmarshal(raw, &b) != nil || b == nil {
-			return invalid
-		}
-		if len(b) > 0 {
-			return errors.New("deploy plan has blockers")
-		}
-	}
-	if m.Apps[req.App].Kind != "compose" {
-		return imagePlan(data, m, req, image, tag)
 	}
 	if raw := fields["diff"]; raw != nil && !validImageDiff(raw) {
 		return invalid
@@ -252,22 +243,13 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 			names[name] = true
 		}
 	}
-	if cf["blockers"] != nil && (json.Unmarshal(cf["blockers"], &plan.Blockers) != nil || plan.Blockers == nil) {
+	top, err := readDeployBlockers(fields["blockers"])
+	if err != nil {
 		return invalid
 	}
-	if cf["blockers"] != nil {
-		var blockers []*string
-		if json.Unmarshal(cf["blockers"], &blockers) != nil {
-			return invalid
-		}
-		for _, blocker := range blockers {
-			if blocker == nil {
-				return invalid
-			}
-		}
-	}
-	if len(plan.Blockers) > 0 {
-		return errors.New("deploy plan has blockers")
+	compose, err := readDeployBlockers(cf["blockers"])
+	if err != nil {
+		return invalid
 	}
 	safeDecision := func(s string) bool {
 		visible := redactSecretText(s, token)
@@ -301,6 +283,9 @@ func batchPlan(data []byte, m *manifest.Manifest, env string, req deploy.Request
 		if !safeDecision(v.Name) || !safeDecision(v.Action) {
 			return errors.New("cannot safely display deploy selection")
 		}
+	}
+	if blockers := append(top, compose...); len(blockers) > 0 {
+		return blockers
 	}
 	return nil
 }
