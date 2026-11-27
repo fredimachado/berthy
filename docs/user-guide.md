@@ -931,7 +931,7 @@ Secrets belong to one environment. `secret` commands need an `admin` token.
 
 Setup runs this guide at a terminal when it has an admin token. Run `berthy secret set -e prod` at a terminal to generate the declared secrets and enter each remaining value in turn. Enter skips a value; the command exits 1 while anything remains unmet. Add `--manifest-dir DIR` to choose the manifest.
 
-`berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input: one trailing LF or CRLF is stripped, any other line break is refused, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
+`berthy secret set` takes the value in one of two ways. Typed at a terminal, Berthy asks for the value without showing it, and for some secrets checks it first. Piped, the value is read from standard input: one trailing LF or CRLF is stripped, any other line break is refused, an empty value is refused with `no value entered`, and nothing else happens. Type the value yourself; pipe it in CI and scripts. [What Berthy does at a terminal](#what-berthy-does-at-a-terminal) lists each step.
 
 ```bash
 # The registry token: a GitHub token that can read packages. Note --registry.
@@ -1010,7 +1010,7 @@ Remove one with `berthy secret rm <NAME> -e prod` (`delete` also works). Add `--
 
 Each line is `NAME=value`. The value is everything after the first `=`, so a value may contain `=`. A blank line, and a line that starts with `#`, is skipped.
 
-The import is **all or nothing**. A line without `=`, a name that is not a secret name, a value over 64 KiB, a name that appears twice, or a name the manifest cannot have (`TUNNEL_TOKEN`) stops the whole import before anything is stored. The error names the line, or the secret, and never its value.
+The import is **all or nothing**. A line without `=`, a name that is not a secret name, an empty value, a value over 64 KiB, a name that appears twice, or a name the manifest cannot have (`TUNNEL_TOKEN`) stops the whole import before anything is stored. The error names the line, or the secret, and never its value.
 
 Check an import with `--dry-run` first. It prints the names the import would create and the names it would replace, and it never prints a value:
 
@@ -1020,6 +1020,7 @@ Check an import with `--dry-run` first. It prints the names the import would cre
 # would replace: REDIS_PASSWORD
 ```
 
+- An empty value is refused (`line N: NAME has no value`).
 - A registry password is not imported. A name that is stored as a registry password is refused, so set that one with `berthy secret set NAME --registry HOST`.
 - One import is one request of at most 1 MiB. A bigger file is refused before anything is sent: split it into two imports.
 - On a protected environment an AI agent's import is held for approval, as a `secret set` is. The plan lists the names and no value.
