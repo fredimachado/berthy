@@ -269,19 +269,27 @@ type storedSecret struct {
 	Registry string `json:"registry"`
 }
 
+var pipeSignalAfterFunc = context.AfterFunc
+
 // exitOnPipeSignal ends an unsubmitted secret read even when its producer keeps stdin open.
 func exitOnPipeSignal(ctx context.Context) func() {
-	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(done)
+	exit := func() {
 		if s, ok := context.Cause(ctx).(commandSignal); ok {
 			exitProcess(128 + int(s.Signal))
 		}
+	}
+	done := make(chan struct{})
+	stop := pipeSignalAfterFunc(ctx, func() {
+		defer close(done)
+		exit()
 	})
 	return func() {
-		if !stop() {
-			<-done
+		if stop() {
+			// EOF can disarm the callback after the signal cause was published.
+			exit()
+			return
 		}
+		<-done
 	}
 }
 
