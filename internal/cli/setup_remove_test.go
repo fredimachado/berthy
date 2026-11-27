@@ -278,7 +278,7 @@ func TestSetupRemoveDryRunOnlyReads(t *testing.T) {
 			if tt.inactive && (r.dockerActive || r.dockerRequests != 0 || !strings.Contains(diag, "systemctl is-active --quiet docker")) {
 				t.Fatalf("inactive daemon was not gated: active=%t requests=%d log %q", r.dockerActive, r.dockerRequests, diag)
 			}
-			if wantCode == 0 && (!strings.Contains(out, "would remove the local CLI entry") || !strings.Contains(diag, "not run: dry run")) {
+			if wantCode == 0 && (!strings.Contains(out, "would keep the local CLI entry") || !strings.Contains(diag, "not run: dry run")) {
 				t.Fatalf("missing preview or verbose detail: %q %q", out, diag)
 			}
 		})

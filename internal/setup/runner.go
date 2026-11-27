@@ -105,6 +105,13 @@ func (r *SSH) Run(ctx context.Context, script string, stdin io.Reader) (Result, 
 	return runProcess(ctx, r.Program, sshArgs(r.Dest, r.sudo, script), stdin)
 }
 
+func (r *SSH) runSSHLogin(ctx context.Context, script string) (Result, error) {
+	if !sshhost.Valid(r.Dest) {
+		return Result{}, fmt.Errorf("invalid host %q: use USER@SERVER or SERVER", r.Dest)
+	}
+	return runProcess(ctx, r.Program, sshArgs(r.Dest, false, script), nil)
+}
+
 // Local runs scripts on this server: sh -c directly when it runs as root, sudo -n sh -c otherwise.
 type Local struct {
 	sudo bool

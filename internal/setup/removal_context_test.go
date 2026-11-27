@@ -13,10 +13,32 @@ import (
 	"berthy/internal/credstore/credtest"
 )
 
+func TestRemovalPreservesAmbiguousSSHContext(t *testing.T) {
+	r, opts := newRemovalRunner(t)
+	opts.CLIConfig = filepath.Join(filepath.Dir(opts.CLIConfig), "operator context.json")
+	before := []byte(`{"projects":{"alpha":{"environments":{"dev":{"url":"http://127.0.0.1:7710","token_env":"TUNNEL_TOKEN"}}}}}`)
+	if err := os.WriteFile(opts.CLIConfig, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{R: r, Opts: opts}
+	var report StepResult
+	ok := Run(context.Background(), s, RemovalSteps(false), func(result StepResult) {
+		if result.Step == "cli_config" || result.Status == StatusFailed {
+			report = result
+		}
+	})
+	after, err := os.ReadFile(opts.CLIConfig)
+	want := "berthy context remove --project alpha -e dev --config " + shellQuote(opts.CLIConfig)
+	if !ok || report.Status != StatusSkipped || !strings.Contains(report.Detail, want) || !bytes.Equal(before, after) || err != nil {
+		t.Fatalf("SSH removal: success=%t, context=%q, result=%+v, read error=%v", ok, after, report, err)
+	}
+}
+
 func TestRemovalFinishesLocalContextAfterServerCleanup(t *testing.T) {
 	for _, name := range []string{"sibling remains", "project pruned", "missing entry", "missing file", "other server", "preview", "write fails and retries"} {
 		t.Run(name, func(t *testing.T) {
 			r, opts := newRemovalRunner(t)
+			opts.Local = true
 			store := credtest.NewMemory()
 			opts.Tokens = store
 			read := func() agentclient.Config {

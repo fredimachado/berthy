@@ -16,7 +16,7 @@ func removeCLIConfigStep(ctx context.Context, s *Session) (string, string, error
 	if err := cleanupReady(s); err != nil {
 		return "", "", err
 	}
-	status, detail, err := removeLocalContext(s)
+	status, detail, err := removeLocalContext(ctx, s)
 	if err != nil {
 		if s.DryRun {
 			return "", "", err
@@ -31,7 +31,7 @@ func removeCLIConfigStep(ctx context.Context, s *Session) (string, string, error
 	return status, detail, nil
 }
 
-func removeLocalContext(s *Session) (string, string, error) {
+func removeLocalContext(ctx context.Context, s *Session) (string, string, error) {
 	id := s.removal.ID
 	path, err := agentclient.ConfigPath(s.Opts.CLIConfig)
 	if err != nil {
@@ -45,8 +45,12 @@ func removeLocalContext(s *Session) (string, string, error) {
 	if !ok {
 		return StatusOK, id.String() + " has no local CLI entry", nil
 	}
-	if !localContextMatches(s.Opts, entry.URL) {
-		return StatusSkipped, fmt.Sprintf("kept the local CLI entry for %s because its URL does not match this server. Use berthy context remove --project %s -e %s to remove it explicitly", id, id.Project, id.Environment), nil
+	if !localContextMatches(s.Opts, entry.URL) || (!s.Opts.Local && !verifiedSSHAddress(ctx, s.R, s.Opts.ListenIP)) {
+		verb := "kept"
+		if s.DryRun {
+			verb = "would keep"
+		}
+		return StatusSkipped, fmt.Sprintf("%s the local CLI entry for %s because its URL could not be tied to this server. To remove it explicitly, run berthy context remove --project %s -e %s --config %s", verb, id, id.Project, id.Environment, shellQuote(path)), nil
 	}
 	if s.DryRun {
 		return StatusWouldChange, "would remove the local CLI entry for " + id.String(), nil
@@ -56,6 +60,52 @@ func removeLocalContext(s *Session) (string, string, error) {
 		return "", "", err
 	}
 	return StatusChanged, "removed the local CLI entry for " + id.String(), nil
+}
+
+type sshLoginRunner interface {
+	runSSHLogin(context.Context, string) (Result, error)
+}
+
+var errNoSSHConnection = errors.New("SSH connection addresses are unavailable")
+
+func verifiedSSHAddress(ctx context.Context, r Runner, listen net.IP) bool {
+	if listen.IsLoopback() {
+		return false
+	}
+	login, ok := r.(sshLoginRunner)
+	if !ok {
+		return false
+	}
+	// sshd sets SSH_CONNECTION for the login shell. sudo can drop it.
+	res, err := login.runSSHLogin(ctx, `printf '%s\n' "$SSH_CONNECTION"`)
+	if err != nil || res.Code != 0 || len(res.Stderr) != 0 {
+		return false
+	}
+	fields := strings.Fields(string(res.Stdout))
+	if len(fields) != 4 || !net.ParseIP(fields[2]).Equal(listen) {
+		return false
+	}
+	client := net.ParseIP(fields[0])
+	if client == nil || client.IsLoopback() {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	// A local listen address can be a port forward. A nonlocal client address can be a jump host.
+	direct := false
+	for _, addr := range addrs {
+		ip, _, err := net.ParseCIDR(addr.String())
+		if err != nil {
+			continue
+		}
+		if ip.Equal(listen) {
+			return false
+		}
+		direct = direct || ip.Equal(client)
+	}
+	return direct
 }
 
 func localContextMatches(opts Options, address string) bool {
