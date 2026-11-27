@@ -47,7 +47,10 @@ func TestRolloutPollMustStartAfterHoldBoundary(t *testing.T) {
 		f := &straddlingHealth{eventedHealth: newEventedHealth(), tasks: []engine.ServiceTask{one, two}, started: make(chan struct{}), release: make(chan struct{})}
 		ctx, cancel := context.WithCancel(context.Background())
 		done, exited := make(chan error, 1), make(chan struct{})
-		go func() { defer close(exited); done <- waitHealthy(ctx, f, "s", "op", 2, 1, 5*time.Second) }()
+		go func() {
+			defer close(exited)
+			done <- waitHealthy(ctx, f, "s", "op", 2, startBudget{limit: 1}, 5*time.Second)
+		}()
 		defer func() { cancel(); <-exited }()
 		synctest.Wait()
 		time.Sleep(4800 * time.Millisecond)
@@ -201,9 +204,9 @@ func TestObservedReceiptWriteStopsAtStartupCutoff(t *testing.T) {
 				i := state.Intent{Kind: kind, Name: "svc", ServiceID: "id", Before: before, Desired: desired, Generation: "op"}
 				var err error
 				if kind == "create" {
-					_, err = createRole(ctx, j, m, "op", i, nil, 1, 1, 5*time.Second)
+					_, err = createRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
 				} else {
-					err = updateRole(ctx, j, m, "op", i, nil, 1, 1, 5*time.Second)
+					err = updateRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
 				}
 				if j.endedAt.IsZero() {
 					t.Fatalf("observed write never started: %v", err)

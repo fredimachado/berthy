@@ -15,6 +15,8 @@ import (
 type roleWork struct {
 	intent   state.Intent
 	replicas int
+	// Recovery allowance if this role and every earlier role in the rollout need to be unwound.
+	recoveryAllowance time.Duration
 }
 
 func (c *Controller) execute(ctx context.Context, op state.Operation, actor Actor, req Request) {
@@ -70,7 +72,10 @@ func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, ro
 		drain = "30s"
 	}
 	order, _ := app.UpdateOrder(role)
-	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
+	if err := checkUptimeImage(app, role, img); err != nil {
+		return nil, err
+	}
+	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver, prepared.ProbeSource)
 }
 
 // releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
@@ -104,7 +109,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
 		var refusal Refusal
-		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal))) {
+		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal)) || isUptimeRefusal(refusal)) {
 			outcome.Err = string(refusal)
 		}
 		return
@@ -128,7 +133,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if req.Adopt {
 		plan, bindings, e := c.planAdoption(ctx, req)
 		if e != nil {
-			outcome.Err = "adoption preflight failed"
+			outcome.Err = uptimePreflightMessage(e, "adoption preflight failed")
 			return
 		}
 		raw, e := json.Marshal(req.Manifest)
@@ -165,6 +170,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		return
 	}
+	prepared.ProbeSource, err = c.appProbeSource(req.Manifest.Apps[req.App])
+	if err != nil {
+		outcome.Err = uptimePreflightMessage(err, outcome.Err)
+		return
+	}
 	img, msg, err := c.ensureImage(ctx, prepared)
 	if err != nil {
 		outcome.Err = msg
@@ -185,20 +195,18 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 	}
 	app := req.Manifest.Apps[req.App]
-	timeout := app.Deploy.DeployTimeout
-	if timeout == "" {
-		timeout = "120s"
-	}
-	budget, err := time.ParseDuration(timeout)
-	if err != nil || budget <= 0 {
+	budget, err := deployStartupBudget(app)
+	if err != nil {
 		return
 	}
 	work := make([]roleWork, 0, len(p.Roles))
+	recoveryAllowance := serviceCleanupAllowance
+	var predecessor *manifest.App
 	for ordinal, role := range p.Roles {
 		r := app.Roles[role]
 		spec, e := c.releaseRoleSpec(prepared, img, role, op.ID)
 		if e != nil {
-			outcome.Err = "role preflight failed"
+			outcome.Err = uptimePreflightMessage(e, "role preflight failed")
 			return
 		}
 		name := req.Manifest.ServiceName(c.Environment, req.App, role)
@@ -258,6 +266,25 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 					outcome.Err = "prior service health cannot be verified"
 					return
 				}
+				if previous.Mode.Replicated.Replicas > 0 {
+					if predecessor == nil {
+						release, err := c.Store.Applied(ctx, req.App)
+						var applied manifest.Manifest
+						if err != nil || json.Unmarshal(release.Manifest, &applied) != nil {
+							return
+						}
+						priorApp := applied.Apps[req.App]
+						predecessor = &priorApp
+					}
+					startup, err := uptimeReplacementBudget(*predecessor, role, live.Spec, previous.Mode.Replicated.Replicas)
+					if err != nil {
+						return
+					}
+					recoveryAllowance, err = addStartupAllowance(recoveryAllowance, startup)
+					if err != nil {
+						return
+					}
+				}
 				if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
 					ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
 					if e != nil {
@@ -293,7 +320,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if r.Replicas != nil {
 			replicas = *r.Replicas
 		}
-		work = append(work, roleWork{intent: intent, replicas: replicas})
+		work = append(work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	}
 	// The check step of a publishing deploy confirms, before anything changes, that its routes and records can be published.
 	wants, err := c.routeWants(ctx, req.Manifest, []string{req.App})
@@ -348,7 +375,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		var gaveUp *errStartAttempts
 		errors.As(e, &gaveUp)
 		outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, touched)
-		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		allowance := serviceCleanupAllowance
+		if len(touched) > 0 {
+			allowance = touched[len(touched)-1].recoveryAllowance
+		}
+		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), allowance)
 		recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 		recoveryCancel()
 		if recoveryErr != nil {
@@ -381,11 +412,13 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
 		rollCtx, stopRoll := interruptible(roleCtx)
 		id := w.intent.ServiceID
+		health := app.Roles[w.intent.Role].Health
+		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
+			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, starts, hold)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
+			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, starts, hold)
 		}
 		stopRoll()
 		stopRole()
@@ -696,7 +729,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0, 0)
+	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, 0)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

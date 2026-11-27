@@ -57,7 +57,7 @@ func TestUpdateRoleSucceedsWhenTheSurvivingReplicaIsInSlotTwo(t *testing.T) {
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: []engine.ServiceTask{retired, survivor}}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := updateRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, 3, 0)
+	err := updateRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, startBudget{limit: 3}, 0)
 	if err != nil {
 		t.Fatalf("update over a service changed by hand: %v", err)
 	}

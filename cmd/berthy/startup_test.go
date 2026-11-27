@@ -85,3 +85,56 @@ func TestStartupDoesNotSearchPATH(t *testing.T) {
 		}
 	}
 }
+
+func TestMountedProbeAndOrdinaryProbeAlias(t *testing.T) {
+	bin := buildBerthy(t)
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.json")
+	manifest := `project: demo
+network: demo
+apps:
+  api:
+    kind: image
+    image: ghcr.io/acme/api
+    roles:
+      worker: {}
+aliases:
+  probe: config show --json
+  validate: config validate
+`
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, store, want string
+		args              []string
+		code              int
+	}{
+		{"mounted usage", "invalid", "usage: berthy probe uptime DURATION", []string{"probe"}, 2},
+		{"mounted bad duration", "invalid", "usage: berthy probe uptime DURATION", []string{"probe", "uptime", "-1s"}, 2},
+		{"validate manifest", "none", "", []string{"config", "validate"}, 0},
+		{"probe alias", "none", `"project": "demo"`, []string{"probe"}, 0},
+		{"other alias", "none", "", []string{"validate"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(bin, tc.args...)
+			cmd.Dir = dir
+			cmd.Env = []string{"HOME=" + dir, "BERTHY_CONFIG=" + config, "BERTHY_TOKEN_STORE=" + tc.store, "BERTHY_ENV=dev"}
+			if tc.store == "invalid" {
+				cmd.Args[0] = "/.berthy/berthy"
+			}
+			out, err := cmd.CombinedOutput()
+			code := 0
+			if err != nil {
+				exit, ok := err.(*exec.ExitError)
+				if !ok {
+					t.Fatal(err)
+				}
+				code = exit.ExitCode()
+			}
+			if code != tc.code || !strings.Contains(string(out), tc.want) {
+				t.Fatalf("exit %d, output %q, want exit %d and %q", code, out, tc.code, tc.want)
+			}
+		})
+	}
+}

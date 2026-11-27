@@ -215,6 +215,13 @@ apps:
       revert: ["migrate", "down-to", "{target}"]
       timeout: 5m
       retries: 1
+  queue:
+    kind: image
+    image: ghcr.io/acme/worker
+    roles:
+      worker:
+        health:
+          uptime: 20s
   db:
     kind: compose
     file: deploy/db.yml
@@ -425,6 +432,8 @@ func TestFullManifestIsValidAndSetsEveryKey(t *testing.T) {
 // exclusive are keys of which a manifest sets exactly one, or that others refer to, so a manifest without them is refused
 // although they are optional. Each says why.
 var exclusive = map[string]string{
+	"apps.<name>.roles.<role>.health.test":   "health has one of test and uptime",
+	"apps.<name>.roles.<role>.health.uptime": "health has one of test and uptime",
 	"apps.<name>.hooks.pre_deploy[].backup":  "a hook is a backup or a run",
 	"apps.<name>.hooks.pre_deploy[].run":     "a hook is a backup or a run",
 	"apps.<name>.hooks.post_deploy[].backup": "a hook is a backup or a run",
@@ -572,9 +581,11 @@ func TestDefaultsAgreeWithTheManifest(t *testing.T) {
 		}
 		var found []string
 		eachKeyAt(stored, k.Path, func(holder map[string]any, name string) { found = append(found, fmt.Sprint(holder[name])) })
+		// bareManifest has a command check. Its uptime counterpart calculates its timing when needed.
+		commandDefault := strings.TrimSuffix(k.Default, " for test")
 		for _, f := range found {
 			switch {
-			case k.Default != "" && !sameValue(k.Default, f):
+			case k.Default != "" && !sameValue(commandDefault, f):
 				t.Errorf("%s: Keys says the default is %q, and the decoded manifest holds %q", k.Path, k.Default, f)
 			case k.Default == "" && k.Type != "map" && k.Type != "list":
 				t.Errorf("%s: the decoded manifest fills in %q, and Keys documents no default", k.Path, f)

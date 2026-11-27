@@ -131,7 +131,8 @@ type Logging struct {
 	Options map[string]string `json:"options,omitempty" yaml:"options,omitempty"`
 }
 type Health struct {
-	Test          []string `json:"test" yaml:"test"`
+	Test          []string `json:"test,omitempty" yaml:"test,omitempty"`
+	Uptime        *string  `json:"uptime,omitempty" yaml:"uptime,omitempty"`
 	Interval      string   `json:"interval,omitempty" yaml:"interval,omitempty"`
 	Timeout       string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	StartPeriod   string   `json:"start_period,omitempty" yaml:"start_period,omitempty"`
@@ -214,6 +215,8 @@ func (e Env) SecretNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+const defaultDeployTimeout = "120s"
 
 type Deploy struct {
 	DeployTimeout string `json:"deploy_timeout,omitempty" yaml:"deploy_timeout,omitempty"`
@@ -891,7 +894,7 @@ func (m *Manifest) defaults() {
 	}
 	for k, a := range m.Apps {
 		if a.Deploy.DeployTimeout == "" {
-			a.Deploy.DeployTimeout = "120s"
+			a.Deploy.DeployTimeout = defaultDeployTimeout
 		}
 		if a.Deploy.DrainTimeout == "" {
 			a.Deploy.DrainTimeout = "30s"
@@ -931,14 +934,16 @@ func (m *Manifest) defaults() {
 				r.Replicas = &n
 			}
 			if h := r.Health; h != nil {
-				if h.Interval == "" {
-					h.Interval = "30s"
+				if h.Uptime == nil {
+					if h.Interval == "" {
+						h.Interval = "30s"
+					}
+					if h.StartPeriod == "" {
+						h.StartPeriod = "0s"
+					}
 				}
 				if h.Timeout == "" {
 					h.Timeout = "30s"
-				}
-				if h.StartPeriod == "" {
-					h.StartPeriod = "0s"
 				}
 				if h.Retries == nil {
 					n := 3

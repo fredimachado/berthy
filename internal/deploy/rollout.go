@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"time"
 
 	"berthy/internal/engine"
@@ -219,14 +221,20 @@ type errStartAttempts struct {
 
 func (e *errStartAttempts) Error() string { return "service gave up after failed starts" }
 
-// startFailed is a task that ended in error: its container exited non-zero or was killed as unhealthy, or Swarm refused to
-// start it.
-func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.State == "rejected" }
+type startBudget struct {
+	limit         int
+	countComplete bool
+}
+
+// An uptime rollout also spends an attempt when a candidate exits cleanly. Swarm can already want that task shut down.
+func startFailed(t engine.ServiceTask, budget startBudget) bool {
+	return t.State == "failed" || t.State == "rejected" || budget.countComplete && t.State == "complete"
+}
 
 // waitHealthy confirms a positive hold only after continuous coverage and a fresh healthy poll begun at or after its
 // boundary. ctx is the role's hard deadline; startup ends at that deadline minus rolloutAllowance(hold), and coverage
 // lost after the startup cutoff ends the wait. Failed task IDs are counted across polls up to a positive limit.
-func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int, hold time.Duration) error {
+func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas int, budget startBudget, hold time.Duration) error {
 	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
@@ -246,13 +254,13 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 		if err == nil {
 			newFailure := false
 			for _, t := range tasks {
-				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) && !failed[t.ID] {
+				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t, budget) && !failed[t.ID] {
 					failed[t.ID] = true
 					newFailure = true
 				}
 			}
-			if limit > 0 && len(failed) >= limit {
-				return &errStartAttempts{Failed: len(failed), Limit: limit}
+			if budget.limit > 0 && len(failed) >= budget.limit {
+				return &errStartAttempts{Failed: len(failed), Limit: budget.limit}
 			}
 			if newFailure {
 				healthySince = time.Time{}
@@ -340,7 +348,7 @@ func withRole(err error, role string) error {
 }
 
 // createRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
-func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) (string, error) {
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, hold time.Duration) (string, error) {
 	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
@@ -382,7 +390,7 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return "", err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, hold); err != nil {
 		return "", withRole(err, i.Role)
 	}
 	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
@@ -392,7 +400,7 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 }
 
 // updateRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
-func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) error {
+func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, hold time.Duration) error {
 	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
@@ -432,7 +440,7 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, hold); err != nil {
 		return withRole(err, i.Role)
 	}
 	if updateHasTasks(i.Before) {
@@ -491,7 +499,7 @@ func emptyInheritedRaw(raw json.RawMessage) bool {
 	return d.Decode(&v) == nil && emptyInherited(v)
 }
 
-func validateInheritedRuntime(raw json.RawMessage) error {
+func validateInheritedRuntime(raw json.RawMessage, expected *expectedUptimeProbe) error {
 	var x struct {
 		TaskTemplate struct {
 			Runtime       string
@@ -515,15 +523,41 @@ func validateInheritedRuntime(raw json.RawMessage) error {
 			return errors.New("unsafe inherited container settings")
 		}
 	}
-	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 && string(rawMounts) != "null" {
-		var mounts []struct{ Type string }
+	foundProbe := false
+	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 {
+		var mounts []json.RawMessage
 		if json.Unmarshal(rawMounts, &mounts) != nil {
 			return errors.New("invalid mounts")
 		}
 		for _, m := range mounts {
-			if m.Type != "volume" {
+			var mount struct{ Type string }
+			if json.Unmarshal(m, &mount) != nil {
+				return errors.New("invalid mounts")
+			}
+			if mount.Type == "volume" {
+				if expected == nil {
+					continue
+				}
+				var volume struct{ Target string }
+				if json.Unmarshal(m, &volume) != nil || uptimeMountOverlap(volume.Target) {
+					return errors.New("unsafe inherited mount")
+				}
+				continue
+			}
+			var bind map[string]any
+			if expected == nil || foundProbe || json.Unmarshal(m, &bind) != nil || !reflect.DeepEqual(bind, expected.mount) {
 				return errors.New("unsafe inherited mount")
 			}
+			foundProbe = true
+		}
+	}
+	if expected != nil {
+		if !foundProbe {
+			return errors.New("managed uptime mount unavailable")
+		}
+		var health struct{ Test []string }
+		if json.Unmarshal(x.TaskTemplate.ContainerSpec["Healthcheck"], &health) != nil || !slices.Equal(health.Test, expected.test) {
+			return errors.New("managed uptime health command changed")
 		}
 	}
 	var outer struct {

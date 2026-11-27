@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,7 +17,7 @@ import (
 // other than the shared one. It is called only by planAdoption, which reads the replica count and so refuses a service that
 // is not replicated itself.
 func adoptableService(live json.RawMessage, network string) error {
-	if err := validateInheritedRuntime(live); err != nil {
+	if err := validateInheritedRuntime(live, nil); err != nil {
 		return err
 	}
 	var x struct {
@@ -86,11 +87,12 @@ const shownValueLimit = 60
 
 // specChanges lists, one line each, what the release's spec does to the live spec of a role: a field of the live spec the
 // release does not produce, which the deploy drops, and one the release produces differently, which the deploy sets. A field
-// only the release produces is not listed, because nothing is lost. Both specs are compared as sameSpec does, with what
+// only the release produces is normally omitted. The uptime command and its generated bind are shown even for additions.
+// Both specs are compared as sameSpec does, with what
 // Docker adds on its own, the Berthy labels and the Swarm force-update counter set aside. Variables of the environment are
 // listed by name and their values never shown, as are the BERTHY_* ones, which every deploy sets. The log driver has its own
 // line, as it always had.
-func specChanges(role string, live, desired json.RawMessage) []string {
+func specChanges(role string, live, desired json.RawMessage, probeSource string) []string {
 	l, ok1 := comparableSpec(live)
 	d, ok2 := comparableSpec(desired)
 	if !ok1 || !ok2 {
@@ -98,12 +100,17 @@ func specChanges(role string, live, desired json.RawMessage) []string {
 	}
 	var lines []string
 	have, want := flattenSpec(l), flattenSpec(d)
+	const healthTest = "TaskTemplate.ContainerSpec.Healthcheck.Test"
+	probe := separateUptimeBind(want, probeSource)
 	paths := make([]string, 0, len(have))
 	for p := range have {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
+		if probe && p == healthTest {
+			continue
+		}
 		f := have[p]
 		name, key := specFieldName(f.path)
 		next, produced := want[p]
@@ -116,6 +123,18 @@ func specChanges(role string, live, desired json.RawMessage) []string {
 			lines = append(lines, line)
 		case valueJSON(next.value) != valueJSON(f.value):
 			lines = append(lines, fmt.Sprintf("role %s: %s %s (now %s), applied by the next deploy", role, name, shownValue(next.value), shownValue(f.value)))
+		}
+	}
+	if probe {
+		lines = append(lines, fmt.Sprintf("role %s: add %s on the first deploy", role, describeUptimeBind(probeSource)))
+		if next, ok := want[healthTest]; ok {
+			prev, present := have[healthTest]
+			switch {
+			case !present:
+				lines = append(lines, fmt.Sprintf("role %s: add health.test %s on the first deploy", role, valueJSON(next.value)))
+			case valueJSON(prev.value) != valueJSON(next.value):
+				lines = append(lines, fmt.Sprintf("role %s: health.test %s (now %s), applied by the next deploy", role, valueJSON(next.value), shownValue(prev.value)))
+			}
 		}
 	}
 	liveEnv, wantEnv := envOf(l), envOf(d)
@@ -142,6 +161,29 @@ func specChanges(role string, live, desired json.RawMessage) []string {
 		lines = append(lines, fmt.Sprintf("role %s: logging %s (now %s), applied by the next deploy", role, describeLogDriver(want), describeLogDriver(have)))
 	}
 	return lines
+}
+
+// Adoption has already refused live host binds. Keep the generated bind out of the named volume comparison.
+func separateUptimeBind(want map[string]specLeaf, source string) bool {
+	const path = "TaskTemplate.ContainerSpec.Mounts"
+	leaf := want[path]
+	mounts, _ := leaf.value.([]any)
+	if source == "" || len(mounts) == 0 {
+		return false
+	}
+	bindJSON := valueJSON(uptimeMount(source))
+	count := len(mounts)
+	mounts = slices.DeleteFunc(mounts, func(m any) bool { return valueJSON(m) == bindJSON })
+	if len(mounts) == count {
+		return false
+	}
+	if len(mounts) == 0 {
+		delete(want, path)
+	} else {
+		leaf.value = mounts
+		want[path] = leaf
+	}
+	return true
 }
 
 func pick(n int, one, many string) string {

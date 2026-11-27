@@ -148,6 +148,14 @@ func (b schemaBuilder) object(t reflect.Type, path string) (map[string]any, erro
 	if b.overlay {
 		return node, nil
 	}
+	if t == reflect.TypeOf(Health{}) {
+		props["test"].(map[string]any)["minItems"] = 1
+		props["uptime"].(map[string]any)["minLength"] = 1
+		node["oneOf"] = []any{
+			map[string]any{"required": []string{"test"}},
+			map[string]any{"required": []string{"uptime"}},
+		}
+	}
 	if len(required) > 0 {
 		node["required"] = required
 	}

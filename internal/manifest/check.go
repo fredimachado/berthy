@@ -278,8 +278,12 @@ func (m *Manifest) checkRole(p *Problems, name string, a App, rn string, r Role,
 		}
 	}
 	for i, v := range r.Volumes {
-		if _, err := ParseMount(v); err != nil {
+		mount, err := ParseMount(v)
+		if err != nil {
 			p.add(path+".volumes."+strconv.Itoa(i), "%s: invalid volume", where)
+		} else if r.Health != nil && r.Health.Uptime != nil &&
+			(mount.Target == uptimeProbeDirectory || strings.HasPrefix(mount.Target, uptimeProbeDirectory+"/")) {
+			p.add(path+".volumes."+strconv.Itoa(i), "%s: %s is reserved for uptime health checks", where, uptimeProbeDirectory)
 		}
 	}
 	if r.Resources != nil {
@@ -321,6 +325,10 @@ func (m *Manifest) checkRole(p *Problems, name string, a App, rn string, r Role,
 		}
 	}
 	if h := r.Health; h != nil {
+		if h.Uptime != nil {
+			h.checkUptime(p, path+".health", where, a)
+			return
+		}
 		for _, f := range []struct {
 			bad bool
 			key string

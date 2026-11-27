@@ -636,18 +636,16 @@ Berthy names the Swarm service `<project>-<environment>-<app>-<role>`. The API's
 
 Quote the number in `max-file`, as the example does. A role with `logging` gets exactly those options, and no default is added to them. Any other driver, such as `journald`, gets nothing from Berthy unless the role sets `logging`. Compose apps keep their own logging settings: set `logging` in the Compose file. Berthy does not rewrite that file, so `doctor` warns (`compose_log_limit`) about each service of a deployed Compose app that logs as json-file with no `max-size`. When the service's driver is the server's default driver, the server's `log-opts` `max-size` counts too, even if the service sets other options.
 
-**The health check** is a command that runs *inside* the container, with the same fields Docker uses:
+**The health check** for a Swarm image role takes one of `test` and `uptime`. Omit `health` to inherit the image's check.
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `test` | The command. It starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. | required |
-| `interval` | Time between checks. | `30s` |
-| `timeout` | Longest one check may take. | `30s` |
-| `start_period` | Grace time after start. Failures in it do not count. | `0s` |
-| `start_interval` | Check more often during the start period. Check that your Docker version supports it for Swarm services. | Docker's |
-| `retries` | Failures in a row before the container is unhealthy. | `3` |
+- Use `test` for a command that runs inside the container and returns exit 0 when healthy. Start the list with `CMD` or `CMD-SHELL`. The image must contain the command (`curl` here).
+- Use `health: {uptime: 20s}` for a worker that should keep PID 1 alive for at least 20 seconds. Berthy supplies the executable for this check. Keep named volume mounts outside `/.berthy`. When switching from a command check in an overlay, set `test: null` alongside `uptime`.
 
-The image must contain the command (`curl` here). A new version is first noticed healthy about one `interval` after it starts, so every deploy takes at least that long.
+The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fit inside the app's shared `deploy_timeout`. Run `berthy docs roles` for all health check fields and defaults.
+
+An uptime check measures survival of PID 1. Use a command check when you need evidence that the worker is making progress. An early exit spends a `deploy.start_attempts` attempt even when the worker exits with code 0. If the attempts run out during an update, Berthy restores the previous release.
+
+Berthy mounts its installed executable read-only at `/.berthy/berthy`. The bind covers any regular file the image ships at that path until the task stops. Install the agent as a static, world-executable file in a directory protected from untrusted writes. Before downgrading to a version without uptime support, redeploy affected roles with a supported health check.
 
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
 
@@ -3103,12 +3101,13 @@ Roles belong to image apps.
 | `user` | string | the image's | The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`. |
 | `replicas` | integer | `1` | The number of replicas, at least 1. |
 | `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
-| `health` | map | none | The container health check, with the fields Docker uses. A new version must pass it before it takes traffic. |
-| `health.test` | list | required | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
-| `health.interval` | duration | `30s` | Time between checks. |
-| `health.timeout` | duration | `30s` | The longest one check may take. |
-| `health.start_period` | duration | `0s` | Grace time after the container starts. Failures in it do not count. |
-| `health.start_interval` | duration | `Docker's` | Time between checks during the start period. Check that your Docker version supports it for Swarm services. |
+| `health` | map | the image's | The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic. |
+| `health.test` | list | none | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
+| `health.uptime` | duration | none | For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fit before `deploy.deploy_timeout`. The probe reserves `/.berthy` and its descendants as mount targets. |
+| `health.interval` | duration | 30s for test | Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`. |
+| `health.timeout` | duration | `30s` | The longest one check may take. For uptime it must be at least `1ms`. |
+| `health.start_period` | duration | 0s for test | Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself. |
+| `health.start_interval` | duration | Docker's for test | Time between checks during the start period. For command checks, confirm Swarm support in your Docker version. Uptime uses `interval` for portable Swarm scheduling, so omit `start_interval` or set it equal to `interval`. |
 | `health.retries` | integer | `3` | Failed checks in a row before the container is unhealthy, at least 1. |
 | `volumes` | list | none | Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path. |
 | `resources` | map | none | Resource limits of each container. |

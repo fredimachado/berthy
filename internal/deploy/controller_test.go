@@ -78,7 +78,7 @@ func (e *positiveEngine) ResolveImage(context.Context, string, *engine.RegistryA
 }
 func (e *positiveEngine) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (e *positiveEngine) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image"}, nil
+	return engine.Image{ID: "image", ConfigPresent: true}, nil
 }
 func (e *positiveEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
 	e.mu.Lock()
@@ -598,7 +598,7 @@ func TestAdoptionPlansExistingHealthyPinnedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +679,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +739,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,7 +964,7 @@ func (f *boundFake) ResolveImage(context.Context, string, *engine.RegistryAuth) 
 }
 func (f *boundFake) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (f *boundFake) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image"}, nil
+	return engine.Image{ID: "image", ConfigPresent: true}, nil
 }
 func (f *boundFake) InspectService(_ context.Context, ref string) (engine.ServiceSnapshot, error) {
 	f.mu.Lock()
@@ -1203,7 +1203,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1399,7 +1399,7 @@ func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data"}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return v }, nil, role, "start-first", "1s", nil, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return v }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1412,7 +1412,7 @@ func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
 	if !PublicMessage(err.Error()) {
 		t.Fatalf("refusal is not public: %v", err)
 	}
-	spec, err = serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return req.Manifest.VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
+	spec, err = serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return req.Manifest.VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
