@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,11 +16,68 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/credstore/credtest"
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 )
+
+func TestPromotionSourceLookupCancelsBlockedStore(t *testing.T) {
+	t.Setenv("PROMOTE_SRC_TOKEN", "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"projects":{"demo":{"environments":{"staging":{"url":"http://localhost","token_env":"PROMOTE_SRC_TOKEN"}}}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := &agentclient.Target{Project: "demo", Env: "prod", Token: "destination-token"}
+	m := &manifest.Manifest{Apps: map[string]manifest.App{"api": {Kind: "image", Image: "ghcr.io/acme/api"}}}
+	synctest.Test(t, func(t *testing.T) {
+		store := credtest.NewMemory()
+		entered, release := make(chan struct{}), make(chan struct{})
+		store.OnCall, store.Block = func() { close(entered) }, release
+		old := agentclient.TokenStore
+		agentclient.TokenStore = store
+		var requests atomic.Int32
+		client := &http.Client{Transport: progressRoundTrip(func(*http.Request) (*http.Response, error) {
+			requests.Add(1)
+			return nil, errors.New("unexpected agent request")
+		})}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, err := selectPromotion(ctx, client, target, path, "staging", m, "api")
+			result <- err
+		}()
+		defer func() {
+			cancel()
+			close(release)
+			<-done
+			store.Wait()
+			agentclient.TokenStore = old
+		}()
+		select {
+		case <-entered:
+		case err := <-result:
+			t.Fatalf("promotion returned before entering the source store lookup: %v", err)
+		}
+		cancel()
+		synctest.Wait()
+		if got := requests.Load(); got != 0 {
+			t.Errorf("made %d agent requests", got)
+		}
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("promotion succeeded after cancellation")
+			}
+		default:
+			t.Fatal("promotion did not return while the source credential store was blocked")
+		}
+	})
+}
 
 func TestPromoteUsesAppliedSnapshotAndSeparateTokens(t *testing.T) {
 	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)

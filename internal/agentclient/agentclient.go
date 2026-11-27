@@ -130,7 +130,12 @@ type Selector struct {
 // variable or the credential store. The project is the selector's, else the one of the berthy.yml in ManifestDir, else the only project that has the
 // environment. The errors name projects and environments and never repeat any other value of the file.
 func Resolve(path string, sel Selector) (*Target, error) {
-	return resolve(path, sel, Tokens(context.Background()))
+	return ResolveContext(context.Background(), path, sel)
+}
+
+// ResolveContext resolves a target and bounds credential lookup by ctx.
+func ResolveContext(ctx context.Context, path string, sel Selector) (*Target, error) {
+	return resolve(path, sel, Tokens(ctx))
 }
 
 // ResolveEnvOnly resolves a target using only its token variable.

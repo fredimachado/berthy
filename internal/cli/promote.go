@@ -121,7 +121,7 @@ func selectPromotion(ctx context.Context, c *http.Client, dst *agentclient.Targe
 	if a, ok := m.Apps[app]; !ok || a.Kind != "image" {
 		return snapshot, errors.New("promotion requires an image app")
 	}
-	src, err := agentclient.Resolve(cfgPath, agentclient.Selector{Project: dst.Project, Environment: from})
+	src, err := agentclient.ResolveContext(ctx, cfgPath, agentclient.Selector{Project: dst.Project, Environment: from})
 	if err != nil {
 		return snapshot, errors.New(safeSecretText(err.Error(), dst.Token))
 	}
