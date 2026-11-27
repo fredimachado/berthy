@@ -167,7 +167,7 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 		return nil, failure
 	}
 	managedRedact := redact
-	tokens := regexp.MustCompile(tokenExpression(g.c.ID()))
+	tokens := regexp.MustCompile(g.c.ID().TokenExpression())
 	redact = func(s string) string { return managedRedact(tokens.ReplaceAllString(s, "[redacted]")) }
 	plan, err := redactApprovalPlan(rest, method, rec.body.Bytes(), redact)
 	if err != nil {

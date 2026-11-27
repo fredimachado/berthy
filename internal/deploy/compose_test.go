@@ -37,6 +37,8 @@ type fakeCompose struct {
 	config     string
 	hashes     string
 	upErr      error
+	upStderr   string
+	onUp       func(context.Context)
 	restartErr error
 	runs       []engine.ComposeRun
 	upFile     string
@@ -100,7 +102,10 @@ func (f *fakeCompose) Run(ctx context.Context, r engine.ComposeRun) ([]byte, []b
 			_, err = os.Stat(filepath.Join(r.DockerConfig, "config.json"))
 			f.upAuthSeen = err == nil
 		}
-		return nil, nil, f.upErr
+		if f.onUp != nil {
+			f.onUp(ctx)
+		}
+		return nil, []byte(f.upStderr), f.upErr
 	case "ps":
 		out := psRunning
 		if len(f.ps) > 0 {
@@ -352,18 +357,60 @@ func TestComposeDeploySucceedsAndRecordsRelease(t *testing.T) {
 }
 
 func TestComposeUpFailureIsReported(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne, upErr: errors.New("exit status 1")}
+	const marker = "missing fixture executable"
+	runner := &fakeCompose{config: configOne, hashes: hashOne, upErr: errors.New("exit status 1"), upStderr: marker}
 	c, s := composeController(t, runner, newComposeDocker())
-	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("up-fail", composeFileOne, composeApp(false)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := waitComposeOperation(t, s, op.ID)
+	ctx := context.Background()
+	got := admitAndDrain(t, c, composeReq("up-fail", composeFileOne, composeApp(false)))
 	if got.State != "failed" || got.Err != "compose up failed" {
 		t.Fatalf("operation %s %q", got.State, got.Err)
 	}
-	if _, err := s.Applied(context.Background(), "db"); err == nil {
+	if _, err := s.Applied(ctx, "db"); err == nil {
 		t.Fatal("failed deploy recorded a release")
+	}
+	if strings.Contains(got.Reason, marker) {
+		t.Errorf("operation reason contains stderr: %q", got.Reason)
+	}
+	events, err := s.EventsAfter(ctx, got.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if strings.Contains(string(event.Data), marker) {
+			t.Errorf("event contains stderr: %s", event.Data)
+		}
+	}
+	steps, err := s.Intents(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checked bool
+	for _, step := range steps {
+		if step.Ordinal == composeRunOrdinal {
+			checked = true
+			if step.Phase != "finished" || string(step.Receipt) != `{"ok":false}` {
+				t.Errorf("Compose up step: %s %s", step.Phase, step.Receipt)
+			}
+		}
+	}
+	if !checked {
+		t.Error("missing Compose up step")
+	}
+	if d := readComposeDiagnostic(t, s, got.ID); d.Logs != marker {
+		t.Errorf("diagnostic logs %q, want %q", d.Logs, marker)
+	}
+}
+
+func TestComposeSuccessfulUpStderrIsNotReadinessEvidence(t *testing.T) {
+	runner := &fakeCompose{config: configOne, hashes: hashOne, upStderr: "successful up warning\n",
+		ps: []string{`{"ExitCode":3,"Service":"database","State":"exited"}`}}
+	c, s := composeController(t, runner, newComposeDocker())
+	op := admitAndDrain(t, c, composeReq("readiness-fail", composeFileOne, composeApp(false)))
+	if op.State != "failed" || op.Err != "service database exited with code 3" {
+		t.Fatalf("operation %s %q", op.State, op.Err)
+	}
+	if items, err := s.Diagnostics(context.Background(), op.ID); err != nil || len(items) != 0 {
+		t.Fatalf("readiness diagnostics: %s, %v", items, err)
 	}
 }
 

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"berthy/internal/agent"
+	"berthy/internal/deploy"
+	"berthy/internal/engine"
+	"berthy/internal/manifest"
+	"berthy/internal/state"
 )
 
 const cannedDiagnostics = `{"operation_id":"op1","reason":"role web: task exited with code 1 (2 failed tasks)","diagnostics":[
@@ -25,6 +33,121 @@ func diagnosticsConfig(t *testing.T, url string) string {
 	}
 	t.Setenv("BERTHY_TEST_TOKEN", "test-token")
 	return cfg
+}
+
+type composeDiagnosticEngine struct{ deploy.Engine }
+
+func (composeDiagnosticEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+
+func (composeDiagnosticEngine) ComposeContainers(context.Context, string) ([]engine.ComposeContainer, error) {
+	return nil, nil
+}
+
+func (composeDiagnosticEngine) VolumeExists(context.Context, string) (bool, error) { return false, nil }
+
+type failedDiagnosticCompose struct{ stderr string }
+
+func (f failedDiagnosticCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
+	switch r.Args[0] {
+	case "config":
+		if r.Args[1] == "--hash" {
+			return []byte("web hash-0000000000000001\n"), nil, nil
+		}
+		return []byte(`{"services":{"web":{"image":"alpine:3.20"}}}`), nil, nil
+	case "up":
+		return []byte("stdout fixture marker\n"), []byte(f.stderr), errors.New("compose exited with status 1")
+	default:
+		return nil, nil, errors.New("unexpected compose command")
+	}
+}
+
+func TestDiagnosticsCommandShowsFailedComposeUp(t *testing.T) {
+	ctx := context.Background()
+	deployToken := "bty.demo.dev." + strings.Repeat("b", 64)
+	viewToken := "bty.demo.dev." + strings.Repeat("c", 64)
+	t.Setenv("BERTHY_TOKEN_STORE", "none")
+	for _, tc := range []struct {
+		name, secret, template, stderr, want string
+	}{
+		{"plain", "", "", "executable missing\n", "executable missing\n"},
+		{"stored secret", "fixture-password", "", "denied fixture-password\n", "denied [redacted]\n"},
+		{"first deploy template", "fixture-password", "scheme://user:${SECRET}@db", "failed opening scheme://user:fixture-password@db\n", "failed opening [redacted]\n"},
+		{"scoped bearer", "", "", "denied " + deployToken + "\n", "denied [redacted]\n"},
+		{"overlapping secret and bearer", "registry-key:bty.", "", "denied registry-key:" + deployToken + " from registry\n", "denied [redacted] from registry\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			key := filepath.Join(dir, "key")
+			if err := os.WriteFile(key, make([]byte, 32), 0600); err != nil {
+				t.Fatal(err)
+			}
+			s, err := state.Open(dir, key, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if tc.secret != "" {
+				if err := s.PutSecret(ctx, state.Actor{ID: "admin"}, state.SecretInfo{Name: "SECRET"}, []byte(tc.secret)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := &deploy.Controller{Store: s, Project: "demo", Environment: "dev", StateDir: dir, Engine: composeDiagnosticEngine{}, Compose: failedDiagnosticCompose{tc.stderr}}
+			app := manifest.App{Kind: "compose", File: "compose.yaml"}
+			if tc.template != "" {
+				app.Env.Template = map[string]string{"URL": tc.template}
+			}
+			m := manifest.Manifest{Project: "demo", Network: "demo", Apps: map[string]manifest.App{"web": app}}
+			op, created, err := c.Admit(ctx, deploy.Actor{ID: agent.Digest(deployToken)}, deploy.Request{
+				RequestID: "failed-compose-up", Kind: "deploy", App: "web", Manifest: m,
+				ComposeFile: "services:\n  web:\n    image: alpine:3.20\n",
+			})
+			if drainErr := c.Drain(ctx); drainErr != nil {
+				t.Fatal(drainErr)
+			}
+			if err != nil || !created {
+				t.Fatalf("admit: created=%t, %v", created, err)
+			}
+			got, err := s.Operation(ctx, op.ID)
+			if err != nil || got.State != "failed" || got.Err != "compose up failed" {
+				t.Fatalf("operation %s %q: %v", got.State, got.Err, err)
+			}
+			cfg := agent.Config{Project: "demo", Environment: "dev", Tokens: []agent.Token{{Digest: agent.Digest(viewToken), Scope: "deploy"}}}
+			server := httptest.NewServer(agent.NewDeploymentHandler(cfg, nil, nil, c))
+			defer server.Close()
+			args := []string{"diagnostics", op.ID, "-e", "dev", "--config", diagnosticsConfig(t, server.URL)}
+			t.Setenv("BERTHY_TEST_TOKEN", viewToken)
+			var out, errs bytes.Buffer
+			if code := Run(args, &out, &errs); code != 0 {
+				t.Fatalf("text diagnostics exit %d: %s", code, errs.String())
+			}
+			wantText := "[1] compose up\n    logs:\n    " + strings.TrimSuffix(tc.want, "\n") + "\n"
+			if !strings.Contains(out.String(), wantText) || strings.Contains(out.String(), "stdout fixture marker") {
+				t.Errorf("text diagnostics %q, want %q", out.String(), wantText)
+			}
+			out.Reset()
+			errs.Reset()
+			if code := Run(append(args, "--json"), &out, &errs); code != 0 {
+				t.Fatalf("JSON diagnostics exit %d: %s", code, errs.String())
+			}
+			var report diagnosticReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.OperationID != op.ID || len(report.Diagnostics) != 1 || report.Diagnostics[0].Kind != "compose" || report.Diagnostics[0].Name != "up" || report.Diagnostics[0].Logs != tc.want {
+				t.Errorf("JSON diagnostics %q: %v", out.String(), err)
+			}
+			items, err := s.Diagnostics(ctx, op.ID)
+			if err != nil || len(items) != 1 {
+				t.Fatalf("stored %d diagnostics, want 1: %v", len(items), err)
+			}
+			var item deploy.Diagnostic
+			if err := json.Unmarshal(items[0], &item); err != nil || item.Logs != tc.want {
+				t.Errorf("stored logs %q, want %q: %v", item.Logs, tc.want, err)
+			}
+		})
+	}
 }
 
 func TestDiagnosticsCommandPrintsEvidenceAsText(t *testing.T) {

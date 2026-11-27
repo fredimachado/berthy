@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -27,14 +30,14 @@ const (
 
 	// errTimedOut is the Error of a one-off that did not finish within its time limit.
 	errTimedOut = "timed out"
-	// errLogsUnavailable is added to a diagnostic when the container's output could not be read.
+	// errLogsUnavailable marks output that could not be read or safely kept.
 	errLogsUnavailable = "logs unavailable"
 )
 
-// Diagnostic is evidence about one failed piece of an operation: a task of the new version or a one-off command.
+// Diagnostic is evidence about one failed piece of an operation.
 type Diagnostic struct {
-	Kind        string               `json:"kind"`            // "task", "oneoff" or "backup"
-	Name        string               `json:"name"`            // service name of a task, the hook role of a one-off ("pre_hook", "migration_apply", ...), or the name of a backup
+	Kind        string               `json:"kind"`            // "task", "oneoff", "backup" or "compose"
+	Name        string               `json:"name"`            // service name, one-off hook role, backup name or Compose command
 	Role        string               `json:"role,omitempty"`  // of a backup: the hook list it ran in, "pre_hook" or "post_hook"
 	Index       int                  `json:"index,omitempty"` // 1-based position of a pre or post-deploy command or backup in the manifest
 	TaskID      string               `json:"task_id,omitempty"`
@@ -300,6 +303,142 @@ func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work
 		}
 	}
 	return c.storeDiagnostics(capCtx, opID, d, fallback)
+}
+
+func (c *Controller) recordComposeUpFailure(ctx context.Context, opID string, req Request, stderr []byte) {
+	if len(stderr) == 0 {
+		return
+	}
+	capCtx, cancel := captureContext(ctx)
+	defer cancel()
+	d := Diagnostic{Kind: "compose", Name: "up", Captured: time.Now().UTC()}
+	values, inventoryErr := c.redactionValues(capCtx)
+	vars, envErr := c.resolveEnv(capCtx, req.Manifest.Apps[req.App].Env)
+	if inventoryErr != nil || envErr != nil {
+		d.Error = errLogsUnavailable
+	} else {
+		for _, v := range vars {
+			if v.Sensitive {
+				values = append(values, []byte(v.Value))
+			}
+		}
+		id := scope.ID{Project: req.Manifest.Project, Environment: c.Environment}
+		d.Logs, d.Truncated = composeDiagnosticTail(stderr, values, id)
+	}
+	c.storeDiagnostics(capCtx, opID, capDiagnostics([]Diagnostic{d}), string(errComposeUp))
+}
+
+func composeDiagnosticTail(stderr []byte, secrets [][]byte, id scope.ID) (logs string, truncated bool) {
+	stderr = stderr[max(0, len(stderr)-engine.MaxComposeOutput-1):]
+	window := max(0, len(stderr)-engine.MaxComposeOutput)
+	// For each possible start, keep the furthest end of any match on the original bytes.
+	ends := make([]int, len(stderr))
+	for _, secret := range secrets {
+		if len(secret) == 0 {
+			continue
+		}
+		markComposeLiteralMatches(stderr, secret, ends)
+		if window > 0 {
+			ends[0] = max(ends[0], composeLiteralSuffixOverlap(stderr, secret))
+		}
+	}
+	tokens := regexp.MustCompile(id.TokenExpression())
+	for _, match := range tokens.FindAllIndex(stderr, -1) {
+		ends[match[0]] = max(ends[match[0]], match[1])
+	}
+	if window > 0 {
+		ends[0] = max(ends[0], id.TokenSuffixOverlap(stderr))
+	}
+
+	var redacted strings.Builder
+	clearFrom := window
+	for i := 0; i < len(ends); {
+		start, end := i, ends[i]
+		i++
+		if end == 0 {
+			continue
+		}
+		for i < end {
+			end = max(end, ends[i])
+			i++
+		}
+		if end > clearFrom {
+			redacted.Write(stderr[clearFrom:max(clearFrom, start)])
+			redacted.WriteString("[redacted]")
+			clearFrom = end
+		}
+	}
+	redacted.Write(stderr[clearFrom:])
+	logs = strings.ToValidUTF8(redacted.String(), "")
+	start := max(0, len(logs)-diagnosticLogBytes)
+	last := len(strings.TrimSuffix(logs, "\n"))
+	lines := 0
+	for i := last - 1; i >= start; i-- {
+		if logs[i] == '\n' {
+			lines++
+			if lines == diagnosticLogLines {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for start < len(logs) && !utf8.RuneStart(logs[start]) {
+		start++
+	}
+	return logs[start:], window > 0 || start > 0
+}
+
+func markComposeLiteralMatches(data, value []byte, ends []int) {
+	first := bytes.Index(data, value)
+	if first < 0 {
+		return
+	}
+	end := first + len(value)
+	ends[first] = max(ends[first], end)
+	fallback := composePrefixTable(value)
+	matched := fallback[len(value)-1]
+	for i := end; i < len(data); i++ {
+		matched = composeMatchByte(value, fallback, matched, data[i])
+		if matched == len(value) {
+			start := i + 1 - len(value)
+			ends[start] = max(ends[start], i+1)
+			matched = fallback[matched-1]
+		}
+	}
+}
+
+func composeLiteralSuffixOverlap(data, value []byte) int {
+	n := min(len(data), len(value)-1)
+	suffix := value[len(value)-n:]
+	if bytes.IndexByte(suffix, data[0]) < 0 {
+		return 0
+	}
+	pattern := data[:n]
+	fallback := composePrefixTable(pattern)
+	matched := 0
+	for _, b := range suffix {
+		matched = composeMatchByte(pattern, fallback, matched, b)
+	}
+	return matched
+}
+
+// The fallback table preserves overlapping matches without comparing the same run of bytes repeatedly.
+func composePrefixTable(pattern []byte) []int {
+	table := make([]int, len(pattern))
+	for i := 1; i < len(pattern); i++ {
+		table[i] = composeMatchByte(pattern, table, table[i-1], pattern[i])
+	}
+	return table
+}
+
+func composeMatchByte(pattern []byte, fallback []int, matched int, b byte) int {
+	for matched > 0 && pattern[matched] != b {
+		matched = fallback[matched-1]
+	}
+	if pattern[matched] == b {
+		matched++
+	}
+	return matched
 }
 
 // captureInterrupted keeps the evidence of an interrupted rollout before recovery compensates it, unless the operation

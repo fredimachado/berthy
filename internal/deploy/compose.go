@@ -922,13 +922,16 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	deadline := upStarted.Add(budget)
 	upCtx, cancel := context.WithDeadline(ctx, deadline.Add(composeUpWindow))
 	defer cancel()
-	_, _, err = c.Compose.Run(upCtx, engine.ComposeRun{
+	_, stderr, err := c.Compose.Run(upCtx, engine.ComposeRun{
 		Project:      project,
 		Dir:          dir,
 		Args:         []string{"up", "-d", "--remove-orphans"},
 		DockerConfig: auth,
 	})
-	if err == nil {
+	if err != nil {
+		c.recordComposeUpFailure(ctx, op.ID, req, stderr)
+		err = errComposeUp
+	} else {
 		err = c.waitCompose(upCtx, project, dir, upStarted, deadline, budget)
 	}
 	if err != nil {
