@@ -37,6 +37,13 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 		}
 		return fmt.Sprint(v)
 	}
+	settings := func(f *approvalFixture) string {
+		v, ok, err := f.s.Settings(context.Background())
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		return fmt.Sprintf("%t %s", ok, v.Manifest)
+	}
 	cancelState := func(f *approvalFixture) string {
 		op, err := f.s.Active(context.Background())
 		if err != nil {
@@ -57,13 +64,32 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 				f.t.Fatal(err)
 			}
 		}, lock},
-		"secret set": {"POST", "/secrets", `{"name":"NEW","value":"v"}`, fixture, nothing, secrets},
+		"secret set":               {"POST", "/secrets", `{"name":"NEW","value":"v"}`, fixture, nothing, secrets},
+		"secret import":            {"POST", "/secrets/import", `{"secrets":[{"name":"IMP","value":"v"}]}`, fixture, nothing, secrets},
+		"secret generate":          {"POST", "/secrets/generate", `{"name":"GEN"}`, fixture, nothing, secrets},
+		"secret generate declared": {"POST", "/secrets/generate-declared", `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"secret":["DB_PASS"]}}},"secrets":{"DB_PASS":{"generate":{"format":"hex"}}}}}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = generateEngine{} }, secrets},
+		"apply":                    {"POST", "/apply", applyBody(t, `{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}},"probes":{"site":{"http":"http://127.0.0.1:8080/"}}}`, false), fixture, nothing, settings},
 		"secret delete": {"DELETE", "/secrets/KEEP", `{}`, fixture, func(f *approvalFixture) {
 			if err := f.s.PutSecret(context.Background(), state.Actor{ID: "human", Name: "human"}, state.SecretInfo{Name: "KEEP"}, []byte("v")); err != nil {
 				f.t.Fatal(err)
 			}
 		}, secrets},
 		"cancel": {"POST", "/operations/{id}/cancel", `{}`, fixture, func(f *approvalFixture) { runningRun(f.t, f) }, cancelState},
+		"recovery resolve": {"POST", "/operations/{id}/resolve", `{"reason":"gone"}`, fixture, func(f *approvalFixture) {
+			op, _, err := f.s.Admit(context.Background(), state.Admission{RequestID: "stuck", ActorID: "a", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			if err := f.s.Finish(context.Background(), op.ID, state.Outcome{State: "recovery_required", Err: "service recovery required"}); err != nil {
+				f.t.Fatal(err)
+			}
+		}, func(f *approvalFixture) string {
+			op, err := f.s.Active(context.Background())
+			if err != nil {
+				return "resolved"
+			}
+			return op.State
+		}},
 	}
 	for _, kind := range dryRunKinds {
 		row, ok := rows[kind]
