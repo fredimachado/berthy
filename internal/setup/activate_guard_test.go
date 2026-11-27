@@ -31,6 +31,11 @@ func (r *guardRunner) Run(_ context.Context, script string, stdin io.Reader) (Re
 	switch {
 	case strings.Contains(script, ".new "):
 		return Result{Stdout: []byte("prev_bin=yes\nprev_cfg=yes\n")}, nil
+	case strings.HasPrefix(script, "/bin/sh "+guardPath+" "):
+		if strings.Contains(script, " yes") {
+			return Result{Stdout: []byte("guard=restored\n")}, nil
+		}
+		return Result{Stdout: []byte("guard=stopped\n")}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
 		r.restarts++
 		if r.stage == "lost" {
@@ -86,11 +91,11 @@ func TestActivateDisarmsTheGuardWhenTheNewAgentAnswers(t *testing.T) {
 		t.Fatalf("no disarm: %q", r.calls)
 	}
 }
-func TestActivateDisarmsTheGuardAfterPuttingThePreviousAgentBack(t *testing.T) {
+func TestActivateRunsGuardAfterPuttingThePreviousAgentBack(t *testing.T) {
 	r := &guardRunner{stage: "recover"}
 	_ = Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
-	if !strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
-		t.Fatalf("no disarm: %q", r.calls)
+	if got := r.calls[len(r.calls)-1]; got != "/bin/sh "+guardPath+" no yes now" {
+		t.Fatalf("guard script: %q", got)
 	}
 }
 func TestLostConnectionAfterTheSwapLeavesTheGuardArmed(t *testing.T) {
@@ -109,11 +114,11 @@ func TestDryRunListsTheGuard(t *testing.T) {
 	}
 }
 
-func TestActivateDisarmsTheGuardAfterStoppingAFirstInstall(t *testing.T) {
+func TestActivateRunsGuardToStopAFirstInstall(t *testing.T) {
 	r := &firstInstallGuardRunner{}
 	_ = Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
-	if len(r.calls) == 0 || !strings.Contains(r.calls[len(r.calls)-1], "systemctl stop berthy-activation-guard.timer") {
-		t.Fatalf("no disarm: %q", r.calls)
+	if got := r.calls[len(r.calls)-1]; got != "/bin/sh "+guardPath+" no no now" {
+		t.Fatalf("guard script: %q", got)
 	}
 }
 
@@ -124,6 +129,9 @@ func (r *firstInstallGuardRunner) Run(_ context.Context, s string, _ io.Reader) 
 	r.calls = append(r.calls, s)
 	if strings.Contains(s, "systemctl restart berthy") {
 		return Result{Code: 1}, nil
+	}
+	if s == "/bin/sh "+guardPath+" no no now" {
+		return Result{Stdout: []byte("guard=stopped\n")}, nil
 	}
 	return Result{}, nil
 }
@@ -157,13 +165,14 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 			os.WriteFile(filepath.Join(tools, "date"), []byte("#!/bin/sh\necho 0\n"), 0700)
 			r := &guardRunner{stage: "up"}
 			_ = Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
-			script := strings.ReplaceAll(strings.ReplaceAll(r.input, binPath, bin), configPath, cfg)
+			os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
+			script := strings.NewReplacer(binPath, bin, configPath, cfg, guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(r.input)
 			if script == "" {
 				t.Fatal("guard script not sent")
 			}
 			cmd := exec.Command("sh", "-c", script, "guard", tc.prev, tc.prev)
 			cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+filepath.Join(dir, "calls"))
-			if out, err := cmd.CombinedOutput(); err != nil {
+			if out, err := cmd.CombinedOutput(); err != nil && tc.name != "rollback" && tc.name != "prev gone" {
 				t.Fatalf("guard failed: %v %s", err, out)
 			}
 			want := "new"
@@ -188,7 +197,7 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 }
 
 func TestGuardMessageOnUnresolvedActivation(t *testing.T) {
-	for _, stage := range []string{"swap 255", "swap cancelled", "restart error", "journal error", "stop 255", "rollback 255", "rollback error", "after rollback"} {
+	for _, stage := range []string{"swap 255", "swap cancelled", "restart error", "journal error"} {
 		t.Run(stage, func(t *testing.T) {
 			r := &outcomeRunner{stage: stage}
 			err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)

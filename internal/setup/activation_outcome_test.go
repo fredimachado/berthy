@@ -28,7 +28,7 @@ func (r *journalExitRunner) Run(ctx context.Context, script string, stdin io.Rea
 		r.calls = append(r.calls, script)
 		return Result{Code: r.journalCode}, nil
 	}
-	if r.rollbackCode != 0 && strings.Contains(script, "mv -f "+configPath+".prev "+configPath) {
+	if r.rollbackCode != 0 && strings.HasPrefix(script, "/bin/sh "+guardPath+" ") {
 		r.calls = append(r.calls, script)
 		return Result{Code: r.rollbackCode}, nil
 	}
@@ -47,7 +47,7 @@ func TestJournalExitDoesNotPreventRollback(t *testing.T) {
 			err := Activate(context.Background(), r, "127.0.0.1:7710", Staged{Config: true}, time.Second)
 			found := false
 			for _, script := range r.calls {
-				if strings.Contains(script, "mv -f "+configPath+".prev "+configPath) {
+				if strings.HasPrefix(script, "/bin/sh "+guardPath+" ") {
 					found = true
 				}
 			}
@@ -114,20 +114,17 @@ func (r *outcomeRunner) Run(_ context.Context, script string, _ io.Reader) (Resu
 		return Result{}, errors.New("journal transport lost")
 	case strings.HasPrefix(script, "journalctl") && r.stage == "journal 255":
 		return Result{Code: 255}, nil
-	case script == "systemctl stop berthy" && r.stage == "stop error":
-		return Result{}, errors.New("stop transport lost")
-	case script == "systemctl stop berthy" && r.stage == "stop 255":
-		return Result{Code: 255}, nil
-	case strings.Contains(script, "mv -f "+binPath+".prev "+binPath) && r.stage == "binary rollback error":
-		return Result{}, errors.New("rollback transport lost")
-	case strings.Contains(script, "mv -f "+configPath+".prev "+configPath):
+	case strings.HasPrefix(script, "/bin/sh "+guardPath+" "):
 		switch r.stage {
-		case "rollback 255":
-			return Result{Code: 255}, nil
-		case "rollback error":
+		case "rollback error", "binary rollback error", "stop error", "after rollback":
 			return Result{}, errors.New("transport lost")
+		case "rollback 255", "stop 255":
+			return Result{Code: 255}, nil
 		}
-		return Result{}, nil
+		if strings.Contains(script, " no no now") {
+			return Result{Stdout: []byte("guard=stopped\n")}, nil
+		}
+		return Result{Stdout: []byte("guard=restored\n")}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
 		r.restarts++
 		if r.stage == "recovery answers" && r.restarts == 2 {
@@ -145,7 +142,7 @@ func TestActivationReportsConfigurationOutcome(t *testing.T) {
 	for _, tc := range []struct{ stage, want string }{
 		{"already cancelled", "previous"}, {"swap cancelled", "unconfirmed"}, {"swap 255", "unconfirmed"},
 		{"rollback 255", "unconfirmed"}, {"rollback error", "unconfirmed"},
-		{"after rollback", "previous"}, {"restart error", "unconfirmed"}, {"journal error", "unconfirmed"}, {"journal 255", "previous"}, {"stop error", "retained"}, {"stop 255", "retained"}, {"binary rollback error", "retained"},
+		{"after rollback", "unconfirmed"}, {"restart error", "unconfirmed"}, {"journal error", "unconfirmed"}, {"journal 255", "previous"}, {"stop error", "unconfirmed"}, {"stop 255", "unconfirmed"}, {"binary rollback error", "unconfirmed"},
 	} {
 		t.Run(tc.stage, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

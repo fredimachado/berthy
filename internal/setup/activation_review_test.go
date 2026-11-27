@@ -52,7 +52,7 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 			shellTool(t, tools, "systemd-run", "echo armed >> \"$CALLS\"")
 			r := &guardRunner{stage: "up"}
 			_ = Activate(context.Background(), r, "x", Staged{Binary: true}, time.Second)
-			script := strings.ReplaceAll(strings.ReplaceAll(r.calls[0], binPath, bin), guardPath, guard)
+			script := strings.NewReplacer(binPath, bin, guardPath, guard, guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(r.calls[0])
 			input := r.input
 			if truncated {
 				input = input[:len(input)/2]
@@ -100,7 +100,9 @@ func TestRestartDisarmsOnlyAfterHealthAnswers(t *testing.T) {
 				curl = "exit 0"
 			}
 			shellTool(t, tools, "curl", curl)
-			err := runShell(t, restartScript("x", 1), "", tools, dir)
+			os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
+			script := strings.NewReplacer(guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(restartScript("x", 1))
+			err := runShell(t, script, "", tools, dir)
 			if (err == nil) != answer {
 				t.Fatalf("restart error = %v", err)
 			}
@@ -116,26 +118,11 @@ func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 	shellTool(t, tools, "date", "echo 0")
 	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; is-failed) exit 0;; esac; exit 0`)
 	shellTool(t, tools, "curl", "exit 1")
-	err := runShell(t, guardScript("/bin/x", "/etc/x", Staged{Binary: true}, "x", 1)+"\n", "", tools, dir)
+	os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
+	script := strings.NewReplacer(guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(guardScript("/bin/x", "/etc/x", Staged{Binary: true}, "x", 1))
+	err := runShell(t, script, "", tools, dir)
 	if err == nil {
 		t.Fatal("guard hid failed stop")
-	}
-}
-
-func TestFailedRecoveryKeepsTheGuardArmed(t *testing.T) {
-	r := &guardRunner{}
-	err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "62 seconds") || r.calls[len(r.calls)-1] == disarmScript {
-		t.Fatalf("unresolved recovery: %v; %q", err, r.calls)
-	}
-}
-func TestRestartDoesNotConfirmWhenTimerStopFails(t *testing.T) {
-	dir, tools := shellFixture(t)
-	shellTool(t, tools, "date", "echo 0")
-	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; esac; exit 0`)
-	shellTool(t, tools, "curl", "exit 0")
-	if err := runShell(t, restartScript("x", 1), "", tools, dir); err == nil {
-		t.Fatal("restart confirmed after timer stop failed")
 	}
 }
 

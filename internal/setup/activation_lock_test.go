@@ -44,9 +44,19 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	}
 	shellTool(t, tools, "curl", curl)
 	if mode == "lock-timeout" {
-		shellTool(t, tools, "flock", "exit 1")
+		shellTool(t, tools, "flock", `echo "flock $*" >> "$CALLS"; exit 1`)
 	}
-	script = strings.ReplaceAll(strings.ReplaceAll(script, testStatePath, state), testLockPath, lock)
+	if mode == "no-actions" {
+		shellTool(t, tools, "mv", `echo "mv $*" >> "$CALLS"; exec /bin/mv "$@"`)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.WriteFile(bin, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin+".prev", []byte("previous"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script = strings.NewReplacer(testStatePath, state, testLockPath, lock, "/nonexistent/bin", bin, "/nonexistent/cfg", filepath.Join(dir, "cfg")).Replace(script)
 	cmd := exec.Command("sh", append([]string{"-c", script, "guard"}, args...)...)
 	cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+calls)
 	out, err := cmd.CombinedOutput()
@@ -57,6 +67,12 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 			t.Fatal(err)
 		}
 		code = ex.ExitCode()
+	}
+	if (mode == "restore" || mode == "down") && len(args) > 0 && args[0] == "yes" {
+		got, err := os.ReadFile(bin)
+		if err != nil || string(got) != "previous" {
+			t.Errorf("previous binary not restored: %q, %v", got, err)
+		}
 	}
 	result, _ := os.ReadFile(state)
 	log, _ := os.ReadFile(calls)
@@ -80,7 +96,7 @@ func TestLockedRestartReadsCompletedState(t *testing.T) {
 }
 func TestLockedRestartGivesUpWhenLockIsHeld(t *testing.T) {
 	code, out, _, calls := stateShell(t, restartScript("x", 1), "pending", "lock-timeout")
-	if code != 3 || !strings.Contains(out, "guard=running") || strings.Contains(calls, "restart berthy") {
+	if code != 3 || !strings.Contains(out, "guard=running") || !strings.Contains(calls, "flock -w 1 9") || strings.Contains(calls, "restart berthy") {
 		t.Fatalf("code=%d output=%q calls=%q", code, out, calls)
 	}
 }
@@ -88,6 +104,16 @@ func TestGuardLeavesConfirmedActivationAlone(t *testing.T) {
 	code, out, state, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), "confirmed", "", "yes", "no")
 	if code != 0 || state != "confirmed" || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy\n") {
 		t.Fatalf("code=%d output=%q state=%q calls=%q", code, out, state, calls)
+	}
+}
+func TestGuardDoesNotActOnFinalState(t *testing.T) {
+	for _, word := range []string{"kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed"} {
+		t.Run(word, func(t *testing.T) {
+			code, out, state, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), word, "no-actions", "yes", "no")
+			if code != 3 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
+				t.Fatalf("code=%d out=%q state=%q calls=%q", code, out, state, calls)
+			}
+		})
 	}
 }
 func TestGuardRecordsItsDecision(t *testing.T) {

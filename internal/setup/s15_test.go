@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,14 +160,14 @@ func TestAnAgentThatDoesNotAnswerGetsThePreviousFileBack(t *testing.T) {
 	server := &s15RollbackServer{agentFake: f, live: before}
 	s := agentSession(t, server, elfFile(t, emX86), false, nil)
 	got, ok := runSteps(s)
-	if ok || lastResult(got).Step != "service" || !f.ran("mv -f "+configPath+".prev "+configPath) || server.live != before || server.staged == "" {
+	if ok || lastResult(got).Step != "service" || !slices.Contains(f.scripts(), "/bin/sh "+guardPath+" no yes now") || server.live != before || server.staged == "" {
 		t.Fatalf("rollback: %+v", got)
 	}
 }
 
 type s15RollbackServer struct {
 	*agentFake
-	live, staged, previous string
+	live, staged, previous, guard string
 }
 
 func (f *s15RollbackServer) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
@@ -180,8 +181,9 @@ func (f *s15RollbackServer) Run(ctx context.Context, script string, stdin io.Rea
 	}
 	if strings.Contains(script, "mv -f "+configPath+".new "+configPath) {
 		f.previous, f.live = f.live, f.staged
+		f.guard = string(in)
 	}
-	if strings.Contains(script, "mv -f "+configPath+".prev "+configPath) {
+	if script == "/bin/sh "+guardPath+" no yes now" && strings.Contains(f.guard, "mv -f "+shellQuote(configPath+".prev")+" "+shellQuote(configPath)) {
 		f.live = f.previous
 	}
 	return f.agentFake.Run(ctx, script, stdin)

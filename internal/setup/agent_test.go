@@ -99,6 +99,20 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 			out += "prev_cfg=yes\n"
 		}
 		return Result{Stdout: []byte(out)}, nil
+	case strings.HasPrefix(script, "/bin/sh "+guardPath+" "):
+		args := strings.Fields(script)
+		if args[2] == "no" && args[3] == "no" {
+			return Result{Stdout: []byte("guard=stopped\n")}, nil
+		}
+		f.restarts++
+		if len(f.waits) > 0 {
+			code := f.waits[0]
+			f.waits = f.waits[1:]
+			if code != 0 {
+				return Result{Code: 1, Stdout: []byte("guard=restored-down\n")}, nil
+			}
+		}
+		return Result{Stdout: []byte("guard=restored\n")}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
 		f.restarts++
 		code := 0
@@ -1257,20 +1271,20 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 			order = append(order, "journal")
 		case strings.Contains(sc, ".prev") && strings.Contains(sc, "mv -f"):
 			order = append(order, "back")
-		case sc == disarmScript:
-			order = append(order, "disarm")
+		case strings.HasPrefix(sc, "/bin/sh "+guardPath+" "):
+			order = append(order, "guard")
 		case strings.Contains(sc, "systemctl restart"):
 			order = append(order, "restart")
 		default:
 			order = append(order, "other")
 		}
 	}
-	if strings.Join(order, " ") != "swap restart journal back restart" {
+	if strings.Join(order, " ") != "swap restart journal guard" {
 		t.Fatalf("order = %v", order)
 	}
 	back := f.calls[3].script
-	if !strings.Contains(back, "mv -f /usr/local/bin/berthy.prev /usr/local/bin/berthy") || !strings.Contains(back, "mv -f /etc/berthy/agent.json.prev /etc/berthy/agent.json") {
-		t.Errorf("rollback = %q", back)
+	if back != "/bin/sh "+guardPath+" yes yes now" {
+		t.Errorf("guard = %q", back)
 	}
 	if slices.Contains(f.scripts(), "systemctl stop berthy") {
 		t.Errorf("the service was stopped although the previous agent was put back")
@@ -1308,7 +1322,7 @@ func TestActivateOnAFirstInstallLeavesTheAgentStopped(t *testing.T) {
 	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || ae.ConfigOutcome != ConfigRetained {
 		t.Errorf("error = %+v", ae)
 	}
-	if !slices.Contains(f.scripts(), "systemctl stop berthy") || f.restarts != 1 {
+	if !slices.Contains(f.scripts(), "/bin/sh "+guardPath+" no no now") || f.restarts != 1 {
 		t.Errorf("scripts = %q", f.scripts())
 	}
 }
