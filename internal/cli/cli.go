@@ -206,7 +206,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}()
 		defer func() { cancel(); <-eventsDone }()
 		collector := metrics.New(metrics.NewHostReader(), eng)
-		// Every environment's state is open and claimed before any of them starts, and the server listens only after all started.
+		// The server listens after the startup result for every hosted environment is settled.
 		host, err := agent.Open(agent.Shared{Engine: eng, Collector: collector, Log: func(msg string) { fmt.Fprintln(errout, msg) }}, f)
 		if err != nil {
 			fmt.Fprintln(errout, err)

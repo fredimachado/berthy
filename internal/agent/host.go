@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 
@@ -19,54 +20,61 @@ type Host struct {
 	// runtimes is by ID and never changes after Open, so requests read it without a lock. order is the order of the file.
 	runtimes map[scope.ID]*Runtime
 	order    []*Runtime
+	ids      []scope.ID
+	failed   map[scope.ID]string
+	failures map[scope.ID]http.Handler
+	log      func(string)
 	claimsMu sync.Mutex
 	leases   map[scope.ID]map[state.Claim]int
 }
 
-// Open opens every hosted environment of the file and wires what they share. When one fails it closes those already opened
-// and returns the error. Nothing runs and nothing is served yet.
-//
-// The order is the rule later steps rely on: every state is opened and claimed, then what the environments share is set on
-// every runtime as plain fields, and only then may Start run a worker. Nothing is written to a runtime after Open returns.
+// Open opens the environments of a validated file and wires what they share. Only stores with verified ownership and
+// readable claims supply peer evidence. Nothing runs and nothing is served yet.
 func Open(sh Shared, f File) (*Host, error) {
-	h := &Host{runtimes: map[scope.ID]*Runtime{}, leases: map[scope.ID]map[state.Claim]int{}}
+	h := &Host{
+		runtimes: map[scope.ID]*Runtime{}, failed: map[scope.ID]string{}, failures: map[scope.ID]http.Handler{},
+		log: sh.Log, leases: map[scope.ID]map[state.Claim]int{},
+	}
+	ctx := context.Background()
+	seen := map[state.Claim]scope.ID{}
 	for _, c := range f.Configs() {
+		id := c.ID()
+		h.ids = append(h.ids, id)
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
-			h.Close()
-			return nil, err
+			h.fail(c, nil, stateOpenReason(err))
+			continue
+		}
+		store := r.deployment.Store
+		if err = store.Claim(ctx, c.Project); err != nil {
+			reason := stateOpenReason(err)
+			var owner *state.OwnerError
+			if errors.As(err, &owner) {
+				reason = "state belongs to another environment"
+			}
+			r.Close()
+			h.fail(c, nil, reason)
+			continue
+		}
+		claims, err := store.Claims(ctx)
+		if err != nil {
+			r.Close()
+			h.fail(c, nil, "cannot read state claims")
+			continue
 		}
 		h.order = append(h.order, r)
-		h.runtimes[c.ID()] = r
-	}
-	for _, r := range h.order {
-		if err := r.deployment.Store.Claim(context.Background(), r.Config.Project); err != nil {
-			h.Close()
-			return nil, fmt.Errorf("state in %s: %w", r.Config.StateDir, err)
-		}
-	}
-	seen := map[state.Claim]scope.ID{}
-	for _, r := range h.order {
-		claims, err := r.deployment.Store.Claims(context.Background())
-		if err != nil {
-			h.Close()
-			return nil, err
-		}
+		h.runtimes[id] = r
 		for _, claim := range claims {
 			if other, ok := seen[claim]; ok {
 				h.Close()
-				return nil, fmt.Errorf("environments %s and %s both hold %s %s: the agent does not start until one of them gives it up", other, r.Config.ID(), claim.Kind, claim.Name)
+				return nil, fmt.Errorf("environments %s and %s both hold %s %s: the agent does not start until one of them gives it up", other, id, claim.Kind, claim.Name)
 			}
-			seen[claim] = r.Config.ID()
+			seen[claim] = id
 		}
-	}
-	ids := make([]scope.ID, len(h.order))
-	for i, r := range h.order {
-		ids[i] = r.Config.ID()
 	}
 	for _, r := range h.order {
 		id := r.Config.ID()
-		r.hosted = ids
+		r.hosted = h.ids
 		r.deployment.Network = r.Config.Network
 		r.deployment.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 			return h.reserveContext(ctx, id, claims)
@@ -87,14 +95,44 @@ func Open(sh Shared, f File) (*Host, error) {
 		if r.exporter != nil {
 			r.exporter.Keep = r.keep
 		}
-		if r.Config.Network != "" {
-			if _, err := h.reserve(id, []state.Claim{{Kind: state.ClaimNetwork, Name: r.Config.Network}}); err != nil {
-				h.Close()
-				return nil, err
-			}
+		if r.Config.Network == "" {
+			continue
 		}
+		claim := state.Claim{Kind: state.ClaimNetwork, Name: r.Config.Network}
+		if seen[claim] != id {
+			// Existing claims stay in force. A new one waits for a startup with complete peer evidence.
+			if len(h.runtimes) != len(h.ids) {
+				continue
+			}
+			if _, held := seen[claim]; held || r.deployment.Store.AddClaims(ctx, []state.Claim{claim}) != nil {
+				h.fail(r.Config, r.deployment.Store, "cannot reserve configured network")
+				continue
+			}
+			seen[claim] = id
+		}
+		h.leases[id] = map[state.Claim]int{claim: 1}
 	}
 	return h, nil
+}
+
+func stateOpenReason(err error) string {
+	switch {
+	case errors.Is(err, state.ErrWrongKey):
+		return state.ErrWrongKey.Error()
+	case errors.Is(err, os.ErrPermission):
+		return "permission denied opening state"
+	default:
+		return "cannot open state"
+	}
+}
+
+func (h *Host) fail(c Config, store *state.Store, reason string) {
+	id := c.ID()
+	h.failed[id] = reason
+	h.failures[id] = failedEnvironmentHandler(c, store, reason)
+	if h.log != nil {
+		h.log(fmt.Sprintf("%s: %s", id, reason))
+	}
 }
 
 func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error) {
@@ -134,9 +172,13 @@ func (h *Host) foreign(ctx context.Context, id scope.ID) (deploy.Foreign, error)
 
 func (h *Host) foreignClaims(ctx context.Context, id scope.ID) (map[state.Claim]bool, error) {
 	claims := map[state.Claim]bool{}
-	for _, r := range h.order {
-		if r.Config.ID() == id {
+	for _, peer := range h.ids {
+		if peer == id {
 			continue
+		}
+		r := h.runtimes[peer]
+		if r == nil {
+			return nil, fmt.Errorf("state claims unavailable for %s", peer)
 		}
 		other, err := r.deployment.Store.Claims(ctx)
 		if err != nil {
@@ -153,6 +195,9 @@ func (h *Host) reserve(id scope.ID, claims []state.Claim) ([]state.Claim, error)
 	return h.reserveContext(context.Background(), id, claims)
 }
 func (h *Host) reserveContext(ctx context.Context, id scope.ID, claims []state.Claim) ([]state.Claim, error) {
+	if len(claims) == 0 {
+		return nil, nil
+	}
 	h.claimsMu.Lock()
 	defer h.claimsMu.Unlock()
 	foreign, err := h.foreignClaims(ctx, id)
@@ -215,13 +260,38 @@ func (h *Host) finishConfirmed(ctx context.Context, id scope.ID, leased, candida
 	return h.runtimes[id].deployment.Store.ReleaseClaims(ctx, release)
 }
 
-// Start starts every hosted environment. The caller serves the Host only after it returns. When one fails to start, the
-// caller still closes the Host.
+// Start settles every startup result before any ordinary workers or requests can observe it.
 func (h *Host) Start(ctx context.Context) error {
+	type recovered struct {
+		r   *Runtime
+		ctx context.Context
+	}
+	var ready []recovered
 	for _, r := range h.order {
-		if err := r.Start(ctx); err != nil {
-			return fmt.Errorf("%s: %w", r.Config.ID(), err)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
+		if h.failed[r.Config.ID()] != "" {
+			continue
+		}
+		runtimeCtx, cancel := context.WithCancel(ctx)
+		r.cancel = cancel
+		if err := r.recoverForStart(runtimeCtx); err != nil {
+			r.stop()
+			r.waitReports()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			h.fail(r.Config, r.deployment.Store, err.Error())
+			continue
+		}
+		ready = append(ready, recovered{r, runtimeCtx})
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, entry := range ready {
+		entry.r.startWorkers(entry.ctx)
 	}
 	return nil
 }
@@ -235,6 +305,10 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id, _, ok := environmentPath(r.URL.Path); ok {
+		if failed := h.failures[id]; failed != nil {
+			failed.ServeHTTP(w, r)
+			return
+		}
 		if rt := h.runtimes[id]; rt != nil {
 			rt.Handler.ServeHTTP(w, r)
 			return

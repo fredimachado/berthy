@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -254,25 +255,108 @@ func openable(t *testing.T, h Hosted) {
 	s.Close()
 }
 
-func TestOpenClosesWhatItOpenedWhenOneEnvironmentFails(t *testing.T) {
-	lab, dev := scope.ID{Project: "demo", Environment: "lab"}, scope.ID{Project: "demo", Environment: "dev"}
-	sh, f := hostedFile(t, lab, dev)
-	// The second state is made with one key and is given another.
-	s, err := state.Open(f.Environments[1].StateDir, f.Environments[1].KeyFile, "dev")
+func wrongHostedKey(t *testing.T, entry *Hosted) {
+	t.Helper()
+	openable(t, *entry)
+	wrong := entry.KeyFile + ".wrong"
+	if err := os.WriteFile(wrong, []byte(strings.Repeat("x", 32)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry.KeyFile = wrong
+}
+
+func expectEnvironmentFailed(t *testing.T, w *httptest.ResponseRecorder, id scope.ID, reason string) {
+	t.Helper()
+	var body struct{ Code, Message string }
+	if w.Code != http.StatusServiceUnavailable || json.Unmarshal(w.Body.Bytes(), &body) != nil ||
+		body.Code != "environment_failed" || !strings.Contains(body.Message, id.String()) || !strings.Contains(body.Message, reason) {
+		t.Errorf("%s: got %d %s, want environment_failed with %q", id, w.Code, w.Body.String(), reason)
+	}
+}
+
+func TestHostServesHealthyPeersAfterStateOpenFails(t *testing.T) {
+	ids := []scope.ID{{Project: "demo", Environment: "lab"}, {Project: "demo", Environment: "dev"}, {Project: "shop", Environment: "dev"}}
+	for bad, id := range ids {
+		t.Run(id.Project+"-"+id.Environment, func(t *testing.T) {
+			sh, f := hostedFile(t, ids...)
+			original := f.Environments[bad]
+			wrongHostedKey(t, &f.Environments[bad])
+			h := openHost(t, sh, f)
+			for i, id := range ids {
+				w := serve(h, "GET", id.APIPath()+"agent", adminOf(f, i), "")
+				if i == bad {
+					expectEnvironmentFailed(t, w, id, state.ErrWrongKey.Error())
+				} else if got := environmentOfAgentInfo(t, w); got != id {
+					t.Errorf("agent-info = %v, want %v", got, id)
+				}
+			}
+			h.Close()
+			f.Environments[bad] = original
+			for _, entry := range f.Environments {
+				openable(t, entry)
+			}
+		})
+	}
+}
+
+func TestAllFailedEnvironmentsStillServeHealth(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	wrongHostedKey(t, &f.Environments[0])
+	if err := os.WriteFile(filepath.Join(f.Environments[1].StateDir, "state.db"), []byte("invalid database"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := openHost(t, sh, f)
+	if w := serve(h, "GET", "/healthz", "", ""); w.Code != http.StatusOK || w.Body.String() != `{"ok":true}` {
+		t.Errorf("healthz: %d %s", w.Code, w.Body.String())
+	}
+	expectEnvironmentFailed(t, serve(h, "GET", a.APIPath()+"agent", adminOf(f, 0), ""), a, state.ErrWrongKey.Error())
+	expectEnvironmentFailed(t, serve(h, "GET", b.APIPath()+"agent", adminOf(f, 1), ""), b, "cannot open state")
+}
+
+func TestFailedEnvironmentRequiresItsOwnCredential(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	unknown := scope.ID{Project: "unknown", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
-	wrong := filepath.Join(filepath.Dir(f.Environments[1].KeyFile), "wrong")
-	if err = os.WriteFile(wrong, []byte(strings.Repeat("x", 32)), 0600); err != nil {
+	defer h.Close()
+	failed := h.runtimes[a]
+	failed.deployment.Engine = nil
+	apiToken, digest, err := NewToken(a)
+	if err != nil {
 		t.Fatal(err)
 	}
-	f.Environments[1].KeyFile = wrong
-	if h, err := Open(sh, f); err == nil {
-		h.Close()
-		t.Fatal("Open accepted a wrong key")
+	ctx := context.Background()
+	if err = failed.deployment.Store.CreateToken(ctx, state.Actor{ID: "admin"}, state.Token{
+		Name: "api-reader", Digest: digest, Scope: "read", Created: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	openable(t, f.Environments[0])
+	if err = h.Start(ctx); err != nil {
+		t.Fatalf("recovery failure stopped the host: %v", err)
+	}
+	expectEnvironmentFailed(t, serve(h, "GET", a.APIPath()+"agent", apiToken, ""), a, "deployment recovery failed")
+	db, err := sql.Open("sqlite", filepath.Join(f.Environments[0].StateDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.ExecContext(ctx, "DROP TABLE tokens"); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ method, path string }{{"GET", "agent"}, {"POST", "deploy"}} {
+		for _, token := range []string{"", "malformed", adminOf(f, 1), hostToken(a, "a"), apiToken} {
+			got := serve(h, route.method, a.APIPath()+route.path, token, "{}")
+			want := serve(h, route.method, unknown.APIPath()+route.path, token, "{}")
+			if got.Code != http.StatusUnauthorized || got.Code != want.Code || got.Body.String() != want.Body.String() {
+				t.Errorf("%s: got %d %s, want %d %s", route.method, got.Code, got.Body, want.Code, want.Body)
+			}
+		}
+		expectEnvironmentFailed(t, serve(h, route.method, a.APIPath()+route.path, adminOf(f, 0), "{}"), a, "deployment recovery failed")
+	}
 }
 
 func TestOpenRefusesAStateOfAnotherProject(t *testing.T) {
@@ -291,16 +375,19 @@ func TestOpenRefusesAStateOfAnotherProject(t *testing.T) {
 		g := f
 		g.Environments = append([]Hosted(nil), f.Environments...)
 		change(&g.Environments[1])
-		h, err := Open(sh, g)
-		if err == nil {
-			h.Close()
-			t.Fatalf("%s: Open accepted the state", name)
-		}
-		if !strings.Contains(err.Error(), "state in "+f.Environments[1].StateDir+":") || !strings.Contains(err.Error(), "state belongs to demo/dev, not ") {
-			t.Errorf("%s: %v", name, err)
-		}
-		// The state of lab, opened before the refusal, is closed again.
-		openable(t, f.Environments[0])
+		t.Run(name, func(t *testing.T) {
+			h := openHost(t, sh, g)
+			bad := scope.ID{Project: g.Environments[1].Project, Environment: g.Environments[1].Environment}
+			if got := h.runtimes[bad]; got != nil {
+				t.Fatal("misassigned state supplied a runtime")
+			}
+			if _, err := h.foreignClaims(context.Background(), lab); err == nil {
+				t.Fatal("misassigned state supplied ownership evidence")
+			}
+			if got := environmentOfAgentInfo(t, serve(h, "GET", lab.APIPath()+"agent", adminOf(f, 0), "")); got != lab {
+				t.Errorf("agent-info = %v, want %v", got, lab)
+			}
+		})
 	}
 }
 
@@ -311,6 +398,47 @@ func (hostCheck) Interval() time.Duration { return time.Hour }
 func (hostCheck) Failures() int           { return 1 }
 func (hostCheck) Run(context.Context) monitor.Result {
 	return monitor.Result{State: monitor.Warning}
+}
+
+func TestHostStartsLaterWorkersAfterRecoveryFailure(t *testing.T) {
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	failed, later := h.runtimes[a], h.runtimes[b]
+	failed.deployment.Engine = nil
+	recorded := make(chan struct{})
+	var once sync.Once
+	later.monitoring.mon.Checks = func(context.Context) []monitor.Check { return []monitor.Check{hostCheck{}} }
+	later.monitoring.mon.Notifier = func(context.Context) (monitor.Notifier, time.Duration, error) {
+		once.Do(func() { close(recorded) })
+		return nil, 0, nil
+	}
+	ctx := context.Background()
+	if err = h.Start(ctx); err != nil {
+		t.Fatalf("recovery failure stopped the host: %v", err)
+	}
+	if later.monitorDone == nil {
+		t.Fatal("later monitor did not start")
+	}
+	<-recorded
+	if rows, err := later.deployment.Store.Checks(ctx); err != nil || len(rows) != 1 || rows[0].Name != "host-test" {
+		t.Errorf("later monitor checks: %+v, %v", rows, err)
+	}
+	select {
+	case <-failed.reportsDone:
+	default:
+		t.Error("failed environment's reports were not joined")
+	}
+	if failed.recoveryDone != nil || failed.monitorDone != nil || failed.jobsDone != nil || failed.exportDone != nil {
+		t.Error("failed environment started ordinary workers")
+	}
+	if _, err = h.foreignClaims(ctx, b); err != nil {
+		t.Errorf("owner-checked state lost after recovery failure: %v", err)
+	}
 }
 
 func TestOpenStartsNoWorkerOfAnyEnvironment(t *testing.T) {
@@ -527,6 +655,52 @@ func TestReserveFailsWhenAnotherStateCannotBeRead(t *testing.T) {
 	}
 }
 
+func TestUnreadablePeerCannotFreeDockerNames(t *testing.T) {
+	a, b, peer := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}, scope.ID{Project: "peer", Environment: "dev"}
+	sh, f := hostedFile(t, a, b, peer)
+	f.Environments[0].Network = "one-dev"
+	first, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	f.Environments[1].Network = "two-dev"
+	original := f.Environments[2]
+	wrongHostedKey(t, &f.Environments[2])
+	h := openHost(t, sh, f)
+	ctx := context.Background()
+	network := state.Claim{Kind: state.ClaimNetwork, Name: "one-dev"}
+	held, err := h.runtimes[a].deployment.Store.Claims(ctx)
+	if err != nil || !slices.Equal(held, []state.Claim{network}) {
+		t.Errorf("existing network claims: %v, %v", held, err)
+	}
+	deferred, err := h.runtimes[b].deployment.Store.Claims(ctx)
+	if err != nil || len(deferred) != 0 {
+		t.Errorf("deferred network claims: %v, %v", deferred, err)
+	}
+	if _, err = h.reserve(a, []state.Claim{{Kind: state.ClaimVolume, Name: "shared"}}); err == nil {
+		t.Error("reserved a new shared name without peer evidence")
+	}
+	if _, err = h.runtimes[a].deployment.Foreign(ctx); err == nil {
+		t.Error("destructive inventory received incomplete peer evidence as complete")
+	}
+	keep := h.runtimes[a].keep()
+	if !keep(a.Labels()) || keep(peer.Labels()) || keep(nil) {
+		t.Error("stats did not restrict the sample to positively owned containers")
+	}
+	h.Close()
+	f.Environments[2] = original
+	reopened, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	claims, err := reopened.runtimes[b].deployment.Store.Claims(ctx)
+	if err != nil || !slices.Equal(claims, []state.Claim{{Kind: state.ClaimNetwork, Name: "two-dev"}}) {
+		t.Errorf("reconciled network claims: %v, %v", claims, err)
+	}
+}
+
 func TestOpenRefusesTwoEnvironmentsThatHoldOneName(t *testing.T) {
 	a, b := scope.ID{Project: "one", Environment: "prod"}, scope.ID{Project: "two", Environment: "prod"}
 	sh, f := hostedFile(t, a, b)
@@ -650,6 +824,48 @@ func (e *deployJobLeaseEngine) InspectContainer(context.Context, string) (engine
 }
 func (e *deployJobLeaseEngine) StopContainer(context.Context, string, int) error { return nil }
 func (e *deployJobLeaseEngine) RemoveContainer(context.Context, string) error    { return nil }
+
+func TestVolumeFreeJobRunsWithUnreadableSibling(t *testing.T) {
+	ctx := context.Background()
+	a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b)
+	h, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	c := h.runtimes[a].deployment
+	m := manifest.Manifest{Project: "one", Network: "overlay", Apps: map[string]manifest.App{"web": {
+		Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}},
+	}}}
+	seed, _, err := c.Store.Admit(ctx, state.Admission{RequestID: "seed", ActorID: "actor", Kind: "deploy", App: "web", PublicRequest: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Store.Finish(ctx, seed.ID, state.Outcome{State: "succeeded", Release: &state.Release{
+		App: "web", Digest: "example/web@sha256:" + strings.Repeat("a", 64), Manifest: raw,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h.runtimes[b].deployment.Store.Close()
+	finish := make(chan struct{})
+	close(finish)
+	c.Engine = &deployJobLeaseEngine{jobStarted: make(chan struct{}), finishJob: finish}
+	out, err := c.RunJob(ctx, m, "smoke", manifest.Job{App: "web", Role: "web", Command: []string{"true"}}, 1)
+	if err != nil || out.Exit == nil || *out.Exit != 0 || out.TimedOut {
+		t.Errorf("volume-free job did not succeed: %+v, %v", out, err)
+	}
+	if _, err = h.reserve(a, []state.Claim{{Kind: state.ClaimVolume, Name: "shared"}}); err == nil {
+		t.Error("reserved a new shared name without peer evidence")
+	}
+	if claims, err := c.Store.Claims(ctx); err != nil || len(claims) != 0 || h.leases[a] != nil {
+		t.Errorf("unexpected claims or leases: %v, %v, %v", claims, h.leases[a], err)
+	}
+}
 
 func TestDeployFailureKeepsVolumeWhileConcurrentJobUsesIt(t *testing.T) {
 	ctx := context.Background()
