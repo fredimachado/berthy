@@ -36,7 +36,7 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	}
 	shellTool(t, tools, "systemctl", ctl)
 	curl := "exit 0"
-	if mode == "down" || mode == "stop-fails" {
+	if mode == "down" || mode == "stop-fails" || mode == "move-fails" {
 		curl = "exit 1"
 	}
 	if mode == "restore" {
@@ -48,6 +48,9 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	}
 	if mode == "no-actions" {
 		shellTool(t, tools, "mv", `echo "mv $*" >> "$CALLS"; exec /bin/mv "$@"`)
+	}
+	if mode == "move-fails" {
+		shellTool(t, tools, "mv", `case "$2" in *.prev) exit 42;; esac; exec /bin/mv "$@"`)
 	}
 	bin := filepath.Join(dir, "bin")
 	if err := os.WriteFile(bin, []byte("new"), 0600); err != nil {
@@ -87,8 +90,8 @@ func TestLockedRestartConfirmsDespiteTimerStopFailure(t *testing.T) {
 func TestLockedRestartReadsCompletedState(t *testing.T) {
 	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed"} {
 		t.Run(word, func(t *testing.T) {
-			code, out, _, calls := stateShell(t, restartScript("x", 1), word, "")
-			if code != 3 || !strings.Contains(out, "guard="+word) || strings.Contains(calls, "restart berthy") {
+			code, out, state, calls := stateShell(t, restartScript("x", 1), word, "no-actions")
+			if code != 3 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
 				t.Fatalf("code=%d output=%q calls=%q", code, out, calls)
 			}
 		})
@@ -101,8 +104,8 @@ func TestLockedRestartGivesUpWhenLockIsHeld(t *testing.T) {
 	}
 }
 func TestGuardLeavesConfirmedActivationAlone(t *testing.T) {
-	code, out, state, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), "confirmed", "", "yes", "no")
-	if code != 0 || state != "confirmed" || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy\n") {
+	code, out, state, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), "confirmed", "no-actions", "yes", "no")
+	if code != 0 || state != "confirmed" || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy\n") || strings.Contains(calls, "mv ") {
 		t.Fatalf("code=%d output=%q state=%q calls=%q", code, out, state, calls)
 	}
 }
@@ -117,7 +120,7 @@ func TestGuardDoesNotActOnFinalState(t *testing.T) {
 	}
 }
 func TestGuardRecordsItsDecision(t *testing.T) {
-	for _, tc := range []struct{ name, mode, bin, cfg, want string }{{"kept", "", "no", "no", "kept"}, {"restored", "restore", "yes", "no", "restored"}, {"restored-down", "down", "yes", "no", "restored-down"}, {"stopped", "down", "no", "no", "stopped"}, {"stop-failed", "stop-fails", "no", "no", "stop-failed"}} {
+	for _, tc := range []struct{ name, mode, bin, cfg, want string }{{"kept", "", "no", "no", "kept"}, {"restored", "restore", "yes", "no", "restored"}, {"restored-down", "down", "yes", "no", "restored-down"}, {"stopped", "down", "no", "no", "stopped"}, {"stop-failed", "stop-fails", "no", "no", "stop-failed"}, {"restore-failed", "move-fails", "yes", "no", "restore-failed"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, state, _ := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), "pending", tc.mode, tc.bin, tc.cfg)
 			if state != tc.want {
