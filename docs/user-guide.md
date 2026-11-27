@@ -1254,6 +1254,20 @@ Each line is one difference. What is compared is the image (digest and tag), eac
 
 **A secret value is never in it.** A plain variable shows by name, and its value only when it changes. A variable from a secret shows by its name and the name of its secret. A template variable shows by name and its template text, which holds secret names and no value. A change of the value stored under a secret name is not a difference of the manifest, so the diff does not show it.
 
+Add `--diff` to see the old and new field values under their app, role, and setting. A removed value starts with `-` and an added value starts with `+`. A replacement shows the old line directly above the new line. Terminals that support color use red and green. Redirected output and `NO_COLOR=1` keep the signs in plain text. Compose plans also show service actions and any blockers, with the planner's instructions for resolving them.
+
+```sh
+berthy deploy api -e dev --version 1.4.2 --dry-run --diff
+berthy deploy api -e dev --version 1.4.2 --diff
+berthy deploy -e dev --version api=1.4.2 --diff
+```
+
+The first command previews a single app. The second prints the field comparison before rollout and then reports the deploy outcome. An unchanged comparison still deploys and records a release. The third deploys the project in dependency order and shows each app's field comparison when it reaches that app. Add `--dry-run` to preview every app. If execution fails or is held for approval, Berthy stops and names the remaining apps.
+
+A protected project deploy using tags checks every app before asking for one confirmation. The confirmation shows the first app's field diff and a compact plan for the later apps, with their pinned digests or Compose service actions. If you accept, each later app gets its field diff when rollout reaches it. Execution uses the release and image checked in the preview. If the applied release changes before admission, the deploy stops with a conflict.
+
+When an older agent returns only the compact plan, a dry run shows that plan and says field detail is unavailable. To deploy with the field diff, upgrade the agent. You can also run the deploy without `--diff`. With `--json`, adding `--diff` preserves the existing JSON output. `--diff` cannot be combined with `--adopt`.
+
 `berthy rollback <app> --dry-run` shows the same lines for the release that runs now and the one it returns to. An `--adopt` dry run keeps its own list of differences.
 
 The dry run for an image app prints the plan as JSON when you add `--json`. The diff is its `diff` key, as a list of `{"area", "change"}` entries:
@@ -2935,8 +2949,8 @@ Every one of these also reads `-e` and `--config`. All accept `--json` except `s
 
 | Command | Scope | Flags it reads | What it does |
 | --- | --- | --- | --- |
-| `deploy <app>` | deploy | `--dry-run`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. On a protected environment a human admin may give a tag. After checkout is frozen the CLI resolves that tag, shows the pinned digest and plan, and asks before admission. CI and agent tokens still give a digest. |
-| `deploy` (no app) | deploy | `--dry-run`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure. An image app given no version keeps the one it runs. An interactive protected selection checks every plan before one confirmation. A plain or digest batch submits in order after preflight. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
+| `deploy <app>` | deploy | `--dry-run`, `--diff`, `--request-id`, `--manifest-dir`, `--version`, `--commit`, `--adopt`, `--replace-existing`, `--allow-recreate` | Deploy an image app or a Compose app. `--diff` shows a field comparison in a dry run or before rollout. On a protected environment a human admin may give a tag. After checkout is frozen the CLI resolves that tag, shows the pinned digest and plan, and asks before admission. CI and agent tokens still give a digest. |
+| `deploy` (no app) | deploy | `--dry-run`, `--diff`, `--manifest-dir`, `--version` (repeatable, `<app>=<ref>`), `--commit` | Deploy every app of the manifest in `depends_on` order and stop at the first failure or hold. An image app given no version keeps the one it runs. `--diff` shows the field comparison for each app as it is reached. An interactive protected selection checks every plan before one confirmation. Refuses `--adopt`, `--replace-existing`, `--allow-recreate` and `--request-id`. |
 | `promote <app>` | deploy | `--from` (required), `--dry-run`, `--request-id`, `--manifest-dir`, `--commit` | Deploy the applied release of the same app in `--from` to this environment after a pinned preview and confirmation. |
 | `apply` | deploy | `--dry-run`, `--manifest-dir`, `--commit` | Apply the environment settings of the manifest (probes, peers, alerts, destinations, telemetry and the rest) without deploying an app. Prints the changes, or `no changes`. Refused while the lock is held. |
 | `rollback <app>` | deploy | `--dry-run`, `--request-id`, `--to`, `--revert-schema`, `--adopt`, `--replace-existing`, `--allow-recreate` | Return to the previous release, or the one named by `--to`. The environment's settings stay as they are. |

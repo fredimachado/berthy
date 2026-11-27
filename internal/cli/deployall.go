@@ -78,6 +78,9 @@ type deployStep struct {
 	preview      []byte
 	previewErr   string
 	previewOlder bool
+	diffPreview  *deployDiffPreview
+	diffBlockers deployPlanBlockers
+	diffShown    *deploy.Diff
 }
 
 // deployAllEntry is what the --json document of a deploy without an app says about one app: how its deploy ended and what
@@ -97,8 +100,8 @@ type appliedRelease struct {
 }
 
 // runDeployAll deploys every app of the manifest, one after another in depends_on order, each as `berthy deploy APP` would.
-// Everything is prepared and checked first, so a request that cannot be made leaves nothing deployed. It stops at the first
-// app that does not succeed. With --dry-run it plans every app and reports the ones that failed.
+// It prepares every app's request before admission. A field preview binds that request to the release it compared.
+// Execution stops at the first app that does not succeed. With --dry-run it plans every app and reports the ones that failed.
 func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Target, out, errout io.Writer) int {
 	base, prefix, token := target.Base, target.Prefix, target.Token
 	for _, needsApp := range []struct {
@@ -201,7 +204,7 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 				return 1
 			}
 		}
-		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
+		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f); err != nil {
 			printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 			return 1
 		}
@@ -229,6 +232,8 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 		if f.dry && step.previewErr != "" {
 			printAgentRefusal(errout, safeSecretText(step.previewErr, target.Token), !f.json, step.previewOlder)
 			code = 1
+		} else if f.deployDiff && !f.json {
+			code = runDeployFieldStep(ctx, client, target, f, step, stdout, errout)
 		} else if f.dry && step.preview != nil {
 			heading := ""
 			if !f.json {
@@ -262,15 +267,7 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 	}
 
 	if stoppedAt >= 0 {
-		var notRun []string
-		for _, step := range steps[stoppedAt+1:] {
-			notRun = append(notRun, step.app)
-		}
-		line := "deploy stopped at " + steps[stoppedAt].app
-		if len(notRun) > 0 {
-			line += "; not run: " + strings.Join(notRun, ", ")
-		}
-		fmt.Fprintln(errout, target.Redact(line))
+		printDeployBatchStop(errout, target, steps, stoppedAt, stoppedAt+1)
 		for i := stoppedAt + 1; i < len(steps); i++ {
 			results[i] = deployAllEntry{App: target.Redact(steps[i].app), State: "not_run"}
 		}
@@ -291,6 +288,47 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 		}
 	}
 	return exit
+}
+
+func printDeployBatchStop(errout io.Writer, target *agentclient.Target, steps []deployStep, stoppedAt, firstUnrun int) {
+	var notRun []string
+	for i := firstUnrun; i < len(steps); i++ {
+		if i != stoppedAt {
+			notRun = append(notRun, steps[i].app)
+		}
+	}
+	line := "deploy stopped at " + steps[stoppedAt].app
+	if len(notRun) > 0 {
+		line += "; not run: " + strings.Join(notRun, ", ")
+	}
+	fmt.Fprintln(errout, target.Redact(line))
+}
+
+func runDeployFieldStep(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, step deployStep, out, errout io.Writer) int {
+	preview, blockers := step.diffPreview, step.diffBlockers
+	if preview == nil {
+		var err error
+		var older bool
+		preview, older, err = requestDeployFieldPreview(ctx, client, target, &step.req, step.appliedID, step.tag, errout)
+		if err != nil && !errors.As(err, &blockers) {
+			return reportDeployFieldError(errout, target, err, older)
+		}
+	}
+	f.shownDeployDiff = step.diffShown
+	if f.shownDeployDiff == nil {
+		shown, err := renderDeployFieldPreview(out, target, step.app, preview, blockers, f.dry)
+		if err != nil {
+			return reportDeployFieldError(errout, target, err, false)
+		}
+		f.shownDeployDiff = shown
+	}
+	if len(blockers) != 0 && (!f.dry || step.diffPreview != nil) {
+		return reportDeployFieldError(errout, target, blockers, false)
+	}
+	if f.dry {
+		return 0
+	}
+	return sendCommand(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", step.req, f, "deploy", out, errout)
 }
 
 // capturedDocument is the one JSON value a single deploy printed to its captured stdout. It is nil when nothing was printed,

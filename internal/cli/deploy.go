@@ -116,7 +116,7 @@ func withRemoteFlags(extra ...string) []string {
 var changeFlags = map[string][]string{
 	"versions":                 withRemoteFlags("--manifest-dir"),
 	"promote":                  withRemoteFlags("--manifest-dir", "--from", "--dry-run", "--request-id", "--commit"),
-	"deploy":                   withRemoteFlags("--dry-run", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
+	"deploy":                   withRemoteFlags("--dry-run", "--diff", "--request-id", "--manifest-dir", "--version", "--commit", "--adopt", "--replace-existing", "--allow-recreate"),
 	"apply":                    withRemoteFlags("--dry-run", "--manifest-dir", "--commit"),
 	"rollback":                 withRemoteFlags("--dry-run", "--request-id", "--to", "--revert-schema", "--adopt", "--replace-existing", "--allow-recreate"),
 	"restart":                  withRemoteFlags("--dry-run", "--request-id", "--role"),
@@ -170,6 +170,8 @@ type commandFlags struct {
 	json, dry, adopt, healthy, revert, replace, allowRecreate, volumes, tunnel, all, interactive, agent, origin                                      bool
 	// replaceGenerated is --replace of secret generate: it replaces a stored secret. It is not replace, which is --replace-existing.
 	replaceGenerated bool
+	deployDiff       bool
+	shownDeployDiff  *deploy.Diff
 	envFromVariable  bool
 	// dirSet is true only when --manifest-dir's value was assigned. An incomplete --manifest-dir leaves it false even if the
 	// flag name was seen, including when parsing stops with a later missing-value error.
@@ -177,7 +179,7 @@ type commandFlags struct {
 	pos, command, given, versions []string
 }
 
-func parseDeploymentArgs(args []string) (commandFlags, error) {
+func parseDeploymentArgs(cmd string, args []string) (commandFlags, error) {
 	f := commandFlags{dir: "."}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -187,6 +189,10 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 		}
 		if strings.HasPrefix(a, "-") {
 			f.given = append(f.given, a)
+		}
+		if cmd == "deploy" && a == "--diff" {
+			f.deployDiff = true
+			continue
 		}
 		switch a {
 		case "--json":
@@ -218,7 +224,7 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 		case "--revert-schema":
 			f.revert = true
 		default:
-			if !deploymentFlagTakesValue(a) {
+			if !deploymentFlagTakesValue(cmd, a) {
 				if strings.HasPrefix(a, "-") {
 					return f, fmt.Errorf("unknown flag %s", a)
 				}
@@ -289,9 +295,11 @@ func parseDeploymentArgs(args []string) (commandFlags, error) {
 }
 
 // deploymentFlagTakesValue is shared by parsing and alias validation.
-func deploymentFlagTakesValue(flag string) bool {
+func deploymentFlagTakesValue(cmd, flag string) bool {
 	switch flag {
-	case "--from", "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--diff", "--run":
+	case "--diff":
+		return cmd != "deploy"
+	case "--from", "-e", "--project", "--config", "--confirm", "--backup", "--into", "--exec", "--manifest-dir", "--version", "--commit", "--request-id", "--role", "--service", "--timeout", "--registry", "-m", "--message", "--to", "--replicas", "--bytes", "--format", "--scope", "--expires", "--run":
 		return true
 	}
 	return false
@@ -423,7 +431,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		fmt.Fprintf(errout, "%s accepts no arguments after --\n", cmd)
 		return 2
 	}
-	f, err := parseDeploymentArgs(args)
+	f, err := parseDeploymentArgs(cmd, args)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 2
@@ -468,6 +476,10 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	}
 	if flag, key := refusedFlag(cmd, f); flag != "" {
 		printRefusal(errout, fmt.Sprintf("%s is not a flag of %s", flag, key), !f.json)
+		return 2
+	}
+	if f.deployDiff && f.adopt {
+		printRefusal(errout, "--diff with --adopt is unsupported", !f.json)
 		return 2
 	}
 	if cmd == "secret" && len(f.pos) == 1 && (f.pos[0] == "generate" || f.pos[0] == "set") && len(f.command) > 0 {
@@ -740,6 +752,9 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 			if e := agentclient.CheckAgentVersion(ctx, client, target, req.Manifest); e != nil {
 				printRefusal(errout, terminalSafe(e.Error()), !f.json)
 				return 1
+			}
+			if f.deployDiff && !f.json {
+				return runDeployFieldPreview(ctx, client, target, f, req, false, out, errout)
 			}
 		}
 		method = "POST"
@@ -1089,7 +1104,8 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		if f.redactToken != "" {
 			heldValues = nil
 		}
-		if code, held := reportHeldMarkers(data, out, errout, f.json, promotionMarkers, heldValues...); held {
+		redact := func(s string) string { return redactSecretText(s, heldValues...) }
+		if code, held := reportHeldPlan(data, out, errout, f.json, promotionMarkers, redact, f.shownDeployDiff); held {
 			return code
 		}
 		var accepted struct {

@@ -58,7 +58,7 @@ func checkAliases(aliases map[string]string) error {
 			if w == "-e" || w == "--project" || w == "--config" || w == "--environment" {
 				return fmt.Errorf("alias %s: %s is not allowed; the environment is given on the command line or by BERTHY_ENV", name, w)
 			}
-			if aliasDefFlagTakesValue(w) {
+			if aliasDefFlagTakesValue(words[0], w) {
 				i++
 			}
 		}
@@ -67,8 +67,8 @@ func checkAliases(aliases map[string]string) error {
 }
 
 // aliasDefFlagTakesValue is for validating an alias definition: which flags in the alias text take a following word.
-func aliasDefFlagTakesValue(flag string) bool {
-	return deploymentFlagTakesValue(flag) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, flag)
+func aliasDefFlagTakesValue(cmd, flag string) bool {
+	return deploymentFlagTakesValue(cmd, flag) || slices.Contains([]string{"--since", "--tail", "--grep", "--replica"}, flag)
 }
 
 // aliasIntent is the environment, project, config and manifest directory the operator chose when invoking an alias, before
@@ -172,7 +172,7 @@ func expandAlias(cmd string, args []string) (expanded []string, dir string, inte
 	}
 	// A complete --manifest-dir in the operator flags or the alias definition is trusted, even when the trusted prefix ends
 	// in another value flag whose argument the caller will supply. An incomplete --manifest-dir is not (dirSet stays false).
-	if tf, _ := parseDeploymentArgs(trusted[1:]); tf.dirSet {
+	if tf, _ := parseDeploymentArgs(trusted[0], trusted[1:]); tf.dirSet {
 		intent.dirGiven = true
 		intent.manifestDir = tf.dir
 	}
@@ -205,7 +205,7 @@ func checkAliasIntent(errout io.Writer, intent *aliasIntent, env, project, confi
 // not read: changeFlags, under the key of the line's command and subcommand. A command outside that list, such as a read
 // command, takes none of these flags.
 func acceptsFlag(line []string, flag string) bool {
-	f, err := parseDeploymentArgs(line[1:])
+	f, err := parseDeploymentArgs(line[0], line[1:])
 	if err != nil {
 		return false
 	}

@@ -42,7 +42,7 @@ func TestUsageStyleAfterModeResolution(t *testing.T) {
 			t.Fatalf("%v: %d %q", args, code, errs.String())
 		}
 	}
-	f, err := parseDeploymentArgs([]string{"web", "-e", "dev", "--", "--json"})
+	f, err := parseDeploymentArgs("exec", []string{"web", "-e", "dev", "--", "--json"})
 	if err != nil || f.json || len(f.command) != 1 || f.command[0] != "--json" {
 		t.Fatalf("child args: %+v %v", f, err)
 	}

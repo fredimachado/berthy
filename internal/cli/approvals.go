@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/deploy"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
 )
@@ -120,6 +122,10 @@ func reportHeldMarkers(data []byte, out, errout io.Writer, asJSON bool, markers 
 }
 
 func reportHeldWithRedactor(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, redact func(string) string) (code int, held bool) {
+	return reportHeldPlan(data, out, errout, asJSON, markers, redact, nil)
+}
+
+func reportHeldPlan(data []byte, out, errout io.Writer, asJSON bool, markers []cliTone, redact func(string) string, shown *deploy.Diff) (code int, held bool) {
 	var h heldApproval
 	if json.Unmarshal(data, &h) != nil || h.ID == "" {
 		return 0, false
@@ -136,7 +142,18 @@ func reportHeldWithRedactor(data []byte, out, errout io.Writer, asJSON bool, mar
 		return exitHeld, true
 	}
 	fmt.Fprintln(out, styleFor(out, true).paint(toneWarning, "held for approval")+strings.TrimPrefix(line, "held for approval"))
-	printPlanMarkers(out, redactDiagnosticJSONWith(h.Plan, false, redact), markers)
+	heading := "plan:"
+	if shown != nil {
+		heading = "held plan:"
+		var plan map[string]json.RawMessage
+		var diff deploy.Diff
+		if json.Unmarshal(h.Plan, &plan) == nil && validImageDiff(plan["diff"]) &&
+			json.Unmarshal(plan["diff"], &diff) == nil && shown.New == diff.New && shown.Same == diff.Same && slices.Equal(shown.Changes, diff.Changes) {
+			delete(plan, "diff")
+			h.Plan, _ = json.Marshal(plan)
+		}
+	}
+	printNamedPlanMarkers(out, redactDiagnosticJSONWith(h.Plan, false, redact), markers, heading)
 	return exitHeld, true
 }
 
@@ -146,13 +163,17 @@ func printPlan(out io.Writer, plan json.RawMessage) {
 }
 
 func printPlanMarkers(out io.Writer, plan json.RawMessage, markers []cliTone) {
+	printNamedPlanMarkers(out, plan, markers, "plan:")
+}
+
+func printNamedPlanMarkers(out io.Writer, plan json.RawMessage, markers []cliTone, heading string) {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(plan))
 	dec.UseNumber()
 	if len(plan) == 0 || dec.Decode(&v) != nil {
 		return
 	}
-	fmt.Fprintln(out, "plan:")
+	fmt.Fprintln(out, heading)
 	if m, ok := v.(map[string]any); ok {
 		if diff, ok := takeDiff(m); ok {
 			fmt.Fprintln(out, "  diff:")

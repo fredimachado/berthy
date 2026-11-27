@@ -23,12 +23,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"berthy/internal/api"
 	"berthy/internal/credstore"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
 )
 
-// ErrInvalidResponse is an answer of the agent that cannot be used: unreadable or over 1 MiB.
+// ErrInvalidResponse is an answer of the agent that cannot be read within the endpoint's response limit.
 var ErrInvalidResponse = errors.New("invalid agent response")
 
 // Environment is one environment's entry of the CLI configuration.
@@ -322,8 +323,14 @@ func DoResult(ctx context.Context, client *http.Client, base *url.URL, prefix, t
 		return Result{}, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 {
+	// Deploy admission answers with 202. The 200 response to the opt-in request is the dry-run document.
+	fieldPreview := resp.StatusCode == http.StatusOK && method == http.MethodPost && path == "deploys" && u.Query().Get("diff") == "fields"
+	limit := 1 << 20
+	if fieldPreview {
+		limit = api.MaxDeployDiffResponse
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil || len(data) > limit || (fieldPreview && !json.Valid(data)) {
 		return Result{}, ErrInvalidResponse
 	}
 	return Result{Data: data, Status: resp.StatusCode, Older: IsOlderAgent(resp)}, nil

@@ -19,6 +19,132 @@ import (
 	"github.com/creack/pty"
 )
 
+func TestProtectedProjectDeployDiffReviewsOnce(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	for _, mode := range []string{"declined", "confirmed", "stale later app", "blocked"} {
+		t.Run(mode, func(t *testing.T) {
+			agent, args := fieldProjectFixture(t, true)
+			const reason = "stateful app zstack would recreate database; deploy with --allow-recreate and an admin token"
+			if mode == "blocked" {
+				agent.fieldPlans["zstack"] = strings.Replace(agent.fieldPlans["zstack"], `"volumes":[]`, fmt.Sprintf(`"volumes":[],"blockers":[%q]`, reason), 1)
+			}
+			master, tty, err := pty.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := os.Stdin
+			os.Stdin = tty
+			var errs bytes.Buffer
+			var exit int
+			stopped, readerDone := make(chan struct{}), make(chan struct{})
+			prompted := make(chan string, 2)
+			var transcript string
+			defer func() {
+				master.Close()
+				<-stopped
+				tty.Close()
+				<-readerDone
+				os.Stdin = previous
+			}()
+			go func() {
+				defer close(stopped)
+				exit = Run(append(args, "--diff"), tty, &errs)
+			}()
+			const prompt = "Proceed with this deploy? [y/N] "
+			go func() {
+				defer close(readerDone)
+				r := bufio.NewReader(master)
+				var seen strings.Builder
+				defer func() { transcript = strings.ReplaceAll(seen.String(), "\r\n", "\n") }()
+				for {
+					c, err := r.ReadByte()
+					if err != nil {
+						return
+					}
+					seen.WriteByte(c)
+					if strings.HasSuffix(seen.String(), prompt) {
+						prompted <- strings.ReplaceAll(seen.String(), "\r\n", "\n")
+					}
+				}
+			}()
+			allPreviews := []string{"preview api?diff=fields", "preview redis?diff=fields", "preview zstack?diff=fields"}
+			select {
+			case preview := <-prompted:
+				agent.mu.Lock()
+				assertFieldProjectCalls(t, agent, allPreviews...)
+				if len(agent.lookups) != 1 || agent.lookups[0] != "api" {
+					t.Errorf("tag lookups: %v", agent.lookups)
+				}
+				agent.mu.Unlock()
+				if mode == "blocked" {
+					t.Error("prompted for a blocked plan")
+				} else if strings.Count(preview, "- replicas:") != 1 || !strings.Contains(preview, "- replicas: 2") ||
+					!strings.Contains(preview, "replicas 1 -> 4") || !strings.Contains(preview, "recreate database") ||
+					!strings.Contains(preview, "ghcr.io/acme/api@sha256:") {
+					t.Errorf("wrong review before confirmation: %q", preview)
+				}
+				answer := "n"
+				if mode == "confirmed" || mode == "stale later app" {
+					answer = "y"
+				}
+				if mode == "stale later app" {
+					agent.mu.Lock()
+					agent.guardIDs["redis"] = 5
+					agent.mu.Unlock()
+				}
+				if _, err := fmt.Fprintln(master, answer); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-prompted:
+					t.Fatal("deploy prompted twice")
+				case <-stopped:
+				}
+			case <-stopped:
+				if mode != "blocked" {
+					t.Fatalf("exit %d before prompt: %s", exit, &errs)
+				}
+			}
+			tty.Close()
+			<-readerDone
+			want := 1
+			switch mode {
+			case "confirmed":
+				want = 0
+				allPreviews = append(allPreviews, "admit api", "admit redis", "admit zstack")
+			case "stale later app":
+				allPreviews = append(allPreviews, "admit api", "admit redis")
+				if !strings.Contains(errs.String(), "applied release changed") || !strings.Contains(errs.String(), "not run: zstack") {
+					t.Errorf("stale held selection: %s", &errs)
+				}
+			case "blocked":
+				if strings.Count(transcript, reason) != 1 || strings.Contains(transcript, prompt) ||
+					!strings.Contains(errs.String(), "deploy stopped at zstack; not run: api, redis") {
+					t.Errorf("blocked preview: %q / %s", transcript, &errs)
+				}
+			}
+			if exit != want {
+				t.Errorf("exit %d, want %d: %s", exit, want, &errs)
+			}
+			assertFieldProjectCalls(t, agent, allPreviews...)
+			if mode != "blocked" {
+				if strings.Count(transcript, "- replicas: 2") != 1 || strings.Count(transcript, prompt) != 1 {
+					t.Errorf("first app or prompt repeated: %q", transcript)
+				}
+				later := strings.Index(transcript, "- replicas: 1")
+				compose := strings.Index(transcript, "\n    recreate database\n")
+				atPrompt := strings.Index(transcript, prompt)
+				if mode == "declined" && (later >= 0 || compose >= 0) ||
+					mode == "confirmed" && !(atPrompt < later && later < compose) ||
+					mode == "stale later app" && !(atPrompt < later && compose < 0) {
+					t.Errorf("later field blocks: %q", transcript)
+				}
+			}
+		})
+	}
+}
+
 func TestBatchComposeRedactionRefusesBeforePrompt(t *testing.T) {
 	manifestText := "project: demo\nnetwork: demo\napps:\n  api:\n    kind: image\n    image: ghcr.io/acme/api\n    roles:\n      web: {}\n  zstack:\n    kind: compose\n    file: compose.yml\n    project_name: test-token-project\n    depends_on: [api]\n"
 	plan := `{"app":"zstack","image":"","roles":[],"compose":{"project":"test-token-project","services":[{"name":"side","action":"keep"}],"volumes":[]}}`

@@ -13,8 +13,7 @@ svc="$PROJECT-$ENVN-web-main"
 SECRET_1='s3cret-value-aaa111'
 SECRET_2='s3cret-value-bbb222'
 
-# manifest REPLICAS EXTRA SECRET [PROTECTED]: the web app with REPLICAS replicas of its main role, the plain variable EXTRA (a
-# whole YAML line, or empty), and API_KEY taking the value of the secret SECRET.
+# manifest REPLICAS EXTRA SECRET [PROTECTED [START_PERIOD [NOTE]]]: EXTRA is a whole plain-env YAML line or empty.
 manifest() {
   [ "${4:-}" = protected ] && echo "protected: true"
   cat <<YML
@@ -31,11 +30,12 @@ apps:
           test: ["CMD", "true"]
           interval: 2s
           timeout: 2s
-          start_period: 1s
+          start_period: ${5:-1s}
           retries: 3
     env:
       plain:
         LOG_LEVEL: info
+        NOTE: "${6:-before -> value}"
 $2
       secret:
         - API_KEY: $3
@@ -44,6 +44,7 @@ YML
 
 # diff_lines TEXT: the lines of the diff under the app name "web" in the output of a dry run.
 diff_lines() { printf '%s\n' "$1" | awk '/^web$/ { f = 1; next } f && /^  / { print; next } { f = 0 }'; }
+field_block() { awk -v heading="Deploy $PROJECT/$ENVN app web" '$0 == heading { print; f = 1; next } f && /^  / { print; next } { f = 0 }'; }
 
 # seen: everything the scenario printed, to look for secret values in it at the end.
 seen=""
@@ -61,8 +62,13 @@ expect_code "the dry run of a first deploy" 0 "$code" "$out"
 note "$out"
 expect_contains "a first deploy is a new app" "$out" $'web\n  new app'
 
-out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
+preview=$(adm deploy web --version v1 --manifest-dir "$MAN" --dry-run --diff 2>&1); code=$?
+expect_code "preview the first field deploy" 0 "$code" "$preview"
+note "$preview"
+out=$(adm deploy web --version v1 --diff --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1" 0 "$code" "$out"
+expect_contains "first field deploy prints its summary" "$out" "  new app"
+expect_eq "first preview and execution field blocks match" "$(field_block <<<"$preview")" "$(field_block <<<"$out")"
 note "$out"
 
 # 2. The same release again changes nothing.
@@ -91,6 +97,35 @@ note "$out"
 expect_contains "the JSON plan has a diff" "$out" '"diff"'
 expect_contains "the JSON diff has the replicas" "$out" '"area": "main"'
 
+# Send one dry-run request with and without the field query.
+api_url="http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN"
+diff_api() { curl_local --fail --header @- "$@" < <(printf 'Authorization: Bearer %s\n' "$BERTHY_ADMIN_TOKEN"); }
+preview_body=$(jq -cn --arg p "$PROJECT" --arg n "$NETWORK" --arg img "$REG/e2e/web" '
+  {app:"web",version:"v2",dry_run:true,manifest:{project:$p,network:$n,apps:{web:{
+    kind:"image",image:$img,roles:{main:{replicas:2,health:{
+      test:["CMD","true"],interval:"2s",timeout:"2s",start_period:"1s",retries:3
+    }}},env:{plain:{LOG_LEVEL:"info",NOTE:"before -> value",FEATURE_X:"on"},secret:[{API_KEY:"API_KEY_V1"}]}
+  }}}}')
+applied=$(diff_api "$api_url/applied/web"); code=$?
+expect_code "read the current applied release" 0 "$code" "$applied"
+ordinary=$(diff_api -H 'Content-Type: application/json' --data-binary "$preview_body" "$api_url/deploys"); code=$?
+expect_code "request the ordinary HTTP dry run" 0 "$code" "$ordinary"
+rich=$(diff_api -H 'Content-Type: application/json' --data-binary "$preview_body" "$api_url/deploys?diff=fields"); code=$?
+expect_code "request the HTTP field preview" 0 "$code" "$rich"
+expect_eq "ordinary HTTP plan matches the CLI dry run" "$(jq -cS . <<<"$out")" "$(jq -cS . <<<"$ordinary")"
+expect_eq "field preview keeps the complete ordinary plan" "$(jq -cS . <<<"$ordinary")" "$(jq -cS 'del(.release_diff)' <<<"$rich")"
+if jq -e --argjson a "${applied:-null}" '
+  $a.id > 0 and .release_diff.base == $a.id and any(.release_diff.fields[];
+    .path == ["roles","main","replicas"] and .before == "1" and .after == "2")
+' <<<"$rich" >/dev/null; then
+  pass "field preview compares the applied release and lists replica sides"
+else
+  fail "field preview compares the applied release and lists replica sides" "$rich"
+fi
+expect_eq "the HTTP previews leave one swarm replica" "1" "$(d service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$svc")"
+note "$ordinary"
+note "$rich"
+
 # 4. A variable taken from another secret shows by names only.
 manifest 2 "        FEATURE_X: \"on\"" API_KEY_V2 | write_manifest
 out=$(adm deploy web --version v2 --dry-run --manifest-dir "$MAN" 2>&1); code=$?
@@ -101,9 +136,25 @@ out=$(adm deploy web --version v2 --dry-run --json --manifest-dir "$MAN" 2>&1); 
 note "$out"
 
 # 5. Deploy v2, then compare the two releases.
-out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
+manifest 2 '        FEATURE_X: "on"' API_KEY_V2 "" 3s "after -> value" | write_manifest
+preview=$(adm deploy web --version v2 --manifest-dir "$MAN" --dry-run --diff 2>&1); code=$?
+expect_code "the Git-style dry run" 0 "$code" "$preview"
+note "$preview"
+out=$(adm deploy web --version v2 --diff --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v2" 0 "$code" "$out"
 note "$out"
+block=$(field_block <<<"$preview")
+expect_contains "field block removes the old replica count" "$block" "- replicas: 1"
+expect_contains "field block adds the new replica count" "$block" "+ replicas: 2"
+expect_contains "field block nests the changed health setting" "$block" $'health:\n        - start_period: 1s\n        + start_period: 3s'
+expect_contains "field block preserves the arrow in the plain value" "$block" $'- NOTE: before -> value\n    + NOTE: after -> value'
+expect_contains "field block names the old secret mapping" "$block" "from secret API_KEY_V1"
+expect_contains "field block names the new secret mapping" "$block" "from secret API_KEY_V2"
+expect_eq "preview and execution field blocks match" "$block" "$(field_block <<<"$out")"
+expect_contains "the field deploy reports success" "$out" "succeeded"
+expect_eq "the field deploy runs two replicas" "2" "$(d service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$svc")"
+applied=$(diff_api "$api_url/applied/web")
+expect_eq "the field deploy applies the planned digest" "$REG/e2e/web@$WEB_V2_DIGEST" "$(jq -r '.digest' <<<"$applied")"
 out=$(adm history web 2>&1); code=$?
 expect_code "history answers" 0 "$code" "$out"
 id2=$(printf '%s\n' "$out" | sed -n 's/^id: //p' | sed -n 1p)
@@ -117,7 +168,7 @@ expect_contains "the diff has the image" "$out" "(v1 -> v2)"
 expect_contains "the diff has the replicas" "$out" "main     replicas 1 -> 2"
 expect_contains "the diff has the variable" "$out" "env      + FEATURE_X (plain)"
 expect_contains "the diff has the secret mapping" "$out" "env      ~ API_KEY now from secret API_KEY_V2"
-expect_eq "the diff has four changes" "4" "$(printf '%s\n' "$out" | grep -c .)"
+expect_eq "the diff has six changes" "6" "$(printf '%s\n' "$out" | grep -c .)"
 
 out2=$(adm history web --diff "$id2" 2>&1); code=$?
 expect_code "history --diff with one release" 0 "$code" "$out2"
@@ -145,6 +196,12 @@ out=$(adm rollback web --dry-run 2>&1); code=$?
 expect_code "the rollback dry run" 0 "$code" "$out"
 note "$out"
 expect_contains "the rollback takes the replicas back" "$out" "main     replicas 2 -> 1"
+
+out=$(adm deploy web --version v2 --diff --manifest-dir "$MAN" 2>&1); code=$?
+expect_code "deploy the unchanged release" 0 "$code" "$out"
+expect_contains "unchanged deploy prints its summary" "$out" "no changes: the same release would be recorded"
+expect_contains "unchanged deploy reports success" "$out" "succeeded"
+note "$out"
 
 # 7. On a protected environment an agent token's deploy is held, and the diff is in what the person reads.
 manifest 1 "" API_KEY_V2 protected | write_manifest
