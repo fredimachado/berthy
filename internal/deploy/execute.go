@@ -15,6 +15,8 @@ import (
 type roleWork struct {
 	intent   state.Intent
 	replicas int
+	// Recovery allowance if this role and every earlier role in the rollout need to be unwound.
+	recoveryAllowance time.Duration
 }
 
 func (c *Controller) execute(ctx context.Context, op state.Operation, actor Actor, req Request) {
@@ -191,6 +193,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		return
 	}
 	work := make([]roleWork, 0, len(p.Roles))
+	recoveryAllowance := serviceCleanupAllowance
+	var predecessor *manifest.App
 	for ordinal, role := range p.Roles {
 		r := app.Roles[role]
 		spec, e := c.releaseRoleSpec(prepared, img, role, op.ID)
@@ -255,6 +259,25 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 					outcome.Err = "prior service health cannot be verified"
 					return
 				}
+				if previous.Mode.Replicated.Replicas > 0 {
+					if predecessor == nil {
+						release, err := c.Store.Applied(ctx, req.App)
+						var applied manifest.Manifest
+						if err != nil || json.Unmarshal(release.Manifest, &applied) != nil {
+							return
+						}
+						priorApp := applied.Apps[req.App]
+						predecessor = &priorApp
+					}
+					startup, err := uptimeStartupBudget(*predecessor, role)
+					if err != nil {
+						return
+					}
+					recoveryAllowance, err = addStartupAllowance(recoveryAllowance, startup)
+					if err != nil {
+						return
+					}
+				}
 				if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
 					ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
 					if e != nil {
@@ -290,7 +313,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		if r.Replicas != nil {
 			replicas = *r.Replicas
 		}
-		work = append(work, roleWork{intent: intent, replicas: replicas})
+		work = append(work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	}
 	// The check step of a publishing deploy confirms, before anything changes, that its routes and records can be published.
 	wants, err := c.routeWants(ctx, req.Manifest, []string{req.App})
@@ -348,7 +371,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		var gaveUp *errStartAttempts
 		errors.As(e, &gaveUp)
 		outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, op.ID, work, rolloutFallback(e), gaveUp), app, touched)
-		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		allowance := serviceCleanupAllowance
+		if len(touched) > 0 {
+			allowance = touched[len(touched)-1].recoveryAllowance
+		}
+		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), allowance)
 		recoveryErr := c.compensateRollout(recoveryCtx, op.ID, req.App)
 		recoveryCancel()
 		if recoveryErr != nil {
