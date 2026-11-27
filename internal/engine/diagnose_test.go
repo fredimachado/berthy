@@ -44,6 +44,24 @@ func inspectEngine(t *testing.T, path, body string) *Engine {
 	return &Engine{client: &http.Client{Transport: rewriteTransport{base: s.URL}}}
 }
 
+func TestInspectContainerHealthRequiresRunning(t *testing.T) {
+	for _, tc := range []struct{ name, state, want string }{
+		{"stopped", `{"Running":false,"Health":{"Status":"healthy"}}`, ""},
+		{"missing running", `{"Health":{"Status":"healthy"}}`, ""},
+		{"healthy", `{"Running":true,"Health":{"Status":"healthy"}}`, "healthy"},
+		{"starting", `{"Running":true,"Health":{"Status":"starting"}}`, "starting"},
+		{"no health", `{"Running":true}`, "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := inspectEngine(t, "/v1.44/containers/c1/json", `{"State":`+tc.state+`}`)
+			got, err := e.InspectContainerHealth(context.Background(), "c1")
+			if err != nil || got != tc.want {
+				t.Fatalf("health = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestDiagnoseContainerParsesStateAndHealthLog(t *testing.T) {
 	long := strings.Repeat("x", 3000)
 	var probes []string

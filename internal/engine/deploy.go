@@ -354,13 +354,19 @@ func (e *Engine) InspectContainerHealth(ctx context.Context, id string) (string,
 		return "", err
 	}
 	var x struct {
-		State struct{ Health *struct{ Status string } }
+		State struct {
+			Running bool
+			Health  *struct{ Status string }
+		}
 	}
 	if err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x); err != nil {
 		return "", err
 	}
 	if x.State.Health == nil {
 		return "none", nil
+	}
+	if !x.State.Running {
+		return "", nil
 	}
 	return x.State.Health.Status, nil
 }
