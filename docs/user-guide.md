@@ -369,17 +369,19 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 
 | Option | Meaning |
 | --- | --- |
-| `-e <env>` | The environment to set up. |
+| `-e <env>` | The environment to set up or remove. |
 | `--host <user>@<server>` | Set up a remote server over SSH, at a destination the manifest does not need to name. |
 | `--server <name>` | Set up the server of that name from the manifest's `servers`. |
 | `--local` | Set up the server the command runs on. Use at most one of `--host`, `--server` and `--local`. |
 | `--listen <address>:<port>` | The private address the agent's API listens on. Required on the first run unless setup picks the server from the manifest and that entry has `address` (`--host` and `--local` still need it). A later run keeps the agent's own address, and a different one is refused. It must be one specific address of the server, not `0.0.0.0` or `::`. |
-| `--config <file>` | The CLI configuration file to add the environment to. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
+| `--config <file>` | The CLI configuration file to update. Without it, `cli_config` uses `BERTHY_CONFIG`, or else the default file. |
 | `--manifest-dir <dir>` | Read from this directory. By default, look for the base manifest in the current directory, then in its `.berthy` subdirectory. |
 | `--project <name>` | The project, required when the directory has no manifest. |
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it. |
+| `--remove` | Remove one hosted environment after destroying its applied apps. The server must still host another environment. |
+| `--purge` | Delete the removed environment's state instead of archiving it. Requires `--remove`. |
 | `--dry-run` | Check and report what would change, without changing anything. |
 | `--json` | Report as JSON. |
 | `--verbose` | Print each command setup sends, and its exit status, on standard error. With `--dry-run`, also the commands a real run would send. Standard output does not change. |
@@ -428,7 +430,21 @@ Two projects with the same environment name are fine: `todo/prod` and `shop/prod
 
 When an existing environment cannot open its state or complete recovery, the other environments keep serving. A token the agent can still verify for the failed environment gets HTTP 503 with the reason. The setup admin token in `agent.json` still works. The agent can verify state-issued tokens only while it can read the token records. Unverifiable tokens get the same HTTP 401 response as an unknown environment. Run `berthy doctor` on a running environment to see the failed pair. After repairing the state or key, restart the agent to clear the finding. Operations that need ownership evidence from the unreadable state remain unavailable until it can be read.
 
-There is no command that removes a hosted environment from a server. After `destroy`, stop the agent, remove that entry from `agent.json` and its directory under `/var/lib/berthy/environments/`, then start the agent again only if at least one hosted environment remains. An `agent.json` with no environments is refused.
+**Remove a hosted environment.** Destroy its applied apps first. Removal checks the agent's state, so an applied release still blocks removal if someone deleted its Docker workload by hand. A fresh environment needs no destroy, and release history can stay.
+
+```bash
+berthy destroy --project todo -e prod --confirm todo/prod --allow-recreate
+berthy setup --remove --project todo -e prod --host ops@10.0.0.5 --dry-run
+berthy setup --remove --project todo -e prod --host ops@10.0.0.5
+```
+
+Use `--config` consistently if you keep your CLI configuration in a separate file. The usual manifest and destination options also work with removal. The server's `agent.json` supplies the actual state path, key path and network. Setup refuses removal of the last hosted environment.
+
+Setup removes the selected entry from `agent.json` and briefly restarts the shared agent. If the restart fails, setup invokes the activation guard to restore the previous configuration and stops before cleanup. After confirmation, setup archives the state to `<state_dir>.removed-<UTC timestamp>` and prints the exact path. It removes the server key and its rotation files. Keep the matching saved key if you may need to recover encrypted values from the archive. Use `--purge` to delete this removal's state. Previous archives and saved key copies on your machine survive either choice.
+
+An unused environment network is removed. A network still used by a container or service is reported as kept. If setup cannot establish that Docker is already running, it stops instead of opening the Docker socket. After server cleanup, setup removes the matching local context. If that write fails, retry the same removal to finish the local update.
+
+To delete an OS-stored token too, run `berthy context remove --project todo -e prod --delete-token` **after destroy and before setup removal**, while the context still identifies the stored credential. Include the same `--config` flag if you used one. Setup removal can finish when the local entry is already gone.
 
 #### Alerts about the server
 
@@ -3000,7 +3016,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token` | Prepare a server and install or upgrade the agent, or add a hosted environment to one that already runs, over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
+| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, or add or remove one hosted environment over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--save-token`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. With `--save-token`, reads the token and saves it in the credential store. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. An empty or missing file prints nothing. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
@@ -3359,7 +3375,7 @@ Besides these, Berthy creates Docker objects: Swarm services named `<project>-<e
 
 - **One agent per server, any number of hosted environments.** Image apps are Swarm services, so a three-server Swarm cluster needs no redesign, but v1 does not set one up. `berthy setup` starts a single-node Swarm. Joining servers, placement settings and merged views are a later, optional phase.
 - **No upgrade in place from a release before projects.** Move the old configuration, state and key aside, then run setup again ([A server set up before projects](#a-server-set-up-before-projects)).
-- **No command that removes a hosted environment** from a server. After `destroy`, stop the agent, remove its entry and directory by hand, and restart the agent only if at least one hosted environment remains.
+- **The agent needs at least one hosted environment.** After `destroy`, [use setup to remove a hosted environment](#more-than-one-project-or-environment-on-a-server) when the server still hosts another pair. Removing the final pair requires decommissioning the server separately.
 - **Host ports are shared** by everything on a server. Two hosted environments cannot both publish the same host port.
 - **Plain HTTP over a private network.** The agent has no TLS. It relies on the private network for encryption and authenticates every request with a token. Do not expose its port to the internet.
 - **No proxy and no certificates.** Berthy ships no reverse proxy. Public traffic enters through Cloudflare Tunnel (managed) or an app you run yourself.

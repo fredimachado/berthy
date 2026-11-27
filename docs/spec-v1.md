@@ -323,6 +323,16 @@ It works in one of two ways.
 
 It ends by printing the next steps: keep the key copy setup saved and store another off this machine (or, when none was saved, the step that says what to do instead), set the token in the environment variable the CLI configuration names when a token is shown and was not saved, set the secrets, apply the managed ingress if the manifest declares one, and run the first deploy.
 
+`berthy setup --remove --project P -e ENV --host USER@SERVER` unhosts one pair. It uses the same project, environment, destination and CLI configuration selection as ordinary setup. Removal uses the live agent file for the listen address, state path, key path, and network. It refuses the last hosted pair. Both preview and execution check that the selected state belongs to the pair and has zero applied releases. If it still has an applied release, run `berthy destroy --project P -e ENV --confirm P/ENV --allow-recreate` first. Release history can remain.
+
+Removal stages only the reduced agent configuration and preserves the exact bytes of every surviving hosted entry. It restarts the shared service under the activation guard and starts cleanup only after confirmation. A pending removal record ties recovery to the configuration digests and filesystem identities. Retry uses those identities and refuses a replacement directory or key.
+
+By default, removal archives the closed state at `<state_dir>.removed-<UTC timestamp>` and reports the path. `--purge` deletes that removal's state. The server key and its rotation files are removed in either case. Earlier archives and operator key copies are preserved. Recovering encrypted values from an archive requires the matching saved key. A configured overlay is removed by its verified ID only if unused. Removal reports a referenced network as kept and refuses to open a socket when it cannot verify that its Docker daemon is running.
+
+After server cleanup, removal prunes a matching local CLI entry and its project if empty. An absent entry is already clean. An entry pointing at a different server is preserved with context-removal guidance. To delete a stored token, run `berthy context remove --project P -e ENV --delete-token` after destroy and before setup removal. Use the same `--config` if one was supplied. Removal itself makes no credential-store calls.
+
+`--dry-run` reports the planned configuration, service, state, key, network, and context dispositions. `--json` adds `"remove": true` to the usual step report for removal mode. Removal emits no credentials or install next steps. `--listen`, `--network`, `--protected`, `--binary`, `--key-file`, `--new-token`, `--show-token`, and `--no-install-docker` are install options and are refused in removal mode.
+
 ### Rules
 
 - **It deploys nothing.** Setup never builds, pushes, pulls or starts an app. The first deploy is a separate `berthy deploy`, after the secrets are set.
@@ -387,13 +397,15 @@ Run from the application's repository, setup reads these values from the merged 
 | `--protected` | Mark the environment as protected, when the directory has no manifest |
 | `--manifest-dir <dir>` | Read from this exact directory. By default, look for `./berthy.yml` first, then `./.berthy/berthy.yml`. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
+| `--remove` | Unhost one pair after its applied apps have been destroyed |
+| `--purge` | Delete that removal's state directory instead of archiving it. Requires `--remove`. |
 | `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
 | `--verbose` | Print each command setup sends, and its exit status, on standard error. With `--dry-run`, also the commands a real run would send. Never the token or the key. |
 | `--binary <path>` | Install this Linux build of Berthy instead of the CLI itself or the release that matches it |
 | `--key-file <path>` | Install a saved encryption key instead of generating one, when rebuilding a server |
 | `--new-token` | Add another `admin` token, for when the first one is lost |
 | `--show-token` | Print the newly created admin token as well as saving it |
-| `--config <path>` | The CLI configuration to add the environment to. Without it, setup uses the file the CLI finds (`BERTHY_CONFIG`, else the default file). |
+| `--config <path>` | The CLI configuration to update. Without it, setup uses the file the CLI finds (`BERTHY_CONFIG`, else the default file). |
 
 ### What it leaves on the server
 
