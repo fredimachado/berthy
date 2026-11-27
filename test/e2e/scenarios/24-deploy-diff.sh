@@ -91,6 +91,35 @@ note "$out"
 expect_contains "the JSON plan has a diff" "$out" '"diff"'
 expect_contains "the JSON diff has the replicas" "$out" '"area": "main"'
 
+# Send one dry-run request with and without the field query.
+api_url="http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN"
+diff_api() { curl_local --fail --header @- "$@" < <(printf 'Authorization: Bearer %s\n' "$BERTHY_ADMIN_TOKEN"); }
+preview_body=$(jq -cn --arg p "$PROJECT" --arg n "$NETWORK" --arg img "$REG/e2e/web" '
+  {app:"web",version:"v2",dry_run:true,manifest:{project:$p,network:$n,apps:{web:{
+    kind:"image",image:$img,roles:{main:{replicas:2,health:{
+      test:["CMD","true"],interval:"2s",timeout:"2s",start_period:"1s",retries:3
+    }}},env:{plain:{LOG_LEVEL:"info",FEATURE_X:"on"},secret:[{API_KEY:"API_KEY_V1"}]}
+  }}}}')
+applied=$(diff_api "$api_url/applied/web"); code=$?
+expect_code "read the current applied release" 0 "$code" "$applied"
+ordinary=$(diff_api -H 'Content-Type: application/json' --data-binary "$preview_body" "$api_url/deploys"); code=$?
+expect_code "request the ordinary HTTP dry run" 0 "$code" "$ordinary"
+rich=$(diff_api -H 'Content-Type: application/json' --data-binary "$preview_body" "$api_url/deploys?diff=fields"); code=$?
+expect_code "request the HTTP field preview" 0 "$code" "$rich"
+expect_eq "ordinary HTTP plan matches the CLI dry run" "$(jq -cS . <<<"$out")" "$(jq -cS . <<<"$ordinary")"
+expect_eq "field preview keeps the complete ordinary plan" "$(jq -cS . <<<"$ordinary")" "$(jq -cS 'del(.release_diff)' <<<"$rich")"
+if jq -e --argjson a "${applied:-null}" '
+  $a.id > 0 and .release_diff.base == $a.id and any(.release_diff.fields[];
+    .path == ["roles","main","replicas"] and .before == "1" and .after == "2")
+' <<<"$rich" >/dev/null; then
+  pass "field preview compares the applied release and lists replica sides"
+else
+  fail "field preview compares the applied release and lists replica sides" "$rich"
+fi
+expect_eq "the HTTP previews leave one swarm replica" "1" "$(d service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$svc")"
+note "$ordinary"
+note "$rich"
+
 # 4. A variable taken from another secret shows by names only.
 manifest 2 "        FEATURE_X: \"on\"" API_KEY_V2 | write_manifest
 out=$(adm deploy web --version v2 --dry-run --manifest-dir "$MAN" 2>&1); code=$?
