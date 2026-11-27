@@ -60,15 +60,21 @@ expect_code 'dirty protected checkout refuses tag' 1 "$code" "$out"
 expect_contains 'dirty refusal names checkout' "$out" 'commit them first'
 git -C "$MAN" checkout -- "berthy.$ENVN.yml"
 
-# The Python driver waits for the real confirmation prompt before changing the registry tag.
+# The Python driver waits for the real prompt before interrupting or changing the registry tag.
 record_deploy "$PROJECT" "$ENVN" web --manifest-dir "$MAN" || { fail 'record deploy ownership' 'fixture names unavailable'; finish; exit 1; }
 terminal_deploy() {
-  python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" "$1" "$PRIVATE_CURL_CONFIG" "$media" "$PRIVATE_DIR/v2.manifest" "$PRIVATE_URL/v2/$PRIVATE_IMAGE_REPO/manifests/stable" "$LOG/tag-$1.log" <<'PY'
-import errno, os, pty, select, subprocess, sys, time
-binary, env, config, manifest, answer, curl_config, media, image, url, log = sys.argv[1:]
+  python3 - "$BIN" "$ENVN" "$RUN/admin.json" "$MAN" "$1" "$PRIVATE_CURL_CONFIG" "$media" "$PRIVATE_DIR/v2.manifest" "$PRIVATE_URL/v2/$PRIVATE_IMAGE_REPO/manifests/stable" "$LOG/tag-$1.log" "$PROJECT" "$RUN/state/state.db" <<'PY'
+import errno, os, pty, select, signal, sqlite3, subprocess, sys, termios, time, uuid
+binary, env, config, manifest, answer, curl_config, media, image, url, log, project, state = sys.argv[1:]
 master, slave = pty.openpty()
-proc = subprocess.Popen([binary, 'deploy', 'web', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'stable'], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
-os.close(slave)
+before = termios.tcgetattr(slave) if answer == 'term' else None
+args = [binary, 'deploy', 'web', '-e', env, '--config', config, '--manifest-dir', manifest, '--version', 'stable']
+if answer == 'term':
+    request_id = f'{project}-{env}-confirm-{uuid.uuid4().hex}'
+    args.extend(['--request-id', request_id])
+proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+if before is None:
+    os.close(slave)
 data = bytearray()
 deadline = time.monotonic() + 120
 prompted = False
@@ -88,18 +94,34 @@ try:
                     subprocess.run(['curl', '-q', '--noproxy', '*', '-fsS', '-K', curl_config, '-X', 'PUT', '-H', 'Content-Type: '+media, '--data-binary', '@'+image, url, '-o', '/dev/null'], check=True)
                     with open(os.path.join(manifest, 'berthy.'+env+'.yml'), 'w') as f:
                         f.write('apps:\n  web:\n    env:\n      plain:\n        SNAPSHOT: after\n')
-                os.write(master, (('y' if answer == 'yes' else 'n')+'\n').encode())
+                if answer == 'term':
+                    if termios.tcgetattr(slave) == before:
+                        raise RuntimeError('confirmation prompt did not change terminal mode')
+                    proc.send_signal(signal.SIGTERM)
+                else:
+                    os.write(master, (('y' if answer == 'yes' else 'n')+'\n').encode())
         if proc.poll() is not None and not ready: break
     else: raise RuntimeError('terminal deploy timed out')
     code = proc.wait(timeout=10)
     with open(log, 'wb') as f: f.write(data)
     if not prompted or code != (0 if answer == 'yes' else 1):
         raise RuntimeError('terminal deploy did not finish as expected')
+    if answer == 'term':
+        if termios.tcgetattr(slave) != before:
+            raise RuntimeError('SIGTERM did not restore the full confirmation terminal mode')
+        with sqlite3.connect('file:' + state + '?mode=ro', uri=True) as db:
+            admitted = db.execute('SELECT id FROM operations WHERE environment=? AND request_id=?', (env, request_id)).fetchone()
+        if admitted is not None:
+            raise RuntimeError('SIGTERM at confirmation admitted a deploy')
 finally:
     if proc.poll() is None: proc.kill(); proc.wait()
+    if before is not None:
+        termios.tcsetattr(slave, termios.TCSANOW, before)
+        os.close(slave)
     os.close(master)
 PY
 }
+if terminal_deploy term; then pass 'SIGTERM at confirmation restores terminal and admits no deploy'; else fail 'SIGTERM at confirmation restores terminal and admits no deploy' 'terminal driver failed'; fi
 if terminal_deploy no; then pass 'declining preview does not deploy'; else fail 'declining preview does not deploy' 'terminal driver failed'; fi
 out=$(adm history web --json 2>&1)
 if jq -e 'length == 0' <<< "$out" >/dev/null; then pass 'decline leaves history empty'; else fail 'decline leaves history empty' 'unexpected history'; fi

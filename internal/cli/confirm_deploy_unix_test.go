@@ -146,6 +146,7 @@ func TestConfirmDeployCancelAndWriteFailure(t *testing.T) {
 		t.Fatalf("terminal not restored after write failure: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() { _, err := confirmDeploy(ctx, tty, tty); result <- err }()
 	prompt := make([]byte, len("Proceed with this deploy? [y/N] "))
@@ -155,5 +156,9 @@ func TestConfirmDeployCancelAndWriteFailure(t *testing.T) {
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
+	}
+	after, err = term.GetState(tty.Fd())
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("terminal not restored after cancellation: %v", err)
 	}
 }
