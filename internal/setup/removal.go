@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"berthy/internal/agent"
@@ -61,7 +62,7 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 	if err != nil {
 		return "", "", err
 	}
-	pending, err := readRemovalRecord(ctx, s.R, id, purge)
+	pending, err := readRemovalRecord(ctx, s.R, id)
 	if err != nil {
 		return "", "", err
 	}
@@ -69,13 +70,25 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 	if pending != nil {
 		switch {
 		case generation == pending.CandidateSHA:
+			if purge != (pending.Archive == "") {
+				return "", "", errors.New("this removal was started with a different purge choice")
+			}
 			return resumeLiveRemoval(ctx, s, cfg, pending)
-		case generation != pending.OriginalSHA || pending.Activated:
-			return "", "", errors.New("the agent configuration changed since this removal started")
+		case pending.Activated:
+			return "", "", fmt.Errorf("the agent configuration changed after removal was activated. Keep %s. Retry with the verified post-removal configuration, or finish cleanup manually using the recorded identities before deleting the record", removalRecordPath(id))
+		case generation != pending.OriginalSHA:
+			if s.hosted() == nil {
+				return "", "", errors.New("the agent configuration changed since this removal started")
+			}
+			pending = nil
+		case purge != (pending.Archive == ""):
+			return "", "", errors.New("this removal was started with a different purge choice")
 		}
 	}
-	if _, err := settledRemovalGuard(ctx, s.R); err != nil {
-		return "", "", err
+	if guard, err := settledRemovalGuard(ctx, s.R); err != nil {
+		if guard != "pending" || pending == nil || !recoverOrphanedRemovalGuard(ctx, s, pending.OriginalSHA) {
+			return "", "", err
+		}
 	}
 	candidate, target, err := withoutHosted(s.existingRaw, id)
 	if err != nil {
@@ -151,12 +164,32 @@ func settledRemovalGuard(ctx context.Context, r Runner) (string, error) {
 	}
 	switch string(raw) {
 	case "pending\n", "recovering\n":
-		return "", errors.New("the activation guard is still running. Retry removal after it finishes")
+		return strings.TrimSuffix(string(raw), "\n"), errors.New("the activation guard is still running. Retry removal after it finishes")
 	case "confirmed\n", "kept\n", "restored\n", "restored-down\n":
 		return strings.TrimSuffix(string(raw), "\n"), nil
 	default:
 		return "", errors.New("could not verify the activation guard's decision")
 	}
+}
+
+// The swap holds this same lock from the pending write through timer registration and the configuration swap.
+func recoverOrphanedRemovalGuard(ctx context.Context, s *Session, original string) bool {
+	script := "# recover orphaned removal guard\nset -eu\n" + removalStat +
+		"exec 9<" + shellQuote(guardLock) + "\nflock -n 9\n" +
+		"state=" + shellQuote(guardState) + "\nstat_entry \"$state\"\n" +
+		"case \"$entry\" in *\" 0 600 1 regular file\") ;; *) exit 1;; esac\n" +
+		"[ \"$(cat -- \"$state\")\" = pending ]\n" +
+		"sum=$(sha256sum -- " + shellQuote(configPath) + ")\n" +
+		"[ \"${sum%% *}\" = " + shellQuote(original) + " ]\n" +
+		"units=$(systemctl list-units --all --plain --no-legend --no-pager " + guardUnit + ".timer " + guardUnit + ".service)\n" +
+		"[ -z \"$units\" ]\n" +
+		"jobs=$(systemctl list-jobs --plain --no-legend --no-pager)\n" +
+		"printf '%s\\n' \"$jobs\" | awk '$2 == \"" + guardUnit + ".timer\" || $2 == \"" + guardUnit + ".service\" { found = 1 } END { exit found }'\n"
+	if !s.DryRun {
+		script += "rm -- " + shellQuote(guardState) + "\n"
+	}
+	res, err := s.R.Run(ctx, script, nil)
+	return err == nil && res.Code == 0 && len(res.Stdout) == 0 && len(res.Stderr) == 0
 }
 
 func resumeLiveRemoval(ctx context.Context, s *Session, cfg *agent.File, rec *removal) (string, string, error) {

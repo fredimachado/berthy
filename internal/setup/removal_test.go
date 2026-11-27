@@ -26,6 +26,7 @@ type removalRunner struct {
 	restartCode, recoveryCode   int
 	recordConfirmationErr       bool
 	daemonCode, pathsCode       int
+	failTimer, restoreScheduled bool
 	onSwap                      func()
 	stateClean, networkGone     bool
 }
@@ -83,6 +84,15 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 			return Result{Code: 3}, nil
 		}
 		return result(r.guard + "\n")
+	case strings.HasPrefix(script, "# recover orphaned removal guard\n"):
+		if r.restoreScheduled || r.guard != "pending" || !strings.Contains(script, shellQuote(configDigest(r.live))) {
+			return Result{Code: 1}, nil
+		}
+		if strings.Contains(script, "rm -- "+shellQuote(guardState)) {
+			r.guard = ""
+			r.mutations = append(r.mutations, "clear-orphan")
+		}
+		return Result{}, nil
 	case strings.HasPrefix(script, "# check applied apps\n"):
 		if !strings.Contains(script, "'/custom/target/state'") {
 			r.t.Fatalf("probe did not use configured state: %q", script)
@@ -146,8 +156,11 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 		if strings.Contains(script, binPath) || !strings.Contains(string(payload()), "http://127.0.0.1:7710/healthz") {
 			r.t.Fatalf("wrong activation script %q", script)
 		}
-		r.live, r.previous, r.new = r.new, r.live, nil
 		r.guard = "pending"
+		if r.failTimer {
+			return Result{Code: 1, Stderr: []byte("timer registration failed\n")}, nil
+		}
+		r.live, r.previous, r.new = r.new, r.live, nil
 		return result("prev_cfg=yes\n")
 	case strings.HasPrefix(script, "/bin/sh "+guardPath):
 		r.mutations = append(r.mutations, "recover")

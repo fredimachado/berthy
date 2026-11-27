@@ -51,7 +51,7 @@ func readRemovalFile(ctx context.Context, r Runner, name, file, owner string) ([
 	return nil, fmt.Errorf("could not read %s", name)
 }
 
-func readRemovalRecord(ctx context.Context, r Runner, id scope.ID, purge bool) (*removal, error) {
+func readRemovalRecord(ctx context.Context, r Runner, id scope.ID) (*removal, error) {
 	raw, err := readRemovalFile(ctx, r, "removal record", removalRecordPath(id), "0")
 	if err != nil || raw == nil {
 		return nil, err
@@ -59,9 +59,6 @@ func readRemovalRecord(ctx context.Context, r Runner, id scope.ID, purge bool) (
 	var rec removal
 	if err := decodeRemovalRecord(raw, &rec); err != nil || rec.ID != id {
 		return nil, errors.New("invalid removal record")
-	}
-	if purge != (rec.Archive == "") {
-		return nil, errors.New("this removal was started with a different purge choice")
 	}
 	return &rec, nil
 }
