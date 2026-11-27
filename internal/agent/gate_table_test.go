@@ -243,8 +243,7 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 	for _, kind := range dryRunKinds {
 		row, ok := rows[kind]
 		if !ok {
-			t.Errorf("no row for %s", kind)
-			continue
+			t.Fatalf("no row for %s", kind)
 		}
 		t.Run(kind, func(t *testing.T) {
 			f := row.fixture(t)
