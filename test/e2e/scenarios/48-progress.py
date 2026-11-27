@@ -87,16 +87,23 @@ def stop_fixture_children():
                         children = [int(pid) for pid in source.read().split()]
                     if not children:
                         return
+                    reaped = False
                     for pid in children:
                         try:
                             waited, _ = os.waitpid(pid, os.WNOHANG)
-                            if not waited and pid not in signalled:
+                            if waited:
+                                reaped = True
+                                signalled.discard(pid)
+                            elif pid not in signalled:
                                 os.kill(pid, sig)
                                 signalled.add(pid)
                         except ChildProcessError:
                             pass
                         except ProcessLookupError:
                             pass
+                    if reaped:
+                        # Reaping may have exposed adopted children that also need a signal.
+                        continue
                     try:
                         os.waitpid(-1, 0)
                     except ChildProcessError:
