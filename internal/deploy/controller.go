@@ -301,11 +301,15 @@ func (c *Controller) validatePin(req Request) error {
 	if req.VersionTag == "" && req.ExpectedApplied == nil {
 		return nil
 	}
-	if (req.Kind != "" && req.Kind != "deploy") || req.Adopt || req.KeepVersion || req.KeepDigest != "" || composeRequest(req) {
+	keepOrCompose := req.KeepVersion || req.KeepDigest != "" || composeRequest(req)
+	if (req.Kind != "" && req.Kind != "deploy") || req.Adopt || (req.VersionTag != "" && keepOrCompose) {
 		return errors.New("image selection fields require an ordinary image deploy")
 	}
 	if req.ExpectedApplied != nil && *req.ExpectedApplied < 0 {
 		return errors.New("invalid expected applied release")
+	}
+	if keepOrCompose {
+		return nil
 	}
 	ref, err := req.Manifest.ImageReference(req.App, req.Version)
 	if err != nil {
@@ -314,10 +318,10 @@ func (c *Controller) validatePin(req Request) error {
 	if _, ok := ref.(reference.Canonical); !ok {
 		return errors.New("image selection requires a digest")
 	}
-	if _, ok := ref.(reference.NamedTagged); ok {
-		return errors.New("image selection requires digest without tag")
-	}
 	if req.VersionTag != "" {
+		if _, ok := ref.(reference.NamedTagged); ok {
+			return errors.New("image selection requires digest without tag")
+		}
 		if _, err := reference.WithTag(reference.TrimNamed(ref), req.VersionTag); err != nil {
 			return errors.New("invalid image tag")
 		}
