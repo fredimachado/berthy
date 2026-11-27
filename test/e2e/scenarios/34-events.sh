@@ -150,10 +150,9 @@ expect_eq "the restart check is unknown during warm-up" "unknown" "$(check_field
 # Restart-loop conditions show in berthy checks (doctor does not list them).
 out=$(adm checks 2>&1)
 expect_contains "checks shows the warm-up detail" "$out" "watching restarts since agent start"
-for _ in $(seq 1 10); do
-  [ "$(tg_messages | jq -r '[.[] | select(.text | contains("recovered"))] | length')" -ge 1 ] && break
-  sleep 1
-done
-expect_eq "no recovery reaches the chat during warm-up" 0 "$(tg_messages | jq -r '[.[] | select(.text | contains("recovered"))] | length')"
+# Wait for the still-crashing service to warn again after warm-up, then assert no recovery for this check only.
+took=$(wait_check "$loop" state warning 45); code=$?
+if [ "$code" -eq 0 ]; then pass "the restart check warned again $took s after warm-up"; else fail "the restart check warned again within 45s after warm-up" "$(adm checks 2>&1)"; fi
+expect_eq "no recovery for the crash restart check" 0 "$(tg_messages | jq -r --arg n "$loop" '[.[] | select(.text | contains("recovered")) | select(.text | contains($n))] | length')"
 
 finish
