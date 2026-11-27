@@ -35,10 +35,10 @@ type call struct {
 
 // agentFake is a server for the agent's steps. It answers the scripts of setup by what they contain.
 type agentFake struct {
-	key        []byte
-	keyAnswer  func(context.Context, []byte) (Result, error)
-	probe      []string
-	config     string // what reading the agent's configuration returns
+	key         []byte
+	keyAnswer   func(context.Context, []byte) (Result, error)
+	probe       []string
+	config      string // what reading the agent's configuration returns
 	version     string // what the installed binary's version command prints
 	versionErr  error  // when set, the version probe fails with a transport error
 	versionCode int    // when non-zero, the version probe returns that exit code with a nil error
