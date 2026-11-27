@@ -389,9 +389,10 @@ trap - EXIT
 // guardScript serializes a health decision and any recovery with setup.
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
-	reason, report := "", ""
+	reason, report, pending := "", "", ""
 	if staged.Added != nil {
-		reason, report = reasonHelpers(), "report_reason; "
+		reason, report = reasonHelpers(*staged.Added), "report_reason; "
+		pending = " && ! validated_reason >/dev/null 2>&1"
 	}
 	s.WriteString("exec 9>" + guardLock + "\nflock 9 || exit 1\n" + stateHelpers() + reason + stateCheck(true, report))
 	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\n")
@@ -401,7 +402,7 @@ func guardScript(bin, cfg string, staged Staged, listen string, secs int) string
 		candidate = "candidate_up"
 	}
 	s.WriteString("result() { set_state \"$1\" || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; printf 'guard=%s\\n' \"$1\"; " + report + "}\n")
-	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ] && " + candidate + " >/dev/null 2>&1; then result kept; exit 0; fi\n")
+	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ]" + pending + " && " + candidate + " >/dev/null 2>&1; then result kept; exit 0; fi\n")
 	s.WriteString("set_state recovering || exit 1\n")
 	s.WriteString("if [ \"$1\" != yes ] && [ \"$2\" != yes ]; then if systemctl stop berthy >/dev/null 2>&1; then result stopped; exit 0; else result stop-failed; exit 1; fi; fi\n")
 	if staged.Binary {
@@ -454,7 +455,7 @@ func restartScriptWithGuard(listen string, secs int, guarded bool, added *scope.
 	prefix := ""
 	reason, report := "", ""
 	if added != nil {
-		reason, report = reasonHelpers(), "report_reason; "
+		reason, report = reasonHelpers(*added), "report_reason; "
 	}
 	if guarded {
 		prefix = "exec 9>" + guardLock + "\n" + fmt.Sprintf("flock -w %d 9 || { echo guard=running; exit %d; }\n", secs, guardDecided) + stateHelpers() + reason + stateCheck(false, report)

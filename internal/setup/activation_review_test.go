@@ -88,6 +88,7 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 		})
 	}
 }
+
 func TestWaitScriptUsesElapsedDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
 	shellClock(t, tools)

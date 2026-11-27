@@ -1,7 +1,10 @@
 package setup
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -17,21 +20,28 @@ var startupReason = regexp.MustCompile("^(" + regexp.QuoteMeta(state.ErrWrongKey
 	"|cannot read state claims|cannot reserve configured network|deployment recovery failed)$")
 
 // The callers hold the activation lock. Replacing the reason atomically keeps it usable after interrupted recovery.
-func reasonHelpers() string {
-	return "reason_file=" + guardReason + "\n" + `
+func reasonHelpers(target scope.ID) string {
+	return "reason_file=" + guardReason + "\n" +
+		"reason_target=" + shellQuote(target.String()) + "\n" +
+		"public_reason=" + shellQuote(startupReason.String()) + "\n" + `
 record_reason() (
   umask 077
   tmp=$(mktemp "$reason_file.XXXXXX") || exit 1
   trap 'rm -f "$tmp"' EXIT
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$tmp" && mv -f "$tmp" "$reason_file"
 )
+validated_reason() {
+  [ -f "$reason_file" ] && [ ! -L "$reason_file" ] || return 1
+  [ "$(stat -c '%u:%a:%h' "$reason_file" 2>/dev/null)" = "0:600:1" ] || return 1
+  [ "$(tail -c 1 "$reason_file" | wc -l)" -eq 1 ] || return 1
+  LC_ALL=C awk -F '\t' -v target="$reason_target" -v reason="$public_reason" '
+    NR == 1 && NF == 3 && length($1) == 32 && $1 ~ /^[0-9a-f]+$/ && $1 !~ /^0+$/ &&
+        $2 == target && $3 ~ reason { row=$0 }
+    END { if (NR != 1 || row == "") exit 1; print row }
+  ' "$reason_file"
+}
 report_reason() {
-  [ -f "$reason_file" ] && [ ! -L "$reason_file" ] || return 0
-  [ "$(stat -c '%u:%a:%h' "$reason_file" 2>/dev/null)" = "0:600:1" ] || return 0
-  LC_ALL=C awk -F '\t' '
-    NR == 1 && NF == 3 { row=$0 }
-    END { if (NR == 1 && row != "") printf "guard-reason\t%s\n", row }
-  ' "$reason_file" || :
+  if rejected=$(validated_reason); then printf 'guard-reason\t%s\n' "$rejected"; fi
 }
 `
 }
@@ -62,9 +72,11 @@ func parseGuardReason(out []byte, added *scope.ID) string {
 
 // candidateProbe binds the result and the listening socket to the service invocation that answers the health request.
 func candidateProbe(listen string, target scope.ID) string {
+	ipv4, ipv6 := procListenAddresses(listen)
 	return "target=" + shellQuote(target.String()) + "\n" +
-		"endpoint=" + shellQuote(listen) + "\n" +
-		"public_reason=" + shellQuote(startupReason.String()) + "\n" +
+		"proc_root=/proc\n" +
+		"addr4=" + shellQuote(ipv4) + "\n" +
+		"addr6=" + shellQuote(ipv6) + "\n" +
 		"startup_result=" + startupResult + "\n" + `
 identity() {
   systemctl show --property=InvocationID --property=MainPID berthy 2>/dev/null |
@@ -103,10 +115,27 @@ target_result() {
     }
     END { if (bad || !complete || rows != count || row == "") exit 1; print row }' "$startup_result"
 }
-owns_listener() {
-  ss -H -ltnp "src $endpoint" 2>/dev/null |
-    awk -v owner="\",pid=$1,fd=" '{ if (index($0, owner) == 0) bad=1 } END { exit NR == 0 || bad }'
-}
+owns_listener() (
+  pid_fd="$proc_root/$1/fd"
+  set -- "$proc_root/net/tcp"
+  if [ -e "$proc_root/net/tcp6" ]; then set -- "$@" "$proc_root/net/tcp6"; fi
+  for fd in "$pid_fd/"*; do
+    link=$(readlink "$fd" 2>/dev/null) || continue
+    case "$link" in
+      'socket:['*']')
+        inode=${link#'socket:['}
+        inode=${inode%']'}
+        case "$inode" in ''|*[!0-9]*) ;; *) printf '%s\n' "$inode";; esac ;;
+    esac
+  done | LC_ALL=C awk -v addr4="$addr4" -v addr6="$addr6" '
+    FILENAME == "-" { owned["inode:" $1]=1; next }
+    $4 == "0A" && ($2 == addr4 || $2 == addr6) {
+      found=1
+      if (!owned["inode:" $10]) bad=1
+    }
+    END { exit (!found || bad) }
+  ' - "$@"
+)
 candidate_health() {
   current=$(identity) || return 1
   inv=${current% *}
@@ -125,4 +154,23 @@ candidate_health() {
     [ "$(identity)" = "$current" ] && owns_listener "$pid"
 }
 `
+}
+
+// Linux prints each address as native-endian 32-bit words. The provisioned
+// Linux agents run on little-endian amd64 or arm64.
+func procListenAddresses(listen string) (ipv4, ipv6 string) {
+	addr, err := netip.ParseAddrPort(listen)
+	if err != nil {
+		return "", ""
+	}
+	ip := addr.Addr().Unmap()
+	if ip.Is4() {
+		v4 := ip.As4()
+		ipv4 = fmt.Sprintf("%08X:%04X", binary.LittleEndian.Uint32(v4[:]), addr.Port())
+	}
+	v6 := ip.As16()
+	ipv6 = fmt.Sprintf("%08X%08X%08X%08X:%04X", binary.LittleEndian.Uint32(v6[:4]),
+		binary.LittleEndian.Uint32(v6[4:8]), binary.LittleEndian.Uint32(v6[8:12]),
+		binary.LittleEndian.Uint32(v6[12:]), addr.Port())
+	return ipv4, ipv6
 }

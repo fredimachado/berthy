@@ -50,7 +50,6 @@ func newStartupFixture(t *testing.T, record, mode string) startupFixture {
 echo "$*" >> "$CALLS"
 mode=$(cat "$CALLS.mode")
 case "$1" in
-  is-failed) exit 0 ;;
   restart)
     touch "$CALLS.restarted"
     if [ -e "$CALLS.restore-result" ] && [ "$(cat "${STATE%/*}/cfg")" = old-cfg ]; then
@@ -62,28 +61,54 @@ case "$1" in
     if [ -e "$CALLS.restarted" ] && [ "$mode" != same-invocation ]; then inv=`+newInvocation+`; fi
     if [ -e "$CALLS.changed" ]; then inv=33333333333333333333333333333333; fi
     case " $* " in
+      *' --property=ActiveState '*) echo active ;;
       *' --value '*) printf '%s\n' "$inv" ;;
       *) printf 'MainPID=123\nInvocationID=%s\n' "$inv" ;;
     esac ;;
 esac
 `)
-	shellTool(t, f.tools, "curl", `
+	shellTool(t, f.tools, "berthy.setup-probe", `
 if [ "$(cat "$CALLS.mode")" = invocation-changes ]; then touch "$CALLS.changed"; fi
 exit 0
 `)
 	shellTool(t, f.tools, "id", "echo 4242")
 	shellTool(t, f.tools, "stat", `case "$2" in '%u:%a:%h') echo 0:600:1;; *) echo 0:4242:620:1;; esac`)
 	shellTool(t, f.tools, "ss", `
+case "$(cat "$CALLS.mode")" in
+  no-ss) exit 127 ;;
+  spoofed-owner)
+    printf '%s\n' 'LISTEN 0 128 127.0.0.1:7710 0.0.0.0:* users:(("fake",pid=123,fd=7",pid=1234,fd=9))'
+    exit 0 ;;
+esac
 pid=123
 if [ "$(cat "$CALLS.mode")" = wrong-listener ]; then pid=1234; fi
 printf 'LISTEN 0 128 127.0.0.1:7710 0.0.0.0:* users:(("agent",pid=%s,fd=7))\n' "$pid"
 `)
+	proc := filepath.Join(f.dir, "proc")
+	for _, dir := range []string{"net", "123/fd", "1234/fd"} {
+		if err := os.MkdirAll(filepath.Join(proc, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tcp := "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n" +
+		"  0: 0100007F:1E1E 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4578\n"
+	if err := os.WriteFile(filepath.Join(proc, "net", "tcp"), []byte(tcp), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pid := "123"
+	if mode == "wrong-listener" || mode == "spoofed-owner" {
+		pid = "1234"
+	}
+	if err := os.Symlink("socket:[4578]", filepath.Join(proc, pid, "fd", "7")); err != nil {
+		t.Fatal(err)
+	}
 	return startupFixture{resumeFixture: f, result: result}
 }
 
 func (f startupFixture) run(t *testing.T, script string, args ...string) (int, string, string, string) {
 	t.Helper()
-	script = strings.NewReplacer(testStartupPath, f.result, testReasonPath, filepath.Join(f.dir, "reason")).Replace(script)
+	script = strings.NewReplacer(testStartupPath, f.result, testReasonPath, filepath.Join(f.dir, "reason"),
+		"proc_root=/proc", "proc_root="+shellQuote(filepath.Join(f.dir, "proc"))).Replace(script)
 	return f.resumeFixture.run(t, script, args...)
 }
 
@@ -109,6 +134,8 @@ func TestActivateRequiresCurrentInvocationAndStartedTarget(t *testing.T) {
 		{name: "stale invocation", record: startupRecord(oldInvocation, started, "2")},
 		{name: "same invocation", record: startupRecord(oldInvocation, started, "2"), mode: "same-invocation"},
 		{name: "wrong listener", record: valid, mode: "wrong-listener"},
+		{name: "PID text in process name", record: valid, mode: "spoofed-owner"},
+		{name: "ss unavailable", record: valid, mode: "no-ss", want: true},
 		{name: "invocation changes", record: valid, mode: "invocation-changes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,9 +183,25 @@ func (*startupActivation) Target() string { return "fixture" }
 
 func (r *startupActivation) shell(script string, input io.Reader, args ...string) (Result, error) {
 	script = strings.NewReplacer(testStartupPath, r.result, testReasonPath, filepath.Join(r.dir, "reason"),
+		"proc_root=/proc", "proc_root="+shellQuote(filepath.Join(r.dir, "proc")),
 		guardPath, filepath.Join(r.dir, "guard"), binPath, r.bin, configPath, r.cfg).Replace(script)
 	code, out, _, _ := r.runInput(r.t, script, input, args...)
 	return Result{Code: code, Stdout: []byte(out)}, nil
+}
+
+func TestTimerRollsBackWhenInterruptedAfterRecordingReason(t *testing.T) {
+	f := newStartupFixture(t, startupRecord(newInvocation, "shop/lab\tstarted\t\n", "1"), "")
+	// Simulate the foreground exiting after the reason rename and before changing "pending".
+	if err := os.WriteFile(filepath.Join(f.dir, "reason"), []byte(newInvocation+"\t"+testTarget+"\tcannot open state\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := guardScript(f.bin, f.cfg, stagedAddition(), "127.0.0.1:7710", 1)
+	code, out, word, calls := f.run(t, script, "no", "yes")
+	cfg, err := os.ReadFile(f.cfg)
+	if code != 0 || word != "restored" || string(cfg) != "old-cfg" || err != nil ||
+		strings.Count(calls, "restart berthy") != 1 || !strings.Contains(out, "cannot open state") {
+		t.Fatalf("interrupted rejection: code=%d state=%q config=%q output=%q calls=%q", code, word, cfg, out, calls)
+	}
 }
 
 func (r *startupActivation) guard(args ...string) (Result, error) {
