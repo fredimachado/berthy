@@ -143,7 +143,8 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 		}
 	}
 	s.removal, s.removalCandidate = &rec, candidate
-	s.hostedCount = len(cfg.Environments) - 1
+	// Activation can restart the original configuration during rollback.
+	s.hostedCount = len(cfg.Environments)
 	return StatusOK, id.String() + " has no applied apps", nil
 }
 

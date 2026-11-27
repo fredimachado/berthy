@@ -21,6 +21,7 @@ type removalRunner struct {
 	t                           *testing.T
 	live, previous, new, record []byte
 	guard, paths                string
+	armedScript                 string
 	mutations                   []string
 	restartErr, stageErr        bool
 	restartCode, recoveryCode   int
@@ -157,7 +158,8 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 		if r.onSwap != nil {
 			r.onSwap()
 		}
-		if strings.Contains(script, binPath) || !strings.Contains(string(payload()), "agent setup-probe health --listen '127.0.0.1:7710'") {
+		r.armedScript = string(payload())
+		if strings.Contains(script, binPath) || !strings.Contains(r.armedScript, "agent setup-probe health --listen '127.0.0.1:7710'") {
 			r.t.Fatalf("wrong activation script %q", script)
 		}
 		r.guard = "pending"
@@ -269,6 +271,19 @@ func TestRemovalRollbackLeavesTargetUsable(t *testing.T) {
 				t.Fatalf("rollback lost original config or changed local context: %v", err)
 			}
 		})
+	}
+}
+
+func TestRemovalRollbackUsesOriginalHealthBudget(t *testing.T) {
+	r, opts := newRemovalRunner(t) // Two pairs are live before removal.
+	r.restartCode = 1
+	if _, failure := runRemoval(r, opts, false, false); !strings.Contains(failure, "previous one was put back") {
+		t.Fatalf("rollback = %q", failure)
+	}
+	_, deadline, _ := strings.Cut(r.armedScript, "end=$(( $(date +%s) + ")
+	seconds, _, _ := strings.Cut(deadline, " ")
+	if seconds != "150" {
+		t.Fatalf("rollback health budget = %q seconds, want 150", seconds)
 	}
 }
 

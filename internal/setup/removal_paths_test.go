@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -13,6 +14,55 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/scope"
 )
+
+func TestRemovalPreservesKeysAtActivationControlPaths(t *testing.T) {
+	for _, control := range []string{guardProbePath, guardReason} {
+		for _, owner := range []struct{ name, key string }{
+			{"target", "/custom/target/key"}, {"peer", "/peer/key"},
+		} {
+			t.Run(owner.name+"/"+filepath.Base(control), func(t *testing.T) {
+				r, opts := newRemovalRunner(t)
+				r.live = bytes.Replace(r.live, []byte(`"`+owner.key+`"`), []byte(`"`+control+`"`), 1)
+				r.paths = strings.ReplaceAll(r.paths, owner.key, control)
+				keyPath := filepath.Join(t.TempDir(), "key")
+				key := []byte("fixture key")
+				if err := os.WriteFile(keyPath, key, 0600); err != nil {
+					t.Fatal(err)
+				}
+				fixture := funcRunner{run: func(script string, stdin io.Reader) Result {
+					// Model the activation write at the configured key path on a private stand-in.
+					var err error
+					switch {
+					case control == guardProbePath && script == prepareProbeScript(Staged{Config: true}):
+						err = os.WriteFile(keyPath, []byte("retained probe"), 0600)
+					case control == guardReason && strings.Contains(script, "rm -f "+guardReason+"\n"):
+						err = os.Remove(keyPath)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					res, err := r.Run(context.Background(), script, stdin)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return res
+				}}
+				s := &Session{R: fixture, Opts: opts}
+				var failure string
+				Run(context.Background(), s, RemovalSteps(false), func(result StepResult) {
+					if result.Status == StatusFailed {
+						failure = result.Detail
+					}
+				})
+				got, err := os.ReadFile(keyPath)
+				if !strings.Contains(failure, control+" overlaps agent files") || err != nil || !bytes.Equal(got, key) {
+					t.Fatalf("failure = %q, fixture key intact = %t, mutations = %v", failure, err == nil && bytes.Equal(got, key), r.mutations)
+				}
+				r.checkMutations("")
+			})
+		}
+	}
+}
 
 func TestRemovalRejectsUnsafePathsBeforeStaging(t *testing.T) {
 	if runtime.GOOS != "linux" {

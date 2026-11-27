@@ -130,14 +130,20 @@ func inspectRemovalPaths(ctx context.Context, runner Runner, rec removal, origin
 	paths := hostedRemovalPaths(rec.StateDir, rec.KeyFile)
 	dest := rec.destination()
 	targets := append(paths, dest)
+	checkControlOverlap := func(p string) error {
+		for _, control := range []string{agentConfigDir, binPath, guardProbePath, unitPath, guardState, guardLock, guardPath, guardReason} {
+			if pathsOverlap(p, control) {
+				return fmt.Errorf("removal path %s overlaps agent files", p)
+			}
+		}
+		return nil
+	}
 	for _, p := range targets {
 		if !removalPathOK(p) {
 			return rec, errors.New("removal requires absolute clean Linux paths")
 		}
-		for _, control := range []string{agentConfigDir, binPath, unitPath, guardState, guardLock, guardPath} {
-			if pathsOverlap(p, control) {
-				return rec, fmt.Errorf("removal path %s overlaps agent files", p)
-			}
+		if err := checkControlOverlap(p); err != nil {
+			return rec, err
 		}
 	}
 	for _, key := range paths[1:] {
@@ -153,6 +159,9 @@ func inspectRemovalPaths(ctx context.Context, runner Runner, rec removal, origin
 	checkOverlap := func(peer string) error {
 		if !removalPathOK(peer) {
 			return errors.New("cannot verify another hosted environment's paths")
+		}
+		if err := checkControlOverlap(peer); err != nil {
+			return err
 		}
 		for _, p := range targets {
 			if pathsOverlap(p, peer) {
