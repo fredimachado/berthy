@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,6 +112,51 @@ func TestEventsAsksDockerForTheFilterAndTheTime(t *testing.T) {
 	st.Close()
 	if q := queries2()[0]; q.Has("since") || q.Has("filters") {
 		t.Errorf("an empty request carries %v", q)
+	}
+}
+
+func TestLastContainerExitCode(t *testing.T) {
+	const id = "bd1d07291e78b59bc4ebd04a5b7059c3c394111ed8f6022c35b2efef27aa70a6"
+	since := time.Unix(1795061398, 5)
+	until := time.Unix(1795061400, 9)
+	die := func(container, code string, at time.Time) string {
+		return fmt.Sprintf(`{"Type":"container","Action":"die","Actor":{"ID":%q,"Attributes":{"exitCode":%q,"com.docker.compose.service":"worker"}},"timeNano":%d}`, container, code, at.UnixNano())
+	}
+	older := die(id, "3", since)
+	latest := die(id, "17", since.Add(time.Second))
+	for _, tt := range []struct {
+		name       string
+		lines      []string
+		code       int
+		found, bad bool
+	}{
+		{"latest matching", []string{latest, older, die("other", "42", until), die(id, "43", since.Add(-time.Nanosecond)),
+			die(id, "44", until.Add(time.Nanosecond)), strings.Replace(die(id, "45", until), `"die"`, `"start"`, 1)}, 17, true, false},
+		{"zero", []string{older, die(id, "0", until)}, 0, true, false},
+		{"empty history", nil, 0, false, false},
+		{"bad final record", []string{latest, `{"Actor":`}, 0, false, true},
+		{"bad last exit code", []string{latest, die(id, "unavailable", until)}, 0, false, false},
+		{"out of range", []string{latest, die(id, "1234", until)}, 0, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, queries := eventsServer(t, tt.lines, false)
+			code, found, err := e.LastContainerExitCode(t.Context(), id, since, until)
+			if code != tt.code || found != tt.found || (err != nil) != tt.bad {
+				t.Errorf("last exit code = %d, %v, %v; want %d, %v, error=%v", code, found, err, tt.code, tt.found, tt.bad)
+			}
+			qs := queries()
+			if len(qs) != 1 || qs[0].Get("since") != "1795061398.000000005" || qs[0].Get("until") != "1795061400.000000009" {
+				t.Fatalf("unexpected event history bounds in %v", qs)
+			}
+			var filters map[string][]string
+			if err = json.Unmarshal([]byte(qs[0].Get("filters")), &filters); err != nil {
+				t.Fatal(err)
+			}
+			if len(filters) != 3 || !slices.Equal(filters["type"], []string{"container"}) ||
+				!slices.Equal(filters["event"], []string{"die"}) || !slices.Equal(filters["container"], []string{id}) {
+				t.Errorf("unexpected filters %v", filters)
+			}
+		})
 	}
 }
 
