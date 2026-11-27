@@ -256,7 +256,7 @@ func TestJobCheckRestartsGraceAfterScheduleRedeploy(t *testing.T) {
 	if err := s.FinishJobRun(ctx, id, "succeeded", nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	now := at(12, 5, 0)
+	now := at(8, 5, 0)
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.now = func() time.Time { return now }
 	jobCheckFrom := func() monitor.Check {
@@ -270,6 +270,7 @@ func TestJobCheckRestartsGraceAfterScheduleRedeploy(t *testing.T) {
 		return nil
 	}
 	_ = jobCheckFrom()
+	now = at(12, 5, 0)
 	recordAppRelease(t, s, "hourly", "api", strings.Replace(daily, "30 2 * * *", "0 * * * *", 1))
 	check := jobCheckFrom()
 	if got := check.Run(ctx); got.State != monitor.OK {
