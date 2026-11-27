@@ -36,7 +36,9 @@ func startFake(t *testing.T) (*fake, string) {
 
 // startFakeTCP serves on a real loopback listener. Use it when a held S3 request must not stall other
 // clients: httptest can serialize keep-alive traffic behind one blocked handler.
-func startFakeTCP(t *testing.T) (*fake, string) {
+// Teardown cancels ctx and releases the hold, then joins the worker, then closes the server, so a
+// Put does not retry against a closed listener on the real clock.
+func startFakeTCP(t *testing.T) (*fake, string, context.Context, *workerJoin) {
 	t.Helper()
 	f, err := newFake(testBucket)
 	if err != nil {
@@ -47,33 +49,25 @@ func startFakeTCP(t *testing.T) (*fake, string) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: f}
-	// Runs before registerWorkerJoin (LIFO). Release so waitHold returns, then close the server.
+	ctx, cancel := context.WithCancel(context.Background())
+	j := &workerJoin{}
 	t.Cleanup(func() {
+		cancel()
 		f.clearHold()
+		if j.done != nil && !j.took {
+			<-j.done
+		}
 		srv.Close()
 		ln.Close()
 	})
 	go srv.Serve(ln)
-	return f, "http://" + ln.Addr().String()
+	return f, "http://" + ln.Addr().String(), ctx, j
 }
 
-// workerJoin receives the worker's one result. Register it before startFakeTCP so LIFO joins
-// after the hold is released and the server is closed. Bind the channel after the worker starts;
-// if the test fails before that, done stays nil and join is a no-op.
+// workerJoin receives the worker's one result. Teardown joins unless take already did.
 type workerJoin struct {
 	done chan error
 	took bool
-}
-
-func registerWorkerJoin(t *testing.T) *workerJoin {
-	t.Helper()
-	j := &workerJoin{}
-	t.Cleanup(func() {
-		if j.done != nil && !j.took {
-			<-j.done
-		}
-	})
-	return j
 }
 
 func (j *workerJoin) bind(done chan error) { j.done = done }
@@ -201,8 +195,7 @@ func TestTransientServerErrorIsRetriedByTheClient(t *testing.T) {
 }
 
 func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
-	j := registerWorkerJoin(t)
-	f, base := startFakeTCP(t)
+	f, base, ctx, j := startFakeTCP(t)
 	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("arm hold: %d", resp.StatusCode)
 	}
@@ -219,7 +212,7 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 		var err error
 		defer func() { done <- err }()
 		src := bytes.Repeat([]byte("h"), 20<<20)
-		_, err = s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
+		_, err = s.Put(ctx, "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
 	}()
 	j.bind(done)
 	// Synchronize on UploadPart entering waitHold, not on CreateMultipartUpload (which happens before the hold).
@@ -254,8 +247,7 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 }
 
 func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
-	j := registerWorkerJoin(t)
-	f, base := startFakeTCP(t)
+	f, base, _, j := startFakeTCP(t)
 	for _, body := range []string{
 		`{"op":"HeadBucket"}`,
 		`{"op":"UploadPart","extra":true}`,
@@ -310,8 +302,7 @@ func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
 }
 
 func TestArmingASecondHoldReportsOnlyTheNewWaiters(t *testing.T) {
-	j := registerWorkerJoin(t)
-	f, base := startFakeTCP(t)
+	f, base, ctx, j := startFakeTCP(t)
 	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("arm hold: %d", resp.StatusCode)
 	}
@@ -328,7 +319,7 @@ func TestArmingASecondHoldReportsOnlyTheNewWaiters(t *testing.T) {
 		var err error
 		defer func() { done <- err }()
 		src := bytes.Repeat([]byte("h"), 20<<20)
-		_, err = s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
+		_, err = s.Put(ctx, "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
 	}()
 	j.bind(done)
 	select {
