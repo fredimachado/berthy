@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -75,7 +74,7 @@ type setupReport struct {
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
 // step is ok or changed (or would change, in a dry run), 1 that a step failed, 2 that the command line is wrong.
 func runSetup(args []string, out, errout io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := commandContext()
 	defer stop()
 	return runSetupWithContext(ctx, args, out, errout)
 }
