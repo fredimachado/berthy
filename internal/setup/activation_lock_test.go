@@ -124,7 +124,8 @@ func TestGuardRecordsItsDecision(t *testing.T) {
 	for _, tc := range []struct{ name, mode, bin, cfg, want string }{{"kept", "", "no", "no", "kept"}, {"restored", "restore", "yes", "no", "restored"}, {"restored-down", "down", "yes", "no", "restored-down"}, {"stopped", "down", "no", "no", "stopped"}, {"stop-failed", "stop-fails", "no", "no", "stop-failed"}, {"restore-failed", "move-fails", "yes", "no", "restore-failed"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, state, _ := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), "pending", tc.mode, tc.bin, tc.cfg)
-			if state != tc.want {
+			failed := tc.want == "restored-down" || tc.want == "stop-failed" || tc.want == "restore-failed"
+			if state != tc.want || (code != 0) != failed {
 				t.Fatalf("code=%d output=%q state=%q want=%q", code, out, state, tc.want)
 			}
 		})
