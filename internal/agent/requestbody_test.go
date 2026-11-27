@@ -74,7 +74,12 @@ func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 		})
 	}
 	t.Run("image lookup", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Header().Set("Docker-Content-Digest", apDigest) }))
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Docker-Content-Digest", apDigest)
+			if r.Method == "GET" {
+				_, _ = w.Write([]byte(`{"name":"acme/api","tags":["v1"]}`))
+			}
+		}))
 		t.Cleanup(srv.Close)
 		host := strings.TrimPrefix(srv.URL, "http://")
 		m, err := manifest.DecodeJSON([]byte(strings.Replace(apManifestSource, "ghcr.io/acme/api", host+"/acme/api", 1)))
@@ -89,6 +94,14 @@ func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 		w := f.call("POST", "/images/resolve", apAdminToken, string(b))
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"image":`) {
 			t.Fatalf("lookup: %d %s", w.Code, w.Body.String())
+		}
+		b, err = json.Marshal(api.ImageLookup{Manifest: *m, App: "api"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = f.call("POST", "/images/tags", apAdminToken, string(b))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"tags":["v1"]`) {
+			t.Fatalf("tags: %d %s", w.Code, w.Body.String())
 		}
 	})
 	t.Run("marshaled manifest shapes", func(t *testing.T) {
@@ -228,6 +241,21 @@ func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 			}
 			if stream := f.waitTerminal(result.ID); !strings.Contains(stream, "event: terminal") {
 				t.Fatalf("terminal: %s", stream)
+			}
+		})
+	}
+	for _, kind := range []string{"restart", "rollback"} {
+		t.Run("tui preview/"+kind, func(t *testing.T) {
+			row := rows[kind]
+			f := row.fixture(t)
+			row.setup(f)
+			b, err := json.Marshal(map[string]any{"app": "api", "request_id": "r", "dry_run": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := f.call("POST", row.path, apAdminToken, string(b))
+			if w.Code != 200 || !strings.Contains(w.Body.String(), `"app":"api"`) {
+				t.Fatalf("preview: %d %s", w.Code, w.Body.String())
 			}
 		})
 	}
