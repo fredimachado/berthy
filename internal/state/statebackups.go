@@ -68,7 +68,7 @@ func (s *Store) StartStateBackup(ctx context.Context, r StateBackupRun) (int64, 
 	if err != nil {
 		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return 0, ErrConflict
 	}
 	id, err := res.LastInsertId()
@@ -98,7 +98,7 @@ func (s *Store) FinishStateBackup(ctx context.Context, id int64, status string, 
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrConflict
 	}
 	return nil
