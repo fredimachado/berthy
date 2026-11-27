@@ -343,6 +343,68 @@ func TestCheckNamesAndShapes(t *testing.T) {
 	}
 }
 
+func TestRestartWatchIsUnknownUntilItHasWatchedAWindow(t *testing.T) {
+	t0 := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	ref := api.AppRef{Kind: "image", Name: "api"}
+	key := RoleKey(ref, "web")
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	warmDetail := "watching restarts since agent start"
+
+	w := NewRestartWatch(nil)
+	w.Observe(at(0), inventory(ref, "web", "c1", 40, false), nil)
+	if got := w.result(at(0), key); got.State != Unknown || got.Detail != warmDetail {
+		t.Fatalf("minute 0: %+v", got)
+	}
+	w.Observe(at(9), inventory(ref, "web", "c1", 40, false), nil)
+	if got := w.result(at(9), key); got.State != Unknown || got.Detail != warmDetail {
+		t.Fatalf("minute 9: %+v", got)
+	}
+	w.Observe(at(10), inventory(ref, "web", "c1", 40, false), nil)
+	if got := w.result(at(10), key); got.State != OK || got.Detail != "1 replicas, no restart loop" {
+		t.Fatalf("minute 10: %+v", got)
+	}
+
+	growing := NewRestartWatch(nil)
+	growing.Observe(at(0), inventory(ref, "web", "c1", 40, false), nil)
+	growing.Observe(at(3), inventory(ref, "web", "c1", 43, false), nil)
+	if got := growing.result(at(3), key); got.State != Warning || got.Detail != "a replica restarted 3 times in 10 minutes" {
+		t.Fatalf("three more restarts by minute 3: %+v", got)
+	}
+}
+
+func TestRestartNotifiedWarningStaysAcrossAnAgentRestart(t *testing.T) {
+	r := newRig(t, openStore(t))
+	ref := api.AppRef{Kind: "compose", Name: "shop"}
+	w := NewRestartWatch(func() time.Time { return r.now })
+	r.checks = []Check{w.Check(ref, "db")}
+	// Seed observations across three minutes so growth reaches the limit, then advance the monitor clock.
+	base := r.now
+	w.Observe(base, inventory(ref, "db", "c1", 0, false), nil)
+	w.Observe(base.Add(time.Minute), inventory(ref, "db", "c1", 2, false), nil)
+	w.Observe(base.Add(2*time.Minute), inventory(ref, "db", "c1", 3, false), nil)
+	r.now = base.Add(2 * time.Minute)
+	r.step(0)
+	expectMessages(t, r.notifier.messages(), "🟠 lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
+	if got := r.stored("restarts:shop/db"); got.State != Warning || got.NotifiedState != Warning {
+		t.Fatalf("state before restart: %+v", got)
+	}
+
+	// The agent restarts: a new monitor loads the stored Warning, and a fresh watch has no baseline yet. The first read
+	// answers Unknown while it warms up, so no recovered message is sent and the notified Warning stays.
+	r.attach()
+	w = NewRestartWatch(func() time.Time { return r.now })
+	r.checks = []Check{w.Check(ref, "db")}
+	w.Observe(r.now, inventory(ref, "db", "c1", 40, false), nil)
+	r.step(time.Minute)
+	expectMessages(t, r.notifier.messages(), "🟠 lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
+	if got := r.stored("restarts:shop/db"); got.State != Unknown || got.Detail != "watching restarts since agent start" {
+		t.Fatalf("state after the restart: %+v", got)
+	}
+	if got := r.stored("restarts:shop/db"); got.NotifiedState != Warning {
+		t.Fatalf("notified state after the restart: %+v, want Warning kept", got)
+	}
+}
+
 func TestRestartLoopOverTime(t *testing.T) {
 	t0 := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 	ref := api.AppRef{Kind: "image", Name: "api"}
@@ -353,13 +415,13 @@ func TestRestartLoopOverTime(t *testing.T) {
 		w.Observe(at(m), inventory(ref, "web", "c1", count, oom), nil)
 	}
 	observe(0, 0, false)
-	if got := w.result(at(0), key); got.State != OK || got.Detail != "1 replicas, no restart loop" {
+	if got := w.result(at(0), key); got.State != Unknown || got.Detail != "watching restarts since agent start" {
 		t.Fatalf("first observation: %+v", got)
 	}
 	observe(1, 1, false)
 	observe(2, 2, false)
-	if got := w.result(at(2), key); got.State != OK {
-		t.Fatalf("two restarts: %+v", got)
+	if got := w.result(at(2), key); got.State != Unknown || got.Detail != "watching restarts since agent start" {
+		t.Fatalf("two restarts during warm-up: %+v", got)
 	}
 	observe(3, 3, false)
 	if got := w.result(at(3), key); got.State != Warning || got.Detail != "a replica restarted 3 times in 10 minutes" {
@@ -475,8 +537,8 @@ func TestSwarmTaskFailuresWarnLikeRestartLoops(t *testing.T) {
 	apps := []api.App{{Ref: ref, Roles: []api.Role{{Name: "main", Replicas: []api.Replica{{TaskID: "t9", RestartCount: &zero}}}}}}
 	w := NewRestartWatch(nil)
 	w.Observe(t0, apps, map[string]int{key: 2})
-	if got := w.result(t0, key); got.State != OK || got.Detail != "1 replicas, no restart loop" {
-		t.Fatalf("two failed tasks: %+v", got)
+	if got := w.result(t0, key); got.State != Unknown || got.Detail != "watching restarts since agent start" {
+		t.Fatalf("two failed tasks during warm-up: %+v", got)
 	}
 	w.Observe(t0.Add(time.Minute), apps, map[string]int{key: 3})
 	if got := w.result(t0.Add(time.Minute), key); got.State != Warning || got.Detail != "3 task failures in 10m" {

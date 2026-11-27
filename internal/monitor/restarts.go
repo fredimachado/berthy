@@ -43,12 +43,14 @@ type roleRecord struct {
 
 // RestartWatch judges restart loops. It keeps restart counts of replicas for RestartWindow, from the app inventory it is
 // shown, and the failed Swarm tasks of each role. Swarm replaces a failed task with a new container whose restart count
-// starts at zero, so for a Swarm role the failed tasks are what shows a loop.
+// starts at zero, so for a Swarm role the failed tasks are what shows a loop. Until one RestartWindow has passed since
+// the first inventory, a role with no issue found answers unknown so an agent restart cannot send a false recovery.
 type RestartWatch struct {
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 
 	mu    sync.Mutex
+	first time.Time              // when the first inventory was observed; zero before it
 	seen  time.Time              // when the last inventory was observed; zero before the first
 	roles map[string]*roleRecord // by RoleKey
 }
@@ -105,6 +107,9 @@ func (w *RestartWatch) Observe(now time.Time, apps []api.App, failures map[strin
 		}
 	}
 	w.roles = fresh
+	if w.first.IsZero() {
+		w.first = now
+	}
 	w.seen = now
 }
 
@@ -171,6 +176,9 @@ func (w *RestartWatch) result(now time.Time, key string) Result {
 	}
 	if len(issues) > 0 {
 		return Result{State: Warning, Detail: strings.Join(issues, "; ")}
+	}
+	if now.Sub(w.first) < RestartWindow {
+		return Result{State: Unknown, Detail: "watching restarts since agent start"}
 	}
 	return Result{State: OK, Detail: fmt.Sprintf("%d replicas, no restart loop", rec.current)}
 }

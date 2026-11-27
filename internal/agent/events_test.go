@@ -153,7 +153,11 @@ func TestAnOOMEventRaisesTheConditionWithoutWaitingForAPoll(t *testing.T) {
 		}
 		return state.CheckState{}
 	}
-	waitUntil(t, "the restart check to read ok", func() bool { return stored().State == monitor.OK })
+	// The restart watch answers unknown until one RestartWindow has passed, so the first inventory is not ok.
+	waitUntil(t, "the restart check to see inventory", func() bool {
+		got := stored()
+		return got.State == monitor.Unknown && got.Detail == "watching restarts since agent start"
+	})
 
 	d.setOOM(true)
 	start := time.Now()
