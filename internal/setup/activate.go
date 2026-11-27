@@ -273,9 +273,6 @@ func guardOutcome(result guardResult, prevCfg bool, outcome ConfigOutcome, journ
 	case guardStopped:
 		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigOutcome: outcome}
 	case guardStopFailed, guardRestoreFailed:
-		if prevCfg {
-			outcome = ConfigUnconfirmed
-		}
 		msg := "the agent did not come up and could not be stopped"
 		if result == guardRestoreFailed {
 			msg = "the new agent did not come up and the previous one could not be put back"
