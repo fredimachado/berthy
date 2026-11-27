@@ -2,18 +2,17 @@ package agent
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"berthy/internal/api"
 	"berthy/internal/cloudflare/cftest"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
@@ -184,7 +183,8 @@ func TestRegistryOutageIsNotARefusal(t *testing.T) {
 		}
 	})
 	t.Run("registry is down", func(t *testing.T) {
-		host := closedLoopbackAddress(t)
+		host := dialtest.Refused
+		cfg.dial = dialtest.Dial
 		s := openIngressStore(t)
 		recordRelease(t, s, "release-down", registryManifest(host))
 		putRegistryPassword(t, s, host, "pw-one")
@@ -300,15 +300,9 @@ func TestCloudflareOutageIsNotARefusal(t *testing.T) {
 		}
 	}
 
-	// Refused without a listener: a closed port can be handed to another test's
-	// server, so the dialer returns ECONNREFUSED instead of closing a fake.
 	cfg := monitoringConfig("")
-	cfg.CloudflareAPIURL = "http://127.0.0.1"
-	cfg.cloudflareHTTP = &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
-		},
-	}}
+	cfg.CloudflareAPIURL = "http://" + dialtest.Refused
+	cfg.dial = dialtest.Dial
 	s := openIngressStore(t)
 	setIngress(t, s)
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
@@ -375,7 +369,8 @@ func TestMonitorChecksTheSameCredentials(t *testing.T) {
 		t.Errorf("changed password: monitor %+v, doctor %+v", got, doctor["registry:"+host])
 	}
 
-	closed := closedLoopbackAddress(t)
+	closed := dialtest.Refused
+	cfg.dial = dialtest.Dial
 	s2 := openIngressStore(t)
 	recordRelease(t, s2, "release-closed", registryManifest(closed))
 	putRegistryPassword(t, s2, closed, "pw-one")

@@ -70,7 +70,7 @@ func credentialProbes(c Config, s *state.Store, m *manifest.Manifest, ingress *s
 				check:    "registry:" + host,
 				secret:   reg.PasswordSecret,
 				registry: host,
-				ask:      func(ctx context.Context) credentialAnswer { return askRegistry(ctx, s, host, reg, repos) },
+				ask:      func(ctx context.Context) credentialAnswer { return askRegistry(ctx, c, s, host, reg, repos) },
 			})
 		}
 	}
@@ -86,7 +86,7 @@ func credentialProbes(c Config, s *state.Store, m *manifest.Manifest, ingress *s
 }
 
 // askRegistry asks registry host whether the stored password can pull every repository in repos.
-func askRegistry(ctx context.Context, s *state.Store, host string, reg manifest.Registry, repos []string) credentialAnswer {
+func askRegistry(ctx context.Context, c Config, s *state.Store, host string, reg manifest.Registry, repos []string) credentialAnswer {
 	info, value, err := s.Secret(ctx, reg.PasswordSecret)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && info.Registry != host {
 		return credentialAnswer{verdict: credentialMissing}
@@ -94,7 +94,7 @@ func askRegistry(ctx context.Context, s *state.Store, host string, reg manifest.
 	if err != nil {
 		return credentialAnswer{verdict: credentialUnasked, reason: "secret unavailable"}
 	}
-	probe := registrycheck.Probe{Host: host, Username: reg.Username, Password: string(value)}
+	probe := registrycheck.Probe{Host: host, Username: reg.Username, Password: string(value), HTTP: c.outboundHTTP()}
 	var failure string
 	for _, repo := range repos {
 		err := probe.CanPull(ctx, repo)
@@ -121,7 +121,7 @@ func askCloudflare(ctx context.Context, c Config, s *state.Store, ingress state.
 	if err != nil {
 		return credentialAnswer{verdict: credentialUnasked, reason: "secret unavailable"}
 	}
-	cf := &cloudflare.Client{BaseURL: c.CloudflareAPIURL, Token: string(value), HTTP: c.cloudflareHTTP}
+	cf := &cloudflare.Client{BaseURL: c.CloudflareAPIURL, Token: string(value), HTTP: c.outboundHTTP()}
 	st, err := cf.TokenStatus(ctx, ingress.AccountID)
 	switch {
 	case err == nil && st.Status == "active":

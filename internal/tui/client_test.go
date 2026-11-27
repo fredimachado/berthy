@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/dialtest"
 	"berthy/internal/logs"
 
 	tea "charm.land/bubbletea/v2"
@@ -90,7 +91,7 @@ func TestFetchesDecodeTypedMessages(t *testing.T) {
 }
 
 func TestFetchErrors(t *testing.T) {
-	c, srv := agentServer(t, map[string]http.HandlerFunc{
+	c, _ := agentServer(t, map[string]http.HandlerFunc{
 		"/v1/projects/demo/environments/prod/apps": func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"code":"forbidden","message":"forbidden `+testToken+`"}`, 403)
 		},
@@ -110,9 +111,10 @@ func TestFetchErrors(t *testing.T) {
 	if e, ok := c.fetchDF()().(errMsg); !ok || e.network || e.text != "agent returned HTTP 500" {
 		t.Fatalf("500: %#v", e)
 	}
-	srv.Close()
+	c.http = dialtest.Client()
+	c.target.Base, _ = url.Parse("http://" + dialtest.Refused)
 	if e, ok := c.fetchApps()().(errMsg); !ok || !e.network || e.text != "agent unreachable" {
-		t.Fatalf("closed server: %#v", e)
+		t.Fatalf("refused: %#v", e)
 	}
 }
 

@@ -19,6 +19,7 @@ const beatPath = "/ping/s3cr3t-beat-token"
 type beatServer struct {
 	srv     *httptest.Server
 	status  atomic.Int32
+	hangUp  atomic.Bool
 	mu      sync.Mutex
 	methods []string
 	paths   []string
@@ -32,6 +33,15 @@ func newBeatServer(t *testing.T) *beatServer {
 	b := &beatServer{}
 	b.status.Store(http.StatusOK)
 	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if b.hangUp.Load() {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
 		b.mu.Lock()
 		b.methods = append(b.methods, r.Method)
 		b.paths = append(b.paths, r.URL.Path)
@@ -110,8 +120,8 @@ func TestHeartbeatIsUnknownWhenThePingIsNotAcceptedAndNeverAnythingWorse(t *test
 	if got := check.Run(context.Background()); got.State != Unknown || got.Detail != "ping not accepted: HTTP 302; last ping accepted at 2026-11-19T10:00:00Z" {
 		t.Fatalf("redirect %+v", got)
 	}
-	// The endpoint goes away.
-	b.srv.Close()
+	// The endpoint hangs up.
+	b.hangUp.Store(true)
 	got := check.Run(context.Background())
 	if got.State != Unknown || got.Detail != "ping failed: unreachable; last ping accepted at 2026-11-19T10:00:00Z" {
 		t.Fatalf("unreachable %+v", got)

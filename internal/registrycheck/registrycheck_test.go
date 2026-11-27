@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
+	"berthy/internal/dialtest"
 	"berthy/internal/registrycheck"
 )
 
@@ -378,10 +380,11 @@ func TestCancelledContextIsNotADenial(t *testing.T) {
 }
 
 func TestConnectionFailureIsNotADenial(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	p := probe(srv)
-	srv.Close()
+	p := registrycheck.Probe{Host: dialtest.Refused, Username: user, Password: secret, HTTP: dialtest.Client()}
 	err := p.CanPull(context.Background(), "acme/api")
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("expected connection refused: %v", err)
+	}
 	requireNotDenied(t, err)
 	requireClean(t, err)
 }

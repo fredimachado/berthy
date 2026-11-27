@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"berthy/internal/dialtest"
+
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 )
@@ -377,9 +379,7 @@ func TestErrorsNeverCarryTheSecretKeyOrRequestURLs(t *testing.T) {
 	}
 	checkHygiene(t, err)
 
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	endpoint := closed.URL
-	closed.Close()
+	endpoint := dialtest.HangUp(t)
 	down := newStore(t, endpoint)
 	_, err = down.Put(context.Background(), "x", strings.NewReader("x"), nil)
 	if err == nil || !strings.HasPrefix(err.Error(), "upload failed: object storage unavailable") {

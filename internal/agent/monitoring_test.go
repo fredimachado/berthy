@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
@@ -60,18 +60,6 @@ func recordAppRelease(t *testing.T, s *state.Store, id, app, manifestJSON string
 // monitoredManifest is a valid manifest with one image app, and the given monitoring members.
 func monitoredManifest(members string) string {
 	return `{"project":"demo","network":"demo","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}` + members + `}`
-}
-
-// closedLoopbackAddress returns a loopback host:port with nothing listening on it.
-func closedLoopbackAddress(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
 }
 
 func serveRequest(t *testing.T, h http.Handler, method, path, token string) *httptest.ResponseRecorder {
@@ -216,7 +204,9 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 	}
 
 	// A second handler points at an address with nothing listening on it.
-	down := NewDeploymentHandler(monitoringConfig("http://"+closedLoopbackAddress(t)), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
+	downCfg := monitoringConfig("http://" + dialtest.Refused)
+	downCfg.dial = dialtest.Dial
+	down := NewDeploymentHandler(downCfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w = serveRequest(t, down, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"error":"telegram unavailable"`) {
 		t.Fatalf("unreachable: %d %s", w.Code, w.Body.String())
@@ -373,13 +363,15 @@ func TestDoctorReportsPeersAndTheAlertSecret(t *testing.T) {
 	s := openIngressStore(t)
 	ctx := context.Background()
 	recordRelease(t, s, "release-doctor", monitoredManifest(`,
-		"peers":{"up":"`+healthy.URL+`","down":"http://`+closedLoopbackAddress(t)+`"},
+		"peers":{"up":"`+healthy.URL+`","down":"http://`+dialtest.Refused+`"},
 		"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"}}`))
 	// The monitor has a stored state for one peer, which the doctor uses without asking again.
 	if err := s.PutCheck(ctx, state.CheckState{Name: "peer:up", State: "ok", Detail: "reachable", Since: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	h := NewDeploymentHandler(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
+	cfg := monitoringConfig("")
+	cfg.dial = dialtest.Dial
+	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("doctor: %d %s", w.Code, w.Body.String())

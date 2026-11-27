@@ -38,7 +38,10 @@ func ValidToken(token string) bool { return tokenPattern.MatchString(token) }
 
 // Handler returns the helper's handler for token. Every request needs "Authorization: Bearer <token>", and any other
 // request is refused with 401. An empty token refuses everything.
-func Handler(token string) http.Handler {
+func Handler(token string) http.Handler { return handler(token, nil) }
+
+// handler is Handler with the dialer of its probes; nil means a net.Dialer.
+func handler(token string, dial monitor.DialFunc) http.Handler {
 	want := sha256.Sum256([]byte(token))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -62,7 +65,7 @@ func Handler(token string) http.Handler {
 			writeError(w, refused.status, refused.code, refused.message)
 			return
 		}
-		ok, detail := run(r.Context(), req)
+		ok, detail := run(r.Context(), req, dial)
 		_ = json.NewEncoder(w).Encode(response{OK: ok, Detail: detail})
 	})
 }
@@ -197,7 +200,7 @@ func validTarget(target string) bool {
 }
 
 // run makes the probe within its timeout. A probe that fails is an answer, not an error.
-func run(ctx context.Context, req monitor.HelperProbe) (bool, string) {
+func run(ctx context.Context, req monitor.HelperProbe, dial monitor.DialFunc) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	var res monitor.Result
@@ -206,9 +209,9 @@ func run(ctx context.Context, req monitor.HelperProbe) (bool, string) {
 		if path == "" {
 			path = "/"
 		}
-		res = monitor.ProbeHTTP(ctx, "http://"+req.Target+path, req.Expect)
+		res = monitor.ProbeHTTP(ctx, "http://"+req.Target+path, req.Expect, dial)
 	} else {
-		res = monitor.ProbeTCP(ctx, req.Target)
+		res = monitor.ProbeTCP(ctx, req.Target, dial)
 	}
 	return res.State == monitor.OK, res.Detail
 }

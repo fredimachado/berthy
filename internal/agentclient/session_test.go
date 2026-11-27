@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"berthy/internal/dialtest"
 	"berthy/internal/session"
 )
 
@@ -92,9 +93,8 @@ func TestOpenSessionGivesUpWhenItsContextEnds(t *testing.T) {
 }
 
 func TestOpenSessionWithAnUnreachableAgent(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	target := sessionTarget(t, srv)
-	srv.Close()
+	u, _ := url.Parse(dialtest.HangUp(t))
+	target := &Target{Env: "lab", Base: u, Prefix: "/v1/projects/demo/environments/lab/", Token: "tok"}
 	if _, _, err := OpenSession(context.Background(), target, session.Request{Kind: "exec", App: "api", Command: []string{"sh"}}); err == nil {
 		t.Fatal("no error")
 	}

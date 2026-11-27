@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/dialtest"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -370,12 +371,7 @@ func TestAgentRefusalIsAToolErrorWithItsMessage(t *testing.T) {
 }
 
 func TestAgentUnreachableIsAToolError(t *testing.T) {
-	agent, u := newFakeAgent(t)
-	_ = agent
-	srv := httptest.NewServer(http.NotFoundHandler())
-	dead, _ := url.Parse(srv.URL)
-	srv.Close()
-	_ = u
+	dead, _ := url.Parse(dialtest.HangUp(t))
 	res := call(t, connect(t, testConfig(dead, t.TempDir())), "list_resources", nil)
 	if !res.IsError || !strings.Contains(text(t, res), "agent connection failed") {
 		t.Fatalf("%v %q", res.IsError, text(t, res))

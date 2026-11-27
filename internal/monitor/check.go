@@ -41,20 +41,23 @@ func (f Func) Run(ctx context.Context) Result {
 // probeUserAgent identifies the agent's probes to the services they check.
 const probeUserAgent = "berthy-probe"
 
-// HTTPProbe returns a probe that runs ProbeHTTP against url, with timeout as its deadline.
-func HTTPProbe(name, url string, expect []int, interval, timeout time.Duration, failures int) Check {
+// DialFunc opens a network connection. Nil means a net.Dialer.
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// HTTPProbe returns a probe that runs ProbeHTTP against url, with timeout as its deadline. A nil dial uses the default.
+func HTTPProbe(name, url string, expect []int, interval, timeout time.Duration, failures int, dial DialFunc) Check {
 	return NewFunc(name, interval, failures, func(ctx context.Context) Result {
 		pctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return ProbeHTTP(pctx, url, expect)
+		return ProbeHTTP(pctx, url, expect, dial)
 	})
 }
 
 // ProbeHTTP sends GET to rawURL once, within ctx's deadline. It follows no redirects, so a 3xx is the status it sees. A
 // status in expect is ok; without expect, any status from 200 to 399 is ok. Other statuses, timeouts and refused
-// connections are critical. The response body is never read or reported.
-func ProbeHTTP(ctx context.Context, rawURL string, expect []int) Result {
-	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+// connections are critical. The response body is never read or reported. A nil dial uses the default.
+func ProbeHTTP(ctx context.Context, rawURL string, expect []int, dial DialFunc) Result {
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: dial}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Transport:     transport,
@@ -77,20 +80,22 @@ func ProbeHTTP(ctx context.Context, rawURL string, expect []int) Result {
 	return Result{State: Critical, Detail: detail}
 }
 
-// TCPProbe returns a probe that runs ProbeTCP against addr, with timeout as its deadline.
-func TCPProbe(name, addr string, interval, timeout time.Duration, failures int) Check {
+// TCPProbe returns a probe that runs ProbeTCP against addr, with timeout as its deadline. A nil dial uses the default.
+func TCPProbe(name, addr string, interval, timeout time.Duration, failures int, dial DialFunc) Check {
 	return NewFunc(name, interval, failures, func(ctx context.Context) Result {
 		pctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return ProbeTCP(pctx, addr)
+		return ProbeTCP(pctx, addr, dial)
 	})
 }
 
 // ProbeTCP connects to addr (host:port) once, within ctx's deadline, and closes the connection. A failed connection is
-// critical.
-func ProbeTCP(ctx context.Context, addr string) Result {
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+// critical. A nil dial uses the default.
+func ProbeTCP(ctx context.Context, addr string, dial DialFunc) Result {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	conn, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		return Result{State: Critical, Detail: FailureDetail(err)}
 	}
@@ -99,18 +104,19 @@ func ProbeTCP(ctx context.Context, addr string) Result {
 }
 
 // PeerCheck returns the check for another agent, named by its base URL. It asks the peer's /healthz every 30 seconds
-// with a 5-second timeout, and needs three misses in a row before it reports the peer silent.
-func PeerCheck(name, base string) Check {
+// with a 5-second timeout, and needs three misses in a row before it reports the peer silent. A nil dial uses the default.
+func PeerCheck(name, base string, dial DialFunc) Check {
 	return NewFunc(name, 30*time.Second, 3, func(ctx context.Context) Result {
-		return ProbePeer(ctx, base, 5*time.Second)
+		return ProbePeer(ctx, base, 5*time.Second, dial)
 	})
 }
 
 // ProbePeer asks another agent for /healthz once. A 200 is reachable; any other answer, or none, is critical and silent.
-func ProbePeer(ctx context.Context, base string, timeout time.Duration) Result {
+// A nil dial uses the default.
+func ProbePeer(ctx context.Context, base string, timeout time.Duration, dial DialFunc) Result {
 	client := &http.Client{
 		Timeout:       timeout,
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: dial},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/healthz", nil)

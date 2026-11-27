@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"berthy/internal/dialtest"
 )
 
 // testToken is a bot token of the documented shape, made up for these tests.
@@ -101,9 +103,7 @@ func TestTelegramTransportErrorsNeverShowTheToken(t *testing.T) {
 		t.Fatalf("error text leaks the request: %q", err.Error())
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	srv.Close()
-	err = (&Telegram{BaseURL: srv.URL, Token: testToken, ChatID: "1"}).Notify(context.Background(), Alert{Text: "x"})
+	err = (&Telegram{BaseURL: "http://" + dialtest.Refused, Token: testToken, ChatID: "1", HTTP: dialtest.Client()}).Notify(context.Background(), Alert{Text: "x"})
 	if !errors.Is(err, ErrTelegramUnavailable) || strings.Contains(err.Error(), testToken) {
 		t.Fatalf("closed server: %v", err)
 	}

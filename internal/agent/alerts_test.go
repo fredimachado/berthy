@@ -14,6 +14,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
@@ -187,14 +188,16 @@ func TestWebhookFailuresAreLoggedWithoutTheURLOrTheHeaders(t *testing.T) {
 	for name, setup := range map[string]func(*hookReceiver) string{
 		"an error status": func(h *hookReceiver) string { h.status.Store(http.StatusInternalServerError); return h.url() },
 		"nothing listening": func(h *hookReceiver) string {
-			return "http://" + closedLoopbackAddress(t) + hookPath
+			return "http://" + dialtest.Refused + hookPath
 		},
 	} {
 		tg, hook := newReportsTelegram(t), newHookReceiver(t)
 		url := setup(hook)
 		var mu sync.Mutex
 		var logged []string
-		r := NewReports(monitoringConfig(tg.srv.URL), bothChannelsStore(t, url, "", ""), func(s string) {
+		cfg := monitoringConfig(tg.srv.URL)
+		cfg.dial = dialtest.Dial
+		r := NewReports(cfg, bothChannelsStore(t, url, "", ""), func(s string) {
 			mu.Lock()
 			defer mu.Unlock()
 			logged = append(logged, s)
@@ -206,7 +209,7 @@ func TestWebhookFailuresAreLoggedWithoutTheURLOrTheHeaders(t *testing.T) {
 			t.Errorf("%s: logged %q", name, logged)
 		}
 		for _, line := range logged {
-			for _, secret := range []string{"s3cr3t", "hook-secret-value", "127.0.0.1", reportsBotToken} {
+			for _, secret := range []string{"s3cr3t", "hook-secret-value", "127.0.0.1", "dialtest.invalid", reportsBotToken} {
 				if strings.Contains(line, secret) {
 					t.Errorf("%s: the log line leaks %q: %q", name, secret, line)
 				}
@@ -221,11 +224,13 @@ func TestWebhookFailuresAreLoggedWithoutTheURLOrTheHeaders(t *testing.T) {
 
 func TestAFailingProbeIsOnePostAndOneTelegramMessage(t *testing.T) {
 	tg, hook := newReportsTelegram(t), newHookReceiver(t)
-	probes := `,"probes":{"site":{"http":"http://` + closedLoopbackAddress(t) + `/health","failures":1}}`
+	probes := `,"probes":{"site":{"http":"http://` + dialtest.Refused + `/health","failures":1}}`
 	s := bothChannelsStore(t, hook.url(), probes, "")
 	var mu sync.Mutex
 	var logged []string
-	w := NewMonitoring(monitoringConfig(tg.srv.URL), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(line string) {
+	cfg := monitoringConfig(tg.srv.URL)
+	cfg.dial = dialtest.Dial
+	w := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(line string) {
 		mu.Lock()
 		defer mu.Unlock()
 		logged = append(logged, line)
