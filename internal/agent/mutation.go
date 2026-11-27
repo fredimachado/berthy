@@ -153,126 +153,6 @@ func (rt *routeRuntime) dispatchOrdinary(call routeCall) {
 	ctx := r.Context()
 	sa := call.stateActor()
 	switch {
-	case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
-		var req deploy.Request
-		if err := decodeBody(w, r, &req); err != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		if rest[0] == "deploys" {
-			req.Kind = "deploy"
-		} else {
-			req.Kind = rest[0]
-		}
-		if (req.Adopt || req.RevertSchema || req.ReplaceExisting || req.AllowRecreate) && !actor.Admin {
-			writeError(w, 403, "forbidden", "forbidden")
-			return
-		}
-		if req.DryRun {
-			plan, err := d.Plan(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			if req.Kind == "deploy" && !planning(r) && r.URL.Query().Get("diff") == "fields" {
-				writeDeployFieldPreview(w, plan)
-				return
-			}
-			json.NewEncoder(w).Encode(plan)
-			return
-		}
-		op, _, err := d.Admit(ctx, actor, req)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		path := apiPrefix(c) + "operations/" + op.ID + "/events"
-		w.Header().Set("Location", path)
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-	case len(rest) == 1 && rest[0] == "apply":
-		var req deploy.ApplyRequest
-		if err := decodeBody(w, r, &req); err != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		result, err := d.ApplySettings(ctx, actor, req)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(result)
-	case len(rest) == 1 && rest[0] == "restore":
-		var body restoreBody
-		if err := decodeBody(w, r, &body); err != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, App: body.App, Service: body.Service, Role: body.Role,
-			Command: body.Command, Timeout: body.Timeout, DryRun: body.DryRun, RequestID: body.RequestID}
-		if req.DryRun {
-			plan, err := d.Plan(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(plan)
-			return
-		}
-		if req.RequestID == "" {
-			var random [16]byte
-			if _, err := rand.Read(random[:]); err != nil {
-				writeError(w, 503, "unavailable", "operation unavailable")
-				return
-			}
-			req.RequestID = hex.EncodeToString(random[:])
-		}
-		op, _, err := d.Admit(ctx, actor, req)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		path := apiPrefix(c) + "operations/" + op.ID + "/events"
-		w.Header().Set("Location", path)
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
-		var req deploy.Request
-		if err := decodeBody(w, r, &req); err != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		req.Kind = "ingress"
-		req.App = manifest.ConnectorAppName
-		if req.ReplaceExisting && !actor.Admin {
-			writeError(w, 403, "forbidden", "forbidden")
-			return
-		}
-		if req.DryRun {
-			plan, err := d.Plan(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(plan)
-			return
-		}
-		op, _, err := d.Admit(ctx, actor, req)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		path := apiPrefix(c) + "operations/" + op.ID + "/events"
-		w.Header().Set("Location", path)
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
-		status, err := d.IngressStatus(ctx)
-		if err != nil {
-			writeError(w, 503, "unavailable", "ingress status unavailable")
-			return
-		}
-		json.NewEncoder(w).Encode(status)
 	case rest[0] == "operations" && len(rest) == 2:
 		op, err := d.Store.Operation(ctx, rest[1])
 		if err != nil {
@@ -636,6 +516,108 @@ func (rt *routeRuntime) dispatchOrdinary(call routeCall) {
 	default:
 		writeError(w, 501, "unavailable", "operation unavailable")
 	}
+}
+
+func (rt *routeRuntime) handleAdmission(call routeCall, read readRouteBody[deploy.Request]) {
+	w := call.w
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	req.Kind = call.row.kind
+	if (req.Adopt || req.RevertSchema || req.ReplaceExisting || req.AllowRecreate) && !call.actor.Admin {
+		writeError(w, 403, "forbidden", "forbidden")
+		return
+	}
+	rt.planOrAdmit(call, req)
+}
+
+func (rt *routeRuntime) handleApply(call routeCall, read readRouteBody[deploy.ApplyRequest]) {
+	w := call.w
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	result, err := rt.d.ApplySettings(call.r.Context(), call.actor, req)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(result)
+}
+
+func (rt *routeRuntime) handleRestore(call routeCall, read readRouteBody[restoreBody]) {
+	w := call.w
+	body, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, App: body.App, Service: body.Service, Role: body.Role,
+		Command: body.Command, Timeout: body.Timeout, DryRun: body.DryRun, RequestID: body.RequestID}
+	if !req.DryRun && req.RequestID == "" {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			writeError(w, 503, "unavailable", "operation unavailable")
+			return
+		}
+		req.RequestID = hex.EncodeToString(random[:])
+	}
+	rt.planOrAdmit(call, req)
+}
+
+func (rt *routeRuntime) handleIngressApply(call routeCall, read readRouteBody[deploy.Request]) {
+	w := call.w
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	req.Kind = "ingress"
+	req.App = manifest.ConnectorAppName
+	if req.ReplaceExisting && !call.actor.Admin {
+		writeError(w, 403, "forbidden", "forbidden")
+		return
+	}
+	rt.planOrAdmit(call, req)
+}
+
+func (rt *routeRuntime) handleIngressStatus(call routeCall) {
+	status, err := rt.d.IngressStatus(call.r.Context())
+	if err != nil {
+		writeError(call.w, 503, "unavailable", "ingress status unavailable")
+		return
+	}
+	json.NewEncoder(call.w).Encode(status)
+}
+
+func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {
+	w, r, actor := call.w, call.r, call.actor
+	ctx := r.Context()
+	if req.DryRun {
+		plan, err := rt.d.Plan(ctx, actor, req)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		if req.Kind == "deploy" && !planning(r) && r.URL.Query().Get("diff") == "fields" {
+			writeDeployFieldPreview(w, plan)
+			return
+		}
+		json.NewEncoder(w).Encode(plan)
+		return
+	}
+	op, _, err := rt.d.Admit(ctx, actor, req)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	path := apiPrefix(rt.c) + "operations/" + op.ID + "/events"
+	w.Header().Set("Location", path)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
 }
 
 func publicRelease(r state.Release) map[string]any {
