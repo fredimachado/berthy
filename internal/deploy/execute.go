@@ -408,11 +408,13 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
 		rollCtx, stopRoll := interruptible(roleCtx)
 		id := w.intent.ServiceID
+		health := app.Roles[w.intent.Role].Health
+		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
+			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, starts, hold)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
+			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, starts, hold)
 		}
 		stopRoll()
 		stopRole()
@@ -723,7 +725,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0, 0)
+	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, 0)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

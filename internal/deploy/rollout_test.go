@@ -125,7 +125,7 @@ func TestHealthRejectsOldGeneration(t *testing.T) {
 func TestHealthWaitHonorsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1, 0, 0); err == nil {
+	if err := waitHealthy(ctx, healthFake{}, "s", "op", 1, startBudget{}, 0); err == nil {
 		t.Fatal("unhealthy service passed")
 	}
 }
@@ -180,7 +180,7 @@ func TestCreateRoleJournalsAndVerifiesHealthyGeneration(t *testing.T) {
 	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"x","Labels":{"berthy.operation":"op"}}}}`)
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Spec: desired}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "container", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
 	j := &journalFake{}
-	id, err := createRole(context.Background(), j, m, "op", state.Intent{Kind: "create", Name: "svc", Generation: "op", Desired: desired}, nil, 1, 3, 0)
+	id, err := createRole(context.Background(), j, m, "op", state.Intent{Kind: "create", Name: "svc", Generation: "op", Desired: desired}, nil, 1, startBudget{limit: 3}, 0)
 	if err != nil || id != "id" || len(j.saved) != 1 || m.creates != 1 {
 		t.Fatalf("id=%q err=%v intents=%d creates=%d", id, err, len(j.saved), m.creates)
 	}
@@ -211,7 +211,7 @@ func TestUpdateRoleUsesCurrentVersion(t *testing.T) {
 	desired := json.RawMessage(`{"Name":"svc","version":"new"}`)
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: []engine.ServiceTask{{ServiceID: "id", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}}
 	j := &journalFake{}
-	err := updateRole(context.Background(), j, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, 3, 0)
+	err := updateRole(context.Background(), j, m, "op", state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, startBudget{limit: 3}, 0)
 	if err != nil || m.updateVersion != 9 {
 		t.Fatalf("update version %d: %v", m.updateVersion, err)
 	}
@@ -319,7 +319,10 @@ func TestRolloutRequiresAFullHealthyMonitor(t *testing.T) {
 		e := &monitorHealth{eventedHealth: newEventedHealth(), tasks: []engine.ServiceTask{one, two}}
 		ctx, cancel := context.WithCancel(context.Background())
 		done, exited := make(chan error, 1), make(chan struct{})
-		go func() { defer close(exited); done <- waitHealthy(ctx, e, "s", "op", 2, 3, 5*time.Second) }()
+		go func() {
+			defer close(exited)
+			done <- waitHealthy(ctx, e, "s", "op", 2, startBudget{limit: 3}, 5*time.Second)
+		}()
 		defer func() { cancel(); <-exited }()
 		synctest.Wait()
 		select {
@@ -378,7 +381,10 @@ func TestRolloutRestartsTheHealthyMonitor(t *testing.T) {
 				e := &monitorHealth{eventedHealth: newEventedHealth(), tasks: []engine.ServiceTask{one, two}}
 				ctx, cancel := context.WithCancel(context.Background())
 				done, exited := make(chan error, 1), make(chan struct{})
-				go func() { defer close(exited); done <- waitHealthy(ctx, e, "s", "op", 2, 3, 5*time.Second) }()
+				go func() {
+					defer close(exited)
+					done <- waitHealthy(ctx, e, "s", "op", 2, startBudget{limit: 3}, 5*time.Second)
+				}()
 				defer func() { cancel(); <-exited }()
 				synctest.Wait()
 				select {
@@ -430,7 +436,7 @@ func TestRolloutCountsFailuresDuringTheMonitor(t *testing.T) {
 		done, exited := make(chan error, 1), make(chan struct{})
 		go func() {
 			defer close(exited)
-			done <- withRole(waitHealthy(ctx, e, "s", "op", 1, 2, 5*time.Second), "web")
+			done <- withRole(waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2}, 5*time.Second), "web")
 		}()
 		defer func() { cancel(); <-exited }()
 		synctest.Wait()
@@ -472,7 +478,10 @@ func TestRolloutCountsFailuresDuringTheMonitor(t *testing.T) {
 			e := &monitorHealth{eventedHealth: newEventedHealth(), tasks: []engine.ServiceTask{running}}
 			ctx, cancel := context.WithCancel(context.Background())
 			done, exited := make(chan error, 1), make(chan struct{})
-			go func() { defer close(exited); done <- waitHealthy(ctx, e, "s", "op", 1, 2, 5*time.Second) }()
+			go func() {
+				defer close(exited)
+				done <- waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2}, 5*time.Second)
+			}()
 			defer func() { cancel(); <-exited }()
 			synctest.Wait()
 			time.Sleep(time.Second)
@@ -509,7 +518,7 @@ func TestWaitHealthyGivesUpAtTheStartAttemptLimit(t *testing.T) {
 	defer cancel()
 	e := healthFake{tasks: []engine.ServiceTask{failedTask("t1", "failed", "op"), failedTask("t2", "rejected", "op"), failedTask("t3", "failed", "op"), runningTask("t4", "op")}, status: "starting"}
 	start := time.Now()
-	err := waitHealthy(ctx, e, "s", "op", 1, 3, 0)
+	err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 3}, 0)
 	var gave *errStartAttempts
 	if !errors.As(err, &gave) || gave.Failed != 3 || gave.Limit != 3 {
 		t.Fatalf("error %v", err)
@@ -523,7 +532,7 @@ func TestWaitHealthyIgnoresFailuresOfOtherGenerationsAndBelowTheLimit(t *testing
 	e := healthFake{tasks: []engine.ServiceTask{failedTask("o1", "failed", "other"), failedTask("o2", "failed", "other"), failedTask("o3", "failed", "other"), failedTask("o4", "failed", "other"), failedTask("t1", "failed", "op"), failedTask("t2", "failed", "op")}, status: "starting"}
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
-	err := waitHealthy(ctx, e, "s", "op", 1, 3, 0)
+	err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 3}, 0)
 	var gave *errStartAttempts
 	if err == nil || errors.As(err, &gave) {
 		t.Fatalf("error %v, want the deadline", err)
@@ -537,7 +546,7 @@ func TestWaitHealthyWithoutALimitNeverGivesUp(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
-	err := waitHealthy(ctx, healthFake{tasks: tasks, status: "starting"}, "s", "op", 1, 0, 0)
+	err := waitHealthy(ctx, healthFake{tasks: tasks, status: "starting"}, "s", "op", 1, startBudget{}, 0)
 	var gave *errStartAttempts
 	if err == nil || errors.As(err, &gave) {
 		t.Fatalf("error %v, want the deadline", err)
@@ -551,7 +560,7 @@ func TestWaitHealthyCountsFailuresAcrossPolls(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := waitHealthy(ctx, e, "s", "op", 1, 3, 0)
+	err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 3}, 0)
 	var gave *errStartAttempts
 	if !errors.As(err, &gave) || gave.Failed != 3 || e.polls != 3 {
 		t.Fatalf("error %v after %d polls", err, e.polls)
@@ -567,7 +576,7 @@ func TestWaitHealthySucceedsAfterFailuresBelowTheLimit(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := waitHealthy(ctx, e, "s", "op", 1, 3, 0); err != nil {
+	if err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 3}, 0); err != nil {
 		t.Fatalf("a role that started on its third try failed: %v", err)
 	}
 }
@@ -577,7 +586,7 @@ func TestCreateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Spec: desired}, tasks: onService("id", failedTask("t1", "failed", "op"), failedTask("t2", "failed", "op"))}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	_, err := createRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: desired}, nil, 1, 2, 0)
+	_, err := createRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: desired}, nil, 1, startBudget{limit: 2}, 0)
 	var gave *errStartAttempts
 	if !errors.As(err, &gave) || gave.Role != "web" || gave.Failed != 2 || gave.Limit != 2 {
 		t.Fatalf("error %v", err)
@@ -590,7 +599,7 @@ func TestUpdateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
 	m := &mutationFake{live: engine.ServiceSnapshot{ID: "id", Version: 9, Spec: before}, tasks: onService("id", failedTask("t1", "failed", "op"), runningTask("t0", "old"))}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	err := updateRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, 1, 0)
+	err := updateRole(ctx, &journalFake{}, m, "op", state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "op", Before: before, Desired: desired}, nil, 1, startBudget{limit: 1}, 0)
 	var gave *errStartAttempts
 	if !errors.As(err, &gave) || gave.Role != "web" || gave.Failed != 1 {
 		t.Fatalf("error %v", err)

@@ -50,7 +50,7 @@ func TestStartupReadCannotOutliveTheCutoff(t *testing.T) {
 				done, exited := make(chan error, 1), make(chan struct{})
 				go func() {
 					defer close(exited)
-					done <- waitHealthy(ctx, cutoffReader{tc.block, tc.late}, "s", "op", 1, 1, 5*time.Second)
+					done <- waitHealthy(ctx, cutoffReader{tc.block, tc.late}, "s", "op", 1, startBudget{limit: 1}, 5*time.Second)
 				}()
 				defer func() { cancel(); <-exited }()
 				synctest.Wait()
@@ -102,11 +102,11 @@ func TestExpiredStartupPreventsServiceMutation(t *testing.T) {
 				go func() {
 					defer close(exited)
 					if kind == "create" {
-						_, err := createRole(ctx, &slowIntentJournal{}, &m.mutationFake, "op", i, nil, 1, 1, 5*time.Second)
+						_, err := createRole(ctx, &slowIntentJournal{}, &m.mutationFake, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
 						done <- err
 						return
 					}
-					done <- updateRole(ctx, &journalFake{}, m, "op", i, nil, 1, 1, 5*time.Second)
+					done <- updateRole(ctx, &journalFake{}, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
 				}()
 				defer func() { cancel(); <-exited }()
 				synctest.Wait()

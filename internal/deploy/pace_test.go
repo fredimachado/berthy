@@ -101,7 +101,7 @@ func goWait(t *testing.T, ctx context.Context, wait func(context.Context) error)
 
 func runWait(t *testing.T, ctx context.Context, e *eventedHealth) chan error {
 	t.Helper()
-	return goWait(t, ctx, func(ctx context.Context) error { return waitHealthy(ctx, e, "s", "op", 1, 0, 0) })
+	return goWait(t, ctx, func(ctx context.Context) error { return waitHealthy(ctx, e, "s", "op", 1, startBudget{}, 0) })
 }
 
 func within(t *testing.T, done chan error, d time.Duration, what string) error {
