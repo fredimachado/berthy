@@ -702,13 +702,15 @@ services:
 
 | Key | Meaning | Default |
 | --- | --- | --- |
-| `deploy_timeout` | The longest the new version may take to become healthy. | `120s` |
+| `deploy_timeout` | The shared startup budget for the new version's roles to become healthy. | `120s` |
 | `drain_timeout` | How long the old version has to finish requests in flight. It is also the Swarm stop grace period. | `30s` |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up (1 to 10). | `3` |
 | `retain` | How many deploys' images are kept, so a rollback needs no pull. At least 1. | `5` |
 | `verify` | Whether the deploy checks, at its end, that each role's port and hostnames answer. A failed check warns and never fails the deploy. | `true` |
 
 With the example values, a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`.
+
+The roles share this startup budget. Each must first be observed healthy before its current cutoff, then stay covered by running, healthy containers at every observation for five seconds. A hold can restart only while startup time remains; lost coverage after the cutoff fails the role. A completed hold adds those five seconds to the next role's cutoff; unused verification grace does not add startup time. The role's hard deadline is its cutoff plus five seconds for the hold and 15 seconds for confirmation, native update completion and draining. Final verification has a separate deadline: 15 seconds after the later of the remaining startup cutoff and the last role's completion.
 
 #### Hooks and migrations
 
@@ -1321,20 +1323,20 @@ api  succeeded
 
 #### What an image deploy does
 
-A deploy either finishes healthy or leaves the previous version running. It never leaves an app half-updated.
+A deploy verifies the new version before recording the switch. If a rollout fails before that point, the agent attempts to restore the previous version. If it cannot confirm the cleanup, the operation needs recovery and keeps the lock.
 
 1. **Lock.** Takes the deploy lock. If someone holds it, the deploy stops and says who and why.
 2. **Check.** Validates the manifest. Confirms every secret has a value. Pulls the image by digest. On a protected path the request already carries a digest. On an unprotected path the agent may still resolve a tag here.
 3. **Pre-deploy hooks.** Runs them in order. A failure stops the deploy with nothing changed.
 4. **Migrations.** Runs `version`, then `apply`, then `version` again (see step 6).
-5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. It must pass its health check within `deploy_timeout`. Failures during the check's `start_period` do not count. If the new version's tasks fail to start `start_attempts` times (3 by default), Berthy gives up at once instead of waiting out the timeout.
-6. **Switch and drain.** Sends traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
+5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. Each role must first be observed healthy within the shared `deploy_timeout` startup budget, then remain covered by running, healthy containers at each observation for five seconds. Lost coverage, an unreadable observation that prevents confirming coverage, or a newly observed failed start restarts the hold. Docker's health-check `start_period` controls when failed probes count toward the container's unhealthy status. Berthy counts failed starts during the hold too, and gives up as soon as they reach `start_attempts` (3 by default).
+6. **Switch and drain.** Swarm switches traffic and gives the old version a stop signal and `drain_timeout` to finish requests in flight. The role's extended deadline covers confirmation, native update completion and draining. Once every role is verified, Berthy checks the live services, health and drain again under a separate final deadline before recording the switch.
 7. **Publish.** With managed ingress, updates the app's routes and DNS records. A failure here is reported and the command exits non-zero, but the new version stays running.
 8. **Post-deploy hooks.** Runs them in order. A failure is reported, but does not undo the deploy.
 9. **Reachability.** For each role with a `port`, checks that the port answers on the shared network, and for each of its `hostnames` that the hostname answers from outside. A check that fails only warns. See "Reachability checks" below.
 10. **Record and tidy.** Writes the release, removes old images beyond `retain`, releases the lock.
 
-If step 5 fails, the agent **rolls back to the previous digest**, records the deploy as failed, and sends an alert. A failed *first* deploy has nothing to roll back to, so the service it created is removed.
+If the rollout or its final inspection, health or drain check fails before the switch is recorded, the agent attempts to **roll back to the previous digest**. A failed *first* deploy has nothing to roll back to, so the agent removes the service it created. If the agent cannot confirm ownership or cleanup, it records `recovery_required` and keeps the lock for inspection. Alerts follow the `alerts.deploys` setting.
 
 Swarm's service defaults for an image app:
 
