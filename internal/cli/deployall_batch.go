@@ -199,6 +199,11 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 }
 
 func prepareBatchFieldPreviews(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, steps []deployStep, out, errout io.Writer) (bool, int) {
+	stop := func(i int, err error, older bool) (bool, int) {
+		code := reportDeployFieldError(errout, target, err, older)
+		printDeployBatchStop(errout, target, steps, i, 0)
+		return true, code
+	}
 	for i := range steps {
 		step := &steps[i]
 		if step.previewErr != "" {
@@ -207,7 +212,7 @@ func prepareBatchFieldPreviews(ctx context.Context, client *http.Client, target 
 		preview, older, err := requestDeployFieldPreview(ctx, client, target, &step.req, step.appliedID, step.tag, errout)
 		if err != nil && !errors.As(err, &step.diffBlockers) {
 			if !f.dry {
-				return true, reportDeployFieldError(errout, target, err, older)
+				return stop(i, err, older)
 			}
 			step.previewErr, step.previewOlder = err.Error(), older
 			continue
@@ -217,14 +222,14 @@ func prepareBatchFieldPreviews(ctx context.Context, client *http.Client, target 
 			continue
 		}
 		if preview.Base < 0 {
-			return true, reportDeployFieldError(errout, target, errDeployFieldUnavailable, false)
+			return stop(i, errDeployFieldUnavailable, false)
 		}
 		if len(step.diffBlockers) != 0 {
 			_, renderErr := renderDeployFieldPreview(out, target, step.app, preview, step.diffBlockers, false)
 			if renderErr != nil {
 				err = renderErr
 			}
-			return true, reportDeployFieldError(errout, target, err, false)
+			return stop(i, err, false)
 		}
 	}
 	if f.dry {
@@ -240,7 +245,7 @@ func prepareBatchFieldPreviews(ctx context.Context, client *http.Client, target 
 			err = showImagePlan(out, step.diffPreview.Plan, target.Token, false, heading)
 		}
 		if err != nil {
-			return true, reportDeployFieldError(errout, target, err, false)
+			return stop(i, err, false)
 		}
 	}
 	yes, err := confirmDeploy(ctx, os.Stdin, out)

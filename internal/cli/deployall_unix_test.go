@@ -119,7 +119,8 @@ func TestProtectedProjectDeployDiffReviewsOnce(t *testing.T) {
 					t.Errorf("stale held selection: %s", &errs)
 				}
 			case "blocked":
-				if strings.Count(transcript, reason) != 1 || strings.Contains(transcript, prompt) {
+				if strings.Count(transcript, reason) != 1 || strings.Contains(transcript, prompt) ||
+					!strings.Contains(errs.String(), "deploy stopped at zstack; not run: api, redis") {
 					t.Errorf("blocked preview: %q / %s", transcript, &errs)
 				}
 			}
