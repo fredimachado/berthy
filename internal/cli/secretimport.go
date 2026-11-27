@@ -27,8 +27,9 @@ const maxImportLine = api.MaxRequestBody
 var stdinTerminal = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // parseSecretLines reads the NAME=value lines of an import. The value is everything after the first =, with one trailing
-// carriage return removed. Blank lines and lines that start with # are skipped. A line without =, or whose name is not a
-// secret name, is refused by its line number. The line itself is never echoed, since it may hold a value.
+// carriage return removed. Blank lines and lines that start with # are skipped. A line without =, whose name is not a
+// secret name, or whose value is empty, is refused by its line number. The line itself is never echoed, since it may hold
+// a value.
 func parseSecretLines(r io.Reader) ([]api.SecretEntry, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxImportLine)
@@ -46,6 +47,9 @@ func parseSecretLines(r io.Reader) ([]api.SecretEntry, error) {
 		}
 		if err := api.CheckSecretName(name); err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
+		}
+		if value == "" {
+			return nil, fmt.Errorf("line %d: %s has no value", line, name)
 		}
 		entries = append(entries, api.SecretEntry{Name: name, Value: value})
 	}

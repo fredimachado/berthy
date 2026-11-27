@@ -79,7 +79,6 @@ func TestParseSecretLines(t *testing.T) {
 		{"equals signs in the value", "URL=postgres://u:p@h/db?x=1&y==2\n", []api.SecretEntry{{Name: "URL", Value: "postgres://u:p@h/db?x=1&y==2"}}},
 		{"one trailing carriage return is removed", "A=value\r\nB=x\r\n", []api.SecretEntry{{Name: "A", Value: "value"}, {Name: "B", Value: "x"}}},
 		{"a value keeps its spaces", "A= spaced value \n", []api.SecretEntry{{Name: "A", Value: " spaced value "}}},
-		{"an empty value", "A=\n", []api.SecretEntry{{Name: "A", Value: ""}}},
 		{"a last line without a newline", "A=1\nB=2", []api.SecretEntry{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}}},
 		{"nothing at all", "", nil},
 	} {
@@ -99,6 +98,7 @@ func TestParseSecretLinesRefusesALineByItsNumberAndNeverEchoesIt(t *testing.T) {
 		{"a name with a space", "OK=1\nBAD NAME=canary-value\n", "line 2: the name is not a valid secret name"},
 		{"the tunnel token", "TUNNEL_TOKEN=canary-value\n", "line 1: TUNNEL_TOKEN is reserved for managed ingress"},
 		{"an empty name", "A=1\n=canary-value\n", "line 2: the name is not a valid secret name"},
+		{"an empty value", "A=1\nNAME=\n", "line 2: NAME has no value"},
 		{"a line longer than a request", "A=" + strings.Repeat("x", 1<<20) + "\n", "line 1: longer than 1048576 bytes"},
 	} {
 		_, err := parseSecretLines(strings.NewReader(tc.input))
@@ -149,6 +149,41 @@ func TestSecretImportWithABadLineSendsNothing(t *testing.T) {
 	code := Run([]string{"secret", "import", "-e", "dev", "--config", cfg}, &out, &errout)
 	if code != 1 || errout.String() != "line 7: expected NAME=value\n" || len(bodies) != 0 {
 		t.Fatalf("exit %d stderr %q requests %q", code, errout.String(), bodies)
+	}
+}
+
+// TestSecretImportRefusesAnEmptyValue checks that a NAME= line is refused by its line number before anything is sent, and
+// that stderr names the secret without echoing any other line's value.
+func TestSecretImportRefusesAnEmptyValue(t *testing.T) {
+	const otherValue = "value-other-canary"
+	for _, tc := range []struct {
+		name, stdin, wantErr string
+	}{
+		{"alone", "NAME=\n", "line 1: NAME has no value"},
+		{"among valid lines", "OK=" + otherValue + "\nNAME=\nALSO=" + otherValue + "\n", "line 2: NAME has no value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []string
+			server := replyingAgent(&bodies, http.StatusOK, `{}`)
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			withStdin(t, tc.stdin)
+			var out, errout bytes.Buffer
+			code := Run([]string{"secret", "import", "-e", "dev", "--config", cfg}, &out, &errout)
+			if code != 1 {
+				t.Fatalf("exit %d, want 1: %s", code, errout.String())
+			}
+			if len(bodies) != 0 {
+				t.Fatalf("requests %q, want none", bodies)
+			}
+			errText := errout.String()
+			if !strings.Contains(errText, tc.wantErr) {
+				t.Fatalf("stderr %q, want %q", errText, tc.wantErr)
+			}
+			if strings.Contains(errText, otherValue) {
+				t.Fatalf("stderr %q, must not echo another line's value", errText)
+			}
+		})
 	}
 }
 
