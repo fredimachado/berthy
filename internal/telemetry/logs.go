@@ -176,7 +176,7 @@ func (l *Logs) send(batch []LogRecord) {
 
 // request builds the OTLP request that carries a batch.
 func (l *Logs) request(batch []LogRecord) *collogspb.ExportLogsServiceRequest {
-	host, _ := os.Hostname()
+	host, _ := os.Hostname() //nolint:errcheck // Hostname is optional metadata on the exported logs.
 	records := make([]*logspb.LogRecord, 0, len(batch))
 	for _, r := range batch {
 		ts := uint64(r.Time.UnixNano())
@@ -234,7 +234,7 @@ func (l *Logs) post(url string, headers map[string]string, req *collogspb.Export
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) //nolint:errcheck // Draining only permits connection reuse; the status determines export success.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("log export answered with status %d", resp.StatusCode)
 	}

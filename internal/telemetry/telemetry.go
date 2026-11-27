@@ -143,7 +143,7 @@ func (e *Exporter) start(ctx context.Context, cfg Config) (*pipeline, error) {
 	if err != nil {
 		return nil, errors.New("OTLP exporter could not be created")
 	}
-	host, _ := os.Hostname()
+	host, _ := os.Hostname() //nolint:errcheck // Hostname is optional metadata on the exported metrics.
 	res := resource.NewSchemaless(
 		attribute.String("service.name", serviceName),
 		attribute.String("deployment.environment.name", e.Env),
@@ -157,7 +157,7 @@ func (e *Exporter) start(ctx context.Context, cfg Config) (*pipeline, error) {
 	}, sdkmetric.WithInterval(e.exportInterval()), sdkmetric.WithTimeout(exportTimeout))
 	p.provider = sdkmetric.NewMeterProvider(sdkmetric.WithResource(res), sdkmetric.WithReader(reader))
 	if err := e.register(p.provider.Meter(meterName)); err != nil {
-		_ = p.provider.Shutdown(context.Background())
+		_ = p.provider.Shutdown(context.Background()) //nolint:errcheck // Registration already failed; shutdown only releases the incomplete pipeline.
 		return nil, errors.New("OTLP instruments could not be registered")
 	}
 	e.mu.Lock()
@@ -221,7 +221,7 @@ func (e *Exporter) stop(p *pipeline) {
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	_ = p.provider.Shutdown(ctx)
+	_ = p.provider.Shutdown(ctx) //nolint:errcheck // A stopped pipeline drops final export results, including shutdown errors.
 	if !wasLive {
 		return
 	}
