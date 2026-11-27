@@ -24,8 +24,9 @@ func Release() bool { return IsRelease(Version) }
 // IsRelease is true for a release version: one that starts with "v" and is not "dev".
 func IsRelease(v string) bool { return strings.HasPrefix(v, "v") && v != "dev" }
 
-// releasePattern is a release version: an optional "v", three numbers, and an optional pre-release.
-var releasePattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?$`)
+// releasePattern is a release version: an optional "v", three numbers, an optional pre-release, and an optional
+// build-metadata suffix (+...) that semver ignores for precedence.
+var releasePattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$`)
 
 // Compare compares two release versions, such as "v0.9.0", "0.9.0" or "v1.0.0-rc.1", by semantic versioning: the numbers of
 // the core in turn, then a pre-release before its release. Pre-release identifiers compare as numbers when both are numbers,

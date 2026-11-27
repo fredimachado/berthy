@@ -133,22 +133,26 @@ func (s *Session) source(arch string) (*binarySource, error) {
 		orUnknown(o.Build.OS), orUnknown(o.Build.Arch), arch)
 }
 
-// serverVersion is the version the agent binary on the server reports, or "" when it cannot say. It runs the installed binary's
-// version command, which only prints.
-func (s *Session) serverVersion(ctx context.Context) string {
+// serverVersion is the version the agent binary on the server reports, or "" when a completed probe reports none
+// (non-zero exit or unparsable output). A transport failure from Runner.Run is returned and not cached, so a later
+// connection cannot replace a newer agent after a failed probe.
+func (s *Session) serverVersion(ctx context.Context) (string, error) {
 	if s.serverVer != nil {
-		return *s.serverVer
+		return *s.serverVer, nil
+	}
+	res, err := s.R.Run(ctx, binPath+" version 2>/dev/null", nil)
+	if err != nil {
+		return "", fmt.Errorf("reading the agent version: %w", err)
 	}
 	v := ""
-	res, err := s.R.Run(ctx, binPath+" version 2>/dev/null", nil)
-	if err == nil && res.Code == 0 {
+	if res.Code == 0 {
 		// "berthy v1.2.0 linux/amd64"
 		if fields := strings.Fields(string(res.Stdout)); len(fields) >= 2 && fields[0] == "berthy" {
 			v = clean(fields[1])
 		}
 	}
 	s.serverVer = &v
-	return v
+	return v, nil
 }
 
 func shortSHA(sha string) string {
@@ -175,7 +179,11 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 		if src.local != "" {
 			same = f.BinSHA == src.sha
 		} else {
-			same = s.serverVersion(ctx) == src.version
+			server, err := s.serverVersion(ctx)
+			if err != nil {
+				return "", "", err
+			}
+			same = server == src.version
 		}
 		if same {
 			return StatusOK, installedText(src), nil
@@ -183,7 +191,10 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 		// --binary has no version and stays the explicit override; a non-release
 		// (dev) version on either side leaves Compare ok=false and skips this.
 		if src.version != "" {
-			server := s.serverVersion(ctx)
+			server, err := s.serverVersion(ctx)
+			if err != nil {
+				return "", "", err
+			}
 			if c, ok := version.Compare(server, src.version); ok && c > 0 {
 				return "", "", fmt.Errorf("the server runs berthy %s, newer than this CLI (%s): upgrade this CLI, or pass --binary to install another build", server, src.version)
 			}
