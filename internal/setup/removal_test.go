@@ -94,7 +94,9 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 	case strings.Contains(script, "network ls"):
 		return result(removalTestNetworkID + " alpha-dev\n")
 	case strings.Contains(script, "network inspect"):
-		return result(removalTestNetworkID + " alpha-dev swarm overlay true false\n")
+		return result(removalNetworkJSON(removalTestNetworkID, "{}"))
+	case strings.Contains(script, "container ls -aq"), strings.Contains(script, "service ls -q"):
+		return result("")
 	case strings.HasPrefix(script, "# write removal record\n"):
 		var rec removal
 		b := payload()

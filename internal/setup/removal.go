@@ -100,9 +100,17 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 	if err := requireNoAppliedApps(ctx, s.R, id, rec.StateDir); err != nil {
 		return "", "", err
 	}
-	rec.NetworkID, err = inspectRemovalNetwork(ctx, s.R, cfg.DockerSocket, rec.Network)
-	if err != nil {
-		return "", "", err
+	if rec.Network != "" {
+		docker, err := removalDockerCommand(ctx, s.R, cfg.DockerSocket, rec.Network)
+		if err != nil {
+			return "", "", err
+		}
+		network, err := inspectRemovalNetwork(ctx, s.R, docker, rec.Network, nil)
+		if err != nil {
+			return "", "", err
+		}
+		rec.NetworkID = network.id
+		s.removalNetwork = &network
 	}
 	if pending != nil && rec.NetworkID != pending.NetworkID {
 		return "", "", errors.New("the configured Docker network changed since this removal started")
