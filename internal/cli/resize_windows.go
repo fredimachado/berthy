@@ -37,5 +37,5 @@ func terminalResizes(ctx context.Context, fd uintptr) <-chan struct{} {
 	return events
 }
 
-// terminationSignals are the signals that end the CLI while the terminal is raw. Windows has SIGTERM for Notify's purposes only.
-var terminationSignals = []os.Signal{syscall.SIGTERM}
+// Windows provides SIGTERM through Notify for console close, logoff and shutdown.
+var terminationSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
