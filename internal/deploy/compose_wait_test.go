@@ -102,6 +102,34 @@ func TestParseComposePS(t *testing.T) {
 			t.Errorf("%q parsed", bad)
 		}
 	}
+	zero, three := 0, 3
+	for _, tt := range []struct {
+		name, field string
+		want        *int
+	}{
+		{"omitted", "", nil},
+		{"null", `,"ExitCode":null`, nil},
+		{"zero", `,"ExitCode":0`, &zero},
+		{"three", `,"ExitCode":3`, &three},
+	} {
+		const id = "bd1d07291e78b59bc4ebd04a5b7059c3c394111ed8f6022c35b2efef27aa70a6"
+		row := `{"ID":"` + id + `","Service":"job","State":"exited"` + tt.field + `}`
+		for name, input := range map[string]string{"lines": row + "\n", "array": "[" + row + "]"} {
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				got, err := parseComposePS([]byte(input))
+				if err != nil || len(got["job"]) != 1 {
+					t.Fatalf("got %+v, %v", got, err)
+				}
+				r := got["job"][0]
+				if r.ExitCode == nil && tt.want != nil || r.ExitCode != nil && (tt.want == nil || *r.ExitCode != *tt.want) {
+					t.Errorf("unexpected exit code in %+v", r)
+				}
+				if r.ContainerID != id {
+					t.Errorf("container ID %q, want %q", r.ContainerID, id)
+				}
+			})
+		}
+	}
 }
 
 // composeOutcome deploys composeFileOne with the polls of ps the test gives and returns the finished operation.

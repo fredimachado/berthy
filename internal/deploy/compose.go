@@ -946,10 +946,11 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 
 // composeContainer is one line of `compose ps --all --format json`, parsed where it enters.
 type composeContainer struct {
+	ID       string `json:"ID"`
 	Service  string `json:"Service"`
 	State    string `json:"State"`  // running, exited, created, restarting, paused, dead, removing
 	Health   string `json:"Health"` // "", starting, healthy, unhealthy
-	ExitCode int    `json:"ExitCode"`
+	ExitCode *int   `json:"ExitCode"`
 }
 
 // parseComposePS parses the output of `compose ps --all --format json`. Compose prints one JSON object per line; older
@@ -978,13 +979,12 @@ func parseComposePS(out []byte) (map[string][]api.Replica, error) {
 		if c.Service == "" {
 			return nil, errors.New("compose ps container has no service")
 		}
-		r := api.Replica{State: c.State, Health: c.Health}
+		r := api.Replica{ContainerID: c.ID, State: c.State, Health: c.Health}
 		if r.Health == "" {
 			r.Health = "none"
 		}
 		if c.State == "exited" {
-			code := c.ExitCode
-			r.ExitCode = &code
+			r.ExitCode = c.ExitCode
 		}
 		services[c.Service] = append(services[c.Service], r)
 	}
@@ -1038,7 +1038,7 @@ func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadl
 		if !pollStarted.Before(deadline) || wctx.Err() != nil {
 			break
 		}
-		out, _, err := c.Compose.Run(wctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
+		out, _, err := c.Compose.Run(wctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--no-trunc", "--format", "json"}})
 		if wctx.Err() != nil {
 			break
 		}

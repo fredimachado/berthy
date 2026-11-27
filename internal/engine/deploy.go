@@ -53,10 +53,11 @@ type Image struct {
 	Healthcheck json.RawMessage
 }
 type ContainerSnapshot struct {
-	ID, ImageID, State, StartedAt string
-	Labels                        map[string]string
-	Running                       bool
-	ExitCode                      int
+	ID, ImageID, State, StartedAt, Health string
+	Labels                                map[string]string
+	Running                               bool
+	ExitCode, RestartCount                *int
+	FinishedAt                            *time.Time
 }
 type ExecResult struct {
 	Output   []byte
@@ -337,16 +338,30 @@ func (e *Engine) InspectContainer(ctx context.Context, id string) (ContainerSnap
 		return ContainerSnapshot{}, err
 	}
 	var x struct {
-		ID, Image string
-		Config    struct{ Labels map[string]string }
-		State     struct {
+		ID, Image    string
+		RestartCount *int
+		Config       struct{ Labels map[string]string }
+		State        struct {
 			Status, StartedAt string
 			Running           bool
-			ExitCode          int
+			ExitCode          *int
+			FinishedAt        *time.Time
+			Health            *struct{ Status string }
 		}
 	}
-	err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x)
-	return ContainerSnapshot{ID: x.ID, ImageID: x.Image, Labels: x.Config.Labels, State: x.State.Status, StartedAt: x.State.StartedAt, Running: x.State.Running, ExitCode: x.State.ExitCode}, err
+	if err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x); err != nil {
+		return ContainerSnapshot{}, err
+	}
+	health := ""
+	if x.State.Health != nil {
+		health = x.State.Health.Status
+	} else if x.State.Running {
+		health = "none"
+	}
+	return ContainerSnapshot{
+		ID: x.ID, ImageID: x.Image, Labels: x.Config.Labels, State: x.State.Status, Running: x.State.Running,
+		StartedAt: x.State.StartedAt, FinishedAt: x.State.FinishedAt, ExitCode: x.State.ExitCode, RestartCount: x.RestartCount, Health: health,
+	}, nil
 }
 func (e *Engine) InspectContainerHealth(ctx context.Context, id string) (string, error) {
 	p, err := pathID(id)
