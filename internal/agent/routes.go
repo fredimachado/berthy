@@ -69,6 +69,9 @@ type readRouteBody[T any] func() (T, error)
 
 func jsonRoute[T any](row envRoute, endpoint func(*routeRuntime, routeCall, readRouteBody[T])) envRoute {
 	row.body = reflect.TypeFor[T]()
+	if endpoint == nil {
+		return row
+	}
 	row.handle = func(rt *routeRuntime, call routeCall) {
 		endpoint(rt, call, func() (T, error) {
 			var value T
