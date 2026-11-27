@@ -3,6 +3,7 @@ package strictjson
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -263,26 +264,30 @@ func TestUnmarshalRefusesAnEmbeddedStruct(t *testing.T) {
 	}
 }
 
+// validBodies are the destinations the agent decodes bodies into, with a body each accepts. The deploy and session
+// requests are the real ones; the others stand for opaque and custom values.
+var validBodies = []struct {
+	name, body string
+	newValue   func() any
+}{
+	{"deploy", `{"app":"api","version":"v1","commit":"c","request_id":"r","manifest":{"project":"demo","network":"overlay","protected":true,"apps":{"api":{"kind":"image","env":{"secret":["PASSWORD",{"TOKEN":"API_TOKEN"}]}}},"backups":{"db":{"retention":{"keep":7}}}}}`, func() any { return &deploy.Request{} }},
+	{"session", `{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"Rows":24,"Cols":80}}`, func() any { return &session.Request{} }},
+	{"opaque", `{"raw":{"Arbitrary":true},"custom":{"value":"x"},"any":{"Case":2}}`, func() any {
+		return &struct {
+			Raw    json.RawMessage `json:"raw"`
+			Custom customJSON      `json:"custom"`
+			Any    any             `json:"any"`
+		}{}
+	}},
+	{"text", `{"value":"hello"}`, func() any {
+		return &struct {
+			Value customText `json:"value"`
+		}{}
+	}},
+}
+
 func TestUnmarshalDecodesWhatEncodingJSONDecodes(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		newValue   func() any
-	}{
-		{"deploy", `{"app":"api","version":"v1","commit":"c","request_id":"r","manifest":{"project":"demo","network":"overlay","protected":true,"apps":{"api":{"kind":"image","env":{"secret":["PASSWORD",{"TOKEN":"API_TOKEN"}]}}},"backups":{"db":{"retention":{"keep":7}}}}}`, func() any { return &deploy.Request{} }},
-		{"session", `{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"Rows":24,"Cols":80}}`, func() any { return &session.Request{} }},
-		{"opaque", `{"raw":{"Arbitrary":true},"custom":{"value":"x"},"any":{"Case":2}}`, func() any {
-			return &struct {
-				Raw    json.RawMessage `json:"raw"`
-				Custom customJSON      `json:"custom"`
-				Any    any             `json:"any"`
-			}{}
-		}},
-		{"text", `{"value":"hello"}`, func() any {
-			return &struct {
-				Value customText `json:"value"`
-			}{}
-		}},
-	} {
+	for _, tc := range validBodies {
 		t.Run(tc.name, func(t *testing.T) {
 			want, got := tc.newValue(), tc.newValue()
 			if err := json.Unmarshal([]byte(tc.body), want); err != nil {
@@ -321,4 +326,147 @@ func TestUnmarshalErrorsNameKeysNotValues(t *testing.T) {
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "outer") || !strings.Contains(err.Error(), "number") || strings.Contains(err.Error(), "private-value") {
 		t.Fatalf("type error lacks a safe key path: %v", err)
 	}
+}
+
+// bodyShapes are the destinations FuzzStrictRequestBody selects from: those of validBodies, then a map, a list and any.
+func bodyShapes() []func() any {
+	var shapes []func() any
+	for _, c := range validBodies {
+		shapes = append(shapes, c.newValue)
+	}
+	return append(shapes,
+		func() any {
+			return &map[string]struct {
+				Value int `json:"value"`
+			}{}
+		},
+		func() any {
+			return &[]struct {
+				A int `json:"a"`
+			}{}
+		},
+		func() any { return new(any) },
+	)
+}
+
+// isStrictError reports whether err wraps one of the exported errors, as every refusal does.
+func isStrictError(err error) bool {
+	for _, e := range []error{ErrInvalid, ErrNotObject, ErrRepeatedKey, ErrUnknownKey, ErrEmbedded} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkStrictControls runs the fixed cases of a request body: what is accepted, and what must be refused, for the two
+// request types the agent decodes. It fails a decoder that accepts everything or refuses everything.
+func checkStrictControls(t *testing.T) {
+	t.Helper()
+	for _, c := range validBodies {
+		got, want := c.newValue(), c.newValue()
+		if err := json.Unmarshal([]byte(c.body), want); err != nil {
+			t.Fatal(err)
+		}
+		if err := Unmarshal([]byte(c.body), got); err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("valid %s body: %v", c.name, err)
+		}
+	}
+	for _, r := range []struct {
+		newValue func() any
+		key      string
+	}{
+		{func() any { return &deploy.Request{} }, "app"},
+		{func() any { return &session.Request{} }, "kind"},
+	} {
+		wrongCase := strings.ToUpper(r.key[:1]) + r.key[1:]
+		escaped := fmt.Sprintf(`\u%04x`, r.key[0]) + r.key[1:]
+		for _, c := range []struct {
+			body string
+			want error
+		}{
+			{`{"` + r.key + `":"x","` + r.key + `":"y"}`, ErrRepeatedKey},
+			{`{"` + r.key + `":"x","` + escaped + `":"y"}`, ErrRepeatedKey},
+			{`{"` + wrongCase + `":"x"}`, ErrUnknownKey},
+			{`[]`, ErrNotObject}, {`"x"`, ErrNotObject}, {`null`, ErrNotObject}, {`1`, ErrNotObject},
+			{`{} {}`, ErrInvalid}, {`{"` + r.key + `":"x"} 1`, ErrInvalid}, {`{"` + r.key + `":`, ErrInvalid},
+		} {
+			if err := Unmarshal([]byte(c.body), r.newValue()); !errors.Is(err, c.want) {
+				t.Fatalf("%T %s: got %v, want %v", r.newValue(), c.body, err, c.want)
+			}
+		}
+	}
+	// The wire accepts every well-formed session request, and Check decides separately whether it is a good one.
+	for _, c := range []struct {
+		body        string
+		wire, check bool
+	}{
+		{`{"kind":"exec","app":"web","command":["sh"]}`, true, true},
+		{`{"kind":"run","app":"web","role":"w","command":["sh"],"timeout":"5m"}`, true, true},
+		{`{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"Rows":24,"Cols":80}}`, true, true},
+		{`{"kind":"attach","app":"web","command":["sh"]}`, true, false},
+		{`{"kind":"exec","app":"web","command":["sh"],"size":{"Rows":24,"Cols":80}}`, true, false},
+		{`{"kind":"exec","app":"web","command":[""]}`, true, false},
+		{`{"kind":"exec","app":"web","command":["s\u0000h"]}`, true, false},
+		{`{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"Rows":1001,"Cols":80}}`, true, false},
+		{`{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"Rows":70000,"Cols":80}}`, false, false},
+		{`{"kind":"exec","app":"web","command":["sh"],"tty":true,"size":{"rows":24,"Cols":80}}`, false, false},
+	} {
+		var r session.Request
+		err := Unmarshal([]byte(c.body), &r)
+		if (err == nil) != c.wire {
+			t.Fatalf("%s: wire error %v, want accepted %v", c.body, err, c.wire)
+		}
+		if err == nil && (r.Check() == nil) != c.check {
+			t.Fatalf("%s: Check %v, want ok %v", c.body, r.Check(), c.check)
+		}
+	}
+}
+
+func FuzzStrictRequestBody(f *testing.F) {
+	for i, c := range validBodies {
+		f.Add(uint8(i), []byte(c.body))
+	}
+	deep := strings.Repeat(`{"d":`, 100) + "0" + strings.Repeat("}", 100)
+	var wide strings.Builder
+	wide.WriteByte('{')
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&wide, `"key%d":0,`, i)
+	}
+	wide.WriteString(`"last":0}`)
+	anyShape := uint8(len(validBodies) + 2)
+	f.Add(anyShape, []byte(deep))
+	f.Add(anyShape, []byte(wide.String()))
+	f.Add(uint8(len(validBodies)), []byte(`{"a":{"value":1},"A":{"value":2}}`))
+	f.Add(uint8(len(validBodies)+1), []byte(`[{"a":1},{"a":2}]`))
+	for shape := range bodyShapes() {
+		for _, body := range []string{
+			`{"a":1,"a":2}`, `{"a":1,"\u0061":2}`, `{"A":1}`, `{"DRY_RUN":1}`, `{"app":"x","app":"y"}`, `{"kind":"exec","Kind":"run"}`,
+			`null`, `[]`, `"x"`, `1`, ``, `{} {}`, `{"a":`, `{"raw":[{"a":1,"a":2}]}`, `{"custom":{"value":"a","value":"b"}}`,
+			`{"manifest":{"apps":{"api":{"kind":"image","kind":"image"}}}}`,
+		} {
+			f.Add(uint8(shape), []byte(body))
+		}
+	}
+	shapes := bodyShapes()
+	f.Fuzz(func(t *testing.T, shape uint8, body []byte) {
+		checkStrictControls(t)
+		got, want := shapes[int(shape)%len(shapes)](), shapes[int(shape)%len(shapes)]()
+		err := Unmarshal(body, got)
+		if err != nil {
+			if !isStrictError(err) {
+				t.Fatalf("refusal wraps no exported error: %v", err)
+			}
+			return
+		}
+		if err := json.Unmarshal(body, want); err != nil {
+			t.Fatalf("accepted a body encoding/json refuses: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("decoded %#v, encoding/json decoded %#v", got, want)
+		}
+		if r, ok := got.(*session.Request); ok {
+			_ = r.Check() // a decoded request is checked where it is used; the check must not panic
+		}
+	})
 }

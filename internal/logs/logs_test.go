@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
+	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,4 +116,77 @@ func TestTailBoundsEncodedJSON(t *testing.T) {
 	if _, err := Tail(context.Background(), f, []Identity{{ContainerID: "a"}}, Options{Tail: 8}); err == nil {
 		t.Fatal("escaped JSON exceeds limit")
 	}
+}
+
+func TestLogFrameMissingEntirePayload(t *testing.T) {
+	wire := frame(1, "x")[:8]
+	err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(Record) error { return nil })
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("missing payload: %v", err)
+	}
+}
+
+func TestLogFrameAllocationTracksInput(t *testing.T) {
+	for _, size := range []int{0, 64, 4096, MaxFrameBytes} {
+		wire := []byte(frame(1, strings.Repeat("x", size)))
+		for _, input := range [][]byte{wire, wire[:8]} {
+			r := bytes.NewReader(input)
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			_ = decode(r, false, Identity{}, Options{}, func(Record) error { return nil })
+			runtime.ReadMemStats(&after)
+			allocated := after.TotalAlloc - before.TotalAlloc
+			limit := uint64(16384 + 12*len(input))
+			if allocated > limit {
+				t.Errorf("input %d declared %d: allocated %d, limit %d", len(input), size, allocated, limit)
+			}
+		}
+	}
+}
+
+func FuzzMultiplexedLogs(f *testing.F) {
+	for _, wire := range []string{
+		"", frame(1, ""), frame(1, "2026-01-01T00:00:01Z hello\n"),
+		frame(1, "2026-01-01T00:00:") + frame(2, "2026-01-01T00:00:02Z err\n") + frame(1, "01Z out\n"),
+		frame(1, "2026-01-01T00:00:01Z final"), frame(1, "x")[:8],
+		string([]byte{3, 0, 0, 0, 0, 0, 0, 0}), string([]byte{1, 1, 0, 0, 0, 0, 0, 0}),
+		string([]byte{1, 0, 0, 0, 0, 16, 0, 1}),
+	} {
+		f.Add([]byte(wire), uint32(8))
+	}
+	f.Fuzz(func(t *testing.T, wire []byte, cut uint32) {
+		id := Identity{Role: "web", Replica: "2", ContainerID: "container"}
+		emit := func(Record) error { return nil }
+		_ = decode(bytes.NewReader(wire), false, id, Options{}, emit)
+		message := hex.EncodeToString(wire[:min(len(wire), 128)])
+		line := "2026-01-01T00:00:01Z " + message
+		split := int(cut % uint32(len(line)+1))
+		other := "2026-01-01T00:00:02Z other\n"
+		combined := frame(1, "") + frame(1, line[:split]) + frame(2, other) + frame(1, line[split:])
+		var got []Record
+		err := decode(strings.NewReader(combined), false, id, Options{}, func(r Record) error { got = append(got, r); return nil })
+		want := []Record{
+			{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 2, 0, time.UTC), Stream: "stderr", Message: "other"},
+			{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: message},
+		}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("records: %+v, error: %v", got, err)
+		}
+		valid := frame(1, "2026-01-01T00:00:01Z hello\n")
+		n := int(cut % uint32(len(valid)+1))
+		err = decode(strings.NewReader(valid[:n]), false, id, Options{}, emit)
+		if n == 0 || n == len(valid) {
+			if err != nil {
+				t.Fatalf("complete stream: %v", err)
+			}
+		} else if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("cut %d: %v", n, err)
+		}
+		for _, bad := range [][]byte{{3, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 0, 0, 0, 0, 0, 0}, {1, 0, 0, 0, 0, 16, 0, 1}} {
+			if err := decode(bytes.NewReader(bad), false, id, Options{}, emit); err == nil {
+				t.Fatal("invalid header accepted")
+			}
+		}
+	})
 }

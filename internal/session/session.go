@@ -70,12 +70,12 @@ func ReadFrame(r io.Reader) (Kind, []byte, error) {
 	if n > MaxPayload {
 		return 0, nil, fmt.Errorf("session frame payload of %d bytes is over the limit", n)
 	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
+	payload, err := io.ReadAll(io.LimitReader(r, int64(n)))
+	if err != nil {
 		return 0, nil, err
+	}
+	if len(payload) != int(n) {
+		return 0, nil, io.ErrUnexpectedEOF
 	}
 	return k, payload, nil
 }

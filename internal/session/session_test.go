@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"runtime"
@@ -249,6 +250,98 @@ func TestRequestCheck(t *testing.T) {
 		tc.edit(&r)
 		if err := r.Check(); (err == nil) != tc.ok {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func FuzzSessionFrame(f *testing.F) {
+	var all bytes.Buffer
+	for k := Stdin; k <= Failure; k++ {
+		var b bytes.Buffer
+		if err := WriteFrame(&b, k, []byte{0, 255, 'x'}); err != nil {
+			f.Fatal(err)
+		}
+		f.Add(b.Bytes())
+		if err := WriteFrame(&all, k, nil); err != nil {
+			f.Fatal(err)
+		}
+	}
+	f.Add(all.Bytes())
+	var full bytes.Buffer
+	if err := WriteFrame(&full, Stdin, bytes.Repeat([]byte{'a'}, MaxPayload)); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(full.Bytes())
+	for _, b := range [][]byte{nil, {4}, {4, 0, 0, 0}, {4, 0, 0, 0, 2, 'a'}, {0, 0, 0, 0, 0}, {8, 0, 0, 0, 0}, {1, 0, 1, 0, 1}} {
+		f.Add(b)
+	}
+	f.Fuzz(func(t *testing.T, wire []byte) {
+		for _, fragmented := range []bool{false, true} {
+			base := bytes.NewReader(wire)
+			var r io.Reader = base
+			if fragmented {
+				r = iotest.OneByteReader(base)
+			}
+			for {
+				remaining := wire[len(wire)-base.Len():]
+				before := base.Len()
+				k, payload, err := ReadFrame(r)
+				if len(remaining) == 0 {
+					if err != io.EOF {
+						t.Fatalf("end: %v", err)
+					}
+					break
+				}
+				if len(remaining) < headerSize {
+					if !errors.Is(err, io.ErrUnexpectedEOF) {
+						t.Fatalf("header: %v", err)
+					}
+					break
+				}
+				n := binary.BigEndian.Uint32(remaining[1:5])
+				if remaining[0] < byte(Stdin) || remaining[0] > byte(Failure) || n > MaxPayload {
+					if err == nil {
+						t.Fatal("invalid header accepted")
+					}
+					break
+				}
+				if uint64(n) > uint64(len(remaining)-headerSize) {
+					if !errors.Is(err, io.ErrUnexpectedEOF) {
+						t.Fatalf("payload: %v", err)
+					}
+					break
+				}
+				size := headerSize + int(n)
+				if err != nil || k != Kind(remaining[0]) || !bytes.Equal(payload, remaining[headerSize:size]) || before-base.Len() != size {
+					t.Fatalf("frame mismatch: kind %d error %v", k, err)
+				}
+				var out bytes.Buffer
+				if err := WriteFrame(&out, k, payload); err != nil || !bytes.Equal(out.Bytes(), remaining[:size]) {
+					t.Fatalf("round trip: %v", err)
+				}
+			}
+		}
+	})
+}
+
+func TestReadFrameAllocationTracksInput(t *testing.T) {
+	for _, size := range []int{0, 64, 4096, MaxPayload} {
+		var full bytes.Buffer
+		if err := WriteFrame(&full, Stdin, bytes.Repeat([]byte{'x'}, size)); err != nil {
+			t.Fatal(err)
+		}
+		for _, wire := range [][]byte{full.Bytes(), full.Bytes()[:headerSize]} {
+			r := bytes.NewReader(wire)
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			_, _, _ = ReadFrame(r)
+			runtime.ReadMemStats(&after)
+			allocated := after.TotalAlloc - before.TotalAlloc
+			limit := uint64(8192 + 8*len(wire))
+			if allocated > limit {
+				t.Errorf("input %d declared %d: allocated %d, limit %d", len(wire), size, allocated, limit)
+			}
 		}
 	}
 }
