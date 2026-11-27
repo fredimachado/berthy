@@ -73,508 +73,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 	gate := &approvalGate{c: c, d: d, tokens: tokens}
 	rt := &routeRuntime{c: c, e: e, collector: col, d: d, tel: tel, sched: sched, backups: backups,
 		lim: lim, keep: keep, tokens: tokens, gate: gate}
-	// serve carries out a request that is authenticated, in scope and not held for approval.
-	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
-		ctx := r.Context()
-		sa := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
-		switch {
-		case len(rest) == 2 && rest[0] == "images":
-			serveImageLookup(w, r, d, rest[1])
-		case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
-			var req deploy.Request
-			if err := decodeBody(w, r, &req); err != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			if rest[0] == "deploys" {
-				req.Kind = "deploy"
-			} else {
-				req.Kind = rest[0]
-			}
-			if (req.Adopt || req.RevertSchema || req.ReplaceExisting || req.AllowRecreate) && !actor.Admin {
-				writeError(w, 403, "forbidden", "forbidden")
-				return
-			}
-			if req.DryRun {
-				plan, err := d.Plan(ctx, actor, req)
-				if err != nil {
-					operationError(w, err)
-					return
-				}
-				if req.Kind == "deploy" && !planning(r) && r.URL.Query().Get("diff") == "fields" {
-					writeDeployFieldPreview(w, plan)
-					return
-				}
-				json.NewEncoder(w).Encode(plan)
-				return
-			}
-			op, _, err := d.Admit(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			path := apiPrefix(c) + "operations/" + op.ID + "/events"
-			w.Header().Set("Location", path)
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-		case len(rest) == 1 && rest[0] == "apply":
-			var req deploy.ApplyRequest
-			if err := decodeBody(w, r, &req); err != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			result, err := d.ApplySettings(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(result)
-		case len(rest) == 1 && rest[0] == "restore":
-			var body restoreBody
-			if err := decodeBody(w, r, &body); err != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, App: body.App, Service: body.Service, Role: body.Role,
-				Command: body.Command, Timeout: body.Timeout, DryRun: body.DryRun, RequestID: body.RequestID}
-			if req.DryRun {
-				plan, err := d.Plan(ctx, actor, req)
-				if err != nil {
-					operationError(w, err)
-					return
-				}
-				json.NewEncoder(w).Encode(plan)
-				return
-			}
-			if req.RequestID == "" {
-				var random [16]byte
-				if _, err := rand.Read(random[:]); err != nil {
-					writeError(w, 503, "unavailable", "operation unavailable")
-					return
-				}
-				req.RequestID = hex.EncodeToString(random[:])
-			}
-			op, _, err := d.Admit(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			path := apiPrefix(c) + "operations/" + op.ID + "/events"
-			w.Header().Set("Location", path)
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
-			var req deploy.Request
-			if err := decodeBody(w, r, &req); err != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			req.Kind = "ingress"
-			req.App = manifest.ConnectorAppName
-			if req.ReplaceExisting && !actor.Admin {
-				writeError(w, 403, "forbidden", "forbidden")
-				return
-			}
-			if req.DryRun {
-				plan, err := d.Plan(ctx, actor, req)
-				if err != nil {
-					operationError(w, err)
-					return
-				}
-				json.NewEncoder(w).Encode(plan)
-				return
-			}
-			op, _, err := d.Admit(ctx, actor, req)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			path := apiPrefix(c) + "operations/" + op.ID + "/events"
-			w.Header().Set("Location", path)
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
-		case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
-			status, err := d.IngressStatus(ctx)
-			if err != nil {
-				writeError(w, 503, "unavailable", "ingress status unavailable")
-				return
-			}
-			json.NewEncoder(w).Encode(status)
-		case rest[0] == "operations" && len(rest) == 2:
-			op, err := d.Store.Operation(ctx, rest[1])
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(publicOperation(op))
-		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "output":
-			op, err := d.Store.Operation(ctx, rest[1])
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			if op.Kind != "exec" && op.Kind != "run" {
-				writeError(w, 404, "not_found", "not found")
-				return
-			}
-			intents, err := d.Store.Intents(ctx, op.ID)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			for _, i := range intents {
-				if i.Kind == "exec" && i.Phase == "finished" {
-					var output struct {
-						Output   string `json:"output"`
-						ExitCode int    `json:"exit_code"`
-					}
-					if json.Unmarshal(i.Receipt, &output) != nil {
-						writeError(w, 503, "unavailable", "output unavailable")
-						return
-					}
-					json.NewEncoder(w).Encode(output)
-					return
-				}
-			}
-			writeError(w, 404, "not_found", "output unavailable")
-		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "diagnostics":
-			op, err := d.Store.Operation(ctx, rest[1])
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			items, err := d.Store.Diagnostics(ctx, op.ID)
-			if err != nil {
-				writeError(w, 503, "unavailable", "diagnostics unavailable")
-				return
-			}
-			if len(items) == 0 {
-				writeError(w, 404, "not_found", "no diagnostics for this operation")
-				return
-			}
-			json.NewEncoder(w).Encode(struct {
-				OperationID string            `json:"operation_id"`
-				Reason      string            `json:"reason"`
-				Diagnostics []json.RawMessage `json:"diagnostics"`
-			}{op.ID, safeReason(op.Reason), items})
-		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
-			var req resolveBody
-			if decodeBody(w, r, &req) != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			if !validReason(req.Reason) {
-				writeError(w, 400, "bad_request", "reason required")
-				return
-			}
-			report, err := d.ResolveRecovery(ctx, actor, rest[1], req.Reason, req.DryRun)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(report)
-		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "cancel":
-			var req dryRunBody
-			// A cancel needs nothing but the operation, so a request with no body is a cancel.
-			if err := decodeOptionalBody(w, r, &req); err != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			plan, err := d.Cancel(ctx, actor, rest[1], req.DryRun)
-			var refused deploy.CancelRefused
-			if errors.As(err, &refused) {
-				writeError(w, 409, "cancel_refused", string(refused))
-				return
-			}
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(plan)
-		case rest[0] == "operations":
-			streamOperation(w, r, d.Store, rest[1], lim)
-		case rest[0] == "wait":
-			timeout := 2 * time.Minute
-			if raw := r.URL.Query().Get("timeout"); raw != "" {
-				var err error
-				timeout, err = time.ParseDuration(raw)
-				if err != nil || timeout <= 0 || timeout > 10*time.Minute {
-					writeError(w, 400, "bad_request", "invalid wait timeout")
-					return
-				}
-			}
-			waitCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			if err := d.Wait(waitCtx, rest[1], r.URL.Query().Get("role")); err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
-		case rest[0] == "applied":
-			// The release the app runs now: berthy deploy asks before it deploys an app that keeps its version.
-			release, err := d.Store.Applied(ctx, rest[1])
-			if errors.Is(err, sql.ErrNoRows) {
-				// A distinct code, so a client never takes the 404 of an agent without this route for an app that was never deployed.
-				writeError(w, 404, "not_deployed", "app is not deployed")
-				return
-			}
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			row := map[string]any{"id": release.ID, "digest": release.Digest}
-			if release.Tag != "" {
-				row["tag"] = release.Tag
-			}
-			json.NewEncoder(w).Encode(row)
-		case len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
-			// What release `release` of the app changes compared with release `base`, or with the release before it.
-			id, base, ok := historyDiffIDs(r.URL.Query())
-			if !ok {
-				writeError(w, 400, "bad_request", "release and base must be release numbers")
-				return
-			}
-			diff, err := d.DiffReleases(ctx, rest[1], id, base)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(diff)
-		case rest[0] == "history":
-			rows, err := d.Store.History(ctx, rest[1])
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			out := make([]map[string]any, 0, len(rows))
-			for _, r := range rows {
-				out = append(out, publicRelease(r))
-			}
-			failures, err := d.Store.DeployHistory(ctx, rest[1])
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			for _, op := range failures {
-				row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
-				if op.Tag != "" {
-					row["tag"] = op.Tag
-				}
-				if reason := safeReason(op.Reason); reason != "" {
-					row["reason"] = reason
-				}
-				if op.Modified {
-					row["modified"] = true
-				}
-				addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
-				out = append(out, row)
-			}
-			sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
-			json.NewEncoder(w).Encode(out)
-		case rest[0] == "audit":
-			rows, err := d.Store.AuditLog(ctx, 100)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			out := make([]map[string]any, 0, len(rows))
-			for _, a := range rows {
-				row := map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time}
-				if a.Tag != "" {
-					row["tag"] = a.Tag
-				}
-				out = append(out, row)
-			}
-			json.NewEncoder(w).Encode(out)
-		case len(rest) == 1 && rest[0] == "lock":
-			l, err := d.Store.Lock(ctx)
-			if errors.Is(err, sql.ErrNoRows) {
-				json.NewEncoder(w).Encode(map[string]bool{"locked": false})
-				return
-			}
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
-		case rest[0] == "lock":
-			var req lockBody
-			if decodeBody(w, r, &req) != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			if req.DryRun {
-				_, lockErr := d.Store.Lock(ctx)
-				if lockErr != nil && !errors.Is(lockErr, sql.ErrNoRows) {
-					operationError(w, lockErr)
-					return
-				}
-				plan := map[string]any{"action": "lock " + rest[1], "currently_locked": lockErr == nil}
-				if req.Message != "" {
-					plan["message"] = req.Message
-				}
-				json.NewEncoder(w).Encode(plan)
-				return
-			}
-			var err error
-			if rest[1] == "acquire" {
-				err = d.Store.AcquireManual(ctx, sa, actor.Name, req.Message)
-			} else {
-				err = d.Store.ReleaseManual(ctx, sa)
-			}
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && r.Method == "POST":
-			serveSecretImport(w, r, d, sa)
-		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && r.Method == "POST":
-			serveSecretGenerate(w, r, d, sa)
-		case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && r.Method == "POST":
-			serveSecretsGenerateDeclared(w, r, d, sa)
-		case rest[0] == "secrets" && r.Method == "GET":
-			rows, err := d.Store.Secrets(ctx)
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			out := make([]map[string]string, 0, len(rows))
-			for _, v := range rows {
-				out = append(out, map[string]string{"name": v.Name, "registry": v.Registry})
-			}
-			json.NewEncoder(w).Encode(out)
-		case rest[0] == "secrets":
-			var req secretBody
-			if decodeBody(w, r, &req) != nil {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-			if len(rest) == 2 {
-				req.Name = rest[1]
-			}
-			if req.Name == "" {
-				writeError(w, 400, "bad_request", "name required")
-				return
-			}
-			if req.Name == manifest.TunnelTokenSecret {
-				writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
-				return
-			}
-			// A set that names no registry keeps the one the stored secret has, so rotating a registry password does not turn
-			// it into a plain secret.
-			exists := false
-			if req.DryRun || (r.Method != "DELETE" && req.Registry == "") {
-				stored, listErr := d.Store.Secrets(ctx)
-				if listErr != nil {
-					operationError(w, listErr)
-					return
-				}
-				for _, info := range stored {
-					if info.Name == req.Name {
-						exists = true
-						if r.Method != "DELETE" && req.Registry == "" {
-							req.Registry = info.Registry
-						}
-					}
-				}
-			}
-			if req.DryRun {
-				plan := map[string]any{"action": "secret set", "name": req.Name, "exists": exists}
-				if r.Method == "DELETE" {
-					plan["action"] = "secret delete"
-				} else {
-					plan["registry"] = req.Registry
-					if req.Registry != "" {
-						if names, listErr := d.RegistryServices(ctx, req.Registry); listErr != nil {
-							plan["services_error"] = listErr.Error()
-						} else {
-							plan["services"] = append([]string{}, names...)
-						}
-					}
-				}
-				json.NewEncoder(w).Encode(plan)
-				return
-			}
-			var err error
-			if r.Method == "DELETE" {
-				err = d.Store.DeleteSecret(ctx, sa, req.Name)
-			} else {
-				err = d.Store.PutSecret(ctx, sa, state.SecretInfo{Name: req.Name, Registry: req.Registry}, []byte(req.Value))
-			}
-			if err != nil {
-				operationError(w, err)
-				return
-			}
-			if r.Method == "DELETE" || req.Registry == "" {
-				json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-				return
-			}
-			// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
-			answer := map[string]any{"ok": true, "registry": req.Registry}
-			refreshed, refreshErr := d.RefreshRegistryAuth(ctx, req.Registry)
-			outcome := "succeeded"
-			if refreshErr != nil {
-				answer["services_error"] = refreshErr.Error()
-				outcome = "failed"
-			} else {
-				answer["services"] = append([]deploy.RegistryRefresh{}, refreshed...)
-				for _, s := range refreshed {
-					if !s.Updated {
-						outcome = "failed"
-					}
-				}
-			}
-			if refreshErr != nil || len(refreshed) > 0 {
-				d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
-			}
-			json.NewEncoder(w).Encode(answer)
-		case rest[0] == "tokens":
-			serveTokens(w, r, rest, c, d.Store, tokens, sa)
-		case rest[0] == "jobs":
-			serveJobs(w, r, rest, d, sched, sa)
-		case rest[0] == "backups":
-			serveBackups(w, r, rest, d, backups, sa)
-		case rest[0] == "state-backup":
-			serveStateBackup(w, r, rest, d, backups, sa)
-		case isKeyRotation(rest):
-			serveKeyRotate(w, r, d, sa)
-		case len(rest) == 1 && rest[0] == "checks":
-			rows, err := d.Store.Checks(ctx)
-			if err != nil {
-				writeError(w, 503, "state_unavailable", "state unavailable")
-				return
-			}
-			out := make([]map[string]any, 0, len(rows))
-			for _, row := range rows {
-				out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
-			}
-			json.NewEncoder(w).Encode(out)
-		case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-			results, sendErr := sendTestAlert(ctx, c, d.Store)
-			outcome := "succeeded"
-			if sendErr != nil {
-				outcome = "failed"
-			}
-			for _, res := range results {
-				if !res.OK {
-					outcome = "failed"
-				}
-			}
-			if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
-				writeError(w, 503, "state_unavailable", "state unavailable")
-				return
-			}
-			if sendErr != nil {
-				alertError(w, sendErr)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
-		default:
-			writeError(w, 501, "unavailable", "operation unavailable")
-		}
-	}
-	gate.serve = serve
+	gate.serve = rt.serveOrdinary
 	// The handler sees the path after the environment, as mount gives it.
 	return serveAPI(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
@@ -614,16 +113,13 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
 		}
-		if rest[0] == "approvals" {
-			gate.serveApprovals(w, r, actor, scope, rest)
-			return
-		}
-		if rest[0] == "sessions" {
-			serveSession(w, r, d, gate, actor)
+		call := routeCall{w: w, r: r, actor: actor, scope: scope, rest: rest, row: row}
+		if row.lane == approvalRoute || row.lane == sessionRoute {
+			row.handle(rt, call)
 			return
 		}
 		// The state key is a person's to replace, on any environment: an agent token is refused, never held for approval.
-		if actor.Agent && isKeyRotation(rest) {
+		if actor.Agent && rest[0] == "key" {
 			writeError(w, 403, "forbidden", "an agent token cannot rotate the state key")
 			return
 		}
@@ -631,8 +127,515 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		if actor.Agent && method != "GET" && gate.hold(w, r, actor, rest) {
 			return
 		}
-		serve(w, r, actor, rest)
+		rt.dispatchOrdinary(call)
 	}))
+}
+
+// serveOrdinary resolves a route again when the approval gate plans or replays a request.
+func (rt *routeRuntime) serveOrdinary(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
+	row := findEnvRoute(rest, r.Method, false)
+	if row == nil || row.method != r.Method || row.lane != ordinaryRoute {
+		writeError(w, 501, "unavailable", "operation unavailable")
+		return
+	}
+	rt.dispatchOrdinary(routeCall{w: w, r: r, actor: actor, rest: rest, row: row})
+}
+
+func (rt *routeRuntime) dispatchOrdinary(call routeCall) {
+	if call.row.handle != nil {
+		call.row.handle(rt, call)
+		return
+	}
+
+	// Only routes whose endpoints have yet to move use the original dispatcher.
+	w, r, actor, rest := call.w, call.r, call.actor, call.rest
+	c, d, lim := rt.c, rt.d, rt.lim
+	ctx := r.Context()
+	sa := call.stateActor()
+	switch {
+	case len(rest) == 1 && (rest[0] == "deploys" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale" || rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
+		var req deploy.Request
+		if err := decodeBody(w, r, &req); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		if rest[0] == "deploys" {
+			req.Kind = "deploy"
+		} else {
+			req.Kind = rest[0]
+		}
+		if (req.Adopt || req.RevertSchema || req.ReplaceExisting || req.AllowRecreate) && !actor.Admin {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
+		if req.DryRun {
+			plan, err := d.Plan(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			if req.Kind == "deploy" && !planning(r) && r.URL.Query().Get("diff") == "fields" {
+				writeDeployFieldPreview(w, plan)
+				return
+			}
+			json.NewEncoder(w).Encode(plan)
+			return
+		}
+		op, _, err := d.Admit(ctx, actor, req)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		path := apiPrefix(c) + "operations/" + op.ID + "/events"
+		w.Header().Set("Location", path)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+	case len(rest) == 1 && rest[0] == "apply":
+		var req deploy.ApplyRequest
+		if err := decodeBody(w, r, &req); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		result, err := d.ApplySettings(ctx, actor, req)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(result)
+	case len(rest) == 1 && rest[0] == "restore":
+		var body restoreBody
+		if err := decodeBody(w, r, &body); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		req := deploy.Request{Kind: "restore", RestoreKey: body.Key, RestoreInto: body.Into, App: body.App, Service: body.Service, Role: body.Role,
+			Command: body.Command, Timeout: body.Timeout, DryRun: body.DryRun, RequestID: body.RequestID}
+		if req.DryRun {
+			plan, err := d.Plan(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(plan)
+			return
+		}
+		if req.RequestID == "" {
+			var random [16]byte
+			if _, err := rand.Read(random[:]); err != nil {
+				writeError(w, 503, "unavailable", "operation unavailable")
+				return
+			}
+			req.RequestID = hex.EncodeToString(random[:])
+		}
+		op, _, err := d.Admit(ctx, actor, req)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		path := apiPrefix(c) + "operations/" + op.ID + "/events"
+		w.Header().Set("Location", path)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
+		var req deploy.Request
+		if err := decodeBody(w, r, &req); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		req.Kind = "ingress"
+		req.App = manifest.ConnectorAppName
+		if req.ReplaceExisting && !actor.Admin {
+			writeError(w, 403, "forbidden", "forbidden")
+			return
+		}
+		if req.DryRun {
+			plan, err := d.Plan(ctx, actor, req)
+			if err != nil {
+				operationError(w, err)
+				return
+			}
+			json.NewEncoder(w).Encode(plan)
+			return
+		}
+		op, _, err := d.Admit(ctx, actor, req)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		path := apiPrefix(c) + "operations/" + op.ID + "/events"
+		w.Header().Set("Location", path)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
+		status, err := d.IngressStatus(ctx)
+		if err != nil {
+			writeError(w, 503, "unavailable", "ingress status unavailable")
+			return
+		}
+		json.NewEncoder(w).Encode(status)
+	case rest[0] == "operations" && len(rest) == 2:
+		op, err := d.Store.Operation(ctx, rest[1])
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(publicOperation(op))
+	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "output":
+		op, err := d.Store.Operation(ctx, rest[1])
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		if op.Kind != "exec" && op.Kind != "run" {
+			writeError(w, 404, "not_found", "not found")
+			return
+		}
+		intents, err := d.Store.Intents(ctx, op.ID)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		for _, i := range intents {
+			if i.Kind == "exec" && i.Phase == "finished" {
+				var output struct {
+					Output   string `json:"output"`
+					ExitCode int    `json:"exit_code"`
+				}
+				if json.Unmarshal(i.Receipt, &output) != nil {
+					writeError(w, 503, "unavailable", "output unavailable")
+					return
+				}
+				json.NewEncoder(w).Encode(output)
+				return
+			}
+		}
+		writeError(w, 404, "not_found", "output unavailable")
+	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "diagnostics":
+		op, err := d.Store.Operation(ctx, rest[1])
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		items, err := d.Store.Diagnostics(ctx, op.ID)
+		if err != nil {
+			writeError(w, 503, "unavailable", "diagnostics unavailable")
+			return
+		}
+		if len(items) == 0 {
+			writeError(w, 404, "not_found", "no diagnostics for this operation")
+			return
+		}
+		json.NewEncoder(w).Encode(struct {
+			OperationID string            `json:"operation_id"`
+			Reason      string            `json:"reason"`
+			Diagnostics []json.RawMessage `json:"diagnostics"`
+		}{op.ID, safeReason(op.Reason), items})
+	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
+		var req resolveBody
+		if decodeBody(w, r, &req) != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		if !validReason(req.Reason) {
+			writeError(w, 400, "bad_request", "reason required")
+			return
+		}
+		report, err := d.ResolveRecovery(ctx, actor, rest[1], req.Reason, req.DryRun)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(report)
+	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "cancel":
+		var req dryRunBody
+		// A cancel needs nothing but the operation, so a request with no body is a cancel.
+		if err := decodeOptionalBody(w, r, &req); err != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		plan, err := d.Cancel(ctx, actor, rest[1], req.DryRun)
+		var refused deploy.CancelRefused
+		if errors.As(err, &refused) {
+			writeError(w, 409, "cancel_refused", string(refused))
+			return
+		}
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(plan)
+	case rest[0] == "operations":
+		streamOperation(w, r, d.Store, rest[1], lim)
+	case rest[0] == "wait":
+		timeout := 2 * time.Minute
+		if raw := r.URL.Query().Get("timeout"); raw != "" {
+			var err error
+			timeout, err = time.ParseDuration(raw)
+			if err != nil || timeout <= 0 || timeout > 10*time.Minute {
+				writeError(w, 400, "bad_request", "invalid wait timeout")
+				return
+			}
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if err := d.Wait(waitCtx, rest[1], r.URL.Query().Get("role")); err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	case rest[0] == "applied":
+		// The release the app runs now: berthy deploy asks before it deploys an app that keeps its version.
+		release, err := d.Store.Applied(ctx, rest[1])
+		if errors.Is(err, sql.ErrNoRows) {
+			// A distinct code, so a client never takes the 404 of an agent without this route for an app that was never deployed.
+			writeError(w, 404, "not_deployed", "app is not deployed")
+			return
+		}
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		row := map[string]any{"id": release.ID, "digest": release.Digest}
+		if release.Tag != "" {
+			row["tag"] = release.Tag
+		}
+		json.NewEncoder(w).Encode(row)
+	case len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
+		// What release `release` of the app changes compared with release `base`, or with the release before it.
+		id, base, ok := historyDiffIDs(r.URL.Query())
+		if !ok {
+			writeError(w, 400, "bad_request", "release and base must be release numbers")
+			return
+		}
+		diff, err := d.DiffReleases(ctx, rest[1], id, base)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(diff)
+	case rest[0] == "history":
+		rows, err := d.Store.History(ctx, rest[1])
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, publicRelease(r))
+		}
+		failures, err := d.Store.DeployHistory(ctx, rest[1])
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		for _, op := range failures {
+			row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
+			if op.Tag != "" {
+				row["tag"] = op.Tag
+			}
+			if reason := safeReason(op.Reason); reason != "" {
+				row["reason"] = reason
+			}
+			if op.Modified {
+				row["modified"] = true
+			}
+			addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
+			out = append(out, row)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
+		json.NewEncoder(w).Encode(out)
+	case rest[0] == "audit":
+		rows, err := d.Store.AuditLog(ctx, 100)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, a := range rows {
+			row := map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time}
+			if a.Tag != "" {
+				row["tag"] = a.Tag
+			}
+			out = append(out, row)
+		}
+		json.NewEncoder(w).Encode(out)
+	case len(rest) == 1 && rest[0] == "lock":
+		l, err := d.Store.Lock(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			json.NewEncoder(w).Encode(map[string]bool{"locked": false})
+			return
+		}
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
+	case rest[0] == "lock":
+		var req lockBody
+		if decodeBody(w, r, &req) != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		if req.DryRun {
+			_, lockErr := d.Store.Lock(ctx)
+			if lockErr != nil && !errors.Is(lockErr, sql.ErrNoRows) {
+				operationError(w, lockErr)
+				return
+			}
+			plan := map[string]any{"action": "lock " + rest[1], "currently_locked": lockErr == nil}
+			if req.Message != "" {
+				plan["message"] = req.Message
+			}
+			json.NewEncoder(w).Encode(plan)
+			return
+		}
+		var err error
+		if rest[1] == "acquire" {
+			err = d.Store.AcquireManual(ctx, sa, actor.Name, req.Message)
+		} else {
+			err = d.Store.ReleaseManual(ctx, sa)
+		}
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && r.Method == "POST":
+		serveSecretImport(w, r, d, sa)
+	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && r.Method == "POST":
+		serveSecretGenerate(w, r, d, sa)
+	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && r.Method == "POST":
+		serveSecretsGenerateDeclared(w, r, d, sa)
+	case rest[0] == "secrets" && r.Method == "GET":
+		rows, err := d.Store.Secrets(ctx)
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		out := make([]map[string]string, 0, len(rows))
+		for _, v := range rows {
+			out = append(out, map[string]string{"name": v.Name, "registry": v.Registry})
+		}
+		json.NewEncoder(w).Encode(out)
+	case rest[0] == "secrets":
+		var req secretBody
+		if decodeBody(w, r, &req) != nil {
+			writeError(w, 400, "bad_request", "invalid request")
+			return
+		}
+		if len(rest) == 2 {
+			req.Name = rest[1]
+		}
+		if req.Name == "" {
+			writeError(w, 400, "bad_request", "name required")
+			return
+		}
+		if req.Name == manifest.TunnelTokenSecret {
+			writeError(w, 400, "bad_request", manifest.TunnelTokenSecret+" is reserved for managed ingress")
+			return
+		}
+		// A set that names no registry keeps the one the stored secret has, so rotating a registry password does not turn
+		// it into a plain secret.
+		exists := false
+		if req.DryRun || (r.Method != "DELETE" && req.Registry == "") {
+			stored, listErr := d.Store.Secrets(ctx)
+			if listErr != nil {
+				operationError(w, listErr)
+				return
+			}
+			for _, info := range stored {
+				if info.Name == req.Name {
+					exists = true
+					if r.Method != "DELETE" && req.Registry == "" {
+						req.Registry = info.Registry
+					}
+				}
+			}
+		}
+		if req.DryRun {
+			plan := map[string]any{"action": "secret set", "name": req.Name, "exists": exists}
+			if r.Method == "DELETE" {
+				plan["action"] = "secret delete"
+			} else {
+				plan["registry"] = req.Registry
+				if req.Registry != "" {
+					if names, listErr := d.RegistryServices(ctx, req.Registry); listErr != nil {
+						plan["services_error"] = listErr.Error()
+					} else {
+						plan["services"] = append([]string{}, names...)
+					}
+				}
+			}
+			json.NewEncoder(w).Encode(plan)
+			return
+		}
+		var err error
+		if r.Method == "DELETE" {
+			err = d.Store.DeleteSecret(ctx, sa, req.Name)
+		} else {
+			err = d.Store.PutSecret(ctx, sa, state.SecretInfo{Name: req.Name, Registry: req.Registry}, []byte(req.Value))
+		}
+		if err != nil {
+			operationError(w, err)
+			return
+		}
+		if r.Method == "DELETE" || req.Registry == "" {
+			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+			return
+		}
+		// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
+		answer := map[string]any{"ok": true, "registry": req.Registry}
+		refreshed, refreshErr := d.RefreshRegistryAuth(ctx, req.Registry)
+		outcome := "succeeded"
+		if refreshErr != nil {
+			answer["services_error"] = refreshErr.Error()
+			outcome = "failed"
+		} else {
+			answer["services"] = append([]deploy.RegistryRefresh{}, refreshed...)
+			for _, s := range refreshed {
+				if !s.Updated {
+					outcome = "failed"
+				}
+			}
+		}
+		if refreshErr != nil || len(refreshed) > 0 {
+			d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
+		}
+		json.NewEncoder(w).Encode(answer)
+	case len(rest) == 1 && rest[0] == "checks":
+		rows, err := d.Store.Checks(ctx)
+		if err != nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
+		}
+		json.NewEncoder(w).Encode(out)
+	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
+		results, sendErr := sendTestAlert(ctx, c, d.Store)
+		outcome := "succeeded"
+		if sendErr != nil {
+			outcome = "failed"
+		}
+		for _, res := range results {
+			if !res.OK {
+				outcome = "failed"
+			}
+		}
+		if err := d.Store.RecordAudit(ctx, sa, "alerts_test", outcome); err != nil {
+			writeError(w, 503, "state_unavailable", "state unavailable")
+			return
+		}
+		if sendErr != nil {
+			alertError(w, sendErr)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
+	default:
+		writeError(w, 501, "unavailable", "operation unavailable")
+	}
 }
 
 func publicRelease(r state.Release) map[string]any {

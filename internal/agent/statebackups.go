@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"berthy/internal/api"
-	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 	"berthy/internal/monitor"
 	"berthy/internal/schedule"
@@ -101,36 +100,47 @@ func stateBackupError(w http.ResponseWriter, err error) {
 	}
 }
 
-// serveStateBackup answers the state backup routes: a manual run, which starts and returns at once with its ID, and the runs
-// of the state backup, newest first. rest is the path after the environment, and the caller has checked the method and scope.
-func serveStateBackup(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.Controller, b *Backups, actor state.Actor) {
-	ctx := r.Context()
-	if b == nil || b.State == nil {
+func (rt *routeRuntime) requireStateBackups(w http.ResponseWriter) bool {
+	if rt.backups == nil || rt.backups.State == nil {
 		writeError(w, 503, "backups_unavailable", "backups unavailable")
+		return false
+	}
+	return true
+}
+
+func (rt *routeRuntime) handleStateBackupRuns(call routeCall) {
+	w, r := call.w, call.r
+	if !rt.requireStateBackups(w) {
 		return
 	}
-	if len(rest) == 2 {
-		limit := 20
-		if v := r.URL.Query().Get("limit"); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 1 || n > 100 {
-				writeError(w, 400, "bad_request", "invalid limit")
-				return
-			}
-			limit = n
-		}
-		runs, err := d.Store.StateBackupRuns(ctx, limit)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
+	ctx, d := r.Context(), rt.d
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			writeError(w, 400, "bad_request", "invalid limit")
 			return
 		}
-		out := make([]api.StateBackupRun, 0, len(runs))
-		for _, run := range runs {
-			out = append(out, stateBackupRunStatus(run))
-		}
-		json.NewEncoder(w).Encode(out)
+		limit = n
+	}
+	runs, err := d.Store.StateBackupRuns(ctx, limit)
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
 		return
 	}
+	out := make([]api.StateBackupRun, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, stateBackupRunStatus(run))
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleStateBackupRun(call routeCall) {
+	w, ctx := call.w, call.r.Context()
+	if !rt.requireStateBackups(w) {
+		return
+	}
+	d, b, actor := rt.d, rt.backups, call.stateActor()
 	m, err := recordedManifest(ctx, d.Store)
 	if err != nil {
 		writeError(w, 503, "state_unavailable", "state unavailable")

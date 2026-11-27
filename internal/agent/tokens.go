@@ -188,47 +188,59 @@ type tokenView struct {
 	LastUsed *time.Time `json:"last_used,omitempty"`
 }
 
-// serveTokens answers the tokens routes: list, create and revoke. The caller has checked the scope and the method, and that the
-// token is not an agent's when the request changes anything.
-func serveTokens(w http.ResponseWriter, r *http.Request, rest []string, c Config, store *state.Store, src *tokenSource, sa state.Actor) {
-	ctx := r.Context()
-	w.Header().Set("Cache-Control", "no-store")
-	entries, err := src.entries(ctx)
+func (rt *routeRuntime) tokenEntries(call routeCall) ([]tokenEntry, time.Time, bool) {
+	call.w.Header().Set("Cache-Control", "no-store")
+	entries, err := rt.tokens.entries(call.r.Context())
+	if err != nil {
+		writeError(call.w, 503, "state_unavailable", "state unavailable")
+		return nil, time.Time{}, false
+	}
+	return entries, rt.c.now(), true
+}
+
+func (rt *routeRuntime) handleTokens(call routeCall) {
+	entries, _, ok := rt.tokenEntries(call)
+	if !ok {
+		return
+	}
+	w, ctx, store := call.w, call.r.Context(), rt.d.Store
+	use, err := store.TokenUse(ctx)
 	if err != nil {
 		writeError(w, 503, "state_unavailable", "state unavailable")
 		return
 	}
-	now := c.now()
-	switch {
-	case len(rest) == 1 && r.Method == "GET":
-		use, err := store.TokenUse(ctx)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
+	out := make([]tokenView, 0, len(entries))
+	for _, e := range entries {
+		v := tokenView{Name: e.Name, Scope: e.Scope, Agent: e.Agent, Origin: e.origin, Expires: e.expires}
+		if !e.created.IsZero() {
+			created := e.created
+			v.Created = &created
 		}
-		out := make([]tokenView, 0, len(entries))
-		for _, e := range entries {
-			v := tokenView{Name: e.Name, Scope: e.Scope, Agent: e.Agent, Origin: e.origin, Expires: e.expires}
-			if !e.created.IsZero() {
-				created := e.created
-				v.Created = &created
-			}
-			if at, ok := use[e.Digest]; ok {
-				v.LastUsed = &at
-			}
-			out = append(out, v)
+		if at, ok := use[e.Digest]; ok {
+			v.LastUsed = &at
 		}
-		_ = json.NewEncoder(w).Encode(out)
-	case len(rest) == 1:
-		createToken(w, r, c, store, entries, sa, now)
-	default:
-		revokeToken(w, r, rest[1], store, entries, sa, now)
+		out = append(out, v)
+	}
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleTokenCreate(call routeCall, read readRouteBody[createTokenBody]) {
+	entries, now, ok := rt.tokenEntries(call)
+	if ok {
+		createToken(call.w, call.r, rt.c, rt.d.Store, entries, call.stateActor(), now, read)
 	}
 }
 
-func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time) {
-	var req createTokenBody
-	if decodeBody(w, r, &req) != nil {
+func (rt *routeRuntime) handleTokenRevoke(call routeCall, read readRouteBody[dryRunBody]) {
+	entries, now, ok := rt.tokenEntries(call)
+	if ok {
+		revokeToken(call.w, call.r, call.rest[1], rt.d.Store, entries, call.stateActor(), now, read)
+	}
+}
+
+func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time, read readRouteBody[createTokenBody]) {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
@@ -287,9 +299,9 @@ func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.
 	_ = json.NewEncoder(w).Encode(answer)
 }
 
-func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time) {
-	var req dryRunBody
-	if err := decodeOptionalBody(w, r, &req); err != nil {
+func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time, read readRouteBody[dryRunBody]) {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
@@ -348,7 +360,7 @@ func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *sta
 		_ = json.NewEncoder(w).Encode(map[string]any{"action": "token revoke", "name": name, "scope": target.Scope, "agent": target.Agent})
 		return
 	}
-	err := store.RevokeToken(r.Context(), sa, name, guard)
+	err = store.RevokeToken(r.Context(), sa, name, guard)
 	switch {
 	case errors.Is(err, errLastAdmin):
 		refuseLastAdmin(w, name)

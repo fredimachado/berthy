@@ -436,63 +436,69 @@ func viewApproval(a state.Approval) approvalView {
 	return v
 }
 
-// serveApprovals answers the approvals routes: the list, and a person's decision. rest is the path after the environment, and
-// the caller has checked the scope and the method.
-func (g *approvalGate) serveApprovals(w http.ResponseWriter, r *http.Request, actor deploy.Actor, scope string, rest []string) {
-	ctx := r.Context()
-	if len(rest) == 1 {
-		// The plan can repeat a command line, so only a token that may deploy sees it.
-		seesPlan := approvalLevels[scope] >= approvalLevels["deploy"]
-		var redact func(string) string
-		if seesPlan {
-			var ok bool
-			if redact, ok = g.d.Redactor(ctx); !ok {
-				writeError(w, 503, "state_unavailable", "state unavailable")
-				return
-			}
-		}
-		status := r.URL.Query().Get("status")
-		switch status {
-		case "", "pending", "approved", "rejected", "expired", "failed":
-		default:
-			writeError(w, 400, "bad_request", "invalid status")
-			return
-		}
-		rows, err := g.d.Store.Approvals(ctx, status, g.c.now().UTC())
-		if err != nil {
+func (rt *routeRuntime) handleApprovals(call routeCall) {
+	w, r, scope := call.w, call.r, call.scope
+	ctx, g := r.Context(), rt.gate
+	// The plan can repeat a command line, so only a token that may deploy sees it.
+	seesPlan := approvalLevels[scope] >= approvalLevels["deploy"]
+	var redact func(string) string
+	if seesPlan {
+		var ok bool
+		if redact, ok = g.d.Redactor(ctx); !ok {
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
 		}
-		out := make([]approvalView, 0, len(rows))
-		for _, a := range rows {
-			v := viewApproval(a)
-			v.Plan = nil
-			if seesPlan {
-				// A secret set after the request is hidden too.
-				if plan, err := redactApprovalPlan(restOf(a.Path), a.Method, a.Plan, redact); err == nil {
-					v.Plan = plan
-				}
+	}
+	status := r.URL.Query().Get("status")
+	switch status {
+	case "", "pending", "approved", "rejected", "expired", "failed":
+	default:
+		writeError(w, 400, "bad_request", "invalid status")
+		return
+	}
+	rows, err := g.d.Store.Approvals(ctx, status, g.c.now().UTC())
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	out := make([]approvalView, 0, len(rows))
+	for _, a := range rows {
+		v := viewApproval(a)
+		v.Plan = nil
+		if seesPlan {
+			// A secret set after the request is hidden too.
+			if plan, err := redactApprovalPlan(restOf(a.Path), a.Method, a.Plan, redact); err == nil {
+				v.Plan = plan
 			}
-			out = append(out, v)
 		}
-		_ = json.NewEncoder(w).Encode(out)
-		return
+		out = append(out, v)
 	}
-	if actor.Agent {
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleApprove(call routeCall) {
+	decider, a, ok := rt.gate.pendingDecision(call)
+	if ok {
+		rt.gate.approve(call.w, call.r, decider, a)
+	}
+}
+
+func (rt *routeRuntime) handleReject(call routeCall, read readRouteBody[rejectBody]) {
+	decider, a, ok := rt.gate.pendingDecision(call)
+	if ok {
+		rt.gate.reject(call.w, call.r, decider, a, read)
+	}
+}
+
+func (g *approvalGate) pendingDecision(call routeCall) (state.Actor, state.Approval, bool) {
+	if call.actor.Agent {
 		// An agent token never decides, whatever its scope: the person is the check on the agent.
-		writeError(w, 403, "forbidden", "an agent token cannot approve or reject")
-		return
+		writeError(call.w, 403, "forbidden", "an agent token cannot approve or reject")
+		return state.Actor{}, state.Approval{}, false
 	}
-	decider := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
-	a, ok := g.pending(w, r, decider, rest[1])
-	if !ok {
-		return
-	}
-	if rest[2] == "reject" {
-		g.reject(w, r, decider, a)
-		return
-	}
-	g.approve(w, r, decider, a)
+	decider := call.stateActor()
+	a, ok := g.pending(call.w, call.r, decider, call.rest[1])
+	return decider, a, ok
 }
 
 // pending loads an approval for a decision. It expires the approval when it is past its expiry, and answers when the
@@ -549,9 +555,9 @@ func (g *approvalGate) decide(w http.ResponseWriter, r *http.Request, decider st
 	return false
 }
 
-func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider state.Actor, a state.Approval) {
-	var req rejectBody
-	if decodeOptionalBody(w, r, &req) != nil {
+func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider state.Actor, a state.Approval, read readRouteBody[rejectBody]) {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}

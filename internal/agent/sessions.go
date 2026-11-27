@@ -16,7 +16,6 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/session"
-	"berthy/internal/state"
 )
 
 const (
@@ -37,8 +36,9 @@ const errAgentStopping = "the agent is stopping"
 // the session has started the agent answers 101 and takes the connection over, and the two sides exchange session frames
 // until the command ends (see package session). A session is not an operation: it takes no lock and is not journaled, and an
 // agent token on a protected environment is refused because a session cannot wait for an approval.
-func serveSession(w http.ResponseWriter, r *http.Request, d *deploy.Controller, gate *approvalGate, actor deploy.Actor) {
-	ctx := r.Context()
+func (rt *routeRuntime) serveSession(call routeCall, read readRouteBody[session.Request]) {
+	w, r, actor := call.w, call.r, call.actor
+	d, gate, ctx := rt.d, rt.gate, r.Context()
 	if actor.Agent {
 		protected, err := gate.protected(ctx)
 		if err != nil {
@@ -54,9 +54,9 @@ func serveSession(w http.ResponseWriter, r *http.Request, d *deploy.Controller, 
 		writeError(w, 400, "bad_request", "session requires an upgrade")
 		return
 	}
-	var req session.Request
 	r.Body = http.MaxBytesReader(w, r.Body, maxSessionRequest)
-	if decodeBody(w, r, &req) != nil {
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
@@ -80,7 +80,7 @@ func serveSession(w http.ResponseWriter, r *http.Request, d *deploy.Controller, 
 		operationError(w, err)
 		return
 	}
-	sa := state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}
+	sa := call.stateActor()
 	action := sessionAction(req)
 	closeSession := func() error {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCloseTime)

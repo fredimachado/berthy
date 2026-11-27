@@ -14,6 +14,7 @@ import (
 	"berthy/internal/jobs"
 	"berthy/internal/metrics"
 	"berthy/internal/session"
+	"berthy/internal/state"
 	"berthy/internal/telemetry"
 )
 
@@ -44,6 +45,10 @@ type routeCall struct {
 	rest    []string
 	row     *envRoute
 	readCtx context.Context
+}
+
+func (call routeCall) stateActor() state.Actor {
+	return state.Actor{ID: call.actor.ID, Name: call.actor.Name, Remote: call.actor.Remote}
 }
 
 type routeRuntime struct {
@@ -91,8 +96,8 @@ func init() {
 
 func declaredRoutes() []envRoute {
 	return []envRoute{
-		jsonRoute[api.ImageLookup](envRoute{pattern: "images/resolve", method: "POST", scope: "admin"}, nil),
-		jsonRoute[imageTagsLookup](envRoute{pattern: "images/tags", method: "POST", scope: "admin"}, nil),
+		jsonRoute[api.ImageLookup](envRoute{pattern: "images/resolve", method: "POST", scope: "admin"}, (*routeRuntime).handleImageResolve),
+		jsonRoute[imageTagsLookup](envRoute{pattern: "images/tags", method: "POST", scope: "admin"}, (*routeRuntime).handleImageTags),
 		jsonRoute[deploy.Request](envRoute{pattern: "deploys", method: "POST", scope: "deploy", kind: "deploy", gateDryRun: true, summary: summarizeDeploy}, nil),
 		jsonRoute[deploy.ApplyRequest](envRoute{pattern: "apply", method: "POST", scope: "deploy", kind: "apply", gateDryRun: true, summary: fixedSummary("apply the environment settings")}, nil),
 		jsonRoute[deploy.Request](envRoute{pattern: "rollback", method: "POST", scope: "deploy", kind: "rollback", gateDryRun: true, summary: summarizeRollback}, nil),
@@ -130,30 +135,30 @@ func declaredRoutes() []envRoute {
 		jsonRoute[deploy.Request](envRoute{pattern: "ingress/apply", method: "POST", scope: "deploy", kind: "ingress apply", gateDryRun: true, summary: summarizeKind}, nil),
 		{pattern: "ingress/status", method: "GET", scope: "read"},
 		{pattern: "checks", method: "GET", scope: "read"},
-		{pattern: "jobs", method: "GET", scope: "read"},
-		{pattern: "jobs/{name}/runs", method: "GET", scope: "read"},
-		{pattern: "jobs/{name}/run", method: "POST", scope: "deploy", kind: "job run", summary: summarizeTarget, describeTarget: true},
-		{pattern: "jobs/{name}/cancel", method: "POST", scope: "deploy", kind: "job cancel", summary: summarizeTarget, describeTarget: true},
+		{pattern: "jobs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobs},
+		{pattern: "jobs/{name}/runs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobRuns},
+		{pattern: "jobs/{name}/run", method: "POST", scope: "deploy", kind: "job run", summary: summarizeTarget, describeTarget: true, handle: (*routeRuntime).handleJobRun},
+		{pattern: "jobs/{name}/cancel", method: "POST", scope: "deploy", kind: "job cancel", summary: summarizeTarget, describeTarget: true, handle: (*routeRuntime).handleJobCancel},
 		// Failed runs can disclose output unavailable to a read token.
-		{pattern: "jobs/{name}/logs", method: "GET", scope: "deploy"},
-		{pattern: "backups", method: "GET", scope: "read"},
-		{pattern: "backups/{name}/runs", method: "GET", scope: "read"},
-		{pattern: "backups/{name}/run", method: "POST", scope: "deploy", kind: "backup run", summary: summarizeTarget, describeTarget: true},
-		{pattern: "state-backup", method: "POST", scope: "admin", kind: "state backup run", summary: summarizeKind},
-		{pattern: "state-backup/runs", method: "GET", scope: "read"},
+		{pattern: "jobs/{name}/logs", method: "GET", scope: "deploy", handle: (*routeRuntime).handleJobLogs},
+		{pattern: "backups", method: "GET", scope: "read", handle: (*routeRuntime).handleBackups},
+		{pattern: "backups/{name}/runs", method: "GET", scope: "read", handle: (*routeRuntime).handleBackupRuns},
+		{pattern: "backups/{name}/run", method: "POST", scope: "deploy", kind: "backup run", summary: summarizeTarget, describeTarget: true, handle: (*routeRuntime).handleBackupRun},
+		{pattern: "state-backup", method: "POST", scope: "admin", kind: "state backup run", summary: summarizeKind, handle: (*routeRuntime).handleStateBackupRun},
+		{pattern: "state-backup/runs", method: "GET", scope: "read", handle: (*routeRuntime).handleStateBackupRuns},
 		jsonRoute[restoreBody](envRoute{pattern: "restore", method: "POST", scope: "admin", kind: "restore", gateDryRun: true, summary: summarizeRestore}, nil),
-		jsonRoute[dryRunBody](envRoute{pattern: "key/rotate", method: "POST", scope: "admin"}, nil),
-		jsonRoute[session.Request](envRoute{pattern: "sessions", method: "POST", scope: "admin", lane: sessionRoute}, nil),
+		jsonRoute[dryRunBody](envRoute{pattern: "key/rotate", method: "POST", scope: "admin"}, (*routeRuntime).serveKeyRotate),
+		jsonRoute[session.Request](envRoute{pattern: "sessions", method: "POST", scope: "admin", lane: sessionRoute}, (*routeRuntime).serveSession),
 		{pattern: "alerts/test", method: "POST", scope: "deploy", kind: "alerts test", summary: summarizeKind},
 
 		// For other methods on the collection, the expected method is POST.
-		{pattern: "tokens", method: "GET", scope: "admin"},
-		jsonRoute[createTokenBody](envRoute{pattern: "tokens", method: "POST", scope: "admin"}, nil),
-		jsonRoute[dryRunBody](envRoute{pattern: "tokens/{name}", method: "DELETE", scope: "admin", optionalBody: true}, nil),
+		{pattern: "tokens", method: "GET", scope: "admin", handle: (*routeRuntime).handleTokens},
+		jsonRoute[createTokenBody](envRoute{pattern: "tokens", method: "POST", scope: "admin"}, (*routeRuntime).handleTokenCreate),
+		jsonRoute[dryRunBody](envRoute{pattern: "tokens/{name}", method: "DELETE", scope: "admin", optionalBody: true}, (*routeRuntime).handleTokenRevoke),
 
-		{pattern: "approvals", method: "GET", scope: "read", lane: approvalRoute},
-		{pattern: "approvals/{id}/approve", method: "POST", scope: "admin", lane: approvalRoute},
-		jsonRoute[rejectBody](envRoute{pattern: "approvals/{id}/reject", method: "POST", scope: "admin", lane: approvalRoute, optionalBody: true}, nil),
+		{pattern: "approvals", method: "GET", scope: "read", lane: approvalRoute, handle: (*routeRuntime).handleApprovals},
+		{pattern: "approvals/{id}/approve", method: "POST", scope: "admin", lane: approvalRoute, handle: (*routeRuntime).handleApprove},
+		jsonRoute[rejectBody](envRoute{pattern: "approvals/{id}/reject", method: "POST", scope: "admin", lane: approvalRoute, optionalBody: true}, (*routeRuntime).handleReject),
 
 		{pattern: "agent", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleAgent},
 		{pattern: "apps", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleApps},
