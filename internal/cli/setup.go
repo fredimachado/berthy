@@ -264,7 +264,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 				base, _ := url.Parse(session.AgentURL())
 				target := &agentclient.Target{Project: id.Project, Env: id.Environment, Base: base, Prefix: id.APIPath(), Token: session.AdminToken()}
 				fmt.Fprintln(out, "\nsecrets:")
-				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, read, out, errout)
+				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, func() ([]byte, error) { return read(ctx) }, out, errout)
 				secretStep.guided = result == guideDone
 				for _, need := range unmet {
 					secretStep.unmet = append(secretStep.unmet, need.Name)

@@ -146,12 +146,15 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 	read, interactive := hiddenInput()
 	var data []byte
 	var err error
+	if !interactive {
+		data, err = io.ReadAll(os.Stdin)
+	}
+	ctx, stop := contextStoreContext()
+	defer stop()
 	if interactive {
 		fmt.Fprintf(errout, "Token of %s/%s (hidden): ", project, env)
-		data, err = read()
+		data, err = read(ctx)
 		fmt.Fprintln(errout)
-	} else {
-		data, err = io.ReadAll(os.Stdin)
 	}
 	if err != nil {
 		fmt.Fprintln(errout, "no token entered")
@@ -162,8 +165,6 @@ func saveContextToken(project, env string, entry agentclient.Environment, out, e
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	ctx, stop := contextStoreContext()
-	defer stop()
 	store := agentclient.Tokens(ctx)
 	progress := startWait(errout, true, "saving credential")
 	err = store.Set(agentclient.StoreKey(project, env, entry), token)

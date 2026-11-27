@@ -38,7 +38,7 @@ func runSecretSetMissing(ctx context.Context, f commandFlags, target *agentclien
 	if !manifestMatchesTarget(errout, dir, m.Project, target.Project) {
 		return 2
 	}
-	unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, m, dir, f.env, read, out, errout)
+	unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, m, dir, f.env, func() ([]byte, error) { return read(ctx) }, out, errout)
 	if result == guideHeld {
 		return exitHeld
 	}

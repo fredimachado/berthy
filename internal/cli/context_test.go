@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -587,8 +588,8 @@ func TestContextAddSaveTokenAsksAtATerminal(t *testing.T) {
 	var during agentclient.Environment
 	var duringOK bool
 	oldHidden := hiddenInput
-	hiddenInput = func() (func() ([]byte, error), bool) {
-		return func() ([]byte, error) {
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
+		return func(context.Context) ([]byte, error) {
 			reads.Add(1)
 			c, err := agentclient.ReadConfig(cfg)
 			if err == nil {
