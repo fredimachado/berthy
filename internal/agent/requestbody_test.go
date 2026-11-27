@@ -168,11 +168,25 @@ func TestEveryBodyAClientSendsIsAccepted(t *testing.T) {
 			{"DELETE", "/tokens/victim", `{"dry_run":true}`, `"action":"token revoke"`},
 			{"POST", "/key/rotate", `{"dry_run":true}`, `"dry_run":true`},
 			{"POST", "/secrets", `{"name":"NEW","value":"v","registry":"","dry_run":false}`, `"ok":true`},
+			{"POST", "/secrets", `{"name":"OTHER","value":"v","registry":""}`, `"ok":true`},
 		} {
 			w := f.call(tc.method, tc.path, apAdminToken, tc.body)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), tc.field) {
 				t.Errorf("%s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
 			}
+		}
+	})
+	t.Run("lock release map", func(t *testing.T) {
+		row := rows["lock release"]
+		f := row.fixture(t)
+		row.setup(f)
+		b, err := json.Marshal(map[string]any{"message": "", "dry_run": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := f.call("POST", row.path, apAdminToken, string(b))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"action":"lock release"`) {
+			t.Fatalf("lock: %d %s", w.Code, w.Body.String())
 		}
 	})
 	t.Run("restore command map", func(t *testing.T) {
