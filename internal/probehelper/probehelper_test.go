@@ -2,6 +2,7 @@ package probehelper
 
 import (
 	"berthy/internal/dialtest"
+	"berthy/internal/monitor"
 	"context"
 	"encoding/json"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -18,12 +20,17 @@ const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 // serve sends one request to the helper's handler for token and returns the status and body.
 func serve(t *testing.T, token, method, path, auth, body string) (int, string) {
 	t.Helper()
+	return serveDial(t, token, method, path, auth, body, dialtest.Dial)
+}
+
+func serveDial(t *testing.T, token, method, path, auth, body string, dial monitor.DialFunc) (int, string) {
+	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	if auth != "" {
 		r.Header.Set("Authorization", auth)
 	}
 	w := httptest.NewRecorder()
-	handler(token, dialtest.Dial).ServeHTTP(w, r)
+	handler(token, dial).ServeHTTP(w, r)
 	return w.Code, w.Body.String()
 }
 
@@ -235,11 +242,23 @@ func TestHTTPProbeAnswersWhatTheServiceSays(t *testing.T) {
 }
 
 func TestTCPProbeAnswersWhetherThePortAccepts(t *testing.T) {
+	var called atomic.Bool
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr == dialtest.Refused {
+			called.Store(true)
+		}
+		return dialtest.Dial(ctx, network, addr)
+	}
+	t.Cleanup(func() {
+		if !called.Load() {
+			t.Error("refusal dialer was not called")
+		}
+	})
 	closed := dialtest.Refused
 	open := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer open.Close()
 	for target, want := range map[string]string{hostPort(t, open): "connected", closed: "connection refused"} {
-		code, out := serve(t, testToken, http.MethodPost, "/probe", "Bearer "+testToken, `{"kind":"tcp","target":"`+target+`","timeout_ms":2000}`)
+		code, out := serveDial(t, testToken, http.MethodPost, "/probe", "Bearer "+testToken, `{"kind":"tcp","target":"`+target+`","timeout_ms":2000}`, dial)
 		if code != http.StatusOK || !strings.Contains(out, `"detail":"`+want+`"`) {
 			t.Fatalf("tcp %s: %d %s, want %q", target, code, out, want)
 		}

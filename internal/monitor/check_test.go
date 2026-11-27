@@ -235,6 +235,23 @@ func TestHTTPProbeSendsItsUserAgentAndNeverEchoesBodies(t *testing.T) {
 	}
 }
 
+// refusalDial checks that the test's refusal came from the injected dialer.
+func refusalDial(t *testing.T) DialFunc {
+	t.Helper()
+	var called atomic.Bool
+	t.Cleanup(func() {
+		if !called.Load() {
+			t.Error("refusal dialer was not called")
+		}
+	})
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr == dialtest.Refused {
+			called.Store(true)
+		}
+		return dialtest.Dial(ctx, network, addr)
+	}
+}
+
 func TestHTTPProbeTimeoutAndRefusedConnection(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -248,7 +265,7 @@ func TestHTTPProbeTimeoutAndRefusedConnection(t *testing.T) {
 		t.Fatalf("timeout: %+v", got)
 	}
 	closed := dialtest.Refused
-	got = HTTPProbe("probe:closed", "http://"+closed+"/", nil, time.Minute, time.Second, 1, dialtest.Dial).Run(context.Background())
+	got = HTTPProbe("probe:closed", "http://"+closed+"/", nil, time.Minute, time.Second, 1, refusalDial(t)).Run(context.Background())
 	if got.State != Critical || got.Detail != "connection refused" {
 		t.Fatalf("refused: %+v", got)
 	}
@@ -267,7 +284,7 @@ func TestTCPProbe(t *testing.T) {
 	if got := TCPProbe("probe:db", l.Addr().String(), time.Minute, time.Second, 1, nil).Run(ctx); got.State != OK || got.Detail != "connected" {
 		t.Fatalf("open port: %+v", got)
 	}
-	if got := TCPProbe("probe:db", dialtest.Refused, time.Minute, time.Second, 1, dialtest.Dial).Run(ctx); got.State != Critical || got.Detail != "connection refused" {
+	if got := TCPProbe("probe:db", dialtest.Refused, time.Minute, time.Second, 1, refusalDial(t)).Run(ctx); got.State != Critical || got.Detail != "connection refused" {
 		t.Fatalf("closed port: %+v", got)
 	}
 }
@@ -324,7 +341,7 @@ func TestPeerProbe(t *testing.T) {
 	if got := ProbePeer(ctx, srv.URL+"/other", time.Second, nil); got.State != Critical || got.Detail != "silent: HTTP 404" {
 		t.Fatalf("peer without /healthz: %+v", got)
 	}
-	if got := ProbePeer(ctx, "http://"+dialtest.Refused, time.Second, dialtest.Dial); got.State != Critical || got.Detail != "silent: connection refused" {
+	if got := ProbePeer(ctx, "http://"+dialtest.Refused, time.Second, refusalDial(t)); got.State != Critical || got.Detail != "silent: connection refused" {
 		t.Fatalf("silent peer: %+v", got)
 	}
 	check := PeerCheck("peer:prod", srv.URL, nil)
