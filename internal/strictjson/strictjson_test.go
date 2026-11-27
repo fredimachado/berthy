@@ -49,6 +49,59 @@ func TestDeepBodiesUseLinearMemory(t *testing.T) {
 	}
 }
 
+func TestDeepSiblingObjectsUseLinearMemory(t *testing.T) {
+	var wide strings.Builder
+	wide.WriteByte('{')
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			wide.WriteByte(',')
+		}
+		wide.WriteString(strconv.Quote("key" + strconv.Itoa(i)))
+		wide.WriteString(":0")
+	}
+	wide.WriteByte('}')
+	small := "[" + strings.Repeat(`{"a":0},`, 1999) + `{"a":0}]`
+	for _, tc := range []struct {
+		name, value string
+		start, end  int
+	}{
+		{"wide_500_530", wide.String(), 500, 530},
+		{"small_500_530", small, 500, 530},
+		{"wide_8690_8710", wide.String(), 8690, 8710},
+		{"small_8690_8710", small, 8690, 8710},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var maxAlloc uint64
+			var maxDepth, maxSize int
+			for depth := tc.start; depth <= tc.end; depth++ {
+				body := []byte(`{"value":` + strings.Repeat(`{"d":`, depth) + tc.value + strings.Repeat("}", depth) + `}`)
+				var got struct {
+					Value string `json:"value"`
+				}
+				runtime.GC()
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				err := Unmarshal(body, &got)
+				runtime.ReadMemStats(&after)
+				if !errors.Is(err, ErrInvalid) {
+					t.Fatalf("depth %d: got %v", depth, err)
+				}
+				allocated := after.TotalAlloc - before.TotalAlloc
+				if depth == 8703 {
+					t.Logf("depth=%d body=%d allocated=%d", depth, len(body), allocated)
+				}
+				if allocated > maxAlloc {
+					maxAlloc, maxDepth, maxSize = allocated, depth, len(body)
+				}
+				if limit := uint64(len(body)) * 96; allocated > limit {
+					t.Errorf("depth=%d body=%d allocated=%d limit=%d", depth, len(body), allocated, limit)
+				}
+			}
+			t.Logf("maximum depth=%d body=%d allocated=%d", maxDepth, maxSize, maxAlloc)
+		})
+	}
+}
+
 func TestDeepRepeatedKeyNamesTheFullPath(t *testing.T) {
 	const depth = 256
 	key := `a"b\c`
@@ -61,6 +114,12 @@ func TestDeepRepeatedKeyNamesTheFullPath(t *testing.T) {
 	want := `$["value"]` + strings.Repeat("["+quoted+"]", depth) + `["duplicate"]: ` + ErrRepeatedKey.Error()
 	if !errors.Is(err, ErrRepeatedKey) || err.Error() != want {
 		t.Fatalf("wrong error path: %v", err)
+	}
+	body = `{"value":{"first":{"inside":1},"second":{"nested":{"x":2}},"target":{"before":{"leaf":3},"dup":1,"dup":2}}}`
+	err = Unmarshal([]byte(body), &got)
+	want = `$["value"]["target"]["dup"]: ` + ErrRepeatedKey.Error()
+	if !errors.Is(err, ErrRepeatedKey) || err.Error() != want {
+		t.Fatalf("wrong sibling path: %v", err)
 	}
 }
 

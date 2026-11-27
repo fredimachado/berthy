@@ -42,7 +42,8 @@ func Unmarshal(data []byte, v any) error {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	if err := walk(dec, t, nil); err != nil {
+	w := walker{dec: dec}
+	if err := w.walk(t); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(data, v); err != nil {
@@ -105,10 +106,15 @@ func targetType(t reflect.Type) reflect.Type {
 	return nil
 }
 
-func walk(dec *json.Decoder, typ reflect.Type, path []string) error {
-	tok, err := dec.Token()
+type walker struct {
+	dec  *json.Decoder
+	path []string
+}
+
+func (w *walker) walk(typ reflect.Type) error {
+	tok, err := w.dec.Token()
 	if err != nil {
-		return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
+		return fmt.Errorf("%s: %w", formatPath(w.path), ErrInvalid)
 	}
 	typ = targetType(typ)
 	switch tok {
@@ -117,19 +123,21 @@ func walk(dec *json.Decoder, typ reflect.Type, path []string) error {
 		if typ != nil && typ.Kind() == reflect.Struct {
 			fields, err = structFields(typ)
 			if err != nil {
-				return fmt.Errorf("%s: %w", formatPath(path), err)
+				return fmt.Errorf("%s: %w", formatPath(w.path), err)
 			}
 		}
 		seen := make(map[string]bool)
-		for dec.More() {
-			keyToken, err := dec.Token()
+		for w.dec.More() {
+			keyToken, err := w.dec.Token()
 			if err != nil {
-				return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
+				return fmt.Errorf("%s: %w", formatPath(w.path), ErrInvalid)
 			}
 			key := keyToken.(string)
-			childPath := append(path, key)
+			w.path = append(w.path, key)
 			if seen[key] {
-				return fmt.Errorf("%s: %w", formatPath(childPath), ErrRepeatedKey)
+				err := fmt.Errorf("%s: %w", formatPath(w.path), ErrRepeatedKey)
+				w.path = w.path[:len(w.path)-1]
+				return err
 			}
 			seen[key] = true
 			var child reflect.Type
@@ -137,30 +145,34 @@ func walk(dec *json.Decoder, typ reflect.Type, path []string) error {
 				var ok bool
 				child, ok = fields[key]
 				if !ok {
-					return fmt.Errorf("%s: %w", formatPath(childPath), ErrUnknownKey)
+					err := fmt.Errorf("%s: %w", formatPath(w.path), ErrUnknownKey)
+					w.path = w.path[:len(w.path)-1]
+					return err
 				}
 			} else if typ != nil && typ.Kind() == reflect.Map {
 				child = typ.Elem()
 			}
-			if err := walk(dec, child, childPath); err != nil {
+			err = w.walk(child)
+			w.path = w.path[:len(w.path)-1]
+			if err != nil {
 				return err
 			}
 		}
-		_, err = dec.Token()
+		_, err = w.dec.Token()
 	case json.Delim('['):
 		var child reflect.Type
 		if typ != nil && (typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array) {
 			child = typ.Elem()
 		}
-		for dec.More() {
-			if err := walk(dec, child, path); err != nil {
+		for w.dec.More() {
+			if err := w.walk(child); err != nil {
 				return err
 			}
 		}
-		_, err = dec.Token()
+		_, err = w.dec.Token()
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", formatPath(path), ErrInvalid)
+		return fmt.Errorf("%s: %w", formatPath(w.path), ErrInvalid)
 	}
 	return nil
 }
