@@ -147,10 +147,15 @@ default='{uptime: 20s}'
 portable='{uptime: 20s, interval: 3s, start_period: 30s}'
 manifest '{uptime: 20s, interval: 1h, start_interval: 2s}' 30s | write_manifest
 code=0
+out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1) || code=$?
+printf '%s\n' "$out" >"$LOG/uptime-incompatible-validate.txt"
+expect_code 'validation rejects unequal startup interval' 1 "$code" "$out"
+expect_contains 'validation names health.start_interval' "$out" 'health.start_interval'
+code=0
 out=$(adm deploy "$app" --version "$good" --manifest-dir "$MAN" 2>&1) || code=$?
 printf '%s\n' "$out" >"$LOG/uptime-incompatible.txt"
 expect_code 'unequal startup interval is refused' 1 "$code" "$out"
-expect_contains 'refusal names health.start_interval' "$out" 'health.start_interval'
+expect_contains 'deploy explains why startup intervals must match' "$out" 'start_interval must equal interval or be omitted'
 services=$(d service ls --format '{{.Name}}') || die 'list services after incompatible plan'
 if grep -Fxq "$service" <<<"$services"; then die 'incompatible timing leaves no service'; fi
 pass 'incompatible timing leaves no service'
