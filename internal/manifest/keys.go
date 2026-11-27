@@ -5,8 +5,10 @@ import (
 	"strings"
 )
 
+const uptimeProbeDirectory = "/.berthy"
+
 // UptimeProbeTarget is the mounted executable path inside a Swarm task.
-const UptimeProbeTarget = "/.berthy/berthy"
+const UptimeProbeTarget = uptimeProbeDirectory + "/berthy"
 
 // Key documents one manifest key. Keys is the only place a key's meaning is written down: the user guide's reference,
 // `berthy docs` and the JSON Schema are generated from it, and a test keeps it in step with the Manifest type and with
@@ -112,7 +114,7 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.env.template", Section: "apps", Type: "map", NamePattern: envName.String(), Description: "Variables whose value is built from secrets. The agent fills a template in when it deploys. The manifest and the release keep the template, and the filled value is a secret: it is redacted like one. A variable is in one of `plain`, `secret` and `template`. Names that start with `BERTHY_` are reserved."},
 		{Path: "apps.<name>.env.template.<VAR>", Section: "apps", Type: "string", Description: "The variable's template: text with `${NAME}` where the value of the secret NAME goes, such as `postgres://app:${DB_PASSWORD}@db:5432/app`. `$$` writes one `$`, and any other `$` is an error. There are no defaults, no nesting and no references to variables. A reference cannot ask for URL encoding: the hex value `berthy secret generate` makes by default needs none, but a password with `@` or `/` does, so use one that has none."},
 		{Path: "apps.<name>.deploy", Section: "apps", Type: "map", Applies: "image", Description: "How a rollout of a new version runs."},
-		{Path: "apps.<name>.deploy.deploy_timeout", Section: "apps", Type: "duration", Default: "120s", Applies: "image", Description: "The longest a new version may take to become healthy."},
+		{Path: "apps.<name>.deploy.deploy_timeout", Section: "apps", Type: "duration", Default: defaultDeployTimeout, Applies: "image", Description: "The longest a new version may take to become healthy."},
 		{Path: "apps.<name>.deploy.drain_timeout", Section: "apps", Type: "duration", Default: "30s", Applies: "image", Description: "Time the old version gets to finish its requests."},
 		{Path: "apps.<name>.deploy.start_attempts", Section: "apps", Type: "integer", Default: "3", Applies: "image", Description: "Failed task starts that a rollout tolerates before it gives up, from 1 to 10."},
 		{Path: "apps.<name>.deploy.order", Section: "apps", Type: "string", Enum: []string{StartFirst, StopFirst}, Applies: "image", Description: "How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one."},
@@ -129,12 +131,13 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.roles.<role>.user", Section: "roles", Type: "string", Default: "the image's", Description: "The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`."},
 		{Path: "apps.<name>.roles.<role>.replicas", Section: "roles", Type: "integer", Default: "1", Description: "The number of replicas, at least 1."},
 		{Path: "apps.<name>.roles.<role>.port", Section: "roles", Type: "integer", Description: "The port the role listens on, from 0 to 65535. Needed for `hostnames`."},
-		{Path: "apps.<name>.roles.<role>.health", Section: "roles", Type: "map", Description: "The container health check, with the fields Docker uses. A new version must pass it before it takes traffic."},
-		{Path: "apps.<name>.roles.<role>.health.test", Section: "roles", Type: "list", Required: true, Description: "The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command."},
-		{Path: "apps.<name>.roles.<role>.health.interval", Section: "roles", Type: "duration", Default: "30s", Description: "Time between checks."},
-		{Path: "apps.<name>.roles.<role>.health.timeout", Section: "roles", Type: "duration", Default: "30s", Description: "The longest one check may take."},
-		{Path: "apps.<name>.roles.<role>.health.start_period", Section: "roles", Type: "duration", Default: "0s", Description: "Grace time after the container starts. Failures in it do not count."},
-		{Path: "apps.<name>.roles.<role>.health.start_interval", Section: "roles", Type: "duration", Default: "Docker's", Description: "Time between checks during the start period. Check that your Docker version supports it for Swarm services."},
+		{Path: "apps.<name>.roles.<role>.health", Section: "roles", Type: "map", Default: "the image's", Description: "The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic."},
+		{Path: "apps.<name>.roles.<role>.health.test", Section: "roles", Type: "list", Description: "The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command."},
+		{Path: "apps.<name>.roles.<role>.health.uptime", Section: "roles", Type: "duration", Description: "For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fit before `deploy.deploy_timeout`. The probe reserves `/.berthy` and its descendants as mount targets."},
+		{Path: "apps.<name>.roles.<role>.health.interval", Section: "roles", Type: "duration", Default: "30s for test", Description: "Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`."},
+		{Path: "apps.<name>.roles.<role>.health.timeout", Section: "roles", Type: "duration", Default: "30s", Description: "The longest one check may take. For uptime it must be at least `1ms`."},
+		{Path: "apps.<name>.roles.<role>.health.start_period", Section: "roles", Type: "duration", Default: "0s for test", Description: "Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself."},
+		{Path: "apps.<name>.roles.<role>.health.start_interval", Section: "roles", Type: "duration", Default: "Docker's for test", Description: "Time between checks during the start period. For command checks, confirm Swarm support in your Docker version. Uptime uses `interval` for portable Swarm scheduling, so omit `start_interval` or set it equal to `interval`."},
 		{Path: "apps.<name>.roles.<role>.health.retries", Section: "roles", Type: "integer", Default: "3", Description: "Failed checks in a row before the container is unhealthy, at least 1."},
 		{Path: "apps.<name>.roles.<role>.volumes", Section: "roles", Type: "list", Description: "Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path."},
 		{Path: "apps.<name>.roles.<role>.resources", Section: "roles", Type: "map", Description: "Resource limits of each container."},

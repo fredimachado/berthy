@@ -256,6 +256,37 @@ func TestJSONSchemaOverlayAcceptsNullForEveryKey(t *testing.T) {
 	}
 }
 
+func TestUptimeHealthSchemaAlternatives(t *testing.T) {
+	path := []string{"apps", "*", "roles", "*", "health"}
+	health := at(t, schemaOf(t, false), path...)
+	if len(stringsOf(health["required"])) != 0 {
+		t.Errorf("health requires a specific form: %v", health["required"])
+	}
+	forms, _ := health["oneOf"].([]any)
+	var required []string
+	for _, form := range forms {
+		branch := stringsOf(form.(map[string]any)["required"])
+		if len(branch) != 1 {
+			t.Fatalf("health branch should require exactly one field: %v", form)
+		}
+		required = append(required, branch[0])
+	}
+	slices.Sort(required)
+	if !slices.Equal(required, []string{"test", "uptime"}) {
+		t.Fatalf("health alternatives = %v, want test and uptime", required)
+	}
+	if test := at(t, health, "test"); test["type"] != "array" || test["minItems"] != float64(1) {
+		t.Errorf("health.test should require a nonempty array: %v", test)
+	}
+	if uptime := at(t, health, "uptime"); uptime["type"] != "string" || uptime["minLength"] != float64(1) {
+		t.Errorf("health.uptime should require a nonempty string: %v", uptime)
+	}
+	overlay := at(t, schemaOf(t, true), path...)
+	if withoutNull(overlay)["oneOf"] != nil || !acceptsNull(at(t, overlay, "test")) || withoutNull(at(t, overlay, "uptime"))["type"] != "string" {
+		t.Errorf("overlay should accept deleting test and setting uptime together: %v", overlay)
+	}
+}
+
 func TestJSONSchemaIsStable(t *testing.T) {
 	a, _ := JSONSchema(false)
 	b, _ := JSONSchema(false)

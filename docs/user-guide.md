@@ -3091,12 +3091,13 @@ Roles belong to image apps.
 | `user` | string | the image's | The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`. |
 | `replicas` | integer | `1` | The number of replicas, at least 1. |
 | `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
-| `health` | map | none | The container health check, with the fields Docker uses. A new version must pass it before it takes traffic. |
-| `health.test` | list | required | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
-| `health.interval` | duration | `30s` | Time between checks. |
-| `health.timeout` | duration | `30s` | The longest one check may take. |
-| `health.start_period` | duration | `0s` | Grace time after the container starts. Failures in it do not count. |
-| `health.start_interval` | duration | `Docker's` | Time between checks during the start period. Check that your Docker version supports it for Swarm services. |
+| `health` | map | the image's | The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic. |
+| `health.test` | list | none | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
+| `health.uptime` | duration | none | For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fit before `deploy.deploy_timeout`. The probe reserves `/.berthy` and its descendants as mount targets. |
+| `health.interval` | duration | 30s for test | Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`. |
+| `health.timeout` | duration | `30s` | The longest one check may take. For uptime it must be at least `1ms`. |
+| `health.start_period` | duration | 0s for test | Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself. |
+| `health.start_interval` | duration | Docker's for test | Time between checks during the start period. For command checks, confirm Swarm support in your Docker version. Uptime uses `interval` for portable Swarm scheduling, so omit `start_interval` or set it equal to `interval`. |
 | `health.retries` | integer | `3` | Failed checks in a row before the container is unhealthy, at least 1. |
 | `volumes` | list | none | Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path. |
 | `resources` | map | none | Resource limits of each container. |
