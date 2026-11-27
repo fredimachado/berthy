@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"berthy/internal/version"
 )
 
 // DefaultReleaseURL is where releases are downloaded from. A release has berthy-linux-amd64, berthy-linux-arm64 and
@@ -131,22 +133,30 @@ func (s *Session) source(arch string) (*binarySource, error) {
 		orUnknown(o.Build.OS), orUnknown(o.Build.Arch), arch)
 }
 
-// serverVersion is the version the agent binary on the server reports, or "" when it cannot say. It runs the installed binary's
-// version command, which only prints.
-func (s *Session) serverVersion(ctx context.Context) string {
+// serverVersion is the version the agent binary on the server reports, or "" when a completed probe reports none
+// (non-zero exit other than 255, or unparsable output). A transport failure from Runner.Run, or exit 255 (a dropped
+// OpenSSH connection reported as Result.Code with a nil error), is returned and not cached, so a later connection
+// cannot replace a newer agent after a failed probe.
+func (s *Session) serverVersion(ctx context.Context) (string, error) {
 	if s.serverVer != nil {
-		return *s.serverVer
+		return *s.serverVer, nil
+	}
+	res, err := s.R.Run(ctx, binPath+" version 2>/dev/null", nil)
+	if err != nil {
+		return "", fmt.Errorf("reading the agent version: %w", err)
+	}
+	if res.Code == 255 {
+		return "", errors.New("reading the agent version: ssh exited 255")
 	}
 	v := ""
-	res, err := s.R.Run(ctx, binPath+" version 2>/dev/null", nil)
-	if err == nil && res.Code == 0 {
+	if res.Code == 0 {
 		// "berthy v1.2.0 linux/amd64"
 		if fields := strings.Fields(string(res.Stdout)); len(fields) >= 2 && fields[0] == "berthy" {
 			v = clean(fields[1])
 		}
 	}
 	s.serverVer = &v
-	return v
+	return v, nil
 }
 
 func shortSHA(sha string) string {
@@ -173,10 +183,25 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 		if src.local != "" {
 			same = f.BinSHA == src.sha
 		} else {
-			same = s.serverVersion(ctx) == src.version
+			server, err := s.serverVersion(ctx)
+			if err != nil {
+				return "", "", err
+			}
+			same = server == src.version
 		}
 		if same {
 			return StatusOK, installedText(src), nil
+		}
+		// --binary has no version and stays the explicit override; a non-release
+		// (dev) version on either side leaves Compare ok=false and skips this.
+		if src.version != "" {
+			server, err := s.serverVersion(ctx)
+			if err != nil {
+				return "", "", err
+			}
+			if c, ok := version.Compare(server, src.version); ok && c > 0 {
+				return "", "", fmt.Errorf("the server runs berthy %s, newer than this CLI (%s): upgrade this CLI, or pass --binary to install another build", server, src.version)
+			}
 		}
 	}
 	verb := "install"

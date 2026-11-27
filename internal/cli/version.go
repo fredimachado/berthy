@@ -63,11 +63,20 @@ func doctorAgentVersion(body []byte) (string, bool) {
 }
 
 // versionNote is the doctor's note when the agent runs a different release than this CLI, and "" otherwise. Dev builds on
-// either side never warn. agent is the agent's version, or empty when it reports none.
+// either side never warn. Equal precedence (including tags that differ only in build metadata) prints no note. agent is
+// the agent's version, or empty when it reports none.
 func versionNote(agent string) string {
 	cliVersion := version.String()
 	if !version.Release() || !version.IsRelease(agent) || agent == cliVersion {
 		return ""
+	}
+	if c, ok := version.Compare(agent, cliVersion); ok {
+		if c == 0 {
+			return ""
+		}
+		if c > 0 {
+			return fmt.Sprintf("note: the agent runs %s, this CLI is %s; upgrade this CLI", agent, cliVersion)
+		}
 	}
 	return fmt.Sprintf("note: the agent runs %s, this CLI is %s; berthy setup upgrades the agent", agent, cliVersion)
 }

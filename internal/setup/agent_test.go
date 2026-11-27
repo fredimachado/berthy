@@ -35,11 +35,13 @@ type call struct {
 
 // agentFake is a server for the agent's steps. It answers the scripts of setup by what they contain.
 type agentFake struct {
-	key       []byte
-	keyAnswer func(context.Context, []byte) (Result, error)
-	probe     []string
-	config    string // what reading the agent's configuration returns
-	version   string // what the installed binary's version command prints
+	key         []byte
+	keyAnswer   func(context.Context, []byte) (Result, error)
+	probe       []string
+	config      string // what reading the agent's configuration returns
+	version     string // what the installed binary's version command prints
+	versionErr  error  // when set, the version probe fails with a transport error
+	versionCode int    // when non-zero, the version probe returns that exit code with a nil error
 
 	prevBin, prevCfg bool  // what the swap finds already installed
 	waits            []int // exit codes of the successive restart-and-wait scripts; the rest are 0
@@ -82,6 +84,12 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	case script == "cat "+configPath:
 		return Result{Stdout: []byte(f.config)}, nil
 	case script == binPath+" version 2>/dev/null":
+		if f.versionErr != nil {
+			return Result{}, f.versionErr
+		}
+		if f.versionCode != 0 {
+			return Result{Code: f.versionCode}, nil
+		}
 		return Result{Stdout: []byte(f.version)}, nil
 	case strings.Contains(script, "cat > "+binPath+".new"):
 		sum := hash(in)
@@ -1008,6 +1016,20 @@ func TestBinaryStep(t *testing.T) {
 		{"BERTHY_RELEASE_URL on the internet over http", nil, func(o *Options) { release(o); o.ReleaseURL = "http://example.com/rel" }, StatusFailed, "BERTHY_RELEASE_URL must be an https URL, or an http URL on a loopback or private address", nil},
 		{"a development build", nil, func(o *Options) { o.Build = Build{OS: "darwin", Arch: "arm64", Version: "dev"} }, StatusFailed, "this CLI is a development build for darwin/arm64: pass --binary with a Linux amd64 build of Berthy", nil},
 		{"a development build for another Linux arch", nil, func(o *Options) { o.Build = Build{OS: "linux", Arch: "arm64", Path: arm, Version: "dev"} }, StatusFailed, "this CLI is a development build for linux/arm64: pass --binary with a Linux amd64 build of Berthy", nil},
+		{"a newer server refuses a release download", func(f *agentFake) { f.version = "berthy v1.3.0 linux/amd64\n" }, release, StatusFailed, "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build", nil},
+		{"a newer server refuses this CLI upload", func(f *agentFake) {
+			f.version = "berthy v1.3.0 linux/amd64\n"
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+		}, func(o *Options) {
+			o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
+		}, StatusFailed, "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build", nil},
+		{"--binary still replaces a newer server", func(f *agentFake) {
+			f.version = "berthy v1.3.0 linux/amd64\n"
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+		}, func(o *Options) { o.Binary = x86 }, StatusChanged, "uploaded --binary berthy, sha256 ", []string{"cat > /usr/local/bin/berthy.new"}},
+		{"a newer build-metadata tag refuses a release download", func(f *agentFake) {
+			f.version = "berthy v1.3.0+build.1 linux/amd64\n"
+		}, release, StatusFailed, "the server runs berthy v1.3.0+build.1, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build", nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1032,6 +1054,76 @@ func TestBinaryStep(t *testing.T) {
 			}
 			if tc.status == StatusChanged != s.staged.Binary {
 				t.Errorf("staged = %v for %s", s.staged.Binary, tc.status)
+			}
+		})
+	}
+	t.Run("a dry run refuses a newer server and stages nothing", func(t *testing.T) {
+		f := setUpAgent(t, x86)
+		f.version = "berthy v1.3.0 linux/amd64\n"
+		s := agentSession(t, f, x86, true, release)
+		var got []StepResult
+		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
+		r := stepOf(t, got, "binary")
+		want := "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build"
+		if r.Status != StatusFailed || r.Detail != want {
+			t.Fatalf("binary = %+v", r)
+		}
+		if s.staged.Binary {
+			t.Errorf("staged.Binary = true")
+		}
+		if f.ran(binPath + ".new") {
+			t.Errorf("a binary was staged on a dry run that refused")
+		}
+	})
+	for _, dry := range []bool{false, true} {
+		name := "a version probe transport error fails without staging"
+		if dry {
+			name = "a dry run fails a version probe transport error without staging"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setUpAgent(t, x86)
+			f.versionErr = errors.New("ssh: connection lost")
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+			s := agentSession(t, f, x86, dry, func(o *Options) {
+				o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
+			})
+			var got []StepResult
+			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
+			r := stepOf(t, got, "binary")
+			if r.Status != StatusFailed || !strings.Contains(r.Detail, "ssh: connection lost") {
+				t.Fatalf("binary = %+v", r)
+			}
+			if s.staged.Binary {
+				t.Errorf("staged.Binary = true")
+			}
+			if f.ran(binPath + ".new") {
+				t.Errorf("uploaded after a version probe transport error")
+			}
+		})
+	}
+	for _, dry := range []bool{false, true} {
+		name := "a version probe exit 255 fails without staging"
+		if dry {
+			name = "a dry run fails a version probe exit 255 without staging"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setUpAgent(t, x86)
+			f.versionCode = 255
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+			s := agentSession(t, f, x86, dry, func(o *Options) {
+				o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
+			})
+			var got []StepResult
+			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
+			r := stepOf(t, got, "binary")
+			if r.Status != StatusFailed || !strings.Contains(r.Detail, "reading the agent version") {
+				t.Fatalf("binary = %+v", r)
+			}
+			if s.staged.Binary {
+				t.Errorf("staged.Binary = true")
+			}
+			if f.ran(binPath + ".new") {
+				t.Errorf("uploaded after a version probe exit 255")
 			}
 		})
 	}

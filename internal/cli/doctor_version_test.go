@@ -68,6 +68,53 @@ func TestDoctorNotesADifferentReleaseOfTheAgent(t *testing.T) {
 	}
 }
 
+func TestDoctorNotesWhenTheAgentIsNewer(t *testing.T) {
+	stampCLI(t, "v1.0.0")
+	server := doctorVersionServer(t, "v1.1.0", false)
+	var out, errout bytes.Buffer
+	if code := Run([]string{"doctor", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	want := "note: the agent runs v1.1.0, this CLI is v1.0.0; upgrade this CLI"
+	if !strings.Contains(out.String(), "agent: v1.1.0\n") || !strings.Contains(out.String(), want+"\n") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "berthy setup upgrades the agent") {
+		t.Fatalf("recommended a setup upgrade for a newer agent:\n%s", out.String())
+	}
+}
+
+func TestDoctorNotesWhenTheAgentHasBuildMetadata(t *testing.T) {
+	stampCLI(t, "v1.0.0")
+	server := doctorVersionServer(t, "v1.1.0+build.1", false)
+	var out, errout bytes.Buffer
+	if code := Run([]string{"doctor", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	want := "note: the agent runs v1.1.0+build.1, this CLI is v1.0.0; upgrade this CLI"
+	if !strings.Contains(out.String(), "agent: v1.1.0+build.1\n") || !strings.Contains(out.String(), want+"\n") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "berthy setup upgrades the agent") {
+		t.Fatalf("recommended a setup upgrade for a newer agent:\n%s", out.String())
+	}
+}
+
+func TestDoctorSkipsNoteWhenOnlyBuildMetadataDiffers(t *testing.T) {
+	stampCLI(t, "v1.3.0+build.1")
+	server := doctorVersionServer(t, "v1.3.0+build.2", false)
+	var out, errout bytes.Buffer
+	if code := Run([]string{"doctor", "-e", "dev", "--config", ingressCLIConfig(t, server.URL)}, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "agent: v1.3.0+build.2\n") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "note:") || strings.Contains(errout.String(), "note:") {
+		t.Fatalf("noted equal-precedence builds:\n%s", out.String())
+	}
+}
+
 func TestDoctorNeverWarnsAboutADevBuild(t *testing.T) {
 	for _, tc := range []struct{ cli, agent string }{
 		{"dev", "v0.9.0"},
