@@ -1,6 +1,9 @@
 package setup
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,7 @@ const (
 	oldInvocation   = "11111111111111111111111111111111"
 	newInvocation   = "22222222222222222222222222222222"
 	testTarget      = "shop/lab"
+	testReasonPath  = "/run/berthy-activation-guard.reason"
 )
 
 func stagedAddition() Staged {
@@ -47,7 +51,12 @@ echo "$*" >> "$CALLS"
 mode=$(cat "$CALLS.mode")
 case "$1" in
   is-failed) exit 0 ;;
-  restart) touch "$CALLS.restarted"; exit 0 ;;
+  restart)
+    touch "$CALLS.restarted"
+    if [ -e "$CALLS.restore-result" ] && [ "$(cat "${STATE%/*}/cfg")" = old-cfg ]; then
+      cp "$CALLS.restore-result" "${STATE%/*}/startup-result"
+    fi
+    exit 0 ;;
   show)
     inv=`+oldInvocation+`
     if [ -e "$CALLS.restarted" ] && [ "$mode" != same-invocation ]; then inv=`+newInvocation+`; fi
@@ -63,7 +72,7 @@ if [ "$(cat "$CALLS.mode")" = invocation-changes ]; then touch "$CALLS.changed";
 exit 0
 `)
 	shellTool(t, f.tools, "id", "echo 4242")
-	shellTool(t, f.tools, "stat", "echo 0:4242:620:1")
+	shellTool(t, f.tools, "stat", `case "$2" in '%u:%a:%h') echo 0:600:1;; *) echo 0:4242:620:1;; esac`)
 	shellTool(t, f.tools, "ss", `
 pid=123
 if [ "$(cat "$CALLS.mode")" = wrong-listener ]; then pid=1234; fi
@@ -74,7 +83,7 @@ printf 'LISTEN 0 128 127.0.0.1:7710 0.0.0.0:* users:(("agent",pid=%s,fd=7))\n' "
 
 func (f startupFixture) run(t *testing.T, script string, args ...string) (int, string, string, string) {
 	t.Helper()
-	script = strings.ReplaceAll(script, testStartupPath, f.result)
+	script = strings.NewReplacer(testStartupPath, f.result, testReasonPath, filepath.Join(f.dir, "reason")).Replace(script)
 	return f.resumeFixture.run(t, script, args...)
 }
 
@@ -133,5 +142,117 @@ func TestGuardChecksAddedEnvironmentBeforeKeepingCandidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type startupActivation struct {
+	startupFixture
+	t                  *testing.T
+	timerFirst         bool
+	journalUnavailable bool
+}
+
+func (*startupActivation) Target() string { return "fixture" }
+
+func (r *startupActivation) shell(script string, input io.Reader, args ...string) (Result, error) {
+	script = strings.NewReplacer(testStartupPath, r.result, testReasonPath, filepath.Join(r.dir, "reason"),
+		guardPath, filepath.Join(r.dir, "guard"), binPath, r.bin, configPath, r.cfg).Replace(script)
+	code, out, _, _ := r.runInput(r.t, script, input, args...)
+	return Result{Code: code, Stdout: []byte(out)}, nil
+}
+
+func (r *startupActivation) guard(args ...string) (Result, error) {
+	raw, err := os.ReadFile(filepath.Join(r.dir, "guard"))
+	if err != nil {
+		return Result{}, err
+	}
+	return r.shell(string(raw), nil, args...)
+}
+
+func (r *startupActivation) Run(_ context.Context, script string, input io.Reader) (Result, error) {
+	switch {
+	case strings.HasPrefix(script, "journalctl "):
+		if r.journalUnavailable {
+			return Result{}, errors.New("journal unavailable")
+		}
+		return Result{Stdout: []byte("cannot open state\n" + strings.Repeat("later journal line\n", 25))}, nil
+	case strings.HasPrefix(script, "/bin/sh "+guardPath):
+		return r.guard("no", "yes", "now")
+	case strings.Contains(script, "systemctl restart berthy") && r.timerFirst:
+		r.timerFirst = false
+		result, err := r.guard("no", "yes")
+		if err != nil || result.Code != 0 {
+			r.t.Fatalf("timer guard: %+v, %v", result, err)
+		}
+	}
+	return r.shell(script, input)
+}
+
+func newStartupActivation(t *testing.T) *startupActivation {
+	t.Helper()
+	candidate := startupRecord(newInvocation, "shop/lab\tfailed\tcannot open state\n", "1")
+	f := newStartupFixture(t, candidate, "")
+	r := &startupActivation{startupFixture: f, t: t}
+	shellTool(t, f.tools, "systemd-run", "exit 0")
+	for path, body := range map[string]string{
+		f.cfg: "old-cfg", f.cfg + ".new": "new-cfg",
+		f.calls + ".restore-result": startupRecord(oldInvocation, "other/lab\tstarted\t\n", "1"),
+	} {
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return r
+}
+
+func TestActivationReportsTargetReasonAfterJournalRollsPastIt(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		timer, journalUnavailable bool
+	}{{"foreground", false, false}, {"timer", true, false}, {"foreground without journal", false, true}, {"timer without journal", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStartupActivation(t)
+			r.timerFirst, r.journalUnavailable = tc.timer, tc.journalUnavailable
+			err := Activate(context.Background(), r, "127.0.0.1:7710", stagedAddition(), time.Second)
+			var activation *ActivateError
+			if !errors.As(err, &activation) || activation.ConfigOutcome != ConfigPrevious ||
+				!strings.Contains(activation.Message, "shop/lab: cannot open state") {
+				t.Errorf("activation = %+v, want previous config and exact target reason", err)
+			}
+			data, cfgErr := os.ReadFile(r.cfg)
+			raw, resultErr := os.ReadFile(r.result)
+			if cfgErr != nil || string(data) != "old-cfg" || resultErr != nil || !strings.Contains(string(raw), oldInvocation) {
+				t.Errorf("restored config=%q (%v), restored result=%q (%v)", data, cfgErr, raw, resultErr)
+			}
+		})
+	}
+}
+
+func TestNewActivationCannotReusePriorFailureReason(t *testing.T) {
+	r := newStartupActivation(t)
+	ctx := context.Background()
+	err := Activate(ctx, r, "127.0.0.1:7710", stagedAddition(), time.Second)
+	if err == nil || !strings.Contains(err.Error(), "shop/lab: cannot open state") {
+		t.Errorf("first activation did not retain its reason: %v", err)
+	}
+	reason := filepath.Join(r.dir, "reason")
+	if _, err := os.Stat(reason); err != nil {
+		t.Errorf("first swap did not preserve its companion file: %v", err)
+	}
+	if err := os.WriteFile(r.cfg+".new", []byte("new-cfg"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(r.calls + ".restarted"); err != nil {
+		t.Fatal(err)
+	}
+	// The result still names the restored invocation, even after the new candidate restarts.
+	err = Activate(ctx, r, "127.0.0.1:7710", stagedAddition(), time.Second)
+	var activation *ActivateError
+	if !errors.As(err, &activation) || activation.ConfigOutcome != ConfigPrevious ||
+		strings.Contains(activation.Message, "shop/lab: cannot open state") {
+		t.Errorf("second activation = %v, want previous config without the old target reason", err)
+	}
+	if _, err := os.Stat(reason); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stale reason survived the second swap: %v", err)
 	}
 }

@@ -1,13 +1,70 @@
 package setup
 
-import "berthy/internal/scope"
+import (
+	"encoding/hex"
+	"regexp"
+	"strings"
+
+	"berthy/internal/scope"
+	"berthy/internal/state"
+)
 
 const startupResult = "/run/berthy-startup/result"
+const guardReason = "/run/berthy-activation-guard.reason"
+
+var startupReason = regexp.MustCompile("^(" + regexp.QuoteMeta(state.ErrWrongKey.Error()) +
+	"|permission denied opening state|cannot open state|state belongs to another environment" +
+	"|cannot read state claims|cannot reserve configured network|deployment recovery failed)$")
+
+// The callers hold the activation lock. Replacing the reason atomically keeps it usable after interrupted recovery.
+func reasonHelpers() string {
+	return "reason_file=" + guardReason + "\n" + `
+record_reason() (
+  umask 077
+  tmp=$(mktemp "$reason_file.XXXXXX") || exit 1
+  trap 'rm -f "$tmp"' EXIT
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" > "$tmp" && mv -f "$tmp" "$reason_file"
+)
+report_reason() {
+  [ -f "$reason_file" ] && [ ! -L "$reason_file" ] || return 0
+  [ "$(stat -c '%u:%a:%h' "$reason_file" 2>/dev/null)" = "0:600:1" ] || return 0
+  LC_ALL=C awk -F '\t' '
+    NR == 1 && NF == 3 { row=$0 }
+    END { if (NR == 1 && row != "") printf "guard-reason\t%s\n", row }
+  ' "$reason_file" || :
+}
+`
+}
+
+func parseGuardReason(out []byte, added *scope.ID) string {
+	if added == nil {
+		return ""
+	}
+	var detail string
+	for _, line := range strings.Split(string(out), "\n") {
+		raw, ok := strings.CutPrefix(line, "guard-reason\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Split(raw, "\t")
+		if detail != "" || len(fields) != 3 || fields[1] != added.String() {
+			return ""
+		}
+		inv, reason := fields[0], fields[2]
+		if _, err := hex.DecodeString(inv); err != nil || len(inv) != 32 || strings.Trim(inv, "0") == "" || inv != strings.ToLower(inv) ||
+			!startupReason.MatchString(reason) {
+			return ""
+		}
+		detail = fields[1] + ": " + reason
+	}
+	return detail
+}
 
 // candidateProbe binds the result and the listening socket to the service invocation that answers the health request.
 func candidateProbe(listen string, target scope.ID) string {
 	return "target=" + shellQuote(target.String()) + "\n" +
 		"endpoint=" + shellQuote(listen) + "\n" +
+		"public_reason=" + shellQuote(startupReason.String()) + "\n" +
 		"startup_result=" + startupResult + "\n" + `
 identity() {
   systemctl show --property=InvocationID --property=MainPID berthy 2>/dev/null |
@@ -25,7 +82,7 @@ target_result() {
   group=$(id -g berthy) || return 1
   [ "$(stat -c '%u:%g:%a:%h' "$startup_result")" = "0:$group:620:1" ] || return 1
   [ "$(tail -c 1 "$startup_result" | wc -l)" -eq 1 ] || return 1
-  LC_ALL=C awk -F '\t' -v invocation="$1" -v target="$target" '
+  LC_ALL=C awk -F '\t' -v invocation="$1" -v target="$target" -v reason="$public_reason" '
     NR == 1 {
       if (NF != 3 || $1 != "berthy-startup-v1" || ($2 "") != (invocation "") || $3 !~ /^[1-9][0-9]*$/) bad=1
       count=$3
@@ -40,7 +97,7 @@ target_result() {
       if (complete || NF != 3 || length($1) > 59 || $1 !~ /^[a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9-]*$/ ||
           seen[$1]++ || ($2 != "started" && $2 != "failed") ||
           ($2 == "started" && $3 != "") ||
-          ($2 == "failed" && ($3 == "" || length($3) > 160 || $3 ~ /[^ -~]/))) bad=1
+          ($2 == "failed" && $3 !~ reason)) bad=1
       rows++
       if ($1 == target) row=($2 == "failed" ? $2 " " $3 : $2)
     }
@@ -59,6 +116,9 @@ candidate_health() {
   case "$row" in
     'failed '*)
       [ "$(identity)" = "$current" ] || return 1
+      record_reason "$inv" "$target" "${row#failed }" || :
+      set_state recovering || :
+      report_reason
       exit 1 ;;
   esac
   owns_listener "$pid" && ` + healthProbeCommand(listen, `"${1}s"`) + ` &&
