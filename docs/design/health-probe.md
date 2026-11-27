@@ -10,8 +10,9 @@ provide the executable. Issue #18 needs the same mechanism for workers.
 
 The experiment used a single-node Swarm on Docker Engine 29.7.2 in WSL.
 It used the isolated socket `unix:///var/tmp/berthy-phase2/docker.sock`, a
-static Go probe, and a scratch-style image imported from a tar containing
-only a static HTTP server. The image's health check was the exec form
+static Go probe, and a one-binary, shell-free image imported from a tar.
+The image runs the experiment executable in `serve` mode. Its health check
+was the exec form
 `["CMD", "/.berthy/probe", "http"]`. The probe requested
 `http://127.0.0.1:18080/health` and returned success on 2xx. Commands below
 are excerpts from `spike10-run.sh`, run with
@@ -25,7 +26,9 @@ are excerpts from `spike10-run.sh`, run with
    using the nonexistent source `spike10-absent`, `d service ps --no-trunc
    spike10-missing` showed a rejected task: `bind source path does not exist`.
    Swarm kept assigning replacement tasks. This tests one Engine version and
-   one node, not all supported versions or a real multi-node deployment.
+   one node, not all supported versions or a real multi-node deployment. Engine
+   25 is the supported minimum (`docs/spec-v1.md:329`); it was not available
+   here and its file-bind and missing-source behavior remains to be tested.
 
 2. **Agent upgrades.** After `mv -f spike10-next spike10-probe` on the host,
    `d exec <old-task> /.berthy/probe http` still printed `old 200`. A new
@@ -36,8 +39,9 @@ are excerpts from `spike10-run.sh`, run with
 3. **Permissions.** The bind service also used `--user 12345:12345
    --read-only --cap-drop ALL`, with no security option override. `d inspect`
    showed user `12345:12345`, `ReadonlyRootfs=true`, `CapDrop=["ALL"]`,
-   and `SecurityOpt=null`. Its health check passed. This is Docker's default
-   seccomp configuration on this daemon. The host binary was world-executable.
+   and `SecurityOpt=null`. Its health check passed with no service security
+   override. The experiment did not establish the applied seccomp profile.
+   The host binary was world-executable.
 
 4. **Named volume.** `d volume create spike10-volume`, then `d run --rm
    --name spike10-seed` with the host probe and the volume mounted, copied the
@@ -63,7 +67,12 @@ are excerpts from `spike10-run.sh`, run with
    Make the new mount and health command explicit in adoption differences,
    including when absent from the live service. Existing host mounts are
    rejected by adoption's runtime safety check (`internal/deploy/adopt.go:14`);
-   do not broadly exempt host mounts to accommodate this feature.
+   do not broadly exempt host mounts to accommodate this feature. The same
+   `validateInheritedRuntime` check runs for restart, scale and exec
+   (`internal/deploy/operations.go:133`, `internal/deploy/operations.go:678`).
+   These operations must accept the exact expected read-only probe mount for
+   an opted-in role. Test each operation and reject a different source, target
+   or read-only flag.
 
 6. **Compose.** Defer a Berthy-specific form for Compose. Berthy writes the
    supplied Compose file (`internal/deploy/compose.go:173`), asks Compose to
@@ -83,15 +92,18 @@ checked against the new form. Do not mount the helper server as-is.
 
 ## Chosen mechanism
 
-Use a small static, versioned probe executable installed on every eligible node
-at a stable path. Bind it read-only into each opted-in task at a reserved path
-and use Docker's exec-form health check. Fail preflight with an actionable
-error when the file, architecture, permissions or version is wrong. A
-single-node preflight cannot prove readiness on other nodes; either verify each
-eligible node or constrain placement to nodes whose installation is verified.
-Protect the host path from untrusted replacement, reserve the container target,
-and define what happens if an image or user mount already occupies it. Keep
-old probe versions available for rollback and for tasks already running.
+On today's single server, bind the installed agent binary itself read-only,
+for example `/usr/local/bin/berthy` to `/.berthy/berthy`. Use Docker's
+exec-form health check, `["CMD", "/.berthy/berthy", "probe", "uptime", ...]`.
+There is no separate probe installation. The `probe uptime` interface must
+remain stable across agent versions: a task recreated from an older service
+spec mounts the binary currently at the host path, not the old inode. Protect
+the host path from untrusted replacement, reserve the container target, and
+handle collisions with image paths or user mounts. Report an absent bind source
+as a task rejection; a present but incompatible binary can let the app start
+while its health check fails. Preflight should report detectable problems.
+Version-specific bind sources and per-node verification belong to multi-server
+work in #16.
 
 ## How #18 uses it
 
@@ -102,24 +114,32 @@ The experiment's `d exec <task> /.berthy/probe uptime 99999s` returned 1;
 must obtain or correctly establish the Linux clock tick rate and parse the
 process name safely. Validate timing against deploy timeout, and set check
 interval and start period so early failures do not exhaust retries before the
-threshold. Test an actual short-lived worker and a surviving worker in Swarm;
-the experiment did not test rollout timing or rollback.
+threshold. `startFailed` counts only failed and rejected tasks
+(`internal/deploy/rollout.go:224`), so a worker that exits 0 before the
+threshold can repeatedly complete without consuming start attempts. Change
+that accounting for this form. Test workers exiting both 0 and 1 before the
+threshold; both must exhaust the configured start attempts and preserve the
+previous release. Also test a surviving worker. The experiment did not test
+rollout timing or rollback.
 
 ## Decision
 
-Build this in slices, subject to solving installation and verification on every
-eligible node. First ship the probe and secure per-node installation with
-versioned rollback and failure reporting. Next add HTTP health, deterministic
-plans and adoption differences, validation, generated reference and Swarm e2e
-tests. Add uptime in a separate slice with timing and failed-start tests. TCP
-can follow when needed. Do not add Compose injection in these slices.
+Build on the single-server mechanism after establishing file-bind and
+missing-source behavior on Engine 25, the supported minimum. First add the
+stable agent probe interface and read-only mount, runtime safety checks,
+plans and adoption differences. Add uptime with validation, generated reference,
+start-attempt accounting and Swarm e2e tests. Add HTTP health and its tests as
+a separate slice; TCP can follow when needed. Keep multi-server distribution
+and version-specific sources in #16. Do not add Compose injection in these
+slices.
 
 ## Risks
 
-A missing or incompatible binary prevents tasks from starting. A stale inode
-keeps the old probe until a task is recreated. Node provisioning and rollback
-must account for that behavior and for mixed agent versions. Custom seccomp,
-user namespaces, mount policies, nonstandard `/proc`, different architectures,
-and older Docker versions remain untested. Uptime proves only survival, not
-that a worker is doing useful work. Protect the probe path because every task
-executes its contents.
+An absent bind source rejects the task. A present but incompatible binary
+can allow the app to start while the health check fails and readiness is never
+established. A running task keeps the old inode until recreated; a recreated
+old spec gets the current binary, so the probe interface must remain compatible.
+Custom seccomp, user namespaces, mount policies, nonstandard `/proc`, different
+architectures and Engine 25 remain untested. Uptime proves only survival, not
+that a worker is doing useful work. Protect the agent path because every
+opted-in task executes its contents.
