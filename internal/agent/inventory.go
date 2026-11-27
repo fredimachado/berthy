@@ -74,6 +74,12 @@ func appInventory(ctx context.Context, e *engine.Engine, d *deploy.Controller) (
 	if err != nil {
 		return nil, err
 	}
+	listedIDs := make(map[string]string, len(bindings))
+	for _, app := range apps {
+		if app.Ref.Kind == "swarm" {
+			listedIDs[app.Ref.Name] = app.ServiceID
+		}
+	}
 	ids := map[string]string{}
 	for _, b := range bindings {
 		live, err := e.InspectService(ctx, b.Name)
@@ -84,7 +90,9 @@ func appInventory(ctx context.Context, e *engine.Engine, d *deploy.Controller) (
 			}
 			return nil, err
 		}
-		ids[b.Name] = live.ID
+		if live.ID == listedIDs[b.Name] {
+			ids[b.Name] = live.ID
+		}
 	}
 	if onlyOwned {
 		claims, err := d.Store.Claims(ctx)

@@ -181,7 +181,7 @@ func (e *Engine) Apps(ctx context.Context) ([]api.App, error) {
 		}
 	}
 	for _, s := range ss {
-		a := &api.App{Ref: api.AppRef{Kind: "swarm", Name: s.Spec.Name}, Roles: []api.Role{{Name: s.Spec.Name, Replicas: []api.Replica{}}}}
+		a := &api.App{Ref: api.AppRef{Kind: "swarm", Name: s.Spec.Name}, ServiceID: s.ID, Roles: []api.Role{{Name: s.Spec.Name, Replicas: []api.Replica{}}}}
 		if s.Spec.Mode.Replicated != nil {
 			a.Roles[0].Desired = &s.Spec.Mode.Replicated.Replicas
 		}

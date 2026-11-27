@@ -90,13 +90,15 @@ func TestPSAndAppMonitorShowOnlyOwnedAppsWithUnreadableSibling(t *testing.T) {
 		case "/containers/json":
 			fmt.Fprint(w, `[]`)
 		case "/services":
-			fmt.Fprint(w, `[{"ID":"ours","Spec":{"Name":"web-svc","Mode":{"Replicated":{"Replicas":1}}}},{"ID":"replacement","Spec":{"Name":"old-svc"}},{"ID":"b","Spec":{"Name":"foreign"}},{"ID":"c","Spec":{"Name":"unattributed"}},{"ID":"d","Spec":{"Name":"legacy"}}]`)
+			fmt.Fprint(w, `[{"ID":"ours","Spec":{"Name":"web-svc","Mode":{"Replicated":{"Replicas":1}}}},{"ID":"replacement","Spec":{"Name":"old-svc"}},{"ID":"listed","Spec":{"Name":"flipped-svc"}},{"ID":"b","Spec":{"Name":"foreign"}},{"ID":"c","Spec":{"Name":"unattributed"}},{"ID":"d","Spec":{"Name":"legacy"}}]`)
 		case "/services/web-svc":
 			fmt.Fprint(w, `{"ID":"ours"}`)
 		case "/services/old-svc":
 			fmt.Fprint(w, `{"ID":"replacement"}`)
+		case "/services/flipped-svc":
+			fmt.Fprint(w, `{"ID":"bound"}`)
 		case "/tasks":
-			fmt.Fprint(w, `[{"ID":"local-task","ServiceID":"ours","DesiredState":"running","Status":{"State":"running"}},{"ID":"foreign-task","ServiceID":"replacement","DesiredState":"running","Status":{"State":"running"}}]`)
+			fmt.Fprint(w, `[{"ID":"local-task","ServiceID":"ours","DesiredState":"running","Status":{"State":"running"}},{"ID":"foreign-task","ServiceID":"replacement","DesiredState":"running","Status":{"State":"running"}},{"ID":"listed-task","ServiceID":"listed","DesiredState":"running","Status":{"State":"running"}}]`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -107,8 +109,8 @@ func TestPSAndAppMonitorShowOnlyOwnedAppsWithUnreadableSibling(t *testing.T) {
 	}
 	defer h.Close()
 	r := h.runtimes[id]
-	recordBoundRelease(t, r.deployment.Store, "seed", `{"project":"one","network":"overlay","apps":{"web":{"kind":"image","image":"example/web","roles":{"web":{},"old":{}}}}}`,
-		[]state.Binding{{App: "web", Role: "web", Name: "web-svc", ServiceID: "ours"}, {App: "web", Role: "old", Name: "old-svc", ServiceID: "stale"}})
+	recordBoundRelease(t, r.deployment.Store, "seed", `{"project":"one","network":"overlay","apps":{"web":{"kind":"image","image":"example/web","roles":{"web":{},"old":{},"flipped":{}}}}}`,
+		[]state.Binding{{App: "web", Role: "web", Name: "web-svc", ServiceID: "ours"}, {App: "web", Role: "old", Name: "old-svc", ServiceID: "stale"}, {App: "web", Role: "flipped", Name: "flipped-svc", ServiceID: "bound"}})
 	ctx := context.Background()
 	if err = r.deployment.Store.AddClaims(ctx, []state.Claim{{Kind: state.ClaimService, Name: "legacy"}, {Kind: state.ClaimService, Name: "old-svc"}}); err != nil {
 		t.Fatal(err)
@@ -120,10 +122,13 @@ func TestPSAndAppMonitorShowOnlyOwnedAppsWithUnreadableSibling(t *testing.T) {
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &apps) != nil {
 		t.Errorf("scoped apps: %d %s", w.Code, w.Body.String())
 	} else if len(apps) != 2 || apps[0].Ref != (api.AppRef{Kind: "image", Name: "web"}) ||
-		apps[1].Ref != (api.AppRef{Kind: "swarm", Name: "legacy"}) || len(apps[0].Roles) != 2 {
+		apps[1].Ref != (api.AppRef{Kind: "swarm", Name: "legacy"}) || len(apps[0].Roles) != 3 {
 		t.Errorf("owned apps: %+v", apps)
 	} else {
-		old, live := apps[0].Roles[0], apps[0].Roles[1]
+		flipped, old, live := apps[0].Roles[0], apps[0].Roles[1], apps[0].Roles[2]
+		if flipped.Name != "flipped" || flipped.Running != 0 || len(flipped.Replicas) != 0 {
+			t.Errorf("listed service was attributed to a different inspected ID: %+v", flipped)
+		}
 		if old.Name != "old" || old.Running != 0 || len(old.Replicas) != 0 ||
 			live.Name != "web" || live.Running != 1 || len(live.Replicas) != 1 || live.Replicas[0].TaskID != "local-task" {
 			t.Errorf("owned roles: %+v", apps[0].Roles)
@@ -134,7 +139,7 @@ func TestPSAndAppMonitorShowOnlyOwnedAppsWithUnreadableSibling(t *testing.T) {
 		names = append(names, check.Name())
 	}
 	slices.Sort(names)
-	if want := []string{"down:web/old", "down:web/web", "restarts:web/old", "restarts:web/web"}; !slices.Equal(names, want) {
+	if want := []string{"down:web/flipped", "down:web/old", "down:web/web", "restarts:web/flipped", "restarts:web/old", "restarts:web/web"}; !slices.Equal(names, want) {
 		t.Errorf("app checks: got %v, want %v", names, want)
 	}
 }
