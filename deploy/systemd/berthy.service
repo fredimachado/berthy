@@ -7,6 +7,10 @@ Wants=network-online.target
 User=berthy
 Group=berthy
 SupplementaryGroups=docker
+ExecStartPre=+/usr/bin/install -d -o root -g berthy -m 0750 /run/berthy-startup
+ExecStartPre=+/usr/bin/rm -f /run/berthy-startup/result
+ExecStartPre=+/usr/bin/install -o root -g berthy -m 0620 /dev/null /run/berthy-startup/result
+Environment=BERTHY_STARTUP_RESULT=/run/berthy-startup/result
 ExecStart=/usr/local/bin/berthy agent --config /etc/berthy/agent.json
 Restart=on-failure
 NoNewPrivileges=true

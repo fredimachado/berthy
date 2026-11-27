@@ -218,6 +218,12 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 			fmt.Fprintln(errout, err)
 			return 1
 		}
+		if path := os.Getenv("BERTHY_STARTUP_RESULT"); path != "" {
+			if err := publishStartupResult(host, path, os.Getenv("INVOCATION_ID")); err != nil {
+				fmt.Fprintln(errout, "publishing startup result:", err)
+				return 1
+			}
+		}
 		server := http.Server{Addr: f.Listen, Handler: host, ReadHeaderTimeout: 5 * time.Second}
 		shutdown := make(chan struct{})
 		go func() {
