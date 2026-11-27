@@ -402,8 +402,8 @@ func (g *approvalGate) protected(ctx context.Context) (bool, error) {
 }
 
 // hold answers a change that an agent token asked for, when the environment is protected: it stores the request as a pending
-// approval and tells the agent so, and nothing changes. It returns false, and writes nothing, when the request is to be
-// served as usual: the environment is not protected, or the request is a dry run.
+// approval and tells the agent so, and nothing changes. It serves a dry run as a planning call. It returns false and writes
+// nothing only when the environment is not protected.
 func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) bool {
 	ctx := r.Context()
 	manifestProtected := false
