@@ -90,6 +90,9 @@ func TestCompareOrdersReleaseVersions(t *testing.T) {
 		{"v1.10.0", "v1.9.0", 1},
 		{"v10.0.0", "v9.99.99", 1},
 		{"v1.0.0-rc.1", "v1.0.0-rc.1", 0},
+		{"v1.3.0+build.1", "v1.2.3", 1},
+		{"v1.3.0+a", "v1.3.0+b", 0},
+		{"v1.0.0-rc.1+build.1", "v1.0.0", -1},
 	} {
 		got, ok := Compare(tc.a, tc.b)
 		if !ok || got != tc.want {
