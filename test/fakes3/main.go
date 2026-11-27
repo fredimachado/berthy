@@ -42,6 +42,15 @@ type failRule struct {
 	status int
 }
 
+// hold makes requests for op wait until it is released. A new arm releases the previous hold.
+type hold struct {
+	op      string
+	release chan struct{} // closed by clearHold or by the next arm
+	entered chan struct{} // closed when the first matching request starts waiting
+	once    sync.Once
+	waiting int // guarded by fake.mu
+}
+
 type fake struct {
 	bucket  string
 	backend *s3mem.Backend
@@ -49,6 +58,7 @@ type fake struct {
 
 	mu   sync.Mutex
 	rule *failRule
+	hold *hold // nil when no hold is armed
 }
 
 func newFake(bucket string) (*fake, error) {
@@ -69,6 +79,7 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if op := s3Op(r); op != "" {
+		f.waitHold(op)
 		if status, fire := f.takeFailure(op); fire {
 			_, _ = io.Copy(io.Discard, r.Body)
 			writeError(w, status)
@@ -76,6 +87,32 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.s3.ServeHTTP(w, r)
+}
+
+// waitHold blocks while a hold is armed for op. It captures that hold so a later arm's waiter
+// count is separate. The mutex is not held across the wait, so DELETE /_fake/hold can release it.
+func (f *fake) waitHold(op string) {
+	f.mu.Lock()
+	h := f.hold
+	if h == nil || h.op != op {
+		f.mu.Unlock()
+		return
+	}
+	h.waiting++
+	h.once.Do(func() { close(h.entered) })
+	release := h.release
+	f.mu.Unlock()
+	<-release
+	f.mu.Lock()
+	h.waiting--
+	f.mu.Unlock()
+}
+
+// currentHold is the armed hold, or nil. Tests synchronize on its entered channel.
+func (f *fake) currentHold() *hold {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hold
 }
 
 // s3Op names the operation a request performs when it is one that a failure can be injected into, and is empty otherwise.
@@ -145,6 +182,25 @@ func (f *fake) control(w http.ResponseWriter, r *http.Request) {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	case controlPrefix + "hold":
+		switch r.Method {
+		case http.MethodGet:
+			f.mu.Lock()
+			view := holdView{}
+			if f.hold != nil {
+				view.Op = f.hold.op
+				view.Waiting = f.hold.waiting
+			}
+			f.mu.Unlock()
+			writeJSON(w, view, nil)
+		case http.MethodPost:
+			f.setHold(w, r)
+		case http.MethodDelete:
+			f.clearHold()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	case controlPrefix + "objects":
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -170,6 +226,15 @@ type failRequest struct {
 	Status int    `json:"status"`
 }
 
+type holdRequest struct {
+	Op string `json:"op"`
+}
+
+type holdView struct {
+	Op      string `json:"op"`
+	Waiting int    `json:"waiting"`
+}
+
 // setRule installs a failure. The matching request after the first After ones fails with Status, which defaults to 500.
 func (f *fake) setRule(w http.ResponseWriter, r *http.Request) {
 	var req failRequest
@@ -190,6 +255,37 @@ func (f *fake) setRule(w http.ResponseWriter, r *http.Request) {
 	f.rule = &failRule{op: req.Op, skip: req.After, status: req.Status}
 	f.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// setHold arms a hold so matching S3 requests wait until clearHold. A prior hold is released first.
+func (f *fake) setHold(w http.ResponseWriter, r *http.Request) {
+	var req holdRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || !failOps[req.Op] {
+		http.Error(w, "invalid hold", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	if f.hold != nil {
+		close(f.hold.release)
+	}
+	f.hold = &hold{
+		op:      req.Op,
+		release: make(chan struct{}),
+		entered: make(chan struct{}),
+	}
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fake) clearHold() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hold != nil {
+		close(f.hold.release)
+		f.hold = nil
+	}
 }
 
 type objectView struct {

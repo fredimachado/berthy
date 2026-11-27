@@ -364,6 +364,7 @@ func TestArchiveStreamsTheVolumeThroughAHardenedContainer(t *testing.T) {
 				"Type": "volume", "Source": "data", "Target": "/source", "ReadOnly": true,
 				"VolumeOptions": map[string]any{"NoCopy": true},
 			}},
+			"LogConfig": map[string]any{"Type": "none"},
 		},
 	})
 	if got := spec(t, c); !reflect.DeepEqual(got, want2) {
@@ -531,6 +532,7 @@ func TestRestoreExtractsIntoANewVolume(t *testing.T) {
 				"Type": "volume", "Source": "copy", "Target": "/target", "ReadOnly": false,
 				"VolumeOptions": map[string]any{"NoCopy": true},
 			}},
+			"LogConfig": map[string]any{"Type": "none"},
 		},
 	})
 	if got := spec(t, c); !reflect.DeepEqual(got, want2) {

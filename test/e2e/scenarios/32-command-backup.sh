@@ -5,8 +5,9 @@
 # command's error, and its detail keeps the end of its standard error. `restore --exec` loads the backup into a scratch
 # database through pg_restore and the data matches, after the object's SHA-256 was checked; a tampered object is refused and the
 # command never starts. An image app's command runs in a container of its own that Docker does not log, and one past its
-# timeout leaves no container. `restore --into` refuses a command backup, and `config validate` refuses a backup with both
-# `volume` and `command`, or with neither. The database service runs postgres:17-alpine, which the fixture has.
+# timeout leaves no container. A volume archive helper likewise uses log driver none (caught mid-upload via a fake-S3 hold).
+# `restore --into` refuses a command backup, and `config validate` refuses a backup with both `volume` and `command`, or with
+# neither. The database service runs postgres:17-alpine, which the fixture has.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -20,8 +21,22 @@ services:
 YML
 
 manifest() {
-  base_manifest
+  # web carries a volume so a volume-archive helper can be caught beside the command-backup log-driver check.
   cat <<YML
+project: $PROJECT
+apps:
+  web:
+    kind: image
+    image: $REG/e2e/web
+    roles:
+      main:
+        volumes: ["data:/data"]
+        health:
+          test: ["CMD", "true"]
+          interval: 2s
+          timeout: 2s
+          start_period: 1s
+          retries: 3
   db:
     kind: compose
     file: compose.yml
@@ -64,10 +79,26 @@ backups:
     command: ["sh", "-c", "echo started; sleep 60"]
     timeout: 3s
     destination: offsite
+  vol-data:
+    app: web
+    volume: data
+    destination: offsite
 YML
 }
 
 backup_containers() { d ps -aq --filter label=berthy.environment=$ENVN --filter label=berthy.oneoff=backup; }
+archive_helpers() {
+  d ps -aq \
+    --filter label=berthy.project=$PROJECT \
+    --filter label=berthy.environment=$ENVN \
+    --filter label=berthy.helper=archive
+}
+# release_s3_hold: DELETE /_fake/hold and require 204. Callers must not wait on a backup while the hold may still be armed.
+release_s3_hold() {
+  local code
+  code=$(curl_local -o /dev/null -w '%{http_code}' -X DELETE "http://$S3_LISTEN/_fake/hold") || return 1
+  [ "$code" = 204 ]
+}
 psql_db() { adm exec db --service postgres -- psql -U postgres "$@" 2>&1; }
 # has_line OUTPUT LINE: true when LINE is a whole line of OUTPUT. The CLI prints a command's output between the events and the
 # operation's record, so an answer is found as a line and not as the last one.
@@ -206,6 +237,100 @@ expect_eq "the container carries the backup's label" "slow" "$(d inspect --forma
 wait "$slowpid"; code=$?
 expect_code "the slow backup finished" 0 "$code" "$(cat "$RUN/slow.out")"
 expect_eq "its container is removed" "" "$(backup_containers)"
+
+# 7b. A volume archive helper: Docker keeps no log of the archive stream. Archive copies the helper's stdout into the
+# S3 Put through a pipe; minio buffers one 64 MiB part before UploadPart, so a small archive finishes and removes the
+# helper before any held upload. Fill the volume past that part with incompressible data, hold UploadPart, wait until
+# the fake reports a blocked UploadPart, then inspect the helper while the pipe is backed up.
+out=$(adm run web -- dd if=/dev/urandom of=/data/big bs=1M count=70 status=none 2>&1); code=$?
+expect_code "write a volume larger than one upload part" 0 "$code" "$out"
+hold_armed=
+volpid=
+release_vol_hold() {
+  [ -n "$hold_armed" ] || return 0
+  if release_s3_hold; then
+    hold_armed=
+    return 0
+  fi
+  return 1
+}
+# If DELETE did not answer 204, the agent may still be blocked in this run's fake. Restarting
+# the fake drops in-memory state and unblocks every held request. Never wait on the backup
+# while the hold may still be armed.
+unblock_vol_hold() {
+  release_vol_hold && return 0
+  stop_s3
+  start_s3
+  hold_armed=
+  return 1
+}
+wait_vol_backup() {
+  [ -n "${volpid:-}" ] || return 0
+  wait "$volpid"
+  local c=$?
+  volpid=
+  return $c
+}
+
+# Register before POST so every exit path (interrupt, early finish) clears the hold.
+trap 'unblock_vol_hold || true; wait_vol_backup || true' EXIT
+hold_armed=1
+hold_code=$(curl_local -o /dev/null -w '%{http_code}' -X POST --data-binary '{"op":"UploadPart"}' "http://$S3_LISTEN/_fake/hold")
+expect_eq "arm S3 UploadPart hold" "204" "$hold_code"
+if [ "$hold_code" = 204 ]; then
+  adm backup run vol-data >"$RUN/vol-data.out" 2>&1 &
+  volpid=$!
+  held=
+  for _ in $(seq 1 240); do
+    view=$(curl_local "http://$S3_LISTEN/_fake/hold" 2>/dev/null || echo '{}')
+    op=$(jq -r '.op // empty' <<<"$view")
+    w=$(jq -r '.waiting // 0' <<<"$view")
+    if [ "$op" = "UploadPart" ] && [ "$w" -ge 1 ] 2>/dev/null; then
+      held=1
+      break
+    fi
+    if ! kill -0 "$volpid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.25
+  done
+  if [ -n "$held" ]; then
+    pass "UploadPart is blocked in the S3 hold"
+    cid=$(archive_helpers | head -n 1)
+    if [ -n "$cid" ]; then
+      pass "the volume archive runs in a helper container"
+      expect_eq "Docker keeps no log of the volume archive" "none" "$(d inspect --format '{{.HostConfig.LogConfig.Type}}' "$cid" 2>/dev/null)"
+      if unblock_vol_hold; then
+        wait_vol_backup; code=$?
+        expect_code "the volume backup finished" 0 "$code" "$(cat "$RUN/vol-data.out")"
+        expect_contains "the volume backup succeeded" "$(cat "$RUN/vol-data.out")" "status: succeeded"
+        expect_eq "no archive helper is left" "" "$(archive_helpers)"
+      else
+        fail "release S3 hold after inspect" "DELETE did not answer 204; fake S3 was restarted"
+        wait_vol_backup || true
+      fi
+    else
+      if unblock_vol_hold; then
+        wait_vol_backup || true
+        fail "the volume archive runs in a helper container" "no helper while UploadPart held; backup: $(cat "$RUN/vol-data.out" 2>/dev/null)"
+      else
+        fail "the volume archive runs in a helper container" "no helper and hold release failed"
+        wait_vol_backup || true
+      fi
+    fi
+  else
+    if unblock_vol_hold; then
+      wait_vol_backup || true
+      fail "UploadPart is blocked in the S3 hold" "waiting never rose; backup: $(cat "$RUN/vol-data.out" 2>/dev/null)"
+    else
+      fail "UploadPart is blocked in the S3 hold" "hold release also failed; backup: $(cat "$RUN/vol-data.out" 2>/dev/null)"
+      wait_vol_backup || true
+    fi
+  fi
+fi
+unblock_vol_hold || true
+wait_vol_backup || true
+trap - EXIT
 
 # 8. An image app's command past its timeout is stopped: nothing is left, and no backup is listed.
 out=$(adm backup run stuck 2>&1); code=$?
