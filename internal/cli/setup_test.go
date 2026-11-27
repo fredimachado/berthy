@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +25,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/dialtest"
 	"berthy/internal/keywrap"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
@@ -1248,14 +1248,7 @@ func TestSetupGuideOutcomes(t *testing.T) {
 }
 
 func TestSetupThatCannotReachTheAgentKeepsTheOldNextSteps(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
+	addr := strings.TrimPrefix(dialtest.HangUp(t), "http://")
 	server := freshServer(t, "ops@s1")
 	server.probe = strings.ReplaceAll(server.probe, "172.31.250.10", "127.0.0.1")
 	withSetupRunner(t, server)
