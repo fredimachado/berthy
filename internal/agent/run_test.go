@@ -3,12 +3,57 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"berthy/internal/state"
 )
+
+func TestARunWithItsCommandSentTwiceIsRefusedForEveryToken(t *testing.T) {
+	for _, protected := range []bool{true, false} {
+		t.Run(fmt.Sprint(protected), func(t *testing.T) {
+			f := newApprovalFixture(t, protected, nil)
+			seedRunApp(t, f.s)
+			f.ctrl.Engine = gateEngine{}
+			t.Cleanup(func() { _ = f.ctrl.Drain(context.Background()) })
+			token := apAdminToken
+			if protected {
+				token = apAgentAdmin
+			}
+			w := f.call("POST", "/run", token, `{"app":"api","command":["true"],"Command":["rake","db:drop"],"request_id":"r1"}`)
+			if w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"code":"bad_request","message":"invalid request"}` {
+				t.Fatalf("run: %d %s", w.Code, w.Body.String())
+			}
+			f.noOperation()
+			if got, err := f.s.Approvals(t.Context(), "pending", f.now); err != nil || len(got) != 0 {
+				t.Fatalf("approvals: %v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAStoredAmbiguousRunIsRefusedAtReplanBeforeItRuns(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	seedRunApp(t, f.s)
+	f.ctrl.Engine = gateEngine{}
+	t.Cleanup(func() { _ = f.ctrl.Drain(context.Background()) })
+	h := f.hold("POST", "/run", apAgentAdmin, `{"app":"api","command":["rake","db:drop"],"request_id":"r1"}`)
+	prior, err := f.s.Approval(t.Context(), h.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := f.s.CreateApproval(t.Context(), prior, []byte(`{"app":"api","command":["true"],"Command":["rake","db:drop"],"request_id":"r1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/approvals/"+a.ID+"/approve", apAdminToken, "")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "the plan can no longer be computed") || f.status(a.ID) != "failed" {
+		t.Fatalf("approve: %d %s status=%s", w.Code, w.Body.String(), f.status(a.ID))
+	}
+	f.noOperation()
+}
 
 const apRunDigest = "ghcr.io/acme/api@sha256:" + "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
 

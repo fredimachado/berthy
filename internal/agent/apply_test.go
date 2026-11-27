@@ -25,6 +25,21 @@ func applyBody(t *testing.T, manifestJSON string, dry bool) string {
 	return string(b)
 }
 
+func TestARepeatedUserMapKeyIsRefusedOnARouteMainDoesNotGuard(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	body := `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}},"env":{"plain":{"A":"1","A":"2"}}}}},"commit":"c","dry_run":true}`
+	for _, tc := range []struct{ path, body string }{{"/apply", body}, {"/restart", `{"app":"api","app":"api","request_id":"r","dry_run":true}`}} {
+		w := f.call("POST", tc.path, apAdminToken, tc.body)
+		if w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"code":"bad_request","message":"invalid request"}` {
+			t.Errorf("%s: %d %s", tc.path, w.Code, w.Body.String())
+		}
+	}
+	good := strings.Replace(body, `"A":"1","A":"2"`, `"A":"1","a":"2"`, 1)
+	if w := f.call("POST", "/apply", apAdminToken, good); w.Code != 200 {
+		t.Fatalf("distinct keys: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func applyChanges(t *testing.T, f *approvalFixture, token, body string) []string {
 	t.Helper()
 	w := f.call("POST", "/apply", token, body)

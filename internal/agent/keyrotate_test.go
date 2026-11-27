@@ -24,6 +24,15 @@ func (f *approvalFixture) keyBytes() []byte {
 	return b
 }
 
+func TestKeyRotateRefusesACaseVariantDryRun(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	before := f.keyBytes()
+	w := f.call("POST", "/key/rotate", apAdminToken, `{"dry_run":true,"DRY_RUN":false}`)
+	if w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"code":"bad_request","message":"invalid request"}` || !bytes.Equal(before, f.keyBytes()) {
+		t.Fatalf("rotate: %d %s key changed=%v", w.Code, w.Body.String(), !bytes.Equal(before, f.keyBytes()))
+	}
+}
+
 func TestOnlyAnAdminPersonRotatesTheStateKey(t *testing.T) {
 	for _, protected := range []bool{false, true} {
 		f := newApprovalFixture(t, protected, nil)

@@ -3,12 +3,12 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"reflect"
 	"strings"
+
+	"berthy/internal/strictjson"
 )
 
 // planCallKey marks a request the approval gate serves for its plan. Only asPlan sets it.
@@ -47,13 +47,8 @@ func readRequest(w http.ResponseWriter, r *http.Request, v any, optional bool) e
 	if optional && len(bytes.Trim(b, " \t\r\n")) == 0 {
 		b = []byte("{}")
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	if err := strictjson.Unmarshal(b, v); err != nil {
 		return err
-	}
-	if dec.Decode(&struct{}{}) != io.EOF {
-		return errors.New("trailing data")
 	}
 	if planning(r) && !setDryRun(v) {
 		return errNoDryRun

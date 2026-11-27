@@ -966,17 +966,9 @@ func TestLegacyAmbiguousDeployApprovalIsRefusedBeforeReplan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := 0
-	gate := &approvalGate{c: f.cfg, d: f.ctrl, tokens: newTokenSource(f.cfg, f.s)}
-	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
-		calls++
-		_, _ = w.Write(old.Plan)
-	}
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/projects/demo/environments/lab/approvals/"+legacy.ID+"/approve", nil)
-	gate.approve(w, r, state.Actor{ID: "human", Name: "human"}, legacy)
-	if w.Code != http.StatusConflict || calls != 0 || f.status(legacy.ID) != "failed" {
-		t.Fatalf("status=%d dispatches=%d state=%s", w.Code, calls, f.status(legacy.ID))
+	w := f.call("POST", "/approvals/"+legacy.ID+"/approve", apAdminToken, "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "the plan can no longer be computed") || f.status(legacy.ID) != "failed" {
+		t.Fatalf("status=%d body=%s state=%s", w.Code, w.Body.String(), f.status(legacy.ID))
 	}
 	f.noOperation()
 }

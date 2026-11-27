@@ -91,9 +91,9 @@ type gateRow struct {
 	watched      func(f *approvalFixture) string
 }
 
-func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
+func gateRows(t *testing.T, protected bool) map[string]gateRow {
 	fixture := func(t *testing.T) *approvalFixture {
-		f := newApprovalFixture(t, true, nil)
+		f := newApprovalFixture(t, protected, nil)
 		ctrl := f.ctrl
 		t.Cleanup(func() { _ = ctrl.Drain(context.Background()) })
 		return f
@@ -156,7 +156,7 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 		}
 		return fmt.Sprint(op.State, cancels)
 	}
-	rows := map[string]gateRow{
+	return map[string]gateRow{
 		"deploy": {"POST", "/deploys", deployBody(t, false), fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("req-1")},
 		"rollback": {"POST", "/rollback", `{"app":"api","request_id":"r"}`, fixture, func(f *approvalFixture) {
 			seed(f)
@@ -187,7 +187,7 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 				t.Fatalf("seed backup: %+v %v", result, err)
 			}
 			f.s, f.ctrl = g.store, g.ctrl
-			f.ctrl.Protected = true
+			f.ctrl.Protected = protected
 			f.h = NewDeploymentHandlerWithBackups(f.cfg, nil, nil, f.ctrl, nil, nil, g.backups)
 			t.Cleanup(func() { _ = g.ctrl.Drain(context.Background()) })
 			return f
@@ -240,6 +240,11 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 			return op.State
 		}},
 	}
+
+}
+
+func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
+	rows := gateRows(t, true)
 	for _, kind := range dryRunKinds {
 		row, ok := rows[kind]
 		if !ok {

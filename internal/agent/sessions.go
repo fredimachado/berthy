@@ -56,9 +56,7 @@ func serveSession(w http.ResponseWriter, r *http.Request, d *deploy.Controller, 
 	}
 	var req session.Request
 	r.Body = http.MaxBytesReader(w, r.Body, maxSessionRequest)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil || dec.Decode(&struct{}{}) != io.EOF {
+	if decodeBody(w, r, &req) != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}

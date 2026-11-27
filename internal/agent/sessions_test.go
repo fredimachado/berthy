@@ -350,16 +350,22 @@ func TestSessionRefusesARequestThatIsNotAnUpgradeOrNotValid(t *testing.T) {
 		status  int
 		message string
 	}{
-		"no upgrade":     {map[string]string{}, sessionBody, 400, "session requires an upgrade"},
-		"wrong upgrade":  {map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, sessionBody, 400, "session requires an upgrade"},
-		"bad json":       {nil, `{"kind":`, 400, "invalid request"},
-		"unknown field":  {nil, `{"kind":"exec","app":"web","command":["sh"],"x":1}`, 400, "invalid request"},
-		"no command":     {nil, `{"kind":"exec","app":"web","command":[]}`, 400, "command is required"},
-		"unknown app":    {nil, `{"kind":"exec","app":"nope","command":["sh"]}`, 400, "exec target unavailable"},
-		"run of compose": {nil, `{"kind":"run","app":"web","command":["sh"]}`, 400, "run is for image apps; use exec --service"},
+		"no upgrade":       {map[string]string{}, sessionBody, 400, "session requires an upgrade"},
+		"wrong upgrade":    {map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, sessionBody, 400, "session requires an upgrade"},
+		"bad json":         {nil, `{"kind":`, 400, "invalid request"},
+		"unknown field":    {nil, `{"kind":"exec","app":"web","command":["sh"],"x":1}`, 400, "invalid request"},
+		"repeated app":     {nil, `{"kind":"exec","app":"web","app":"web","command":["sh"]}`, 400, "invalid request"},
+		"case variant app": {nil, `{"kind":"exec","App":"web","command":["sh"]}`, 400, "invalid request"},
+		"no command":       {nil, `{"kind":"exec","app":"web","command":[]}`, 400, "command is required"},
+		"unknown app":      {nil, `{"kind":"exec","app":"nope","command":["sh"]}`, 400, "exec target unavailable"},
+		"run of compose":   {nil, `{"kind":"run","app":"web","command":["sh"]}`, 400, "run is for image apps; use exec --service"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, resp := f.open(apAdminToken, tc.headers, tc.body)
+			conn, _, resp := f.open(apAdminToken, tc.headers, tc.body)
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				conn.Close()
+				t.Fatalf("unexpected upgrade: %d", resp.StatusCode)
+			}
 			body, _ := io.ReadAll(resp.Body)
 			if resp.StatusCode != tc.status || !strings.Contains(string(body), tc.message) {
 				t.Fatalf("%d %s", resp.StatusCode, body)

@@ -20,6 +20,15 @@ func newGet(path, token string) *http.Request {
 	return r
 }
 
+func TestTokenRevokeRefusesNull(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	tok := f.makeToken(`{"name":"victim","scope":"read"}`)
+	w := f.call("DELETE", "/tokens/victim", apAdminToken, `null`)
+	if w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"code":"bad_request","message":"invalid request"}` || f.call("GET", "/audit", tok.Token, "").Code != 200 {
+		t.Fatalf("revoke: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRevokeEmptyBodyIsZeroBytesOrJSONWhiteSpaceOnly(t *testing.T) {
 	f := newApprovalFixture(t, false, nil)
 	tok := f.makeToken(`{"name":"victim","scope":"read"}`)
