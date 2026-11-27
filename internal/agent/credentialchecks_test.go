@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -238,18 +240,18 @@ func TestRegistryPasswordThatIsNotStoredIsReported(t *testing.T) {
 }
 
 // cloudflareCredentialConfig serves the fake Cloudflare and returns the agent's config that points at it.
-func cloudflareCredentialConfig(t *testing.T, f *cftest.Fake) (Config, *httptest.Server) {
+func cloudflareCredentialConfig(t *testing.T, f *cftest.Fake) Config {
 	t.Helper()
 	srv := httptest.NewServer(f.Handler())
 	t.Cleanup(srv.Close)
 	cfg := monitoringConfig("")
 	cfg.CloudflareAPIURL = srv.URL
-	return cfg, srv
+	return cfg
 }
 
 func TestDoctorAsksCloudflareAboutItsToken(t *testing.T) {
 	f := cftest.New("cf-token-1", "acct")
-	cfg, _ := cloudflareCredentialConfig(t, f)
+	cfg := cloudflareCredentialConfig(t, f)
 	s := openIngressStore(t)
 	setIngress(t, s)
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
@@ -287,7 +289,7 @@ func TestCloudflareOutageIsNotARefusal(t *testing.T) {
 		f := cftest.New("cf-token-1", "acct")
 		f.FailRequests(http.MethodGet, "/user/tokens/verify", status)
 		f.FailRequests(http.MethodGet, "/accounts/", status)
-		cfg, _ := cloudflareCredentialConfig(t, f)
+		cfg := cloudflareCredentialConfig(t, f)
 		s := openIngressStore(t)
 		setIngress(t, s)
 		putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
@@ -298,21 +300,27 @@ func TestCloudflareOutageIsNotARefusal(t *testing.T) {
 		}
 	}
 
-	f := cftest.New("cf-token-1", "acct")
-	cfg, srv := cloudflareCredentialConfig(t, f)
-	srv.Close()
+	// Refused without a listener: a closed port can be handed to another test's
+	// server, so the dialer returns ECONNREFUSED instead of closing a fake.
+	cfg := monitoringConfig("")
+	cfg.CloudflareAPIURL = "http://127.0.0.1"
+	cfg.cloudflareHTTP = &http.Client{Transport: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+		},
+	}}
 	s := openIngressStore(t)
 	setIngress(t, s)
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
 	checks, _ := credentialDoctor(t, cfg, s)
 	if c := checks["cloudflare_token"]; c.OK || c.Critical || c.Detail != "could not be asked: connection refused" {
-		t.Errorf("closed server: %+v", c)
+		t.Errorf("connection refused: %+v", c)
 	}
 }
 
 func TestCloudflareTokenThatIsNotStoredIsReported(t *testing.T) {
 	f := cftest.New("cf-token-1", "acct")
-	cfg, _ := cloudflareCredentialConfig(t, f)
+	cfg := cloudflareCredentialConfig(t, f)
 	s := openIngressStore(t)
 	setIngress(t, s)
 	checks, _ := credentialDoctor(t, cfg, s)
@@ -331,7 +339,7 @@ func TestMonitorChecksTheSameCredentials(t *testing.T) {
 	reg := newCredentialRegistry(t, "pw-one")
 	host := reg.host()
 	f := cftest.New("cf-token-1", "acct")
-	cfg, _ := cloudflareCredentialConfig(t, f)
+	cfg := cloudflareCredentialConfig(t, f)
 	s := openIngressStore(t)
 	ctx := context.Background()
 	recordRelease(t, s, "release-monitor", registryManifest(host))
