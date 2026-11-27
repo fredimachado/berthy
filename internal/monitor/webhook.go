@@ -87,7 +87,7 @@ func (w *Webhook) Notify(ctx context.Context, a Alert) error {
 		return ErrWebhookUnavailable
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) //nolint:errcheck // Draining only permits connection reuse; the status determines delivery.
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return &WebhookStatusError{Code: resp.StatusCode}
 	}

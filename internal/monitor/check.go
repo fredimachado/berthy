@@ -72,7 +72,7 @@ func ProbeHTTP(ctx context.Context, rawURL string, expect []int, dial DialFunc) 
 	if err != nil {
 		return Result{State: Critical, Detail: FailureDetail(err)}
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:errcheck // The probe uses only the response status, not its body.
 	detail := fmt.Sprintf("HTTP %d", resp.StatusCode)
 	if statusExpected(resp.StatusCode, expect) {
 		return Result{State: OK, Detail: detail}
@@ -99,7 +99,7 @@ func ProbeTCP(ctx context.Context, addr string, dial DialFunc) Result {
 	if err != nil {
 		return Result{State: Critical, Detail: FailureDetail(err)}
 	}
-	conn.Close()
+	conn.Close() //nolint:errcheck // The probe only checks whether the connection opens.
 	return Result{State: OK, Detail: "connected"}
 }
 
@@ -128,7 +128,7 @@ func ProbePeer(ctx context.Context, base string, timeout time.Duration, dial Dia
 	if err != nil {
 		return Result{State: Critical, Detail: "silent: " + FailureDetail(err)}
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:errcheck // The peer check uses only the response status.
 	if resp.StatusCode != http.StatusOK {
 		return Result{State: Critical, Detail: fmt.Sprintf("silent: HTTP %d", resp.StatusCode)}
 	}
