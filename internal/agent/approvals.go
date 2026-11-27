@@ -81,7 +81,7 @@ func (c *capture) replay(w http.ResponseWriter) {
 	_, _ = w.Write(c.body.Bytes())
 }
 
-// restOf splits a path relative to the environment, as mount gives it to a handler, into the segments the routes switch on.
+// restOf splits a path relative to the environment, as mount gives it to a handler, into segments for route matching.
 // It is nil for the environment's own path.
 func restOf(path string) []string {
 	path = strings.TrimRight(path, "/")
@@ -113,14 +113,10 @@ func withBody(r *http.Request, method, path string, body []byte) *http.Request {
 	return r2
 }
 
-// dryRunKinds lists the change routes whose dry run answers with a plan.
-var dryRunKinds = []string{"deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore",
-	"apply", "ingress apply", "secret set", "secret delete", "secret import", "secret generate", "secret generate declared",
-	"lock acquire", "lock release", "recovery resolve", "cancel"}
-
 // supportsDryRun reports whether the route takes a dry_run in its body and answers it with the plan of the change.
 func supportsDryRun(rest []string, method string) bool {
-	return slices.Contains(dryRunKinds, routeKind(rest, method))
+	row := findEnvRoute(rest, method, true)
+	return row != nil && row.gateDryRun
 }
 
 // isDryRun reports whether a request body asks for a dry run of a route that has one.
@@ -128,9 +124,7 @@ func isDryRun(rest []string, method string, body []byte) bool {
 	if !supportsDryRun(rest, method) {
 		return false
 	}
-	var v struct {
-		DryRun bool `json:"dry_run"`
-	}
+	var v dryRunBody
 	_ = json.Unmarshal(body, &v)
 	return v.DryRun
 }
@@ -556,9 +550,7 @@ func (g *approvalGate) decide(w http.ResponseWriter, r *http.Request, decider st
 }
 
 func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider state.Actor, a state.Approval) {
-	var req struct {
-		Reason string `json:"reason"`
-	}
+	var req rejectBody
 	if decodeOptionalBody(w, r, &req) != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
@@ -700,157 +692,22 @@ func cleanText(s string, n int) string {
 	return b.String()
 }
 
-// summarize is the one line that says what a held request does, such as "deploy api 1.4.2". It carries no secret value.
-func summarize(rest []string, method string, body []byte) string {
-	var b struct {
-		App           string   `json:"app"`
-		Version       string   `json:"version"`
-		KeepVersion   bool     `json:"keep_version"`
-		KeepDigest    string   `json:"keep_digest"`
-		Role          string   `json:"role"`
-		Replicas      *int     `json:"replicas"`
-		TargetRelease int64    `json:"target_release"`
-		Name          string   `json:"name"`
-		Key           string   `json:"key"`
-		Into          string   `json:"into"`
-		Volumes       bool     `json:"volumes"`
-		Service       string   `json:"service"`
-		Command       []string `json:"command"`
-		// Secrets is counted, never read: an import's entries hold values.
-		Secrets []json.RawMessage `json:"secrets"`
-	}
-	_ = json.Unmarshal(body, &b)
-	app := cleanText(b.App, 80)
-	if b.Role != "" {
-		app += "/" + cleanText(b.Role, 40)
-	}
-	service := ""
-	if b.Service != "" {
-		service = "/" + cleanText(b.Service, 40)
-	}
-	switch routeKind(rest, method) {
-	case "deploy":
-		if b.KeepVersion && b.Version == "" {
-			if b.KeepDigest != "" {
-				return "deploy " + cleanText(b.App, 80) + " (keeps " + cleanText(deploy.ShortDigest(b.KeepDigest), 80) + ")"
-			}
-			return "deploy " + cleanText(b.App, 80) + " (keeps the current version)"
-		}
-		return strings.TrimSpace("deploy " + cleanText(b.App, 80) + " " + cleanText(deploy.ShortDigest(b.Version), 80))
-	case "apply":
-		return "apply the environment settings"
-	case "rollback":
-		if b.TargetRelease > 0 {
-			return "rollback " + cleanText(b.App, 80) + " to release " + strconv.FormatInt(b.TargetRelease, 10)
-		}
-		return "rollback " + cleanText(b.App, 80)
-	case "restart":
-		return "restart " + app
-	case "scale":
-		if b.Replicas != nil {
-			return "scale " + app + " to " + strconv.Itoa(*b.Replicas)
-		}
-		return "scale " + app
-	case "exec":
-		if b.Service != "" {
-			return "exec " + cleanText(b.App, 80) + "/" + cleanText(b.Service, 40)
-		}
-		return "exec " + app
-	case "run":
-		return "run " + app
-	case "prune":
-		return "prune"
-	case "remove":
-		if b.Volumes {
-			return "remove " + cleanText(b.App, 80) + " and its volumes"
-		}
-		return "remove " + cleanText(b.App, 80)
-	case "destroy":
-		return "destroy the environment"
-	case "restore":
-		if len(b.Command) > 0 {
-			// A restore into a command names where it runs, never the command: its arguments may hold a secret.
-			return "restore " + cleanText(b.Key, 100) + " into a command on " + app + service
-		}
-		return "restore " + cleanText(b.Key, 100) + " into " + cleanText(b.Into, 60)
-	case "ingress apply":
-		return "ingress apply"
-	case "secret set":
-		return "secret set " + cleanText(b.Name, 80)
-	case "secret generate":
-		return "secret generate " + cleanText(b.Name, 80)
-	case "secret generate declared":
-		return "generate the declared secrets"
-	case "secret import":
-		if len(b.Secrets) == 1 {
-			return "secret import 1 secret"
-		}
-		return "secret import " + strconv.Itoa(len(b.Secrets)) + " secrets"
-	case "secret delete":
-		return "secret delete " + cleanText(rest[1], 80)
-	case "lock acquire", "lock release", "state backup run", "alerts test":
-		return routeKind(rest, method)
-	case "backup run", "job run", "job cancel", "cancel":
-		return routeKind(rest, method) + " " + cleanText(rest[1], 80)
-	case "recovery resolve":
-		return "recovery resolve " + cleanText(rest[1], 80)
-	}
-	return "change"
-}
-
-// routeKind names what a change route does, for the method it takes. It is "" for a route that changes nothing. A POST to
-// secrets/import or secrets/generate and a DELETE of secrets/<name> share a path shape, so the method and the name tell them apart.
+// routeKind names what a change route does. It is empty for a route that changes nothing.
 func routeKind(rest []string, method string) string {
-	switch {
-	case len(rest) == 1 && rest[0] == "deploys":
-		return "deploy"
-	case len(rest) == 1:
-		switch rest[0] {
-		case "apply", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore":
-			return rest[0]
-		case "secrets":
-			return "secret set"
-		case "state-backup":
-			return "state backup run"
-		}
-	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
-		return "ingress apply"
-	case len(rest) == 2 && rest[0] == "secrets":
-		if method == "POST" {
-			switch rest[1] {
-			case "import":
-				return "secret import"
-			case "generate":
-				return "secret generate"
-			case "generate-declared":
-				return "secret generate declared"
-			}
-		}
-		return "secret delete"
-	case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):
-		return "lock " + rest[1]
-	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-		return "alerts test"
-	case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
-		return "backup run"
-	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "run":
-		return "job run"
-	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "cancel":
-		return "job cancel"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
-		return "recovery resolve"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "cancel":
-		return "cancel"
+	if row := findEnvRoute(rest, method, true); row != nil {
+		return row.kind
 	}
 	return ""
 }
 
-// describe is the plan of a held request whose route has no dry run: what it does, and to what.
+// describe is the plan of a held request whose route has no dry run.
 func describe(rest []string, method string) map[string]string {
-	out := map[string]string{"action": routeKind(rest, method)}
-	switch out["action"] {
-	case "backup run", "job run", "job cancel":
-		out["target"] = rest[1]
+	out := map[string]string{"action": ""}
+	if row := findEnvRoute(rest, method, true); row != nil {
+		out["action"] = row.kind
+		if row.describeTarget {
+			out["target"] = rest[1]
+		}
 	}
 	return out
 }

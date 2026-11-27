@@ -18,9 +18,7 @@ func isKeyRotation(rest []string) bool {
 // serveKeyRotate replaces the key the state is sealed with, or with dry_run reports what it would do. The answer names the
 // keys by ID and never shows one.
 func serveKeyRotate(w http.ResponseWriter, r *http.Request, d *deploy.Controller, actor state.Actor) {
-	var req struct {
-		DryRun bool `json:"dry_run"`
-	}
+	var req dryRunBody
 	if decodeBody(w, r, &req) != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return

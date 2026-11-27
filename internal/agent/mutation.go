@@ -129,19 +129,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			json.NewEncoder(w).Encode(result)
 		case len(rest) == 1 && rest[0] == "restore":
-			var body struct {
-				Key string `json:"key"`
-				// Into is the new volume a volume backup fills. App, Service or Role, Command and Timeout name the command a
-				// command backup is fed to, and where it runs.
-				Into      string   `json:"into"`
-				App       string   `json:"app"`
-				Service   string   `json:"service"`
-				Role      string   `json:"role"`
-				Command   []string `json:"command"`
-				Timeout   string   `json:"timeout"`
-				DryRun    bool     `json:"dry_run"`
-				RequestID string   `json:"request_id"`
-			}
+			var body restoreBody
 			if err := decodeBody(w, r, &body); err != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
@@ -269,10 +257,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				Diagnostics []json.RawMessage `json:"diagnostics"`
 			}{op.ID, safeReason(op.Reason), items})
 		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
-			var req struct {
-				Reason string `json:"reason"`
-				DryRun bool   `json:"dry_run"`
-			}
+			var req resolveBody
 			if decodeBody(w, r, &req) != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
@@ -288,9 +273,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			json.NewEncoder(w).Encode(report)
 		case rest[0] == "operations" && len(rest) == 3 && rest[2] == "cancel":
-			var req struct {
-				DryRun bool `json:"dry_run"`
-			}
+			var req dryRunBody
 			// A cancel needs nothing but the operation, so a request with no body is a cancel.
 			if err := decodeOptionalBody(w, r, &req); err != nil {
 				writeError(w, 400, "bad_request", "invalid request")
@@ -414,10 +397,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
 		case rest[0] == "lock":
-			var req struct {
-				Message string `json:"message"`
-				DryRun  bool   `json:"dry_run"`
-			}
+			var req lockBody
 			if decodeBody(w, r, &req) != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
@@ -464,12 +444,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			}
 			json.NewEncoder(w).Encode(out)
 		case rest[0] == "secrets":
-			var req struct {
-				Name     string `json:"name"`
-				Value    string `json:"value"`
-				Registry string `json:"registry"`
-				DryRun   bool   `json:"dry_run"`
-			}
+			var req secretBody
 			if decodeBody(w, r, &req) != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
@@ -692,128 +667,11 @@ func historyDiffIDs(q url.Values) (id, base int64, ok bool) {
 // route needs and the one HTTP method it takes. ok is false for a path that is not one of these routes. Every route whose
 // method is not GET changes something.
 func routeScope(rest []string, httpMethod string) (required, method string, ok bool) {
-	switch {
-	case len(rest) == 2 && rest[0] == "images" && (rest[1] == "resolve" || rest[1] == "tags"):
-		required, method = "admin", "POST"
-	case len(rest) == 1 && rest[0] == "deploys":
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 1 && (rest[0] == "apply" || rest[0] == "rollback" || rest[0] == "restart" || rest[0] == "scale"):
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 1 && (rest[0] == "exec" || rest[0] == "run" || rest[0] == "prune" || rest[0] == "remove" || rest[0] == "destroy"):
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "operations":
-		required = "read"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "output":
-		required = "admin"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "events":
-		required = "read"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "diagnostics":
-		// Failure evidence holds the failed app's own output, which can be sensitive, so it needs more than read.
-		required = "deploy"
-		method = "GET"
-	case len(rest) == 2 && (rest[0] == "history" || rest[0] == "wait" || rest[0] == "applied"), len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
-		required = "read"
-		method = "GET"
-	case len(rest) == 1 && (rest[0] == "audit" || rest[0] == "lock"):
-		required = "read"
-		method = "GET"
-	case len(rest) == 2 && rest[0] == "lock" && (rest[1] == "acquire" || rest[1] == "release"):
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 1 && rest[0] == "secrets":
-		required = "admin"
-		if httpMethod == "GET" {
-			method = "GET"
-		} else {
-			method = "POST"
-		}
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "import" && httpMethod == "POST":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate" && httpMethod == "POST":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "secrets" && rest[1] == "generate-declared" && httpMethod == "POST":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "secrets":
-		required = "admin"
-		method = "DELETE"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "resolve":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 3 && rest[0] == "operations" && rest[2] == "cancel":
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "apply":
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "ingress" && rest[1] == "status":
-		required = "read"
-		method = "GET"
-	case len(rest) == 1 && rest[0] == "checks":
-		required = "read"
-		method = "GET"
-	case len(rest) == 1 && rest[0] == "jobs", len(rest) == 3 && rest[0] == "jobs" && rest[2] == "runs":
-		required = "read"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "jobs" && (rest[2] == "run" || rest[2] == "cancel"):
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 3 && rest[0] == "jobs" && rest[2] == "logs":
-		// The output of a failed run may hold what a read token should not see, so it needs the deploy scope.
-		required = "deploy"
-		method = "GET"
-	case len(rest) == 1 && rest[0] == "backups", len(rest) == 3 && rest[0] == "backups" && rest[2] == "runs":
-		required = "read"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "backups" && rest[2] == "run":
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 1 && rest[0] == "state-backup":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "state-backup" && rest[1] == "runs":
-		required = "read"
-		method = "GET"
-	case len(rest) == 1 && rest[0] == "restore":
-		required = "admin"
-		method = "POST"
-	case isKeyRotation(rest):
-		required = "admin"
-		method = "POST"
-	case len(rest) == 1 && rest[0] == "sessions":
-		required = "admin"
-		method = "POST"
-	case len(rest) == 2 && rest[0] == "alerts" && rest[1] == "test":
-		required = "deploy"
-		method = "POST"
-	case len(rest) == 1 && rest[0] == "tokens":
-		required = "admin"
-		if httpMethod == "GET" {
-			method = "GET"
-		} else {
-			method = "POST"
-		}
-	case len(rest) == 2 && rest[0] == "tokens":
-		required = "admin"
-		method = "DELETE"
-	case len(rest) == 1 && rest[0] == "approvals":
-		required = "read"
-		method = "GET"
-	case len(rest) == 3 && rest[0] == "approvals" && (rest[2] == "approve" || rest[2] == "reject"):
-		required = "admin"
-		method = "POST"
-	default:
+	row := findEnvRoute(rest, httpMethod, false)
+	if row == nil || row.lane == legacyReadRoute {
 		return "", "", false
 	}
-	return required, method, true
+	return row.scope, row.method, true
 }
 
 // authenticate finds the token a request carries and the actor it stands for. status is as tokenSource.identify gives it: 200

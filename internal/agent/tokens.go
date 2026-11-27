@@ -227,13 +227,7 @@ func serveTokens(w http.ResponseWriter, r *http.Request, rest []string, c Config
 }
 
 func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time) {
-	var req struct {
-		Name    string `json:"name"`
-		Scope   string `json:"scope"`
-		Agent   bool   `json:"agent"`
-		Expires string `json:"expires"`
-		DryRun  bool   `json:"dry_run"`
-	}
+	var req createTokenBody
 	if decodeBody(w, r, &req) != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
@@ -294,9 +288,7 @@ func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.
 }
 
 func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time) {
-	var req struct {
-		DryRun bool `json:"dry_run"`
-	}
+	var req dryRunBody
 	if err := decodeOptionalBody(w, r, &req); err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
