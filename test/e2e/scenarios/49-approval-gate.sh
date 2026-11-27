@@ -70,8 +70,9 @@ expect_eq "1.1 lock/release null is refused" 400 "$status"
 expect_eq "1.1 lock/release null answers invalid request" "$INVALID" "$(answer)"
 expect_eq "1.1 lock/release null adds no approval" "$before" "$(pending_ids)"
 
-out=$(adm lock release 2>&1); code=$?
-expect_code "the person releases the lock" 0 "$code" "$out"
+# On 9ecb7aa the null release already freed the lock (finding 1); after the fix the person still holds it.
+adm lock release >/dev/null 2>&1 || true
+expect_contains "the lock is free before 1.2" "$(admin_get lock)" '"locked":false'
 
 # 1.2 POST lock/acquire null while the lock is free.
 before=$(pending_ids)
@@ -162,9 +163,20 @@ else
     expect_contains "2.3 the deploy names who cancelled" "$(cat "$LOG/gate-deploy.out")" "cancelled by ci-admin (approved by admin)"
     if lock_free; then pass "2.3 the lock is free after the approved cancel"; else fail "2.3 the lock is free after the approved cancel" "$(lock_json)"; fi
   fi
+  # On 9ecb7aa the empty-body cancel can leave the operation in recovery_required with the lock held.
+  # Free it so part 3's finding-2 checks are not blocked by a conflict.
+  if ! lock_free; then
+    rid=$(lock_op)
+    if [ -n "$rid" ]; then
+      adm recovery resolve "$rid" -m "scenario cleanup" >/dev/null 2>&1 || true
+      adm cancel "$rid" >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
 clear_pending
+# Do not assert here: this only clears finding-1 fallout so part 3 can exercise finding 2.
+for i in $(seq 1 120); do lock_free && break; sleep 0.5; done
 
 # Part 3. A command sent twice under different spellings is refused for every token.
 { echo "protected: true"; base_manifest; } | write_manifest
