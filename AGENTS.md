@@ -50,6 +50,13 @@
   Release it unconditionally and assert the event in the test body; otherwise
   a regression hangs the package until the 10-minute `go test` timeout instead
   of failing.
+- A goroutine a test starts never calls `t.Fatal` or a helper that does, such
+  as `send(t, ...)`. It sends its result on a channel; teardown releases what
+  it holds, closes, then joins it. Otherwise a failed request leaves the test
+  spinning until the package timeout.
+- Before a test closes a fake server, it cancels the context of any client
+  request still running against it. An object-store client retries a cut
+  request with backoff on the real clock, which hides a long wait in teardown.
 - A flaky test is a bug until shown otherwise. Find the cause instead of
   rerunning it or adding a sleep; several flakes here were real bugs. Run the
   tests with `-race` in WSL, because some races only show there.
@@ -67,6 +74,10 @@
   run can prove it created, even when setup fails partway through. Use a per-run
   ownership marker when a resource name can collide. Scenario 41 checks its
   volume's label before removal.
+- A scenario that watches `docker events` passes `--since` a timestamp taken
+  before the action it watches, and reads attributes such as the image from
+  the event itself. A watcher started in the background can miss a one-shot
+  event, and a live `docker inspect` fails once the container is gone.
 - The harness builds the working tree. To check committed work while someone
   else edits the checkout, run it from a clean clone of HEAD.
 
@@ -107,6 +118,11 @@
   request hash in `Admit` (the same request id with another value is a
   conflict), and the allowlist in `state.publicJSON`. Without the last one,
   every request with the field is refused as an invalid admission.
+- Every return path in `runDeploy` leaves an outcome that `state.Store.Finish`
+  accepts: never `Settings` or `Protected` without a `Release`. Build a fresh
+  outcome on a failure path rather than clearing fields of a successful one.
+  `Finish` rejects the mix, the error is dropped, and the operation stays
+  `running` with the lock held.
 - The API shows an operation's error only when it is a fixed text or
   `deploy.PublicMessage` accepts it; anything else becomes "operation failed".
   A refusal with variable text, such as an app name or digest, needs a strict
@@ -117,6 +133,9 @@
   renumber when one rebases onto the other.
 - Swarm replica slots are not always 1..N: after a service is scaled by hand, a
   single replica can keep slot 2. Count healthy replicas, not slot numbers.
+- A container counts as healthy only when one inspect shows
+  `State.Running` and `State.Health.Status` "healthy". Docker keeps the last
+  probe status on a stopped container.
 - A reader never returns `(0, nil)` at the end of its input, which makes its
   caller loop forever. A stream cut inside a frame ends with
   `io.ErrUnexpectedEOF`.
