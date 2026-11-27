@@ -22,11 +22,21 @@ answer() { tr -d '\n' < "$RUN/gate.body"; }
 admin_get() { curl_local -H "Authorization: Bearer $BERTHY_ADMIN_TOKEN" "$URL/$1"; }
 
 # pending_ids: the ids of the pending approvals, one per line, sorted.
-pending_ids() { admin_get 'approvals?status=pending' | grep -o '"id":"[^"]*"' | sort; }
+pending_ids() {
+  local status
+  status=$(curl_local -o "$RUN/pending.body" -w '%{http_code}' -H "Authorization: Bearer $BERTHY_ADMIN_TOKEN" "$URL/approvals?status=pending") || return 1
+  [ "$status" = 200 ] || return 1
+  jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string"))' "$RUN/pending.body" >/dev/null || return 1
+  jq -r '.[] | "\"id\":" + (.id | tojson)' "$RUN/pending.body" | tr -d '\r' | sort
+}
 # clear_pending: rejects every pending approval, so the next part starts with none.
 clear_pending() {
-  local id
-  for id in $(pending_ids | sed 's/"id":"\(.*\)"/\1/'); do
+  local id pending
+  if ! pending=$(pending_ids); then
+    fail "clear pending approvals" "cannot read pending approvals"
+    return 1
+  fi
+  for id in $(printf '%s\n' "$pending" | sed 's/"id":"\(.*\)"/\1/'); do
     adm reject "$id" -m "scenario cleanup" >/dev/null 2>&1 || true
   done
 }
@@ -60,41 +70,41 @@ expect_code "protect the environment with a digest deploy" 0 "$code" "$out"
 # 1.1 POST lock/release null while a person holds the lock.
 out=$(adm lock acquire -m "held by a person" 2>&1); code=$?
 expect_code "a person acquires the lock" 0 "$code" "$out"
-before=$(pending_ids)
+before=$(pending_ids) || before='<unavailable>'
 status=$(call "$BERTHY_CIADMIN_TOKEN" POST lock/release null)
 expect_contains "1.1 the lock is still held" "$(admin_get lock)" '"locked":true'
 expect_eq "1.1 lock/release null is refused" 400 "$status"
 expect_eq "1.1 lock/release null answers invalid request" "$INVALID" "$(answer)"
-expect_eq "1.1 lock/release null adds no approval" "$before" "$(pending_ids)"
+if after=$(pending_ids); then expect_eq "1.1 lock/release null adds no approval" "$before" "$after"; else fail "1.1 lock/release null adds no approval" "cannot read pending approvals"; fi
 
 adm lock release >/dev/null || { echo "could not release the lock" >&2; exit 1; }
 expect_contains "the lock is free before 1.2" "$(admin_get lock)" '"locked":false'
 
 # 1.2 POST lock/acquire null while the lock is free.
-before=$(pending_ids)
+before=$(pending_ids) || before='<unavailable>'
 status=$(call "$BERTHY_CIADMIN_TOKEN" POST lock/acquire null)
 expect_eq "1.2 lock/acquire null is refused" 400 "$status"
 expect_eq "1.2 lock/acquire null answers invalid request" "$INVALID" "$(answer)"
 expect_contains "1.2 the lock stays free" "$(admin_get lock)" '"locked":false'
-expect_eq "1.2 lock/acquire null adds no approval" "$before" "$(pending_ids)"
+if after=$(pending_ids); then expect_eq "1.2 lock/acquire null adds no approval" "$before" "$after"; else fail "1.2 lock/acquire null adds no approval" "cannot read pending approvals"; fi
 
 # 1.4 POST secrets null.
-before=$(pending_ids)
+before=$(pending_ids) || before='<unavailable>'
 status=$(call "$BERTHY_CIADMIN_TOKEN" POST secrets null)
 expect_eq "1.4 POST secrets null is refused" 400 "$status"
 expect_eq "1.4 POST secrets null answers invalid request" "$INVALID" "$(answer)"
-expect_eq "1.4 POST secrets null adds no approval" "$before" "$(pending_ids)"
+if after=$(pending_ids); then expect_eq "1.4 POST secrets null adds no approval" "$before" "$after"; else fail "1.4 POST secrets null adds no approval" "cannot read pending approvals"; fi
 
 # 1.3 DELETE secrets/GATE_KEEP null.
 out=$(printf v1 | adm secret set GATE_KEEP 2>&1); code=$?
 expect_code "an admin stores GATE_KEEP" 0 "$code" "$out"
 expect_contains "GATE_KEEP is listed before" "$(admin_get secrets)" 'GATE_KEEP'
-before=$(pending_ids)
+before=$(pending_ids) || before='<unavailable>'
 status=$(call "$BERTHY_CIADMIN_TOKEN" DELETE secrets/GATE_KEEP null)
 expect_contains "1.3 GATE_KEEP is still there" "$(admin_get secrets)" 'GATE_KEEP'
 expect_eq "1.3 secret delete null is refused" 400 "$status"
 expect_eq "1.3 secret delete null answers invalid request" "$INVALID" "$(answer)"
-expect_eq "1.3 secret delete null adds no approval" "$before" "$(pending_ids)"
+if after=$(pending_ids); then expect_eq "1.3 secret delete null adds no approval" "$before" "$after"; else fail "1.3 secret delete null adds no approval" "cannot read pending approvals"; fi
 
 clear_pending
 
@@ -144,12 +154,12 @@ else
     expect_contains "2.1 the held answer names an approval" "$(answer)" '"approval_id":"'
 
     # 2.2 POST operations/<id>/cancel null.
-    before=$(pending_ids)
+    before=$(pending_ids) || before='<unavailable>'
     status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel" null)
     expect_eq "2.2 cancel null is refused" 400 "$status"
     expect_eq "2.2 cancel null answers invalid request" "$INVALID" "$(answer)"
     expect_eq "2.2 the deploy still runs after null" "$id" "$(lock_op)"
-    expect_eq "2.2 cancel null adds no approval" "$before" "$(pending_ids)"
+    if after=$(pending_ids); then expect_eq "2.2 cancel null adds no approval" "$before" "$after"; else fail "2.2 cancel null adds no approval" "cannot read pending approvals"; fi
 
     # 2.3 Approve the held cancel from 2.1. On an earlier failure, cancel as admin so wait never sits out the 60 s hook.
     out=$(adm approve "$held" 2>&1); code=$?
@@ -171,11 +181,11 @@ clear_pending
 { echo "protected: true"; base_manifest; } | write_manifest
 before_audit=$(adm audit 2>&1)
 ambig='{"app":"web","command":["true"],"Command":["sh","-c","echo gate-ambiguous"],"request_id":"gate-1"}'
-before=$(pending_ids)
+before=$(pending_ids) || before='<unavailable>'
 status=$(call "$BERTHY_CIADMIN_TOKEN" POST run "$ambig")
 expect_eq "3.1 ambiguous run is refused" 400 "$status"
 expect_eq "3.1 ambiguous run answers invalid request" "$INVALID" "$(answer)"
-expect_eq "3.1 ambiguous run adds no approval" "$before" "$(pending_ids)"
+if after=$(pending_ids); then expect_eq "3.1 ambiguous run adds no approval" "$before" "$after"; else fail "3.1 ambiguous run adds no approval" "cannot read pending approvals"; fi
 
 ambig2='{"app":"web","command":["true"],"Command":["sh","-c","echo gate-ambiguous"],"request_id":"gate-2"}'
 status=$(call "$BERTHY_ADMIN_TOKEN" POST run "$ambig2")
