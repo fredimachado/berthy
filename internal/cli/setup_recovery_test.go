@@ -61,12 +61,14 @@ func (s *setupUncertainServer) Run(ctx context.Context, script string, stdin io.
 		}
 		return setup.Result{}, errors.New("restart transport lost")
 	}
-	if strings.HasPrefix(s.mode, "rollback") && strings.Contains(script, "mv -f /etc/berthy/agent.json.prev /etc/berthy/agent.json") {
+	if strings.HasPrefix(s.mode, "rollback") && script == "/bin/sh /run/berthy-activation-guard.sh no yes now" {
 		switch s.mode {
 		case "rollback 255":
 			return setup.Result{Code: 255}, nil
 		case "rollback error":
 			return setup.Result{}, errors.New("rollback transport lost")
+		case "rollback complete":
+			return setup.Result{Stdout: []byte("guard=restored\n")}, nil
 		}
 	}
 	return s.setupServer.Run(ctx, script, stdin)
