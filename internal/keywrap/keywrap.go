@@ -32,7 +32,7 @@ func Generate() (*Private, error) {
 	return &Private{key: k}, nil
 }
 func (p *Private) PublicLine() []byte {
-	der, _ := x509.MarshalPKIXPublicKey(&p.key.PublicKey)
+	der, _ := x509.MarshalPKIXPublicKey(&p.key.PublicKey) //nolint:errcheck // Generated RSA public keys are supported by PKIX marshaling.
 	return append([]byte(base64.StdEncoding.EncodeToString(der)), '\n')
 }
 func line(b []byte) ([]byte, bool) {
