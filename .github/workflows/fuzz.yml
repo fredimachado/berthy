@@ -1,0 +1,71 @@
+name: Fuzz
+
+# The fuzz targets run their seeds as ordinary tests in CI. This workflow mutates them: each target for two minutes, once a
+# week. It never runs on a push or a pull request.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ format('Fuzz {0}', matrix.target) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./internal/session
+            target: FuzzSessionFrame
+          - package: ./internal/logs
+            target: FuzzMultiplexedLogs
+          - package: ./internal/volarchive
+            target: FuzzVolumeArchive
+          - package: ./internal/schedule
+            target: FuzzSchedule
+          - package: ./internal/manifest
+            target: FuzzManifestShape
+          - package: ./internal/strictjson
+            target: FuzzStrictRequestBody
+          - package: ./internal/keywrap
+            target: FuzzKeywrap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # A renamed target would otherwise match no test, and go test would pass having fuzzed nothing.
+      - name: Check the target exists
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
+        run: go test "$PACKAGE" -run='^$' -list '^Fuzz' | grep -qx "$TARGET"
+
+      - name: Fuzz
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
+        run: go test "$PACKAGE" -run='^$' -fuzz="^${TARGET}\$" -fuzztime=2m
+
+      # Go writes the input that failed to testdata/fuzz/<target>/ in the package. These inputs are synthetic, so the log
+      # carries each new file in base64: decode it into the same path in a checkout to replay it.
+      - name: Print the failing input
+        if: failure()
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          git ls-files --others --exclude-standard -- "$PACKAGE/testdata/fuzz/$TARGET" | while IFS= read -r file; do
+            echo "corpus file: $file"
+            base64 -w0 "$file"
+            echo
+          done
