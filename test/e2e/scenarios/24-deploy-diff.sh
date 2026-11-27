@@ -44,6 +44,7 @@ YML
 
 # diff_lines TEXT: the lines of the diff under the app name "web" in the output of a dry run.
 diff_lines() { printf '%s\n' "$1" | awk '/^web$/ { f = 1; next } f && /^  / { print; next } { f = 0 }'; }
+field_block() { awk -v heading="Deploy $PROJECT/$ENVN app web" '$0 == heading { print; f = 1; next } f && /^  / { print; next } { f = 0 }'; }
 
 # seen: everything the scenario printed, to look for secret values in it at the end.
 seen=""
@@ -61,8 +62,9 @@ expect_code "the dry run of a first deploy" 0 "$code" "$out"
 note "$out"
 expect_contains "a first deploy is a new app" "$out" $'web\n  new app'
 
-out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
+out=$(adm deploy web --version v1 --diff --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1" 0 "$code" "$out"
+expect_contains "first field deploy prints its summary" "$out" "  new app"
 note "$out"
 
 # 2. The same release again changes nothing.
@@ -130,9 +132,22 @@ out=$(adm deploy web --version v2 --dry-run --json --manifest-dir "$MAN" 2>&1); 
 note "$out"
 
 # 5. Deploy v2, then compare the two releases.
-out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
+preview=$(adm deploy web --version v2 --manifest-dir "$MAN" --dry-run --diff 2>&1); code=$?
+expect_code "the Git-style dry run" 0 "$code" "$preview"
+note "$preview"
+out=$(adm deploy web --version v2 --diff --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v2" 0 "$code" "$out"
 note "$out"
+block=$(field_block <<<"$preview")
+expect_contains "field block removes the old replica count" "$block" "- replicas: 1"
+expect_contains "field block adds the new replica count" "$block" "+ replicas: 2"
+expect_contains "field block names the old secret mapping" "$block" "from secret API_KEY_V1"
+expect_contains "field block names the new secret mapping" "$block" "from secret API_KEY_V2"
+expect_eq "preview and execution field blocks match" "$block" "$(field_block <<<"$out")"
+expect_contains "the field deploy reports success" "$out" "succeeded"
+expect_eq "the field deploy runs two replicas" "2" "$(d service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$svc")"
+applied=$(diff_api "$api_url/applied/web")
+expect_eq "the field deploy applies the planned digest" "$REG/e2e/web@$WEB_V2_DIGEST" "$(jq -r '.digest' <<<"$applied")"
 out=$(adm history web 2>&1); code=$?
 expect_code "history answers" 0 "$code" "$out"
 id2=$(printf '%s\n' "$out" | sed -n 's/^id: //p' | sed -n 1p)
