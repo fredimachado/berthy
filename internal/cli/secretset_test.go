@@ -355,6 +355,40 @@ func TestSecretSetFromAPipeAcceptsOneTrailingLineEnd(t *testing.T) {
 	}
 }
 
+// TestSecretSetFromAPipeRefusesAnEmptyValue checks that a piped empty value (nothing, one LF, or one CRLF) is refused with
+// exit 1, stderr "no value entered", and no request to the agent — the same outcome as an empty terminal entry.
+func TestSecretSetFromAPipeRefusesAnEmptyValue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stdin string
+	}{
+		{"empty", ""},
+		{"LF only", "\n"},
+		{"CRLF only", "\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []string
+			server := recordingAgent(&bodies)
+			defer server.Close()
+			cfg := ingressCLIConfig(t, server.URL)
+			withStdin(t, tc.stdin)
+			var out, errout bytes.Buffer
+			if code := Run([]string{"secret", "set", "DB_URL", "-e", "dev", "--config", cfg}, &out, &errout); code != 1 {
+				t.Fatalf("exit %d, want 1: %s", code, errout.String())
+			}
+			if len(bodies) != 0 {
+				t.Fatalf("requests %q, want none", bodies)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout %q, want empty", out.String())
+			}
+			if !strings.Contains(errout.String(), "no value entered") {
+				t.Fatalf("stderr %q, want no value entered", errout.String())
+			}
+		})
+	}
+}
+
 // TestSecretSetFromAPipeRefusesALineBreakInTheValue checks that a piped value with any remaining CR or LF is refused with
 // exit 1, no request to the agent, empty stdout, and a stderr line that names the rule without echoing the value.
 func TestSecretSetFromAPipeRefusesALineBreakInTheValue(t *testing.T) {
