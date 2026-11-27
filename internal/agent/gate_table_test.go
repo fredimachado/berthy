@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"berthy/internal/cloudflare/cftest"
 	"berthy/internal/engine"
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
@@ -90,14 +94,18 @@ type gateRow struct {
 func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 	fixture := func(t *testing.T) *approvalFixture {
 		f := newApprovalFixture(t, true, nil)
-		t.Cleanup(func() { _ = f.ctrl.Drain(context.Background()) })
+		ctrl := f.ctrl
+		t.Cleanup(func() { _ = ctrl.Drain(context.Background()) })
 		return f
 	}
 	nothing := func(*approvalFixture) {}
 	lock := func(f *approvalFixture) string {
 		v, err := f.s.Lock(context.Background())
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "unlocked"
+		}
+		if err != nil {
+			f.t.Fatal(err)
 		}
 		return fmt.Sprintf("%+v", v)
 	}
@@ -134,8 +142,11 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 	}
 	cancelState := func(f *approvalFixture) string {
 		op, err := f.s.Active(context.Background())
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Sprint("no active operation: ", err, f.audit())
+		}
+		if err != nil {
+			f.t.Fatal(err)
 		}
 		var cancels []string
 		for _, a := range f.audit() {
@@ -160,9 +171,39 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 			f.ctrl.Engine = e
 			f.t.Cleanup(func() { e.once.Do(func() { close(e.release) }) })
 		}, operation("r")},
-		"prune":        {"POST", "/prune", `{"request_id":"r"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
-		"remove":       {"POST", "/remove", `{"app":"api","request_id":"r"}`, fixture, seed, operation("r")},
-		"destroy":      {"POST", "/destroy", `{"request_id":"r","confirm":"demo/lab"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
+		"prune":   {"POST", "/prune", `{"request_id":"r"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
+		"remove":  {"POST", "/remove", `{"app":"api","request_id":"r"}`, fixture, seed, operation("r")},
+		"destroy": {"POST", "/destroy", `{"request_id":"r","confirm":"demo/lab"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
+		"restore": {"POST", "/restore", `{"key":"demo/lab/api/uploads/uploads/20261116T120000Z-1.tar.gz","into":"restored-1","request_id":"r"}`, func(t *testing.T) *approvalFixture {
+			f := fixture(t)
+			g := newBackupRig(t)
+			g.backups.Runner.Now = func() time.Time { return apStartTime }
+			m, err := manifest.DecodeJSON([]byte(backupManifest(g.url)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := g.backups.Runner.Run(context.Background(), *m, "uploads", "manual")
+			if err != nil || result.Run.Status != "succeeded" || result.Key != "demo/lab/api/uploads/uploads/20261116T120000Z-1.tar.gz" {
+				t.Fatalf("seed backup: %+v %v", result, err)
+			}
+			f.s, f.ctrl = g.store, g.ctrl
+			f.ctrl.Protected = true
+			f.h = NewDeploymentHandlerWithBackups(f.cfg, nil, nil, f.ctrl, nil, nil, g.backups)
+			t.Cleanup(func() { _ = g.ctrl.Drain(context.Background()) })
+			return f
+		}, nothing, operation("r")},
+		"ingress apply": {"POST", "/ingress/apply", strings.Replace(string(ingressTestRequest(t, false)), `"dry_run":true`, `"dry_run":false`, 1), fixture, func(f *approvalFixture) {
+			if err := f.s.PutSecret(context.Background(), state.Actor{ID: "human", Name: "human"}, state.SecretInfo{Name: "CF_TOKEN"}, []byte(ingressTestCFToken)); err != nil {
+				f.t.Fatal(err)
+			}
+			fake := cftest.New(ingressTestCFToken, "acct")
+			fake.AddZone("example.com")
+			srv := httptest.NewServer(fake.Handler())
+			f.t.Cleanup(srv.Close)
+			f.ctrl.CloudflareURL = srv.URL + "/client/v4"
+			f.ctrl.Engine = gateEngine{}
+			f.t.Cleanup(func() { _ = f.ctrl.Drain(context.Background()) })
+		}, operation("ingress-test")},
 		"lock acquire": {"POST", "/lock/acquire", `{"message":"m"}`, fixture, nothing, lock},
 		"lock release": {"POST", "/lock/release", `{}`, fixture, func(f *approvalFixture) {
 			if err := f.s.AcquireManual(context.Background(), state.Actor{ID: "human", Name: "human"}, "human", "held"); err != nil {
@@ -190,8 +231,11 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 			}
 		}, func(f *approvalFixture) string {
 			op, err := f.s.Active(context.Background())
-			if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return "resolved"
+			}
+			if err != nil {
+				f.t.Fatal(err)
 			}
 			return op.State
 		}},
