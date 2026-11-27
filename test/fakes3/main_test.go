@@ -334,6 +334,13 @@ func TestArmingASecondHoldReportsOnlyTheNewWaiters(t *testing.T) {
 	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"PutObject"}`); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("re-arm: %d", resp.StatusCode)
 	}
+	select {
+	case <-h1.release:
+	default:
+		// Unblock the first handler before failing; cleanup only clears the new hold.
+		close(h1.release)
+		t.Fatal("re-arm left the previous hold's release open")
+	}
 	h2 := f.currentHold()
 	if h2 == nil || h2 == h1 {
 		t.Fatalf("re-arm should install a new hold, got %v after %v", h2, h1)
