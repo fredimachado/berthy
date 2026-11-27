@@ -807,6 +807,43 @@ func TestConfigIsWrittenOnlyOnChange(t *testing.T) {
 	}
 }
 
+type configWriteFailureRunner struct {
+	Runner
+	result Result
+	err    error
+}
+
+func (r configWriteFailureRunner) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
+	if script == configWriteScript() {
+		return r.result, r.err
+	}
+	return r.Runner.Run(ctx, script, stdin)
+}
+
+func TestConfigStepKeepsWriteFailureCause(t *testing.T) {
+	transport := errors.New("SSH connection lost")
+	for _, tc := range []struct {
+		name, want string
+		result     Result
+		cause      error
+	}{
+		{name: "transport", want: transport.Error(), cause: transport},
+		{name: "remote exit", want: "No space left on device", result: Result{Code: 1, Stderr: []byte("No space left on device\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exe := elfFile(t, emX86)
+			f := setUpAgent(t, exe)
+			s := agentSession(t, f, exe, false, func(o *Options) { o.Protected = true })
+			s.R = configWriteFailureRunner{Runner: s.R, result: tc.result, err: tc.cause}
+			_, _, err := configStep(context.Background(), s)
+			want := "writing " + configPath + ": " + tc.want
+			if err == nil || err.Error() != want || tc.cause != nil && !errors.Is(err, tc.cause) || s.staged.Config {
+				t.Fatalf("config write: err=%v staged=%t, want %q", err, s.staged.Config, want)
+			}
+		})
+	}
+}
+
 func TestConfigOwnerAndModeAreRepairedInPlace(t *testing.T) {
 	exe := elfFile(t, emX86)
 	f := setUpAgent(t, exe)

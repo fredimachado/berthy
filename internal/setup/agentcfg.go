@@ -629,8 +629,14 @@ func (s *Session) stageConfig(ctx context.Context, want []byte) error {
 	script := configWriteScript()
 	if s.DryRun {
 		s.Log.Would(script)
-	} else if res, err := s.R.Run(ctx, script, bytes.NewReader(want)); err != nil || res.Code != 0 {
-		return fmt.Errorf("could not stage %s", configPath)
+	} else {
+		res, err := s.R.Run(ctx, script, bytes.NewReader(want))
+		if err != nil {
+			return fmt.Errorf("writing %s: %w", configPath, err)
+		}
+		if res.Code != 0 {
+			return fmt.Errorf("writing %s: %s", configPath, failureText(res))
+		}
 	}
 	return nil
 }

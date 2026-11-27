@@ -207,7 +207,7 @@ func stageRemoval(ctx context.Context, s *Session) (string, string, error) {
 		return StatusOK, configPath + " already excludes " + s.removal.ID.String(), nil
 	}
 	if err := s.stageConfig(ctx, s.removalCandidate); err != nil {
-		return "", "", err
+		return "", "", errors.New("could not stage " + configPath)
 	}
 	if s.DryRun {
 		return StatusWouldChange, "would remove " + s.removal.ID.String() + " from " + configPath, nil
