@@ -149,196 +149,10 @@ func (rt *routeRuntime) dispatchOrdinary(call routeCall) {
 
 	// Only routes whose endpoints have yet to move use the original dispatcher.
 	w, r, actor, rest := call.w, call.r, call.actor, call.rest
-	c, d, lim := rt.c, rt.d, rt.lim
+	c, d := rt.c, rt.d
 	ctx := r.Context()
 	sa := call.stateActor()
 	switch {
-	case rest[0] == "operations" && len(rest) == 2:
-		op, err := d.Store.Operation(ctx, rest[1])
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(publicOperation(op))
-	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "output":
-		op, err := d.Store.Operation(ctx, rest[1])
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		if op.Kind != "exec" && op.Kind != "run" {
-			writeError(w, 404, "not_found", "not found")
-			return
-		}
-		intents, err := d.Store.Intents(ctx, op.ID)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		for _, i := range intents {
-			if i.Kind == "exec" && i.Phase == "finished" {
-				var output struct {
-					Output   string `json:"output"`
-					ExitCode int    `json:"exit_code"`
-				}
-				if json.Unmarshal(i.Receipt, &output) != nil {
-					writeError(w, 503, "unavailable", "output unavailable")
-					return
-				}
-				json.NewEncoder(w).Encode(output)
-				return
-			}
-		}
-		writeError(w, 404, "not_found", "output unavailable")
-	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "diagnostics":
-		op, err := d.Store.Operation(ctx, rest[1])
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		items, err := d.Store.Diagnostics(ctx, op.ID)
-		if err != nil {
-			writeError(w, 503, "unavailable", "diagnostics unavailable")
-			return
-		}
-		if len(items) == 0 {
-			writeError(w, 404, "not_found", "no diagnostics for this operation")
-			return
-		}
-		json.NewEncoder(w).Encode(struct {
-			OperationID string            `json:"operation_id"`
-			Reason      string            `json:"reason"`
-			Diagnostics []json.RawMessage `json:"diagnostics"`
-		}{op.ID, safeReason(op.Reason), items})
-	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "resolve":
-		var req resolveBody
-		if decodeBody(w, r, &req) != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		if !validReason(req.Reason) {
-			writeError(w, 400, "bad_request", "reason required")
-			return
-		}
-		report, err := d.ResolveRecovery(ctx, actor, rest[1], req.Reason, req.DryRun)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(report)
-	case rest[0] == "operations" && len(rest) == 3 && rest[2] == "cancel":
-		var req dryRunBody
-		// A cancel needs nothing but the operation, so a request with no body is a cancel.
-		if err := decodeOptionalBody(w, r, &req); err != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		plan, err := d.Cancel(ctx, actor, rest[1], req.DryRun)
-		var refused deploy.CancelRefused
-		if errors.As(err, &refused) {
-			writeError(w, 409, "cancel_refused", string(refused))
-			return
-		}
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(plan)
-	case rest[0] == "operations":
-		streamOperation(w, r, d.Store, rest[1], lim)
-	case rest[0] == "wait":
-		timeout := 2 * time.Minute
-		if raw := r.URL.Query().Get("timeout"); raw != "" {
-			var err error
-			timeout, err = time.ParseDuration(raw)
-			if err != nil || timeout <= 0 || timeout > 10*time.Minute {
-				writeError(w, 400, "bad_request", "invalid wait timeout")
-				return
-			}
-		}
-		waitCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		if err := d.Wait(waitCtx, rest[1], r.URL.Query().Get("role")); err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
-	case rest[0] == "applied":
-		// The release the app runs now: berthy deploy asks before it deploys an app that keeps its version.
-		release, err := d.Store.Applied(ctx, rest[1])
-		if errors.Is(err, sql.ErrNoRows) {
-			// A distinct code, so a client never takes the 404 of an agent without this route for an app that was never deployed.
-			writeError(w, 404, "not_deployed", "app is not deployed")
-			return
-		}
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		row := map[string]any{"id": release.ID, "digest": release.Digest}
-		if release.Tag != "" {
-			row["tag"] = release.Tag
-		}
-		json.NewEncoder(w).Encode(row)
-	case len(rest) == 3 && rest[0] == "history" && rest[2] == "diff":
-		// What release `release` of the app changes compared with release `base`, or with the release before it.
-		id, base, ok := historyDiffIDs(r.URL.Query())
-		if !ok {
-			writeError(w, 400, "bad_request", "release and base must be release numbers")
-			return
-		}
-		diff, err := d.DiffReleases(ctx, rest[1], id, base)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(diff)
-	case rest[0] == "history":
-		rows, err := d.Store.History(ctx, rest[1])
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		out := make([]map[string]any, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, publicRelease(r))
-		}
-		failures, err := d.Store.DeployHistory(ctx, rest[1])
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		for _, op := range failures {
-			row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
-			if op.Tag != "" {
-				row["tag"] = op.Tag
-			}
-			if reason := safeReason(op.Reason); reason != "" {
-				row["reason"] = reason
-			}
-			if op.Modified {
-				row["modified"] = true
-			}
-			addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
-			out = append(out, row)
-		}
-		sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
-		json.NewEncoder(w).Encode(out)
-	case rest[0] == "audit":
-		rows, err := d.Store.AuditLog(ctx, 100)
-		if err != nil {
-			operationError(w, err)
-			return
-		}
-		out := make([]map[string]any, 0, len(rows))
-		for _, a := range rows {
-			row := map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time}
-			if a.Tag != "" {
-				row["tag"] = a.Tag
-			}
-			out = append(out, row)
-		}
-		json.NewEncoder(w).Encode(out)
 	case len(rest) == 1 && rest[0] == "lock":
 		l, err := d.Store.Lock(ctx)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -618,6 +432,231 @@ func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {
 	w.Header().Set("Location", path)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+}
+
+func (rt *routeRuntime) handleOperation(call routeCall) {
+	w, ctx, id := call.w, call.r.Context(), call.rest[1]
+	d := rt.d
+	op, err := d.Store.Operation(ctx, id)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(publicOperation(op))
+}
+
+func (rt *routeRuntime) handleOutput(call routeCall) {
+	w, ctx, id := call.w, call.r.Context(), call.rest[1]
+	d := rt.d
+	op, err := d.Store.Operation(ctx, id)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	if op.Kind != "exec" && op.Kind != "run" {
+		writeError(w, 404, "not_found", "not found")
+		return
+	}
+	intents, err := d.Store.Intents(ctx, op.ID)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	for _, i := range intents {
+		if i.Kind == "exec" && i.Phase == "finished" {
+			var output struct {
+				Output   string `json:"output"`
+				ExitCode int    `json:"exit_code"`
+			}
+			if json.Unmarshal(i.Receipt, &output) != nil {
+				writeError(w, 503, "unavailable", "output unavailable")
+				return
+			}
+			json.NewEncoder(w).Encode(output)
+			return
+		}
+	}
+	writeError(w, 404, "not_found", "output unavailable")
+}
+
+func (rt *routeRuntime) handleDiagnostics(call routeCall) {
+	w, ctx, id := call.w, call.r.Context(), call.rest[1]
+	d := rt.d
+	op, err := d.Store.Operation(ctx, id)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	items, err := d.Store.Diagnostics(ctx, op.ID)
+	if err != nil {
+		writeError(w, 503, "unavailable", "diagnostics unavailable")
+		return
+	}
+	if len(items) == 0 {
+		writeError(w, 404, "not_found", "no diagnostics for this operation")
+		return
+	}
+	json.NewEncoder(w).Encode(struct {
+		OperationID string            `json:"operation_id"`
+		Reason      string            `json:"reason"`
+		Diagnostics []json.RawMessage `json:"diagnostics"`
+	}{op.ID, safeReason(op.Reason), items})
+}
+
+func (rt *routeRuntime) handleResolve(call routeCall, read readRouteBody[resolveBody]) {
+	w, ctx, id := call.w, call.r.Context(), call.rest[1]
+	d, actor := rt.d, call.actor
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	if !validReason(req.Reason) {
+		writeError(w, 400, "bad_request", "reason required")
+		return
+	}
+	report, err := d.ResolveRecovery(ctx, actor, id, req.Reason, req.DryRun)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(report)
+}
+
+func (rt *routeRuntime) handleCancel(call routeCall, read readRouteBody[dryRunBody]) {
+	w, ctx, id := call.w, call.r.Context(), call.rest[1]
+	d, actor := rt.d, call.actor
+	req, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	plan, err := d.Cancel(ctx, actor, id, req.DryRun)
+	var refused deploy.CancelRefused
+	if errors.As(err, &refused) {
+		writeError(w, 409, "cancel_refused", string(refused))
+		return
+	}
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(plan)
+}
+
+func (rt *routeRuntime) handleEvents(call routeCall) {
+	streamOperation(call.w, call.r, rt.d.Store, call.rest[1], rt.lim)
+}
+
+func (rt *routeRuntime) handleWait(call routeCall) {
+	w, r, app := call.w, call.r, call.rest[1]
+	timeout := 2 * time.Minute
+	if raw := r.URL.Query().Get("timeout"); raw != "" {
+		var err error
+		timeout, err = time.ParseDuration(raw)
+		if err != nil || timeout <= 0 || timeout > 10*time.Minute {
+			writeError(w, 400, "bad_request", "invalid wait timeout")
+			return
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	if err := rt.d.Wait(waitCtx, app, r.URL.Query().Get("role")); err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+}
+
+func (rt *routeRuntime) handleApplied(call routeCall) {
+	w, ctx, app := call.w, call.r.Context(), call.rest[1]
+	d := rt.d
+	// The release the app runs now: berthy deploy asks before it deploys an app that keeps its version.
+	release, err := d.Store.Applied(ctx, app)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A distinct code, so a client never takes the 404 of an agent without this route for an app that was never deployed.
+		writeError(w, 404, "not_deployed", "app is not deployed")
+		return
+	}
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	row := map[string]any{"id": release.ID, "digest": release.Digest}
+	if release.Tag != "" {
+		row["tag"] = release.Tag
+	}
+	json.NewEncoder(w).Encode(row)
+}
+
+func (rt *routeRuntime) handleHistoryDiff(call routeCall) {
+	w, r, app := call.w, call.r, call.rest[1]
+	// What release `release` of the app changes compared with release `base`, or with the release before it.
+	id, base, ok := historyDiffIDs(r.URL.Query())
+	if !ok {
+		writeError(w, 400, "bad_request", "release and base must be release numbers")
+		return
+	}
+	diff, err := rt.d.DiffReleases(r.Context(), app, id, base)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(diff)
+}
+
+func (rt *routeRuntime) handleHistory(call routeCall) {
+	w, ctx, app := call.w, call.r.Context(), call.rest[1]
+	d := rt.d
+	rows, err := d.Store.History(ctx, app)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, publicRelease(r))
+	}
+	failures, err := d.Store.DeployHistory(ctx, app)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	for _, op := range failures {
+		row := map[string]any{"operation_id": op.OperationID, "kind": op.Kind, "app": op.App, "commit": op.Commit, "state": op.State, "created": op.Started}
+		if op.Tag != "" {
+			row["tag"] = op.Tag
+		}
+		if reason := safeReason(op.Reason); reason != "" {
+			row["reason"] = reason
+		}
+		if op.Modified {
+			row["modified"] = true
+		}
+		addSchemaStates(row, op.SchemaBefore, op.SchemaAfter)
+		out = append(out, row)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleAudit(call routeCall) {
+	w, ctx := call.w, call.r.Context()
+	d := rt.d
+	rows, err := d.Store.AuditLog(ctx, 100)
+	if err != nil {
+		operationError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, a := range rows {
+		row := map[string]any{"operation_id": a.OperationID, "actor_id": a.ActorID, "actor_name": a.ActorName, "remote": a.Remote, "action": a.Action, "outcome": a.Outcome, "time": a.Time}
+		if a.Tag != "" {
+			row["tag"] = a.Tag
+		}
+		out = append(out, row)
+	}
+	json.NewEncoder(w).Encode(out)
 }
 
 func publicRelease(r state.Release) map[string]any {
