@@ -35,6 +35,6 @@ func sessionBus() bool {
 	if _, err := os.Stat(sessionBusPath); err != nil {
 		return false
 	}
-	_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+sessionBusPath)
+	_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+sessionBusPath) //nolint:errcheck // The constant name is valid and Stat rejected a path containing NUL.
 	return true
 }
