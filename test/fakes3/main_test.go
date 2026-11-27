@@ -5,13 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"berthy/internal/objectstore"
 )
@@ -47,12 +48,41 @@ func startFakeTCP(t *testing.T) (*fake, string) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: f}
+	// LIFO: clear the hold before closing so a blocked UploadPart does not outlive the listener.
 	t.Cleanup(func() {
 		srv.Close()
 		ln.Close()
 	})
+	t.Cleanup(f.clearHold)
 	go srv.Serve(ln)
 	return f, "http://" + ln.Addr().String()
+}
+
+// waitHoldEntered waits until a matching request is blocked in waitHold, or fails if done finishes first
+// (which is what happens when waitHold is removed).
+func waitHoldEntered(t *testing.T, f *fake, done <-chan error) {
+	t.Helper()
+	entered := make(chan struct{})
+	go func() {
+		f.mu.Lock()
+		for f.holdWaiting < 1 {
+			f.holdCond.Wait()
+		}
+		f.mu.Unlock()
+		close(entered)
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("upload finished without entering hold: %v", err)
+	}
+}
+
+func holdWaitingAt(t *testing.T, base string) holdView {
+	t.Helper()
+	var view holdView
+	decodeJSON(t, send(t, http.MethodGet, base+"/_fake/hold", ""), &view)
+	return view
 }
 
 func send(t *testing.T, method, url, body string) *http.Response {
@@ -157,7 +187,9 @@ func TestTransientServerErrorIsRetriedByTheClient(t *testing.T) {
 
 func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 	f, base := startFakeTCP(t)
-	send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`)
+	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("arm hold: %d", resp.StatusCode)
+	}
 	s, err := objectstore.New(objectstore.Config{Endpoint: base, Bucket: testBucket, AccessKey: testAccessKey, SecretKey: testSecretKey})
 	if err != nil {
 		t.Fatal(err)
@@ -168,21 +200,14 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 		_, err := s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
 		done <- err
 	}()
-	// Wait until CreateMultipartUpload has run and UploadPart is blocked on the hold.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		uploads, err := f.uploads()
-		if err == nil && len(uploads) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("multipart upload never appeared under the hold")
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("upload finished while held: %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
+	// Synchronize on UploadPart entering waitHold, not on CreateMultipartUpload (which happens before the hold).
+	waitHoldEntered(t, f, done)
+	if view := holdWaitingAt(t, base); view.Waiting < 1 || view.Op != "UploadPart" {
+		t.Fatalf("hold view while blocked: %+v", view)
+	}
+	// Still in waitHold: the part has not reached the S3 handler, so nothing is stored.
+	if objs := objectsAt(t, base, ""); len(objs) != 0 {
+		t.Fatalf("object stored before release: %v", objs)
 	}
 	select {
 	case err := <-done:
@@ -201,7 +226,7 @@ func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
 }
 
 func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
-	_, base := startFakeTCP(t)
+	f, base := startFakeTCP(t)
 	for _, body := range []string{
 		`{"op":"HeadBucket"}`,
 		`{"op":"UploadPart","extra":true}`,
@@ -211,18 +236,41 @@ func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
 			t.Errorf("hold %s: %d", body, resp.StatusCode)
 		}
 	}
-	send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`)
-	// A GetObject must not wait on an UploadPart hold.
-	put := send(t, http.MethodPut, base+"/"+testBucket+"/other.txt", "ok")
-	if put.StatusCode != http.StatusOK {
-		t.Fatalf("seed put: %d", put.StatusCode)
+	if resp := send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("arm hold: %d", resp.StatusCode)
 	}
-	got := send(t, http.MethodGet, base+"/"+testBucket+"/other.txt", "")
-	if got.StatusCode != http.StatusOK {
-		t.Fatalf("GetObject under UploadPart hold: %d", got.StatusCode)
-	}
-	if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("clear: %d", resp.StatusCode)
+	// Non-matching ops must finish without entering the hold. If a regression held them, waiting
+	// would rise and this fails instead of hanging on the blocked request.
+	done := make(chan error, 1)
+	go func() {
+		put := send(t, http.MethodPut, base+"/"+testBucket+"/other.txt", "ok")
+		if put.StatusCode != http.StatusOK {
+			done <- fmt.Errorf("seed put: %d", put.StatusCode)
+			return
+		}
+		got := send(t, http.MethodGet, base+"/"+testBucket+"/other.txt", "")
+		if got.StatusCode != http.StatusOK {
+			done <- fmt.Errorf("GetObject under UploadPart hold: %d", got.StatusCode)
+			return
+		}
+		done <- nil
+	}()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("clear: %d", resp.StatusCode)
+			}
+			return
+		default:
+			if f.waiting() >= 1 {
+				t.Fatal("a non-matching request is waiting in the UploadPart hold")
+			}
+			runtime.Gosched()
+		}
 	}
 }
 
