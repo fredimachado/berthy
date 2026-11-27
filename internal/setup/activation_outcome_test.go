@@ -142,7 +142,7 @@ func TestActivationReportsConfigurationOutcome(t *testing.T) {
 	for _, tc := range []struct{ stage, want string }{
 		{"already cancelled", "previous"}, {"swap cancelled", "unconfirmed"}, {"swap 255", "unconfirmed"},
 		{"rollback 255", "unconfirmed"}, {"rollback error", "unconfirmed"},
-		{"after rollback", "unconfirmed"}, {"restart error", "unconfirmed"}, {"journal error", "unconfirmed"}, {"journal 255", "previous"}, {"stop error", "unconfirmed"}, {"stop 255", "unconfirmed"}, {"binary rollback error", "unconfirmed"},
+		{"after rollback", "unconfirmed"}, {"restart error", "unconfirmed"}, {"journal error", "unconfirmed"}, {"journal 255", "previous"}, {"stop error", "retained"}, {"stop 255", "retained"}, {"binary rollback error", "retained"},
 	} {
 		t.Run(tc.stage, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

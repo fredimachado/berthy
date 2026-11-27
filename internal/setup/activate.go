@@ -152,7 +152,7 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		return guarded(fmt.Errorf("restarting the agent: %w", err))
 	}
 	if armed && res.Code == guardDecided {
-		return guardOutcome(parseGuardState(res.Stdout), staged, prevCfg, outcome, "")
+		return guardOutcome(parseGuardState(res.Stdout), prevCfg, outcome, "")
 	}
 	if res.Code == 0 {
 		return nil
@@ -180,18 +180,26 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	}
 	res, err = r.Run(ctx, "/bin/sh "+guardPath+" "+binArg+" "+cfgArg+" now", nil)
 	if err != nil {
-		if staged.Config {
+		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
 		return activationFailure(fmt.Errorf("setup lost the server while it put the previous agent back or stopped it; the server finishes it: %w", err), outcome)
 	}
-	return guardOutcome(parseGuardState(res.Stdout), staged, prevCfg, outcome, journal)
+	result := parseGuardState(res.Stdout)
+	if result == guardNoWord {
+		if prevCfg {
+			outcome = ConfigUnconfirmed
+		}
+		return &ActivateError{Message: withLog("setup may have started recovery; the server finishes it if it started, and the timer decides otherwise", journal), ConfigOutcome: outcome}
+	}
+	return guardOutcome(result, prevCfg, outcome, journal)
 }
 
 type guardResult uint8
 
 const (
-	guardRunning guardResult = iota
+	guardNoWord guardResult = iota
+	guardRunning
 	guardConfirmed
 	guardKept
 	guardRestored
@@ -202,8 +210,12 @@ const (
 )
 
 func parseGuardState(out []byte) guardResult {
+	unknown := false
 	for _, line := range strings.Split(string(out), "\n") {
-		switch strings.TrimSpace(line) {
+		line = strings.TrimSpace(line)
+		switch line {
+		case "guard=running":
+			return guardRunning
 		case "guard=confirmed":
 			return guardConfirmed
 		case "guard=kept":
@@ -218,12 +230,19 @@ func parseGuardState(out []byte) guardResult {
 			return guardStopFailed
 		case "guard=restore-failed":
 			return guardRestoreFailed
+		default:
+			if strings.HasPrefix(line, "guard=") && line != "guard=" {
+				unknown = true
+			}
 		}
 	}
-	return guardRunning
+	if unknown {
+		return guardRunning
+	}
+	return guardNoWord
 }
 
-func guardOutcome(result guardResult, staged Staged, prevCfg bool, outcome ConfigOutcome, journal string) error {
+func guardOutcome(result guardResult, prevCfg bool, outcome ConfigOutcome, journal string) error {
 	switch result {
 	case guardConfirmed, guardKept:
 		return nil
@@ -238,8 +257,17 @@ func guardOutcome(result guardResult, staged Staged, prevCfg bool, outcome Confi
 		return &ActivateError{Message: withLog(msg, journal), ConfigOutcome: outcome}
 	case guardStopped:
 		return &ActivateError{Message: withLog("the agent did not come up and is left stopped", journal), ConfigOutcome: outcome}
+	case guardStopFailed, guardRestoreFailed:
+		if prevCfg {
+			outcome = ConfigUnconfirmed
+		}
+		msg := "the agent did not come up and could not be stopped"
+		if result == guardRestoreFailed {
+			msg = "the new agent did not come up and the previous one could not be put back"
+		}
+		return &ActivateError{Message: withLog(msg, journal), ConfigOutcome: outcome}
 	default:
-		if staged.Config {
+		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
 		return &ActivateError{Message: withLog("the server guard took over and its result is not known yet", journal), ConfigOutcome: outcome}

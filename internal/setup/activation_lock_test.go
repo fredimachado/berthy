@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -167,7 +168,7 @@ func TestActivateMapsGuardStates(t *testing.T) {
 		ok      bool
 		outcome ConfigOutcome
 		text    string
-	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigUnconfirmed, "not known"}, {"restore-failed", false, ConfigUnconfirmed, "not known"}, {"running", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
+	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigUnconfirmed, "the agent did not come up and could not be stopped"}, {"restore-failed", false, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"}, {"running", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
 		t.Run(tc.word, func(t *testing.T) {
 			r := &stateResultRunner{word: tc.word}
 			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
@@ -189,10 +190,11 @@ func TestActivateMapsGuardStates(t *testing.T) {
 }
 
 type ownerResultRunner struct {
-	word     string
-	fail     bool
-	previous bool
-	calls    []string
+	word      string
+	fail      bool
+	emptyCode int
+	previous  bool
+	calls     []string
 }
 
 func (*ownerResultRunner) Target() string { return "fixture" }
@@ -207,9 +209,15 @@ func (r *ownerResultRunner) Run(_ context.Context, s string, _ io.Reader) (Resul
 	if strings.Contains(s, "systemctl restart berthy") {
 		return Result{Code: 1}, nil
 	}
+	if strings.HasPrefix(s, "journalctl") {
+		return Result{Stdout: []byte("journal detail\n")}, nil
+	}
 	if strings.Contains(s, "/run/berthy-activation-guard.sh") && !strings.Contains(s, ".new ") {
 		if r.fail {
 			return Result{}, errors.New("lost owner")
+		}
+		if r.word == "" {
+			return Result{Code: r.emptyCode}, nil
 		}
 		return Result{Stdout: []byte("guard=" + r.word + "\n")}, nil
 	}
@@ -238,6 +246,55 @@ func TestActivateRunsGuardOnFailure(t *testing.T) {
 			}
 			if tc.previous && !strings.Contains(r.calls[3], "yes yes") {
 				t.Fatalf("missing previous flags: %q", r.calls[3])
+			}
+		})
+	}
+}
+
+func TestGuardResponseDistinguishesNoWord(t *testing.T) {
+	for _, tc := range []struct {
+		name, word string
+		previous   bool
+		code       int
+		outcome    ConfigOutcome
+		message    string
+	}{
+		{"no word with previous", "", true, 255, ConfigUnconfirmed, "setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"},
+		{"no word on first install", "", false, 1, ConfigRetained, "setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"},
+		{"empty successful response", "", true, 0, ConfigUnconfirmed, "setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"},
+		{"explicit running with previous", "running", true, 0, ConfigUnconfirmed, "the server guard took over and its result is not known yet"},
+		{"explicit running on first install", "running", false, 0, ConfigRetained, "the server guard took over and its result is not known yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &ownerResultRunner{word: tc.word, previous: tc.previous, emptyCode: tc.code}
+			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
+			var ae *ActivateError
+			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("error=%v; want %s (%s)", err, tc.message, tc.outcome)
+			}
+			if tc.word == "running" && strings.Contains(err.Error(), "timer decides otherwise") {
+				t.Fatal("running was treated as no response")
+			}
+		})
+	}
+}
+func TestGuardFailureReportsKnownResultAndJournal(t *testing.T) {
+	for _, tc := range []struct {
+		word     string
+		previous bool
+		outcome  ConfigOutcome
+		message  string
+	}{
+		{"stop-failed", false, ConfigRetained, "the agent did not come up and could not be stopped"},
+		{"restore-failed", true, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"},
+		{"restore-failed", false, ConfigRetained, "the new agent did not come up and the previous one could not be put back"},
+	} {
+		t.Run(tc.word+fmt.Sprint(tc.previous), func(t *testing.T) {
+			r := &ownerResultRunner{word: tc.word, previous: tc.previous}
+			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
+			var ae *ActivateError
+			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), tc.message) || !strings.Contains(err.Error(), "journal detail") {
+				t.Fatalf("error=%v; want %s (%s) with journal", err, tc.message, tc.outcome)
 			}
 		})
 	}

@@ -81,7 +81,7 @@ out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen
 expect_code "upgrade loses connection" 1 "$code"
 if [ "$code" -ne 1 ]; then setup_failure "$private/upgrade.stderr"; fi
 if [ ! -f "$SSH_STATE.dropped" ] || [ -f "$SSH_STATE.wrong" ]; then fail "restart connection dropped" "unexpected SSH call order"; fi
-if [[ ( $out == *"server restarts the agent"* && $out != *"may have armed"* ) || $out == *"server guard took over and its result is not known yet"* ]]; then pass "guard reported"; else fail "guard reported" "missing guard description"; setup_failure "$private/upgrade.stderr"; fi
+if [[ $out == *"setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"* ]]; then pass "guard reported"; else fail "guard reported" "missing guard description"; setup_failure "$private/upgrade.stderr"; fi
 unset out
 rm -f "$SSH_STATE.dropped"
 deadline=$((SECONDS+300))
