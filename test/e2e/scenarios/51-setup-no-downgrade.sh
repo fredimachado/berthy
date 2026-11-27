@@ -2,9 +2,15 @@
 # An older release CLI refuses to downgrade a newer agent, and doctor says to upgrade the CLI.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
+mkdir -p "$E2E_ROOT/bin" "$RUN/no-downgrade-empty"
+CLI910=$E2E_ROOT/bin/berthy-v910
+CLI900=$E2E_ROOT/bin/berthy-v900
+# Stamp before HOME is moved into the fixture home, so go does not write its module cache there.
+stamped "$CLI910" v9.1.0 "$SRC" || exit 1
+stamped "$CLI900" v9.0.0 "$SRC" || exit 1
 export FS_HOME="$RUN/no-downgrade-home" FS_DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config"
 export HOME="$FS_HOME"
-mkdir -p "$FS_HOME/bin" "$RUN/no-downgrade-empty" "$E2E_ROOT/bin"
+mkdir -p "$FS_HOME/bin"
 ln -sf "$DOCKER_BIN" "$FS_HOME/bin/docker"
 export PATH="$FS_HOME/bin:/usr/bin:/bin"
 fixture="$REPO/test/fakeserver/fakeserver.sh"
@@ -24,11 +30,6 @@ cleanup() { bash "$fixture" rm "$server" >/dev/null 2>&1 || echo "could not remo
 trap cleanup EXIT
 bash "$fixture" start "$server" >/dev/null || exit 1
 ip=$(bash "$fixture" ip "$server") || exit 1
-
-CLI910=$E2E_ROOT/bin/berthy-v910
-CLI900=$E2E_ROOT/bin/berthy-v900
-stamped "$CLI910" v9.1.0 "$SRC" || exit 1
-stamped "$CLI900" v9.0.0 "$SRC" || exit 1
 
 cfg="$RUN/no-downgrade.json"
 setup_failure() {
