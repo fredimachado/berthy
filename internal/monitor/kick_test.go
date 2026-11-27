@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -150,31 +151,31 @@ func TestKickedCheckThatIsRunningIsNotStartedTwice(t *testing.T) {
 }
 
 func TestKickWakesTheRunLoop(t *testing.T) {
+	// The store is opened outside the bubble so its sql connection is not owned by
+	// synctest; cleanup still runs after Run has been cancelled.
 	store := openStore(t)
-	r := newRig(t, store)
-	down := newCounted("down:app/web", time.Hour)
-	r.checks = []Check{down}
-	r.m.Now = nil // the real clock, so the loop's own ticker is real
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); r.m.Run(ctx) }()
-	defer func() { cancel(); <-done }()
-	waitFor := func(want int) {
-		t.Helper()
-		deadline := time.After(3 * time.Second)
-		for down.count() < want {
-			select {
-			case <-deadline:
-				t.Fatalf("the check ran %d times, want %d", down.count(), want)
-			case <-time.After(5 * time.Millisecond):
-			}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, store)
+		down := newCounted("down:app/web", time.Hour)
+		r.checks = []Check{down}
+		r.m.Now = nil // the loop reads the bubble's fake clock, so its one-second ticker is fake too
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); r.m.Run(ctx) }()
+		defer func() { cancel(); <-done }() // ends on cancel whatever the test saw; never waits for a kick
+
+		synctest.Wait() // the first run has ended (running cleared) and the loop waits on its ticker and wake channel
+		if down.count() != 1 {
+			t.Fatalf("the first run finished with %d runs, want 1", down.count())
 		}
-	}
-	waitFor(1)
-	start := time.Now()
-	r.m.Kick("down:")
-	waitFor(2)
-	if took := time.Since(start); took > 500*time.Millisecond {
-		t.Fatalf("the kick took %v to run the check, the loop ticks once a second", took)
-	}
+		start := time.Now()
+		r.m.Kick("down:")
+		synctest.Wait()
+		if down.count() != 2 {
+			t.Fatalf("the kick did not run the check: %d runs", down.count())
+		}
+		if took := time.Since(start); took != 0 {
+			t.Fatalf("the check ran after %v, on a tick rather than the kick", took)
+		}
+	})
 }
