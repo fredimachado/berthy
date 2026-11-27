@@ -1,0 +1,63 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - forbidigo
+    - funlen
+    - staticcheck
+  settings:
+    depguard:
+      rules:
+        credential-store:
+          files:
+            - $all
+            - '!**/internal/credstore/**'
+          deny:
+            - pkg: github.com/zalando/go-keyring$
+              desc: Use internal/credstore for OS credential access.
+    errcheck:
+      check-blank: true
+    forbidigo:
+      analyze-types: true
+      exclude-godoc-examples: false
+      forbid:
+        - pattern: '^time\.Sleep$'
+          pkg: '^time$'
+          msg: Test sleeps must use an event or a fake clock.
+        - pattern: '^http\.Request\.Body$'
+          pkg: '^net/http$'
+          msg: Agent routes must use the shared body decoder.
+        - pattern: '^agent\.readBody$'
+          pkg: '^berthy/internal/agent$'
+          msg: Agent routes must use the shared body decoder instead of readBody.
+    funlen:
+      lines: 584
+      statements: -1
+      ignore-comments: false
+  exclusions:
+    paths:
+      - '^third_party/'
+    rules:
+      - linters: [forbidigo]
+        text: 'Test sleeps must use an event or a fake clock\.'
+        path-except: '_test\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder\.'
+        path-except: '^internal/agent/[^/]*\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder\.'
+        path: '_test\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder instead of readBody\.'
+        path-except: '^internal/agent/[^/]*\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder instead of readBody\.'
+        path: '_test\.go$'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
