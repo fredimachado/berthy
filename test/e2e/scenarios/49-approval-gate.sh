@@ -51,6 +51,7 @@ wait_until() {
   return 1
 }
 have_op() { [ -n "$(lock_op)" ]; }
+oneoff_running() { [ -n "$(d ps -q --filter label=berthy.environment=$ENVN --filter label=berthy.oneoff="$1" --filter status=running)" ]; }
 
 # Part 1. Null bodies must not carry out a change, and must answer 400 invalid request.
 make_ciadmin || { fail "make an agent admin token" "token create failed"; finish; }
@@ -134,6 +135,11 @@ if ! wait_until "the deploy to hold the lock" have_op; then
   wait "$pid" || true
 else
   id=$(lock_op)
+  # Cancel only after the pre-deploy command runs: earlier, the deploy can end recovery_required and hold the lock.
+  if ! wait_until "the pre-deploy command to run" oneoff_running pre_hook; then
+    adm cancel "$id" >/dev/null 2>&1 || true
+    wait "$pid" || true
+  else
 
   # 2.1 POST operations/<id>/cancel with no body. The hold is proved by lock_op and the audit, not by the 202 alone.
   status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel")
@@ -172,6 +178,7 @@ else
       adm cancel "$rid" >/dev/null 2>&1 || true
     fi
   fi
+  fi
 fi
 
 clear_pending
@@ -195,6 +202,8 @@ expect_eq "3.2 person's ambiguous run answers invalid request" "$INVALID" "$(ans
 expect_eq "3.2 person's ambiguous run leaves the audit unchanged" "$before_audit" "$(adm audit 2>&1)"
 
 clear_pending
+# Until slice 4, 3.2 admits a run that holds the lock briefly; wait so part 4's lock checks are not 409.
+for i in $(seq 1 120); do lock_free && break; sleep 0.5; done
 
 # Part 4. The released v0.8.0 CLI still talks to this agent.
 CLI080=$E2E_ROOT/bin/berthy-cli-v080
