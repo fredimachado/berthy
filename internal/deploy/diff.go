@@ -14,16 +14,25 @@ import (
 	"berthy/internal/state"
 )
 
-// Diff is what a deploy of an app changes compared with the release the app runs now. It is built from two manifests and two
-// image references alone, so it holds names and settings, never the value of a secret: a secret variable shows by its name
-// and the name of its secret.
+// Diff compares an app's proposed release with its applied release. It uses manifest settings, image references and Compose
+// service decisions. Secret variables identify their sources by name.
 type Diff struct {
 	// New is true for the first deploy of an app: there is no release to compare with.
 	New bool `json:"new,omitempty"`
-	// Same is true when nothing differs: the release that would be recorded is the one the app runs.
+	// Same reports whether the compact comparison found any changes.
 	Same bool `json:"same,omitempty"`
 	// Changes lists the differences in a fixed order, so two diffs of the same pair are equal.
 	Changes []DiffChange `json:"changes,omitempty"`
+	// Fields holds the structured comparison separately from the compact JSON.
+	Fields []DiffField `json:"-"`
+}
+
+// DiffField is a setting change or planner note at an app-relative path.
+type DiffField struct {
+	Path   []string `json:"path"`
+	Before *string  `json:"before,omitempty"`
+	After  *string  `json:"after,omitempty"`
+	Note   string   `json:"note,omitempty"`
 }
 
 // DiffChange is one difference. Area is "image", "app", "roles", "deploy", "env", "hooks", "migrations", "ingress", "jobs",
@@ -73,7 +82,7 @@ func ReleaseDiff(app string, prev, next *ReleaseSide) Diff {
 	d.jobs(pm.Jobs, nm.Jobs)
 	d.backups(pm.Backups, nm.Backups)
 	d.probes(pm.Probes, nm.Probes)
-	return Diff{Same: len(d.changes) == 0, Changes: d.changes}
+	return Diff{Same: len(d.changes) == 0, Changes: d.changes, Fields: d.fields}
 }
 
 // WithCompose adds the services that the Compose plan creates, recreates or removes. A service it keeps is not a difference. The
@@ -85,7 +94,9 @@ func (d Diff) WithCompose(plan ComposePlan) Diff {
 	verbs := map[string]string{"create": "create", "recreate": "recreate", "remove": "remove"}
 	for _, s := range plan.Services {
 		if verb, ok := verbs[s.Action]; ok {
-			d.Changes = append(d.Changes, DiffChange{Area: "compose", Change: verb + " " + s.Name})
+			note := verb + " " + s.Name
+			d.Changes = append(d.Changes, DiffChange{Area: "compose", Change: note})
+			d.Fields = append(d.Fields, DiffField{Path: []string{"compose", s.Name}, Note: note})
 		}
 	}
 	d.Same = len(d.Changes) == 0
@@ -165,16 +176,36 @@ func releaseSide(r state.Release) (*ReleaseSide, error) {
 }
 
 // differ collects the changes of one comparison in the order the areas are compared.
-type differ struct{ changes []DiffChange }
+type differ struct {
+	changes []DiffChange
+	fields  []DiffField
+}
 
 func (d *differ) add(area, format string, args ...any) {
 	d.changes = append(d.changes, DiffChange{Area: area, Change: fmt.Sprintf(format, args...)})
 }
 
-// field notes a setting whose text differs.
-func (d *differ) field(area, name, prev, next string) {
+func (d *differ) row(path []string, before, after *string) {
+	d.fields = append(d.fields, DiffField{Path: path, Before: before, After: after})
+}
+
+func diffSide(value string, present bool) *string {
+	if !present {
+		return nil
+	}
+	return &value
+}
+
+// setting compares scalar settings and JSON lists. For optional settings, missing is the compact label for an absent value.
+func (d *differ) setting(area, name, prev, next, missing string, path ...string) {
 	if prev != next {
-		d.add(area, "%s %s -> %s", name, prev, next)
+		if len(path) == 0 {
+			path = []string{area, name}
+		}
+		d.row(path, diffSide(prev, missing == "" || prev != ""), diffSide(next, missing == "" || next != ""))
+	}
+	if a, b := orNone(prev, missing), orNone(next, missing); a != b {
+		d.add(area, "%s %s -> %s", name, a, b)
 	}
 }
 
@@ -183,10 +214,17 @@ func (d *differ) image(pa, na manifest.App, prev, next *ReleaseSide) {
 	if na.Kind == "compose" || pa.Kind == "compose" {
 		if pd, nd := pinnedDigest(prev.Image), pinnedDigest(next.Image); pd != nd && nd != "" {
 			d.add("compose", "file %s -> %s", shortDigest(pd), shortDigest(nd))
+			d.row([]string{"compose", "file"}, diffSide(pd, pd != ""), &nd)
 		}
 		return
 	}
 	pd, nd := pinnedDigest(prev.Image), pinnedDigest(next.Image)
+	if pd != nd {
+		d.row([]string{"image", "digest"}, diffSide(pd, pd != ""), diffSide(nd, nd != ""))
+	}
+	if prev.Tag != next.Tag {
+		d.row([]string{"image", "tag"}, diffSide(prev.Tag, prev.Tag != ""), diffSide(next.Tag, next.Tag != ""))
+	}
 	switch {
 	case pd != nd:
 		line := orNone(shortDigest(pd), "none") + " -> " + orNone(shortDigest(nd), "none")
@@ -202,16 +240,17 @@ func (d *differ) image(pa, na manifest.App, prev, next *ReleaseSide) {
 	}
 	if pa.Image != na.Image {
 		d.add("image", "repository %s -> %s", orNone(pa.Image, "none"), orNone(na.Image, "none"))
+		d.row([]string{"image", "repository"}, diffSide(pa.Image, pa.Image != ""), diffSide(na.Image, na.Image != ""))
 	}
 }
 
 // app notes the settings of the app itself.
 func (d *differ) app(pa, na manifest.App) {
-	d.field("app", "kind", orNone(pa.Kind, "none"), orNone(na.Kind, "none"))
-	d.field("app", "stateful", strconv.FormatBool(pa.Stateful), strconv.FormatBool(na.Stateful))
-	d.field("app", "file", orNone(pa.File, "none"), orNone(na.File, "none"))
-	d.field("app", "project_name", orNone(pa.ProjectName, "none"), orNone(na.ProjectName, "none"))
-	d.field("app", "depends_on", list(pa.DependsOn), list(na.DependsOn))
+	d.setting("app", "kind", pa.Kind, na.Kind, "none")
+	d.setting("app", "stateful", strconv.FormatBool(pa.Stateful), strconv.FormatBool(na.Stateful), "")
+	d.setting("app", "file", pa.File, na.File, "none")
+	d.setting("app", "project_name", pa.ProjectName, na.ProjectName, "none")
+	d.setting("app", "depends_on", list(pa.DependsOn), list(na.DependsOn), "none")
 }
 
 // roles notes the roles that are added or removed, then the settings of each role that both releases have. A role's hostnames
@@ -220,11 +259,13 @@ func (d *differ) roles(pa, na manifest.App) {
 	for _, name := range slices.Sorted(maps.Keys(na.Roles)) {
 		if _, ok := pa.Roles[name]; !ok {
 			d.add("roles", "+ %s", name)
+			d.row([]string{"roles", name}, nil, &name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(pa.Roles)) {
 		if _, ok := na.Roles[name]; !ok {
 			d.add("roles", "- %s", name)
+			d.row([]string{"roles", name}, &name, nil)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(na.Roles)) {
@@ -235,27 +276,33 @@ func (d *differ) roles(pa, na manifest.App) {
 }
 
 func (d *differ) role(name string, p, n manifest.Role) {
-	d.field(name, "service", orNone(p.Service, "none"), orNone(n.Service, "none"))
-	d.field(name, "command", list(p.Command), list(n.Command))
-	d.field(name, "entrypoint", list(p.Entrypoint), list(n.Entrypoint))
-	d.field(name, "user", orNone(p.User, "none"), orNone(n.User, "none"))
-	d.field(name, "replicas", intOf(p.Replicas), intOf(n.Replicas))
-	d.field(name, "port", intOrNone(p.Port), intOrNone(n.Port))
+	setting := func(key, before, after string) {
+		path := append([]string{"roles", name}, strings.Split(key, ".")...)
+		d.setting(name, key, before, after, "none", path...)
+	}
+	setting("service", p.Service, n.Service)
+	setting("command", list(p.Command), list(n.Command))
+	setting("entrypoint", list(p.Entrypoint), list(n.Entrypoint))
+	setting("user", p.User, n.User)
+	setting("replicas", intOf(p.Replicas), intOf(n.Replicas))
+	setting("port", intOrEmpty(p.Port), intOrEmpty(n.Port))
 	switch {
 	case p.Health == nil && n.Health != nil:
 		d.add(name, "+ health")
+		d.row([]string{"roles", name, "health"}, nil, diffSide("configured", true))
 	case p.Health != nil && n.Health == nil:
 		d.add(name, "- health")
+		d.row([]string{"roles", name, "health"}, diffSide("configured", true), nil)
 	case p.Health != nil:
-		d.field(name, "health.test", list(p.Health.Test), list(n.Health.Test))
-		d.field(name, "health.interval", orNone(p.Health.Interval, "none"), orNone(n.Health.Interval, "none"))
-		d.field(name, "health.timeout", orNone(p.Health.Timeout, "none"), orNone(n.Health.Timeout, "none"))
-		d.field(name, "health.start_period", orNone(p.Health.StartPeriod, "none"), orNone(n.Health.StartPeriod, "none"))
-		d.field(name, "health.start_interval", orNone(p.Health.StartInterval, "none"), orNone(n.Health.StartInterval, "none"))
-		d.field(name, "health.retries", intOf(p.Health.Retries), intOf(n.Health.Retries))
+		setting("health.test", list(p.Health.Test), list(n.Health.Test))
+		setting("health.interval", p.Health.Interval, n.Health.Interval)
+		setting("health.timeout", p.Health.Timeout, n.Health.Timeout)
+		setting("health.start_period", p.Health.StartPeriod, n.Health.StartPeriod)
+		setting("health.start_interval", p.Health.StartInterval, n.Health.StartInterval)
+		setting("health.retries", intOf(p.Health.Retries), intOf(n.Health.Retries))
 	}
 	before, after := uptimeDiffValue(p.Health), uptimeDiffValue(n.Health)
-	d.field(name, "health.uptime", orNone(before, "none"), orNone(after, "none"))
+	setting("health.uptime", before, after)
 	switch {
 	case before == "" && after != "":
 		d.add(name, "+ read-only probe bind %s", manifest.UptimeProbeTarget)
@@ -264,9 +311,11 @@ func (d *differ) role(name string, p, n manifest.Role) {
 	}
 	for _, v := range added(p.Volumes, n.Volumes) {
 		d.add(name, "+ volume %s", v)
+		d.row([]string{"roles", name, "volumes"}, nil, &v)
 	}
 	for _, v := range added(n.Volumes, p.Volumes) {
 		d.add(name, "- volume %s", v)
+		d.row([]string{"roles", name, "volumes"}, &v, nil)
 	}
 	var pr, nr manifest.Resources
 	if p.Resources != nil {
@@ -275,8 +324,8 @@ func (d *differ) role(name string, p, n manifest.Role) {
 	if n.Resources != nil {
 		nr = *n.Resources
 	}
-	d.field(name, "resources.cpu", orNone(pr.CPU, "none"), orNone(nr.CPU, "none"))
-	d.field(name, "resources.memory", orNone(pr.Memory, "none"), orNone(nr.Memory, "none"))
+	setting("resources.cpu", pr.CPU, nr.CPU)
+	setting("resources.memory", pr.Memory, nr.Memory)
 	var pl, nl manifest.Logging
 	if p.Logging != nil {
 		pl = *p.Logging
@@ -284,9 +333,16 @@ func (d *differ) role(name string, p, n manifest.Role) {
 	if n.Logging != nil {
 		nl = *n.Logging
 	}
-	d.field(name, "logging.driver", orNone(pl.Driver, "none"), orNone(nl.Driver, "none"))
+	setting("logging.driver", pl.Driver, nl.Driver)
 	for _, k := range union(pl.Options, nl.Options) {
-		d.field(name, "logging.options."+k, orNone(pl.Options[k], "none"), orNone(nl.Options[k], "none"))
+		before, had := pl.Options[k]
+		after, has := nl.Options[k]
+		if had != has || before != after {
+			d.row([]string{"roles", name, "logging", "options", k}, diffSide(before, had), diffSide(after, has))
+		}
+		if a, b := orNone(before, "none"), orNone(after, "none"); a != b {
+			d.add(name, "logging.options.%s %s -> %s", k, a, b)
+		}
 	}
 }
 
@@ -302,12 +358,12 @@ func uptimeDiffValue(h *manifest.Health) string {
 
 // deploy notes the app's rollout settings.
 func (d *differ) deploy(p, n manifest.Deploy) {
-	d.field("deploy", "deploy_timeout", orNone(p.DeployTimeout, "none"), orNone(n.DeployTimeout, "none"))
-	d.field("deploy", "drain_timeout", orNone(p.DrainTimeout, "none"), orNone(n.DrainTimeout, "none"))
-	d.field("deploy", "retain", intOf(p.Retain), intOf(n.Retain))
-	d.field("deploy", "start_attempts", intOf(p.StartAttempts), intOf(n.StartAttempts))
-	d.field("deploy", "order", orNone(p.Order, "auto"), orNone(n.Order, "auto"))
-	d.field("deploy", "verify", strconv.FormatBool(p.Verifies()), strconv.FormatBool(n.Verifies()))
+	d.setting("deploy", "deploy_timeout", p.DeployTimeout, n.DeployTimeout, "none")
+	d.setting("deploy", "drain_timeout", p.DrainTimeout, n.DrainTimeout, "none")
+	d.setting("deploy", "retain", intOf(p.Retain), intOf(n.Retain), "none")
+	d.setting("deploy", "start_attempts", intOf(p.StartAttempts), intOf(n.StartAttempts), "none")
+	d.setting("deploy", "order", orNone(p.Order, "auto"), orNone(n.Order, "auto"), "")
+	d.setting("deploy", "verify", strconv.FormatBool(p.Verifies()), strconv.FormatBool(n.Verifies()), "")
 }
 
 // envValue is where one variable of an app takes its value from: the value itself when it is plain, the name of the secret, or
@@ -335,6 +391,9 @@ func (d *differ) env(p, n manifest.Env) {
 	for _, name := range union(pv, nv) {
 		a, hadA := pv[name]
 		b, hasB := nv[name]
+		if hadA != hasB || a != b {
+			d.row([]string{"env", name}, diffSide(a.fieldValue(), hadA), diffSide(b.fieldValue(), hasB))
+		}
 		switch {
 		case !hadA:
 			d.add("env", "+ %s (%s)", name, b.kind)
@@ -349,6 +408,13 @@ func (d *differ) env(p, n manifest.Env) {
 			d.add("env", "~ %s (%s) %s -> %s", name, b.kind, quote(a.value), quote(b.value))
 		}
 	}
+}
+
+func (v envValue) fieldValue() string {
+	if v.kind == "secret" {
+		return v.source()
+	}
+	return v.value
 }
 
 // source says where a variable takes its value from, for a variable that is now taken from somewhere else.
@@ -368,12 +434,15 @@ func (d *differ) hooks(when string, p, n []manifest.Hook) {
 	gone, fresh := added(nt, pt), added(pt, nt)
 	for _, h := range fresh {
 		d.add("hooks", "+ %s: %s", when, h)
+		d.row([]string{"hooks", when}, nil, &h)
 	}
 	for _, h := range gone {
 		d.add("hooks", "- %s: %s", when, h)
+		d.row([]string{"hooks", when}, &h, nil)
 	}
 	if len(gone) == 0 && len(fresh) == 0 && !slices.Equal(pt, nt) {
 		d.add("hooks", "~ %s: order changed", when)
+		d.fields = append(d.fields, DiffField{Path: []string{"hooks", when}, Note: "order changed"})
 	}
 }
 
@@ -406,14 +475,16 @@ func (d *differ) migrations(p, n *manifest.Migrations) {
 	case p == nil && n == nil:
 	case p == nil:
 		d.add("migrations", "+ migrations")
+		d.row([]string{"migrations"}, nil, diffSide("configured", true))
 	case n == nil:
 		d.add("migrations", "- migrations")
+		d.row([]string{"migrations"}, diffSide("configured", true), nil)
 	default:
-		d.field("migrations", "version", list(p.Version), list(n.Version))
-		d.field("migrations", "apply", list(p.Apply), list(n.Apply))
-		d.field("migrations", "revert", list(p.Revert), list(n.Revert))
-		d.field("migrations", "timeout", orNone(p.Timeout, "none"), orNone(n.Timeout, "none"))
-		d.field("migrations", "retries", intOf(p.Retries), intOf(n.Retries))
+		d.setting("migrations", "version", list(p.Version), list(n.Version), "none")
+		d.setting("migrations", "apply", list(p.Apply), list(n.Apply), "none")
+		d.setting("migrations", "revert", list(p.Revert), list(n.Revert), "none")
+		d.setting("migrations", "timeout", p.Timeout, n.Timeout, "none")
+		d.setting("migrations", "retries", intOf(p.Retries), intOf(n.Retries), "none")
 	}
 }
 
@@ -423,6 +494,9 @@ func (d *differ) ingress(p, n manifest.App) {
 	for _, host := range union(ph, nh) {
 		pr, hadP := ph[host]
 		nr, hasN := nh[host]
+		if hadP != hasN || pr != nr {
+			d.row([]string{"ingress", host}, diffSide(pr, hadP), diffSide(nr, hasN))
+		}
 		switch {
 		case !hadP:
 			d.add("ingress", "+ %s", host)
@@ -452,14 +526,16 @@ func (d *differ) jobs(p, n map[string]manifest.Job) {
 		switch {
 		case !hadA:
 			d.add("jobs", "+ %s", name)
+			d.row([]string{"jobs", name}, nil, &name)
 		case !hasB:
 			d.add("jobs", "- %s", name)
+			d.row([]string{"jobs", name}, &name, nil)
 		default:
-			d.fieldOf("jobs", name, "role", quote(a.Role), quote(b.Role))
-			d.fieldOf("jobs", name, "service", quote(a.Service), quote(b.Service))
-			d.fieldOf("jobs", name, "schedule", quote(a.Schedule), quote(b.Schedule))
-			d.fieldOf("jobs", name, "command", list(a.Command), list(b.Command))
-			d.fieldOf("jobs", name, "timeout", quote(a.Timeout), quote(b.Timeout))
+			d.fieldOf("jobs", name, "role", a.Role, b.Role, quote)
+			d.fieldOf("jobs", name, "service", a.Service, b.Service, quote)
+			d.fieldOf("jobs", name, "schedule", a.Schedule, b.Schedule, quote)
+			d.fieldOf("jobs", name, "command", list(a.Command), list(b.Command), compactList)
+			d.fieldOf("jobs", name, "timeout", a.Timeout, b.Timeout, quote)
 		}
 	}
 }
@@ -471,19 +547,25 @@ func (d *differ) backups(p, n map[string]manifest.Backup) {
 		switch {
 		case !hadA:
 			d.add("backups", "+ %s", name)
+			d.row([]string{"backups", name}, nil, &name)
 		case !hasB:
 			d.add("backups", "- %s", name)
+			d.row([]string{"backups", name}, &name, nil)
 		default:
-			d.fieldOf("backups", name, "volume", quote(a.Volume), quote(b.Volume))
-			d.fieldOf("backups", name, "command", list(a.Command), list(b.Command))
-			d.fieldOf("backups", name, "role", quote(a.Role), quote(b.Role))
-			d.fieldOf("backups", name, "service", quote(a.Service), quote(b.Service))
-			d.fieldOf("backups", name, "timeout", quote(a.Timeout), quote(b.Timeout))
-			d.fieldOf("backups", name, "schedule", quote(a.Schedule), quote(b.Schedule))
-			d.fieldOf("backups", name, "destination", quote(a.Destination), quote(b.Destination))
-			d.fieldOf("backups", name, "prefix", quote(a.Prefix), quote(b.Prefix))
-			d.fieldOf("backups", name, "before", quote(a.Before), quote(b.Before))
-			d.fieldOf("backups", name, "retention", jsonText(a.Retention), jsonText(b.Retention))
+			d.fieldOf("backups", name, "volume", a.Volume, b.Volume, quote)
+			d.fieldOf("backups", name, "command", list(a.Command), list(b.Command), compactList)
+			d.fieldOf("backups", name, "role", a.Role, b.Role, quote)
+			d.fieldOf("backups", name, "service", a.Service, b.Service, quote)
+			d.fieldOf("backups", name, "timeout", a.Timeout, b.Timeout, quote)
+			d.fieldOf("backups", name, "schedule", a.Schedule, b.Schedule, quote)
+			d.fieldOf("backups", name, "destination", a.Destination, b.Destination, quote)
+			d.fieldOf("backups", name, "prefix", a.Prefix, b.Prefix, quote)
+			d.fieldOf("backups", name, "before", a.Before, b.Before, quote)
+			prev, next := jsonText(a.Retention), jsonText(b.Retention)
+			if prev != next {
+				d.add("backups", "~ %s retention %s -> %s", name, prev, next)
+				d.row([]string{"backups", name, "retention"}, diffSide(prev, a.Retention != nil), diffSide(next, b.Retention != nil))
+			}
 		}
 	}
 }
@@ -496,18 +578,24 @@ func (d *differ) probes(p, n map[string]manifest.Probe) {
 		switch {
 		case !hadA:
 			d.add("probes", "+ %s", name)
+			d.row([]string{"probes", name}, nil, &name)
 		case !hasB:
 			d.add("probes", "- %s", name)
+			d.row([]string{"probes", name}, &name, nil)
 		case jsonText(a) != jsonText(b):
 			d.add("probes", "~ %s changed", name)
+			d.fields = append(d.fields, DiffField{Path: []string{"probes", name}, Note: "changed"})
 		}
 	}
 }
 
-// fieldOf notes a setting of a named job or backup whose text differs.
-func (d *differ) fieldOf(area, name, setting, prev, next string) {
+// fieldOf compares a setting of a named job or backup before formatting its compact values.
+func (d *differ) fieldOf(area, name, setting, prev, next string, compact func(string) string) {
 	if prev != next {
-		d.add(area, "~ %s %s %s -> %s", name, setting, prev, next)
+		d.row([]string{area, name, setting}, diffSide(prev, prev != ""), diffSide(next, next != ""))
+		if a, b := compact(prev), compact(next); a != b {
+			d.add(area, "~ %s %s %s -> %s", name, setting, a, b)
+		}
 	}
 }
 
@@ -560,24 +648,28 @@ func orNone(s, none string) string {
 
 func intOf(n *int) string {
 	if n == nil {
-		return "none"
+		return ""
 	}
 	return strconv.Itoa(*n)
 }
 
-func intOrNone(n int) string {
+func intOrEmpty(n int) string {
 	if n == 0 {
-		return "none"
+		return ""
 	}
 	return strconv.Itoa(n)
 }
 
-// list writes a list of words as JSON, such as ["serve","--fast"], or none when it is empty.
+// list writes a nonempty list of words as JSON, such as ["serve","--fast"].
 func list(s []string) string {
 	if len(s) == 0 {
-		return "none"
+		return ""
 	}
 	return jsonText(s)
+}
+
+func compactList(s string) string {
+	return orNone(s, "none")
 }
 
 func jsonText(v any) string {

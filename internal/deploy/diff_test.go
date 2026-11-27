@@ -361,3 +361,107 @@ func TestReleaseDiffOfAComposeAppNamesTheFileChange(t *testing.T) {
 		t.Fatalf("changes %q", got)
 	}
 }
+
+func TestReleaseDiffRetainsFieldPathsAndSides(t *testing.T) {
+	prefix := strings.Repeat("x", 60)
+	before := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+		r := a.Roles["web"]
+		r.Logging = &manifest.Logging{Driver: "json-file", Options: map[string]string{"option.name": "old -> older"}}
+		a.Roles = map[string]manifest.Role{"env": r}
+		a.Env.Plain = map[string]string{"GONE": "remove me", "NOTE": prefix + " -> before"}
+	})
+	after := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+		three := 3
+		r := before.Apps["api"].Roles["env"]
+		r.Replicas = &three
+		r.Health = &manifest.Health{Test: r.Health.Test, StartPeriod: "45s"}
+		r.Logging = &manifest.Logging{Driver: "json-file", Options: map[string]string{"option.name": "new"}}
+		r.Hostnames = []string{"api.example.com"}
+		a.Roles = map[string]manifest.Role{"env": r}
+		a.Env.Plain = map[string]string{"ADDED": "add me", "NOTE": prefix + " -> after"}
+	})
+	d := ReleaseDiff("api", side(before, oldDigest, "v1"), side(after, newDigest, "v2"))
+	assertDiffJSON(t, d.Fields, `[`+
+		`{"path":["image","digest"],"before":"`+pinnedDigest(oldDigest)+`","after":"`+pinnedDigest(newDigest)+`"},`+
+		`{"path":["image","tag"],"before":"v1","after":"v2"},`+
+		`{"path":["roles","env","replicas"],"before":"2","after":"3"},`+
+		`{"path":["roles","env","health","start_period"],"before":"30s","after":"45s"},`+
+		`{"path":["roles","env","logging","options","option.name"],"before":"old -\u003e older","after":"new"},`+
+		`{"path":["env","ADDED"],"after":"add me"},`+
+		`{"path":["env","GONE"],"before":"remove me"},`+
+		`{"path":["env","NOTE"],"before":"`+prefix+` -\u003e before","after":"`+prefix+` -\u003e after"},`+
+		`{"path":["ingress","api.example.com"],"after":"env"}]`)
+}
+
+func TestReleaseDiffDistinguishesAbsentAndEmptyLogOption(t *testing.T) {
+	release := func(options map[string]string) *ReleaseSide {
+		m := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+			r := a.Roles["web"]
+			r.Logging = &manifest.Logging{Driver: "json-file", Options: options}
+			a.Roles["web"] = r
+		})
+		if err := m.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		return side(m, oldDigest, "v1")
+	}
+	absent, empty := release(nil), release(map[string]string{"option.name": ""})
+	for _, tc := range []struct {
+		name          string
+		before, after *ReleaseSide
+		fields        string
+	}{
+		{"add", absent, empty, `[{"path":["roles","web","logging","options","option.name"],"after":""}]`},
+		{"remove", empty, absent, `[{"path":["roles","web","logging","options","option.name"],"before":""}]`},
+		{"unchanged", empty, empty, `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := ReleaseDiff("api", tc.before, tc.after)
+			assertDiffJSON(t, d, `{"same":true}`)
+			assertDiffJSON(t, d.Fields, tc.fields)
+		})
+	}
+}
+
+func TestReleaseDiffFieldsUseManifestSecretSources(t *testing.T) {
+	release := func(secret, template string) *ReleaseSide {
+		m := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+			a.Env.Secret = []manifest.SecretVar{{Var: "DB_PASSWORD", Secret: secret}}
+			a.Env.Template = map[string]string{"DSN": template}
+		})
+		return side(m, oldDigest, "v1")
+	}
+	d := ReleaseDiff("api", release("DB_V1", "u:${DB_V1}@db"), release("DB_V2", "u:${DB_V2}@db"))
+	// Exact sides exclude any resolved secret value.
+	assertDiffJSON(t, d.Fields, `[{"path":["env","DB_PASSWORD"],"before":"from secret DB_V1","after":"from secret DB_V2"},`+
+		`{"path":["env","DSN"],"before":"u:${DB_V1}@db","after":"u:${DB_V2}@db"}]`)
+}
+
+func TestComposeDiffFieldsKeepServiceActions(t *testing.T) {
+	plan := ComposePlan{Services: []ComposeService{
+		{Name: "db", Action: "recreate"},
+		{Name: "cache", Action: "keep"},
+		{Name: "old", Action: "remove"},
+		{Name: "web", Action: "create"},
+	}}
+	d := (Diff{Same: true}).WithCompose(plan)
+	assertDiffJSON(t, d, `{"changes":[{"area":"compose","change":"recreate db"},{"area":"compose","change":"remove old"},{"area":"compose","change":"create web"}]}`)
+	assertDiffJSON(t, d.Fields, `[{"path":["compose","db"],"note":"recreate db"},{"path":["compose","old"],"note":"remove old"},{"path":["compose","web"],"note":"create web"}]`)
+
+	first := (Diff{New: true}).WithCompose(plan)
+	assertDiffJSON(t, first, `{"new":true}`)
+	if len(first.Fields) != 0 || !reflect.DeepEqual(first.Lines(), []string{"new app"}) {
+		t.Fatalf("first deploy = %+v, lines %q", first, first.Lines())
+	}
+}
+
+func assertDiffJSON(t *testing.T, value any, want string) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != want {
+		t.Fatalf("JSON\n got %s\nwant %s", raw, want)
+	}
+}
