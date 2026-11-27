@@ -45,7 +45,7 @@ func alertChannels(ctx context.Context, c Config, s *state.Store, a manifest.Ale
 		out = append(out, alertChannel{name: "telegram", okDetail: "bot token secret present", notifier: n, err: err})
 	}
 	if a.Webhook != nil {
-		n, err := webhookOf(ctx, s, *a.Webhook)
+		n, err := webhookOf(ctx, c, s, *a.Webhook)
 		detail := "url secret present"
 		if a.Webhook.HeadersSecret != "" {
 			detail = "url and headers secrets present"
@@ -122,17 +122,17 @@ func telegramOf(ctx context.Context, c Config, s *state.Store, t manifest.Telegr
 	if !ok {
 		return nil, errors.New(missingTelegramSecret)
 	}
-	return &monitor.Telegram{BaseURL: c.TelegramAPIURL, Token: string(token), ChatID: t.ChatID}, nil
+	return &monitor.Telegram{BaseURL: c.TelegramAPIURL, Token: string(token), ChatID: t.ChatID, HTTP: c.outboundHTTP()}, nil
 }
 
 // webhookOf returns the webhook sender of a channel's settings, or the error that says why it cannot send. The URL and the
 // headers are parsed here, once, where they are read. An error names the secret and never a value.
-func webhookOf(ctx context.Context, s *state.Store, w manifest.Webhook) (monitor.Notifier, error) {
+func webhookOf(ctx context.Context, c Config, s *state.Store, w manifest.Webhook) (monitor.Notifier, error) {
 	target, err := urlSecret(ctx, s, "webhook", w.URLSecret)
 	if err != nil {
 		return nil, err
 	}
-	out := &monitor.Webhook{URL: target}
+	out := &monitor.Webhook{URL: target, Client: c.outboundHTTP()}
 	if w.HeadersSecret != "" {
 		value, ok := plainSecret(ctx, s, w.HeadersSecret)
 		if !ok {

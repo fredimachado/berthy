@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -104,7 +105,8 @@ func TestHeartbeatNamesTheSecretThatCannotBeUsed(t *testing.T) {
 }
 
 func TestHeartbeatIsUnknownWhenTheURLCannotBeReachedAndNeverLeaksIt(t *testing.T) {
-	check, _ := heartbeatCheck(t, heartbeatStore(t, "http://"+closedLoopbackAddress(t)+hookPath, "10s"))
+	check, w := heartbeatCheck(t, heartbeatStore(t, "http://"+dialtest.Refused+hookPath, "10s"))
+	w.beat.Client = dialtest.Client()
 	got := check.Run(context.Background())
 	if got.State != monitor.Unknown || got.Detail != "ping failed: unreachable; no ping accepted yet" {
 		t.Fatalf("result %+v", got)

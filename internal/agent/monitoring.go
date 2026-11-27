@@ -65,7 +65,7 @@ func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy
 	}
 	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.ID(), e, log)}
 	w.composeServices = w.projectServices
-	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers}
+	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers, Client: c.outboundHTTP()}
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
 	return w
 }
@@ -241,9 +241,9 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 		failures := p.FailureLimit()
 		switch {
 		case p.HTTP != "":
-			out = append(out, monitor.HTTPProbe("probe:"+name, p.HTTP, p.ExpectStatus, interval, timeout, failures))
+			out = append(out, monitor.HTTPProbe("probe:"+name, p.HTTP, p.ExpectStatus, interval, timeout, failures, w.cfg.dial))
 		case p.TCP != "":
-			out = append(out, monitor.TCPProbe("probe:"+name, p.TCP, interval, timeout, failures))
+			out = append(out, monitor.TCPProbe("probe:"+name, p.TCP, interval, timeout, failures, w.cfg.dial))
 		default:
 			out = append(out, w.serviceCheck(ctx, "probe:"+name, m, p, interval, timeout, failures))
 		}
@@ -261,7 +261,7 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 		out = append(out, stateBackupCheck(w.store, *m.StateBackup, m.Location(), &w.stateSeen, w.clock))
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Peers)) {
-		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name]))
+		out = append(out, monitor.PeerCheck("peer:"+name, m.Peers[name], w.cfg.dial))
 	}
 	if m.Alerts != nil {
 		alerts := *m.Alerts
@@ -603,7 +603,7 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out[i] = peerDoctorCheck(ctx, name, m.Peers[name], states)
+			out[i] = peerDoctorCheck(ctx, name, m.Peers[name], states, c.dial)
 		}()
 	}
 	wg.Wait()
@@ -652,7 +652,7 @@ func heartbeatDoctorCheck(ctx context.Context, s *state.Store, h manifest.Heartb
 }
 
 // peerDoctorCheck reports one peer for the doctor.
-func peerDoctorCheck(ctx context.Context, name, base string, states map[string]state.CheckState) api.Check {
+func peerDoctorCheck(ctx context.Context, name, base string, states map[string]state.CheckState, dial monitor.DialFunc) api.Check {
 	c := api.Check{Name: "peer:" + name}
 	if st, ok := states["peer:"+name]; ok && st.State != monitor.Unknown && st.State != "" {
 		c.OK = st.State == monitor.OK
@@ -661,7 +661,7 @@ func peerDoctorCheck(ctx context.Context, name, base string, states map[string]s
 	}
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	res := monitor.ProbePeer(pctx, base, 3*time.Second)
+	res := monitor.ProbePeer(pctx, base, 3*time.Second, dial)
 	c.OK = res.State == monitor.OK
 	c.Detail = res.Detail
 	return c

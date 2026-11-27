@@ -6,6 +6,7 @@ import (
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
+	"berthy/internal/monitor"
 	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
@@ -58,9 +59,16 @@ type Config struct {
 	Tokens      []Token `json:"tokens"`
 	// clock is the time source of the approvals. Tests set it; nil means the system clock.
 	clock func() time.Time
-	// cloudflareHTTP is the HTTP client of the Cloudflare token check, for both the doctor and the monitor; nil means the
-	// cloudflare package's default. Tests set it to reach a fake without a network.
-	cloudflareHTTP *http.Client
+	// dial opens connections to external services. Nil uses each client's default dialer.
+	dial monitor.DialFunc
+}
+
+// outboundHTTP returns the default client unless a test supplies a dialer.
+func (c Config) outboundHTTP() *http.Client {
+	if c.dial == nil {
+		return nil
+	}
+	return &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: c.dial}}
 }
 
 const defaultApprovalTTL = 15 * time.Minute
