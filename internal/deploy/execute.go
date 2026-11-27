@@ -402,6 +402,45 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	verifyCtx, stopVerify := context.WithDeadline(ctx, deadline)
 	defer stopVerify()
+	steps, e := c.Store.Intents(verifyCtx, op.ID)
+	if e != nil {
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
+	}
+	seen := make(map[int]bool)
+	for _, i := range steps {
+		if i.Kind != "create" && i.Kind != "update" {
+			continue
+		}
+		if i.Ordinal < 0 || i.Ordinal >= len(work) || seen[i.Ordinal] {
+			outcome.State = "recovery_required"
+			outcome.Err = "verification unavailable"
+			return
+		}
+		expected := work[i.Ordinal].intent
+		if i.Kind != expected.Kind || i.Role != expected.Role || i.Name != expected.Name || i.Generation != expected.Generation || i.ServiceID != expected.ServiceID {
+			outcome.State = "recovery_required"
+			outcome.Err = "verification unavailable"
+			return
+		}
+		seen[i.Ordinal] = true
+	}
+	if len(seen) != len(work) {
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
+	}
+	if e = c.verifyRollout(verifyCtx, steps); e != nil {
+		var failed finalRolloutFailure
+		if errors.As(e, &failed) {
+			unwind(e, work)
+			return
+		}
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
+	}
 	manifestJSON, err := json.Marshal(req.Manifest)
 	if err != nil {
 		outcome.State = "recovery_required"
@@ -414,45 +453,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = "release recording failed"
 		return
 	}
-	for _, w := range work {
-		live, e := c.Engine.InspectService(verifyCtx, w.intent.Name)
-		if e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final verification unavailable"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable", nil)
-			return
-		}
-		if e = healthyOnce(verifyCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final health verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed", nil)
-			return
-		}
-		if e = waitDrain(verifyCtx, c.Engine, live.ID, op.ID); e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final drain verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed", nil)
-			return
-		}
-	}
 	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
 	barrier, e := json.Marshal(outcome)
 	if e != nil {
 		outcome.State = "recovery_required"
 		outcome.Release = nil
-		return
-	}
-	steps, e := c.Store.Intents(verifyCtx, op.ID)
-	if e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification unavailable"
-		return
-	}
-	if _, e = c.recoverBarrier(verifyCtx, steps, state.Intent{Desired: barrier}); e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification unavailable"
 		return
 	}
 	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy

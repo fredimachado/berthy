@@ -926,44 +926,58 @@ func (c *Controller) resolveKeepVersion(ctx context.Context, req Request) (Reque
 	return req, nil
 }
 
-func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent, barrier state.Intent) (state.Outcome, error) {
-	var out state.Outcome
-	if json.Unmarshal(barrier.Desired, &out) != nil || out.Release == nil {
-		return state.Outcome{}, errors.New("invalid verification barrier")
-	}
+type finalRolloutFailure string
+
+func (e finalRolloutFailure) Error() string { return string(e) }
+
+func (c *Controller) verifyRollout(ctx context.Context, intents []state.Intent) error {
 	for _, i := range intents {
 		if i.Kind != "create" && i.Kind != "update" {
 			continue
 		}
 		if i.Phase != "verified" {
-			return state.Outcome{}, errors.New("unverified service")
+			return errors.New("unverified service")
 		}
 		var receipt struct {
 			ID   string          `json:"id"`
 			Spec json.RawMessage `json:"spec"`
 		}
 		if json.Unmarshal(i.Receipt, &receipt) != nil || receipt.ID == "" {
-			return state.Outcome{}, errors.New("missing service observation")
+			return errors.New("missing service observation")
 		}
 		live, err := c.Engine.InspectService(ctx, i.Name)
-		if err != nil || live.ID != receipt.ID || !sameSpec(live.Spec, receipt.Spec) {
-			return state.Outcome{}, errors.New("service changed after verification")
+		if err != nil {
+			return finalRolloutFailure("final verification unavailable")
+		}
+		if live.ID != receipt.ID || !sameSpec(live.Spec, receipt.Spec) {
+			return errors.New("service changed after verification")
 		}
 		var spec struct {
 			Mode struct{ Replicated *struct{ Replicas int } }
 		}
 		if json.Unmarshal(live.Spec, &spec) != nil || spec.Mode.Replicated == nil {
-			return state.Outcome{}, errors.New("invalid service mode")
+			return errors.New("invalid service mode")
 		}
 		if err = healthyOnce(ctx, c.Engine, live.ID, i.Generation, spec.Mode.Replicated.Replicas); err != nil {
-			return state.Outcome{}, err
+			return finalRolloutFailure("final health verification failed")
 		}
 		if err = waitDrain(ctx, c.Engine, live.ID, i.Generation); err != nil {
-			return state.Outcome{}, err
+			return finalRolloutFailure("final drain verification failed")
 		}
 		if i.Kind == "update" && updateHasTasks(i.Before) && live.UpdateStatus.State != "completed" {
-			return state.Outcome{}, errors.New("native update incomplete")
+			return finalRolloutFailure("service update did not complete")
 		}
+	}
+	return nil
+}
+
+func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent, barrier state.Intent) (state.Outcome, error) {
+	var out state.Outcome
+	if json.Unmarshal(barrier.Desired, &out) != nil || out.Release == nil {
+		return state.Outcome{}, errors.New("invalid verification barrier")
+	}
+	if err := c.verifyRollout(ctx, intents); err != nil {
+		return state.Outcome{}, err
 	}
 	out.State = "failed"
 	out.Event = nil
