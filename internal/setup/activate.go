@@ -152,7 +152,12 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		return guarded(fmt.Errorf("restarting the agent: %w", err))
 	}
 	if armed && res.Code == guardDecided {
-		return guardOutcome(parseGuardState(res.Stdout), prevCfg, outcome, "")
+		result := parseGuardState(res.Stdout)
+		journal := ""
+		if result == guardStopFailed || result == guardRestoreFailed {
+			journal, _ = journalTail(ctx, r)
+		}
+		return guardOutcome(result, prevCfg, outcome, journal)
 	}
 	if res.Code == 0 {
 		return nil

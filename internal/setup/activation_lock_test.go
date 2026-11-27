@@ -147,6 +147,7 @@ func TestWgetProbeIsBoundedAsAWhole(t *testing.T) {
 
 type stateResultRunner struct {
 	word      string
+	journal   string
 	calls     []string
 	failOwner bool
 }
@@ -154,6 +155,9 @@ type stateResultRunner struct {
 func (*stateResultRunner) Target() string { return "fixture" }
 func (r *stateResultRunner) Run(_ context.Context, s string, _ io.Reader) (Result, error) {
 	r.calls = append(r.calls, s)
+	if strings.HasPrefix(s, "journalctl") {
+		return Result{Stdout: []byte(r.journal)}, nil
+	}
 	if strings.Contains(s, ".new ") {
 		return Result{Stdout: []byte("prev_bin=yes\nprev_cfg=yes\n")}, nil
 	}
@@ -182,7 +186,11 @@ func TestActivateMapsGuardStates(t *testing.T) {
 					t.Fatalf("error=%v outcome expected=%s", err, tc.outcome)
 				}
 			}
-			if len(r.calls) != 2 {
+			wantCalls := 2
+			if tc.word == "stop-failed" || tc.word == "restore-failed" {
+				wantCalls = 3
+			}
+			if len(r.calls) != wantCalls {
 				t.Fatalf("scripts after guard decision: %d", len(r.calls))
 			}
 		})
@@ -295,6 +303,24 @@ func TestGuardFailureReportsKnownResultAndJournal(t *testing.T) {
 			var ae *ActivateError
 			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), tc.message) || !strings.Contains(err.Error(), "journal detail") {
 				t.Fatalf("error=%v; want %s (%s) with journal", err, tc.message, tc.outcome)
+			}
+		})
+	}
+}
+
+func TestPriorGuardFailureIncludesJournal(t *testing.T) {
+	for _, tc := range []struct{ word, message string }{
+		{"stop-failed", "the agent did not come up and could not be stopped"},
+		{"restore-failed", "the new agent did not come up and the previous one could not be put back"},
+	} {
+		t.Run(tc.word, func(t *testing.T) {
+			r := &stateResultRunner{word: tc.word, journal: "last agent log\n"}
+			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
+			if err == nil || !strings.Contains(err.Error(), tc.message) || !strings.Contains(err.Error(), "last agent log") {
+				t.Fatalf("known guard failure lacks journal: %v", err)
+			}
+			if len(r.calls) != 3 || r.calls[2] != "journalctl -u berthy -n 20 --no-pager -o cat 2>&1" {
+				t.Fatalf("journal call: %q", r.calls)
 			}
 		})
 	}
