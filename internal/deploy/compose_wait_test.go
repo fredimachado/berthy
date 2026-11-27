@@ -11,6 +11,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/state"
 )
 
 func up(health string) composeObservation {
@@ -334,6 +335,67 @@ func TestComposeFinalInspectSeesOrdinaryExit(t *testing.T) {
 	}
 }
 
+func TestComposeConfirmationChecksQueuedProjectEvents(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const siblingID = "other-worker-replica"
+		// Replicas of one service are inspected in ps order, so the worker has already read as running when the die event arrives.
+		const sibling = `{"ID":"` + siblingID + `","Service":"worker","State":"running"}`
+		runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWorker + "\n" + sibling}}
+		c, store := composeController(t, runner, newComposeDocker())
+		c.rolloutHold = nil
+		paceWith(t, time.Hour, time.Hour, 0)
+		docker := &evComposeDocker{composeDocker: newComposeDocker(), events: make(chan engine.Event, 2)}
+		c.Engine = docker
+		req := composeReq("confirmation-event", composeFileOne, composeApp(false))
+		project := req.Manifest.ComposeProject(c.Environment, req.App)
+		var firstReady, diedAt time.Time
+		docker.inspect = func(id string) (engine.ContainerSnapshot, error) {
+			snapshot := runningComposeSnapshot(id)
+			if id == workerID {
+				if firstReady.IsZero() {
+					firstReady = time.Now()
+				}
+				if !diedAt.IsZero() {
+					code := 3
+					snapshot.State, snapshot.Running, snapshot.ExitCode = "exited", false, &code
+				}
+			} else if id == siblingID && time.Since(firstReady) == rolloutMonitor && diedAt.IsZero() {
+				event := engine.Event{Type: "container", Action: "die", ID: workerID, Time: time.Now(),
+					Attributes: map[string]string{"com.docker.compose.project": project, "exitCode": "3"}}
+				if match := docker.matcher(); match == nil || !match(event) {
+					t.Fatal("the wait ignores a die event of its project")
+				}
+				diedAt = event.Time
+				docker.events <- event
+				docker.events <- event
+			}
+			return snapshot, nil
+		}
+
+		ctx, actor := t.Context(), Actor{ID: "ci"}
+		op, _, err := store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, Kind: "deploy", App: req.App, PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := c.runCompose(ctx, op, actor, req, false)
+		if err := store.Finish(ctx, op.ID, out); err != nil {
+			t.Fatal(err)
+		}
+		if diedAt.IsZero() {
+			t.Fatal("the worker did not die during the confirmation poll")
+		}
+		if out.State != "failed" || out.Err != "service worker exited with code 3" {
+			t.Errorf("deploy %s: %q, want failure with service worker exited with code 3", out.State, out.Err)
+		}
+		if releases, err := store.History(ctx, req.App); err != nil || len(releases) != 0 {
+			t.Errorf("recorded %d releases, want none (history error: %v)", len(releases), err)
+		}
+		if len(docker.events) != 0 || time.Since(diedAt) != 0 {
+			t.Errorf("confirmation left %d queued events and returned %v after the worker died", len(docker.events), time.Since(diedAt))
+		}
+	})
+}
+
 func TestComposeRestartingFailsOnFirstPoll(t *testing.T) {
 	zero, three := 0, 3
 	for _, tt := range []struct {
@@ -479,9 +541,17 @@ func TestServiceEventsMatchTheServiceByIDOrLabel(t *testing.T) {
 // evComposeDocker is a Compose engine that also hears Docker's events, with the feed driven by the test.
 type evComposeDocker struct {
 	*composeDocker
-	events chan engine.Event
-	mu     sync.Mutex
-	match  func(engine.Event) bool
+	events  chan engine.Event
+	mu      sync.Mutex
+	match   func(engine.Event) bool
+	inspect func(string) (engine.ContainerSnapshot, error)
+}
+
+func (e *evComposeDocker) InspectContainer(ctx context.Context, id string) (engine.ContainerSnapshot, error) {
+	if e.inspect != nil {
+		return e.inspect(id)
+	}
+	return e.composeDocker.InspectContainer(ctx, id)
 }
 
 func (e *evComposeDocker) Watch(match func(engine.Event) bool) (<-chan engine.Event, func()) {

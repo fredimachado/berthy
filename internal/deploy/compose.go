@@ -1187,6 +1187,7 @@ func (c *Controller) waitCompose(ctx context.Context, project, dir string, upSta
 				break
 			}
 			if ready {
+				timeout = errComposeReadyHold
 				if readySince.IsZero() {
 					readySince = observedAt
 				}
@@ -1195,9 +1196,12 @@ func (c *Controller) waitCompose(ctx context.Context, project, dir string, upSta
 					if ctx.Err() != nil {
 						return errComposeUp
 					}
+					// An event queued during inspection may invalidate a container already read in this poll.
+					if pace.takeQueuedEvent() {
+						continue
+					}
 					return nil
 				}
-				timeout = errComposeReadyHold
 			} else if pending != "" {
 				timeout = Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
 			} else {
