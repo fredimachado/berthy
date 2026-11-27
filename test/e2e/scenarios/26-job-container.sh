@@ -9,6 +9,10 @@ set -uo pipefail
 . "$RUN/digests.env"
 
 DATA_VOLUME="data"
+slot_epoch=$(( ($(date -u +%s) / 60) * 60 - 4 * 3600 ))
+slot_minute=$(date -u -d "@$slot_epoch" +%-M)
+slot_hour=$(date -u -d "@$slot_epoch" +%-H)
+slot_text=$(date -u -d "@$slot_epoch" +%Y-%m-%dT%H:%M:%SZ)
 
 manifest() {
   cat <<YML
@@ -32,6 +36,10 @@ apps:
           start_period: 1s
           retries: 3
 jobs:
+  missed:
+    app: web
+    schedule: "$slot_minute $slot_hour * * *"
+    command: ["true"]
   slow:
     app: web
     command: ["sh", "-c", "echo working; sleep 60"]
@@ -112,6 +120,63 @@ expect_eq "no replica runs" "0" "$(d ps -q --filter label=com.docker.swarm.servi
 out=$(adm job run volume 2>&1); code=$?
 expect_code "a job runs while its role is scaled to 0" 0 "$code" "$out"
 expect_contains "it succeeded" "$out" "status: succeeded"
+
+# Seed yesterday's successful occurrence and leave today's slot unhandled while the agent is stopped.
+out=$(adm job run missed 2>&1); code=$?
+expect_code "the missed fixture job succeeds" 0 "$code" "$out"
+run_id=$(adm jobs --json | jq -r '.[] | select(.name == "missed") | .last.id')
+if ! [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then fail "capture the missed fixture run" "$run_id"; finish; fi
+stop_agent
+if python3 - "$RUN/state/state.db" "$ENVN" "$run_id" "$slot_epoch" <<'PY'
+import datetime, json, sqlite3, sys
+path, env, run_id, slot = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+today = datetime.datetime.fromtimestamp(slot, datetime.timezone.utc)
+yesterday = today - datetime.timedelta(days=1)
+with sqlite3.connect('file:' + path + '?mode=rw', uri=True) as db:
+    release = db.execute("SELECT r.id, r.manifest, r.operation_id FROM applied a JOIN releases r ON r.id=a.release_id WHERE a.environment=? AND a.app='web'", (env,)).fetchone()
+    settings = db.execute('SELECT manifest, operation_id FROM environment_settings WHERE environment=?', (env,)).fetchone()
+    assert release and settings and release[2] == settings[1], 'release and settings must come from the same deployment'
+    expression = json.loads(release[1])['jobs']['missed']['schedule']
+    timezone = json.loads(settings[0]).get('timezone') or 'UTC'
+    assert timezone == 'UTC'
+    assert expression == f'{today.minute} {today.hour} * * *'
+    assert (yesterday.minute, yesterday.hour) == (today.minute, today.hour)
+    handled = int(yesterday.timestamp()) * 1000
+    before = handled - 60000
+    assert db.execute('UPDATE releases SET created=? WHERE id=? AND environment=?', (before, release[0], env)).rowcount == 1
+    assert db.execute('UPDATE environment_settings SET updated=? WHERE environment=?', (before, env)).rowcount == 1
+    assert db.execute("UPDATE job_runs SET trigger='schedule', scheduled=?, started=?, finished=? WHERE environment=? AND id=? AND job='missed' AND trigger='manual' AND status='succeeded'", (handled, handled, handled + 1000, env, run_id)).rowcount == 1
+    assert db.execute('SELECT created FROM releases WHERE id=?', (release[0],)).fetchone()[0] < handled
+    assert db.execute('SELECT updated FROM environment_settings WHERE environment=?', (env,)).fetchone()[0] < handled
+    assert db.execute("SELECT COUNT(*) FROM job_runs WHERE environment=? AND job='missed' AND scheduled=?", (env, slot * 1000)).fetchone()[0] == 0
+PY
+then pass "seed yesterday's scheduled success"; else fail "seed yesterday's scheduled success" "fixture transaction failed"; start_agent; finish; fi
+start_agent || { fail "restart the agent" "the agent did not answer"; finish; }
+expected_detail="missed scheduled run at $slot_text"
+check_json=""
+for _ in $(seq 1 45); do
+  check_json=$(adm checks --json 2>&1)
+  if [ "$(printf '%s' "$check_json" | jq -r '.[] | select(.name == "job:missed") | .state' 2>/dev/null)" = warning ]; then break; fi
+  sleep 1
+done
+check_row=$(printf '%s' "$check_json" | jq -c '.[] | select(.name == "job:missed")' 2>/dev/null)
+printf 'missed slot: %s; seeded run: %s; check: %s\n' "$slot_text" "$run_id" "$check_row"
+expect_eq "the missed slot warns" "warning" "$(printf '%s' "$check_row" | jq -r '.state' 2>/dev/null)"
+expect_eq "the warning names the missed slot" "$expected_detail" "$(printf '%s' "$check_row" | jq -r '.detail' 2>/dev/null)"
+out=$(adm checks 2>&1); code=$?
+expect_code "human-readable checks answers" 0 "$code" "$out"
+printf '%s\n' "$out" | grep -F 'job:missed' || true
+expect_contains "human-readable checks names the job" "$out" "job:missed"
+expect_contains "human-readable checks names the missed slot" "$out" "$expected_detail"
+last_id=$(adm jobs --json | jq -r '.[] | select(.name == "missed") | .last.id')
+expect_eq "the seeded run remains the last run" "$run_id" "$last_id"
+remaining=$(python3 - "$RUN/state/state.db" "$ENVN" "$slot_epoch" <<'PY'
+import sqlite3, sys
+with sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True) as db:
+    print(db.execute("SELECT COUNT(*) FROM job_runs WHERE environment=? AND job='missed' AND scheduled=?", (sys.argv[2], int(sys.argv[3]) * 1000)).fetchone()[0])
+PY
+)
+expect_eq "today's slot remains unexecuted" "0" "$remaining"
 
 # 5. A deploy of the app during a long job does not end it: the job finishes on the release it started with.
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
