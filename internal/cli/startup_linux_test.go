@@ -89,7 +89,7 @@ func TestAgentPublishesEveryStartupResultBeforeServing(t *testing.T) {
 	done := make(chan struct{})
 	var runErr error
 	go func() { runErr = cmd.Wait(); close(done) }()
-	t.Cleanup(func() { _ = cmd.Process.Signal(os.Interrupt); <-done })
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
 	url := "http://" + f.Listen
 	for {
 		select {
