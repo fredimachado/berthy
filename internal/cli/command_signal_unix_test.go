@@ -12,7 +12,28 @@ import (
 	"os/signal"
 	"syscall"
 	"testing"
+	"time"
 )
+
+// waitForSignalChild keeps the fixture closed during the assertion. The
+// watchdog bounds a missing OS exit, which cannot use a synctest clock.
+func waitForSignalChild(t *testing.T, child *exec.Cmd, release func(), missing string) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- child.Wait() }()
+	watchdog := time.NewTimer(15 * time.Second)
+	defer watchdog.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-watchdog.C:
+		release()
+		_ = child.Process.Kill()
+		<-done
+		t.Fatal(missing)
+		return nil
+	}
+}
 
 func TestCommandContextSignalsUnix(t *testing.T) {
 	const childCase = "BERTHY_TEST_COMMAND_SIGNAL"
@@ -77,7 +98,7 @@ func TestCommandContextSignalsUnix(t *testing.T) {
 			if err := child.Process.Signal(syscall.SIGTERM); err != nil {
 				t.Fatal(err)
 			}
-			err = child.Wait()
+			err = waitForSignalChild(t, child, func() { _ = stdin.Close() }, "child did not die on the second SIGTERM while stdin was held open")
 			status := child.ProcessState.Sys().(syscall.WaitStatus)
 			if !status.Signaled() || status.Signal() != syscall.SIGTERM {
 				t.Fatalf("second SIGTERM: wait status %v (%v)", status, err)

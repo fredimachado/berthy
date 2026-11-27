@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -77,10 +78,13 @@ func TestTerminationWhileTheTerminalIsRawRestoresItAndExitsWithTheSignal(t *test
 			child.Env = append(os.Environ(), childAgent+"="+a.URL)
 			child.Stdin, child.Stderr = tty, tty
 			child.ExtraFiles = []*os.File{gate}
-			defer func() {
+			releaseFixture := sync.OnceFunc(func() {
 				_ = release.Close()
 				close(hold)
 				_ = master.Close()
+			})
+			defer func() {
+				releaseFixture()
 				if child.Process != nil && child.ProcessState == nil {
 					_ = child.Process.Kill()
 					_ = child.Wait()
@@ -106,7 +110,7 @@ func TestTerminationWhileTheTerminalIsRawRestoresItAndExitsWithTheSignal(t *test
 				t.Fatal(err)
 			}
 			// The gate only opens in teardown. Even a stuck write must allow exit.
-			waitErr := child.Wait()
+			waitErr := waitForSignalChild(t, child, releaseFixture, fmt.Sprintf("child did not exit while stderr was blocked after %s; want %d", tc.sig, tc.code))
 			if code := child.ProcessState.ExitCode(); code != tc.code {
 				t.Errorf("native exit %d while stderr was blocked, want %d (%v)", code, tc.code, waitErr)
 			}
