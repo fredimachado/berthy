@@ -93,7 +93,9 @@ func TestWaitScriptUsesElapsedDeadline(t *testing.T) {
 	shellTool(t, tools, "probe", `echo "$*" >> "$CALLS"; `+expireProbe)
 	shellTool(t, tools, "systemctl", "echo active")
 	shellTool(t, tools, "sleep", `n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"`)
-	_ = runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir)
+	if err := runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir); err == nil {
+		t.Fatal("an active but silent agent passed the wait")
+	}
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], "--timeout 3s") || !strings.Contains(lines[1], "--timeout 1s") {
@@ -141,12 +143,12 @@ func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 func TestWaitDoesNotSleepAfterDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
 	shellClock(t, tools)
-	shellTool(t, tools, "probe", `echo 3 > "$CLOCK"; exit 1`)
+	shellTool(t, tools, "probe", `echo probed >> "$CALLS"; echo 3 > "$CLOCK"; exit 1`)
 	shellTool(t, tools, "systemctl", "echo active")
 	shellTool(t, tools, "sleep", `echo slept >> "$CALLS"`)
-	_ = runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir)
+	err := runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir)
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
-	if strings.Contains(string(calls), "slept") {
-		t.Fatal("slept after the deadline")
+	if err == nil || string(calls) != "probed\n" {
+		t.Fatalf("wait must fail without sleeping after the probe runs out of time: error=%v, calls=%q", err, calls)
 	}
 }

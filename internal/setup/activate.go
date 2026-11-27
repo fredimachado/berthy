@@ -35,8 +35,6 @@ const recoveryUncertain = "setup may have started recovery; the server finishes 
 // guardDelay allows time for activation and its own rollback.
 func guardDelay(secs int) int { return 2*secs + 60 }
 
-const defaultHealthTimeout = 30 * time.Second
-
 // Staged says what a run left next to the live files for Activate to put in place: the binary as /usr/local/bin/berthy.new
 // and the configuration as /etc/berthy/agent.json.new.
 type Staged struct {

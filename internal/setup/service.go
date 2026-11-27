@@ -53,6 +53,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	first := f.UnitSHA == "" && !f.ServiceActive
 	restart := len(reasons) > 0 || !f.ServiceActive
+	wait := s.Opts.healthTimeout(s.hostedCount)
 	var text string
 	switch {
 	case first:
@@ -75,7 +76,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 			s.Log.Would(enableScript)
 		}
 		if restart {
-			for _, sc := range activateScripts(s.staged, s.Opts.listen(), s.Opts.healthTimeout()) {
+			for _, sc := range activateScripts(s.staged, s.Opts.listen(), wait) {
 				s.Log.Would(sc)
 			}
 		}
@@ -104,7 +105,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 	}
 	if restart {
-		err := Activate(ctx, s.R, s.Opts.listen(), s.staged, s.Opts.healthTimeout())
+		err := Activate(ctx, s.R, s.Opts.listen(), s.staged, wait)
 		var ae *ActivateError
 		switch {
 		case err == nil:

@@ -580,8 +580,8 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 		return "", "", fmt.Errorf("preserving %s: %w", configPath, err)
 	}
 	addsToken := s.newToken != nil || (s.DryRun && (s.hosted() == nil || s.Opts.NewToken))
-	tokens := len(cfg.Environments)
-	summary := fmt.Sprintf("%s (listen %s, %d %s)", configPath, cfg.Listen, tokens, plural(tokens, "environment", "environments"))
+	s.hostedCount = len(cfg.Environments)
+	summary := fmt.Sprintf("%s (listen %s, %d %s)", configPath, cfg.Listen, s.hostedCount, plural(s.hostedCount, "environment", "environments"))
 	changed := s.existing == nil || addsToken
 	if !changed {
 		have, err := marshalConfig(*s.existing)
