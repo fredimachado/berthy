@@ -63,6 +63,10 @@ func runningRun(t *testing.T, f *approvalFixture) (string, *runEngine) {
 	seedRunApp(t, f.s)
 	e := &runEngine{started: make(chan struct{}), release: make(chan struct{})}
 	f.ctrl.Engine = e
+	t.Cleanup(func() {
+		e.once.Do(func() { close(e.release) })
+		_ = f.ctrl.Drain(context.Background())
+	})
 	w := f.call("POST", "/run", apAdminToken, `{"app":"api","command":["sleep","60"],"request_id":"r1"}`)
 	var accepted struct {
 		ID string `json:"operation_id"`
@@ -70,10 +74,6 @@ func runningRun(t *testing.T, f *approvalFixture) (string, *runEngine) {
 	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &accepted) != nil || accepted.ID == "" {
 		t.Fatalf("run: %d %s", w.Code, w.Body.String())
 	}
-	t.Cleanup(func() {
-		e.once.Do(func() { close(e.release) })
-		_ = f.ctrl.Drain(context.Background())
-	})
 	<-e.started
 	return accepted.ID, e
 }
