@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -37,6 +38,10 @@ func TestARepeatedUserMapKeyIsRefusedOnARouteMainDoesNotGuard(t *testing.T) {
 	good := strings.Replace(body, `"A":"1","A":"2"`, `"A":"1","a":"2"`, 1)
 	if w := f.call("POST", "/apply", apAdminToken, good); w.Code != 200 {
 		t.Fatalf("distinct keys: %d %s", w.Code, w.Body.String())
+	}
+	var decoded deploy.ApplyRequest
+	if err := decodeBody(httptest.NewRecorder(), httptest.NewRequest("POST", "/apply", strings.NewReader(good)), &decoded); err != nil || decoded.Manifest.Apps["api"].Env.Plain["A"] != "1" || decoded.Manifest.Apps["api"].Env.Plain["a"] != "2" {
+		t.Fatalf("distinct map keys: %+v %v", decoded.Manifest.Apps["api"].Env.Plain, err)
 	}
 }
 
