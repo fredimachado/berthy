@@ -92,7 +92,8 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 	// The tag is read from the requested image: prepare pins p.Image to its digest below.
 	p := Plan{App: req.App, Image: image, Tag: requestedTag(image)}
 	app := req.Manifest.Apps[req.App]
-	if _, err := c.appProbeSource(app); err != nil {
+	probeSource, err := c.appProbeSource(app)
+	if err != nil {
 		return Plan{}, err
 	}
 	for role := range app.Roles {
@@ -102,6 +103,14 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 	for _, role := range p.Roles {
 		if order, reason := app.UpdateOrder(role); order == manifest.StopFirst {
 			p.Notes = append(p.Notes, "role "+role+": "+order+", "+reason)
+		}
+		if health := app.Roles[role].Health; health != nil && health.Uptime != nil {
+			timing, err := health.UptimeTiming()
+			if err != nil {
+				return Plan{}, err
+			}
+			threshold := timing.Threshold.String()
+			p.Notes = append(p.Notes, fmt.Sprintf("role %s: uptime %s, health check %s, %s", role, threshold, valueJSON(uptimeCommand(threshold)), describeUptimeBind(probeSource)))
 		}
 	}
 
@@ -347,7 +356,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		if e = adoptionVolumeMismatch(live.Spec, desired); e != nil {
 			return Plan{}, nil, e
 		}
-		p.Changes = append(p.Changes, specChanges(role, live.Spec, desired)...)
+		p.Changes = append(p.Changes, specChanges(role, live.Spec, desired, probeSource)...)
 		tasks, e := c.Engine.ServiceTasks(ctx, live.ID)
 		if e != nil {
 			return Plan{}, nil, errors.New("adoption health unavailable")

@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"path"
 	"strings"
@@ -55,6 +56,10 @@ func uptimeCommand(duration string) []string {
 
 func uptimeMount(source string) map[string]any {
 	return map[string]any{"Type": "bind", "Source": source, "Target": manifest.UptimeProbeTarget, "ReadOnly": true}
+}
+
+func describeUptimeBind(source string) string {
+	return fmt.Sprintf("read-only bind %s -> %s", source, manifest.UptimeProbeTarget)
 }
 
 type expectedUptimeProbe struct {

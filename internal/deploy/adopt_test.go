@@ -122,7 +122,7 @@ func TestAdoptionStillRefusesUnsafeSettings(t *testing.T) {
 func TestSpecChangesNeverShowsAnEnvValue(t *testing.T) {
 	live := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"i","Env":["API_KEY=hunter2-live","PLAIN=1","SAME=x","BERTHY_VERSION=old"]}}}`)
 	desired := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"i","Env":["API_KEY=hunter2-new","SAME=x","NEW=y"]}}}`)
-	got := specChanges("web", live, desired)
+	got := specChanges("web", live, desired, "")
 	want := []string{
 		"role web: env PLAIN is not in the manifest; the first deploy drops it",
 		"role web: env API_KEY changes value, applied by the next deploy",
@@ -138,7 +138,7 @@ func TestSpecChangesNeverShowsAnEnvValue(t *testing.T) {
 func TestSpecChangesSetsAsideWhatDockerAndBerthyAdd(t *testing.T) {
 	live := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old","team":"x"},"TaskTemplate":{"Runtime":"container","ForceUpdate":3,"ContainerSpec":{"Image":"i","Isolation":"default","Labels":{"berthy.operation":"old"},"DNSConfig":{}}},"EndpointSpec":{"Mode":"vip"}}`)
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"i","Labels":{"berthy.operation":"new"}}}}`)
-	got := specChanges("web", live, desired)
+	got := specChanges("web", live, desired, "")
 	want := []string{"role web: service label team \"x\" is not in the manifest; the first deploy drops it"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("changes %q, want %q", got, want)
@@ -148,7 +148,7 @@ func TestSpecChangesSetsAsideWhatDockerAndBerthyAdd(t *testing.T) {
 func TestSpecChangesShortensALongValue(t *testing.T) {
 	long := strings.Repeat("a", 200)
 	live := json.RawMessage(`{"TaskTemplate":{"ContainerSpec":{"Dir":"` + long + `"}}}`)
-	got := specChanges("web", live, json.RawMessage(`{}`))
+	got := specChanges("web", live, json.RawMessage(`{}`), "")
 	if len(got) != 1 || strings.Contains(got[0], long) || !strings.Contains(got[0], "...") {
 		t.Fatalf("changes %q", got)
 	}

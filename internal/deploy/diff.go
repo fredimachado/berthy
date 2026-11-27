@@ -254,6 +254,14 @@ func (d *differ) role(name string, p, n manifest.Role) {
 		d.field(name, "health.start_interval", orNone(p.Health.StartInterval, "none"), orNone(n.Health.StartInterval, "none"))
 		d.field(name, "health.retries", intOf(p.Health.Retries), intOf(n.Health.Retries))
 	}
+	before, after := uptimeDiffValue(p.Health), uptimeDiffValue(n.Health)
+	d.field(name, "health.uptime", orNone(before, "none"), orNone(after, "none"))
+	switch {
+	case before == "" && after != "":
+		d.add(name, "+ read-only probe bind %s", manifest.UptimeProbeTarget)
+	case before != "" && after == "":
+		d.add(name, "- read-only probe bind %s", manifest.UptimeProbeTarget)
+	}
 	for _, v := range added(p.Volumes, n.Volumes) {
 		d.add(name, "+ volume %s", v)
 	}
@@ -280,6 +288,16 @@ func (d *differ) role(name string, p, n manifest.Role) {
 	for _, k := range union(pl.Options, nl.Options) {
 		d.field(name, "logging.options."+k, orNone(pl.Options[k], "none"), orNone(nl.Options[k], "none"))
 	}
+}
+
+func uptimeDiffValue(h *manifest.Health) string {
+	if h == nil || h.Uptime == nil {
+		return ""
+	}
+	if timing, err := h.UptimeTiming(); err == nil {
+		return timing.Threshold.String()
+	}
+	return *h.Uptime
 }
 
 // deploy notes the app's rollout settings.
