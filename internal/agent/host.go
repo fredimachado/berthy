@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/scope"
 	"berthy/internal/state"
@@ -24,8 +25,10 @@ type Host struct {
 	failed   map[scope.ID]string
 	failures map[scope.ID]http.Handler
 	log      func(string)
-	claimsMu sync.Mutex
-	leases   map[scope.ID]map[state.Claim]int
+	// Frozen by Start before any ordinary worker or HTTP handler reads it.
+	startupRows []api.Check
+	claimsMu    sync.Mutex
+	leases      map[scope.ID]map[state.Claim]int
 }
 
 // Open opens the environments of a validated file and wires what they share. Only stores with verified ownership and
@@ -40,6 +43,7 @@ func Open(sh Shared, f File) (*Host, error) {
 	for _, c := range f.Configs() {
 		id := c.ID()
 		h.ids = append(h.ids, id)
+		c.startupChecks = h.startupChecks
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
 			h.fail(c, nil, stateOpenReason(err))
@@ -290,11 +294,18 @@ func (h *Host) Start(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	h.startupRows = make([]api.Check, 0, len(h.ids))
+	for _, id := range h.ids {
+		reason, failed := h.failed[id]
+		h.startupRows = append(h.startupRows, api.Check{Name: "hosted:" + id.String(), OK: !failed, Detail: reason})
+	}
 	for _, entry := range ready {
 		entry.r.startWorkers(entry.ctx)
 	}
 	return nil
 }
+
+func (h *Host) startupChecks() []api.Check { return h.startupRows }
 
 // ServeHTTP sends a request to the environment its URL names. A request for any other path is refused by refuseOutside, the
 // same answer a runtime gives, so an environment that does not exist is not told apart from a bad token.

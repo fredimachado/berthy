@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/api"
@@ -312,6 +313,94 @@ func TestAllFailedEnvironmentsStillServeHealth(t *testing.T) {
 	}
 	expectEnvironmentFailed(t, serve(h, "GET", a.APIPath()+"agent", adminOf(f, 0), ""), a, state.ErrWrongKey.Error())
 	expectEnvironmentFailed(t, serve(h, "GET", b.APIPath()+"agent", adminOf(f, 1), ""), b, "cannot open state")
+}
+
+func TestDoctorOfEveryRunningEnvironmentReportsFailedPeers(t *testing.T) {
+	a, b, c := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "peer", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
+	sh, f := hostedFile(t, a, b, c)
+	original := f.Environments[1]
+	wrongHostedKey(t, &f.Environments[1])
+	h := openHost(t, sh, f)
+	hostedRows := func(h *Host, id scope.ID, token string) []api.Check {
+		t.Helper()
+		w := serve(h, "GET", id.APIPath()+"doctor", token, "")
+		var body struct{ Checks []api.Check }
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil ||
+			len(body.Checks) == 0 || body.Checks[0].Name != "agent" {
+			t.Fatalf("%s doctor: %d %s", id, w.Code, w.Body.String())
+		}
+		return slices.DeleteFunc(body.Checks, func(c api.Check) bool { return !strings.HasPrefix(c.Name, "hosted:") })
+	}
+	want := []api.Check{{Name: "hosted:peer/dev", Detail: state.ErrWrongKey.Error()}}
+	for _, i := range []int{0, 2} {
+		id := f.Configs()[i].ID()
+		if got := hostedRows(h, id, adminOf(f, i)); !slices.Equal(got, want) {
+			t.Errorf("%s doctor hosted rows: got %+v, want %+v", id, got, want)
+		}
+	}
+	expectEnvironmentFailed(t, serve(h, "GET", b.APIPath()+"doctor", adminOf(f, 1), ""), b, state.ErrWrongKey.Error())
+	h.Close()
+	f.Environments[1] = original
+	h = openHost(t, sh, f)
+	if got := hostedRows(h, a, adminOf(f, 0)); len(got) != 0 {
+		t.Errorf("healthy-only doctor adds hosted rows: %+v", got)
+	}
+}
+
+type hostedAlertRecorder struct {
+	mu     sync.Mutex
+	alerts []monitor.Alert
+}
+
+func (r *hostedAlertRecorder) Notify(_ context.Context, a monitor.Alert) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.alerts = append(r.alerts, a)
+	return nil
+}
+
+func TestHostedStartupAlertAndRecoveryUseTheSameCheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "peer", Environment: "dev"}
+		sh, f := hostedFile(t, a, b)
+		ctx := context.Background()
+		const checkName = "hosted:peer/dev"
+		start := func() []monitor.Alert {
+			t.Helper()
+			h, err := Open(sh, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+			recorder := &hostedAlertRecorder{}
+			w := h.runtimes[a].monitoring
+			w.mon.Checks = func(ctx context.Context) []monitor.Check {
+				checks := w.builtins(ctx, false, nil)
+				return slices.DeleteFunc(checks, func(c monitor.Check) bool { return !strings.HasPrefix(c.Name(), "hosted:") })
+			}
+			w.mon.Notifier = func(context.Context) (monitor.Notifier, time.Duration, error) { return recorder, 0, nil }
+			if err = h.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+			h.Close()
+			return recorder.alerts
+		}
+
+		if alerts := start(); len(alerts) != 0 {
+			t.Errorf("initially healthy host sent alerts: %+v", alerts)
+		}
+		original := f.Environments[1]
+		wrongHostedKey(t, &f.Environments[1])
+		if alerts := start(); len(alerts) != 1 || alerts[0].Kind != "check" || alerts[0].Name != checkName ||
+			alerts[0].State != monitor.Critical || alerts[0].Detail != state.ErrWrongKey.Error() {
+			t.Errorf("critical startup notification for %s: got %+v", checkName, alerts)
+		}
+		f.Environments[1] = original
+		if alerts := start(); len(alerts) != 1 || alerts[0].Kind != "check" || alerts[0].Name != checkName || alerts[0].State != monitor.OK {
+			t.Errorf("recovery notification for %s: got %+v", checkName, alerts)
+		}
+	})
 }
 
 func TestFailedEnvironmentRequiresItsOwnCredential(t *testing.T) {
