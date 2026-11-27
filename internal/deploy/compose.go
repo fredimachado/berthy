@@ -76,6 +76,7 @@ const (
 	errComposePlan          Refusal = "compose plan failed"
 	errComposeJournal       Refusal = "compose journal failed"
 	errComposeUp            Refusal = "compose up failed"
+	errComposeReadyHold     Refusal = "Compose project did not stay ready long enough"
 	errComposeRestart       Refusal = "compose restart failed"
 	errComposeFailed        Refusal = "compose deploy failed"
 	errComposeNoFiles       Refusal = "compose project has no deployed files"
@@ -1022,64 +1023,68 @@ func composeVerdict(services map[string][]api.Replica) (ready bool, pending stri
 	return pending == "", pending, ""
 }
 
-// waitCompose polls `compose ps --all` in dir until composeVerdict says ready (nil) or failed (a Refusal naming the service),
-// or until deadline (a Refusal naming the service that is not ready, with the budget). A poll whose ps fails is tried again
-// at the next one; if the last poll before the deadline failed, or the output cannot be read, the wait ends with errComposeUp.
-// A health or die event of a container of the project wakes the wait before its interval. A project reads ready only after two
-// ready polls in a row, one pollFast apart, so a one-shot that exits with an error a moment after up is not missed. ps runs
-// without registry auth.
+// waitCompose requires a fresh ready poll started after the hold, within the deploy deadline. Docker events can wake a poll
+// during the hold. A pending observation or failed ps breaks the hold, and malformed output ends the wait immediately.
 func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadline time.Time, budget time.Duration) error {
 	pace := newPacer(c.Engine, projectEvents(project))
 	defer pace.close()
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	var pending string
-	var psFailed, confirmed bool
+	hold := c.monitorHold()
+	var readySince time.Time
+	timeout := errComposeUp
 	for {
-		if ctx.Err() != nil {
-			return errComposeUp
+		pollStarted := time.Now()
+		if !pollStarted.Before(deadline) || wctx.Err() != nil {
+			break
 		}
-		out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
-		psFailed = err != nil
-		if psFailed {
-			confirmed = false
+		out, _, err := c.Compose.Run(wctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
+		if wctx.Err() != nil {
+			break
 		}
-		if err == nil {
+		var next time.Time
+		if err != nil {
+			timeout = errComposeUp
+		} else {
 			services, perr := parseComposePS(out)
 			if perr != nil {
 				return errComposeUp
 			}
-			var ready bool
-			var failure string
-			ready, pending, failure = composeVerdict(services)
+			ready, pending, failure := composeVerdict(services)
+			observedAt := time.Now()
+			if !observedAt.Before(deadline) {
+				break
+			}
 			if failure != "" {
 				return Refusal(failure)
 			}
 			if ready {
-				// Right after up, ps can show a one-shot as running that is about to exit with an error. A project is
-				// ready when two polls, one interval apart, both say so.
-				if confirmed || !time.Now().Before(deadline) {
+				if readySince.IsZero() {
+					readySince = observedAt
+				}
+				next = readySince.Add(hold)
+				if hold == 0 || !pollStarted.Before(next) {
+					if ctx.Err() != nil {
+						return errComposeUp
+					}
 					return nil
 				}
-				confirmed = true
-				select {
-				case <-wctx.Done():
-				case <-time.After(pollFast):
-				}
-				continue
+				timeout = errComposeReadyHold
+			} else {
+				timeout = Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
 			}
-			confirmed = false
 		}
-		if !time.Now().Before(deadline) {
+		if next.IsZero() {
+			readySince = time.Time{}
+		}
+		if !pace.waitUntil(wctx, next) {
 			break
 		}
-		// A false wait is the deadline or a cancel: the next round reads once more and decides.
-		pace.wait(wctx)
 	}
-	if psFailed {
+	if ctx.Err() != nil {
 		return errComposeUp
 	}
-	return Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
+	return timeout
 }
 
 // replaceProjectDir moves the staged files into the project's directory. The new contents are written beside it first.

@@ -63,7 +63,7 @@ func PublicMessage(s string) bool {
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errTunnelForeign, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,
-		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposeNetwork, errComposeOverlay, errComposePlan, errComposeJournal, errComposeUp, errComposeRestart, errComposeFailed,
+		errAllowRecreateAdmin, errComposeFile, errComposeNotCompose, errComposeUnavailable, errComposeFiles, errComposeConfig, errComposeNetwork, errComposeOverlay, errComposePlan, errComposeJournal, errComposeUp, errComposeReadyHold, errComposeRestart, errComposeFailed,
 		errComposeNoFiles, errComposeSourceMissing, errComposeInterrupted, errComposeEnv, errComposeSecret, errScaleCompose, errExecServiceImage, errExecServices, errComposeRole,
 		errRemoveAdmin, errRemoveApp, errRemoveConnector, errRemoveNotDeployed, errRemoveInterrupted, errRemovePreflight, errRemoveOwnership, errRemoveService, errRemoveVolume, errRemoveCompose, errRemoveState, errRemoveJournal,
 		errDestroyAdmin, errDestroyConfirm, errDestroyInterrupted, errDestroyPreflight, errDestroyContainers, errDestroyImages, errDestroyState,

@@ -83,6 +83,13 @@ func releaseSettings(req Request, rollback bool) (*state.Settings, error) {
 	return state.NewSettings(req.Manifest, req.Commit, req.Modified)
 }
 
+func (c *Controller) monitorHold() time.Duration {
+	if c.rolloutHold != nil {
+		return *c.rolloutHold
+	}
+	return rolloutMonitor
+}
+
 // runDeploy rolls out req and returns the outcome for the caller to record, and the image and tag it planned, when it got as
 // far as a plan. A rollback runs no migration steps.
 func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Actor, req Request, rollback bool) (outcome state.Outcome, planned target) {
@@ -333,10 +340,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		return
 	}
 	attempts := app.Deploy.StartAttemptLimit()
-	hold := rolloutMonitor
-	if c.rolloutHold != nil {
-		hold = *c.rolloutHold
-	}
+	hold := c.monitorHold()
 	startupDeadline := time.Now().Add(budget)
 	// unwind takes the rollout back after a failure or a cancel, with the roles in touched changed.
 	unwind := func(e error, touched []roleWork) {
