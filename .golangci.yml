@@ -4,10 +4,8 @@ linters:
   default: none
   enable:
     - depguard
-    - errcheck
     - forbidigo
     - funlen
-    - staticcheck
   settings:
     depguard:
       rules:
@@ -31,9 +29,6 @@ linters:
       analyze-types: true
       exclude-godoc-examples: false
       forbid:
-        - pattern: '^time\.Sleep$'
-          pkg: '^time$'
-          msg: Test sleeps must use an event or a fake clock.
         - pattern: '^http\.Request\.Body$'
           pkg: '^net/http$'
           msg: Agent routes must use the shared body decoder.
@@ -58,9 +53,6 @@ linters:
       - linters: [errcheck]
         text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
         source: 'json\.NewEncoder\(w\)\.Encode\('
-      - linters: [forbidigo]
-        text: 'Test sleeps must use an event or a fake clock\.'
-        path-except: '_test\.go$'
       - linters: [forbidigo]
         text: 'Agent routes must use the shared body decoder\.'
         path-except: '^internal/agent/[^/]*\.go$'

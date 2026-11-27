@@ -40,7 +40,7 @@ func decodeOptionalBody(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 func readRequest(w http.ResponseWriter, r *http.Request, v any, optional bool) error {
-	b, err := readBody(w, r)
+	b, err := readBody(w, r) //nolint:forbidigo // The shared decoder validates these bounded bytes with strictjson.
 	if err != nil {
 		return err
 	}

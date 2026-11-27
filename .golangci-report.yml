@@ -1,0 +1,60 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - forbidigo
+    - staticcheck
+  settings:
+    depguard:
+      rules:
+        credential-store:
+          files:
+            - $all
+            - '!**/internal/credstore/**'
+          deny:
+            - pkg: github.com/zalando/go-keyring$
+              desc: Use internal/credstore for OS credential access.
+    errcheck:
+      check-blank: true
+      verbose: true
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*database/sql.Tx).Rollback
+        - (*net/http.ResponseController).SetWriteDeadline
+    forbidigo:
+      analyze-types: true
+      exclude-godoc-examples: false
+      forbid:
+        - pattern: '^time\.Sleep$'
+          pkg: '^time$'
+          msg: Test sleeps must use an event or a fake clock.
+    funlen:
+      lines: 584
+      statements: -1
+      ignore-comments: false
+  exclusions:
+    paths:
+      - '^third_party/'
+    rules:
+      - linters: [errcheck]
+        path: '_test\.go$'
+      - linters: [errcheck]
+        path: '^test/'
+      - linters: [errcheck]
+        text: 'Error return value of `\((io\.Closer|net\.Conn|\*os\.File|\*os\.Root|\*database/sql\.(Rows|Conn)|\*debug/elf\.File|\*compress/gzip\.Reader)\)\.Close` is not checked'
+        source: '^\s*defer\s+.*\.Close\('
+      - linters: [errcheck]
+        text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
+        source: 'json\.NewEncoder\(w\)\.Encode\('
+      - linters: [forbidigo]
+        text: 'Test sleeps must use an event or a fake clock\.'
+        path-except: '_test\.go$'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false

@@ -93,11 +93,11 @@ func restOf(path string) []string {
 
 // readBody reads a request body of at most 1 MiB and puts it back, so the handler can read it again.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxRequestBody))
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxRequestBody)) //nolint:forbidigo // The shared reader bounds the original request body.
 	if err != nil {
 		return nil, err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(b))
+	r.Body = io.NopCloser(bytes.NewReader(b)) //nolint:forbidigo // Rewind the bounded body for the route handler.
 	return b, nil
 }
 
@@ -108,7 +108,7 @@ func withBody(r *http.Request, method, path string, body []byte) *http.Request {
 	u := *r.URL
 	u.Path, u.RawPath, u.RawQuery = path, "", ""
 	r2.URL = &u
-	r2.Body = io.NopCloser(bytes.NewReader(body))
+	r2.Body = io.NopCloser(bytes.NewReader(body)) //nolint:forbidigo // Replay the bounded request for approval planning.
 	r2.ContentLength = int64(len(body))
 	return r2
 }
@@ -350,7 +350,7 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 	ctx := r.Context()
 	manifestProtected := false
 	if len(rest) == 1 && rest[0] == "deploys" {
-		body, err := readBody(w, r)
+		body, err := readBody(w, r) //nolint:forbidigo // The gate needs bounded original bytes for the manifest check.
 		if err != nil {
 			writeError(w, 400, "bad_request", "invalid request")
 			return true
@@ -374,7 +374,7 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 	if !protected && !manifestProtected {
 		return false
 	}
-	body, err := readBody(w, r)
+	body, err := readBody(w, r) //nolint:forbidigo // The gate stores and replays the bounded original request.
 	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return true

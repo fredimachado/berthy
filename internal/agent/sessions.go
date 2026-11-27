@@ -54,7 +54,7 @@ func (rt *routeRuntime) serveSession(call routeCall, read readRouteBody[session.
 		writeError(w, 400, "bad_request", "session requires an upgrade")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxSessionRequest)
+	r.Body = http.MaxBytesReader(w, r.Body, maxSessionRequest) //nolint:forbidigo // Session requests use a smaller bound before shared decoding.
 	req, err := read()
 	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
