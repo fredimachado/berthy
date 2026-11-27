@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -103,13 +104,19 @@ func TestConfirmedWriteFailureHasDistinctExit(t *testing.T) {
 	}
 }
 
-type recordFailureRunner struct{ calls []string }
+type recordFailureRunner struct {
+	calls    []string
+	previous bool
+}
 
 func (*recordFailureRunner) Target() string { return "fixture" }
 func (r *recordFailureRunner) Run(_ context.Context, s string, _ io.Reader) (Result, error) {
 	r.calls = append(r.calls, s)
 	if strings.Contains(s, ".new ") {
-		return Result{Stdout: []byte("prev_cfg=yes\n")}, nil
+		if r.previous {
+			return Result{Stdout: []byte("prev_cfg=yes\n")}, nil
+		}
+		return Result{}, nil
 	}
 	if strings.Contains(s, "systemctl restart berthy") {
 		return Result{Code: 4}, nil
@@ -117,11 +124,18 @@ func (r *recordFailureRunner) Run(_ context.Context, s string, _ io.Reader) (Res
 	return Result{}, nil
 }
 func TestActivateReportsConfirmedWriteFailure(t *testing.T) {
-	r := &recordFailureRunner{}
-	err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
-	var ae *ActivateError
-	if !errors.As(err, &ae) || ae.ConfigOutcome != ConfigUnconfirmed || !strings.Contains(err.Error(), "agent answered") || !strings.Contains(err.Error(), "could not record") || len(r.calls) != 2 {
-		t.Fatalf("err=%v calls=%q", err, r.calls)
+	for _, tc := range []struct {
+		previous bool
+		outcome  ConfigOutcome
+	}{{true, ConfigUnconfirmed}, {false, ConfigRetained}} {
+		t.Run(fmt.Sprint(tc.previous), func(t *testing.T) {
+			r := &recordFailureRunner{previous: tc.previous}
+			err := Activate(context.Background(), r, "x", Staged{Config: true}, time.Second)
+			var ae *ActivateError
+			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), "agent answered") || !strings.Contains(err.Error(), "could not record") || !strings.Contains(err.Error(), "timer") || len(r.calls) != 2 {
+				t.Fatalf("err=%v calls=%q", err, r.calls)
+			}
+		})
 	}
 }
 func TestOwnerErrorReportsUncertainRecovery(t *testing.T) {

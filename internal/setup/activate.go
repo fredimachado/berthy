@@ -27,6 +27,7 @@ const guardState = "/run/berthy-activation-guard.state"
 const guardLock = "/run/berthy-activation-guard.lock"
 
 const guardDecided = 3
+const guardRecordFailed = 4
 
 const recoveryUncertain = "setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"
 
@@ -160,6 +161,12 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 			journal, _ = journalTail(ctx, r)
 		}
 		return guardOutcome(result, prevCfg, outcome, journal)
+	}
+	if armed && res.Code == guardRecordFailed {
+		if prevCfg {
+			outcome = ConfigUnconfirmed
+		}
+		return &ActivateError{Message: "the agent answered but the server could not record it; the server's timer checks it", ConfigOutcome: outcome}
 	}
 	if res.Code == 0 {
 		return nil
@@ -384,7 +391,7 @@ func restartScriptWithGuard(listen string, secs int, guarded bool) string {
 	prefix := ""
 	if guarded {
 		prefix = "exec 9>" + guardLock + "\n" + fmt.Sprintf("flock -w %d 9 || { echo guard=running; exit %d; }\n", secs, guardDecided) + stateHelpers() + stateCheck(false)
-		success = "set_state confirmed || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; exit 0"
+		success = fmt.Sprintf("set_state confirmed || exit %d; systemctl stop %s.timer >/dev/null 2>&1 || true; exit 0", guardRecordFailed, guardUnit)
 	}
 	return prefix + "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
 		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(healthURL(listen), secs, success)
