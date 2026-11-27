@@ -30,9 +30,11 @@ func heartbeatStore(t *testing.T, url, interval string) *state.Store {
 }
 
 // heartbeatCheck returns the heartbeat check of the stored manifest, and the monitoring that made it, whose Docker answers.
-func heartbeatCheck(t *testing.T, s *state.Store) (monitor.Check, *Monitoring) {
+func heartbeatCheck(t *testing.T, s *state.Store, dial monitor.DialFunc) (monitor.Check, *Monitoring) {
 	t.Helper()
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	cfg := monitoringConfig("")
+	cfg.dial = dial
+	w := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.beat.Alive = func(context.Context) bool { return true }
 	for _, c := range w.checks(context.Background()) {
 		if c.Name() == "heartbeat" {
@@ -46,7 +48,7 @@ func heartbeatCheck(t *testing.T, s *state.Store) (monitor.Check, *Monitoring) {
 func TestHeartbeatPingsTheURLOfTheSecretEveryIntervalOfTheManifest(t *testing.T) {
 	hook := newHookReceiver(t)
 	s := heartbeatStore(t, hook.url(), "10s")
-	check, w := heartbeatCheck(t, s)
+	check, w := heartbeatCheck(t, s, nil)
 	if check.Interval() != 10*time.Second || check.Failures() != 1 {
 		t.Fatalf("check %v %d", check.Interval(), check.Failures())
 	}
@@ -90,11 +92,11 @@ func TestHeartbeatIsUnknownAndSendsNothingWithoutADockerThatAnswers(t *testing.T
 
 func TestHeartbeatNamesTheSecretThatCannotBeUsed(t *testing.T) {
 	hook := newHookReceiver(t)
-	check, _ := heartbeatCheck(t, heartbeatStore(t, "", "10s"))
+	check, _ := heartbeatCheck(t, heartbeatStore(t, "", "10s"), nil)
 	if got := check.Run(context.Background()); got.State != monitor.Unknown || got.Detail != "heartbeat url secret missing; no ping accepted yet" {
 		t.Fatalf("missing: %+v", got)
 	}
-	check, _ = heartbeatCheck(t, heartbeatStore(t, "ftp://hooks.example.com/s3cr3t", "10s"))
+	check, _ = heartbeatCheck(t, heartbeatStore(t, "ftp://hooks.example.com/s3cr3t", "10s"), nil)
 	got := check.Run(context.Background())
 	if got.State != monitor.Unknown || got.Detail != "heartbeat url secret HEARTBEAT_URL is not an http or https URL; no ping accepted yet" || strings.Contains(got.Detail, "s3cr3t") {
 		t.Fatalf("bad URL: %+v", got)
@@ -105,8 +107,7 @@ func TestHeartbeatNamesTheSecretThatCannotBeUsed(t *testing.T) {
 }
 
 func TestHeartbeatIsUnknownWhenTheURLCannotBeReachedAndNeverLeaksIt(t *testing.T) {
-	check, w := heartbeatCheck(t, heartbeatStore(t, "http://"+dialtest.Refused+hookPath, "10s"))
-	w.beat.Client = dialtest.Client()
+	check, _ := heartbeatCheck(t, heartbeatStore(t, "http://"+dialtest.Refused+hookPath, "10s"), refusalDial(t))
 	got := check.Run(context.Background())
 	if got.State != monitor.Unknown || got.Detail != "ping failed: unreachable; no ping accepted yet" {
 		t.Fatalf("result %+v", got)
