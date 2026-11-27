@@ -70,8 +70,9 @@ func NewDeploymentHandlerWithBackups(c Config, e *engine.Engine, col *metrics.Co
 // newDeploymentHandler is NewDeploymentHandlerWithBackups with the stream limits of the hosted environment the handler serves.
 func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, tel *telemetry.Exporter, sched *jobs.Scheduler, backups *Backups, lim *limits, keep func() func(map[string]string) bool) http.Handler {
 	tokens := newTokenSource(c, storeOf(d))
-	legacy := handlerWithTokens(c, e, col, d, tel, tokens, lim, keep)
 	gate := &approvalGate{c: c, d: d, tokens: tokens}
+	rt := &routeRuntime{c: c, e: e, collector: col, d: d, tel: tel, sched: sched, backups: backups,
+		lim: lim, keep: keep, tokens: tokens, gate: gate}
 	// serve carries out a request that is authenticated, in scope and not held for approval.
 	serve := func(w http.ResponseWriter, r *http.Request, actor deploy.Actor, rest []string) {
 		ctx := r.Context()
@@ -577,11 +578,12 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 	// The handler sees the path after the environment, as mount gives it.
 	return serveAPI(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
-		required, method, known := routeScope(rest, r.Method)
-		if !known {
-			legacy.ServeHTTP(w, r)
+		row := findEnvRoute(rest, r.Method, false)
+		if row == nil || row.lane == legacyReadRoute {
+			rt.serveRead(routeCall{w: w, r: r, rest: rest, row: row})
 			return
 		}
+		required, method := row.scope, row.method
 		w.Header().Set("Content-Type", "application/json")
 		actor, scope, status := authenticate(tokens, r)
 		if status != http.StatusOK {

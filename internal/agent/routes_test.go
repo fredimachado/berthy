@@ -1,10 +1,78 @@
 package agent
 
 import (
+	"encoding/json"
+	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"berthy/internal/version"
 )
+
+func TestRouteRefusalOrder(t *testing.T) {
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{
+		{Name: "reader", Digest: Digest(apReadToken), Scope: "read"},
+		{Name: "deployer", Digest: Digest(apDeployToken), Scope: "deploy"},
+		{Name: "admin", Digest: Digest(apAdminToken), Scope: "admin"},
+		{Name: "agent", Digest: Digest(apAgentAdmin), Scope: "admin", Agent: true},
+	}}
+	host, _ := os.Hostname()
+	info, err := json.Marshal(map[string]any{
+		"project": c.Project, "environment": c.Environment, "hostname": host, "version": version.String(),
+		"protected": false, "effective_protected": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unauthorized = `{"code":"unauthorized","message":"unauthorized"}`
+	const notFound = `{"code":"not_found","message":"not found"}`
+	const forbidden = `{"code":"forbidden","message":"forbidden"}`
+	const wrongMethod = `{"code":"method_not_allowed","message":"method not allowed"}`
+	const upgrade = `{"code":"not_found","message":"this agent serves /v1/projects/\u003cproject\u003e/environments/\u003cenvironment\u003e/: upgrade the CLI"}`
+	for _, entry := range []struct {
+		name       string
+		handler    http.Handler
+		deployment bool
+	}{
+		{"read", Handler(c, nil), false},
+		{"deployment", NewDeploymentHandler(c, nil, nil, nil), true},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, method, path, token string
+				status                    int
+				body                      string
+				mutation                  bool
+			}{
+				{"unknown without a token", "GET", labPrefix + "unknown", "", 401, unauthorized, false},
+				{"unknown with a token", "GET", labPrefix + "unknown", apReadToken, 404, notFound, false},
+				{"old URL", "GET", "/v1/environments/lab/agent", apReadToken, 404, upgrade, false},
+				{"trailing slash", "GET", labPrefix + "agent/", apReadToken, 200, string(info), false},
+				{"HEAD with no token", "HEAD", labPrefix + "agent", "", 401, unauthorized, false},
+				{"HEAD with a token", "HEAD", labPrefix + "agent", apReadToken, 405, wrongMethod, false},
+				{"wrong verb without a token", "PUT", labPrefix + "deploys", "", 401, unauthorized, true},
+				{"wrong verb with insufficient scope", "PUT", labPrefix + "deploys", apReadToken, 403, forbidden, true},
+				{"wrong verb with sufficient scope", "PUT", labPrefix + "deploys", apDeployToken, 405, wrongMethod, true},
+				{"agent token management", "PUT", labPrefix + "tokens", apAgentAdmin, 403, `{"code":"forbidden","message":"an agent token cannot manage tokens"}`, true},
+				{"agent image lookup", "POST", labPrefix + "images/resolve", apAgentAdmin, 403, forbidden, true},
+				{"human image lookup without state", "POST", labPrefix + "images/resolve", apAdminToken, 503, `{"code":"state_unavailable","message":"state unavailable"}`, true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					status, body := tc.status, tc.body
+					if tc.mutation && !entry.deployment && tc.token != "" {
+						status, body = 404, notFound
+					}
+					w := serve(entry.handler, tc.method, tc.path, tc.token, "")
+					if w.Code != status || w.Body.String() != body+"\n" || w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Location") != "" {
+						t.Errorf("got %d %q, headers %v, want %d %q with JSON and no Location", w.Code, w.Body.String(), w.Header(), status, body+"\n")
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestRouteLookupCompatibility(t *testing.T) {
 	for _, tc := range []struct {

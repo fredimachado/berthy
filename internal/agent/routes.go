@@ -155,13 +155,13 @@ func declaredRoutes() []envRoute {
 		{pattern: "approvals/{id}/approve", method: "POST", scope: "admin", lane: approvalRoute},
 		jsonRoute[rejectBody](envRoute{pattern: "approvals/{id}/reject", method: "POST", scope: "admin", lane: approvalRoute, optionalBody: true}, nil),
 
-		{pattern: "agent", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "apps", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "apps/{app}", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "apps/{app}/logs", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "df", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "doctor", method: "GET", scope: "read", lane: legacyReadRoute},
-		{pattern: "stats", method: "GET", scope: "read", lane: legacyReadRoute},
+		{pattern: "agent", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleAgent},
+		{pattern: "apps", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleApps},
+		{pattern: "apps/{app}", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleApp},
+		{pattern: "apps/{app}/logs", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleAppLogs},
+		{pattern: "df", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleDF},
+		{pattern: "doctor", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleDoctor},
+		{pattern: "stats", method: "GET", scope: "read", lane: legacyReadRoute, handle: (*routeRuntime).handleStats},
 	}
 }
 
