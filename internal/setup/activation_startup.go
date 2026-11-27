@@ -8,16 +8,20 @@ import (
 	"regexp"
 	"strings"
 
+	"berthy/internal/agent"
 	"berthy/internal/scope"
-	"berthy/internal/state"
 )
 
 const startupResult = "/run/berthy-startup/result"
 const guardReason = "/run/berthy-activation-guard.reason"
 
-var startupReason = regexp.MustCompile("^(" + regexp.QuoteMeta(state.ErrWrongKey.Error()) +
-	"|permission denied opening state|cannot open state|state belongs to another environment" +
-	"|cannot read state claims|cannot reserve configured network|deployment recovery failed)$")
+var startupReason = func() *regexp.Regexp {
+	reasons := agent.StartupFailureReasons()
+	for i, reason := range reasons {
+		reasons[i] = regexp.QuoteMeta(reason)
+	}
+	return regexp.MustCompile("^(" + strings.Join(reasons, "|") + ")$")
+}()
 
 // The callers hold the activation lock. Replacing the reason atomically keeps it usable after interrupted recovery.
 func reasonHelpers(target scope.ID) string {

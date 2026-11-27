@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 
 	"berthy/internal/api"
@@ -46,7 +47,7 @@ func Open(sh Shared, f File) (*Host, error) {
 		c.startupChecks = h.startupChecks
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
-			h.fail(c, nil, stateOpenReason(err))
+			h.fail(c, nil, stateOpenReason(err), err)
 			continue
 		}
 		store := r.deployment.Store
@@ -54,16 +55,16 @@ func Open(sh Shared, f File) (*Host, error) {
 			reason := stateOpenReason(err)
 			var owner *state.OwnerError
 			if errors.As(err, &owner) {
-				reason = "state belongs to another environment"
+				reason = StartupStateOwner
 			}
 			r.Close()
-			h.fail(c, nil, reason)
+			h.fail(c, nil, reason, err)
 			continue
 		}
 		claims, err := store.Claims(ctx)
 		if err != nil {
 			r.Close()
-			h.fail(c, nil, "cannot read state claims")
+			h.fail(c, nil, StartupStateClaims, err)
 			continue
 		}
 		h.order = append(h.order, r)
@@ -103,13 +104,18 @@ func Open(sh Shared, f File) (*Host, error) {
 			continue
 		}
 		claim := state.Claim{Kind: state.ClaimNetwork, Name: r.Config.Network}
-		if seen[claim] != id {
+		owner, held := seen[claim]
+		if held && owner != id {
+			h.fail(r.Config, r.deployment.Store, StartupNetwork, fmt.Errorf("network %q is held by %s", claim.Name, owner))
+			continue
+		}
+		if !held {
 			// Existing claims stay in force. A new one waits for a startup with complete peer evidence.
 			if len(h.runtimes) != len(h.ids) {
 				continue
 			}
-			if _, held := seen[claim]; held || r.deployment.Store.AddClaims(ctx, []state.Claim{claim}) != nil {
-				h.fail(r.Config, r.deployment.Store, "cannot reserve configured network")
+			if err := r.deployment.Store.AddClaims(ctx, []state.Claim{claim}); err != nil {
+				h.fail(r.Config, r.deployment.Store, StartupNetwork, err)
 				continue
 			}
 			seen[claim] = id
@@ -119,23 +125,25 @@ func Open(sh Shared, f File) (*Host, error) {
 	return h, nil
 }
 
-func stateOpenReason(err error) string {
+func stateOpenReason(err error) startupFailureReason {
 	switch {
 	case errors.Is(err, state.ErrWrongKey):
-		return state.ErrWrongKey.Error()
+		return StartupWrongKey
 	case errors.Is(err, os.ErrPermission):
-		return "permission denied opening state"
+		return StartupStatePermission
 	default:
-		return "cannot open state"
+		return StartupStateOpen
 	}
 }
 
-func (h *Host) fail(c Config, store *state.Store, reason string) {
+func (h *Host) fail(c Config, store *state.Store, reason startupFailureReason, cause error) {
 	id := c.ID()
-	h.failed[id] = reason
-	h.failures[id] = failedEnvironmentHandler(c, store, reason)
+	public := reason.String()
+	h.failed[id] = public
+	h.failures[id] = failedEnvironmentHandler(c, store, public)
 	if h.log != nil {
-		h.log(fmt.Sprintf("%s: %s", id, reason))
+		detail := strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(cause.Error())
+		h.log(fmt.Sprintf("%s: %s%s%s", id, public, StartupDiagnosticSeparator, detail))
 	}
 }
 
@@ -286,7 +294,7 @@ func (h *Host) Start(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			h.fail(r.Config, r.deployment.Store, err.Error())
+			h.fail(r.Config, r.deployment.Store, StartupRecovery, err)
 			continue
 		}
 		ready = append(ready, recovered{r, runtimeCtx})

@@ -5,7 +5,39 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"berthy/internal/state"
 )
+
+type startupFailureReason uint8
+
+// StartupDiagnosticSeparator marks the local-only cause in a startup log line.
+const StartupDiagnosticSeparator = " [startup detail] "
+
+const (
+	StartupWrongKey startupFailureReason = iota
+	StartupStatePermission
+	StartupStateOpen
+	StartupStateOwner
+	StartupStateClaims
+	StartupNetwork
+	StartupRecovery
+)
+
+var startupFailureText = [...]string{
+	StartupWrongKey:        state.ErrWrongKey.Error(),
+	StartupStatePermission: "permission denied opening state",
+	StartupStateOpen:       "cannot open state",
+	StartupStateOwner:      "state belongs to another environment",
+	StartupStateClaims:     "cannot read state claims",
+	StartupNetwork:         "cannot reserve configured network",
+	StartupRecovery:        "deployment recovery failed",
+}
+
+func (r startupFailureReason) String() string { return startupFailureText[r] }
+
+// StartupFailureReasons returns the public reasons allowed in the startup result.
+func StartupFailureReasons() []string { return append([]string(nil), startupFailureText[:]...) }
 
 // WriteStartupResult writes the final status of every hosted environment for this systemd invocation.
 func (h *Host) WriteStartupResult(w io.Writer, invocation string) error {

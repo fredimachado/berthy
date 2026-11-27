@@ -159,7 +159,7 @@ func (r *Runtime) ownContainer(labels map[string]string, own map[state.Claim]boo
 func (r *Runtime) Start(ctx context.Context) error {
 	ctx, r.cancel = context.WithCancel(ctx)
 	if err := r.recoverForStart(ctx); err != nil {
-		return err
+		return errors.New(StartupRecovery.String())
 	}
 	r.startWorkers(ctx)
 	return nil
@@ -175,7 +175,7 @@ func (r *Runtime) recoverForStart(ctx context.Context) error {
 	err := r.deployment.Recover(recoveryCtx)
 	done()
 	if err != nil && !errors.Is(err, deploy.ErrRecoveryPending) {
-		return errors.New("deployment recovery failed")
+		return err
 	}
 	// Recover reports the first move into recovery_required as success, so the lock is checked as well.
 	if op, activeErr := r.deployment.Store.Active(ctx); activeErr == nil && op.State == "recovery_required" {

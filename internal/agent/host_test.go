@@ -315,6 +315,49 @@ func TestAllFailedEnvironmentsStillServeHealth(t *testing.T) {
 	expectEnvironmentFailed(t, serve(h, "GET", b.APIPath()+"agent", adminOf(f, 1), ""), b, "cannot open state")
 }
 
+func TestKnownNetworkConflictRejectsAdditionWithUnreadablePeer(t *testing.T) {
+	owner, added, unreadable := scope.ID{Project: "owner", Environment: "dev"}, scope.ID{Project: "added", Environment: "dev"}, scope.ID{Project: "peer", Environment: "dev"}
+	sh, f := hostedFile(t, owner, added, unreadable)
+	f.Environments[0].Network = "shared-network"
+	initial, err := Open(sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Close()
+	// The configured names are distinct. The owner's store still holds its earlier network.
+	f.Environments[0].Network = "owner-current"
+	f.Environments[1].Network = "shared-network"
+	wrongHostedKey(t, &f.Environments[2])
+	h := openHost(t, sh, f)
+	expectEnvironmentFailed(t, serve(h, "GET", added.APIPath()+"agent", adminOf(f, 1), ""), added, "cannot reserve configured network")
+	if got := environmentOfAgentInfo(t, serve(h, "GET", owner.APIPath()+"agent", adminOf(f, 0), "")); got != owner {
+		t.Errorf("agent-info = %s, want %s", got, owner)
+	}
+}
+
+func TestStartupLogsUnderlyingCauseWithOnlyPublicReasonOverHTTP(t *testing.T) {
+	id := scope.ID{Project: "one", Environment: "dev"}
+	sh, f := hostedFile(t, id)
+	f.Environments[0].KeyFile += ".missing"
+	unexpected, cause := OpenRuntime(sh, f.Configs()[0])
+	if cause == nil {
+		unexpected.Close()
+		t.Fatal("fixture unexpectedly opened")
+	}
+	var log []string
+	sh.Log = func(s string) { log = append(log, s) }
+	h := openHost(t, sh, f)
+	h.Close()
+	w := serve(h, "GET", id.APIPath()+"agent", adminOf(f, 0), "")
+	expectEnvironmentFailed(t, w, id, "cannot open state")
+	if strings.Contains(w.Body.String(), f.Environments[0].KeyFile) {
+		t.Errorf("underlying cause in HTTP response: %s", w.Body)
+	}
+	if got := strings.Join(log, "\n"); !strings.Contains(got, id.String()+":") || !strings.Contains(got, cause.Error()) {
+		t.Errorf("journal = %q, want pair and underlying open error", got)
+	}
+}
+
 func TestDoctorOfEveryRunningEnvironmentReportsFailedPeers(t *testing.T) {
 	a, b, c := scope.ID{Project: "one", Environment: "dev"}, scope.ID{Project: "peer", Environment: "dev"}, scope.ID{Project: "two", Environment: "dev"}
 	sh, f := hostedFile(t, a, b, c)

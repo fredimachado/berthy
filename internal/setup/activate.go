@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/agent"
 	"berthy/internal/scope"
 )
 
@@ -493,6 +494,13 @@ func journalTail(ctx context.Context, r Runner) (string, error) {
 	res, err := r.Run(ctx, "journalctl -u berthy -n 20 --no-pager -o cat 2>&1", nil)
 	if err != nil {
 		return "", fmt.Errorf("reading the agent's log: %w", err)
+	}
+	for _, stream := range []*[]byte{&res.Stdout, &res.Stderr} {
+		lines := strings.Split(string(*stream), "\n")
+		for i, line := range lines {
+			lines[i], _, _ = strings.Cut(line, agent.StartupDiagnosticSeparator)
+		}
+		*stream = []byte(strings.Join(lines, "\n"))
 	}
 	return lastLines(res, 20), nil
 }
