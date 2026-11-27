@@ -28,6 +28,8 @@ const guardLock = "/run/berthy-activation-guard.lock"
 
 const guardDecided = 3
 
+const recoveryUncertain = "setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"
+
 // guardDelay allows time for activation and its own rollback.
 func guardDelay(secs int) int { return 2*secs + 60 }
 
@@ -188,14 +190,14 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return activationFailure(fmt.Errorf("setup lost the server while it put the previous agent back or stopped it; the server finishes it: %w", err), outcome)
+		return activationFailure(fmt.Errorf("%s: %w", recoveryUncertain, err), outcome)
 	}
 	result := parseGuardState(res.Stdout)
 	if result == guardNoWord {
 		if prevCfg {
 			outcome = ConfigUnconfirmed
 		}
-		return &ActivateError{Message: withLog("setup may have started recovery; the server finishes it if it started, and the timer decides otherwise", journal), ConfigOutcome: outcome}
+		return &ActivateError{Message: withLog(recoveryUncertain, journal), ConfigOutcome: outcome}
 	}
 	return guardOutcome(result, prevCfg, outcome, journal)
 }
@@ -300,12 +302,11 @@ func stateHelpers() string {
 }
 
 func stateCheck(guard bool) string {
-	s := "state=$(cat " + guardState + " 2>/dev/null) || state=running\n" +
-		"if [ \"$state\" != pending ]; then printf 'guard=%s\\n' \"${state:-running}\"; "
+	s := "state=$(cat " + guardState + " 2>/dev/null) || state=running\n"
 	if guard {
-		s += "[ \"$state\" = confirmed ] && exit 0; "
+		return s + "if [ \"$state\" != pending ] && [ \"$state\" != recovering ]; then printf 'guard=%s\\n' \"${state:-running}\"; exit 0; fi\n"
 	}
-	return s + fmt.Sprintf("exit %d; fi\n", guardDecided)
+	return s + fmt.Sprintf("if [ \"$state\" != pending ]; then printf 'guard=%%s\\n' \"${state:-running}\"; exit %d; fi\n", guardDecided)
 }
 
 // armScript writes the guard from stdin and starts its timer.
@@ -328,10 +329,10 @@ trap - EXIT
 func guardScript(bin, cfg string, staged Staged, listen string, secs int) string {
 	var s strings.Builder
 	s.WriteString("exec 9>" + guardLock + "\nflock 9 || exit 1\n" + stateHelpers() + stateCheck(true))
-	s.WriteString("if [ \"${3:-}\" = now ]; then systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; fi\n")
 	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\n")
-	s.WriteString("result() { set_state \"$1\" || exit 1; printf 'guard=%s\\n' \"$1\"; }\n")
-	s.WriteString("if [ \"${3:-}\" != now ] && up >/dev/null 2>&1; then result kept; exit 0; fi\n")
+	s.WriteString("result() { set_state \"$1\" || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; printf 'guard=%s\\n' \"$1\"; }\n")
+	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ] && up >/dev/null 2>&1; then result kept; exit 0; fi\n")
+	s.WriteString("set_state recovering || exit 1\n")
 	s.WriteString("if [ \"$1\" != yes ] && [ \"$2\" != yes ]; then if systemctl stop berthy >/dev/null 2>&1; then result stopped; exit 0; else result stop-failed; exit 1; fi; fi\n")
 	if staged.Binary {
 		s.WriteString("if [ \"$1\" = yes ] && [ -e " + shellQuote(bin+".prev") + " ]; then mv -f " + shellQuote(bin+".prev") + " " + shellQuote(bin) + " >/dev/null 2>&1 || { result restore-failed; exit 1; }; fi\n")
