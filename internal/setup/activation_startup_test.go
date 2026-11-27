@@ -34,7 +34,7 @@ type startupFixture struct {
 	result string
 }
 
-func newStartupFixture(t *testing.T, record, mode string) startupFixture {
+func newStartupFixture(t *testing.T, record, mode, endpoint string) startupFixture {
 	t.Helper()
 	f := newResumeFixture(t, "pending")
 	result := filepath.Join(f.dir, "startup-result")
@@ -91,7 +91,7 @@ printf 'LISTEN 0 128 127.0.0.1:7710 0.0.0.0:* users:(("agent",pid=%s,fd=7))\n' "
 		}
 	}
 	tcp := "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n" +
-		"  0: 0100007F:1E1E 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4578\n"
+		"  0: " + endpoint + " 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4578\n"
 	if err := os.WriteFile(filepath.Join(proc, "net", "tcp"), []byte(tcp), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestActivateRequiresCurrentInvocationAndStartedTarget(t *testing.T) {
 		{name: "invocation changes", record: valid, mode: "invocation-changes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newStartupFixture(t, tc.record, tc.mode)
+			f := newStartupFixture(t, tc.record, tc.mode, "0100007F:1E1E")
 			scripts := activateScripts(stagedAddition(), "127.0.0.1:7710", time.Second)
 			code, out, state, calls := f.run(t, scripts[1])
 			if confirmed := code == 0 && state == "confirmed"; confirmed != tc.want {
@@ -156,7 +156,7 @@ func TestGuardChecksAddedEnvironmentBeforeKeepingCandidate(t *testing.T) {
 		{"stop failed first install", "other/lab\tstarted\t\nshop/lab\tfailed\tcannot open state\n", "no", "stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newStartupFixture(t, startupRecord(newInvocation, tc.rows, "2"), "")
+			f := newStartupFixture(t, startupRecord(newInvocation, tc.rows, "2"), "", "0100007F:1E1E")
 			script := guardScript(f.bin, f.cfg, stagedAddition(), "127.0.0.1:7710", 1)
 			code, out, state, calls := f.run(t, script, "no", tc.previous)
 			if code != 0 || state != tc.want {
@@ -184,13 +184,14 @@ func (*startupActivation) Target() string { return "fixture" }
 func (r *startupActivation) shell(script string, input io.Reader, args ...string) (Result, error) {
 	script = strings.NewReplacer(testStartupPath, r.result, testReasonPath, filepath.Join(r.dir, "reason"),
 		"proc_root=/proc", "proc_root="+shellQuote(filepath.Join(r.dir, "proc")),
+		guardProbePath, filepath.Join(r.tools, "berthy.setup-probe"),
 		guardPath, filepath.Join(r.dir, "guard"), binPath, r.bin, configPath, r.cfg).Replace(script)
 	code, out, _, _ := r.runInput(r.t, script, input, args...)
 	return Result{Code: code, Stdout: []byte(out)}, nil
 }
 
 func TestTimerRollsBackWhenInterruptedAfterRecordingReason(t *testing.T) {
-	f := newStartupFixture(t, startupRecord(newInvocation, "shop/lab\tstarted\t\n", "1"), "")
+	f := newStartupFixture(t, startupRecord(newInvocation, "shop/lab\tstarted\t\n", "1"), "", "0100007F:1E1E")
 	// Simulate the foreground exiting after the reason rename and before changing "pending".
 	if err := os.WriteFile(filepath.Join(f.dir, "reason"), []byte(newInvocation+"\t"+testTarget+"\tcannot open state\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -234,7 +235,7 @@ func (r *startupActivation) Run(_ context.Context, script string, input io.Reade
 func newStartupActivation(t *testing.T) *startupActivation {
 	t.Helper()
 	candidate := startupRecord(newInvocation, "shop/lab\tfailed\tcannot open state\n", "1")
-	f := newStartupFixture(t, candidate, "")
+	f := newStartupFixture(t, candidate, "", "0100007F:1E1E")
 	r := &startupActivation{startupFixture: f, t: t}
 	shellTool(t, f.tools, "systemd-run", "exit 0")
 	for path, body := range map[string]string{
