@@ -218,6 +218,16 @@ func (s *Store) JobRuns(ctx context.Context, job string, limit int) ([]JobRun, e
 	return out, rows.Err()
 }
 
+// LastJobOccurrence returns the greatest retained scheduled minute for a job, regardless of status.
+func (s *Store) LastJobOccurrence(ctx context.Context, job string) (time.Time, error) {
+	var scheduled int64
+	err := s.queryRow(ctx, `SELECT COALESCE(MAX(scheduled), 0) FROM job_runs WHERE environment=? AND job=? AND scheduled<>0`, s.env, job).Scan(&scheduled)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fromMilli(scheduled), nil
+}
+
 // LastJobRuns returns, for each job, its newest run that succeeded or failed. Skipped and interrupted runs, and runs still running, are
 // ignored. A job that has none is absent.
 func (s *Store) LastJobRuns(ctx context.Context) (map[string]JobRun, error) {

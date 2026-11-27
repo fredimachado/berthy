@@ -35,6 +35,69 @@ func TestStartJobRunRefusesASecondRunOfTheSameOccurrence(t *testing.T) {
 	}
 }
 
+func TestLastJobOccurrenceUsesTheScheduledMinute(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+
+	check := func(store *Store, job string, want time.Time) {
+		t.Helper()
+		got, err := store.LastJobOccurrence(ctx, job)
+		if err != nil || !got.Equal(want) {
+			t.Errorf("%s occurrence: got %v, want %v: %v", job, got, want, err)
+		}
+	}
+	check(s, "tick", time.Time{})
+	for _, status := range []string{"running", "succeeded", "failed", "skipped", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			job := "status-" + status
+			run := JobRun{Job: job, App: "api", Trigger: "schedule", Scheduled: minute(10), Started: minute(10)}
+			if status == "skipped" {
+				run.Status = status
+			}
+			id, err := s.StartJobRun(ctx, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != "running" && status != "skipped" {
+				if err := s.FinishJobRun(ctx, id, status, nil, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := s.LastJobOccurrence(ctx, job)
+			if err != nil || !got.Equal(minute(10)) {
+				t.Fatalf("%s occurrence: %v, %v", status, got, err)
+			}
+		})
+	}
+	for _, run := range []JobRun{
+		{Job: "tick", App: "api", Trigger: "schedule", Scheduled: minute(20), Started: minute(20), Status: "skipped"},
+		{Job: "tick", App: "api", Trigger: "schedule", Scheduled: minute(5), Started: minute(5)},
+		{Job: "tick", App: "api", Trigger: "manual", Started: minute(25)},
+		{Job: "tick", App: "api", Trigger: "backup", Started: minute(26)},
+		{Job: "another", App: "api", Trigger: "schedule", Scheduled: minute(30), Started: minute(30)},
+	} {
+		if _, err := s.StartJobRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.env = "other"
+	if _, err := s.StartJobRun(ctx, JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: minute(40), Started: minute(40)}); err != nil {
+		t.Fatal(err)
+	}
+	check(s, "tick", minute(40))
+	check(s, "another", time.Time{})
+	s.env = "test"
+	check(s, "tick", minute(20))
+	check(s, "another", minute(30))
+	check(s, "absent", time.Time{})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LastJobOccurrence(ctx, "tick"); err == nil {
+		t.Fatal("reading a closed store succeeded")
+	}
+}
+
 func TestManualJobRunsNeverConflict(t *testing.T) {
 	s, _, _ := testStore(t)
 	ctx := context.Background()
