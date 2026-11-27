@@ -26,6 +26,10 @@ func watchLabel(cmd string) string {
 	}
 }
 
+func watchHasOutput(cmd string) bool {
+	return cmd == "exec" || cmd == "run"
+}
+
 func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, prefix, id, events string, out, errout io.Writer, asJSON bool, cmd, env, project string, options ...operationWatchOptions) int {
 	var config string
 	redact := []string{token}
@@ -79,7 +83,7 @@ func watchOperation(ctx context.Context, c *http.Client, base *url.URL, token, p
 			}
 			progress.Close()
 			var output *watchOutput
-			if cmd == "exec" || cmd == "run" {
+			if watchHasOutput(cmd) {
 				var err error
 				output, err = reader.output(ctx, state)
 				if err != nil {

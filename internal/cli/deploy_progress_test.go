@@ -301,6 +301,16 @@ func TestDeployProgressPreservesRunOutput(t *testing.T) {
 	}
 }
 
+func TestWatchRenderUsesFetchedOutputForNewCommand(t *testing.T) {
+	var out, errs bytes.Buffer
+	render := watchRender{cmd: "future-command", out: &out, errout: &errs}
+	output := &watchOutput{Output: "command output\n", ExitCode: 3}
+	got := render.finish("succeeded", []byte(`{"state":"succeeded"}`), output)
+	if got != 1 || !strings.Contains(out.String(), output.Output) || errs.Len() != 0 {
+		t.Fatalf("exit=%d out=%q err=%q", got, out.String(), errs.String())
+	}
+}
+
 func TestDeployProgressCancelledReplayKeepsKnownStatus(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

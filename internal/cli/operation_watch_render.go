@@ -157,12 +157,12 @@ func (w *watchRender) finish(state string, data []byte, output *watchOutput) int
 		doc = safeJSONValue(doc, w.redact...)
 	}
 	data, _ = json.Marshal(doc)
+	if output == nil && watchHasOutput(w.cmd) {
+		w.printResult(data)
+		return 1
+	}
 	exitCode := 0
-	if w.cmd == "exec" || w.cmd == "run" {
-		if output == nil {
-			w.printResult(data)
-			return 1
-		}
+	if output != nil {
 		exitCode = output.ExitCode
 		if w.asJSON {
 			var object map[string]any
