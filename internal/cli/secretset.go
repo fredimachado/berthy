@@ -267,6 +267,10 @@ func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored f
 			fmt.Fprintln(errout, "the secret must be one line: a piped value may end with one LF or CRLF")
 			return "", "", 1
 		}
+		if len(value) == 0 {
+			fmt.Fprintln(errout, "no value entered")
+			return "", "", 1
+		}
 		return string(value), f.registry, 0
 	}
 	name := f.pos[1]
