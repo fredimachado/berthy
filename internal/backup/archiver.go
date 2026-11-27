@@ -303,6 +303,8 @@ func helperSpec(kind string, id scope.ID, image, volume string) (json.RawMessage
 		"SecurityOpt":    []string{"no-new-privileges"},
 		"Memory":         helperMemory,
 		"Mounts":         []any{mount},
+		// The helper's standard output is the archive itself; Docker must keep no copy of it.
+		"LogConfig": map[string]any{"Type": "none"},
 	}
 	spec["HostConfig"] = host
 	switch kind {
