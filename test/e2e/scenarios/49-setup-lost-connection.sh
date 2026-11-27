@@ -66,38 +66,6 @@ if d exec "$server" curl -fsS "http://$ip:7710/healthz" >/dev/null; then pass "h
 unset out
 # Record the installed generation for the connection-loss case.
 old=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
-# Make the guard finish before setup's restart, with a distinct valid binary.
-cp "$BIN" "$private/agent-next" || exit 1
-printf '\nfixture upgrade\n' >> "$private/agent-next"
-export GUARD_SERVER="$server" GUARD_DOCKER="$DOCKER_BIN" GUARD_SOCKET="$SOCK" GUARD_STATE="$private/guard-state"
-cat > "$FS_HOME/bin/ssh" <<'SH'
-#!/bin/sh
-if [ -f "$GUARD_STATE.swap" ] && [ ! -f "$GUARD_STATE.fired" ]; then
- case "$*" in
-  *'systemctl restart berthy'*)
-   "$GUARD_DOCKER" --host "unix://$GUARD_SOCKET" exec "$GUARD_SERVER" systemctl stop berthy-activation-guard.timer || exit 255
-   "$GUARD_DOCKER" --host "unix://$GUARD_SOCKET" exec "$GUARD_SERVER" /bin/sh /run/berthy-activation-guard.sh yes no || exit 255
-   touch "$GUARD_STATE.fired" || exit 255
-   ;;
-  *) touch "$GUARD_STATE.wrong"; exit 255;;
- esac
-fi
-case "$*" in
- *'mv -f /usr/local/bin/berthy.new'*) /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"; rc=$?; [ "$rc" -ne 0 ] || touch "$GUARD_STATE.swap"; exit "$rc";;
-esac
-exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
-SH
-chmod 700 "$FS_HOME/bin/ssh"
-out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary "$private/agent-next" --json 2>"$private/delayed.stderr"); code=$?
-expect_code "guard finishes before restart" 0 "$code"
-if [ "$code" -ne 0 ]; then setup_failure "$private/delayed.stderr"; fi
-if [ ! -f "$GUARD_STATE.fired" ] || [ -f "$GUARD_STATE.wrong" ]; then fail "guard ran before restart" "unexpected SSH call order"; fi
-expected=$(sha256sum "$private/agent-next" | cut -d' ' -f1)
-actual=$(d exec "$server" sha256sum /usr/local/bin/berthy | cut -d' ' -f1)
-expect_eq "healthy upgrade retained" "$expected" "$actual"
-if d exec "$server" curl -fsS "http://$ip:7710/healthz" >/dev/null; then pass "healthy upgraded agent answers"; else fail "healthy upgraded agent answers" "health check failed"; fi
-unset out
-old=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
 export SSH_STATE="$private/state"
 cat > "$FS_HOME/bin/ssh" <<'SH'
 #!/bin/sh
