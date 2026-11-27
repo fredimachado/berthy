@@ -22,10 +22,13 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	state := filepath.Join(dir, "state")
 	lock := filepath.Join(dir, "lock")
 	calls := filepath.Join(dir, "calls")
-	if word != "" {
+	if word != "" || mode == "empty-state" {
 		if err := os.WriteFile(state, []byte(word+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if mode == "unreadable-state" {
+		shellTool(t, tools, "cat", "exit 1")
 	}
 	shellTool(t, tools, "date", "echo 0")
 	ctl := `echo "$*" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`
@@ -89,7 +92,7 @@ func TestLockedRestartConfirmsDespiteTimerStopFailure(t *testing.T) {
 	}
 }
 func TestLockedRestartReadsCompletedState(t *testing.T) {
-	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed", "recovering"} {
+	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed"} {
 		t.Run(word, func(t *testing.T) {
 			code, out, state, calls := stateShell(t, restartScript("x", 1), word, "no-actions")
 			if code != 3 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
@@ -174,7 +177,7 @@ func TestActivateMapsGuardStates(t *testing.T) {
 		ok      bool
 		outcome ConfigOutcome
 		text    string
-	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigUnconfirmed, "the agent did not come up and could not be stopped"}, {"restore-failed", false, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"}, {"running", false, ConfigUnconfirmed, "not known"}, {"recovering", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
+	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigRetained, "the agent did not come up and could not be stopped"}, {"restore-failed", false, ConfigRetained, "the new agent did not come up and the previous one could not be put back"}, {"running", false, ConfigUnconfirmed, "not known"}, {"recovering", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
 		t.Run(tc.word, func(t *testing.T) {
 			r := &stateResultRunner{word: tc.word}
 			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
@@ -296,7 +299,7 @@ func TestGuardFailureReportsKnownResultAndJournal(t *testing.T) {
 		message  string
 	}{
 		{"stop-failed", false, ConfigRetained, "the agent did not come up and could not be stopped"},
-		{"restore-failed", true, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"},
+		{"restore-failed", true, ConfigRetained, "the new agent did not come up and the previous one could not be put back"},
 		{"restore-failed", false, ConfigRetained, "the new agent did not come up and the previous one could not be put back"},
 	} {
 		t.Run(tc.word+fmt.Sprint(tc.previous), func(t *testing.T) {
@@ -323,6 +326,28 @@ func TestPriorGuardFailureIncludesJournal(t *testing.T) {
 			}
 			if len(r.calls) != 3 || r.calls[2] != "journalctl -u berthy -n 20 --no-pager -o cat 2>&1" {
 				t.Fatalf("journal call: %q", r.calls)
+			}
+		})
+	}
+}
+
+func TestRestartLeavesRecoveringForGuard(t *testing.T) {
+	code, out, state, calls := stateShell(t, restartScript("x", 1), "recovering", "no-actions")
+	if code != 1 || state != "recovering" || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
+		t.Fatalf("code=%d out=%q state=%q calls=%q", code, out, state, calls)
+	}
+}
+func TestGuardRejectsInvalidState(t *testing.T) {
+	for _, tc := range []struct{ name, word, mode, want string }{
+		{"missing", "", "no-actions", "guard=running"},
+		{"empty", "", "empty-state", "guard=running"},
+		{"unreadable", "pending", "unreadable-state", "guard=running"},
+		{"unknown", "unexpected", "no-actions", "guard=unexpected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, _, calls := stateShell(t, guardScript("/nonexistent/bin", "/nonexistent/cfg", Staged{Binary: true}, "x", 1), tc.word, tc.mode, "yes", "no")
+			if code == 0 || !strings.Contains(out, tc.want) || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
+				t.Fatalf("code=%d out=%q calls=%q", code, out, calls)
 			}
 		})
 	}

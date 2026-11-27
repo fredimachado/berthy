@@ -54,6 +54,11 @@ func TestGuardStopsTimerAfterRecordingResult(t *testing.T) {
 	if code != 0 || state != "restored" || !strings.Contains(calls, "systemctl stop berthy-activation-guard.timer state=restored") {
 		t.Fatalf("code=%d output=%q state=%q calls=%q", code, out, state, calls)
 	}
+	for _, line := range strings.Split(calls, "\n") {
+		if strings.HasPrefix(line, "systemctl stop berthy-activation-guard.timer ") && !strings.HasSuffix(line, "state=restored") {
+			t.Fatalf("timer stopped before final result: %s", line)
+		}
+	}
 }
 func TestGuardResumesInterruptedRecovery(t *testing.T) {
 	f := newResumeFixture(t, "recovering")
@@ -170,8 +175,8 @@ func TestPriorRecoveryResultSurvivesJournalError(t *testing.T) {
 		{"restored", "previous one was put back", ConfigPrevious},
 		{"restored-down", "does not answer either", ConfigPrevious},
 		{"stopped", "left stopped", ConfigRetained},
-		{"stop-failed", "could not be stopped", ConfigUnconfirmed},
-		{"restore-failed", "could not be put back", ConfigUnconfirmed},
+		{"stop-failed", "could not be stopped", ConfigRetained},
+		{"restore-failed", "could not be put back", ConfigRetained},
 	} {
 		t.Run(tc.word, func(t *testing.T) {
 			r := &stateResultRunner{word: tc.word, journalErr: errors.New("journal unavailable")}
