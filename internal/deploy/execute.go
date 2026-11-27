@@ -131,248 +131,25 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	planned = target{Image: p.Image, Tag: p.Tag}
 	if req.Adopt {
-		plan, bindings, e := c.planAdoption(ctx, req)
-		if e != nil {
-			outcome.Err = uptimePreflightMessage(e, "adoption preflight failed")
-			return
-		}
-		raw, e := json.Marshal(req.Manifest)
-		if e != nil {
-			return
-		}
-		ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, appRouteWants(req.Manifest, c.Environment, req.App, bindings), req.ReplaceExisting)
-		if err != nil {
-			outcome.Err = ingressFailure(err, errIngressPublish)
-			return
-		}
-		settings, e := releaseSettings(req, rollback)
-		if e != nil {
-			return
-		}
-		outcome = state.Outcome{State: "succeeded", Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: plan.Image, Commit: req.Commit, Modified: req.Modified, Manifest: raw, Bindings: bindings}, Settings: settings}
-		if ing == nil {
-			return
-		}
-		// Adoption starts no service, so its routes follow its bindings at once. The barrier keeps the release if the
-		// process stops during the publish, as it does for a deploy.
-		barrier, e := json.Marshal(outcome)
-		if e != nil || c.cross(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: time.Now()}, reasonSwitched) != nil {
-			outcome = state.Outcome{State: "failed", Err: "verification barrier unavailable"}
-			return
-		}
-		if err = c.publishIngress(ctx, op.ID, ing, req.ReplaceExisting); err != nil {
-			outcome.State = "failed"
-			outcome.Err = ingressFailure(err, errIngressPublish)
-		}
-		return
+		return c.runAdoption(ctx, op, req, rollback), planned
 	}
-	prepared, err := c.prepareExecution(ctx, req, p)
-	if err != nil {
-		return
+
+	d := deployRun{opID: op.ID, rollback: rollback, outcome: outcome}
+	if !c.prepareDeployRoles(ctx, &d, req, p) {
+		return d.outcome, planned
 	}
-	prepared.ProbeSource, err = c.appProbeSource(req.Manifest.Apps[req.App])
-	if err != nil {
-		outcome.Err = uptimePreflightMessage(err, outcome.Err)
-		return
+	if !c.runDeployPre(ctx, &d) {
+		return d.outcome, planned
 	}
-	img, msg, err := c.ensureImage(ctx, prepared)
-	if err != nil {
-		outcome.Err = msg
-		return
-	}
-	bindings, err := c.Store.Bindings(ctx, req.App)
-	if err != nil {
-		return
-	}
-	byRole := map[string]state.Binding{}
-	for _, b := range bindings {
-		byRole[b.Role] = b
-	}
-	for role := range byRole {
-		if _, ok := req.Manifest.Apps[req.App].Roles[role]; !ok {
-			outcome.Err = "removing managed roles unavailable"
-			return
-		}
-	}
-	app := req.Manifest.Apps[req.App]
-	budget, err := deployStartupBudget(app)
-	if err != nil {
-		return
-	}
-	work := make([]roleWork, 0, len(p.Roles))
-	recoveryAllowance := serviceCleanupAllowance
-	var predecessor *manifest.App
-	for ordinal, role := range p.Roles {
-		r := app.Roles[role]
-		spec, e := c.releaseRoleSpec(prepared, img, role, op.ID)
-		if e != nil {
-			outcome.Err = uptimePreflightMessage(e, "role preflight failed")
-			return
-		}
-		name := req.Manifest.ServiceName(c.Environment, req.App, role)
-		intent := state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
-		if b, ok := byRole[role]; ok {
-			name = b.Name
-			// The release's spec goes to the bound service under its bound name. An adopted role keeps the name of the
-			// service it adopted, which is not the generated one.
-			if spec, e = renamed(spec, name); e != nil {
-				return
-			}
-			live, e := c.Engine.InspectService(ctx, name)
-			if e != nil {
-				gone, ge := c.boundServiceGone(ctx, b, e)
-				if ge != nil || !gone {
-					outcome.Err = "bound service unavailable"
-					return
-				}
-				// Recreate the role under its bound name; the release re-binds it to the new service.
-				intent = state.Intent{Ordinal: ordinal, Kind: "create", Role: role, Name: name, Generation: op.ID, Desired: spec}
-			} else {
-				if live.ID != b.ServiceID {
-					outcome.Err = "bound service unavailable"
-					return
-				}
-				var ownership struct {
-					Labels       map[string]string
-					TaskTemplate struct {
-						ContainerSpec struct {
-							Labels map[string]string
-							Image  string
-						}
-					}
-				}
-				if json.Unmarshal(live.Spec, &ownership) != nil {
-					outcome.Err = "invalid bound service"
-					return
-				}
-				for _, labels := range []map[string]string{ownership.Labels, ownership.TaskTemplate.ContainerSpec.Labels} {
-					for key, value := range map[string]string{"berthy.environment": c.Environment, "berthy.project": req.Manifest.Project, "berthy.app": req.App, "berthy.role": role} {
-						if existing, ok := labels[key]; ok && existing != value {
-							outcome.Err = "bound service ownership changed"
-							return
-						}
-					}
-				}
-				var previous struct {
-					TaskTemplate struct {
-						ContainerSpec struct {
-							Labels map[string]string
-							Image  string
-						}
-					}
-					Mode struct{ Replicated *struct{ Replicas int } }
-				}
-				if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
-					outcome.Err = "prior service health cannot be verified"
-					return
-				}
-				if previous.Mode.Replicated.Replicas > 0 {
-					if predecessor == nil {
-						release, err := c.Store.Applied(ctx, req.App)
-						var applied manifest.Manifest
-						if err != nil || json.Unmarshal(release.Manifest, &applied) != nil {
-							return
-						}
-						priorApp := applied.Apps[req.App]
-						predecessor = &priorApp
-					}
-					startup, err := uptimeReplacementBudget(*predecessor, role, live.Spec, previous.Mode.Replicated.Replicas)
-					if err != nil {
-						return
-					}
-					recoveryAllowance, err = addStartupAllowance(recoveryAllowance, startup)
-					if err != nil {
-						return
-					}
-				}
-				if previous.TaskTemplate.ContainerSpec.Labels["berthy.operation"] == "" {
-					ref, e := reference.ParseNormalizedNamed(previous.TaskTemplate.ContainerSpec.Image)
-					if e != nil {
-						outcome.Err = "prior image identity unavailable"
-						return
-					}
-					if _, ok := ref.(reference.Canonical); !ok {
-						outcome.Err = "prior image is not pinned"
-						return
-					}
-					if healthyImageOnce(ctx, c.Engine, live.ID, previous.TaskTemplate.ContainerSpec.Image, previous.Mode.Replicated.Replicas) != nil {
-						outcome.Err = "prior service health cannot be verified"
-						return
-					}
-				}
-				if _, e = c.operationAuth(ctx, req.App, live.Spec); e != nil {
-					outcome.Err = "prior image credential unavailable"
-					return
-				}
-				// The update sends the release's spec, as a create does. Nothing in it comes from the live spec: whatever the
-				// live one has beyond the release is replaced.
-				intent = state.Intent{Ordinal: ordinal, Kind: "update", Role: role, Name: name, ServiceID: live.ID, SeenVersion: live.Version, Generation: op.ID, Before: live.Spec, Desired: spec}
-			}
-		} else {
-			_, e = c.Engine.InspectService(ctx, name)
-			var status *engine.StatusError
-			if e == nil || !errors.As(e, &status) || status.Code != 404 {
-				outcome.Err = "service name is unavailable"
-				return
-			}
-		}
-		replicas := 1
-		if r.Replicas != nil {
-			replicas = *r.Replicas
-		}
-		work = append(work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
-	}
-	// The check step of a publishing deploy confirms, before anything changes, that its routes and records can be published.
-	wants, err := c.routeWants(ctx, req.Manifest, []string{req.App})
-	if err != nil {
-		outcome.Err = ingressFailure(err, errIngressPublish)
-		return
-	}
-	ing, err := c.publishCheck(ctx, op.ID, req.Manifest, req.App, wants, req.ReplaceExisting)
-	if err != nil {
-		outcome.Err = ingressFailure(err, errIngressPublish)
-		return
-	}
-	// A cancel that came during the checks stops the deploy here, before it changes anything.
-	if err = cancelledBy(ctx); err != nil {
-		return
-	}
-	if !rollback && app.Migrations != nil {
-		source, e := json.Marshal(struct {
-			Manifest manifest.Manifest `json:"manifest"`
-			Image    string            `json:"image"`
-		}{req.Manifest, prepared.Image})
-		if e != nil {
-			return
-		}
-		if e = c.Store.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 9000, Kind: "schema_source", Desired: source}); e != nil {
-			outcome.Err = "migration source journal failed"
-			return
-		}
-	}
-	var before, after string
-	if !rollback {
-		before, after, err = c.runPre(ctx, op.ID, prepared)
-	}
-	outcome.SchemaBefore = before
-	outcome.SchemaAfter = after
-	if err != nil {
-		if errors.Is(err, ErrOneOffUncertain) {
-			outcome.State = "recovery_required"
-			outcome.Err = "one-off outcome uncertain"
-		} else {
-			outcome.Err = hookFailureText(err, "pre")
-		}
-		outcome.Reason = c.recordOneOffFailure(ctx, op.ID, err)
-		return
-	}
-	d := deployRun{opID: op.ID, rollback: rollback, prepared: prepared, work: work, ing: ing, budget: budget, outcome: outcome}
 	if !c.rollDeployRoles(ctx, &d) {
 		return d.outcome, planned
 	}
 	verifyCtx, stopVerify := context.WithDeadline(ctx, d.deadline)
 	defer stopVerify()
-	if !c.verifyDeployRoles(ctx, verifyCtx, &d) || !c.crossDeployBarrier(ctx, verifyCtx, &d, p.Tag) {
+	if !c.verifyDeployRoles(ctx, verifyCtx, &d) {
+		return d.outcome, planned
+	}
+	if !c.crossDeployBarrier(ctx, verifyCtx, &d, p.Tag) {
 		return d.outcome, planned
 	}
 	c.finishDeployRelease(ctx, &d)
