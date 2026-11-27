@@ -20,6 +20,7 @@ linters:
               desc: Use internal/credstore for OS credential access.
     errcheck:
       check-blank: true
+      verbose: true
       exclude-functions:
         - fmt.Fprint
         - fmt.Fprintf
@@ -50,7 +51,7 @@ linters:
       - linters: [errcheck]
         path: '_test\.go$'
       - linters: [errcheck]
-        text: 'Error return value of .*\.Close` is not checked'
+        text: 'Error return value of `\((io\.Closer|net\.Conn|\*os\.File|\*os\.Root|\*database/sql\.(Rows|Conn)|\*debug/elf\.File|\*compress/gzip\.Reader)\)\.Close` is not checked'
         source: '^\s*defer\s+.*\.Close\('
       - linters: [errcheck]
         text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
