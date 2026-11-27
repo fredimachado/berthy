@@ -1,6 +1,7 @@
 package main
 
 import (
+	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"io"
@@ -217,9 +218,7 @@ func TestCheckReadyExitsZeroOnlyOnHTTP200(t *testing.T) {
 	defer ready.Close()
 	notReady := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer notReady.Close()
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	closedAddr := strings.TrimPrefix(closed.URL, "http://")
-	closed.Close()
+	closedAddr := strings.TrimPrefix(dialtest.HangUp(t), "http://")
 
 	var stderr bytes.Buffer
 	if code := checkReady(strings.TrimPrefix(ready.URL, "http://"), &stderr); code != 0 {

@@ -1,6 +1,7 @@
 package agentclient
 
 import (
+	"berthy/internal/dialtest"
 	"context"
 	"fmt"
 	"net/http"
@@ -205,10 +206,8 @@ func TestAgentProtectionRequiresUnambiguousScopedCapability(t *testing.T) {
 		})
 	}
 	t.Run("transport", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		server.Close()
-		u, _ := url.Parse(server.URL)
-		got, err := AgentProtection(context.Background(), NewHTTPClient(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
+		u, _ := url.Parse("http://" + dialtest.Refused)
+		got, err := AgentProtection(context.Background(), dialtest.Client(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
 		if got != ProtectionUnknown || err == nil {
 			t.Fatalf("got %v, %v", got, err)
 		}

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -1691,14 +1692,7 @@ func TestVerifyStep(t *testing.T) {
 }
 
 func TestHTTPDoctorTellsUnreachableFromRefused(t *testing.T) {
-	// An address nothing listens on is unreachable, not an error answer.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Skip(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	_, err = httpDoctor(context.Background(), "http://"+addr, "shop", "p5", "tok")
+	_, err := httpDoctor(context.Background(), dialtest.HangUp(t), "shop", "p5", "tok")
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("err = %v", err)
 	}

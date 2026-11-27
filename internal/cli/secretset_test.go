@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"berthy/internal/dialtest"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -738,9 +739,7 @@ func TestSecretSetFromAPipeIsNeverChecked(t *testing.T) {
 // when the agent cannot be reached, since the value would be typed for nothing.
 func TestSecretSetAtATerminalFailsBeforeAskingWhenTheAgentCannotBeReached(t *testing.T) {
 	reads := fakeTerminal(t, "s3cret-value")
-	server := httptest.NewServer(http.NotFoundHandler())
-	agentURL := server.URL
-	server.Close()
+	agentURL := dialtest.HangUp(t)
 	cfg := ingressCLIConfig(t, agentURL)
 	var out, errout bytes.Buffer
 	args := []string{"secret", "set", "DB_URL", "-e", "dev", "--config", cfg, "--manifest-dir", secretManifestDir(t, ingressBerthyYML)}
