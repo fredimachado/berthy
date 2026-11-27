@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -270,7 +271,7 @@ func TestSetupRemoveDryRunOnlyReads(t *testing.T) {
 			}
 			report := removalReport(t, out)
 			after, err := os.ReadFile(cfg)
-			if report.OK != (wantCode == 0) || !report.DryRun || err != nil || !bytes.Equal(before, after) ||
+			if report.OK != (wantCode == 0) || !report.DryRun || !slices.Contains(r.scripts, "cat /etc/berthy/agent.json") || err != nil || !bytes.Equal(before, after) ||
 				!bytes.Equal(original, r.live) || len(r.writes) != 0 || r.restarts != 0 || store.Calls() != 0 {
 				t.Fatalf("preview changed the fixture: writes %v, restarts %d, store calls %d, config error %v", r.writes, r.restarts, store.Calls(), err)
 			}
