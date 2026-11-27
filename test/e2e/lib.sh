@@ -380,7 +380,7 @@ env_cmd() {
   (cd "$(env_dir "$project" "$env")" && { [ "$c" != deploy ] || record_deploy "$project" "$env" "$@"; } && "$BIN" "$c" -e "$env" --project "$project" --config "$RUN/admin.json" "$@")
 }
 
-# start_agent: starts the agent and waits until /healthz answers, which it does only once every hosted environment has started.
+# start_agent: starts the agent and waits until /healthz answers, after the agent has attempted every hosted environment.
 # /healthz needs no token and names no environment. It gives up early when the process has died.
 start_agent() {
   local i

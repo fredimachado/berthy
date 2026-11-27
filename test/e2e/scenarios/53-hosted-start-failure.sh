@@ -40,6 +40,18 @@ else
 fi
 out=$(env_cmd "$PROJECT" "$ENVN" agent-info --json 2>&1); code=$?
 expect_code "healthy pair $PROJECT/$ENVN answers" 0 "$code" "$out"
+out=$(env_cmd "$PROJECT" "$ENVN" ps --json 2>&1); code=$?
+expect_code "healthy pair lists its apps" 0 "$code" "$out"
+if jq -e 'length == 1 and .[0].ref == {"kind":"image","name":"web"} and .[0].roles[0].running == 1' <<< "$out" >/dev/null; then
+  pass "healthy pair lists its own running image app"
+else
+  fail "healthy pair lists its own running image app" "unexpected app inventory"
+  detail_block "$out"
+fi
+out=$(env_cmd "$PROJECT" "$ENVN" job run smoke 2>&1); code=$?
+expect_code "healthy pair runs its volume-free job" 0 "$code" "$out"
+expect_contains "the job reached terminal success" "$out" "status: succeeded"
+
 expect_eq "unauthenticated health returns the exact body and HTTP 200" '{"ok":true} 200' \
   "$(curl_local -w ' %{http_code}' "http://$AGENT_LISTEN/healthz")"
 

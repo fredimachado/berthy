@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 
 	"berthy/internal/api"
@@ -54,25 +55,17 @@ func appInventory(ctx context.Context, e *engine.Engine, d *deploy.Controller) (
 	if err != nil {
 		return nil, err
 	}
+	onlyOwned := false
 	if d != nil && d.Foreign != nil {
 		foreign, err := d.Foreign(ctx)
 		if err != nil {
-			return nil, err
-		}
-		visible := apps[:0]
-		for _, app := range apps {
-			kind := ""
-			switch app.Ref.Kind {
-			case "swarm":
-				kind = state.ClaimService
-			case "compose":
-				kind = state.ClaimComposeProject
+			if d.Store == nil {
+				return nil, err
 			}
-			if !foreign.Claims[state.Claim{Kind: kind, Name: app.Ref.Name}] {
-				visible = append(visible, app)
-			}
+			onlyOwned = true
+		} else {
+			apps = slices.DeleteFunc(apps, func(app api.App) bool { return foreign.Claims[inventoryClaim(app)] })
 		}
-		apps = visible
 	}
 	if d == nil || d.Store == nil {
 		return apps, nil
@@ -93,5 +86,31 @@ func appInventory(ctx context.Context, e *engine.Engine, d *deploy.Controller) (
 		}
 		ids[b.Name] = live.ID
 	}
+	if onlyOwned {
+		claims, err := d.Store.Claims(ctx)
+		if err != nil {
+			return nil, err
+		}
+		owned := make(map[state.Claim]bool, len(claims)+len(bindings))
+		for _, claim := range claims {
+			owned[claim] = true
+		}
+		// A binding requires an ID match, even when the service name is also claimed.
+		for _, b := range bindings {
+			owned[state.Claim{Kind: state.ClaimService, Name: b.Name}] = ids[b.Name] == b.ServiceID && b.ServiceID != ""
+		}
+		apps = slices.DeleteFunc(apps, func(app api.App) bool { return !owned[inventoryClaim(app)] })
+	}
 	return logicalInventory(apps, bindings, ids), nil
+}
+
+func inventoryClaim(app api.App) state.Claim {
+	claim := state.Claim{Name: app.Ref.Name}
+	switch app.Ref.Kind {
+	case "swarm":
+		claim.Kind = state.ClaimService
+	case "compose":
+		claim.Kind = state.ClaimComposeProject
+	}
+	return claim
 }
