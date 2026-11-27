@@ -25,7 +25,7 @@ func (rt *routeRuntime) handleImageResolve(call routeCall, read readRouteBody[ap
 		writeError(w, 400, "lookup_failed", "image lookup failed")
 		return
 	}
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(result) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleImageTags(call routeCall, read readRouteBody[imageTagsLookup]) {
@@ -41,5 +41,5 @@ func (rt *routeRuntime) handleImageTags(call routeCall, read readRouteBody[image
 		writeError(w, 400, "lookup_failed", "image lookup failed")
 		return
 	}
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(result) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }

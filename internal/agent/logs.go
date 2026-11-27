@@ -111,7 +111,7 @@ func serveLogs(w http.ResponseWriter, r *http.Request, e *engine.Engine, name st
 		if rows == nil {
 			rows = []logs.Record{}
 		}
-		json.NewEncoder(w).Encode(rows)
+		json.NewEncoder(w).Encode(rows) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	select {

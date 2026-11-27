@@ -106,7 +106,7 @@ func serveSecretGenerate(w http.ResponseWriter, r *http.Request, d *deploy.Contr
 		}
 	}
 	if req.DryRun {
-		json.NewEncoder(w).Encode(plan)
+		json.NewEncoder(w).Encode(plan) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	value, err := generateSecret(secretRandom, n, format)
@@ -119,7 +119,7 @@ func serveSecretGenerate(w http.ResponseWriter, r *http.Request, d *deploy.Contr
 		secretGenerateError(w, req.Name, err)
 		return
 	}
-	json.NewEncoder(w).Encode(api.SecretGenerated{Name: req.Name, Bytes: n, Format: format, Replaced: replaced})
+	json.NewEncoder(w).Encode(api.SecretGenerated{Name: req.Name, Bytes: n, Format: format, Replaced: replaced}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleSecretsGenerateDeclared(call routeCall, read readRouteBody[api.SecretsGenerateDeclared]) {
@@ -157,7 +157,7 @@ func serveSecretsGenerateDeclared(w http.ResponseWriter, r *http.Request, d *dep
 			}
 		}
 	}
-	json.NewEncoder(w).Encode(api.SecretsDeclared{Action: "secret generate declared", Secrets: plan})
+	json.NewEncoder(w).Encode(api.SecretsDeclared{Action: "secret generate declared", Secrets: plan}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 // secretGenerateError answers a failed generate. A registry password is refused with what the name is; a stored secret that the

@@ -403,7 +403,7 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 	}
 	w.Header().Set("Berthy-Approval", "pending")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(struct {
+	_ = json.NewEncoder(w).Encode(struct { //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		ID      string          `json:"approval_id"`
 		Expires time.Time       `json:"expires"`
 		Plan    json.RawMessage `json:"plan"`
@@ -473,7 +473,7 @@ func (rt *routeRuntime) handleApprovals(call routeCall) {
 		}
 		out = append(out, v)
 	}
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleApprove(call routeCall) {
@@ -566,7 +566,7 @@ func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider st
 		return
 	}
 	if g.decide(w, r, decider, a.ID, "rejected", req.Reason) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"id": a.ID, "status": "rejected"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": a.ID, "status": "rejected"}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 	}
 }
 

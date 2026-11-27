@@ -12,19 +12,10 @@ linters:
         credential-store:
           files:
             - $all
-            - '!**/internal/credstore/**'
+            - '!**/internal/credstore/*.go'
           deny:
             - pkg: github.com/zalando/go-keyring$
               desc: Use internal/credstore for OS credential access.
-    errcheck:
-      check-blank: true
-      verbose: true
-      exclude-functions:
-        - fmt.Fprint
-        - fmt.Fprintf
-        - fmt.Fprintln
-        - (*database/sql.Tx).Rollback
-        - (*net/http.ResponseController).SetWriteDeadline
     forbidigo:
       analyze-types: true
       exclude-godoc-examples: false
@@ -43,16 +34,6 @@ linters:
     paths:
       - '^third_party/'
     rules:
-      - linters: [errcheck]
-        path: '_test\.go$'
-      - linters: [errcheck]
-        path: '^test/'
-      - linters: [errcheck]
-        text: 'Error return value of `\((io\.Closer|net\.Conn|\*os\.File|\*os\.Root|\*database/sql\.(Rows|Conn)|\*debug/elf\.File|\*compress/gzip\.Reader)\)\.Close` is not checked'
-        source: '^\s*defer\s+.*\.Close\('
-      - linters: [errcheck]
-        text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
-        source: 'json\.NewEncoder\(w\)\.Encode\('
       - linters: [forbidigo]
         text: 'Agent routes must use the shared body decoder\.'
         path-except: '^internal/agent/[^/]*\.go$'

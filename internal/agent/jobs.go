@@ -137,7 +137,7 @@ func (rt *routeRuntime) handleJobs(call routeCall) {
 		writeError(w, 503, "state_unavailable", "state unavailable")
 		return
 	}
-	json.NewEncoder(w).Encode(list)
+	json.NewEncoder(w).Encode(list) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleJobRuns(call routeCall) {
@@ -171,7 +171,7 @@ func (rt *routeRuntime) handleJobRuns(call routeCall) {
 	for _, run := range runs {
 		out = append(out, jobs.RunStatus(run))
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleJobLogs(call routeCall) {
@@ -199,7 +199,7 @@ func (rt *routeRuntime) handleJobLogs(call routeCall) {
 	if !run.Finished.IsZero() {
 		logs.Finished = &run.Finished
 	}
-	json.NewEncoder(w).Encode(logs)
+	json.NewEncoder(w).Encode(logs) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleJobCancel(call routeCall) {
@@ -224,7 +224,7 @@ func (rt *routeRuntime) handleJobCancel(call routeCall) {
 		return
 	}
 	_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "accepted")
-	json.NewEncoder(w).Encode(map[string]any{"job": rest[1], "accepted": true})
+	json.NewEncoder(w).Encode(map[string]any{"job": rest[1], "accepted": true}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleJobRun(call routeCall) {
@@ -249,5 +249,5 @@ func (rt *routeRuntime) handleJobRun(call routeCall) {
 	// The run itself is audited as the job; this records who asked for it.
 	_ = d.Store.RecordAudit(ctx, actor, "job_start:"+rest[1], "started")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]int64{"run_id": id})
+	json.NewEncoder(w).Encode(map[string]int64{"run_id": id}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }

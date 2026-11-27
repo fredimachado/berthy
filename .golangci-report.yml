@@ -7,15 +7,6 @@ linters:
     - forbidigo
     - staticcheck
   settings:
-    depguard:
-      rules:
-        credential-store:
-          files:
-            - $all
-            - '!**/internal/credstore/**'
-          deny:
-            - pkg: github.com/zalando/go-keyring$
-              desc: Use internal/credstore for OS credential access.
     errcheck:
       check-blank: true
       verbose: true
@@ -32,10 +23,6 @@ linters:
         - pattern: '^time\.Sleep$'
           pkg: '^time$'
           msg: Test sleeps must use an event or a fake clock.
-    funlen:
-      lines: 584
-      statements: -1
-      ignore-comments: false
   exclusions:
     paths:
       - '^third_party/'
@@ -47,9 +34,6 @@ linters:
       - linters: [errcheck]
         text: 'Error return value of `\((io\.Closer|net\.Conn|\*os\.File|\*os\.Root|\*database/sql\.(Rows|Conn)|\*debug/elf\.File|\*compress/gzip\.Reader)\)\.Close` is not checked'
         source: '^\s*defer\s+.*\.Close\('
-      - linters: [errcheck]
-        text: 'Error return value of `\(\*encoding/json\.Encoder\)\.Encode` is not checked'
-        source: 'json\.NewEncoder\(w\)\.Encode\('
       - linters: [forbidigo]
         text: 'Test sleeps must use an event or a fake clock\.'
         path-except: '_test\.go$'

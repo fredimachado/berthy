@@ -510,10 +510,10 @@ func writeReadResult(w http.ResponseWriter, result any, err error) {
 	if err != nil {
 		code := dockerErrorCode(err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": strings.ReplaceAll(code, "_", " ")})
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": strings.ReplaceAll(code, "_", " ")}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
-	_ = json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 type dockerDisk struct {
@@ -540,7 +540,7 @@ type dockerDisk struct {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 func compareVersion(a, b string) int {
 	var am, an, bm, bn int

@@ -59,7 +59,7 @@ jobs:
         run: |
           for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
             echo "golangci-lint report ($target)"
-            GOOS=${target%/*} GOARCH=${target#*/} "$(go env GOPATH)/bin/golangci-lint" run --config .golangci-report.yml ./... || true
+            GOOS=${target%/*} GOARCH=${target#*/} "$(go env GOPATH)/bin/golangci-lint" run --config .golangci-report.yml --issues-exit-code=0 ./...
           done
 
   tests:

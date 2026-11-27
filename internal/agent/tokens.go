@@ -221,7 +221,7 @@ func (rt *routeRuntime) handleTokens(call routeCall) {
 		}
 		out = append(out, v)
 	}
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleTokenCreate(call routeCall, read readRouteBody[createTokenBody]) {
@@ -278,7 +278,7 @@ func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.
 	}
 	if req.DryRun {
 		answer["action"] = "token create"
-		_ = json.NewEncoder(w).Encode(answer)
+		_ = json.NewEncoder(w).Encode(answer) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	value, digest, err := NewToken(scope.ID{Project: c.Project, Environment: c.Environment})
@@ -296,7 +296,7 @@ func createToken(w http.ResponseWriter, r *http.Request, c Config, store *state.
 		return
 	}
 	answer["token"] = value
-	_ = json.NewEncoder(w).Encode(answer)
+	_ = json.NewEncoder(w).Encode(answer) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *state.Store, entries []tokenEntry, sa state.Actor, now time.Time, read readRouteBody[dryRunBody]) {
@@ -357,7 +357,7 @@ func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *sta
 			refuseLastAdmin(w, name)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"action": "token revoke", "name": name, "scope": target.Scope, "agent": target.Agent})
+		_ = json.NewEncoder(w).Encode(map[string]any{"action": "token revoke", "name": name, "scope": target.Scope, "agent": target.Agent}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	err = store.RevokeToken(r.Context(), sa, name, guard)
@@ -369,7 +369,7 @@ func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *sta
 	case err != nil:
 		writeError(w, 503, "state_unavailable", "state unavailable")
 	default:
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": name})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "name": name}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 	}
 }
 
