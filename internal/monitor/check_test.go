@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"berthy/internal/dialtest"
 	"context"
 	"errors"
 	"net"
@@ -171,7 +172,7 @@ func TestHTTPProbeStatuses(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 	run := func(expect []int) Result {
-		return HTTPProbe("probe:x", srv.URL, expect, time.Minute, time.Second, 1).Run(ctx)
+		return HTTPProbe("probe:x", srv.URL, expect, time.Minute, time.Second, 1, nil).Run(ctx)
 	}
 	if got := run(nil); got.State != OK || got.Detail != "HTTP 200" {
 		t.Fatalf("200 by default: %+v", got)
@@ -205,7 +206,7 @@ func TestHTTPProbeDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL, http.StatusFound)
 	}))
 	defer redirect.Close()
-	got := HTTPProbe("probe:r", redirect.URL, nil, time.Minute, time.Second, 1).Run(context.Background())
+	got := HTTPProbe("probe:r", redirect.URL, nil, time.Minute, time.Second, 1, nil).Run(context.Background())
 	if got.State != OK || got.Detail != "HTTP 302" {
 		t.Fatalf("redirect not taken as the status: %+v", got)
 	}
@@ -224,11 +225,11 @@ func TestHTTPProbeSendsItsUserAgentAndNeverEchoesBodies(t *testing.T) {
 		w.Write([]byte("private-body-text"))
 	}))
 	defer srv.Close()
-	got := HTTPProbe("probe:ua", srv.URL, nil, time.Minute, time.Second, 1).Run(context.Background())
+	got := HTTPProbe("probe:ua", srv.URL, nil, time.Minute, time.Second, 1, nil).Run(context.Background())
 	if got.Detail != "HTTP 500" || strings.Contains(got.Detail, "private") {
 		t.Fatalf("detail: %+v", got)
 	}
-	ok := HTTPProbe("probe:ua", srv.URL, []int{500}, time.Minute, time.Second, 1).Run(context.Background())
+	ok := HTTPProbe("probe:ua", srv.URL, []int{500}, time.Minute, time.Second, 1, nil).Run(context.Background())
 	if ok.State != OK {
 		t.Fatalf("user agent not sent: %+v", ok)
 	}
@@ -242,30 +243,18 @@ func TestHTTPProbeTimeoutAndRefusedConnection(t *testing.T) {
 		}
 	}))
 	defer slow.Close()
-	got := HTTPProbe("probe:slow", slow.URL, nil, time.Minute, 50*time.Millisecond, 1).Run(context.Background())
+	got := HTTPProbe("probe:slow", slow.URL, nil, time.Minute, 50*time.Millisecond, 1, nil).Run(context.Background())
 	if got.State != Critical || got.Detail != "timeout" {
 		t.Fatalf("timeout: %+v", got)
 	}
-	closed := closedAddress(t)
-	got = HTTPProbe("probe:closed", "http://"+closed+"/", nil, time.Minute, time.Second, 1).Run(context.Background())
+	closed := dialtest.Refused
+	got = HTTPProbe("probe:closed", "http://"+closed+"/", nil, time.Minute, time.Second, 1, dialtest.Dial).Run(context.Background())
 	if got.State != Critical || got.Detail != "connection refused" {
 		t.Fatalf("refused: %+v", got)
 	}
 	if strings.Contains(got.Detail, closed) {
 		t.Fatalf("error text echoed the address: %q", got.Detail)
 	}
-}
-
-// closedAddress returns a loopback host:port with nothing listening on it.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
 }
 
 func TestTCPProbe(t *testing.T) {
@@ -275,10 +264,10 @@ func TestTCPProbe(t *testing.T) {
 	}
 	defer l.Close()
 	ctx := context.Background()
-	if got := TCPProbe("probe:db", l.Addr().String(), time.Minute, time.Second, 1).Run(ctx); got.State != OK || got.Detail != "connected" {
+	if got := TCPProbe("probe:db", l.Addr().String(), time.Minute, time.Second, 1, nil).Run(ctx); got.State != OK || got.Detail != "connected" {
 		t.Fatalf("open port: %+v", got)
 	}
-	if got := TCPProbe("probe:db", closedAddress(t), time.Minute, time.Second, 1).Run(ctx); got.State != Critical || got.Detail != "connection refused" {
+	if got := TCPProbe("probe:db", dialtest.Refused, time.Minute, time.Second, 1, dialtest.Dial).Run(ctx); got.State != Critical || got.Detail != "connection refused" {
 		t.Fatalf("closed port: %+v", got)
 	}
 }
@@ -329,23 +318,23 @@ func TestPeerProbe(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx := context.Background()
-	if got := ProbePeer(ctx, srv.URL+"/", time.Second); got.State != OK {
+	if got := ProbePeer(ctx, srv.URL+"/", time.Second, nil); got.State != OK {
 		t.Fatalf("healthy peer: %+v", got)
 	}
-	if got := ProbePeer(ctx, srv.URL+"/other", time.Second); got.State != Critical || got.Detail != "silent: HTTP 404" {
+	if got := ProbePeer(ctx, srv.URL+"/other", time.Second, nil); got.State != Critical || got.Detail != "silent: HTTP 404" {
 		t.Fatalf("peer without /healthz: %+v", got)
 	}
-	if got := ProbePeer(ctx, "http://"+closedAddress(t), time.Second); got.State != Critical || got.Detail != "silent: connection refused" {
+	if got := ProbePeer(ctx, "http://"+dialtest.Refused, time.Second, dialtest.Dial); got.State != Critical || got.Detail != "silent: connection refused" {
 		t.Fatalf("silent peer: %+v", got)
 	}
-	check := PeerCheck("peer:prod", srv.URL)
+	check := PeerCheck("peer:prod", srv.URL, nil)
 	if check.Name() != "peer:prod" || check.Interval() != 30*time.Second || check.Failures() != 3 {
 		t.Fatalf("peer check shape: %s %v %d", check.Name(), check.Interval(), check.Failures())
 	}
 }
 
 func TestCheckNamesAndShapes(t *testing.T) {
-	probe := HTTPProbe("probe:site", "http://127.0.0.1:1/", nil, 5*time.Second, time.Second, 2)
+	probe := HTTPProbe("probe:site", "http://127.0.0.1:1/", nil, 5*time.Second, time.Second, 2, nil)
 	if probe.Name() != "probe:site" || probe.Interval() != 5*time.Second || probe.Failures() != 2 {
 		t.Fatalf("probe shape: %s %v %d", probe.Name(), probe.Interval(), probe.Failures())
 	}

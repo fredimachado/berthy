@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"berthy/internal/dialtest"
 	"context"
 	"errors"
 	"fmt"
@@ -101,9 +102,7 @@ func TestTelegramTransportErrorsNeverShowTheToken(t *testing.T) {
 		t.Fatalf("error text leaks the request: %q", err.Error())
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	srv.Close()
-	err = (&Telegram{BaseURL: srv.URL, Token: testToken, ChatID: "1"}).Notify(context.Background(), Alert{Text: "x"})
+	err = (&Telegram{BaseURL: "http://" + dialtest.Refused, Token: testToken, ChatID: "1", HTTP: dialtest.Client()}).Notify(context.Background(), Alert{Text: "x"})
 	if !errors.Is(err, ErrTelegramUnavailable) || strings.Contains(err.Error(), testToken) {
 		t.Fatalf("closed server: %v", err)
 	}

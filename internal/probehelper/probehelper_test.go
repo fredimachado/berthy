@@ -1,6 +1,7 @@
 package probehelper
 
 import (
+	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"net"
@@ -22,7 +23,7 @@ func serve(t *testing.T, token, method, path, auth, body string) (int, string) {
 		r.Header.Set("Authorization", auth)
 	}
 	w := httptest.NewRecorder()
-	Handler(token).ServeHTTP(w, r)
+	handler(token, dialtest.Dial).ServeHTTP(w, r)
 	return w.Code, w.Body.String()
 }
 
@@ -234,13 +235,7 @@ func TestHTTPProbeAnswersWhatTheServiceSays(t *testing.T) {
 }
 
 func TestTCPProbeAnswersWhetherThePortAccepts(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	closed := l.Addr().String()
-	l.Close()
+	closed := dialtest.Refused
 	open := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer open.Close()
 	for target, want := range map[string]string{hostPort(t, open): "connected", closed: "connection refused"} {
