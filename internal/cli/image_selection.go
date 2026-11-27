@@ -129,12 +129,12 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 	if raw := fields["changes"]; raw != nil && (!req.Adopt || !validStringList(raw)) {
 		return errors.New("invalid agent deploy plan")
 	}
-	if raw := fields["ingress"]; raw != nil && !validDeployIngress(raw) {
-		return errors.New("invalid agent deploy plan")
-	}
 	blockers, err := readDeployBlockers(fields["blockers"])
 	if err != nil {
 		return err
+	}
+	if raw := fields["ingress"]; raw != nil && !validDeployIngress(raw, blockers) {
+		return errors.New("invalid agent deploy plan")
 	}
 	if len(blockers) != 0 {
 		return blockers
@@ -176,7 +176,7 @@ func validStringList(data []byte) bool {
 }
 
 // validDeployIngress validates the route plan produced by dryRunPublish, not ingress apply.
-func validDeployIngress(data []byte) bool {
+func validDeployIngress(data []byte, blockers deployPlanBlockers) bool {
 	fields, err := exactOnlyFields(data, "tunnel", "tunnel_id", "dns", "changes", "conflicts", "notes")
 	if err != nil {
 		return false
@@ -195,13 +195,19 @@ func validDeployIngress(data []byte) bool {
 	if raw := fields["notes"]; raw != nil && !validStringList(raw) {
 		return false
 	}
-	if raw := fields["conflicts"]; raw != nil {
-		if !validStringList(raw) {
-			return false
+	conflicts, err := readDeployBlockers(fields["conflicts"])
+	if err != nil {
+		return false
+	}
+	if len(conflicts) > 0 {
+		blocked := make(map[string]bool, len(blockers))
+		for _, reason := range blockers {
+			blocked[reason] = true
 		}
-		var conflicts []string
-		if json.Unmarshal(raw, &conflicts) != nil || len(conflicts) != 0 {
-			return false
+		for _, conflict := range conflicts {
+			if conflict == "" || !blocked[conflict] {
+				return false
+			}
 		}
 	}
 	var changes []json.RawMessage

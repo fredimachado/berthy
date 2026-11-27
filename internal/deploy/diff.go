@@ -35,6 +35,9 @@ type DiffField struct {
 	Note   string   `json:"note,omitempty"`
 }
 
+// MaxDiffFieldPathDepth is the depth of a role's logging option, the longest field path.
+const MaxDiffFieldPathDepth = 5
+
 // DiffChange is one difference. Area is "image", "app", "roles", "deploy", "env", "hooks", "migrations", "ingress", "jobs",
 // "backups", "probes", "compose" or the name of a role; Change says what differs, such as "replicas 2 -> 3".
 type DiffChange struct {
@@ -392,7 +395,8 @@ func (d *differ) env(p, n manifest.Env) {
 		a, hadA := pv[name]
 		b, hasB := nv[name]
 		if hadA != hasB || a != b {
-			d.row([]string{"env", name}, diffSide(a.fieldValue(), hadA), diffSide(b.fieldValue(), hasB))
+			kindChanged := hadA && hasB && a.kind != b.kind
+			d.row([]string{"env", name}, diffSide(a.fieldValue(kindChanged), hadA), diffSide(b.fieldValue(kindChanged), hasB))
 		}
 		switch {
 		case !hadA:
@@ -410,9 +414,12 @@ func (d *differ) env(p, n manifest.Env) {
 	}
 }
 
-func (v envValue) fieldValue() string {
+func (v envValue) fieldValue(showKind bool) string {
 	if v.kind == "secret" {
 		return v.source()
+	}
+	if showKind {
+		return v.kind + " " + v.value
 	}
 	return v.value
 }
@@ -434,39 +441,67 @@ func (d *differ) hooks(when string, p, n []manifest.Hook) {
 	gone, fresh := added(nt, pt), added(pt, nt)
 	for _, h := range fresh {
 		d.add("hooks", "+ %s: %s", when, h)
-		d.row([]string{"hooks", when}, nil, &h)
 	}
 	for _, h := range gone {
 		d.add("hooks", "- %s: %s", when, h)
-		d.row([]string{"hooks", when}, &h, nil)
 	}
 	if len(gone) == 0 && len(fresh) == 0 && !slices.Equal(pt, nt) {
 		d.add("hooks", "~ %s: order changed", when)
-		d.fields = append(d.fields, DiffField{Path: []string{"hooks", when}, Note: "order changed"})
 	}
+	// The compact sentence can collapse distinct argument lists into the same text.
+	for len(p) > 0 && len(n) > 0 && equalHooks(p[0], n[0]) {
+		p, n = p[1:], n[1:]
+	}
+	for len(p) > 0 && len(n) > 0 && equalHooks(p[len(p)-1], n[len(n)-1]) {
+		p, n = p[:len(p)-1], n[:len(n)-1]
+	}
+	for i := range max(len(p), len(n)) {
+		if i < len(p) && i < len(n) && equalHooks(p[i], n[i]) {
+			continue
+		}
+		d.row([]string{"hooks", when}, hookFieldSide(p, i), hookFieldSide(n, i))
+	}
+}
+
+func equalHooks(a, b manifest.Hook) bool {
+	return a.Backup == b.Backup && slices.Equal(a.Run, b.Run) &&
+		a.Timeout == b.Timeout && intOf(a.Retries) == intOf(b.Retries)
+}
+
+func hookFieldSide(hooks []manifest.Hook, i int) *string {
+	if i >= len(hooks) {
+		return nil
+	}
+	h := hooks[i]
+	text := hookText(h, jsonText(h.Run))
+	return &text
 }
 
 // hookTexts describes each hook, with its time limit and retries when they are not the defaults.
 func hookTexts(hooks []manifest.Hook) []string {
 	out := make([]string, len(hooks))
 	for i, h := range hooks {
-		if h.Backup != "" {
-			out[i] = "backup " + h.Backup
-			continue
-		}
-		out[i] = "run " + strings.Join(h.Run, " ")
-		var extra []string
-		if h.Timeout != "" && h.Timeout != "5m" {
-			extra = append(extra, "timeout "+h.Timeout)
-		}
-		if h.Retries != nil && *h.Retries != 0 {
-			extra = append(extra, "retries "+strconv.Itoa(*h.Retries))
-		}
-		if len(extra) > 0 {
-			out[i] += " (" + strings.Join(extra, ", ") + ")"
-		}
+		out[i] = hookText(h, strings.Join(h.Run, " "))
 	}
 	return out
+}
+
+func hookText(h manifest.Hook, command string) string {
+	if h.Backup != "" {
+		return "backup " + h.Backup
+	}
+	text := "run " + command
+	var extra []string
+	if h.Timeout != "" && h.Timeout != "5m" {
+		extra = append(extra, "timeout "+h.Timeout)
+	}
+	if h.Retries != nil && *h.Retries != 0 {
+		extra = append(extra, "retries "+strconv.Itoa(*h.Retries))
+	}
+	if len(extra) > 0 {
+		text += " (" + strings.Join(extra, ", ") + ")"
+	}
+	return text
 }
 
 // migrations notes the migration commands that are added, removed or changed.

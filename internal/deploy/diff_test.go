@@ -455,6 +455,33 @@ func TestComposeDiffFieldsKeepServiceActions(t *testing.T) {
 	}
 }
 
+func TestReleaseDiffPreservesHookArgumentBoundaries(t *testing.T) {
+	release := func(args ...string) *ReleaseSide {
+		m := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+			a.Hooks.PreDeploy = []manifest.Hook{{Run: args}}
+		})
+		return side(m, oldDigest, "v1")
+	}
+	d := ReleaseDiff("api", release("./notify", "a b"), release("./notify", "a", "b"))
+	assertDiffJSON(t, d, `{"same":true}`)
+	assertDiffJSON(t, d.Fields, `[{"path":["hooks","pre_deploy"],"before":"run [\"./notify\",\"a b\"]","after":"run [\"./notify\",\"a\",\"b\"]"}]`)
+}
+
+func TestReleaseDiffDistinguishesPlainAndTemplateSources(t *testing.T) {
+	const expression = "${DB_PASSWORD}"
+	plain := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+		a.Env.Plain["DSN"] = expression
+	})
+	template := apiManifest(func(_ *manifest.Manifest, a *manifest.App) {
+		a.Env.Template = map[string]string{"DSN": expression}
+	})
+	prev, next := side(plain, oldDigest, "v1"), side(template, oldDigest, "v1")
+	d := ReleaseDiff("api", prev, next)
+	assertDiffJSON(t, d.Fields, `[{"path":["env","DSN"],"before":"plain ${DB_PASSWORD}","after":"template ${DB_PASSWORD}"}]`)
+	d = ReleaseDiff("api", next, prev)
+	assertDiffJSON(t, d.Fields, `[{"path":["env","DSN"],"before":"template ${DB_PASSWORD}","after":"plain ${DB_PASSWORD}"}]`)
+}
+
 func assertDiffJSON(t *testing.T, value any, want string) {
 	t.Helper()
 	raw, err := json.Marshal(value)

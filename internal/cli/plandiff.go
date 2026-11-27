@@ -80,7 +80,7 @@ func readDeployDiffPreview(data []byte) (deployDiffPreview, error) {
 	}
 	preview := deployDiffPreview{Base: *detail.Base, Fields: make([]deploy.DiffField, 0, len(detail.Fields))}
 	for _, field := range detail.Fields {
-		if len(field.Path) == 0 {
+		if len(field.Path) == 0 || len(field.Path) > deploy.MaxDiffFieldPathDepth {
 			return deployDiffPreview{}, invalid
 		}
 		for _, component := range field.Path {
@@ -168,6 +168,9 @@ func showDeployFieldPreview(out io.Writer, target *agentclient.Target, app strin
 	delete(plan, "blockers")
 	if compose, ok := plan["compose"].(map[string]any); ok {
 		delete(compose, "blockers")
+	}
+	if ingress, ok := plan["ingress"].(map[string]any); ok {
+		delete(ingress, "conflicts")
 	}
 	redact := func(s string) string { return redactSecretText(s, target.Token) }
 	for i := range preview.Fields {

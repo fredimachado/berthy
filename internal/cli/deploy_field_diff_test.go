@@ -195,6 +195,59 @@ func TestDeployDiffShowsStatefulComposeBlockers(t *testing.T) {
 	}
 }
 
+func TestDeployDiffShowsIngressConflictsOnce(t *testing.T) {
+	const reason = "route api.example.com belongs to app other"
+	for _, tc := range []struct {
+		name, blockers, conflicts, changes string
+		dry, valid                         bool
+	}{
+		{"preview", `["` + reason + `"]`, `["` + reason + `"]`, `[]`, true, true},
+		{"execution", `["` + reason + `","` + reason + `"]`, `["` + reason + `"]`, `[]`, false, true},
+		{"unlisted conflict", `["another blocker"]`, `["` + reason + `"]`, `[]`, true, false},
+		{"null conflict entry", `["` + reason + `"]`, `[null]`, `[]`, true, false},
+		{"invalid later decision", `["` + reason + `"]`, `["` + reason + `"]`, `[{"hostname":"api.example.com","route":"unknown"}]`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := strings.TrimSuffix(fieldImagePlan("v1", changedFieldDiff, replicaFieldDiff), "}") +
+				fmt.Sprintf(`,"blockers":%s,"ingress":{"tunnel":"demo","dns":false,"conflicts":%s,"changes":%s}}`, tc.blockers, tc.conflicts, tc.changes)
+			cfg, paths := planDiffAgent(t, plan)
+			args := []string{"deploy", "api", "--diff", "--version", "v1", "-e", "dev", "--config", cfg, "--manifest-dir", apiManifestDir(t)}
+			if tc.dry {
+				args = append(args, "--dry-run")
+			}
+			var out, errs bytes.Buffer
+			code := Run(args, &out, &errs)
+			if !slices.Equal(paths(), []string{"POST /v1/projects/demo/environments/dev/deploys?diff=fields"}) {
+				t.Errorf("expected only the preview request, got %v", paths())
+			}
+			if tc.valid {
+				want := 1
+				if tc.dry {
+					want = 0
+				}
+				if code != want || strings.Count(out.String()+errs.String(), reason) != 1 || strings.Contains(errs.String(), "invalid agent deploy plan") {
+					t.Errorf("exit %d, stdout %q, stderr %q", code, &out, &errs)
+				}
+			} else if code != 1 || out.Len() != 0 || !strings.Contains(errs.String(), "invalid agent deploy plan") {
+				t.Errorf("malformed conflict: exit %d, stdout %q, stderr %q", code, &out, &errs)
+			}
+		})
+	}
+}
+
+func TestDeployDiffRejectsOverdeepPathBeforeAdmission(t *testing.T) {
+	const extension = `{"base":17,"fields":[{"path":["roles","web","logging","options","key","extra"],"after":"value"}]}`
+	cfg, paths := planDiffAgent(t, fieldImagePlan("v1", sameFieldDiff, extension))
+	var out, errs bytes.Buffer
+	code := Run([]string{"deploy", "api", "--diff", "--version", "v1", "-e", "dev", "--config", cfg, "--manifest-dir", apiManifestDir(t)}, &out, &errs)
+	if code != 1 || out.Len() != 0 || !strings.Contains(errs.String(), "invalid agent deploy plan") {
+		t.Errorf("overdeep path: exit %d, stdout %q, stderr %q", code, &out, &errs)
+	}
+	if !slices.Equal(paths(), []string{"POST /v1/projects/demo/environments/dev/deploys?diff=fields"}) {
+		t.Errorf("expected only the preview request, got %v", paths())
+	}
+}
+
 type fieldOutputObserver struct {
 	bytes.Buffer
 	printed atomic.Bool
