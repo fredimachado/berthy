@@ -36,6 +36,25 @@ const bootstrapSchema = `
  CREATE TABLE IF NOT EXISTS tokens (environment TEXT NOT NULL, name TEXT NOT NULL, digest TEXT NOT NULL UNIQUE, scope TEXT NOT NULL, agent INTEGER NOT NULL, created INTEGER NOT NULL, expires INTEGER, PRIMARY KEY(environment,name));
  CREATE TABLE IF NOT EXISTS token_use (environment TEXT NOT NULL, digest TEXT NOT NULL, last_used INTEGER NOT NULL, PRIMARY KEY(environment,digest));`
 
+type schemaStep struct {
+	apply        func(*sql.Tx) error
+	existingOnly bool
+}
+
+var schemaSteps = [...]schemaStep{
+	3:  {apply: schema3},
+	8:  {apply: schema8, existingOnly: true},
+	9:  {apply: schema9, existingOnly: true},
+	10: {apply: schema10, existingOnly: true},
+	13: {apply: schema13},
+	14: {apply: schema14},
+	17: {apply: schema17},
+	18: {apply: schema18},
+	19: {}, // Claims are created by the unconditional bootstrap DDL.
+}
+
+const schemaVersion = len(schemaSteps) - 1
+
 func (s *Store) initializeSchema(keys keyFiles, fresh bool, version int) (bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -61,97 +80,115 @@ func (s *Store) initializeSchema(keys keyFiles, fresh bool, version int) (bool, 
 	if err != nil {
 		return false, fmt.Errorf("state key: %w", err)
 	}
-	if version < 3 {
-		if _, err = tx.Exec(`ALTER TABLE releases ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_before TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_after TEXT NOT NULL DEFAULT ''`); err != nil {
-			return false, err
-		}
-	}
-	if version != 0 && version < 8 {
-		// A database from before schema 8 lacks the reason column. The column check keeps a repeated upgrade harmless.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='reason'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN reason TEXT NOT NULL DEFAULT ''`)
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	if version != 0 && version < 9 {
-		// A database from before schema 9 lacks the ownership columns. Every route it holds counts as created by Berthy,
-		// which is how it was treated until now. The column check keeps a repeated upgrade harmless.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('ingress_routes') WHERE name='route_created'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE ingress_routes ADD COLUMN route_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_prior_comment TEXT NOT NULL DEFAULT ''`)
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	if version != 0 && version < 10 {
-		// A database from before schema 10 lacks the occurrence of a scheduled backup. The column check keeps a repeated upgrade
-		// harmless.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('backups') WHERE name='scheduled'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE backups ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0`)
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	if version < 13 {
-		// A database from before schema 13 lacks the tag of a release. The column check keeps a repeated upgrade harmless.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('releases') WHERE name='tag'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE releases ADD COLUMN tag TEXT NOT NULL DEFAULT ''`)
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	if version < 14 {
-		// A database from before schema 14 lacks the local-changes flag of its releases and operations. The column checks keep a
-		// repeated upgrade harmless.
-		for _, table := range []string{"releases", "operations"} {
-			var has int
-			if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name='modified'`, table).Scan(&has); err == nil && has == 0 {
-				_, err = tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN modified INTEGER NOT NULL DEFAULT 0`)
-			}
-			if err != nil {
-				return false, err
-			}
-		}
-	}
-	if version < 17 {
-		// A database from before schema 17 lacks the output a failed job run keeps. The column check keeps a repeated upgrade
-		// harmless.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('job_runs') WHERE name='output_sealed'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE job_runs ADD COLUMN output_sealed BLOB`)
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	if version < 18 {
-		// A database from before schema 18 lacks the point of no return of an operation. The column check keeps a repeated upgrade
-		// harmless, and every operation it holds counts as not crossed.
-		var has int
-		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='no_return'`).Scan(&has); err == nil && has == 0 {
-			_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN no_return TEXT NOT NULL DEFAULT ''`)
-		}
-		if err != nil {
-			return false, err
-		}
+	if err = applySchemaSteps(tx, version); err != nil {
+		return false, err
 	}
 	// Each scheduled occurrence of a backup is recorded once.
 	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS backups_occurrence ON backups(environment, backup, scheduled) WHERE scheduled <> 0`); err != nil {
 		return false, err
 	}
-	if _, err = tx.Exec(`PRAGMA user_version=19`); err != nil {
+	if _, err = tx.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, schemaVersion)); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
 	return rotationCommitted, nil
+}
+
+func applySchemaSteps(tx *sql.Tx, version int) error {
+	for target, step := range schemaSteps {
+		if target <= version || step.apply == nil || (version == 0 && step.existingOnly) {
+			continue
+		}
+		if err := step.apply(tx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func schema3(tx *sql.Tx) error {
+	_, err := tx.Exec(`ALTER TABLE releases ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_before TEXT NOT NULL DEFAULT ''; ALTER TABLE releases ADD COLUMN schema_after TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func schema8(tx *sql.Tx) error {
+	// A database from before schema 8 lacks the reason column. The column check keeps a repeated upgrade harmless.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='reason'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN reason TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
+}
+
+func schema9(tx *sql.Tx) error {
+	// A database from before schema 9 lacks the ownership columns. Every route it holds counts as created by Berthy,
+	// which is how it was treated until now. The column check keeps a repeated upgrade harmless.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('ingress_routes') WHERE name='route_created'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE ingress_routes ADD COLUMN route_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_created INTEGER NOT NULL DEFAULT 1; ALTER TABLE ingress_routes ADD COLUMN dns_prior_comment TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
+}
+
+func schema10(tx *sql.Tx) error {
+	// A database from before schema 10 lacks the occurrence of a scheduled backup. The column check keeps a repeated upgrade
+	// harmless.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('backups') WHERE name='scheduled'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE backups ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0`)
+	}
+	return err
+}
+
+func schema13(tx *sql.Tx) error {
+	// A database from before schema 13 lacks the tag of a release. The column check keeps a repeated upgrade harmless.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('releases') WHERE name='tag'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE releases ADD COLUMN tag TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
+}
+
+func schema14(tx *sql.Tx) error {
+	// A database from before schema 14 lacks the local-changes flag of its releases and operations. The column checks keep a
+	// repeated upgrade harmless.
+	for _, table := range []string{"releases", "operations"} {
+		var has int
+		err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name='modified'`, table).Scan(&has)
+		if err == nil && has == 0 {
+			_, err = tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN modified INTEGER NOT NULL DEFAULT 0`)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func schema17(tx *sql.Tx) error {
+	// A database from before schema 17 lacks the output a failed job run keeps. The column check keeps a repeated upgrade
+	// harmless.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('job_runs') WHERE name='output_sealed'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE job_runs ADD COLUMN output_sealed BLOB`)
+	}
+	return err
+}
+
+func schema18(tx *sql.Tx) error {
+	// A database from before schema 18 lacks the point of no return of an operation. The column check keeps a repeated upgrade
+	// harmless, and every operation it holds counts as not crossed.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('operations') WHERE name='no_return'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE operations ADD COLUMN no_return TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
 }

@@ -176,7 +176,7 @@ func Open(stateDir, keyFile, environment string) (*Store, error) {
 	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fail(err)
 	}
-	if !fresh && (version < 1 || version > 19) {
+	if !fresh && (version < 1 || version > schemaVersion) {
 		return fail(errors.New("unsupported or uninitialized state schema"))
 	}
 	rotationCommitted, err := s.initializeSchema(keys, fresh, version)
