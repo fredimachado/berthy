@@ -749,13 +749,17 @@ func (t *TailBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// String is what was kept, with bytes that are not valid UTF-8 dropped, which a cut in the middle of a character leaves.
-func (t *TailBuffer) String() string {
+func (t *TailBuffer) bytes() []byte {
 	b := t.buf
 	if len(b) > t.max {
 		b = b[len(b)-t.max:]
 	}
-	return strings.ToValidUTF8(string(b), "")
+	return b
+}
+
+// String is what was kept, with bytes that are not valid UTF-8 dropped, which a cut in the middle of a character leaves.
+func (t *TailBuffer) String() string {
+	return strings.ToValidUTF8(string(t.bytes()), "")
 }
 
 // exec creates an exec in a container, starts it, hands the output stream to consume, and returns the exit code.
