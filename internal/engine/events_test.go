@@ -140,6 +140,7 @@ func TestLastContainerExitCode(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e, queries := eventsServer(t, tt.lines, false)
+			e.client.Timeout = 0 // The fixture ends the response after the last record.
 			code, found, err := e.LastContainerExitCode(t.Context(), id, since, until)
 			if code != tt.code || found != tt.found || (err != nil) != tt.bad {
 				t.Errorf("last exit code = %d, %v, %v; want %d, %v, error=%v", code, found, err, tt.code, tt.found, tt.bad)
