@@ -27,18 +27,24 @@ func validHexID(s string) bool {
 	return len(s) == 64 && err == nil && strings.ToLower(s) == s
 }
 
+// The runner keeps the tail of stdout. Refuse files it could truncate.
+func removalReadLimit(file string) string {
+	return fmt.Sprintf("[ \"$(stat -c %%s -- %s)\" -lt %d ]\n", file, maxCaptured)
+}
+
 // Read only a private regular file with an expected owner and one link. Exit 3 is reserved for verified absence.
 func readRemovalFile(ctx context.Context, r Runner, name, file, owner string) ([]byte, error) {
 	script := "# read " + name + "\nset -eu\n" + removalStat
 	script += "file=" + shellQuote(file) + "\nstat_entry \"$file\"\n"
 	script += "[ \"$entry\" != absent ] || exit 3\nowner=" + owner + "\n"
-	script += "case \"$entry\" in *\" $owner 600 1 regular file\") ;; *) exit 1;; esac\ncat -- \"$file\"\n"
+	script += "case \"$entry\" in *\" $owner 600 1 regular file\") ;; *) exit 1;; esac\n"
+	script += removalReadLimit(`"$file"`) + "cat -- \"$file\"\n"
 	res, err := r.Run(ctx, script, nil)
 	if err == nil && len(res.Stderr) == 0 {
 		if res.Code == 3 && len(res.Stdout) == 0 {
 			return nil, nil
 		}
-		if res.Code == 0 && len(res.Stdout) != 0 {
+		if res.Code == 0 && len(res.Stdout) != 0 && len(res.Stdout) < maxCaptured {
 			return res.Stdout, nil
 		}
 	}

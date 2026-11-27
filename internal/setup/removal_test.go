@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -330,5 +331,27 @@ func TestRemovalResumesOnlyItsConfirmedGeneration(t *testing.T) {
 			}
 			r.checkMutations(tt.want)
 		})
+	}
+}
+
+func TestRemovalRejectsTruncatedRecordPayload(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux stat and the shell runner")
+	}
+	file := filepath.Join(t.TempDir(), "record")
+	raw := "invalid prefix" + strings.Repeat(" ", maxCaptured) + "{}"
+	if err := os.WriteFile(file, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := funcRunner{run: func(script string, stdin io.Reader) Result {
+		result, err := runProcess(context.Background(), "sh", []string{"-c", script}, stdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}}
+	got, err := readRemovalFile(context.Background(), r, "removal record", file, "$(id -u)")
+	if err == nil || len(got) != 0 {
+		t.Fatalf("oversized payload returned %d bytes and %v", len(got), err)
 	}
 }

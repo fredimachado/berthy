@@ -36,8 +36,7 @@ for file in /etc/berthy/agent.json.new /etc/berthy/agent.json.prev; do
   stat_entry "$file"
   case "$entry" in absent|*" $owner 600 1 regular file"|*" 0 600 1 regular file") ;; *) exit 1;; esac
 done
-printf 'present\n'
-`
+` + removalReadLimit(configPath) + "printf 'present\\n'\n"
 	res, err := s.R.Run(ctx, script, nil)
 	if err != nil || res.Code != 0 || string(res.Stdout) != "present\n" || len(res.Stderr) != 0 {
 		return nil, errors.New("could not verify the live agent configuration and its staging paths")
