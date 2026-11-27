@@ -134,8 +134,9 @@ func (s *Session) source(arch string) (*binarySource, error) {
 }
 
 // serverVersion is the version the agent binary on the server reports, or "" when a completed probe reports none
-// (non-zero exit or unparsable output). A transport failure from Runner.Run is returned and not cached, so a later
-// connection cannot replace a newer agent after a failed probe.
+// (non-zero exit other than 255, or unparsable output). A transport failure from Runner.Run, or exit 255 (a dropped
+// OpenSSH connection reported as Result.Code with a nil error), is returned and not cached, so a later connection
+// cannot replace a newer agent after a failed probe.
 func (s *Session) serverVersion(ctx context.Context) (string, error) {
 	if s.serverVer != nil {
 		return *s.serverVer, nil
@@ -143,6 +144,9 @@ func (s *Session) serverVersion(ctx context.Context) (string, error) {
 	res, err := s.R.Run(ctx, binPath+" version 2>/dev/null", nil)
 	if err != nil {
 		return "", fmt.Errorf("reading the agent version: %w", err)
+	}
+	if res.Code == 255 {
+		return "", errors.New("reading the agent version: ssh exited 255")
 	}
 	v := ""
 	if res.Code == 0 {
