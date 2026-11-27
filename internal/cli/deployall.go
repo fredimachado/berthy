@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/signal"
 	"strings"
 
 	"berthy/internal/agentclient"
@@ -101,7 +99,7 @@ type appliedRelease struct {
 // runDeployAll deploys every app of the manifest, one after another in depends_on order, each as `berthy deploy APP` would.
 // Everything is prepared and checked first, so a request that cannot be made leaves nothing deployed. It stops at the first
 // app that does not succeed. With --dry-run it plans every app and reports the ones that failed.
-func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Writer) int {
+func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Target, out, errout io.Writer) int {
 	base, prefix, token := target.Base, target.Prefix, target.Token
 	for _, needsApp := range []struct {
 		given bool
@@ -112,8 +110,6 @@ func runDeployAll(f commandFlags, target *agentclient.Target, out, errout io.Wri
 			return 2
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	before, err := gitcheck.Capture(ctx, f.dir)
 	if err != nil {
 		fmt.Fprintln(errout, err)

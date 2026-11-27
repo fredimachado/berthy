@@ -26,13 +26,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"runtime"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -191,7 +189,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 			fmt.Fprintln(errout, err)
 			return 1
 		}
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, cancel := commandContext()
 		defer cancel()
 		eng := engine.New(f.DockerSocket)
 		// The one reader of Docker's event feed. It wakes the monitor and the rollouts early; their own reads still decide.
@@ -260,7 +258,9 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	target, err := agentclient.Resolve(path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
+	ctx, stop := commandContext()
+	defer stop()
+	target, err := agentclient.ResolveContext(ctx, path, agentclient.Selector{Project: project, Environment: env, ManifestDir: dir})
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
@@ -327,8 +327,6 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}
 		u.RawQuery = q.Encode()
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	client := http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if watch || follow {
 		client.Timeout = 0
@@ -437,7 +435,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 // runProbeHelper serves the overlay helper's probes until it is stopped. Its token comes from the environment, and the
 // process never prints it.
 func runProbeHelper(errout io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := commandContext()
 	defer stop()
 	if err := probehelper.Serve(ctx, net.JoinHostPort("0.0.0.0", strconv.Itoa(monitor.HelperPort)), os.Getenv(monitor.HelperTokenEnv)); err != nil {
 		fmt.Fprintln(errout, err)

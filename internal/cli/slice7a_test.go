@@ -83,7 +83,7 @@ func TestBackupAdmissionRefusalRedactsToken(t *testing.T) {
 	base, _ := url.Parse(server.URL)
 	for _, asJSON := range []bool{false, true} {
 		var out, errs bytes.Buffer
-		code := runBackupCommand(commandFlags{pos: []string{"run", "task"}, json: asJSON}, base, "/", "backup-credential", &out, &errs)
+		code := runBackupCommand(context.Background(), commandFlags{pos: []string{"run", "task"}, json: asJSON}, base, "/", "backup-credential", &out, &errs)
 		if code != 1 || out.Len() != 0 || strings.Contains(errs.String(), "backup-credential") || !strings.Contains(errs.String(), "[redacted]") || strings.Contains(errs.String(), "\x1b[31m") == asJSON {
 			t.Error("backup admission exposed its credential, changed its exit or writer mode")
 		}

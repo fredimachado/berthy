@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/signal"
 	"sort"
 	"strings"
 
@@ -60,8 +59,13 @@ func parseSecretLines(r io.Reader) ([]api.SecretEntry, error) {
 // readSecretImport reads the import from standard input and checks it before anything is sent: the entries must pass
 // api.CheckSecretImport, and the request must fit in one request body. An import that does not fit is split by the person
 // who runs it.
-func readSecretImport(dry bool) (api.SecretImport, error) {
+func readSecretImport(ctx context.Context, dry bool) (api.SecretImport, error) {
+	stop := exitOnPipeSignal(ctx)
 	entries, err := parseSecretLines(os.Stdin)
+	stop()
+	if ctx.Err() != nil {
+		return api.SecretImport{}, ctx.Err()
+	}
 	if err != nil {
 		return api.SecretImport{}, err
 	}
@@ -114,14 +118,12 @@ func printNames(out io.Writer, label string, names []string) {
 // the manifest needs that are not held, each with what needs it. With --json it prints one object: the list under secrets, and
 // the missing names under missing. The manifest must load, since a list that cannot say what the manifest needs is not the
 // check the person asked for.
-func runSecretList(f commandFlags, u *url.URL, prefix, token string, out, errout io.Writer) int {
+func runSecretList(ctx context.Context, f commandFlags, u *url.URL, prefix, token string, out, errout io.Writer) int {
 	m, err := manifest.Load(f.dir, f.env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	held, ok := storedSecrets(ctx, agentclient.NewHTTPClient(), agentURL(u, prefix, "secrets"), token, errout, !f.json)
 	if !ok {
 		return 1

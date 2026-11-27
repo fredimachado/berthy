@@ -250,6 +250,22 @@ type storedSecret struct {
 	Registry string `json:"registry"`
 }
 
+// exitOnPipeSignal ends an unsubmitted secret read even when its producer keeps stdin open.
+func exitOnPipeSignal(ctx context.Context) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		if s, ok := context.Cause(ctx).(commandSignal); ok {
+			exitProcess(128 + int(s.Signal))
+		}
+	})
+	return func() {
+		if !stop() {
+			<-done
+		}
+	}
+}
+
 // secretValue returns the value `secret set` stores and the registry it is for. From a pipe it reads standard input to its
 // end, as before, and the registry is the flag's. At a terminal it first asks the agent what it holds (stored; ok is false
 // when the agent could not say, and has printed why), says when the value replaces a stored one, prints the guide, asks,
@@ -257,7 +273,12 @@ type storedSecret struct {
 func secretValue(ctx context.Context, f commandFlags, errout io.Writer, stored func() ([]storedSecret, bool), token string) (value, registry string, code int) {
 	read, interactive := hiddenInput()
 	if !interactive {
+		stop := exitOnPipeSignal(ctx)
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, api.MaxSecretValue+1))
+		stop()
+		if ctx.Err() != nil {
+			return "", "", 1
+		}
 		if e != nil || len(data) > api.MaxSecretValue {
 			fmt.Fprintln(errout, "secret input unavailable or too large")
 			return "", "", 1

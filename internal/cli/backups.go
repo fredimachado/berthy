@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strings"
 	"time"
 
@@ -126,9 +124,7 @@ func printRestorePlan(out, errout io.Writer, data []byte) int {
 }
 
 // runBackupCommand runs "backup list" and "backup run NAME".
-func runBackupCommand(f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+func runBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	call := agentclient.CallerResult(ctx, agentclient.NewHTTPClient(), base, prefix, token)
 	redact := func(s string) string { return redactSecretText(s, token) }
 	switch {

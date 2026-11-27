@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/signal"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +24,7 @@ const (
 	guideFailed
 )
 
-func runSecretSetMissing(f commandFlags, target *agentclient.Target, dir string, out, errout io.Writer) int {
+func runSecretSetMissing(ctx context.Context, f commandFlags, target *agentclient.Target, dir string, out, errout io.Writer) int {
 	read, ok := hiddenInput()
 	if !ok {
 		fmt.Fprintln(errout, "secret set without a NAME asks at a terminal: pipe a value to berthy secret set NAME, or use berthy secret import")
@@ -40,8 +38,6 @@ func runSecretSetMissing(f commandFlags, target *agentclient.Target, dir string,
 	if !manifestMatchesTarget(errout, dir, m.Project, target.Project) {
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, m, dir, f.env, read, out, errout)
 	if result == guideHeld {
 		return exitHeld

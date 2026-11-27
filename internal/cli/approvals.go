@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"path"
 	"strings"
 	"time"
@@ -179,7 +177,7 @@ type approvalRow struct {
 }
 
 // runApprovalCommand runs "approvals", "approve ID" and "reject ID".
-func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
+func runApprovalCommand(ctx context.Context, cmd string, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
 	want := 1
 	if cmd == "approvals" {
 		want = 0
@@ -188,8 +186,6 @@ func runApprovalCommand(cmd string, f commandFlags, base *url.URL, prefix, token
 		fmt.Fprintln(errout, "usage: approvals [--all] | approve ID | reject ID [-m REASON]")
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	client := agentclient.NewHTTPClient()
 	call := func(method, endpoint, query string, body []byte) (agentclient.Result, error) {
 		return agentclient.DoResult(ctx, client, base, prefix, token, method, endpoint, query, body)

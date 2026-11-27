@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/signal"
 	"slices"
 	"sort"
 
@@ -27,7 +25,7 @@ const (
 
 // runSecretGenerateDeclared answers secret generate with no name: it generates each declared secret the agent will accept.
 // dir is the effective manifest directory (the same one the named form uses after alias and --manifest-dir selection).
-func runSecretGenerateDeclared(f commandFlags, target *agentclient.Target, dir string, out, errout io.Writer) int {
+func runSecretGenerateDeclared(ctx context.Context, f commandFlags, target *agentclient.Target, dir string, out, errout io.Writer) int {
 	m, err := manifest.Load(dir, f.env)
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -36,8 +34,6 @@ func runSecretGenerateDeclared(f commandFlags, target *agentclient.Target, dir s
 	if !manifestMatchesTarget(errout, dir, m.Project, target.Project) {
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	client := agentclient.NewHTTPClient()
 	res, call := generateDeclared(ctx, client, target, m, dir, f.dry, out, errout, f.json, false)
 	switch call {
