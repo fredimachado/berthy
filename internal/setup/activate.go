@@ -312,9 +312,14 @@ func stateHelpers() string {
 func stateCheck(guard bool) string {
 	s := "state=$(cat " + guardState + " 2>/dev/null) || state=running\n"
 	if guard {
-		return s + "if [ \"$state\" != pending ] && [ \"$state\" != recovering ]; then printf 'guard=%s\\n' \"${state:-running}\"; exit 0; fi\n"
+		return s + "case \"$state\" in\n" +
+			"  pending|recovering) ;;\n" +
+			"  confirmed|kept|restored|restored-down|stopped|stop-failed|restore-failed) printf 'guard=%s\\n' \"$state\"; exit 0 ;;\n" +
+			"  *) printf 'guard=%s\\n' \"${state:-running}\"; exit 1 ;;\n" +
+			"esac\n"
 	}
-	return s + fmt.Sprintf("if [ \"$state\" != pending ]; then printf 'guard=%%s\\n' \"${state:-running}\"; exit %d; fi\n", guardDecided)
+	return s + "if [ \"$state\" = recovering ]; then exit 1; fi\n" +
+		fmt.Sprintf("if [ \"$state\" != pending ]; then printf 'guard=%%s\\n' \"${state:-running}\"; exit %d; fi\n", guardDecided)
 }
 
 // armScript writes the guard from stdin and starts its timer.
