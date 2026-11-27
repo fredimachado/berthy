@@ -3,36 +3,29 @@ package agent
 import (
 	"berthy/internal/api"
 	"berthy/internal/deploy"
-	"bytes"
+	"berthy/internal/manifest"
 	"encoding/json"
 	"net/http"
-	"reflect"
-	"strings"
 )
 
+// imageTagsLookup is an image lookup without a tag; tags rejects that field.
+type imageTagsLookup struct {
+	Manifest manifest.Manifest `json:"manifest"`
+	App      string            `json:"app"`
+}
+
 func serveImageLookup(w http.ResponseWriter, r *http.Request, d *deploy.Controller, action string) {
-	body, err := readBody(w, r)
-	if err != nil || !unambiguousJSON(body, reflect.TypeOf(api.ImageLookup{})) {
-		writeError(w, 400, "bad_request", "invalid request")
-		return
-	}
 	var q api.ImageLookup
-	if decodeBody(w, r, &q) != nil {
-		writeError(w, 400, "bad_request", "invalid request")
-		return
-	}
 	if action == "tags" {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(body, &fields) != nil {
+		var tags imageTagsLookup
+		if decodeBody(w, r, &tags) != nil {
 			writeError(w, 400, "bad_request", "invalid request")
 			return
 		}
-		for name := range fields {
-			if strings.EqualFold(name, "tag") {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
-		}
+		q = api.ImageLookup{Manifest: tags.Manifest, App: tags.App}
+	} else if decodeBody(w, r, &q) != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
 	}
 	if action == "resolve" {
 		result, err := d.ResolveTag(r.Context(), q)
@@ -49,79 +42,4 @@ func serveImageLookup(w http.ResponseWriter, r *http.Request, d *deploy.Controll
 		return
 	}
 	json.NewEncoder(w).Encode(result)
-}
-
-func requestBodyUnambiguous(rest []string, method string, body []byte) bool {
-	if method == http.MethodPost && len(rest) == 1 && rest[0] == "deploys" {
-		return unambiguousJSON(body, reflect.TypeOf(deploy.Request{}))
-	}
-	return generationBodyUnambiguous(rest, method, body)
-}
-
-// unambiguousJSON applies Go's case-insensitive struct matching without folding user map keys.
-func unambiguousJSON(body []byte, typ reflect.Type) bool {
-	if !json.Valid(body) {
-		return false
-	}
-	for typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	switch typ.Kind() {
-	case reflect.Struct, reflect.Map:
-		dec := json.NewDecoder(bytes.NewReader(body))
-		tok, err := dec.Token()
-		if err != nil || tok != json.Delim('{') {
-			return true
-		}
-		seen := map[string]bool{}
-		for dec.More() {
-			token, err := dec.Token()
-			if err != nil {
-				return false
-			}
-			key, ok := token.(string)
-			if !ok {
-				return false
-			}
-			var value json.RawMessage
-			if dec.Decode(&value) != nil {
-				return false
-			}
-			canonical := key
-			var child reflect.Type
-			if typ.Kind() == reflect.Map {
-				child = typ.Elem()
-			} else {
-				for i := 0; i < typ.NumField(); i++ {
-					f := typ.Field(i)
-					name := strings.Split(f.Tag.Get("json"), ",")[0]
-					if name == "" {
-						name = f.Name
-					}
-					if name != "-" && strings.EqualFold(name, key) {
-						canonical = name
-						child = f.Type
-						break
-					}
-				}
-			}
-			if seen[canonical] {
-				return false
-			}
-			seen[canonical] = true
-			if child != nil && !unambiguousJSON(value, child) {
-				return false
-			}
-		}
-	case reflect.Slice, reflect.Array:
-		var values []json.RawMessage
-		if json.Unmarshal(body, &values) == nil {
-			for _, v := range values {
-				if !unambiguousJSON(v, typ.Elem()) {
-					return false
-				}
-			}
-		}
-	}
-	return true
 }

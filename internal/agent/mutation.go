@@ -615,13 +615,6 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
 			return
 		}
-		// An agent token never makes or revokes a token, whatever its scope, so an AI agent cannot mint access. The refusal comes
-		// before the scope and the hold: the request is never held for a person to approve, and it is refused on an unprotected
-		// environment too.
-		if rest[0] == "tokens" && r.Method != "GET" && actor.Agent {
-			writeError(w, 403, "forbidden", "an agent token cannot manage tokens")
-			return
-		}
 		levels := map[string]int{"read": 1, "deploy": 2, "admin": 3}
 		if levels[scope] < levels[required] {
 			writeError(w, 403, "forbidden", "forbidden")
@@ -638,13 +631,6 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 		if d == nil || d.Store == nil {
 			writeError(w, 503, "state_unavailable", "state unavailable")
 			return
-		}
-		if len(rest) == 1 && rest[0] == "deploys" && r.Method == "POST" {
-			body, err := readBody(w, r)
-			if err != nil || !requestBodyUnambiguous(rest, r.Method, body) {
-				writeError(w, 400, "bad_request", "invalid request")
-				return
-			}
 		}
 		if rest[0] == "approvals" {
 			gate.serveApprovals(w, r, actor, scope, rest)
