@@ -43,7 +43,7 @@ func backupResult(b manifest.Backup, loc *time.Location, h state.BackupHistory, 
 			if lastSuccess != nil {
 				since = lastSuccess.Finished
 			}
-			if by := overdueBy(sched, since); !by.IsZero() && now.After(by) {
+			if by := occurrenceDeadline(sched, sched.Next(since)); !by.IsZero() && now.After(by) {
 				if lastSuccess == nil {
 					return monitor.Result{State: monitor.Critical, Detail: fmt.Sprintf("overdue: no success yet, first seen %s (expected by %s)", firstSeen.UTC().Format(time.RFC3339), by.Format(time.RFC3339))}
 				}
@@ -66,18 +66,16 @@ func backupResult(b manifest.Backup, loc *time.Location, h state.BackupHistory, 
 	return monitor.Result{State: monitor.OK, Detail: fmt.Sprintf("last success %s ago, %s", api.HumanAge(now.Sub(lastSuccess.Finished)), api.HumanSize(lastSuccess.Size))}
 }
 
-// overdueBy is the time after which a backup that last succeeded at since is overdue: its next occurrence, and a grace of the
-// interval between that occurrence and the one after it, at most an hour. It is zero when the schedule has no next occurrence.
-func overdueBy(sched schedule.Schedule, since time.Time) time.Time {
-	next := sched.Next(since)
-	if next.IsZero() {
+// occurrenceDeadline is the slot plus the interval to the next slot, capped at one hour.
+func occurrenceDeadline(sched schedule.Schedule, slot time.Time) time.Time {
+	if slot.IsZero() {
 		return time.Time{}
 	}
 	grace := maxBackupGrace
-	if after := sched.Next(next); !after.IsZero() {
-		grace = min(grace, after.Sub(next))
+	if after := sched.Next(slot); !after.IsZero() {
+		grace = min(grace, after.Sub(slot))
 	}
-	return next.Add(grace)
+	return slot.Add(grace)
 }
 
 // backupSeen remembers when the agent first saw each backup. A backup that never ran is given its grace from then.

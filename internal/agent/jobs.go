@@ -15,6 +15,7 @@ import (
 	"berthy/internal/jobs"
 	"berthy/internal/manifest"
 	"berthy/internal/monitor"
+	"berthy/internal/schedule"
 	"berthy/internal/state"
 )
 
@@ -93,20 +94,31 @@ func appBackups(ctx context.Context, d *deploy.Controller, app api.App, now time
 	return list
 }
 
-// jobCheck returns the monitor check of a scheduled job: critical while its last finished run failed, ok while it
-// succeeded, and unknown before it has run. A skipped occurrence never changes it.
-func jobCheck(store *state.Store, name string) monitor.Check {
+// jobCheck reports failures and scheduled occurrences that have not been handled.
+func jobCheck(store *state.Store, name string, sched schedule.Schedule, firstSeen time.Time, now func() time.Time) monitor.Check {
 	return monitor.NewFunc("job:"+name, 30*time.Second, 1, func(ctx context.Context) monitor.Result {
 		last, err := store.LastJobRuns(ctx)
 		if err != nil {
 			return monitor.Result{State: monitor.Unknown, Detail: "job runs unavailable"}
 		}
+		occurrence, err := store.LastJobOccurrence(ctx, name)
+		if err != nil {
+			return monitor.Result{State: monitor.Unknown, Detail: "job runs unavailable"}
+		}
 		run, ok := last[name]
-		switch {
-		case !ok:
-			return monitor.Result{State: monitor.Unknown, Detail: "not run yet"}
-		case run.Status == "failed":
+		if ok && run.Status == "failed" {
 			return monitor.Result{State: monitor.Critical, Detail: run.Detail + jobs.LogsHint(name, run)}
+		}
+		baseline := firstSeen
+		if !occurrence.IsZero() && sched.Next(occurrence.Add(-time.Minute)).Equal(occurrence) {
+			baseline = occurrence
+		}
+		slot := sched.Next(baseline)
+		if !slot.IsZero() && now().After(occurrenceDeadline(sched, slot)) {
+			return monitor.Result{State: monitor.Warning, Detail: "missed scheduled run at " + slot.UTC().Format(time.RFC3339)}
+		}
+		if !ok {
+			return monitor.Result{State: monitor.Unknown, Detail: "not run yet"}
 		}
 		return monitor.Result{State: monitor.OK, Detail: "last run succeeded"}
 	})

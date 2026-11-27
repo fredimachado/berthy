@@ -23,6 +23,12 @@ import (
 	"berthy/internal/state"
 )
 
+type jobScheduleSighting struct {
+	expression string
+	timezone   string
+	firstSeen  time.Time
+}
+
 // Monitoring runs the agent's health checks. The checks come from the running manifest and from the built-in
 // conditions, and their states are stored in the agent's state. Monitoring needs state, so NewMonitoring returns nil
 // without it.
@@ -50,9 +56,10 @@ type Monitoring struct {
 	root string
 	// seen is when each backup was first in the manifest, and now is the clock of the backup checks. stateSeen is the same for
 	// the state backup.
-	seen      backupSeen
-	stateSeen backupSeen
-	now       func() time.Time
+	seen         backupSeen
+	stateSeen    backupSeen
+	jobSightings map[string]jobScheduleSighting
+	now          func() time.Time
 	// beat sends the heartbeat pings, and remembers when one was last accepted across the monitor's rebuilds of its checks.
 	beat *monitor.Heartbeat
 }
@@ -176,7 +183,11 @@ func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
 	}
 	out = append(out, tokenChecks...)
 	if mp != nil {
-		out = append(out, w.manifestChecks(ctx, *mp)...)
+		checks, err := w.manifestChecks(ctx, *mp)
+		if err != nil {
+			return nil
+		}
+		out = append(out, checks...)
 	}
 	return out
 }
@@ -233,8 +244,27 @@ func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Man
 }
 
 // manifestChecks returns the probes, the peer checks, and the alert configuration of the running manifest.
-func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []monitor.Check {
+func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) ([]monitor.Check, error) {
 	var out []monitor.Check
+	sightings := make(map[string]jobScheduleSighting)
+	jobChecks := make([]monitor.Check, 0, len(m.Jobs))
+	for _, name := range slices.Sorted(maps.Keys(m.Jobs)) {
+		expression := m.Jobs[name].Schedule
+		if expression == "" {
+			continue
+		}
+		sched, err := m.ParseSchedule(expression)
+		if err != nil {
+			return nil, err
+		}
+		zone := m.Location().String()
+		sighting, ok := w.jobSightings[name]
+		if !ok || sighting.expression != expression || sighting.timezone != zone {
+			sighting = jobScheduleSighting{expression: expression, timezone: zone, firstSeen: w.clock()}
+		}
+		sightings[name] = sighting
+		jobChecks = append(jobChecks, jobCheck(w.store, name, sched, sighting.firstSeen, w.clock))
+	}
 	for _, name := range slices.Sorted(maps.Keys(m.Probes)) {
 		p := m.Probes[name]
 		interval, timeout := p.Durations()
@@ -248,11 +278,7 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 			out = append(out, w.serviceCheck(ctx, "probe:"+name, m, p, interval, timeout, failures))
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(m.Jobs)) {
-		if m.Jobs[name].Schedule != "" {
-			out = append(out, jobCheck(w.store, name))
-		}
-	}
+	out = append(out, jobChecks...)
 	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
 		out = append(out, backupCheck(w.store, name, m.Backups[name], m.Location(), &w.seen, w.clock))
 	}
@@ -277,7 +303,8 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) []
 			return urlSecret(ctx, w.store, "heartbeat", hb.URLSecret)
 		}))
 	}
-	return out
+	w.jobSightings = sightings
+	return out, nil
 }
 
 // dockerAnswers reports whether Docker answers now. The heartbeat is sent only while it does.

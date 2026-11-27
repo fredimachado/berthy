@@ -67,6 +67,8 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 	ctx := context.Background()
 	recordRelease(t, s, "release-jobs", jobsManifest)
 	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	now := at(10, 0, 30)
+	w.now = func() time.Time { return now }
 	checks := map[string]monitor.Check{}
 	for _, c := range w.checks(ctx) {
 		checks[c.Name()] = c
@@ -85,7 +87,7 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 		t.Fatalf("before any run: %+v", got)
 	}
 	three := 3
-	bad, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	bad, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: now})
 	if got := tick.Run(ctx); got.State != monitor.Unknown {
 		t.Fatalf("while the first run is running: %+v", got)
 	}
@@ -96,7 +98,7 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 		t.Fatalf("after a failure: %+v", got)
 	}
 	// A failed run that kept its output names the command that shows it.
-	again, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	again, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: now})
 	if err := s.FinishJobRunWithOutput(ctx, again, "failed", &three, "exit status 3", "boom"); err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +109,14 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 		t.Fatalf("another job is affected: %+v", got)
 	}
 	// A skipped occurrence changes nothing.
-	if _, err := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: time.Now().Truncate(time.Minute), Started: time.Now(), Status: "skipped", Detail: "previous run still running"}); err != nil {
+	if _, err := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: now.Truncate(time.Minute), Started: now, Status: "skipped", Detail: "previous run still running"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := tick.Run(ctx); got.State != monitor.Critical {
 		t.Fatalf("after a skip: %+v", got)
 	}
 	zero := 0
-	good, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	good, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: now})
 	if err := s.FinishJobRun(ctx, good, "succeeded", &zero, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -122,20 +124,123 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 		t.Fatalf("after a success: %+v", got)
 	}
 	// A run that an orderly agent stop cut short changes nothing, in either direction.
-	cut, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: time.Now()})
+	cut, _ := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "manual", Started: now})
 	if err := s.FinishJobRun(ctx, cut, "interrupted", nil, "agent stopped during the run"); err != nil {
 		t.Fatal(err)
 	}
 	if got := tick.Run(ctx); got.State != monitor.OK {
 		t.Fatalf("after an interrupted run: %+v", got)
 	}
-	dumpCut, _ := s.StartJobRun(ctx, state.JobRun{Job: "dump", App: "db", Trigger: "manual", Started: time.Now()})
+	dumpCut, _ := s.StartJobRun(ctx, state.JobRun{Job: "dump", App: "db", Trigger: "manual", Started: now})
 	if err := s.FinishJobRun(ctx, dumpCut, "interrupted", nil, "agent stopped during the run"); err != nil {
 		t.Fatal(err)
 	}
 	if got := checks["job:dump"].Run(ctx); got.State != monitor.Unknown || got.Detail != "not run yet" {
 		t.Fatalf("a job with only an interrupted run: %+v", got)
 	}
+}
+
+func TestJobCheckWarnsForFirstUnhandledSlot(t *testing.T) {
+	for _, tc := range []struct {
+		name, cron        string
+		handled, boundary time.Time
+		detail            string
+	}{
+		{"daily", "30 2 * * *", time.Date(2026, 11, 15, 2, 30, 0, 0, time.UTC), at(3, 30, 0), "2026-11-16T02:30:00Z"},
+		{"ten minutes", "*/10 * * * *", at(10, 0, 0), at(10, 20, 0), "2026-11-16T10:10:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openIngressStore(t)
+			ctx := context.Background()
+			recordRelease(t, s, "release", strings.Replace(jobsManifest, "* * * * *", tc.cron, 1))
+			id, err := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: tc.handled, Started: tc.handled})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.FinishJobRun(ctx, id, "succeeded", nil, ""); err != nil {
+				t.Fatal(err)
+			}
+			now := tc.handled
+			w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+			w.now = func() time.Time { return now }
+			var check monitor.Check
+			for _, c := range w.checks(ctx) {
+				if c.Name() == "job:tick" {
+					check = c
+				}
+			}
+			if check == nil {
+				t.Fatal("missing job check")
+			}
+			now = tc.boundary
+			if got := check.Run(ctx); got.State != monitor.OK {
+				t.Errorf("at boundary: %+v", got)
+			}
+			for _, delta := range []time.Duration{time.Second, 2 * time.Hour} {
+				now = tc.boundary.Add(delta)
+				if got := check.Run(ctx); got.State != monitor.Warning || got.Detail != "missed scheduled run at "+tc.detail {
+					t.Errorf("after boundary: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestJobCheckUsesScheduledOccurrencesOfEveryStatus(t *testing.T) {
+	s := openIngressStore(t)
+	ctx := context.Background()
+	recordRelease(t, s, "release", strings.Replace(jobsManifest, "* * * * *", "*/10 * * * *", 1))
+	now := at(10, 0, 0)
+	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w.now = func() time.Time { return now }
+	var check monitor.Check
+	for _, c := range w.checks(ctx) {
+		if c.Name() == "job:tick" {
+			check = c
+		}
+	}
+	if check == nil {
+		t.Fatal("missing job check")
+	}
+	add := func(trigger string, scheduled time.Time, status string, output string) {
+		t.Helper()
+		run := state.JobRun{Job: "tick", App: "api", Trigger: trigger, Scheduled: scheduled, Started: now}
+		if status == "skipped" {
+			run.Status = status
+		}
+		id, err := s.StartJobRun(ctx, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != "running" && status != "skipped" {
+			if err := s.FinishJobRunWithOutput(ctx, id, status, nil, "exit status 3", output); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	assert := func(want string, detail string) {
+		t.Helper()
+		got := check.Run(ctx)
+		if got.State != want || got.Detail != detail {
+			t.Errorf("got %+v, want %s %q", got, want, detail)
+		}
+	}
+	add("schedule", at(10, 0, 0), "succeeded", "")
+	now = at(10, 20, 1)
+	assert(monitor.Warning, "missed scheduled run at 2026-11-16T10:10:00Z")
+	add("manual", time.Time{}, "succeeded", "")
+	add("backup", time.Time{}, "succeeded", "")
+	assert(monitor.Warning, "missed scheduled run at 2026-11-16T10:10:00Z")
+	add("schedule", at(10, 20, 0), "skipped", "")
+	assert(monitor.OK, "last run succeeded")
+	now = at(10, 40, 1)
+	add("schedule", at(10, 30, 0), "running", "")
+	assert(monitor.OK, "last run succeeded")
+	add("schedule", at(10, 40, 0), "interrupted", "")
+	now = at(11, 0, 1)
+	assert(monitor.Warning, "missed scheduled run at 2026-11-16T10:50:00Z")
+	add("manual", time.Time{}, "failed", "boom")
+	assert(monitor.Critical, "exit status 3: berthy job logs tick shows its output")
 }
 
 func jobsHandler(t *testing.T, s *state.Store, exec jobs.Runner) http.Handler {
