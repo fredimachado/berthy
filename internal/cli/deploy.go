@@ -413,6 +413,9 @@ func refusedFlag(cmd string, f commandFlags) (flag, key string) {
 	return "", key
 }
 
+// captureDeployCheckout is the first checkout read for a single mutable-tag deploy.
+var captureDeployCheckout = gitcheck.Capture
+
 // runDeployment runs a command of deploymentCommands. dir is where the project is looked for when the line has no --manifest-dir.
 // intent is non-nil for an expanded alias: after ordinary validation, the parsed selectors must match it.
 func runDeployment(cmd string, args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
@@ -543,7 +546,7 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 	var checkoutBefore gitcheck.Identity
 	// A mutable tag needs the identity from before target resolution or manifest loading reads the checkout.
 	if cmd == "deploy" && len(f.pos) == 1 && len(f.versions) == 1 && !strings.Contains(f.versions[0], "@") && !bareSHA256(f.versions[0]) {
-		checkoutBefore, err = gitcheck.Capture(context.Background(), f.dir)
+		checkoutBefore, err = captureDeployCheckout(ctx, f.dir)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
