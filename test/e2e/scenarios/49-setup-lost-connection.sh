@@ -66,6 +66,21 @@ if d exec "$server" curl -fsS "http://$ip:7710/healthz" >/dev/null; then pass "h
 unset out
 # Record the installed generation for the connection-loss case.
 old=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
+# A connected failed upgrade runs recovery synchronously on the server.
+cat > "$FS_HOME/bin/ssh" <<'SH'
+#!/bin/sh
+exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
+SH
+chmod 700 "$FS_HOME/bin/ssh"
+out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary /bin/false --json 2>"$private/connected.stderr"); code=$?
+expect_code "connected failed upgrade" 1 "$code"
+if [[ $out == *"the new agent did not come up; the previous one was put back"* ]]; then pass "connected rollback reported"; else fail "connected rollback reported" "missing rollback message"; setup_failure "$private/connected.stderr"; fi
+unset out
+current=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
+expect_eq "connected rollback restored binary" "$old" "$current"
+state=$(d exec "$server" cat /run/berthy-activation-guard.state) || exit 1
+expect_eq "connected rollback state" "restored" "$state"
+if d exec "$server" curl -fsS "http://$ip:7710/healthz" >/dev/null; then pass "connected rollback answers"; else fail "connected rollback answers" "health check failed"; fi
 export SSH_STATE="$private/state"
 cat > "$FS_HOME/bin/ssh" <<'SH'
 #!/bin/sh
