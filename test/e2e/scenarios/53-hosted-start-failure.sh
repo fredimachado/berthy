@@ -120,7 +120,7 @@ else
   fail "startup recovery webhook" "missing recovery for $check_name"
 fi
 
-# Run setup against the Docker-equipped fixture selected by FS_IMAGE, with its own SSH home.
+# Run setup against a disposable server with its own SSH home.
 private=$(mktemp -d "$RUN/hosted-setup.XXXXXX") || exit 1
 export FS_HOME="$private/home" FS_DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$E2E_ROOT/docker-config"
 export HOME="$FS_HOME"
@@ -144,9 +144,12 @@ cleanup_setup() {
 }
 trap cleanup_setup EXIT
 bash "$fixture" start "$server" || { fail "start disposable setup server" "fixture did not start"; finish; }
+if ! bash "$fixture" install-docker "$server" > "$LOG/install-docker.log" 2>&1; then
+  fail "install Docker on the setup fixture" "see $LOG/install-docker.log"
+  finish
+fi
 remote() { bash "$fixture" exec "$server" "$@"; }
 ip=$(bash "$fixture" ip "$server") || exit 1
-remote systemctl start docker || { fail "start fixture Docker" "select a Docker-equipped FS_IMAGE"; finish; }
 
 cfg="$private/cli.json"
 setup_cmd=("$BIN" setup -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --binary "$BIN"
