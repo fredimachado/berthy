@@ -337,13 +337,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if c.rolloutHold != nil {
 		hold = *c.rolloutHold
 	}
-	deadline := time.Now().Add(budget)
-	// verifyCtx ends at the deploy timeout. rollCtx also ends when a cancel is accepted, so the wait for health can be cancelled,
-	// and the verification that follows it is not: it is short, and the cancel is settled at the barrier.
-	verifyCtx, stop := context.WithDeadline(ctx, deadline)
-	defer stop()
-	rollCtx, stopRoll := interruptible(verifyCtx)
-	defer stopRoll()
+	startupDeadline := time.Now().Add(budget)
 	// unwind takes the rollout back after a failure or a cancel, with the roles in touched changed.
 	unwind := func(e error, touched []roleWork) {
 		// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
@@ -375,7 +369,13 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	var releaseBindings []state.Binding
 	for n, w := range work {
-		w.intent.Deadline = deadline
+		if !time.Now().Before(startupDeadline) {
+			unwind(errors.New("service health deadline exceeded"), work[:n])
+			return
+		}
+		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
+		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
+		rollCtx, stopRoll := interruptible(roleCtx)
 		id := w.intent.ServiceID
 		var e error
 		if w.intent.Kind == "create" {
@@ -383,13 +383,25 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		} else {
 			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
 		}
+		stopRoll()
+		stopRole()
 		if e != nil {
 			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
 			unwind(e, work[:n+1])
 			return
 		}
+		startupDeadline = startupDeadline.Add(hold)
 		releaseBindings = append(releaseBindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
 	}
+	deadline := startupDeadline
+	if hold > 0 {
+		if now := time.Now(); now.After(deadline) {
+			deadline = now
+		}
+		deadline = deadline.Add(rolloutVerificationGrace)
+	}
+	verifyCtx, stopVerify := context.WithDeadline(ctx, deadline)
+	defer stopVerify()
 	manifestJSON, err := json.Marshal(req.Manifest)
 	if err != nil {
 		outcome.State = "recovery_required"
@@ -445,7 +457,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy
 	// commands follow. A cancel that was accepted before it takes the rollout back instead.
-	if e = c.cross(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
+	if e = c.cross(verifyCtx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
 		if isCancelled(e) {
 			outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
 			unwind(e, work)
