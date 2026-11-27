@@ -100,6 +100,10 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 					operationError(w, err)
 					return
 				}
+				if req.Kind == "deploy" && !planning(r) && r.URL.Query().Get("diff") == "fields" {
+					writeDeployFieldPreview(w, plan)
+					return
+				}
 				json.NewEncoder(w).Encode(plan)
 				return
 			}
@@ -884,6 +888,36 @@ func secretImportError(w http.ResponseWriter, err error) {
 		return
 	}
 	operationError(w, err)
+}
+
+func writeDeployFieldPreview(w http.ResponseWriter, plan deploy.Plan) {
+	if plan.DiffBase == nil || plan.Diff == nil {
+		writeError(w, http.StatusBadRequest, "operation_failed", "deploy field comparison unavailable")
+		return
+	}
+	fields := plan.Diff.Fields
+	if fields == nil {
+		fields = []deploy.DiffField{}
+	}
+	response := struct {
+		deploy.Plan
+		ReleaseDiff struct {
+			Base   int64              `json:"base"`
+			Fields []deploy.DiffField `json:"fields"`
+		} `json:"release_diff"`
+	}{Plan: plan}
+	response.ReleaseDiff.Base = *plan.DiffBase
+	response.ReleaseDiff.Fields = fields
+	data, err := json.Marshal(response)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "operation_failed", "deploy field comparison unavailable")
+		return
+	}
+	if len(data) >= api.MaxDeployDiffResponse { // Leave room for the final newline.
+		writeError(w, http.StatusBadRequest, "operation_failed", "deploy field preview exceeds response limit")
+		return
+	}
+	w.Write(append(data, '\n'))
 }
 
 func operationError(w http.ResponseWriter, err error) {

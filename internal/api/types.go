@@ -1,5 +1,8 @@
 package api
 
+// MaxDeployDiffResponse limits the complete opt-in deploy field preview.
+const MaxDeployDiffResponse = 64 << 20
+
 type AppRef struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`

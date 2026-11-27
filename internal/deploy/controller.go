@@ -109,6 +109,8 @@ type Plan struct {
 	// Diff says what a deploy or rollback of the app changes compared with the release the app runs now. A plan of either has it;
 	// an adoption has Changes instead.
 	Diff *Diff `json:"diff,omitempty"`
+	// DiffBase identifies the applied release used for Diff. Zero means a first deploy.
+	DiffBase *int64 `json:"-"`
 }
 type ExecPlan struct {
 	// Target is the Swarm service of the role for an image app, and the Compose project and service, such as shop-db/postgres,
@@ -474,6 +476,11 @@ func (c *Controller) addDiff(ctx context.Context, p *Plan, req Request, image, t
 		d = d.WithCompose(*p.Compose)
 	}
 	p.Diff = &d
+	if prev == nil {
+		p.DiffBase = new(int64)
+	} else if _, ok := prev.Manifest.Apps[req.App]; ok {
+		p.DiffBase = &release.ID
+	}
 	return nil
 }
 
