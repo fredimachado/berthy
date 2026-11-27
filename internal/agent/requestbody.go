@@ -28,7 +28,8 @@ func planning(r *http.Request) bool {
 // errNoDryRun refuses a planning call whose body type has no dry_run field.
 var errNoDryRun = errors.New("the route has no dry run")
 
-// decodeBody reads a JSON body into a struct pointer. A planning call sets its dry_run field or fails closed.
+// decodeBody reads a JSON body into a struct pointer. Routes read bodies only through this or decodeOptionalBody.
+// A planning call sets its dry_run field or fails closed.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 	return readRequest(w, r, v, false)
 }
