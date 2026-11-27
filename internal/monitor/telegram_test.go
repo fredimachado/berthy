@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"berthy/internal/dialtest"
 )
 
 // testToken is a bot token of the documented shape, made up for these tests.

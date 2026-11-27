@@ -14,9 +14,10 @@ import (
 
 // Refused is an address that Dial refuses as a closed port would. The .invalid name never resolves (RFC 6761), so a
 // client that dials it any other way fails differently and the test notices.
-const Refused = "refused.invalid:80"
+const Refused = "dialtest.invalid:80"
 
-// Dial refuses Refused with ECONNREFUSED without touching the network and dials every other address normally.
+// Dial refuses Refused with ECONNREFUSED without touching the network and dials every other address with a net.Dialer,
+// so one client can reach a fake and Refused.
 func Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if addr == Refused {
 		return nil, &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}

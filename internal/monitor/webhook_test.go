@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"berthy/internal/dialtest"
 )
 
 // secretURLPath stands for the credential that a webhook URL often holds.
@@ -104,7 +105,7 @@ func TestWebhookReportsAStatusAndNeverTheURL(t *testing.T) {
 
 func TestWebhookTransportErrorsNameAClassNotTheURL(t *testing.T) {
 	err := (&Webhook{URL: "http://" + dialtest.Refused + secretURLPath, Client: dialtest.Client()}).Notify(context.Background(), sampleAlert())
-	if !errors.Is(err, ErrWebhookUnavailable) || strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "refused.invalid") {
+	if !errors.Is(err, ErrWebhookUnavailable) || strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "dialtest.invalid") {
 		t.Fatalf("error %v", err)
 	}
 	err = (&Webhook{URL: "http://bad host" + secretURLPath}).Notify(context.Background(), sampleAlert())

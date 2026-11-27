@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"berthy/internal/api"
 	"berthy/internal/cloudflare/cftest"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
@@ -184,7 +184,7 @@ func TestRegistryOutageIsNotARefusal(t *testing.T) {
 	})
 	t.Run("registry is down", func(t *testing.T) {
 		host := dialtest.Refused
-		cfg.dial = refusalDial(t)
+		cfg.dial = dialtest.Dial
 		s := openIngressStore(t)
 		recordRelease(t, s, "release-down", registryManifest(host))
 		putRegistryPassword(t, s, host, "pw-one")
@@ -302,7 +302,7 @@ func TestCloudflareOutageIsNotARefusal(t *testing.T) {
 
 	cfg := monitoringConfig("")
 	cfg.CloudflareAPIURL = "http://" + dialtest.Refused
-	cfg.dial = refusalDial(t)
+	cfg.dial = dialtest.Dial
 	s := openIngressStore(t)
 	setIngress(t, s)
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
@@ -370,7 +370,7 @@ func TestMonitorChecksTheSameCredentials(t *testing.T) {
 	}
 
 	closed := dialtest.Refused
-	cfg.dial = refusalDial(t)
+	cfg.dial = dialtest.Dial
 	s2 := openIngressStore(t)
 	recordRelease(t, s2, "release-closed", registryManifest(closed))
 	putRegistryPassword(t, s2, closed, "pw-one")

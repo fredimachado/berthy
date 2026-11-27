@@ -40,6 +40,7 @@ func ValidToken(token string) bool { return tokenPattern.MatchString(token) }
 // request is refused with 401. An empty token refuses everything.
 func Handler(token string) http.Handler { return handler(token, nil) }
 
+// handler is Handler with the dialer of its probes; nil means a net.Dialer.
 func handler(token string, dial monitor.DialFunc) http.Handler {
 	want := sha256.Sum256([]byte(token))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

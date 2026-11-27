@@ -1,7 +1,6 @@
 package registrycheck_test
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"berthy/internal/dialtest"
 	"berthy/internal/registrycheck"
 )
 

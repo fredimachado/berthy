@@ -1,7 +1,6 @@
 package main
 
 import (
-	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"berthy/internal/dialtest"
 )
 
 func TestParseAcceptsBerthyInvocations(t *testing.T) {
@@ -218,7 +219,7 @@ func TestCheckReadyExitsZeroOnlyOnHTTP200(t *testing.T) {
 	defer ready.Close()
 	notReady := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer notReady.Close()
-	closedAddr := strings.TrimPrefix(dialtest.HangUp(t), "http://")
+	hangUpAddr := strings.TrimPrefix(dialtest.HangUp(t), "http://")
 
 	var stderr bytes.Buffer
 	if code := checkReady(strings.TrimPrefix(ready.URL, "http://"), &stderr); code != 0 {
@@ -232,7 +233,7 @@ func TestCheckReadyExitsZeroOnlyOnHTTP200(t *testing.T) {
 		t.Errorf("not ready message = %q, want the status", stderr.String())
 	}
 	stderr.Reset()
-	if code := checkReady(closedAddr, &stderr); code != 1 {
+	if code := checkReady(hangUpAddr, &stderr); code != 1 {
 		t.Errorf("unreachable: exit %d, want 1", code)
 	}
 }

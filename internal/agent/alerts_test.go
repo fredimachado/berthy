@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
@@ -209,7 +209,7 @@ func TestWebhookFailuresAreLoggedWithoutTheURLOrTheHeaders(t *testing.T) {
 			t.Errorf("%s: logged %q", name, logged)
 		}
 		for _, line := range logged {
-			for _, secret := range []string{"s3cr3t", "hook-secret-value", "127.0.0.1", "refused.invalid", reportsBotToken} {
+			for _, secret := range []string{"s3cr3t", "hook-secret-value", "127.0.0.1", "dialtest.invalid", reportsBotToken} {
 				if strings.Contains(line, secret) {
 					t.Errorf("%s: the log line leaks %q: %q", name, secret, line)
 				}

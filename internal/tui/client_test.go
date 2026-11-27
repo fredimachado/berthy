@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"fmt"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/dialtest"
 	"berthy/internal/logs"
 
 	tea "charm.land/bubbletea/v2"
@@ -114,7 +114,7 @@ func TestFetchErrors(t *testing.T) {
 	c.http = dialtest.Client()
 	c.target.Base, _ = url.Parse("http://" + dialtest.Refused)
 	if e, ok := c.fetchApps()().(errMsg); !ok || !e.network || e.text != "agent unreachable" {
-		t.Fatalf("closed server: %#v", e)
+		t.Fatalf("refused: %#v", e)
 	}
 }
 

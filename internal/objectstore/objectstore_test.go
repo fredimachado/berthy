@@ -1,7 +1,6 @@
 package objectstore
 
 import (
-	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"berthy/internal/dialtest"
 
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"

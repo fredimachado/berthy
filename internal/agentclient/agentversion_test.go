@@ -1,7 +1,6 @@
 package agentclient
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"fmt"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"berthy/internal/dialtest"
 	"berthy/internal/manifest"
 	"berthy/internal/version"
 )

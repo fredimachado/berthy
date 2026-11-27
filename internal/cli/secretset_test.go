@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"berthy/internal/dialtest"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"testing"
 
 	"berthy/internal/cloudflare/cftest"
+	"berthy/internal/dialtest"
 	"berthy/internal/manifest"
 )
 

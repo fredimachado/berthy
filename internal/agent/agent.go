@@ -59,11 +59,13 @@ type Config struct {
 	Tokens      []Token `json:"tokens"`
 	// clock is the time source of the approvals. Tests set it; nil means the system clock.
 	clock func() time.Time
-	// dial opens connections to external services. Nil uses each client's default dialer.
+	// dial opens the agent's connections to other services: Cloudflare, registries, Telegram, webhooks, the heartbeat URL,
+	// peers and probes. Nil means a net.Dialer and each client's default. Tests set it to refuse a connection without a
+	// closed port.
 	dial monitor.DialFunc
 }
 
-// outboundHTTP returns the default client unless a test supplies a dialer.
+// outboundHTTP returns the HTTP client for those services: nil, which is each package's default, unless a test set dial.
 func (c Config) outboundHTTP() *http.Client {
 	if c.dial == nil {
 		return nil

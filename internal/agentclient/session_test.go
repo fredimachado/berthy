@@ -1,7 +1,6 @@
 package agentclient
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"berthy/internal/dialtest"
 	"berthy/internal/session"
 )
 

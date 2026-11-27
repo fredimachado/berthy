@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -24,6 +23,7 @@ import (
 	"berthy/internal/agent"
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
+	"berthy/internal/dialtest"
 	"berthy/internal/keywrap"
 )
 

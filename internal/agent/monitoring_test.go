@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"berthy/internal/dialtest"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +16,7 @@ import (
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
+	"berthy/internal/dialtest"
 	"berthy/internal/manifest"
 	"berthy/internal/metrics"
 	"berthy/internal/monitor"
@@ -72,23 +71,6 @@ func serveRequest(t *testing.T, h http.Handler, method, path, token string) *htt
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
-}
-
-// refusalDial checks that the test's refusal came from the injected dialer.
-func refusalDial(t *testing.T) monitor.DialFunc {
-	t.Helper()
-	var called atomic.Bool
-	t.Cleanup(func() {
-		if !called.Load() {
-			t.Error("refusal dialer was not called")
-		}
-	})
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if addr == dialtest.Refused {
-			called.Store(true)
-		}
-		return dialtest.Dial(ctx, network, addr)
-	}
 }
 
 func TestHealthzIsUnauthenticatedAndSaysNothingElse(t *testing.T) {
@@ -223,7 +205,7 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 
 	// A second handler points at an address with nothing listening on it.
 	downCfg := monitoringConfig("http://" + dialtest.Refused)
-	downCfg.dial = refusalDial(t)
+	downCfg.dial = dialtest.Dial
 	down := NewDeploymentHandler(downCfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w = serveRequest(t, down, http.MethodPost, "/v1/projects/demo/environments/lab/alerts/test", monitoringToken("b"))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"error":"telegram unavailable"`) {
@@ -388,7 +370,7 @@ func TestDoctorReportsPeersAndTheAlertSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := monitoringConfig("")
-	cfg.dial = refusalDial(t)
+	cfg.dial = dialtest.Dial
 	h := NewDeploymentHandler(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"})
 	w := serveRequest(t, h, http.MethodGet, "/v1/projects/demo/environments/lab/doctor", monitoringToken("a"))
 	if w.Code != http.StatusOK {

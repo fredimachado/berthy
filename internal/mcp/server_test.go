@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"berthy/internal/dialtest"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/dialtest"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
