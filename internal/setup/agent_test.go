@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,20 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 			out += "prev_cfg=yes\n"
 		}
 		return Result{Stdout: []byte(out)}, nil
+	case strings.HasPrefix(script, "/bin/sh "+guardPath+" "):
+		args := strings.Fields(script)
+		if args[2] == "no" && args[3] == "no" {
+			return Result{Stdout: []byte("guard=stopped\n")}, nil
+		}
+		f.restarts++
+		if len(f.waits) > 0 {
+			code := f.waits[0]
+			f.waits = f.waits[1:]
+			if code != 0 {
+				return Result{Code: 1, Stdout: []byte("guard=restored-down\n")}, nil
+			}
+		}
+		return Result{Stdout: []byte("guard=restored\n")}, nil
 	case strings.Contains(script, "systemctl restart berthy"):
 		f.restarts++
 		code := 0
@@ -1196,7 +1211,7 @@ func TestActivateSucceeds(t *testing.T) {
 			t.Errorf("swap lacks %q:\n%s", want, s[0])
 		}
 	}
-	for _, want := range []string{"systemctl restart berthy", "http://" + listenIP + ":7710/healthz", "curl", "wget", "-lt 3", "systemctl is-failed"} {
+	for _, want := range []string{"systemctl restart berthy", "http://" + listenIP + ":7710/healthz", "curl", "wget", "date +%s", "systemctl is-failed"} {
 		if !strings.Contains(s[1], want) {
 			t.Errorf("restart lacks %q:\n%s", want, s[1])
 		}
@@ -1206,7 +1221,7 @@ func TestActivateSucceeds(t *testing.T) {
 	if reset < 0 || reset > restart {
 		t.Errorf("reset-failed does not come before the restart:\n%s", s[1])
 	}
-	if f.ran("journalctl") || f.ran("systemctl stop") {
+	if f.ran("journalctl") || slices.Contains(f.scripts(), "systemctl stop berthy") {
 		t.Errorf("a rollback ran")
 	}
 }
@@ -1256,20 +1271,22 @@ func TestActivateRollsBackWhenTheAgentDoesNotAnswer(t *testing.T) {
 			order = append(order, "journal")
 		case strings.Contains(sc, ".prev") && strings.Contains(sc, "mv -f"):
 			order = append(order, "back")
+		case strings.HasPrefix(sc, "/bin/sh "+guardPath+" "):
+			order = append(order, "guard")
 		case strings.Contains(sc, "systemctl restart"):
 			order = append(order, "restart")
 		default:
 			order = append(order, "other")
 		}
 	}
-	if strings.Join(order, " ") != "swap restart journal back restart" {
+	if strings.Join(order, " ") != "swap restart journal guard" {
 		t.Fatalf("order = %v", order)
 	}
 	back := f.calls[3].script
-	if !strings.Contains(back, "mv -f /usr/local/bin/berthy.prev /usr/local/bin/berthy") || !strings.Contains(back, "mv -f /etc/berthy/agent.json.prev /etc/berthy/agent.json") {
-		t.Errorf("rollback = %q", back)
+	if back != "/bin/sh "+guardPath+" yes yes now" {
+		t.Errorf("guard = %q", back)
 	}
-	if f.ran("systemctl stop") {
+	if slices.Contains(f.scripts(), "systemctl stop berthy") {
 		t.Errorf("the service was stopped although the previous agent was put back")
 	}
 }
@@ -1305,7 +1322,7 @@ func TestActivateOnAFirstInstallLeavesTheAgentStopped(t *testing.T) {
 	if ae.Message != "the agent did not come up and is left stopped: invalid listen address" || ae.ConfigOutcome != ConfigRetained {
 		t.Errorf("error = %+v", ae)
 	}
-	if !f.ran("systemctl stop berthy") || f.restarts != 1 {
+	if !slices.Contains(f.scripts(), "/bin/sh "+guardPath+" no no now") || f.restarts != 1 {
 		t.Errorf("scripts = %q", f.scripts())
 	}
 }
