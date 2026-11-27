@@ -288,7 +288,9 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 				t.Fatalf("approve: %d %s", w.Code, w.Body.String())
 			}
 			if kind == "cancel" {
-				f.waitTerminal(strings.Split(path, "/")[2])
+				if stream := f.waitTerminal(strings.Split(path, "/")[2]); !strings.Contains(stream, "event: terminal") {
+					t.Fatalf("missing terminal: %s", stream)
+				}
 			} else if strings.HasPrefix(row.watched(f), "admitted") {
 				var answer struct {
 					ID string `json:"operation_id"`
