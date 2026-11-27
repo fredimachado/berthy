@@ -69,7 +69,9 @@ func TestComposeDiagnosticTailLimits(t *testing.T) {
 	const last = "last error\n"
 	const tokenHex = "0123456789abcdef"
 	const cutToken = "test." + tokenHex + tokenHex + tokenHex + tokenHex
+	const tokenPrefix = "bty.shop.test."
 	const marker = "[redacted]"
+	overlappingBearers := tokenPrefix + strings.Repeat("a", 63) + tokenPrefix + strings.Repeat("c", 64)
 	lines := strings.Repeat("line\n", 200)
 	expanded := strings.Repeat(marker+" ", 6000)
 	fillWindow := func(prefix string) string {
@@ -85,7 +87,12 @@ func TestComposeDiagnosticTailLimits(t *testing.T) {
 		{"unterminated line", lines + "last", lines[len("line\n"):] + "last", nil, true},
 		{"UTF-8 byte cutoff", "界" + strings.Repeat("!", diagnosticLogBytes-1), strings.Repeat("!", diagnosticLogBytes-1), nil, true},
 		{"UTF-8 repair", "bad\xffbytes", "badbytes", nil, false},
+		{"UTF-8 repair exposes a managed secret", "denied fixture-\xffpassword\n", "denied " + marker + "\n", []string{"fixture-password"}, false},
+		{"UTF-8 repair exposes a scoped bearer", "denied bty.shop.\xfftest." + strings.Repeat("b", 64) + "\n", "denied " + marker + "\n", nil, false},
+		{"raw and UTF-8 repaired matches overlap", "denied fixture-\xffpassword work\n", "denied " + marker + "\n", []string{"fixture-password", "password work"}, false},
+		{"raw secret contains invalid UTF-8", "denied fixture-\xffpassword\n", "denied " + marker + "\n", []string{"fixture-\xffpassword"}, false},
 		{"overlapping literal occurrences", "one ababa two", "one " + marker + " two", []string{"aba"}, false},
+		{"overlapping scoped bearers", "denied " + overlappingBearers + "\n", "denied " + marker + "\n", nil, false},
 		{"expansion after redaction", strings.Repeat("x ", 6000), expanded[len(expanded)-diagnosticLogBytes:], []string{"x"}, true},
 		{"literal suffix at raw edge", fillWindow("ret "), marker + " " + marker + last, []string{"secret", "!!"}, true},
 		{"token prefix cut at raw edge", fillWindow(cutToken + " "), marker + " " + marker + last, []string{"!!"}, true},

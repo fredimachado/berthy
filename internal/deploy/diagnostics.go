@@ -331,23 +331,17 @@ func (c *Controller) recordComposeUpFailure(ctx context.Context, opID string, re
 func composeDiagnosticTail(stderr []byte, secrets [][]byte, id scope.ID) (logs string, truncated bool) {
 	stderr = stderr[max(0, len(stderr)-engine.MaxComposeOutput-1):]
 	window := max(0, len(stderr)-engine.MaxComposeOutput)
-	// For each possible start, keep the furthest end of any match on the original bytes.
-	ends := make([]int, len(stderr))
-	for _, secret := range secrets {
-		if len(secret) == 0 {
-			continue
-		}
-		markComposeLiteralMatches(stderr, secret, ends)
-		if window > 0 {
-			ends[0] = max(ends[0], composeLiteralSuffixOverlap(stderr, secret))
-		}
-	}
 	tokens := regexp.MustCompile(id.TokenExpression())
-	for _, match := range tokens.FindAllIndex(stderr, -1) {
-		ends[match[0]] = max(ends[match[0]], match[1])
-	}
-	if window > 0 {
-		ends[0] = max(ends[0], id.TokenSuffixOverlap(stderr))
+	ends := composeCredentialEnds(stderr, secrets, id, tokens, window > 0)
+	if !utf8.Valid(stderr) {
+		// Repair can join bytes that form a credential. Map those matches back so they merge with raw matches.
+		repaired, offsets := composeUTF8Offsets(stderr)
+		for i, end := range composeCredentialEnds(repaired, secrets, id, tokens, window > 0) {
+			if end > 0 {
+				start := offsets[i]
+				ends[start] = max(ends[start], offsets[end-1]+1)
+			}
+		}
 	}
 
 	var redacted strings.Builder
@@ -386,6 +380,51 @@ func composeDiagnosticTail(stderr []byte, secrets [][]byte, id scope.ID) (logs s
 		start++
 	}
 	return logs[start:], window > 0 || start > 0
+}
+
+func composeUTF8Offsets(data []byte) (repaired []byte, offsets []int) {
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		if r != utf8.RuneError || size > 1 {
+			repaired = append(repaired, data[i:i+size]...)
+			for j := range size {
+				offsets = append(offsets, i+j)
+			}
+		}
+		i += size
+	}
+	return repaired, offsets
+}
+
+// For each credential start, keep the furthest end of any match.
+func composeCredentialEnds(data []byte, secrets [][]byte, id scope.ID, tokens *regexp.Regexp, cut bool) []int {
+	ends := make([]int, len(data))
+	if len(data) == 0 {
+		return ends
+	}
+	for _, secret := range secrets {
+		if len(secret) == 0 {
+			continue
+		}
+		markComposeLiteralMatches(data, secret, ends)
+		if cut {
+			ends[0] = max(ends[0], composeLiteralSuffixOverlap(data, secret))
+		}
+	}
+	for offset := 0; offset < len(data); {
+		match := tokens.FindIndex(data[offset:])
+		if match == nil {
+			break
+		}
+		start, end := offset+match[0], offset+match[1]
+		ends[start] = max(ends[start], end)
+		// A token ending in b can share that byte with the start of the next token.
+		offset = start + 1
+	}
+	if cut {
+		ends[0] = max(ends[0], id.TokenSuffixOverlap(data))
+	}
+	return ends
 }
 
 func markComposeLiteralMatches(data, value []byte, ends []int) {
