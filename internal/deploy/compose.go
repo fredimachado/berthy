@@ -76,6 +76,7 @@ const (
 	errComposePlan          Refusal = "compose plan failed"
 	errComposeJournal       Refusal = "compose journal failed"
 	errComposeUp            Refusal = "compose up failed"
+	errComposeReadyHold     Refusal = "Compose project did not stay ready long enough"
 	errComposeRestart       Refusal = "compose restart failed"
 	errComposeFailed        Refusal = "compose deploy failed"
 	errComposeNoFiles       Refusal = "compose project has no deployed files"
@@ -92,7 +93,7 @@ const (
 
 // composeMessage matches the refusals a Compose plan, an adoption or an exec can name a service, port or app in. Only these
 // dynamic texts are public besides the fixed Refusal values.
-var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (exited with code -?[0-9]{1,3}|is unhealthy|not ready after [0-9]{1,6}s|publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|volume [A-Za-z0-9][A-Za-z0-9._-]{0,127} uses a host-access driver; deploy it with an admin token|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
+var composeMessage = regexp.MustCompile(`^(service [A-Za-z0-9][A-Za-z0-9._-]{0,127} (exited with code -?[0-9]{1,3}|restarted \(last exit code unavailable\)|is unhealthy|not ready after [0-9]{1,6}s|publishes port [0-9]{1,5}(-[0-9]{1,5})? on all interfaces; bind it to a private address|builds an image; Compose apps deploy images only|binds a path inside the agent's Compose directory; use a named volume or a path outside it|(runs privileged|uses the host (network|pid|ipc|uts|user|cgroup) namespace|adds capabilities|maps host devices|relaxes security options|reads an env_file from the host|mounts host path [ -~]{1,200}|shares container [ -~]{1,200}|reads a host file through (secret|config) [A-Za-z0-9][A-Za-z0-9._-]{0,127}); deploy it with an admin token)|volume [A-Za-z0-9][A-Za-z0-9._-]{0,127} uses a host-access driver; deploy it with an admin token|stateful app [a-z0-9][a-z0-9_-]{0,62} would (recreate|remove) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; deploy with --allow-recreate and an admin token|removing stateful app [a-z0-9][a-z0-9_-]{0,62} needs --allow-recreate|adoption would change (service|volume) [A-Za-z0-9][A-Za-z0-9._-]{0,127}; align the manifest first|no running container for [a-z0-9][a-z0-9_-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)$`)
 
 // composeHash matches one config hash printed by `compose config --hash`.
 var composeHash = regexp.MustCompile(`^[A-Za-z0-9:._-]{8,256}$`)
@@ -917,7 +918,8 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 	}
 	// Berthy judges readiness itself: Compose's --wait fails a project whose service has exited, even with code 0, so a
 	// one-shot service could never be deployed. The budget counts from before up, as Compose's wait timeout did.
-	deadline := time.Now().Add(budget)
+	upStarted := time.Now()
+	deadline := upStarted.Add(budget)
 	upCtx, cancel := context.WithDeadline(ctx, deadline.Add(composeUpWindow))
 	defer cancel()
 	_, _, err = c.Compose.Run(upCtx, engine.ComposeRun{
@@ -927,7 +929,7 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 		DockerConfig: auth,
 	})
 	if err == nil {
-		err = c.waitCompose(upCtx, project, dir, deadline, budget)
+		err = c.waitCompose(upCtx, project, dir, upStarted, deadline, budget)
 	}
 	if err != nil {
 		_ = c.Store.MarkStep(ctx, op.ID, composeRunOrdinal, "finished", json.RawMessage(`{"ok":false}`))
@@ -945,10 +947,11 @@ func (c *Controller) runCompose(ctx context.Context, op state.Operation, actor A
 
 // composeContainer is one line of `compose ps --all --format json`, parsed where it enters.
 type composeContainer struct {
+	ID       string `json:"ID"`
 	Service  string `json:"Service"`
 	State    string `json:"State"`  // running, exited, created, restarting, paused, dead, removing
 	Health   string `json:"Health"` // "", starting, healthy, unhealthy
-	ExitCode int    `json:"ExitCode"`
+	ExitCode *int   `json:"ExitCode"`
 }
 
 // parseComposePS parses the output of `compose ps --all --format json`. Compose prints one JSON object per line; older
@@ -977,109 +980,245 @@ func parseComposePS(out []byte) (map[string][]api.Replica, error) {
 		if c.Service == "" {
 			return nil, errors.New("compose ps container has no service")
 		}
-		r := api.Replica{State: c.State, Health: c.Health}
+		r := api.Replica{ContainerID: c.ID, State: c.State, Health: c.Health}
 		if r.Health == "" {
 			r.Health = "none"
 		}
 		if c.State == "exited" {
-			code := c.ExitCode
-			r.ExitCode = &code
+			r.ExitCode = c.ExitCode
 		}
 		services[c.Service] = append(services[c.Service], r)
 	}
 	return services, nil
 }
 
-// composeVerdict judges the containers of a project after up. ready is true when every container is a finished one-shot, or
-// runs with no health check or a healthy one. failure is non-empty when a container exited with a code other than 0 or is
-// dead ("service S exited with code N"), or runs unhealthy ("service S is unhealthy"); a failure wins over not ready.
-// Services are judged in name order so the message is stable. pending names the first service that is neither ready nor
-// failed, for the timeout message. A project with no containers is ready.
-func composeVerdict(services map[string][]api.Replica) (ready bool, pending string, failure string) {
+type composeObservation struct {
+	replica    api.Replica
+	failure    string
+	incomplete bool
+}
+
+type composeInspector interface {
+	InspectContainer(context.Context, string) (engine.ContainerSnapshot, error)
+}
+
+func (c *Controller) observeCompose(ctx context.Context, services map[string][]api.Replica, upStarted time.Time) map[string][]composeObservation {
+	inspector, _ := c.Engine.(composeInspector)
+	observations := make(map[string][]composeObservation, len(services))
+	for name, replicas := range services {
+		for _, replica := range replicas {
+			observations[name] = append(observations[name], c.observeComposeContainer(ctx, inspector, name, replica, upStarted))
+		}
+	}
+	return observations
+}
+
+func (c *Controller) observeComposeContainer(ctx context.Context, inspector composeInspector, name string, ps api.Replica, upStarted time.Time) composeObservation {
+	if failure := composeContainerFailure(name, ps); failure != "" {
+		return composeObservation{replica: ps, failure: failure}
+	}
+	id := ps.ContainerID
+	var live engine.ContainerSnapshot
+	if inspector != nil && id != "" {
+		var err error
+		live, err = inspector.InspectContainer(ctx, id)
+		if err != nil || live.ID != id {
+			live = engine.ContainerSnapshot{}
+		}
+	}
+	current := ps
+	if live.ID != "" {
+		current = api.Replica{ContainerID: id, State: live.State, Health: live.Health}
+		if live.State == "exited" || live.State == "dead" {
+			current.ExitCode = live.ExitCode
+		}
+	}
+	obs := composeObservation{replica: current}
+	observedAt := time.Now()
+	if ps.State == "restarting" || live.State == "restarting" {
+		obs.failure = c.composeRestartFailure(ctx, name, id, live, upStarted, observedAt)
+		return obs
+	}
+	if live.ID == "" || live.State == "running" && !live.Running {
+		obs.incomplete = true
+		return obs
+	}
+	restarted, complete := composeRestartSinceUp(live, upStarted, observedAt)
+	if restarted {
+		obs.failure = c.composeRestartFailure(ctx, name, id, live, upStarted, observedAt)
+		return obs
+	}
+	if obs.failure = composeContainerFailure(name, current); obs.failure != "" {
+		return obs
+	}
+	switch current.State {
+	case "running":
+		obs.incomplete = !complete || current.Health != "none" && current.Health != "healthy" && current.Health != "starting"
+	case "exited":
+		obs.incomplete = !complete || live.Running || current.ExitCode == nil
+	case "created", "starting", "paused", "removing":
+	default:
+		obs.incomplete = true
+	}
+	return obs
+}
+
+// A running container retains the previous run's finish time. An exited container keeps the start and finish of the same run.
+func composeRestartSinceUp(live engine.ContainerSnapshot, since, until time.Time) (restarted, complete bool) {
+	if live.State != "running" && live.State != "exited" {
+		return false, true
+	}
+	if live.RestartCount == nil || *live.RestartCount < 0 {
+		return false, false
+	}
+	if *live.RestartCount == 0 {
+		return false, true
+	}
+	started, err := time.Parse(time.RFC3339Nano, live.StartedAt)
+	if err != nil || started.IsZero() || live.FinishedAt == nil || live.FinishedAt.IsZero() {
+		return false, false
+	}
+	first, second := started, *live.FinishedAt
+	if live.State == "running" {
+		first, second = second, first
+	}
+	if first.After(second) || second.After(until) {
+		return false, false
+	}
+	return !first.Before(since), true
+}
+
+func (c *Controller) composeRestartFailure(ctx context.Context, name, id string, live engine.ContainerSnapshot, since, until time.Time) string {
+	if live.ExitCode != nil && (live.State == "restarting" || live.State == "exited" || live.State == "dead") {
+		return composeExitFailure(name, *live.ExitCode)
+	}
+	if history, ok := c.Engine.(interface {
+		LastContainerExitCode(context.Context, string, time.Time, time.Time) (int, bool, error)
+	}); ok && id != "" {
+		if code, found, err := history.LastContainerExitCode(ctx, id, since, until); err == nil && found {
+			return composeExitFailure(name, code)
+		}
+	}
+	return "service " + name + " restarted (last exit code unavailable)"
+}
+
+func composeContainerFailure(name string, r api.Replica) string {
+	switch {
+	case r.State == "dead":
+		if r.ExitCode == nil {
+			return composeExitFailure(name, -1)
+		}
+		return composeExitFailure(name, *r.ExitCode)
+	case r.State == "exited" && r.ExitCode != nil && *r.ExitCode != 0:
+		return composeExitFailure(name, *r.ExitCode)
+	case r.State == "running" && r.Health == "unhealthy":
+		return "service " + name + " is unhealthy"
+	}
+	return ""
+}
+
+func composeExitFailure(name string, code int) string {
+	return fmt.Sprintf("service %s exited with code %d", name, code)
+}
+
+// composeVerdict considers services in name order. A definite failure takes precedence over an incomplete read or a
+// pending service. When the poll is incomplete, all three results are zero and the wait retries the read.
+func composeVerdict(services map[string][]composeObservation) (ready bool, pending string, failure string) {
 	names := make([]string, 0, len(services))
 	for name := range services {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	incomplete := false
 	for _, name := range names {
-		for _, r := range services[name] {
+		for _, obs := range services[name] {
+			r := obs.replica
 			switch {
+			case obs.failure != "":
+				return false, "", obs.failure
+			case obs.incomplete:
+				incomplete = true
 			case r.FinishedOneShot():
-			case r.State == "exited" || r.State == "dead":
-				code := -1
-				if r.ExitCode != nil {
-					code = *r.ExitCode
-				}
-				return false, "", fmt.Sprintf("service %s exited with code %d", name, code)
-			case r.State == "running" && r.Health == "unhealthy":
-				return false, "", "service " + name + " is unhealthy"
 			case r.State == "running" && (r.Health == "none" || r.Health == "healthy"):
 			case pending == "":
 				pending = name
 			}
 		}
 	}
+	if incomplete {
+		return false, "", ""
+	}
 	return pending == "", pending, ""
 }
 
-// waitCompose polls `compose ps --all` in dir until composeVerdict says ready (nil) or failed (a Refusal naming the service),
-// or until deadline (a Refusal naming the service that is not ready, with the budget). A poll whose ps fails is tried again
-// at the next one; if the last poll before the deadline failed, or the output cannot be read, the wait ends with errComposeUp.
-// A health or die event of a container of the project wakes the wait before its interval. A project reads ready only after two
-// ready polls in a row, one pollFast apart, so a one-shot that exits with an error a moment after up is not missed. ps runs
-// without registry auth.
-func (c *Controller) waitCompose(ctx context.Context, project, dir string, deadline time.Time, budget time.Duration) error {
+// waitCompose requires a fresh ready poll started after the hold, within the deploy deadline. Docker events can wake a poll
+// during the hold. A pending observation or failed ps breaks the hold, and malformed output ends the wait immediately.
+func (c *Controller) waitCompose(ctx context.Context, project, dir string, upStarted, deadline time.Time, budget time.Duration) error {
 	pace := newPacer(c.Engine, projectEvents(project))
 	defer pace.close()
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	var pending string
-	var psFailed, confirmed bool
+	hold := c.monitorHold()
+	var readySince time.Time
+	timeout := errComposeUp
 	for {
-		if ctx.Err() != nil {
-			return errComposeUp
+		pollStarted := time.Now()
+		if !pollStarted.Before(deadline) || wctx.Err() != nil {
+			break
 		}
-		out, _, err := c.Compose.Run(ctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--format", "json"}})
-		psFailed = err != nil
-		if psFailed {
-			confirmed = false
+		out, _, err := c.Compose.Run(wctx, engine.ComposeRun{Project: project, Dir: dir, Args: []string{"ps", "--all", "--no-trunc", "--format", "json"}})
+		if wctx.Err() != nil {
+			break
 		}
-		if err == nil {
+		var next time.Time
+		if err != nil {
+			timeout = errComposeUp
+		} else {
 			services, perr := parseComposePS(out)
 			if perr != nil {
 				return errComposeUp
 			}
-			var ready bool
-			var failure string
-			ready, pending, failure = composeVerdict(services)
+			ready, pending, failure := composeVerdict(c.observeCompose(wctx, services, upStarted))
 			if failure != "" {
 				return Refusal(failure)
 			}
+			observedAt := time.Now()
+			if !observedAt.Before(deadline) {
+				break
+			}
 			if ready {
-				// Right after up, ps can show a one-shot as running that is about to exit with an error. A project is
-				// ready when two polls, one interval apart, both say so.
-				if confirmed || !time.Now().Before(deadline) {
+				timeout = errComposeReadyHold
+				if readySince.IsZero() {
+					readySince = observedAt
+				}
+				next = readySince.Add(hold)
+				if hold == 0 || !pollStarted.Before(next) {
+					if ctx.Err() != nil {
+						return errComposeUp
+					}
+					// An event queued during inspection may invalidate a container already read in this poll.
+					if pace.takeQueuedEvent() {
+						continue
+					}
 					return nil
 				}
-				confirmed = true
-				select {
-				case <-wctx.Done():
-				case <-time.After(pollFast):
-				}
-				continue
+			} else if pending != "" {
+				timeout = Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
+			} else {
+				timeout = errComposeUp
 			}
-			confirmed = false
 		}
-		if !time.Now().Before(deadline) {
+		if next.IsZero() {
+			readySince = time.Time{}
+		}
+		if !pace.waitUntil(wctx, next) {
 			break
 		}
-		// A false wait is the deadline or a cancel: the next round reads once more and decides.
-		pace.wait(wctx)
 	}
-	if psFailed {
+	if ctx.Err() != nil {
 		return errComposeUp
 	}
-	return Refusal("service " + pending + " not ready after " + strconv.FormatInt(int64(budget/time.Second), 10) + "s")
+	return timeout
 }
 
 // replaceProjectDir moves the staged files into the project's directory. The new contents are written beside it first.

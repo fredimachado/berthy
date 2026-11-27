@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,16 +41,54 @@ type EventStream interface {
 // Docker has accepted the request. The stream has no timeout of its own: it lasts until ctx ends, Close is called, or the
 // connection drops.
 func (e *Engine) Events(ctx context.Context, since time.Time, f EventFilter) (EventStream, error) {
-	q := url.Values{}
-	if !since.IsZero() {
-		q.Set("since", fmt.Sprintf("%d.%09d", since.Unix(), since.Nanosecond()))
-	}
 	filters := map[string][]string{}
 	if len(f.Types) > 0 {
 		filters["type"] = f.Types
 	}
 	if len(f.Actions) > 0 {
 		filters["event"] = f.Actions
+	}
+	return e.openEvents(ctx, since, time.Time{}, filters)
+}
+
+// LastContainerExitCode looks for the last die event of this container within the given history window.
+func (e *Engine) LastContainerExitCode(ctx context.Context, id string, since, until time.Time) (int, bool, error) {
+	if id == "" || since.IsZero() || until.IsZero() || until.Before(since) {
+		return 0, false, fmt.Errorf("invalid container event history window")
+	}
+	st, err := e.openEvents(ctx, since, until, map[string][]string{"type": {"container"}, "event": {"die"}, "container": {id}})
+	if err != nil {
+		return 0, false, err
+	}
+	defer st.Close()
+	var last Event
+	for {
+		ev, err := st.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		if ev.Type == "container" && ev.Action == "die" && ev.ID == id &&
+			!ev.Time.Before(since) && !ev.Time.After(until) && !ev.Time.Before(last.Time) {
+			last = ev
+		}
+	}
+	code, err := strconv.Atoi(last.Attributes["exitCode"])
+	if err != nil || code < -999 || code > 999 {
+		return 0, false, nil
+	}
+	return code, true, nil
+}
+
+func (e *Engine) openEvents(ctx context.Context, since, until time.Time, filters map[string][]string) (EventStream, error) {
+	q := url.Values{}
+	if !since.IsZero() {
+		q.Set("since", fmt.Sprintf("%d.%09d", since.Unix(), since.Nanosecond()))
+	}
+	if !until.IsZero() {
+		q.Set("until", fmt.Sprintf("%d.%09d", until.Unix(), until.Nanosecond()))
 	}
 	if len(filters) > 0 {
 		b, err := json.Marshal(filters)
@@ -66,8 +105,11 @@ func (e *Engine) Events(ctx context.Context, since time.Time, f EventFilter) (Ev
 	if err != nil {
 		return nil, err
 	}
-	// The engine's client times a request out after seconds, which would cut the stream: this one shares its transport only.
-	client := http.Client{Transport: e.client.Transport}
+	client := e.client
+	if until.IsZero() {
+		// A live feed shares the transport without the timeout used for finite requests.
+		client = &http.Client{Transport: e.client.Transport}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Docker unavailable: %w", err)

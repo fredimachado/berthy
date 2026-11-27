@@ -55,10 +55,11 @@ type fakeCompose struct {
 	psRun int
 	// psFails is how many of the first ps polls fail.
 	psFails int
+	onPS    func(context.Context, int) error
 }
 
 // psRunning is `compose ps --all --format json` for one running container without a health check.
-const psRunning = `{"ExitCode":0,"Health":"","Service":"database","State":"running","Status":"Up 3 seconds"}`
+const psRunning = `{"ID":"database","ExitCode":0,"Health":"","Service":"database","State":"running","Status":"Up 3 seconds"}`
 
 // psRuns counts the ps polls of the deploy.
 func (f *fakeCompose) psRuns() int {
@@ -73,7 +74,7 @@ func (f *fakeCompose) psRuns() int {
 	return n
 }
 
-func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
+func (f *fakeCompose) Run(ctx context.Context, r engine.ComposeRun) ([]byte, []byte, error) {
 	if r.Args[0] == "up" && f.upStarted != nil {
 		// A test that holds the deploy at up: it says up began and waits to be let go.
 		f.upOnce.Do(func() { close(f.upStarted) })
@@ -106,6 +107,11 @@ func (f *fakeCompose) Run(_ context.Context, r engine.ComposeRun) ([]byte, []byt
 			out = f.ps[min(f.psRun, len(f.ps)-1)]
 		}
 		f.psRun++
+		if f.onPS != nil {
+			if err := f.onPS(ctx, f.psRun); err != nil {
+				return nil, nil, err
+			}
+		}
 		if f.psRun <= f.psFails {
 			return nil, nil, errors.New("compose could not run")
 		}
@@ -202,6 +208,28 @@ func (d *composeDocker) ComposeContainers(context.Context, string) ([]engine.Com
 	return d.containers, nil
 }
 
+func (d *composeDocker) InspectContainer(_ context.Context, id string) (engine.ContainerSnapshot, error) {
+	snapshot := runningComposeSnapshot(id)
+	switch id {
+	case "database", "job-running", workerID:
+	case "web":
+		snapshot.Health = "healthy"
+	case "web-starting":
+		snapshot.Health = "starting"
+	case "job":
+		zero := 0
+		snapshot.State, snapshot.Running, snapshot.Health, snapshot.ExitCode = "exited", false, "", &zero
+	default:
+		return engine.ContainerSnapshot{}, &engine.StatusError{Code: 404}
+	}
+	return snapshot, nil
+}
+
+func runningComposeSnapshot(id string) engine.ContainerSnapshot {
+	zero := 0
+	return engine.ContainerSnapshot{ID: id, State: "running", Running: true, Health: "none", RestartCount: &zero}
+}
+
 func (d *composeDocker) VolumeExists(_ context.Context, name string) (bool, error) {
 	return d.volumes[name], nil
 }
@@ -215,7 +243,6 @@ func (d *composeDocker) InspectVolume(_ context.Context, name string) (string, m
 
 func composeController(t *testing.T, runner *fakeCompose, docker *composeDocker) (*Controller, *state.Store) {
 	t.Helper()
-	// A deploy polls compose ps at pollFast, twice before it calls the project ready.
 	paceWith(t, 5*time.Millisecond, 5*time.Millisecond, 0)
 	s := openStore(t)
 	return &Controller{rolloutHold: zeroTestRolloutHold(), Engine: docker, Store: s, Environment: "test", Compose: runner, StateDir: t.TempDir()}, s

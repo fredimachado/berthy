@@ -54,6 +54,56 @@ func TestInspectServicePreservesSpecs(t *testing.T) {
 	}
 }
 
+func TestInspectContainerPreservesExitCodePresence(t *testing.T) {
+	zero, three := 0, 3
+	for _, tt := range []struct {
+		name, field string
+		want        *int
+	}{
+		{"omitted", "", nil},
+		{"null", `,"ExitCode":null`, nil},
+		{"zero", `,"ExitCode":0`, &zero},
+		{"three", `,"ExitCode":3`, &three},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := fakeEngine(func(r *http.Request) (*http.Response, error) {
+				if r.Method != "GET" || r.URL.Path != "/v1.44/containers/c1/json" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL)
+				}
+				return response(200, `{"ID":"c1","RestartCount":2,"State":{"Status":"exited","Running":false,`+
+					`"StartedAt":"2026-11-19T09:00:00Z","FinishedAt":"2026-11-19T09:00:02Z"`+tt.field+`}}`), nil
+			})
+			got, err := e.InspectContainer(t.Context(), "c1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := got.ExitCode
+			if code == nil && tt.want != nil || code != nil && (tt.want == nil || *code != *tt.want) {
+				t.Errorf("unexpected exit code in %+v", got)
+			}
+			if got.ID != "c1" || got.State != "exited" || got.Running || got.StartedAt != "2026-11-19T09:00:00Z" ||
+				got.FinishedAt == nil || !got.FinishedAt.Equal(time.Date(2026, 11, 19, 9, 0, 2, 0, time.UTC)) ||
+				got.RestartCount == nil || *got.RestartCount != 2 {
+				t.Errorf("incomplete container snapshot %+v", got)
+			}
+		})
+	}
+	for _, tt := range []struct{ name, field, want string }{
+		{"no health check", "", "none"},
+		{"healthy", `,"Health":{"Status":"healthy"}`, "healthy"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := fakeEngine(func(*http.Request) (*http.Response, error) {
+				return response(200, `{"ID":"c1","State":{"Status":"running","Running":true`+tt.field+`}}`), nil
+			})
+			got, err := e.InspectContainer(t.Context(), "c1")
+			if err != nil || !got.Running || got.Health != tt.want || got.RestartCount != nil || got.FinishedAt != nil {
+				t.Fatalf("container snapshot %+v, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestTasksFilterServiceAndRetainVersion(t *testing.T) {
 	e := fakeEngine(func(r *http.Request) (*http.Response, error) {
 		if !strings.Contains(r.URL.Query().Get("filters"), "service1") {

@@ -62,6 +62,28 @@ func newPacer(e any, match func(engine.Event) bool) *pacer {
 
 func (p *pacer) close() { p.stop() }
 
+func (p *pacer) takeQueuedEvent() bool {
+	select {
+	case <-p.events:
+		p.drainEventBurst()
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *pacer) drainEventBurst() {
+	p.lastEvent = time.Now()
+	// A burst of events is one poll.
+	for {
+		select {
+		case <-p.events:
+		default:
+			return
+		}
+	}
+}
+
 // wait blocks until the next poll is due: an event of the service, or the interval. It reports false when ctx has ended.
 func (p *pacer) wait(ctx context.Context) bool {
 	return p.waitUntil(ctx, time.Time{})
@@ -81,15 +103,7 @@ func (p *pacer) waitUntil(ctx context.Context, next time.Time) bool {
 	case <-ctx.Done():
 		return false
 	case <-p.events:
-		p.lastEvent = time.Now()
-		// A burst of events is one poll.
-		for drained := false; !drained; {
-			select {
-			case <-p.events:
-			default:
-				drained = true
-			}
-		}
+		p.drainEventBurst()
 		return true
 	case <-timer.C:
 		return true

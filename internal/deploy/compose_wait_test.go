@@ -2,65 +2,84 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/state"
 )
 
-func exited(code int) api.Replica {
-	return api.Replica{State: "exited", Health: "none", ExitCode: &code}
+func up(health string) composeObservation {
+	return composeObservation{replica: api.Replica{State: "running", Health: health}}
 }
 
-func up(health string) api.Replica { return api.Replica{State: "running", Health: health} }
-
 func TestComposeVerdict(t *testing.T) {
+	zero, three := 0, 3
+	finished := composeObservation{replica: api.Replica{State: "exited", ExitCode: &zero}}
 	tests := []struct {
-		name         string
-		services     map[string][]api.Replica
-		ready        bool
-		pending      string
-		failure      string
-		anyFailureOf string
+		name     string
+		services map[string][]composeObservation
+		ready    bool
+		pending  string
+		failure  string
 	}{
-		{"no containers", map[string][]api.Replica{}, true, "", "", ""},
-		{"running without a health check", map[string][]api.Replica{"web": {up("none")}}, true, "", "", ""},
-		{"running and healthy", map[string][]api.Replica{"web": {up("healthy")}}, true, "", "", ""},
-		{"a finished one-shot", map[string][]api.Replica{"job": {exited(0)}, "web": {up("healthy")}}, true, "", "", ""},
-		{"still starting", map[string][]api.Replica{"web": {up("starting")}}, false, "web", "", ""},
-		{"created", map[string][]api.Replica{"web": {{State: "created", Health: "none"}}}, false, "web", "", ""},
-		{"restarting", map[string][]api.Replica{"web": {{State: "restarting", Health: "none"}}}, false, "web", "", ""},
-		{"one-shot failed", map[string][]api.Replica{"job": {exited(1)}, "web": {up("healthy")}}, false, "", "service job exited with code 1", ""},
-		{"dead", map[string][]api.Replica{"web": {{State: "dead", Health: "none"}}}, false, "", "", "service web exited with code"},
-		{"unhealthy", map[string][]api.Replica{"web": {up("unhealthy")}}, false, "", "service web is unhealthy", ""},
-		{"a failure wins over pending", map[string][]api.Replica{"a": {up("starting")}, "z": {exited(2)}}, false, "", "service z exited with code 2", ""},
-		{"the first pending by name", map[string][]api.Replica{"b": {up("starting")}, "a": {up("starting")}}, false, "a", "", ""},
-		{"one of two replicas pending", map[string][]api.Replica{"web": {up("healthy"), up("starting")}}, false, "web", "", ""},
+		{"no containers", nil, true, "", ""},
+		{"running without a health check", map[string][]composeObservation{"web": {up("none")}}, true, "", ""},
+		{"running and healthy", map[string][]composeObservation{"web": {up("healthy")}}, true, "", ""},
+		{"a finished one-shot", map[string][]composeObservation{"job": {finished}, "web": {up("healthy")}}, true, "", ""},
+		{"still starting", map[string][]composeObservation{"web": {up("starting")}}, false, "web", ""},
+		{"created", map[string][]composeObservation{"web": {{replica: api.Replica{State: "created"}}}}, false, "web", ""},
+		{"exit code unknown", map[string][]composeObservation{"job": {{incomplete: true}}}, false, "", ""},
+		{"failure wins over incomplete", map[string][]composeObservation{"job": {{incomplete: true}}, "z": {{failure: "service z exited with code 3"}}}, false, "", "service z exited with code 3"},
+		{"failure wins over pending", map[string][]composeObservation{"a": {up("starting")}, "z": {{failure: "service z exited with code 2"}}}, false, "", "service z exited with code 2"},
+		{"first pending by name", map[string][]composeObservation{"b": {up("starting")}, "a": {up("starting")}}, false, "a", ""},
+		{"first failure by name", map[string][]composeObservation{"z": {{failure: "service z is unhealthy"}}, "a": {{failure: "service a exited with code 3"}}}, false, "", "service a exited with code 3"},
+		{"one of two replicas pending", map[string][]composeObservation{"web": {up("healthy"), up("starting")}}, false, "web", ""},
 	}
 	for _, tt := range tests {
 		ready, pending, failure := composeVerdict(tt.services)
 		if ready != tt.ready || pending != tt.pending {
 			t.Errorf("%s: ready %v pending %q, want %v %q", tt.name, ready, pending, tt.ready, tt.pending)
 		}
-		if tt.anyFailureOf != "" {
-			if !strings.HasPrefix(failure, tt.anyFailureOf) {
-				t.Errorf("%s: failure %q, want prefix %q", tt.name, failure, tt.anyFailureOf)
-			}
-		} else if failure != tt.failure {
+		if failure != tt.failure {
 			t.Errorf("%s: failure %q, want %q", tt.name, failure, tt.failure)
 		}
+	}
+	for _, tt := range []struct {
+		name, psCode string
+		inspectCode  *int
+		want         error
+	}{
+		{"both exit codes missing", "", nil, errComposeUp},
+		{"null exit codes", `,"ExitCode":null`, nil, errComposeUp},
+		{"inspect supplies zero", "", &zero, nil},
+		{"inspect supplies failure", "", &three, Refusal("service worker exited with code 3")},
+		{"stale zero does not fill a missing result", `,"ExitCode":0`, nil, errComposeUp},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ps := `{"ID":"` + workerID + `","Service":"worker","State":"exited"` + tt.psCode + `}`
+				docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(id string) (engine.ContainerSnapshot, error) {
+					return engine.ContainerSnapshot{ID: id, State: "exited", ExitCode: tt.inspectCode, RestartCount: &zero}, nil
+				}}
+				c := Controller{Compose: &fakeCompose{ps: []string{ps}}, Engine: docker, rolloutHold: zeroTestRolloutHold()}
+				checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now(), time.Now().Add(time.Second), time.Second), tt.want)
+			})
+		})
 	}
 }
 
 const (
-	psBad  = `{"ExitCode":3,"Health":"","Service":"bad","State":"exited","Status":"Exited (3) 3 seconds ago"}`
-	psJob  = `{"ExitCode":0,"Health":"","Service":"job","State":"exited","Status":"Exited (0) 3 seconds ago"}`
-	psWeb  = `{"ExitCode":0,"Health":"healthy","Service":"web","State":"running","Status":"Up 3 seconds (healthy)"}`
-	psWeb0 = `{"ExitCode":0,"Health":"starting","Service":"web","State":"running","Status":"Up 1 second (health: starting)"}`
-	psWebU = `{"ExitCode":0,"Health":"unhealthy","Service":"web","State":"running","Status":"Up 5 seconds (unhealthy)"}`
+	psBad  = `{"ID":"bad","ExitCode":3,"Health":"","Service":"bad","State":"exited","Status":"Exited (3) 3 seconds ago"}`
+	psJob  = `{"ID":"job","ExitCode":0,"Health":"","Service":"job","State":"exited","Status":"Exited (0) 3 seconds ago"}`
+	psWeb  = `{"ID":"web","ExitCode":0,"Health":"healthy","Service":"web","State":"running","Status":"Up 3 seconds (healthy)"}`
+	psWeb0 = `{"ID":"web-starting","ExitCode":0,"Health":"starting","Service":"web","State":"running","Status":"Up 1 second (health: starting)"}`
+	psWebU = `{"ID":"web-unhealthy","ExitCode":0,"Health":"unhealthy","Service":"web","State":"running","Status":"Up 5 seconds (unhealthy)"}`
 )
 
 func TestParseComposePS(t *testing.T) {
@@ -100,20 +119,40 @@ func TestParseComposePS(t *testing.T) {
 			t.Errorf("%q parsed", bad)
 		}
 	}
+	zero, three := 0, 3
+	for _, tt := range []struct {
+		name, field string
+		want        *int
+	}{
+		{"omitted", "", nil},
+		{"null", `,"ExitCode":null`, nil},
+		{"zero", `,"ExitCode":0`, &zero},
+		{"three", `,"ExitCode":3`, &three},
+	} {
+		row := `{"ID":"` + workerID + `","Service":"job","State":"exited"` + tt.field + `}`
+		for name, input := range map[string]string{"lines": row + "\n", "array": "[" + row + "]"} {
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				got, err := parseComposePS([]byte(input))
+				if err != nil || len(got["job"]) != 1 {
+					t.Fatalf("got %+v, %v", got, err)
+				}
+				r := got["job"][0]
+				if r.ExitCode == nil && tt.want != nil || r.ExitCode != nil && (tt.want == nil || *r.ExitCode != *tt.want) {
+					t.Errorf("unexpected exit code in %+v", r)
+				}
+				if r.ContainerID != workerID {
+					t.Errorf("container ID %q, want %q", r.ContainerID, workerID)
+				}
+			})
+		}
+	}
 }
 
 // composeOutcome deploys composeFileOne with the polls of ps the test gives and returns the finished operation.
-func composeOutcome(t *testing.T, runner *fakeCompose, timeout string) (*Controller, string, string) {
+func composeOutcome(t *testing.T, runner *fakeCompose) (*Controller, string, string) {
 	t.Helper()
-	paceWith(t, 5*time.Millisecond, 5*time.Millisecond, 0)
 	c, s := composeController(t, runner, newComposeDocker())
-	m := composeApp(false)
-	if timeout != "" {
-		app := m.Apps["db"]
-		app.Deploy.DeployTimeout = timeout
-		m.Apps["db"] = app
-	}
-	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("wait", composeFileOne, m))
+	op, _, err := admit(t, c, context.Background(), Actor{ID: "ci"}, composeReq("wait", composeFileOne, composeApp(false)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +167,7 @@ func composeOutcome(t *testing.T, runner *fakeCompose, timeout string) (*Control
 
 func TestComposeDeploySucceedsWithFinishedOneShot(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psJob + "\n" + psWeb}}
-	_, state, err := composeOutcome(t, runner, "")
+	_, state, err := composeOutcome(t, runner)
 	if state != "succeeded" {
 		t.Fatalf("deploy %s: %s", state, err)
 	}
@@ -141,39 +180,45 @@ func TestComposeDeploySucceedsWithFinishedOneShot(t *testing.T) {
 }
 
 func TestComposeDeployFailsWhenOneShotFails(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{`{"ExitCode":1,"Health":"","Service":"job","State":"exited"}` + "\n" + psWeb}}
-	c, state, err := composeOutcome(t, runner, "")
-	if state != "failed" || err != "service job exited with code 1" {
-		t.Fatalf("deploy %s: %q", state, err)
-	}
-	if rel, e := c.Store.Applied(context.Background(), "db"); e == nil {
-		t.Fatalf("release recorded for a failed deploy: %+v", rel)
+	for _, tt := range []struct{ name, row, want string }{
+		{"exited", `{"ID":"job","ExitCode":1,"Service":"job","State":"exited"}`, "service job exited with code 1"},
+		{"dead", `{"ID":"job","Service":"job","State":"dead"}`, "service job exited with code -1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{tt.row + "\n" + psWeb}}
+			c, state, err := composeOutcome(t, runner)
+			if state != "failed" || err != tt.want {
+				t.Fatalf("deploy %s: %q, want %q", state, err, tt.want)
+			}
+			if rel, e := c.Store.Applied(context.Background(), "db"); e == nil {
+				t.Fatalf("release recorded for a failed deploy: %+v", rel)
+			}
+		})
 	}
 }
 
 func TestComposeDeployFailsWhenUnhealthy(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWebU}}
-	_, state, err := composeOutcome(t, runner, "")
+	_, state, err := composeOutcome(t, runner)
 	if state != "failed" || err != "service web is unhealthy" {
 		t.Fatalf("deploy %s: %q", state, err)
 	}
 }
 
 func TestComposeDeployReadsAgainBeforeCallingAProjectReady(t *testing.T) {
-	// Right after up, ps can still show a one-shot as running that is about to exit with an error. One ready poll is not
-	// enough: the project must read ready twice in a row.
-	const jobRunning = `{"ExitCode":0,"Health":"","Service":"job","State":"running"}`
-	const jobFailed = `{"ExitCode":3,"Health":"","Service":"job","State":"exited"}`
-	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{jobRunning + "\n" + psWeb, jobFailed + "\n" + psWeb}}
-	_, state, err := composeOutcome(t, runner, "")
-	if state != "failed" || err != "service job exited with code 3" {
-		t.Fatalf("deploy %s: %q", state, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		const jobRunning = `{"ID":"job-running","ExitCode":0,"Health":"","Service":"job","State":"running"}`
+		const jobFailed = `{"ID":"job-running","ExitCode":3,"Health":"","Service":"job","State":"exited"}`
+		runner := &fakeCompose{ps: []string{jobRunning + "\n" + psWeb, jobFailed + "\n" + psWeb}}
+		c := Controller{Compose: runner, Engine: newComposeDocker()}
+		checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now(), time.Now().Add(time.Minute), time.Minute),
+			Refusal("service job exited with code 3"))
+	})
 }
 
 func TestComposeDeployWaitsForStartingService(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb0, psWeb}}
-	_, state, err := composeOutcome(t, runner, "")
+	_, state, err := composeOutcome(t, runner)
 	if state != "succeeded" {
 		t.Fatalf("deploy %s: %s", state, err)
 	}
@@ -183,52 +228,295 @@ func TestComposeDeployWaitsForStartingService(t *testing.T) {
 }
 
 func TestComposeDeployTimesOut(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb0}}
-	start := time.Now()
-	_, state, err := composeOutcome(t, runner, "1s")
-	if state != "failed" || err != "service web not ready after 1s" {
-		t.Fatalf("deploy %s: %q", state, err)
-	}
-	if took := time.Since(start); took > 5*time.Second {
-		t.Fatalf("the wait took %v for a 1s budget", took)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c := Controller{Compose: &fakeCompose{ps: []string{psWeb0}}, Engine: newComposeDocker()}
+		start := time.Now()
+		checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), start, start.Add(time.Second), time.Second),
+			Refusal("service web not ready after 1s"))
+		if took := time.Since(start); took != time.Second {
+			t.Fatalf("the wait took %v for a 1s budget", took)
+		}
+	})
 }
 
 func TestComposeDeployRetriesAPSThatFails(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb}, psFails: 2}
-	_, state, err := composeOutcome(t, runner, "")
-	if state != "succeeded" || runner.psRuns() != 4 {
+	_, state, err := composeOutcome(t, runner)
+	if state != "succeeded" || runner.psRuns() <= runner.psFails {
 		t.Fatalf("deploy %s: %q after %d polls", state, err, runner.psRuns())
 	}
 }
 
 func TestComposeDeployFailsWhenPSFailsUntilTheDeadline(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb}, psFails: 1 << 30}
-	_, state, err := composeOutcome(t, runner, "1s")
-	if state != "failed" || err != string(errComposeUp) {
-		t.Fatalf("deploy %s: %q", state, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c := Controller{Compose: &fakeCompose{ps: []string{psWeb}, psFails: 1 << 30}}
+		checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now(), time.Now().Add(time.Second), time.Second), errComposeUp)
+	})
 }
 
 func TestComposeDeployFailsWhenPSOutputIsGarbage(t *testing.T) {
 	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{"not json"}}
-	_, state, err := composeOutcome(t, runner, "")
+	_, state, err := composeOutcome(t, runner)
 	if state != "failed" || err != string(errComposeUp) {
 		t.Fatalf("deploy %s: %q", state, err)
 	}
 }
 
+const composeHoldRefusal = Refusal("Compose project did not stay ready long enough")
+
 func TestComposeWaitMessagesArePublic(t *testing.T) {
-	for _, s := range []string{"service job exited with code 1", "service web exited with code -1", "service web is unhealthy", "service web not ready after 120s", "service a.b-c_1 not ready after 1s"} {
+	for _, s := range []string{"service job exited with code 1", "service web exited with code -1", "service web is unhealthy", "service web not ready after 120s", "service a.b-c_1 not ready after 1s", string(composeHoldRefusal), "service worker restarted (last exit code unavailable)"} {
 		if !PublicMessage(s) {
 			t.Errorf("%q is not public", s)
 		}
 	}
-	for _, s := range []string{"service web exited with code 1234", "service web not ready after s", "service web is unhealthy; rm -rf", "service  is unhealthy"} {
+	for _, s := range []string{"service web exited with code 1234", "service web not ready after s", "service web is unhealthy; rm -rf", "service  is unhealthy",
+		"service worker restarted (last exit code unavailable) detail", "service -worker restarted (last exit code unavailable)"} {
 		if PublicMessage(s) {
 			t.Errorf("%q is public", s)
 		}
 	}
+}
+
+const (
+	workerID           = "bd1d07291e78b59bc4ebd04a5b7059c3c394111ed8f6022c35b2efef27aa70a6"
+	psWorker           = `{"ID":"` + workerID + `","Service":"worker","State":"running"}`
+	psWorkerFailed     = `{"ID":"` + workerID + `","Service":"worker","State":"exited","ExitCode":3}`
+	psWorkerRestarting = `{"ID":"` + workerID + `","Service":"worker","State":"restarting","ExitCode":0}`
+)
+
+type composeWaitDocker struct {
+	*composeDocker
+	inspect func(string) (engine.ContainerSnapshot, error)
+	history func(string, time.Time, time.Time) (int, bool, error)
+}
+
+func (d *composeWaitDocker) InspectContainer(_ context.Context, id string) (engine.ContainerSnapshot, error) {
+	return d.inspect(id)
+}
+
+func (d *composeWaitDocker) LastContainerExitCode(_ context.Context, id string, since, until time.Time) (int, bool, error) {
+	if d.history == nil {
+		return 0, false, errors.New("history unavailable")
+	}
+	return d.history(id, since, until)
+}
+
+func TestComposeFinalInspectSeesOrdinaryExit(t *testing.T) {
+	for _, tt := range []struct{ name, ps string }{
+		{"inspect sees exit at boundary", psWorker},
+		{"ps exit survives newer running state", psWorkerFailed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				zero, three := 0, 3
+				start := time.Now()
+				docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(id string) (engine.ContainerSnapshot, error) {
+					if id != workerID {
+						t.Errorf("inspecting %q, want %q", id, workerID)
+					}
+					if tt.ps == psWorker && time.Since(start) >= rolloutMonitor {
+						return engine.ContainerSnapshot{ID: id, State: "exited", RestartCount: &zero, ExitCode: &three}, nil
+					}
+					return engine.ContainerSnapshot{ID: id, State: "running", Running: true, Health: "none", RestartCount: &zero}, nil
+				}}
+				c := Controller{Compose: &fakeCompose{ps: []string{tt.ps}}, Engine: docker}
+				checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), start, start.Add(time.Minute), time.Minute),
+					Refusal("service worker exited with code 3"))
+				wantElapsed := time.Duration(0)
+				if tt.ps == psWorker {
+					wantElapsed = rolloutMonitor
+				}
+				if got := time.Since(start); got != wantElapsed {
+					t.Errorf("verdict after %v, want %v", got, wantElapsed)
+				}
+			})
+		})
+	}
+}
+
+func TestComposeConfirmationChecksQueuedProjectEvents(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const siblingID = "other-worker-replica"
+		// Replicas of one service are inspected in ps order, so the worker has already read as running when the die event arrives.
+		const sibling = `{"ID":"` + siblingID + `","Service":"worker","State":"running"}`
+		runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWorker + "\n" + sibling}}
+		c, store := composeController(t, runner, newComposeDocker())
+		c.rolloutHold = nil
+		paceWith(t, time.Hour, time.Hour, 0)
+		docker := &evComposeDocker{composeDocker: newComposeDocker(), events: make(chan engine.Event, 2)}
+		c.Engine = docker
+		req := composeReq("confirmation-event", composeFileOne, composeApp(false))
+		project := req.Manifest.ComposeProject(c.Environment, req.App)
+		var firstReady, diedAt time.Time
+		docker.inspect = func(id string) (engine.ContainerSnapshot, error) {
+			snapshot := runningComposeSnapshot(id)
+			if id == workerID {
+				if firstReady.IsZero() {
+					firstReady = time.Now()
+				}
+				if !diedAt.IsZero() {
+					code := 3
+					snapshot.State, snapshot.Running, snapshot.ExitCode = "exited", false, &code
+				}
+			} else if id == siblingID && time.Since(firstReady) == rolloutMonitor && diedAt.IsZero() {
+				event := engine.Event{Type: "container", Action: "die", ID: workerID, Time: time.Now(),
+					Attributes: map[string]string{"com.docker.compose.project": project, "exitCode": "3"}}
+				if match := docker.matcher(); match == nil || !match(event) {
+					t.Fatal("the wait ignores a die event of its project")
+				}
+				diedAt = event.Time
+				docker.events <- event
+				docker.events <- event
+			}
+			return snapshot, nil
+		}
+
+		ctx, actor := t.Context(), Actor{ID: "ci"}
+		op, _, err := store.Admit(ctx, state.Admission{RequestID: req.RequestID, ActorID: actor.ID, Kind: "deploy", App: req.App, PublicRequest: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := c.runCompose(ctx, op, actor, req, false)
+		if err := store.Finish(ctx, op.ID, out); err != nil {
+			t.Fatal(err)
+		}
+		if diedAt.IsZero() {
+			t.Fatal("the worker did not die during the confirmation poll")
+		}
+		if out.State != "failed" || out.Err != "service worker exited with code 3" {
+			t.Errorf("deploy %s: %q, want failure with service worker exited with code 3", out.State, out.Err)
+		}
+		if releases, err := store.History(ctx, req.App); err != nil || len(releases) != 0 {
+			t.Errorf("recorded %d releases, want none (history error: %v)", len(releases), err)
+		}
+		if len(docker.events) != 0 || time.Since(diedAt) != 0 {
+			t.Errorf("confirmation left %d queued events and returned %v after the worker died", len(docker.events), time.Since(diedAt))
+		}
+	})
+}
+
+func TestComposeRestartingFailsOnFirstPoll(t *testing.T) {
+	zero, three := 0, 3
+	for _, tt := range []struct {
+		name, ps, state string
+		code            *int
+		history         bool
+		want            Refusal
+	}{
+		{"known code", psWorkerRestarting, "restarting", &three, false, "service worker exited with code 3"},
+		{"known zero", psWorkerRestarting, "restarting", &zero, false, "service worker exited with code 0"},
+		{"omitted inspect code", psWorkerRestarting, "restarting", nil, true, "service worker exited with code 17"},
+		{"null inspect code", psWorker, "restarting", nil, true, "service worker exited with code 17"},
+		{"running after ps saw restarting", psWorkerRestarting, "running", &zero, true, "service worker exited with code 17"},
+		{"unavailable history", psWorkerRestarting, "restarting", nil, false, "service worker restarted (last exit code unavailable)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				upStarted := start.Add(-time.Second)
+				historyCalls := 0
+				docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(id string) (engine.ContainerSnapshot, error) {
+					return engine.ContainerSnapshot{ID: id, State: tt.state, Running: true, Health: "none", ExitCode: tt.code, RestartCount: &zero}, nil
+				}, history: func(id string, since, until time.Time) (int, bool, error) {
+					historyCalls++
+					if id != workerID || !since.Equal(upStarted) || !until.Equal(start) {
+						t.Errorf("history request for %q from %v to %v, want worker and current up window", id, since, until)
+					}
+					if tt.history {
+						return 17, true, nil
+					}
+					return 0, false, errors.New("history unavailable")
+				}}
+				runner := &fakeCompose{ps: []string{tt.ps}}
+				c := Controller{Compose: runner, Engine: docker}
+				checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), upStarted, upStarted.Add(time.Minute), time.Minute), tt.want)
+				if elapsed, polls := time.Since(start), runner.psRuns(); elapsed != 0 || polls != 1 {
+					t.Errorf("restart verdict after %v and %d polls, want one immediate poll", elapsed, polls)
+				}
+				wantCalls := 0
+				if tt.code == nil || tt.state == "running" {
+					wantCalls = 1
+				}
+				if historyCalls != wantCalls {
+					t.Errorf("history queried %d times, want %d", historyCalls, wantCalls)
+				}
+			})
+		})
+	}
+}
+
+func TestComposeRestartSinceUp(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		state         string
+		start, finish time.Duration
+		want          error
+		wantHistory   bool
+	}{
+		{"running after restart", "running", 2 * time.Second, time.Second, Refusal("service worker exited with code 17"), true},
+		{"retained running container", "running", -time.Second, -2 * time.Second, nil, false},
+		{"retained exit after up", "exited", -time.Second, time.Second, nil, false},
+		{"exited after restart", "exited", time.Second, 2 * time.Second, Refusal("service worker exited with code 0"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				upStarted := start.Add(-3 * time.Second)
+				zero, two := 0, 2
+				finished := upStarted.Add(tt.finish)
+				historyCalled := false
+				docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(id string) (engine.ContainerSnapshot, error) {
+					return engine.ContainerSnapshot{ID: id, State: tt.state, Running: tt.state == "running", Health: "none", ExitCode: &zero,
+						RestartCount: &two, StartedAt: upStarted.Add(tt.start).Format(time.RFC3339Nano), FinishedAt: &finished}, nil
+				}, history: func(id string, since, until time.Time) (int, bool, error) {
+					historyCalled = true
+					if !since.Equal(upStarted) || !until.Equal(start) {
+						t.Errorf("history from %v to %v, want %v to %v", since, until, upStarted, start)
+					}
+					code, found := map[string]int{workerID: 17, "other-worker-replica": 42}[id]
+					return code, found, nil
+				}}
+				c := Controller{Compose: &fakeCompose{ps: []string{psWorker}}, Engine: docker}
+				checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), upStarted, upStarted.Add(time.Minute), time.Minute), tt.want)
+				if historyCalled != tt.wantHistory {
+					t.Errorf("history queried: %v, want %v", historyCalled, tt.wantHistory)
+				}
+			})
+		})
+	}
+}
+
+func TestComposeIncompleteRestartObservation(t *testing.T) {
+	t.Run("unavailable inspect restarts hold", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			paceWith(t, time.Second, time.Hour, 0)
+			zero := 0
+			start := time.Now()
+			docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(id string) (engine.ContainerSnapshot, error) {
+				if time.Since(start) == time.Second {
+					return engine.ContainerSnapshot{}, errors.New("inspect unavailable")
+				}
+				return engine.ContainerSnapshot{ID: id, State: "running", Running: true, Health: "none", RestartCount: &zero}, nil
+			}}
+			c := Controller{Compose: &fakeCompose{ps: []string{psWorker}}, Engine: docker}
+			checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), start, start.Add(time.Minute), time.Minute), nil)
+			if got, want := time.Since(start), rolloutMonitor+2*time.Second; got != want {
+				t.Errorf("confirmed readiness after %v, want %v after inspect gap", got, want)
+			}
+		})
+	})
+	t.Run("sibling failure wins", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			docker := &composeWaitDocker{composeDocker: newComposeDocker(), inspect: func(string) (engine.ContainerSnapshot, error) {
+				return engine.ContainerSnapshot{}, errors.New("inspect unavailable")
+			}}
+			const siblingFailed = `{"ID":"sibling","Service":"z","State":"exited","ExitCode":3}`
+			c := Controller{Compose: &fakeCompose{ps: []string{psWorker + "\n" + siblingFailed}}, Engine: docker}
+			checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now(), time.Now().Add(time.Minute), time.Minute),
+				Refusal("service z exited with code 3"))
+		})
+	})
 }
 
 func TestProjectEventsMatchContainersOfTheProject(t *testing.T) {
@@ -253,9 +541,17 @@ func TestServiceEventsMatchTheServiceByIDOrLabel(t *testing.T) {
 // evComposeDocker is a Compose engine that also hears Docker's events, with the feed driven by the test.
 type evComposeDocker struct {
 	*composeDocker
-	events chan engine.Event
-	mu     sync.Mutex
-	match  func(engine.Event) bool
+	events  chan engine.Event
+	mu      sync.Mutex
+	match   func(engine.Event) bool
+	inspect func(string) (engine.ContainerSnapshot, error)
+}
+
+func (e *evComposeDocker) InspectContainer(ctx context.Context, id string) (engine.ContainerSnapshot, error) {
+	if e.inspect != nil {
+		return e.inspect(id)
+	}
+	return e.composeDocker.InspectContainer(ctx, id)
 }
 
 func (e *evComposeDocker) Watch(match func(engine.Event) bool) (<-chan engine.Event, func()) {
@@ -273,36 +569,216 @@ func (e *evComposeDocker) matcher() func(engine.Event) bool {
 	return e.match
 }
 
-func TestComposeWaitEndsAtAHealthEventOfTheProject(t *testing.T) {
-	runner := &fakeCompose{config: configOne, hashes: hashOne, ps: []string{psWeb0, psWeb}}
-	c, _ := composeController(t, runner, newComposeDocker())
-	// The slow poll is an hour away, so only the event can end the wait; pollFast is the pause that confirms readiness.
-	paceWith(t, 50*time.Millisecond, time.Hour, 0)
+func startComposeWait(t *testing.T, runner *fakeCompose, hold *time.Duration) (*evComposeDocker, chan error) {
+	t.Helper()
+	// Outside the confirmation boundary, the live feed is the only way to prompt another poll within the budget.
+	paceWith(t, 500*time.Millisecond, time.Hour, 0)
 	docker := &evComposeDocker{composeDocker: newComposeDocker(), events: make(chan engine.Event, 4)}
-	c.Engine = docker
-	done := make(chan error, 1)
-	go func() {
-		done <- c.waitCompose(context.Background(), "shop-db", t.TempDir(), time.Now().Add(time.Minute), time.Minute)
-	}()
-	deadline := time.After(2 * time.Second)
-	for runner.psRuns() < 1 || docker.matcher() == nil {
-		select {
-		case <-deadline:
-			t.Fatal("the wait did not poll")
-		case <-time.After(time.Millisecond):
-		}
-	}
+	c := Controller{Engine: docker, Compose: runner, rolloutHold: hold}
+	dir, upStarted := t.TempDir(), time.Now()
+	deadline := upStarted.Add(time.Minute)
+	done := goWait(t, t.Context(), func(ctx context.Context) error {
+		return c.waitCompose(ctx, "shop-db", dir, upStarted, deadline, time.Minute)
+	})
+	synctest.Wait()
+	return docker, done
+}
+
+func sendComposeHealth(t *testing.T, docker *evComposeDocker) {
+	t.Helper()
 	ev := engine.Event{Type: "container", Action: "health_status", Attributes: map[string]string{"com.docker.compose.project": "shop-db"}}
-	if !docker.matcher()(ev) {
+	if match := docker.matcher(); match == nil || !match(ev) {
 		t.Fatal("the wait ignores a health event of its project")
 	}
 	docker.events <- ev
+	synctest.Wait()
+}
+
+func checkComposeWaitResult(t *testing.T, got, want error) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("wait returned %v, want %v", got, want)
+	}
+}
+
+func requireComposeWaitResult(t *testing.T, done <-chan error, want error) {
+	t.Helper()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the event did not wake the wait")
+		checkComposeWaitResult(t, err, want)
+	default:
+		t.Fatalf("the wait has not returned, want %v", want)
 	}
+}
+
+func requireComposeWaiting(t *testing.T, done <-chan error, when string) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("wait returned %v %s", err, when)
+	default:
+	}
+}
+
+func TestComposeWaitEndsAtAHealthEventOfTheProject(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runner := &fakeCompose{ps: []string{psWeb0, psWeb}}
+		docker, done := startComposeWait(t, runner, zeroTestRolloutHold())
+		requireComposeWaiting(t, done, "while the service was starting")
+		sendComposeHealth(t, docker)
+		requireComposeWaitResult(t, done, nil)
+	})
+}
+
+func TestComposeRequiresFullReadyHold(t *testing.T) {
+	t.Run("event before boundary", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			runner := &fakeCompose{ps: []string{psWeb}}
+			docker, done := startComposeWait(t, runner, nil)
+			time.Sleep(2 * time.Second)
+			synctest.Wait()
+			requireComposeWaiting(t, done, "before the readiness hold ended")
+			polls := runner.psRuns()
+			sendComposeHealth(t, docker)
+			if runner.psRuns() <= polls {
+				t.Fatal("the event did not wake a poll during the hold")
+			}
+			time.Sleep(rolloutMonitor - 2*time.Second - time.Millisecond)
+			synctest.Wait()
+			requireComposeWaiting(t, done, "before the readiness hold ended")
+			polls = runner.psRuns()
+			time.Sleep(time.Millisecond)
+			synctest.Wait()
+			requireComposeWaitResult(t, done, nil)
+			if runner.psRuns() <= polls {
+				t.Fatal("the hold ended without a fresh poll")
+			}
+		})
+	})
+	t.Run("read crossing boundary", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			runner := &fakeCompose{onPS: func(ctx context.Context, poll int) error {
+				if poll == 2 {
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				return nil
+			}}
+			docker, done := startComposeWait(t, runner, nil)
+			time.Sleep(rolloutMonitor - time.Second)
+			sendComposeHealth(t, docker)
+			time.Sleep(2 * time.Second)
+			close(release)
+			synctest.Wait()
+			requireComposeWaitResult(t, done, nil)
+			if runner.psRuns() <= 2 {
+				t.Fatal("a poll begun before the boundary confirmed readiness when it finished afterward")
+			}
+		})
+	})
+}
+
+func TestComposeReadyHoldRestartsAfterGap(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		gap  string
+		err  error
+	}{
+		{name: "pending service", gap: psWeb0},
+		{name: "transient ps error", gap: psWeb, err: errors.New("compose could not run")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runner := &fakeCompose{ps: []string{psWeb, psWeb, tt.gap, psWeb}, onPS: func(_ context.Context, poll int) error {
+					if poll == 3 {
+						return tt.err
+					}
+					return nil
+				}}
+				docker, done := startComposeWait(t, runner, nil)
+				time.Sleep(250 * time.Millisecond)
+				sendComposeHealth(t, docker)
+				time.Sleep(1750 * time.Millisecond)
+				synctest.Wait()
+				requireComposeWaiting(t, done, "before the gap in readiness")
+				sendComposeHealth(t, docker)
+				requireComposeWaiting(t, done, "after the gap interrupted the hold")
+				polls := runner.psRuns()
+				time.Sleep(rolloutMonitor - time.Second)
+				synctest.Wait()
+				if runner.psRuns() != polls {
+					t.Fatal("the previous hold still scheduled a poll after the gap")
+				}
+				sendComposeHealth(t, docker)
+				if runner.psRuns() <= polls {
+					t.Fatal("the event did not wake a poll after recovery")
+				}
+				time.Sleep(rolloutMonitor - time.Millisecond)
+				synctest.Wait()
+				requireComposeWaiting(t, done, "before the replacement hold ended")
+				time.Sleep(time.Millisecond)
+				synctest.Wait()
+				requireComposeWaitResult(t, done, nil)
+			})
+		})
+	}
+}
+
+func TestComposeExitDuringReadyHold(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const running = psWorker
+		const failed = `{"ID":"` + workerID + `","Service":"worker","State":"exited","ExitCode":1}`
+		runner := &fakeCompose{ps: []string{running, running, failed}}
+		docker, done := startComposeWait(t, runner, nil)
+		time.Sleep(time.Second)
+		sendComposeHealth(t, docker)
+		time.Sleep(2 * time.Second)
+		sendComposeHealth(t, docker)
+		requireComposeWaitResult(t, done, Refusal("service worker exited with code 1"))
+	})
+}
+
+func TestComposeDeadlineCutsOffReadyHold(t *testing.T) {
+	for _, tt := range []struct{ name, ps string }{{"ready project", psWeb}, {"empty project", ""}} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				c := Controller{Compose: &fakeCompose{ps: []string{tt.ps}}, Engine: newComposeDocker()}
+				checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now(), time.Now().Add(time.Second), time.Second), composeHoldRefusal)
+			})
+		})
+	}
+	t.Run("up consumed budget", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			runner := &fakeCompose{}
+			c := Controller{Compose: runner, Engine: newComposeDocker()}
+			checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), time.Now().Add(-time.Second), time.Now(), time.Second), errComposeUp)
+			if runner.psRuns() != 0 {
+				t.Fatal("started a readiness read after the budget was spent")
+			}
+		})
+	})
+	t.Run("late confirmation", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			paceWith(t, time.Hour, time.Hour, 0)
+			var readExpired bool
+			deadline := time.Now().Add(rolloutMonitor + time.Second)
+			runner := &fakeCompose{onPS: func(ctx context.Context, poll int) error {
+				if poll == 2 {
+					// Model a read that returns valid output despite the deadline passing in flight.
+					time.Sleep(2 * time.Second)
+					readExpired = ctx.Err() == context.DeadlineExceeded
+				}
+				return nil
+			}}
+			c := Controller{Compose: runner, Engine: newComposeDocker()}
+			checkComposeWaitResult(t, c.waitCompose(t.Context(), "shop-db", t.TempDir(), deadline.Add(-rolloutMonitor-time.Second), deadline, rolloutMonitor+time.Second), composeHoldRefusal)
+			if !readExpired {
+				t.Fatal("the deploy deadline did not bound the confirmation read")
+			}
+		})
+	})
 }
