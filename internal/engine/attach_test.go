@@ -195,6 +195,9 @@ func TestAttachReportsAStreamCutInsideAPayload(t *testing.T) {
 	buf := make([]byte, 64)
 	for i := 0; i < 100; i++ {
 		n, err := out.Read(buf)
+		if n == 0 && err == nil {
+			t.Fatalf("read %d: no data and no error", i)
+		}
 		got = append(got, buf[:n]...)
 		if err != nil {
 			if !errors.Is(err, io.ErrUnexpectedEOF) || string(got) != "he" {
@@ -213,8 +216,20 @@ func TestAttachEndsCleanlyBetweenFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer out.Close()
-	if got, err := io.ReadAll(out); err != nil || string(got) != "x" {
-		t.Fatalf("%q %v", got, err)
+	var got []byte
+	buf := make([]byte, 64)
+	for {
+		n, err := out.Read(buf)
+		if n == 0 && err == nil {
+			t.Fatal("read returned no data and no error")
+		}
+		got = append(got, buf[:n]...)
+		if err != nil {
+			if err != io.EOF || string(got) != "x" {
+				t.Fatalf("got %q, error %v", got, err)
+			}
+			return
+		}
 	}
 }
 
