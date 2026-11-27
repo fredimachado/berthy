@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"berthy/internal/objectstore"
 )
@@ -30,6 +32,27 @@ func startFake(t *testing.T) (*fake, string) {
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv.URL
+}
+
+// startFakeTCP serves on a real loopback listener. Use it when a held S3 request must not stall other
+// clients: httptest can serialize keep-alive traffic behind one blocked handler.
+func startFakeTCP(t *testing.T) (*fake, string) {
+	t.Helper()
+	f, err := newFake(testBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: f}
+	t.Cleanup(func() {
+		srv.Close()
+		ln.Close()
+	})
+	go srv.Serve(ln)
+	return f, "http://" + ln.Addr().String()
 }
 
 func send(t *testing.T, method, url, body string) *http.Response {
@@ -129,6 +152,77 @@ func TestTransientServerErrorIsRetriedByTheClient(t *testing.T) {
 	src := bytes.Repeat([]byte("y"), 20<<20)
 	if _, err := s.Put(context.Background(), "retried.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil); err != nil {
 		t.Fatalf("a single 500 should be retried by the client: %v", err)
+	}
+}
+
+func TestHoldBlocksMatchingRequestsUntilCleared(t *testing.T) {
+	f, base := startFakeTCP(t)
+	send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`)
+	s, err := objectstore.New(objectstore.Config{Endpoint: base, Bucket: testBucket, AccessKey: testAccessKey, SecretKey: testSecretKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		src := bytes.Repeat([]byte("h"), 20<<20)
+		_, err := s.Put(context.Background(), "held.bin", struct{ io.Reader }{bytes.NewReader(src)}, nil)
+		done <- err
+	}()
+	// Wait until CreateMultipartUpload has run and UploadPart is blocked on the hold.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		uploads, err := f.uploads()
+		if err == nil && len(uploads) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("multipart upload never appeared under the hold")
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("upload finished while held: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("upload finished while held: %v", err)
+	default:
+	}
+	if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear hold: %d", resp.StatusCode)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("upload after release: %v", err)
+	}
+	if objs := objectsAt(t, base, ""); len(objs) != 1 || objs[0]["key"] != "held.bin" {
+		t.Fatalf("objects after held upload: %v", objs)
+	}
+}
+
+func TestHoldValidationAndIgnoresOtherOps(t *testing.T) {
+	_, base := startFakeTCP(t)
+	for _, body := range []string{
+		`{"op":"HeadBucket"}`,
+		`{"op":"UploadPart","extra":true}`,
+		`not json`,
+	} {
+		if resp := send(t, http.MethodPost, base+"/_fake/hold", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("hold %s: %d", body, resp.StatusCode)
+		}
+	}
+	send(t, http.MethodPost, base+"/_fake/hold", `{"op":"UploadPart"}`)
+	// A GetObject must not wait on an UploadPart hold.
+	put := send(t, http.MethodPut, base+"/"+testBucket+"/other.txt", "ok")
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("seed put: %d", put.StatusCode)
+	}
+	got := send(t, http.MethodGet, base+"/"+testBucket+"/other.txt", "")
+	if got.StatusCode != http.StatusOK {
+		t.Fatalf("GetObject under UploadPart hold: %d", got.StatusCode)
+	}
+	if resp := send(t, http.MethodDelete, base+"/_fake/hold", ""); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear: %d", resp.StatusCode)
 	}
 }
 
