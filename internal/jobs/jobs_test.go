@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,6 +149,60 @@ func (r *rig) runs(t *testing.T, job string) []state.JobRun {
 		t.Fatal(err)
 	}
 	return runs
+}
+
+func TestJobRetriesManifestWithinTheMinute(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		log  string
+	}{
+		{"failure", errors.New("broken"), "jobs: manifest unavailable, retrying"},
+		{"no manifest", sql.ErrNoRows, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, map[string]manifest.Job{"tick": tickJob()})
+			reads := 0
+			var logs []string
+			r.sched.Log = func(s string) { logs = append(logs, s) }
+			r.sched.Manifest = func(context.Context) (manifest.Manifest, error) {
+				reads++
+				if reads == 1 {
+					return manifest.Manifest{}, tc.err
+				}
+				return testManifest(r.jobs), nil
+			}
+			r.settle(context.Background())
+			if runs := r.runs(t, "tick"); len(runs) != 0 {
+				t.Errorf("runs after failed read: %+v", runs)
+			}
+			r.settle(context.Background())
+			r.settle(context.Background())
+			runs := r.runs(t, "tick")
+			if reads != 2 || len(runs) != 1 {
+				t.Errorf("reads %d, runs %+v", reads, runs)
+			} else if runs[0].Status != "succeeded" || !runs[0].Scheduled.Equal(time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)) {
+				t.Errorf("run: %+v", runs[0])
+			}
+			if got := strings.Join(logs, "\n"); got != tc.log {
+				t.Errorf("log: got %q, want %q", got, tc.log)
+			}
+		})
+	}
+}
+
+func TestJobManifestReadCrossingAMinuteDoesNotBackfill(t *testing.T) {
+	job := tickJob()
+	job.Schedule = "0 10 * * *"
+	r := newRig(t, map[string]manifest.Job{"tick": job})
+	r.sched.Manifest = func(context.Context) (manifest.Manifest, error) {
+		r.clock.Add(time.Minute)
+		return testManifest(r.jobs), nil
+	}
+	r.settle(context.Background())
+	if runs := r.runs(t, "tick"); len(runs) != 0 {
+		t.Fatalf("backfilled old minute: %+v", runs)
+	}
 }
 
 func TestAJobRunsOncePerMinute(t *testing.T) {

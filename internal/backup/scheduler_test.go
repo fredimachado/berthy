@@ -76,6 +76,58 @@ func (g *scheduleRig) runs() []state.BackupRun {
 	return runs
 }
 
+func TestBackupRetriesManifestWithinTheMinute(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		log  string
+	}{
+		{"failure", errors.New("broken"), "backups: manifest unavailable, retrying"},
+		{"no manifest", sql.ErrNoRows, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newScheduleRig(t, "* * * * *")
+			g.archive("recovered")
+			reads := 0
+			g.sched.Manifest = func(context.Context) (manifest.Manifest, error) {
+				reads++
+				if reads == 1 {
+					return manifest.Manifest{}, tc.err
+				}
+				return g.m, nil
+			}
+			g.settle(g.sched)
+			if runs := g.runs(); len(runs) != 0 {
+				t.Errorf("runs after failed read: %+v", runs)
+			}
+			g.settle(g.sched)
+			g.settle(g.sched)
+			runs := g.runs()
+			if reads != 2 || len(runs) != 1 {
+				t.Errorf("reads %d, runs %+v", reads, runs)
+			} else if runs[0].Status != "succeeded" || !runs[0].Scheduled.Equal(time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)) {
+				t.Errorf("run: %+v", runs[0])
+			}
+			if got := g.logged(); got != tc.log {
+				t.Errorf("log: got %q, want %q", got, tc.log)
+			}
+		})
+	}
+}
+
+func TestBackupManifestReadCrossingAMinuteDoesNotBackfill(t *testing.T) {
+	g := newScheduleRig(t, "0 10 * * *")
+	g.archive("old")
+	g.sched.Manifest = func(context.Context) (manifest.Manifest, error) {
+		g.advance(time.Minute)
+		return g.m, nil
+	}
+	g.settle(g.sched)
+	if runs := g.runs(); len(runs) != 0 {
+		t.Fatalf("backfilled old minute: %+v", runs)
+	}
+}
+
 func TestABackupRunsOncePerOccurrence(t *testing.T) {
 	g := newScheduleRig(t, "* * * * *")
 	g.archive("minute-one")
@@ -259,11 +311,20 @@ func TestSchedulerReadsTheManifestEachMinuteAndToleratesNone(t *testing.T) {
 	g.settle(g.sched)
 	g.advance(time.Minute)
 	g.settle(g.sched)
-	if calls != 2 || len(g.runs()) != 0 {
+	if calls != 3 || len(g.runs()) != 0 {
 		t.Fatalf("manifest reads %d, runs %+v", calls, g.runs())
 	}
 	if strings.Contains(g.logged(), "unavailable") {
 		t.Fatalf("a missing manifest was logged: %q", g.logged())
+	}
+	g.sched.Manifest = func(context.Context) (manifest.Manifest, error) { calls++; return manifest.Manifest{}, nil }
+	g.settle(g.sched)
+	g.settle(g.sched)
+	g.advance(time.Minute)
+	g.settle(g.sched)
+	g.settle(g.sched)
+	if calls != 5 {
+		t.Fatalf("successful manifest reads: %d", calls)
 	}
 	g.advance(time.Minute)
 	g.sched.Manifest = func(context.Context) (manifest.Manifest, error) { return manifest.Manifest{}, errors.New("broken") }

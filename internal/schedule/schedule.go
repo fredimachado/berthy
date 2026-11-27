@@ -303,6 +303,14 @@ type Minutes struct {
 	last time.Time
 }
 
+// Due reports whether now falls in a minute later than the last claimed minute, without claiming it.
+func (m *Minutes) Due(now time.Time) bool {
+	cur := now.UTC().Truncate(time.Minute)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cur.After(m.last)
+}
+
 // Claim returns the UTC minute that now falls in, and true, when that minute has not been handed out and is later than the
 // last one that was.
 func (m *Minutes) Claim(now time.Time) (time.Time, bool) {
