@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -960,10 +962,6 @@ func TestLegacyAmbiguousDeployApprovalIsRefusedBeforeReplan(t *testing.T) {
 	}
 	other := "sha256:" + strings.Repeat("b", 64)
 	ambiguous := strings.Replace(body, `"version":"`+apDigest+`"`, `"version":"`+other+`","VERSION":"`+apDigest+`"`, 1)
-	var original, rewritten deploy.Request
-	if json.Unmarshal([]byte(ambiguous), &original) != nil || json.Unmarshal(withDryRun([]byte(ambiguous)), &rewritten) != nil || original.Version != apDigest || rewritten.Version != other {
-		t.Fatal("fixture does not demonstrate differing decode order")
-	}
 	legacy, err := f.s.CreateApproval(t.Context(), old, []byte(ambiguous))
 	if err != nil {
 		t.Fatal(err)
@@ -981,6 +979,77 @@ func TestLegacyAmbiguousDeployApprovalIsRefusedBeforeReplan(t *testing.T) {
 		t.Fatalf("status=%d dispatches=%d state=%s", w.Code, calls, f.status(legacy.ID))
 	}
 	f.noOperation()
+}
+
+func TestTheGateAsksForThePlanOutOfBandAndNeverRewritesTheBody(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	gate := &approvalGate{c: f.cfg, d: f.ctrl, tokens: newTokenSource(f.cfg, f.s)}
+	type call struct {
+		plan bool
+		body string
+	}
+	var calls []call
+	gate.serve = func(w http.ResponseWriter, r *http.Request, _ deploy.Actor, _ []string) {
+		b, _ := io.ReadAll(r.Body)
+		calls = append(calls, call{planning(r), string(b)})
+		_, _ = w.Write([]byte(`{"action":"lock acquire"}`))
+	}
+	body := `{ "message" : "m" }`
+	r := httptest.NewRequest("POST", "/lock/acquire", strings.NewReader(body))
+	r.URL.Path = "lock/acquire"
+	r.Header.Set("Authorization", "Bearer "+apAgentDeploy)
+	actor, _, status := authenticate(gate.tokens, r)
+	if status != 200 {
+		t.Fatal(status)
+	}
+	w := httptest.NewRecorder()
+	if !gate.hold(w, r, actor, []string{"lock", "acquire"}) {
+		t.Fatal("not held")
+	}
+	var held held
+	if json.Unmarshal(w.Body.Bytes(), &held) != nil || held.ID == "" {
+		t.Fatalf("hold: %d %s", w.Code, w.Body.String())
+	}
+	a, err := f.s.Approval(t.Context(), held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := httptest.NewRecorder()
+	gate.approve(approved, r, state.Actor{ID: "human", Name: "human"}, a)
+	if approved.Code != 200 {
+		t.Fatalf("approve: %d %s", approved.Code, approved.Body.String())
+	}
+	if !reflect.DeepEqual(calls, []call{{true, body}, {true, body}, {false, body}}) {
+		t.Fatalf("calls: %+v", calls)
+	}
+	calls = nil
+	dry := `{"message":"m","dry_run":true}`
+	r = httptest.NewRequest("POST", "/lock/acquire", strings.NewReader(dry))
+	w = httptest.NewRecorder()
+	if !gate.hold(w, r, actor, []string{"lock", "acquire"}) || !reflect.DeepEqual(calls, []call{{true, dry}}) {
+		t.Fatalf("dry run: %d calls=%+v", w.Code, calls)
+	}
+	rows, err := f.s.Approvals(t.Context(), "pending", f.now)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("dry run created an approval: %+v %v", rows, err)
+	}
+}
+
+func TestSupportsDryRunMatchesTheRoutesThatHaveOne(t *testing.T) {
+	for _, path := range []string{"deploys", "apply", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore", "ingress/apply", "secrets", "secrets/x", "secrets/import", "secrets/generate", "secrets/generate-declared", "lock/acquire", "lock/release", "operations/x/resolve", "operations/x/cancel"} {
+		method := "POST"
+		if path == "secrets/x" {
+			method = "DELETE"
+		}
+		if !supportsDryRun(restOf(path), method) {
+			t.Errorf("%s has a dry run", path)
+		}
+	}
+	for _, path := range []string{"images/resolve", "images/tags", "jobs/x/run", "jobs/x/cancel", "backups/x/run", "state-backup", "alerts/test", "key/rotate", "tokens", "tokens/x", "sessions", "approvals/x/approve", "approvals/x/reject"} {
+		if supportsDryRun(restOf(path), "POST") {
+			t.Errorf("%s has no dry run", path)
+		}
+	}
 }
 
 func TestDeployPlanKeepsFixedKeysWhenSecretsMatch(t *testing.T) {

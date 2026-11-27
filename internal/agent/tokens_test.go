@@ -20,6 +20,19 @@ func newGet(path, token string) *http.Request {
 	return r
 }
 
+func TestRevokeEmptyBodyIsZeroBytesOrJSONWhiteSpaceOnly(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	tok := f.makeToken(`{"name":"victim","scope":"read"}`)
+	w := f.call("DELETE", "/tokens/victim", apAdminToken, "\u00a0")
+	if w.Code != 400 || !strings.Contains(w.Body.String(), `"message":"invalid request"`) || f.call("GET", "/audit", tok.Token, "").Code != 200 {
+		t.Fatalf("revoke non-json space: %d %s", w.Code, w.Body.String())
+	}
+	w = f.call("DELETE", "/tokens/victim", apAdminToken, "")
+	if w.Code != 200 || f.call("GET", "/audit", tok.Token, "").Code != 401 {
+		t.Fatalf("revoke empty: %d %s", w.Code, w.Body.String())
+	}
+}
+
 type createdToken struct {
 	Name    string     `json:"name"`
 	Scope   string     `json:"scope"`

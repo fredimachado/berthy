@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -286,7 +285,7 @@ func revokeToken(w http.ResponseWriter, r *http.Request, name string, store *sta
 	var req struct {
 		DryRun bool `json:"dry_run"`
 	}
-	if err := decodeBody(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeOptionalBody(w, r, &req); err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}

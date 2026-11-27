@@ -113,25 +113,19 @@ func withBody(r *http.Request, method, path string, body []byte) *http.Request {
 	return r2
 }
 
+// dryRunKinds lists the change routes whose dry run answers with a plan.
+var dryRunKinds = []string{"deploy", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore",
+	"apply", "ingress apply", "secret set", "secret delete", "secret import", "secret generate", "secret generate declared",
+	"lock acquire", "lock release", "recovery resolve", "cancel"}
+
 // supportsDryRun reports whether the route takes a dry_run in its body and answers it with the plan of the change.
-func supportsDryRun(rest []string) bool {
-	switch {
-	case len(rest) == 1:
-		switch rest[0] {
-		case "deploys", "apply", "rollback", "restart", "scale", "exec", "run", "prune", "remove", "destroy", "restore", "secrets":
-			return true
-		}
-	case len(rest) == 2:
-		return rest[0] == "ingress" && rest[1] == "apply" || rest[0] == "lock" || rest[0] == "secrets"
-	case len(rest) == 3:
-		return rest[0] == "operations" && (rest[2] == "resolve" || rest[2] == "cancel")
-	}
-	return false
+func supportsDryRun(rest []string, method string) bool {
+	return slices.Contains(dryRunKinds, routeKind(rest, method))
 }
 
 // isDryRun reports whether a request body asks for a dry run of a route that has one.
-func isDryRun(rest []string, body []byte) bool {
-	if !supportsDryRun(rest) {
+func isDryRun(rest []string, method string, body []byte) bool {
+	if !supportsDryRun(rest, method) {
 		return false
 	}
 	var v struct {
@@ -139,21 +133,6 @@ func isDryRun(rest []string, body []byte) bool {
 	}
 	_ = json.Unmarshal(body, &v)
 	return v.DryRun
-}
-
-// withDryRun returns body with dry_run set to true. A body that is not a JSON object is returned as it is, and the route
-// refuses it as it would any request.
-func withDryRun(body []byte) []byte {
-	var m map[string]json.RawMessage
-	if len(bytes.TrimSpace(body)) == 0 || json.Unmarshal(body, &m) != nil || m == nil {
-		return body
-	}
-	m["dry_run"] = json.RawMessage("true")
-	out, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return out
 }
 
 // generationBodyUnambiguous prevents the map rewrite from changing how repeated fields decode.
@@ -221,13 +200,13 @@ func (g *approvalGate) plan(r *http.Request, actor deploy.Actor, rest []string, 
 		writeError(failure, 400, "bad_request", "invalid request")
 		return nil, failure
 	}
-	if !supportsDryRun(rest) {
+	if !supportsDryRun(rest, method) {
 		b, _ := json.Marshal(describe(rest, method))
 		return b, nil
 	}
 	rec := newCapture()
 	rec.header.Set("Content-Type", "application/json")
-	g.serve(rec, withBody(r, method, path, withDryRun(body)), actor, rest)
+	g.serve(rec, asPlan(withBody(r, method, path, body)), actor, rest)
 	if rec.status() != http.StatusOK {
 		return nil, rec
 	}
@@ -462,8 +441,9 @@ func (g *approvalGate) hold(w http.ResponseWriter, r *http.Request, actor deploy
 		writeError(w, 400, "bad_request", "invalid request")
 		return true
 	}
-	if isDryRun(rest, body) {
-		return false
+	if isDryRun(rest, r.Method, body) {
+		g.serve(w, asPlan(r), actor, rest)
+		return true
 	}
 	plan, refused := g.plan(r, actor, rest, r.Method, r.URL.Path, body)
 	if refused != nil {
@@ -632,23 +612,16 @@ func (g *approvalGate) decide(w http.ResponseWriter, r *http.Request, decider st
 }
 
 func (g *approvalGate) reject(w http.ResponseWriter, r *http.Request, decider state.Actor, a state.Approval) {
-	body, err := readBody(w, r)
-	if err != nil {
-		writeError(w, 400, "bad_request", "invalid request")
-		return
-	}
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	if len(bytes.TrimSpace(body)) > 0 {
-		if decodeBody(w, r, &req) != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		if req.Reason != "" && !validReason(req.Reason) {
-			writeError(w, 400, "bad_request", "invalid reason")
-			return
-		}
+	if decodeOptionalBody(w, r, &req) != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	if req.Reason != "" && !validReason(req.Reason) {
+		writeError(w, 400, "bad_request", "invalid reason")
+		return
 	}
 	if g.decide(w, r, decider, a.ID, "rejected", req.Reason) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": a.ID, "status": "rejected"})

@@ -22,6 +22,8 @@ type runEngine struct {
 	planEngine
 	mu      sync.Mutex
 	started chan struct{}
+	release chan struct{}
+	once    sync.Once
 	stopped bool
 }
 
@@ -34,8 +36,12 @@ func (e *runEngine) CreateContainer(_ context.Context, name string, _ json.RawMe
 func (e *runEngine) StartContainer(context.Context, string) error { return nil }
 func (e *runEngine) WaitContainer(ctx context.Context, _ string) (int, error) {
 	close(e.started)
-	<-ctx.Done()
-	return 0, ctx.Err()
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-e.release:
+		return 0, nil
+	}
 }
 func (e *runEngine) ContainerLogs(context.Context, string) ([]byte, error) {
 	return []byte("so far\n"), nil
@@ -55,7 +61,7 @@ func (e *runEngine) RemoveContainer(context.Context, string) error { return nil 
 func runningRun(t *testing.T, f *approvalFixture) (string, *runEngine) {
 	t.Helper()
 	seedRunApp(t, f.s)
-	e := &runEngine{started: make(chan struct{})}
+	e := &runEngine{started: make(chan struct{}), release: make(chan struct{})}
 	f.ctrl.Engine = e
 	w := f.call("POST", "/run", apAdminToken, `{"app":"api","command":["sleep","60"],"request_id":"r1"}`)
 	var accepted struct {
@@ -65,16 +71,73 @@ func runningRun(t *testing.T, f *approvalFixture) (string, *runEngine) {
 		t.Fatalf("run: %d %s", w.Code, w.Body.String())
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = f.ctrl.Drain(ctx)
+		e.once.Do(func() { close(e.release) })
+		_ = f.ctrl.Drain(context.Background())
 	})
-	select {
-	case <-e.started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the run never began")
-	}
+	<-e.started
 	return accepted.ID, e
+}
+
+func (f *approvalFixture) waitTerminal(id string) string {
+	f.t.Helper()
+	return f.call("GET", "/operations/"+id+"/events", apReadToken, "").Body.String()
+}
+
+func TestAnAgentsCancelWithNoBodyIsHeldAndApprovalCarriesItOut(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	id, _ := runningRun(t, f)
+	h := f.hold("POST", "/operations/"+id+"/cancel", apAgentDeploy, "")
+	op, err := f.s.Operation(t.Context(), id)
+	if err != nil || op.State != "running" {
+		t.Errorf("operation after hold: %+v %v", op, err)
+	}
+	for _, line := range f.audit() {
+		if strings.Contains(line, "cancel:"+id) {
+			t.Errorf("cancel audited during hold: %s", line)
+		}
+	}
+	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+	}
+	if stream := f.waitTerminal(id); !strings.Contains(stream, "cancelled by claude (approved by alice)") {
+		t.Fatalf("terminal: %s", stream)
+	}
+}
+
+func TestAnEmptyBodyIsZeroBytesOrJSONWhiteSpaceOnly(t *testing.T) {
+	for _, body := range []string{"", " \r\n\t"} {
+		t.Run("cancel/"+body, func(t *testing.T) {
+			f := newApprovalFixture(t, false, nil)
+			id, _ := runningRun(t, f)
+			w := f.call("POST", "/operations/"+id+"/cancel", apAdminToken, body)
+			if w.Code != 200 || !strings.Contains(w.Body.String(), `"accepted":true`) {
+				t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+			}
+			f.waitTerminal(id)
+		})
+	}
+	t.Run("cancel/non-json-space", func(t *testing.T) {
+		f := newApprovalFixture(t, false, nil)
+		id, _ := runningRun(t, f)
+		w := f.call("POST", "/operations/"+id+"/cancel", apAdminToken, "\u00a0")
+		op, err := f.s.Operation(t.Context(), id)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"message":"invalid request"`) || err != nil || op.State != "running" {
+			t.Fatalf("cancel: %d %s operation=%+v %v", w.Code, w.Body.String(), op, err)
+		}
+	})
+	t.Run("reject", func(t *testing.T) {
+		f := newApprovalFixture(t, true, nil)
+		h := f.hold("POST", "/lock/acquire", apAgentDeploy, `{"message":"x"}`)
+		w := f.call("POST", "/approvals/"+h.ID+"/reject", apAdminToken, "\u00a0")
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"message":"invalid request"`) || f.status(h.ID) != "pending" {
+			t.Fatalf("reject: %d %s status=%s", w.Code, w.Body.String(), f.status(h.ID))
+		}
+		w = f.call("POST", "/approvals/"+h.ID+"/reject", apAdminToken, "")
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"rejected"`) {
+			t.Fatalf("reject empty: %d %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func (f *approvalFixture) waitEnded(id string) state.Operation {

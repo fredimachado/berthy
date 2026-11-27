@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -288,7 +287,7 @@ func newDeploymentHandler(c Config, e *engine.Engine, col *metrics.Collector, d 
 				DryRun bool `json:"dry_run"`
 			}
 			// A cancel needs nothing but the operation, so a request with no body is a cancel.
-			if err := decodeBody(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
+			if err := decodeOptionalBody(w, r, &req); err != nil {
 				writeError(w, 400, "bad_request", "invalid request")
 				return
 			}
@@ -900,18 +899,6 @@ func secretImportError(w http.ResponseWriter, err error) {
 	operationError(w, err)
 }
 
-func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, api.MaxRequestBody)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if dec.Decode(&struct{}{}) != io.EOF {
-		return errors.New("trailing data")
-	}
-	return nil
-}
 func operationError(w http.ResponseWriter, err error) {
 	if errors.Is(err, state.ErrConflict) {
 		writeError(w, 409, "conflict", "environment or request conflict")
