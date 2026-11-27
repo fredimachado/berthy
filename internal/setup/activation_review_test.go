@@ -21,6 +21,7 @@ func shellFixture(t *testing.T) (string, string) {
 	if err := os.Mkdir(tools, 0700); err != nil {
 		t.Fatal(err)
 	}
+	shellTool(t, tools, "flock", "exit 0")
 	return d, tools
 }
 func shellTool(t *testing.T, tools, name, body string) {

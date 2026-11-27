@@ -145,11 +145,9 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 		answer, missing bool
 	}{{"answers", "yes", true, false}, {"rollback", "yes", false, false}, {"first install", "no", false, false}, {"prev gone", "yes", false, true}} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir, tools := shellFixture(t)
 			bin := filepath.Join(dir, "bin")
 			cfg := filepath.Join(dir, "cfg")
-			tools := filepath.Join(dir, "tools")
-			os.Mkdir(tools, 0700)
 			for _, p := range []string{bin, cfg} {
 				os.WriteFile(p, []byte("new"), 0600)
 				if !tc.missing {
