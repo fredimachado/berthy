@@ -40,7 +40,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	if policy == agentclient.ProtectionLegacyProtected || (policy == agentclient.ProtectionLegacyUnprotected && protected) {
 		return fail("protected tag deployment requires an agent upgrade or an explicit digest")
 	}
-	if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
+	if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f); err != nil {
 		return fail(err)
 	}
 	if protected {
@@ -59,7 +59,8 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	if protected && !f.dry && !interactiveDeploy(f, out) {
 		return fail("deploy confirmation requires terminal input and preview output; run interactively or deploy an explicit digest")
 	}
-	if !protected && policy != agentclient.ProtectionLegacyUnprotected {
+	fieldDiff := f.deployDiff && !f.json
+	if !protected && (policy != agentclient.ProtectionLegacyUnprotected || fieldDiff) {
 		return false, 0
 	}
 	if protected {
@@ -137,6 +138,9 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	if !protected {
 		return false, 0
 	}
+	if fieldDiff {
+		return prepareBatchFieldPreviews(ctx, client, target, f, steps, out, errout)
+	}
 	for i := range steps {
 		step := &steps[i]
 		if step.previewErr != "" {
@@ -187,6 +191,61 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	yes, err := confirmDeploy(ctx, os.Stdin, out)
 	if err != nil {
 		return fail(err)
+	}
+	if !yes || ctx.Err() != nil {
+		return true, 1
+	}
+	return false, 0
+}
+
+func prepareBatchFieldPreviews(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, steps []deployStep, out, errout io.Writer) (bool, int) {
+	for i := range steps {
+		step := &steps[i]
+		if step.previewErr != "" {
+			continue
+		}
+		preview, older, err := requestDeployFieldPreview(ctx, client, target, &step.req, step.appliedID, step.tag, errout)
+		if err != nil && !errors.As(err, &step.diffBlockers) {
+			if !f.dry {
+				return true, reportDeployFieldError(errout, target, err, older)
+			}
+			step.previewErr, step.previewOlder = err.Error(), older
+			continue
+		}
+		step.diffPreview = preview
+		if f.dry {
+			continue
+		}
+		if preview.Base < 0 {
+			return true, reportDeployFieldError(errout, target, errDeployFieldUnavailable, false)
+		}
+		if len(step.diffBlockers) != 0 {
+			_, renderErr := renderDeployFieldPreview(out, target, step.app, preview, step.diffBlockers, false)
+			if renderErr != nil {
+				err = renderErr
+			}
+			return true, reportDeployFieldError(errout, target, err, false)
+		}
+	}
+	if f.dry {
+		return false, 0
+	}
+	for i := range steps {
+		step := &steps[i]
+		var err error
+		if i == 0 {
+			step.diffShown, err = renderDeployFieldPreview(out, target, step.app, step.diffPreview, nil, false)
+		} else {
+			heading := "Deploy " + target.Project + "/" + target.Env + " app " + step.app
+			err = showImagePlan(out, step.diffPreview.Plan, target.Token, false, heading)
+		}
+		if err != nil {
+			return true, reportDeployFieldError(errout, target, err, false)
+		}
+	}
+	yes, err := confirmDeploy(ctx, os.Stdin, out)
+	if err != nil {
+		return true, reportDeployFieldError(errout, target, err, false)
 	}
 	if !yes || ctx.Err() != nil {
 		return true, 1
@@ -307,7 +366,7 @@ func hasTaggedKept(steps []deployStep) bool {
 }
 
 // guardTaggedKept checks only the historical form whose validity depends on effective protection.
-func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, co gitcheck.Checkout, steps []deployStep, policy agentclient.Protection, dry bool) error {
+func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclient.Target, m *manifest.Manifest, co gitcheck.Checkout, steps []deployStep, policy agentclient.Protection, f commandFlags) error {
 	for i := range steps {
 		step := &steps[i]
 		if !step.req.KeepVersion {
@@ -324,7 +383,7 @@ func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclie
 		switch {
 		case m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected:
 			guardErr = fmt.Errorf("image app %s keeps a tagged digest; deploy an explicit digest", step.app)
-		case policy == agentclient.ProtectionLegacyUnprotected:
+		case policy == agentclient.ProtectionLegacyUnprotected && (!f.deployDiff || f.json):
 			guard := step.req
 			guard.DryRun = true
 			guard.Modified = guard.Modified || len(co.Changed) > 0
@@ -338,13 +397,13 @@ func guardTaggedKept(ctx context.Context, client *http.Client, target *agentclie
 			default:
 				if err := legacyKeptPlan(data, m, *step); err != nil {
 					guardErr = err
-				} else if dry {
+				} else if f.dry {
 					step.preview = data
 				}
 			}
 		}
 		if guardErr != nil {
-			if !dry {
+			if !f.dry {
 				return guardErr
 			}
 			step.previewErr = guardErr.Error()

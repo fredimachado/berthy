@@ -144,10 +144,14 @@ func imagePlan(data []byte, m *manifest.Manifest, req deploy.Request, image, tag
 
 // checkedTaggedDigest permits the exact tag-plus-digest the operator supplied on an unprotected deploy.
 func checkedTaggedDigest(m *manifest.Manifest, req deploy.Request, image, tag string) bool {
-	if image == "" || req.Version == "" || req.VersionTag != "" || m.Protected {
+	version := req.Version
+	if req.KeepVersion {
+		version = req.KeepDigest
+	}
+	if image == "" || version == "" || req.VersionTag != "" || m.Protected {
 		return false
 	}
-	ref, err := m.ImageReference(req.App, req.Version)
+	ref, err := m.ImageReference(req.App, version)
 	if err != nil || ref.String() != image {
 		return false
 	}

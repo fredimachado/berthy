@@ -203,67 +203,103 @@ func showDeployFieldPreview(out io.Writer, target *agentclient.Target, app strin
 	return raw.Diff, writeDeployOutput(out, &buf)
 }
 
-func runDeployFieldPreview(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, req deploy.Request, confirm bool, out, errout io.Writer) int {
-	fail := func(err error) int {
-		printRefusal(errout, safeSecretText(err.Error(), target.Token), true)
-		return 1
-	}
+// requestDeployFieldPreview validates the plan before binding req to its comparison.
+func requestDeployFieldPreview(ctx context.Context, client *http.Client, target *agentclient.Target, req *deploy.Request, appliedID int64, keptTag string, errout io.Writer) (*deployDiffPreview, bool, error) {
 	m := &req.Manifest
 	var selected reference.Named
 	var image, tag string
 	if m.Apps[req.App].Kind == "image" {
+		version := req.Version
+		tag = req.VersionTag
+		if req.KeepVersion {
+			version, tag = req.KeepDigest, keptTag
+		}
 		var err error
-		selected, err = m.ImageReference(req.App, req.Version)
+		selected, err = m.ImageReference(req.App, version)
 		if err != nil {
-			return fail(err)
+			return nil, false, err
 		}
 		if _, pinned := selected.(reference.Canonical); pinned {
 			image = selected.String()
 		}
-		tag = req.VersionTag
 		if tagged, ok := selected.(reference.NamedTagged); ok && tag == "" {
 			tag = tagged.Tag()
 		}
 	}
-	previewReq := req
+	previewReq := *req
 	previewReq.DryRun = true
 	payload, err := json.Marshal(previewReq)
 	if err != nil {
-		return fail(errors.New("deploy preview failed"))
+		return nil, false, errors.New("deploy preview failed")
 	}
 	progress := startWait(errout, true, "Planning deploy")
 	result, err := agentclient.DoResult(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", "diff=fields", payload)
 	progress.Close()
 	if err != nil {
-		return fail(fmt.Errorf("deploy preview failed: %w", err))
+		return nil, false, fmt.Errorf("deploy preview failed: %w", err)
 	}
 	if result.Status != http.StatusOK {
-		printAgentRefusal(errout, safeSecretText(agentclient.Message(result.Status, result.Data), target.Token), true, result.Older)
-		return 1
+		return nil, result.Older, errors.New(agentclient.Message(result.Status, result.Data))
 	}
 	preview, err := readDeployDiffPreview(result.Data)
 	if err != nil {
-		return fail(err)
+		return nil, false, err
 	}
 	var blockers deployPlanBlockers
-	planErr := batchPlan(preview.Plan, m, target.Env, req, image, tag, target.Token, false)
-	if planErr != nil && !errors.As(planErr, &blockers) {
-		return fail(planErr)
+	err = batchPlan(preview.Plan, m, target.Env, *req, image, tag, target.Token, false)
+	if err != nil && !errors.As(err, &blockers) {
+		return nil, false, err
 	}
-	if preview.Base < 0 {
-		if !f.dry {
-			return fail(errors.New("deploy field detail is unavailable; upgrade the agent or run without --diff"))
+	if preview.Base >= 0 {
+		if (appliedID > 0 && preview.Base != appliedID) || (req.ExpectedApplied != nil && preview.Base != *req.ExpectedApplied) {
+			return nil, false, errors.New("applied release changed since its version was read")
 		}
-		if err := showImagePlan(out, preview.Plan, target.Token, false, ""); err != nil {
-			return fail(err)
-		}
-		fmt.Fprintln(out, "deploy field detail is unavailable")
-		if confirm && len(blockers) != 0 {
-			return 1
-		}
-		return 0
 	}
-	shown, err := showDeployFieldPreview(out, target, req.App, preview, blockers)
+	if err != nil {
+		return &preview, false, err
+	}
+	if preview.Base >= 0 {
+		if selected != nil && image == "" {
+			var plan struct{ Image string }
+			if json.Unmarshal(preview.Plan, &plan) != nil {
+				return nil, false, errors.New("invalid agent deploy plan")
+			}
+			req.Version, req.VersionTag = plan.Image, tag
+		}
+		req.ExpectedApplied = &preview.Base
+	}
+	return &preview, false, nil
+}
+
+var errDeployFieldUnavailable = errors.New("deploy field detail is unavailable; upgrade the agent or run without --diff")
+
+func renderDeployFieldPreview(out io.Writer, target *agentclient.Target, app string, preview *deployDiffPreview, blockers deployPlanBlockers, dry bool) (*deploy.Diff, error) {
+	if preview.Base >= 0 {
+		return showDeployFieldPreview(out, target, app, *preview, blockers)
+	}
+	if !dry {
+		return nil, errDeployFieldUnavailable
+	}
+	if err := showImagePlan(out, preview.Plan, target.Token, false, ""); err != nil {
+		return nil, err
+	}
+	_, err := fmt.Fprintln(out, "deploy field detail is unavailable")
+	return nil, err
+}
+
+func reportDeployFieldError(errout io.Writer, target *agentclient.Target, err error, older bool) int {
+	printAgentRefusal(errout, safeSecretText(err.Error(), target.Token), true, older)
+	return 1
+}
+
+func runDeployFieldPreview(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, req deploy.Request, confirm bool, out, errout io.Writer) int {
+	fail := func(err error) int { return reportDeployFieldError(errout, target, err, false) }
+	preview, older, err := requestDeployFieldPreview(ctx, client, target, &req, 0, "", errout)
+	var blockers deployPlanBlockers
+	if err != nil && !errors.As(err, &blockers) {
+		return reportDeployFieldError(errout, target, err, older)
+	}
+	shown, err := renderDeployFieldPreview(out, target, req.App, preview, blockers, f.dry)
 	if err != nil {
 		return fail(err)
 	}
@@ -282,14 +318,7 @@ func runDeployFieldPreview(ctx context.Context, client *http.Client, target *age
 			return fail(errors.New("deploy cancelled"))
 		}
 	}
-	if _, pinned := selected.(reference.Canonical); selected != nil && !pinned {
-		var plan struct{ Image string }
-		if json.Unmarshal(preview.Plan, &plan) != nil {
-			return fail(errors.New("invalid agent deploy plan"))
-		}
-		req.Version, req.VersionTag = plan.Image, tag
-	}
-	req.DryRun, req.ExpectedApplied = false, &preview.Base
+	req.DryRun = false
 	f.shownDeployDiff = shown
 	return sendCommand(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", req, f, "deploy", out, errout)
 }

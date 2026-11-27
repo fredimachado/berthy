@@ -42,24 +42,28 @@ apps:
 
 // fakeDeployAgent is an agent that records what berthy deploy sends and answers as each app is told to.
 type fakeDeployAgent struct {
-	mu           sync.Mutex
-	deploys      []map[string]any // the body of each deploy request, in the order received
-	reads        []string         // the path of each read request
-	failOp       map[string]bool  // apps whose operation ends failed
-	failPlan     map[string]bool  // apps whose dry run is refused
-	undeployed   map[string]bool  // apps that have no applied release
-	held         string           // the app whose deploy the agent holds for approval
-	mixedPlans   bool
-	blockCompose bool
-	legacy       bool
-	lookupFail   string
-	lookups      []string
-	protected    bool // whether the agent is configured for a protected environment
-	plans        map[string]string
-	applied      map[string]string
-	calls        int
-	policyReply  string
-	policyReads  int
+	mu            sync.Mutex
+	deploys       []map[string]any // the body of each deploy request, in the order received
+	reads         []string         // the path of each read request
+	failOp        map[string]bool  // apps whose operation ends failed
+	failPlan      map[string]bool  // apps whose dry run is refused
+	undeployed    map[string]bool  // apps that have no applied release
+	held          string           // the app whose deploy the agent holds for approval
+	mixedPlans    bool
+	blockCompose  bool
+	legacy        bool
+	lookupFail    string
+	lookups       []string
+	protected     bool // whether the agent is configured for a protected environment
+	plans         map[string]string
+	fieldPlans    map[string]string
+	deployQueries []string
+	guardIDs      map[string]int64
+	rollBack      string
+	applied       map[string]string
+	calls         int
+	policyReply   string
+	policyReads   int
 }
 
 // deployAllFixture starts a fake agent and writes the manifest and a config that point at it.
@@ -118,8 +122,11 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.deploys = append(f.deploys, body)
+		f.deployQueries = append(f.deployQueries, r.URL.RawQuery)
 		app, _ := body["app"].(string)
 		switch {
+		case body["dry_run"] == true && r.URL.RawQuery == "diff=fields" && f.fieldPlans[app] != "":
+			fmt.Fprint(w, f.fieldPlans[app])
 		case body["dry_run"] == true && f.plans[app] != "":
 			fmt.Fprint(w, f.plans[app])
 		case body["dry_run"] == true && f.mixedPlans && app == "api":
@@ -135,6 +142,9 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `{"code":"operation_failed","message":"plan refused for `+app+`"}`)
 		case body["dry_run"] == true:
 			fmt.Fprintf(w, `{"app":%q,"roles":["web"]}`, app)
+		case f.guardIDs[app] != 0 && body["expected_applied"] != float64(f.guardIDs[app]):
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"message":"applied release changed"}`)
 		case f.held == app:
 			w.Header().Set("Berthy-Approval", "pending")
 			w.WriteHeader(202)
@@ -162,10 +172,16 @@ func (f *fakeDeployAgent) serve(w http.ResponseWriter, r *http.Request) {
 		state := "succeeded"
 		if f.failOp[app] {
 			state = "failed"
+		} else if app == f.rollBack {
+			state = "rolled_back"
 		}
 		fmt.Fprintf(w, "id: 1\nevent: accepted\ndata: {}\n\nid: 2\nevent: %s\ndata: {}\n\n", state)
 	case r.Method == "GET" && strings.HasPrefix(rest, "operations/op-"):
 		app := strings.TrimPrefix(rest, "operations/op-")
+		if app == f.rollBack {
+			fmt.Fprintf(w, `{"id":"op-%s","state":"rolled_back","app":%q,"error":"rollout failed"}`, app, app)
+			return
+		}
 		if f.failOp[app] {
 			fmt.Fprintf(w, `{"id":"op-%s","state":"failed","app":%q,"error":"rollout failed"}`, app, app)
 			return

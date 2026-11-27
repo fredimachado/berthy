@@ -78,6 +78,9 @@ type deployStep struct {
 	preview      []byte
 	previewErr   string
 	previewOlder bool
+	diffPreview  *deployDiffPreview
+	diffBlockers deployPlanBlockers
+	diffShown    *deploy.Diff
 }
 
 // deployAllEntry is what the --json document of a deploy without an app says about one app: how its deploy ended and what
@@ -201,7 +204,7 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 				return 1
 			}
 		}
-		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f.dry); err != nil {
+		if err := guardTaggedKept(ctx, client, target, m, co, steps, policy, f); err != nil {
 			printRefusal(errout, safeSecretText(err.Error(), target.Token), !f.json)
 			return 1
 		}
@@ -229,6 +232,8 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 		if f.dry && step.previewErr != "" {
 			printAgentRefusal(errout, safeSecretText(step.previewErr, target.Token), !f.json, step.previewOlder)
 			code = 1
+		} else if f.deployDiff && !f.json {
+			code = runDeployFieldStep(ctx, client, target, f, step, stdout, errout)
 		} else if f.dry && step.preview != nil {
 			heading := ""
 			if !f.json {
@@ -238,8 +243,6 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 				fmt.Fprintln(errout, err)
 				code = 1
 			}
-		} else if f.dry && f.deployDiff && !f.json && len(steps) == 1 && !step.req.KeepVersion {
-			code = runDeployFieldPreview(ctx, client, target, f, step.req, false, stdout, errout)
 		} else {
 			code = sendCommand(ctx, client, base, prefix, token, "POST", "deploys", step.req, f, "deploy", stdout, errout)
 		}
@@ -293,6 +296,33 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 		}
 	}
 	return exit
+}
+
+func runDeployFieldStep(ctx context.Context, client *http.Client, target *agentclient.Target, f commandFlags, step deployStep, out, errout io.Writer) int {
+	preview, blockers := step.diffPreview, step.diffBlockers
+	if preview == nil {
+		var err error
+		var older bool
+		preview, older, err = requestDeployFieldPreview(ctx, client, target, &step.req, step.appliedID, step.tag, errout)
+		if err != nil && !errors.As(err, &blockers) {
+			return reportDeployFieldError(errout, target, err, older)
+		}
+	}
+	f.shownDeployDiff = step.diffShown
+	if f.shownDeployDiff == nil {
+		shown, err := renderDeployFieldPreview(out, target, step.app, preview, blockers, f.dry)
+		if err != nil {
+			return reportDeployFieldError(errout, target, err, false)
+		}
+		f.shownDeployDiff = shown
+	}
+	if len(blockers) != 0 && (!f.dry || step.diffPreview != nil) {
+		return reportDeployFieldError(errout, target, blockers, false)
+	}
+	if f.dry {
+		return 0
+	}
+	return sendCommand(ctx, client, target.Base, target.Prefix, target.Token, "POST", "deploys", step.req, f, "deploy", out, errout)
 }
 
 // capturedDocument is the one JSON value a single deploy printed to its captured stdout. It is nil when nothing was printed,
