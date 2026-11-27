@@ -72,18 +72,18 @@ func (s *Scheduler) Wait() { s.wg.Wait() }
 
 // Step handles the current minute if it has not been handled yet. Run calls it every tick.
 func (s *Scheduler) Step(ctx context.Context) {
-	if ctx.Err() != nil {
-		return
-	}
-	cur, ok := s.minutes.Claim(s.now())
-	if !ok {
+	if ctx.Err() != nil || !s.minutes.Due(s.now()) {
 		return
 	}
 	m, err := s.Manifest(ctx)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			s.logf("backups: manifest unavailable, skipping %s", cur.Format("15:04"))
+			s.logf("backups: manifest unavailable, retrying")
 		}
+		return
+	}
+	cur, ok := s.minutes.Claim(s.now())
+	if !ok {
 		return
 	}
 	for _, name := range slices.Sorted(maps.Keys(m.Backups)) {
