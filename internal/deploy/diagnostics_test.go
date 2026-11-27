@@ -268,7 +268,7 @@ func TestEvidenceKeepsFiveNewestTasksPerRole(t *testing.T) {
 		f.tails[fmt.Sprintf("c%d", i)] = fmt.Sprintf("line %d\n", i)
 	}
 	c, s := diagController(t, f)
-	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil))
 	got := storedDiagnostics(t, s, op.ID)
 	if len(got) != 5 || got[0].TaskID != "t8" || got[4].TaskID != "t4" {
 		t.Fatalf("kept %d diagnostics: %+v", len(got), got)
