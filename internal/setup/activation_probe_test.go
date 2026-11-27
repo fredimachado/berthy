@@ -6,14 +6,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"berthy/internal/agent"
 )
-
-const testProbePath = binPath + ".setup-probe"
 
 type probePreparationRunner struct {
 	calls []string
@@ -135,5 +134,121 @@ esac`)
 	got, err := os.ReadFile(filepath.Join(tools, "berthy.setup-probe"))
 	if err != nil || string(got) != "#!/bin/sh\nprintf 'berthy-setup-probe/1\\n'\n" {
 		t.Fatalf("installed candidate not retained: %q, %v", got, err)
+	}
+}
+
+func closedProbeTools(t *testing.T, tools string) {
+	t.Helper()
+	for _, name := range []string{"cat", "grep", "mktemp", "mv"} {
+		if _, err := os.Stat(filepath.Join(tools, name)); err == nil {
+			continue
+		}
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shellTool(t, tools, name, "exec "+shellQuote(path)+` "$@"`)
+	}
+}
+
+func TestSetupWaitWithoutFetchTools(t *testing.T) {
+	dir, tools := shellFixture(t)
+	closedProbeTools(t, tools)
+	shellClock(t, tools)
+	shellTool(t, tools, "systemctl", `case "$1" in show) echo active ;; esac`)
+	shellTool(t, tools, "berthy.setup-probe", `
+echo "$*" >> "$CALLS"
+[ "$*" = 'agent setup-probe health --listen 127.0.0.1:7710 --timeout 3s' ]`)
+	state := filepath.Join(dir, "state")
+	if err := os.WriteFile(state, []byte("pending\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.NewReplacer(guardLock, filepath.Join(dir, "lock"), guardState, state,
+		guardProbePath, filepath.Join(tools, "berthy.setup-probe")).Replace(restartScript("127.0.0.1:7710", 3))
+	err := runShell(t, "PATH="+shellQuote(tools)+"\n"+script, "", tools, dir)
+	got, _ := os.ReadFile(state)
+	log, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil || string(got) != "confirmed\n" || !strings.Contains(string(log), "agent setup-probe health") {
+		t.Fatalf("restart with neither fetch tool: error=%v, guard=%q, probe calls=%q", err, got, log)
+	}
+}
+
+func TestSetupWaitStopsOnUnitState(t *testing.T) {
+	const listen = "127.0.0.1:7710"
+	for _, state := range []string{"failed", "inactive", "deactivating", "unreadable", "activating"} {
+		t.Run(state, func(t *testing.T) {
+			dir, tools := shellFixture(t)
+			shellTool(t, tools, "systemctl", `case "$1" in
+  show)
+    echo show >> "$CALLS"
+    if [ "`+state+`" = unreadable ]; then exit 1; fi
+    if [ -f "$CLOCK" ]; then echo active; else echo `+state+`; fi ;;
+esac`)
+			shellTool(t, tools, "date", `if [ -f "$CLOCK" ]; then cat "$CLOCK"; else echo 0; fi`)
+			shellTool(t, tools, "sleep", `echo sleep >> "$CALLS"; n=$(date +%s); echo $((n+1)) > "$CLOCK"`)
+			shellTool(t, tools, "curl", `echo legacy-http >> "$CALLS"; exit 0`)
+			shellTool(t, tools, "berthy.setup-probe", `echo "$*" >> "$CALLS"; [ -f "$CLOCK" ]`)
+			script := strings.ReplaceAll(restartScriptWithoutGuard(listen, 3), guardProbePath, filepath.Join(tools, "berthy.setup-probe"))
+			err := runShell(t, script, "", tools, dir)
+			log, _ := os.ReadFile(filepath.Join(dir, "calls"))
+			if state != "activating" {
+				if err == nil || string(log) != "show\n" {
+					t.Fatalf("%s unit: error=%v, calls=%q, want a state check only", state, err, log)
+				}
+				return
+			}
+			probe := "agent setup-probe health --listen " + listen + " --timeout "
+			if want := "show\n" + probe + "3s\nsleep\nshow\n" + probe + "2s\n"; err != nil || string(log) != want {
+				t.Fatalf("activating unit: error=%v, calls=%q, want %q", err, log, want)
+			}
+		})
+	}
+}
+
+func TestGuardProbesRestoredLegacyAgent(t *testing.T) {
+	for _, word := range []string{"pending", "recovering"} {
+		t.Run(word, func(t *testing.T) {
+			f := newResumeFixture(t, word)
+			closedProbeTools(t, f.tools)
+			shellTool(t, f.tools, "date", `if [ -f "$CALLS.clock" ]; then cat "$CALLS.clock"; else echo 0; fi`)
+			shellTool(t, f.tools, "sleep", `n=$(date +%s); echo $((n+1)) > "$CALLS.clock"`)
+			legacy := "#!/bin/sh\nexit 2 # legacy agent\n"
+			if err := os.WriteFile(f.bin+".prev", []byte(legacy), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if word == "recovering" {
+				if err := os.Rename(f.bin+".prev", f.bin); err != nil {
+					t.Fatal(err)
+				}
+			}
+			probe := `[ "$*" = 'agent setup-probe health --listen 127.0.0.1:7710 --timeout 1s' ] || exit 2
+if grep -q 'legacy agent' "$BIN" && [ "$(cat ` + shellQuote(f.cfg) + `)" = old-cfg ]; then
+  echo 'retained probe answered after restore' >> "$CALLS"
+  exit 0
+fi
+echo 'retained probe saw unhealthy new agent' >> "$CALLS"
+echo 1 > "$CALLS.clock"
+exit 1`
+			shellTool(t, f.tools, "berthy.setup-probe", probe)
+			if word == "pending" {
+				shellTool(t, f.dir, filepath.Base(f.bin), probe)
+				if err := os.Chmod(f.bin, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := "PATH=" + shellQuote(f.tools) + "\n" + guardScript(f.bin, f.cfg, Staged{Binary: true, Config: true}, "127.0.0.1:7710", 1)
+			code, output, state, log := f.run(t, script, "yes", "yes")
+			restarts := 1
+			if word == "pending" {
+				restarts++
+			}
+			bin, _ := os.ReadFile(f.bin)
+			cfg, _ := os.ReadFile(f.cfg)
+			if code != 0 || state != "restored" || string(bin) != legacy || string(cfg) != "old-cfg" ||
+				strings.Count(log, "restart berthy") != restarts || !strings.Contains(log, "retained probe answered after restore") ||
+				(word == "pending") != strings.Contains(log, "retained probe saw unhealthy new agent") {
+				t.Fatalf("legacy restore: code=%d, output=%q, state=%q, binary=%q, config=%q, calls=%q", code, output, state, bin, cfg, log)
+			}
+		})
 	}
 }

@@ -168,7 +168,7 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 func redactDoctor(s, token string) string { return strings.ReplaceAll(s, token, "<token>") }
 
 // healthScript asks the server whether the agent answers on listen, for five seconds.
-func healthScript(listen string) string { return waitScript(healthURL(listen), 5) }
+func healthScript(listen string) string { return waitScript(listen, 5) }
 
 // dryHasToken says whether a real run would have an admin token to verify with.
 func (s *Session) dryHasToken() bool {

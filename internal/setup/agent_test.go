@@ -135,7 +135,7 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 		return Result{}, nil
 	case strings.Contains(script, "-H @-"):
 		return Result{Stdout: []byte(f.doctorBody), Code: f.doctorCode}, nil
-	case strings.Contains(script, "systemctl is-failed"):
+	case strings.Contains(script, "agent setup-probe health"):
 		return Result{Code: f.healthCode}, nil
 	}
 	return Result{}, nil
@@ -286,6 +286,8 @@ func stepOf(t *testing.T, got []StepResult, name string) StepResult {
 
 // agentChange reports whether a script changes the server in a way only the agent's steps do.
 func agentChange(script string) bool {
+	// A version handshake removes its temporary stdout file before returning.
+	script = strings.ReplaceAll(script, "marker=$(mktemp)", "")
 	for _, m := range []string{"useradd", "usermod", "install -d", "mktemp", "systemctl restart", "systemctl enable", "daemon-reload",
 		"mv -f", "chown", "chmod", "cat >", "journalctl", "systemctl stop"} {
 		if strings.Contains(script, m) {
@@ -1306,7 +1308,7 @@ func TestActivateSucceeds(t *testing.T) {
 			t.Errorf("swap lacks %q:\n%s", want, s[0])
 		}
 	}
-	for _, want := range []string{"systemctl restart berthy", "http://" + listenIP + ":7710/healthz", "curl", "wget", "date +%s", "systemctl is-failed"} {
+	for _, want := range []string{"systemctl restart berthy", guardProbePath, "agent setup-probe health --listen '" + listenIP + ":7710'", "date +%s", "systemctl show --property=ActiveState --value berthy"} {
 		if !strings.Contains(s[1], want) {
 			t.Errorf("restart lacks %q:\n%s", want, s[1])
 		}
@@ -1760,7 +1762,7 @@ func TestVerifyStep(t *testing.T) {
 		if r.Status != StatusOK || r.Detail != "the agent answers; run berthy doctor with an admin token to check it fully" {
 			t.Fatalf("verify = %+v", r)
 		}
-		if !f.ran("http://" + listenIP + ":7710/healthz") {
+		if !f.ran("agent setup-probe health --listen '" + listenIP + ":7710'") {
 			t.Errorf("healthz was not asked")
 		}
 	})

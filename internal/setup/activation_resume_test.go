@@ -24,17 +24,17 @@ func newResumeFixture(t *testing.T, state string) resumeFixture {
 			t.Fatal(err)
 		}
 	}
-	shellTool(t, tools, "date", "echo 0")
-	shellTool(t, tools, "systemctl", `word=$(/bin/cat "$STATE"); echo "systemctl $* state=$word" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`)
-	shellTool(t, tools, "curl", `echo "curl" >> "$CALLS"; [ "$(/bin/cat "$BIN")" = old-bin ]`)
+	shellClock(t, tools)
+	shellTool(t, tools, "systemctl", `word=$(/bin/cat "$STATE"); echo "systemctl $* state=$word" >> "$CALLS"; case "$1" in show) echo active;; esac`)
+	shellTool(t, tools, "berthy.setup-probe", `[ "$(/bin/cat "$BIN")" = old-bin ] || { `+expireProbe+`; }`)
 	shellTool(t, tools, "mv", `word=$(/bin/cat "$STATE"); echo "mv $* state=$word" >> "$CALLS"; exec /bin/mv "$@"`)
 	return f
 }
 func (f resumeFixture) run(t *testing.T, script string, args ...string) (int, string, string, string) {
 	t.Helper()
-	script = strings.NewReplacer(guardState, f.state, guardLock, f.lock).Replace(script)
+	script = strings.NewReplacer(guardState, f.state, guardLock, f.lock, guardProbePath, filepath.Join(f.tools, "berthy.setup-probe")).Replace(script)
 	cmd := exec.Command("sh", append([]string{"-c", script, "guard"}, args...)...)
-	cmd.Env = append(os.Environ(), "PATH="+f.tools+":"+os.Getenv("PATH"), "STATE="+f.state, "CALLS="+f.calls, "BIN="+f.bin)
+	cmd.Env = append(os.Environ(), "PATH="+f.tools+":"+os.Getenv("PATH"), "STATE="+f.state, "CALLS="+f.calls, "BIN="+f.bin, "CLOCK="+filepath.Join(f.dir, "clock"))
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -103,7 +103,7 @@ func TestGuardNowLeavesFinalStateAlone(t *testing.T) {
 func TestConfirmedWriteFailureHasDistinctExit(t *testing.T) {
 	f := newResumeFixture(t, "pending")
 	shellTool(t, f.tools, "mktemp", "exit 1")
-	shellTool(t, f.tools, "curl", "exit 0")
+	shellTool(t, f.tools, "berthy.setup-probe", "exit 0")
 	code, out, state, calls := f.run(t, restartScript("x", 1))
 	if code != 4 || state != "pending" || strings.Contains(calls, "systemctl stop berthy-activation-guard.timer") {
 		t.Fatalf("code=%d output=%q state=%q calls=%q", code, out, state, calls)

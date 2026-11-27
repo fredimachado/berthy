@@ -23,6 +23,7 @@ func shellFixture(t *testing.T) (string, string) {
 	}
 	shellTool(t, tools, "flock", "exit 0")
 	shellTool(t, tools, "setpriv", `shift 3; exec "$@"`)
+	shellTool(t, tools, "sleep", `n=$(date +%s); echo $((n+1)) > "$CLOCK"`)
 	return d, tools
 }
 func shellTool(t *testing.T, tools, name, body string) {
@@ -31,6 +32,14 @@ func shellTool(t *testing.T, tools, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+func shellClock(t *testing.T, tools string) {
+	t.Helper()
+	shellTool(t, tools, "date", `if [ -f "$CLOCK" ]; then cat "$CLOCK"; else echo 0; fi`)
+}
+
+const expireProbe = `n=$(date +%s); echo $((n+1)) > "$CLOCK"; exit 1`
+
 func runShell(t *testing.T, script, input, tools, dir string) error {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", script)
@@ -80,14 +89,14 @@ func TestSwapRejectsTruncatedGuard(t *testing.T) {
 }
 func TestWaitScriptUsesElapsedDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
-	shellTool(t, tools, "date", `[ ! -f "$CLOCK" ] || cat "$CLOCK"; [ -f "$CLOCK" ] || echo 0`)
-	shellTool(t, tools, "curl", `echo "$*" >> "$CALLS"; n=0; [ ! -f "$CLOCK" ] || n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"; exit 1`)
-	shellTool(t, tools, "systemctl", "exit 1")
+	shellClock(t, tools)
+	shellTool(t, tools, "probe", `echo "$*" >> "$CALLS"; `+expireProbe)
+	shellTool(t, tools, "systemctl", "echo active")
 	shellTool(t, tools, "sleep", `n=$(cat "$CLOCK"); echo $((n+1)) > "$CLOCK"`)
-	_ = runShell(t, waitScript("http://x", 3), "", tools, dir)
+	_ = runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir)
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[1], "--max-time 1") {
+	if len(lines) != 2 || !strings.Contains(lines[0], "--timeout 3s") || !strings.Contains(lines[1], "--timeout 1s") {
 		t.Fatalf("probes do not respect elapsed time: %q", calls)
 	}
 }
@@ -95,15 +104,16 @@ func TestRestartDisarmsOnlyAfterHealthAnswers(t *testing.T) {
 	for _, answer := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unhealthy", true: "healthy"}[answer], func(t *testing.T) {
 			dir, tools := shellFixture(t)
-			shellTool(t, tools, "date", "echo 0")
-			shellTool(t, tools, "systemctl", `echo "$*" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`)
-			curl := "exit 1"
+			shellClock(t, tools)
+			shellTool(t, tools, "systemctl", `echo "$*" >> "$CALLS"; case "$1" in show) echo active ;; esac`)
+			probe := expireProbe
 			if answer {
-				curl = "exit 0"
+				probe = "exit 0"
 			}
-			shellTool(t, tools, "curl", curl)
+			shellTool(t, tools, "probe", probe)
 			os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
-			script := strings.NewReplacer(guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(restartScript("x", 1))
+			script := strings.NewReplacer(guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock"),
+				guardProbePath, filepath.Join(tools, "probe")).Replace(restartScript("x", 1))
 			err := runShell(t, script, "", tools, dir)
 			if (err == nil) != answer {
 				t.Fatalf("restart error = %v", err)
@@ -118,23 +128,23 @@ func TestRestartDisarmsOnlyAfterHealthAnswers(t *testing.T) {
 func TestGuardReportsFirstInstallStopFailure(t *testing.T) {
 	dir, tools := shellFixture(t)
 	shellTool(t, tools, "date", "echo 0")
-	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; is-failed) exit 0;; esac; exit 0`)
-	shellTool(t, tools, "curl", "exit 1")
+	shellTool(t, tools, "systemctl", `case "$1" in stop) exit 42;; show) echo failed;; esac`)
 	os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
 	script := strings.NewReplacer(guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(guardScript("/bin/x", "/etc/x", Staged{Binary: true}, "x", 1))
 	err := runShell(t, script, "", tools, dir)
-	if err == nil {
-		t.Fatal("guard hid failed stop")
+	state, _ := os.ReadFile(filepath.Join(dir, "state"))
+	if err == nil || string(state) != "stop-failed\n" {
+		t.Fatalf("guard hid failed stop: error=%v, state=%q", err, state)
 	}
 }
 
 func TestWaitDoesNotSleepAfterDeadline(t *testing.T) {
 	dir, tools := shellFixture(t)
-	shellTool(t, tools, "date", `[ ! -f "$CLOCK" ] || cat "$CLOCK"; [ -f "$CLOCK" ] || echo 0`)
-	shellTool(t, tools, "curl", `echo 3 > "$CLOCK"; exit 1`)
-	shellTool(t, tools, "systemctl", "exit 1")
+	shellClock(t, tools)
+	shellTool(t, tools, "probe", `echo 3 > "$CLOCK"; exit 1`)
+	shellTool(t, tools, "systemctl", "echo active")
 	shellTool(t, tools, "sleep", `echo slept >> "$CALLS"`)
-	_ = runShell(t, waitScript("http://x", 3), "", tools, dir)
+	_ = runShell(t, waitScriptOnSuccess(filepath.Join(tools, "probe"), "x", 3, "exit 0"), "", tools, dir)
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if strings.Contains(string(calls), "slept") {
 		t.Fatal("slept after the deadline")

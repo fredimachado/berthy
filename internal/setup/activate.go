@@ -100,26 +100,26 @@ install -o root -g root -m 0755 -- "$probe_bin" "$tmp" && mv -fT -- "$tmp" "$ret
 `
 }
 
-// getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.
-const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time "$2" -o /dev/null "$1" >/dev/null 2>&1; else timeout "$2" wget --tries=1 -q -T "$2" -O /dev/null "$1" >/dev/null 2>&1; fi; }
-`
+// waitScript selects a client for a standalone health check without replacing the retained copy.
+func waitScript(listen string, secs int) string {
+	return selectProbeScript(Staged{}) + waitForProbe(listen, secs, "exit 0")
+}
 
-// healthURL is where the agent answers whether it is up.
-func healthURL(listen string) string { return "http://" + listen + "/healthz" }
+func waitScriptOnSuccess(probeBin, listen string, secs int, success string) string {
+	return "probe_bin=" + shellQuote(probeBin) + "\n" + waitForProbe(listen, secs, success)
+}
 
-// waitScript succeeds as soon as url answers, and fails when secs seconds pass, or earlier when systemd has given the service
-// up.
-func waitScript(url string, secs int) string { return waitScriptOnSuccess(url, secs, "exit 0") }
-
-func waitScriptOnSuccess(url string, secs int, success string) string {
-	return getFunc +
-		fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
+// waitForProbe uses the selected probe_bin for the whole wait.
+func waitForProbe(listen string, secs int, success string) string {
+	return fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
 		"while :; do\n" +
+		"  active_state=$(systemctl show --property=ActiveState --value berthy) || exit 1\n" +
+		"  case \"$active_state\" in active|activating|reloading) ;; *) exit 1 ;; esac\n" +
 		"  left=$((end - $(date +%s)))\n" +
 		"  [ \"$left\" -gt 0 ] || break\n" +
 		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
-		"  if get " + shellQuote(url) + " \"$probe\"; then " + success + "; fi\n" +
-		"  if systemctl is-failed --quiet berthy; then exit 1; fi\n" +
+		"  if " + probeAsAgent + "\"$probe_bin\" agent setup-probe health --listen " + shellQuote(listen) +
+		" --timeout \"${probe}s\" </dev/null >/dev/null 2>&1; then " + success + "; fi\n" +
 		"  [ \"$(date +%s)\" -lt \"$end\" ] || break\n" +
 		"  sleep 1\n" +
 		"done\n" +
@@ -431,7 +431,7 @@ func restartScriptWithGuard(listen string, secs int, guarded bool) string {
 		success = fmt.Sprintf("set_state confirmed || exit %d; systemctl stop %s.timer >/dev/null 2>&1 || true; exit 0", guardRecordFailed, guardUnit)
 	}
 	return prefix + "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
-		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(healthURL(listen), secs, success)
+		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(guardProbePath, listen, secs, success)
 }
 
 // activateScripts lists the swap when staged and the restart for a successful activation.
