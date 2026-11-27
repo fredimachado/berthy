@@ -160,3 +160,23 @@ func TestPriorRecoveryResultsIncludeJournal(t *testing.T) {
 		})
 	}
 }
+
+func TestPriorRecoveryResultSurvivesJournalError(t *testing.T) {
+	for _, tc := range []struct {
+		word, message string
+		outcome       ConfigOutcome
+	}{
+		{"restored", "previous one was put back", ConfigPrevious},
+		{"restored-down", "does not answer either", ConfigPrevious},
+		{"stopped", "left stopped", ConfigRetained},
+	} {
+		t.Run(tc.word, func(t *testing.T) {
+			r := &stateResultRunner{word: tc.word, journalErr: errors.New("journal unavailable")}
+			err := Activate(context.Background(), r, "x", Staged{Config: true, Binary: true}, time.Second)
+			var ae *ActivateError
+			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), tc.message) || len(r.calls) != 3 {
+				t.Fatalf("error=%v calls=%q", err, r.calls)
+			}
+		})
+	}
+}

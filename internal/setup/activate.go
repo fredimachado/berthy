@@ -157,7 +157,8 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	if armed && res.Code == guardDecided {
 		result := parseGuardState(res.Stdout)
 		journal := ""
-		if result == guardStopFailed || result == guardRestoreFailed {
+		switch result {
+		case guardRestored, guardRestoredDown, guardStopped, guardStopFailed, guardRestoreFailed:
 			journal, _ = journalTail(ctx, r)
 		}
 		return guardOutcome(result, prevCfg, outcome, journal)

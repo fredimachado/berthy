@@ -89,7 +89,7 @@ func TestLockedRestartConfirmsDespiteTimerStopFailure(t *testing.T) {
 	}
 }
 func TestLockedRestartReadsCompletedState(t *testing.T) {
-	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed"} {
+	for _, word := range []string{"confirmed", "kept", "restored", "restored-down", "stopped", "stop-failed", "restore-failed", "recovering"} {
 		t.Run(word, func(t *testing.T) {
 			code, out, state, calls := stateShell(t, restartScript("x", 1), word, "no-actions")
 			if code != 0 || !strings.Contains(out, "guard="+word) || state != word || strings.Contains(calls, "restart berthy") || strings.Contains(calls, "stop berthy") || strings.Contains(calls, "mv ") {
@@ -146,17 +146,18 @@ func TestWgetProbeIsBoundedAsAWhole(t *testing.T) {
 }
 
 type stateResultRunner struct {
-	word      string
-	journal   string
-	calls     []string
-	failOwner bool
+	word       string
+	journal    string
+	journalErr error
+	calls      []string
+	failOwner  bool
 }
 
 func (*stateResultRunner) Target() string { return "fixture" }
 func (r *stateResultRunner) Run(_ context.Context, s string, _ io.Reader) (Result, error) {
 	r.calls = append(r.calls, s)
 	if strings.HasPrefix(s, "journalctl") {
-		return Result{Stdout: []byte(r.journal)}, nil
+		return Result{Stdout: []byte(r.journal)}, r.journalErr
 	}
 	if strings.Contains(s, ".new ") {
 		return Result{Stdout: []byte("prev_bin=yes\nprev_cfg=yes\n")}, nil
@@ -172,7 +173,7 @@ func TestActivateMapsGuardStates(t *testing.T) {
 		ok      bool
 		outcome ConfigOutcome
 		text    string
-	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigUnconfirmed, "the agent did not come up and could not be stopped"}, {"restore-failed", false, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"}, {"running", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
+	}{{"confirmed", true, "", ""}, {"kept", true, "", ""}, {"restored", false, ConfigPrevious, "previous one was put back"}, {"restored-down", false, ConfigPrevious, "does not answer either"}, {"stopped", false, ConfigRetained, "left stopped"}, {"stop-failed", false, ConfigUnconfirmed, "the agent did not come up and could not be stopped"}, {"restore-failed", false, ConfigUnconfirmed, "the new agent did not come up and the previous one could not be put back"}, {"running", false, ConfigUnconfirmed, "not known"}, {"recovering", false, ConfigUnconfirmed, "not known"}, {"bogus", false, ConfigUnconfirmed, "not known"}} {
 		t.Run(tc.word, func(t *testing.T) {
 			r := &stateResultRunner{word: tc.word}
 			err := Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
@@ -187,7 +188,7 @@ func TestActivateMapsGuardStates(t *testing.T) {
 				}
 			}
 			wantCalls := 2
-			if tc.word == "stop-failed" || tc.word == "restore-failed" {
+			if tc.word == "restored" || tc.word == "restored-down" || tc.word == "stopped" || tc.word == "stop-failed" || tc.word == "restore-failed" {
 				wantCalls = 3
 			}
 			if len(r.calls) != wantCalls {
