@@ -226,7 +226,11 @@ func TestActivateRunsGuardOnFailure(t *testing.T) {
 			if !errors.As(err, &ae) || ae.ConfigOutcome != tc.outcome || !strings.Contains(err.Error(), tc.message) || tc.fail && strings.Contains(err.Error(), "seconds after the swap") {
 				t.Fatalf("error=%v expected=%s", err, tc.outcome)
 			}
-			if len(r.calls) != 4 || !strings.Contains(r.calls[3], "/run/berthy-activation-guard.sh") {
+			wantScript := "/bin/sh " + guardPath + " no no now"
+			if tc.previous {
+				wantScript = "/bin/sh " + guardPath + " yes yes now"
+			}
+			if len(r.calls) != 4 || r.calls[3] != wantScript {
 				t.Fatalf("expected synchronous guard: %q", r.calls)
 			}
 			if tc.previous && !strings.Contains(r.calls[3], "yes yes") {

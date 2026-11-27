@@ -28,7 +28,7 @@ func (r *journalExitRunner) Run(ctx context.Context, script string, stdin io.Rea
 		r.calls = append(r.calls, script)
 		return Result{Code: r.journalCode}, nil
 	}
-	if r.rollbackCode != 0 && strings.HasPrefix(script, "/bin/sh "+guardPath+" ") {
+	if r.rollbackCode != 0 && script == "/bin/sh "+guardPath+" no yes now" {
 		r.calls = append(r.calls, script)
 		return Result{Code: r.rollbackCode}, nil
 	}
@@ -47,7 +47,7 @@ func TestJournalExitDoesNotPreventRollback(t *testing.T) {
 			err := Activate(context.Background(), r, "127.0.0.1:7710", Staged{Config: true}, time.Second)
 			found := false
 			for _, script := range r.calls {
-				if strings.HasPrefix(script, "/bin/sh "+guardPath+" ") {
+				if script == "/bin/sh "+guardPath+" no yes now" {
 					found = true
 				}
 			}
