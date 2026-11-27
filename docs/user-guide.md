@@ -348,7 +348,7 @@ Keep the file in a password manager or your provisioning tool's vault as well.
 
 A second run repairs what is missing and changes nothing else. It never replaces the encryption key, the tokens or the agent's state, it never replaces a key copy on your machine, and it never touches a running app. Run one `berthy setup` at a time against a server: two runs that add different environments can read the same `agent.json` and lose one entry. (A setup lock is planned: #53.)
 
-Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped. If the connection is lost after the swap, a transient server-side timer checks the agent and restores the previous files, or stops a first install, if it does not answer. Setup and the timer coordinate their recovery on the server, so setup can report the timer’s result if it finishes first. The timer does not survive a reboot.
+Running it with a **newer CLI**, or with `--binary`, **upgrades the agent**. An older release CLI refuses to replace a newer agent: upgrade the CLI, or pass `--binary` to install another build. Only the agent restarts. Apps keep running. The previous binary and configuration are kept for one generation, and **if the new agent does not answer, setup puts the previous binary and configuration back** and restarts the old one, with the agent's last log lines in the error. On a first install there is nothing to put back, so setup stops the service and leaves it stopped. If the connection is lost after the swap, a transient server-side timer checks the agent and restores the previous files, or stops a first install, if it does not answer. Setup and the timer coordinate their recovery on the server, so setup can report the timer’s result if it finishes first. The timer does not survive a reboot.
 
 Put the server name, its SSH destination and its private address in the environment's overlay. `address` needs the release that ships it: set `min_version: 0.8.0` so an older CLI or agent is refused before the request. For example, in `berthy.prod.yml`:
 
@@ -467,7 +467,7 @@ berthy agent-info -e prod
 
 `berthy version` needs no agent. It prints the CLI's version and platform (`berthy dev linux/amd64` for a development build). `--json` prints an object with `version`, `release`, `os` and `arch`.
 
-`berthy doctor` asks the agent to check itself, and prints the CLI's and the agent's versions first. If they differ, it adds a note that `berthy setup` upgrades the agent. It exits `1` when a critical check fails. The checks are:
+`berthy doctor` asks the agent to check itself, and prints the CLI's and the agent's versions first. If the agent is an older release, it adds a note that `berthy setup` upgrades the agent; if the agent is newer, it says to upgrade this CLI. It exits `1` when a critical check fails. The checks are:
 
 | Check | What it looks at |
 | --- | --- |
