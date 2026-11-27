@@ -2,11 +2,20 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
+	"berthy/internal/agentclient"
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
 	"berthy/internal/state"
@@ -168,4 +177,125 @@ func TestDeployFieldPreviewIsOptIn(t *testing.T) {
 		}
 		f.noOperation()
 	})
+}
+
+func TestDeployFieldPreviewReadsBothLargeReleases(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	values := func(part string) (body []byte, value string) {
+		value = strings.Repeat(part, 150<<10)
+		body = previewRequest(t, func(app *manifest.App) {
+			app.Env.Plain = map[string]string{"ALPHA": value, "BETA": value, "GAMMA": value, "OMEGA": value}
+		})
+		if len(body) >= api.MaxRequestBody {
+			t.Fatalf("request is %d bytes", len(body))
+		}
+		return body, value
+	}
+	before, oldValue := values("a")
+	next, newValue := values("b")
+	baseID := recordPreviewRelease(t, f.s, "initial", previewManifest(t, before))
+	server := httptest.NewServer(f.h)
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	base, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(query string) (agentclient.Result, error) {
+		return agentclient.DoResult(ctx, server.Client(), base, apiPrefix(f.cfg), apDeployToken, "POST", "deploys", query, next)
+	}
+	compact, err := call("")
+	if err != nil || compact.Status != http.StatusOK || len(compact.Data) >= 1<<20 {
+		t.Fatalf("compact preview: status %d, %d bytes, %v", compact.Status, len(compact.Data), err)
+	}
+	result, err := call("diff=fields")
+	if err != nil || result.Status != http.StatusOK || len(result.Data) <= 1<<20 {
+		t.Fatalf("field preview: status %d, %d bytes, %v", result.Status, len(result.Data), err)
+	}
+	preview := readFieldPreview(t, result.Data)
+	if *preview.ReleaseDiff.Base != baseID || len(preview.ReleaseDiff.Fields) != 4 {
+		t.Fatalf("field preview base %d, rows %d", *preview.ReleaseDiff.Base, len(preview.ReleaseDiff.Fields))
+	}
+	for i, name := range []string{"ALPHA", "BETA", "GAMMA", "OMEGA"} {
+		row := preview.ReleaseDiff.Fields[i]
+		if !slices.Equal(row.Path, []string{"env", name}) || row.Before == nil || *row.Before != oldValue || row.After == nil || *row.After != newValue {
+			t.Fatalf("incomplete row for %s: path %q", name, row.Path)
+		}
+	}
+	f.noOperation()
+}
+
+type fieldPreviewTransport func(*http.Request) (*http.Response, error)
+
+func (f fieldPreviewTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type previewWhitespace struct{}
+
+func (previewWhitespace) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = ' '
+	}
+	return len(p), nil
+}
+
+func TestDeployFieldPreviewResponseLimit(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	const role = "application-with-a-long-service-role-name"
+	const count = 2048
+	request := func(value string) []byte {
+		return previewRequest(t, func(app *manifest.App) {
+			options := make(map[string]string, count)
+			for i := range count {
+				options[fmt.Sprintf("option.%04d", i)] = value
+			}
+			app.Roles = map[string]manifest.Role{role: {Logging: &manifest.Logging{Driver: "json-file", Options: options}}}
+		})
+	}
+	before, after := request("old"), request("new")
+	recordPreviewRelease(t, f.s, "initial", previewManifest(t, before))
+	w := f.call("POST", fieldPreviewPath, apDeployToken, string(after))
+	if w.Code != http.StatusOK {
+		t.Fatalf("field preview: %d %s", w.Code, w.Body.String())
+	}
+	raw := w.Body.Bytes()
+	preview := readFieldPreview(t, raw)
+	pathPrefix := []byte(`"path":["roles","` + role + `","logging","options","option.`)
+	sides := []byte(`"before":"old","after":"new"`)
+	if len(preview.ReleaseDiff.Fields) != count || bytes.Count(raw, pathPrefix) != count || bytes.Count(raw, sides) != count {
+		t.Fatalf("expected %d encoded paths and both sides in %d bytes", count, len(raw))
+	}
+	if len(raw) <= len(before)+len(after) {
+		t.Fatalf("repeated paths should make preview (%d bytes) larger than the requests (%d bytes)", len(raw), len(before)+len(after))
+	}
+
+	for _, tc := range []struct {
+		name, query   string
+		status, limit int
+		document      []byte
+		wantInvalid   bool
+	}{
+		{"at limit", "diff=fields", http.StatusOK, api.MaxDeployDiffResponse, raw, false},
+		{"one byte over", "diff=fields", http.StatusOK, api.MaxDeployDiffResponse + 1, raw, true},
+		{"ordinary", "", http.StatusOK, api.MaxDeployDiffResponse, raw, true},
+		{"error response", "diff=fields", http.StatusBadRequest, api.MaxDeployDiffResponse, raw, true},
+		{"admission", "diff=fields", http.StatusAccepted, api.MaxDeployDiffResponse, raw, true},
+		{"truncated", "diff=fields", http.StatusOK, 7, []byte(`{"app":`), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: fieldPreviewTransport(func(*http.Request) (*http.Response, error) {
+				body := io.MultiReader(bytes.NewReader(tc.document), io.LimitReader(previewWhitespace{}, int64(tc.limit-len(tc.document))))
+				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(body)}, nil
+			})}
+			base := &url.URL{Scheme: "http", Host: "agent"}
+			result, err := agentclient.DoResult(t.Context(), client, base, apiPrefix(f.cfg), apDeployToken, "POST", "deploys", tc.query, after)
+			if tc.wantInvalid {
+				if !errors.Is(err, agentclient.ErrInvalidResponse) {
+					t.Fatalf("read %d bytes, error = %v, want ErrInvalidResponse", len(result.Data), err)
+				}
+			} else if err != nil || len(result.Data) != tc.limit || !bytes.HasPrefix(result.Data, raw) {
+				t.Fatalf("read %d bytes at rich limit, error = %v", len(result.Data), err)
+			}
+		})
+	}
 }
