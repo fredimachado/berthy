@@ -144,11 +144,16 @@ cleanup_setup() {
 }
 trap cleanup_setup EXIT
 bash "$fixture" start "$server" || { fail "start disposable setup server" "fixture did not start"; finish; }
-if ! bash "$fixture" install-docker "$server" > "$LOG/install-docker.log" 2>&1; then
-  fail "install Docker on the setup fixture" "see $LOG/install-docker.log"
-  finish
-fi
 remote() { bash "$fixture" exec "$server" "$@"; }
+if remote sh -c 'command -v docker' >/dev/null; then
+  remote systemctl start docker || { fail "start fixture Docker" "the installed Docker service did not start"; finish; }
+else
+  echo "  fixture image has no Docker; running the fixture installer"
+  if ! bash "$fixture" install-docker "$server" > "$LOG/install-docker.log" 2>&1; then
+    fail "install Docker on the setup fixture" "see $LOG/install-docker.log"
+    finish
+  fi
+fi
 ip=$(bash "$fixture" ip "$server") || exit 1
 
 cfg="$private/cli.json"
