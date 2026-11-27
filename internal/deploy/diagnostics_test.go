@@ -759,6 +759,27 @@ func TestStartAttemptWordingOfTheReason(t *testing.T) {
 	}
 }
 
+func TestFinalRolloutFallbackIsPublic(t *testing.T) {
+	for _, reason := range []string{
+		"final verification unavailable",
+		"final health verification failed",
+		"final drain verification failed",
+		"service update did not complete",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			cause := finalRolloutFailure(reason)
+			for _, err := range []error{cause, fmt.Errorf("wrapped: %w", cause)} {
+				if got := rolloutFallback(err); got != reason {
+					t.Errorf("fallback for %v = %q, want %q", err, got, reason)
+				}
+			}
+		})
+	}
+	if got := rolloutFallback(errors.New("service health deadline exceeded")); got != "deploy deadline exceeded before the task was healthy" {
+		t.Fatalf("startup deadline fallback = %q", got)
+	}
+}
+
 type failingRestoreEngine struct{ *diagFake }
 
 func (f failingRestoreEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {

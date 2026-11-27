@@ -330,6 +330,10 @@ func (c *Controller) recordOneOffFailure(ctx context.Context, opID string, err e
 
 // rolloutFallback is the public reason when no task left evidence, chosen from the rollout's own error. The texts are fixed.
 func rolloutFallback(cause error) string {
+	var final finalRolloutFailure
+	if errors.As(cause, &final) {
+		return final.Error()
+	}
 	var gaveUp *errStartAttempts
 	if errors.As(cause, &gaveUp) {
 		return fmt.Sprintf("role %s: gave up after %d failed starts", printable(gaveUp.Role, 64), gaveUp.Limit)
