@@ -51,7 +51,9 @@ func runSetupProbe(args []string, stdin io.Reader, out, errout io.Writer) int {
 	}
 	base := url.URL{Scheme: "http", Host: net.JoinHostPort(ip.String(), strconv.Itoa(port))}
 	if args[0] == "doctor" {
-		return setupProbeDoctor(&base, scopeName, stdin, out, errout)
+		client := agentclient.NewHTTPClient()
+		defer client.CloseIdleConnections()
+		return setupProbeDoctor(client, &base, scopeName, stdin, out, errout)
 	}
 	if timeout <= 0 || timeout > 3*time.Second {
 		fmt.Fprintln(errout, "setup-probe: timeout must be positive and at most 3s")
@@ -63,7 +65,7 @@ func runSetupProbe(args []string, stdin io.Reader, out, errout io.Writer) int {
 	return 0
 }
 
-func setupProbeDoctor(base *url.URL, scopeName string, stdin io.Reader, out, errout io.Writer) int {
+func setupProbeDoctor(client *http.Client, base *url.URL, scopeName string, stdin io.Reader, out, errout io.Writer) int {
 	id, err := scope.Parse(scopeName)
 	if err != nil {
 		fmt.Fprintln(errout, "setup-probe: invalid scope")
@@ -80,9 +82,10 @@ func setupProbeDoctor(base *url.URL, scopeName string, stdin io.Reader, out, err
 		fmt.Fprintln(errout, "setup-probe:", err)
 		return 2
 	}
-	client := agentclient.NewHTTPClient()
-	defer client.CloseIdleConnections()
-	body, status, err := agentclient.Do(context.Background(), client, base, id.APIPath(), token, http.MethodGet, "doctor", "", nil)
+	// A legacy probe after a 404 shares the scoped request's budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body, status, err := agentclient.Do(ctx, client, base, id.APIPath(), token, http.MethodGet, "doctor", "", nil)
 	if err != nil {
 		fmt.Fprintln(errout, "setup-probe: doctor request failed")
 		return 1

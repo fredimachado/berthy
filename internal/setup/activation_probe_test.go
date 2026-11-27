@@ -90,30 +90,65 @@ func TestSwapRequiresUsableProbeBeforeRestart(t *testing.T) {
 }
 
 func TestStalledStagedProbeUsesInstalledBinary(t *testing.T) {
+	t.Run("stalls after readiness", func(t *testing.T) {
+		testStagedProbeSelection(t, false)
+	})
+	t.Run("exits before readiness", func(t *testing.T) {
+		testStagedProbeSelection(t, true)
+	})
+}
+
+func testStagedProbeSelection(t *testing.T, exitEarly bool) {
+	t.Helper()
 	dir, tools := shellFixture(t)
+	if exitEarly {
+		shellTool(t, tools, "setpriv", `shift 3; case "$1" in *.new) exit 126;; esac; exec "$@"`)
+		mkfifo, err := exec.LookPath("mkfifo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Give the old FIFO reader EOF too, so a regression fails instead of blocking on open.
+		shellTool(t, tools, "mkfifo", `
+for path do
+  case "$path" in *.ready) : > "$path";; *) `+shellQuote(mkfifo)+` "$path" || exit 2;; esac
+done`)
+	}
 	shellTool(t, tools, "berthy.new", `
 [ "${SUPERVISED:-}" = yes ] || { echo unsupervised >> "$CALLS"; exit 1; }
 if read -r unexpected; then observation=has-input; else observation=eof; fi
-printf '%s\n' "$observation" > "$CALLS.ready"
 trap '' TERM
+printf '%s %s\n' "$$" "$observation" >&4
 read -r release < "$CALLS.block"`)
 	shellTool(t, tools, "berthy", `printf 'berthy-setup-probe/1\n'`)
 	shellTool(t, tools, "install", `shift 7; exec /bin/cp "$@"`)
 	shellTool(t, tools, "mv", `[ "$1" = -fT ] && [ "$2" = -- ] || exit 2; shift 2; exec /bin/mv -f "$@"`)
 	shellTool(t, tools, "timeout", `
 exec 3<&0
-echo "timeout $*" >> "$CALLS"
+# Keep the fixture log within the candidate's file size limit on long temp paths.
+args=$*
+tools="${CALLS%/*}/tools/"
+case "$args" in
+  *"$tools"*) args=${args%%"$tools"*}${args#*"$tools"} ;;
+esac
+echo "timeout $args" >> "$CALLS"
 [ "$1" = --kill-after=1s ] && [ "$2" = 3s ] || exit 2
 shift 2
 case "$*" in
   *'berthy.new agent setup-probe version')
-    mkfifo "$CALLS.ready" "$CALLS.block" || exit 2
-    SUPERVISED=yes "$@" <&3 3<&- &
-    child=$!
-    trap 'kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null' EXIT
-    IFS= read -r observation < "$CALLS.ready"
-    echo "staged stdin: $observation" >> "$CALLS"
-    exit 124 ;;
+    mkfifo "$CALLS.block" || exit 2
+    (
+      SUPERVISED=yes "$@" <&3 3<&- 4>&1 &
+      wait "$!" 2>/dev/null
+    ) | (
+      if ! IFS=' ' read -r child observation; then
+        echo 'staged probe exited before readiness' >> "$CALLS"
+        exit 126
+      fi
+      kill -KILL "$child" || exit 2
+      echo "staged stdin: $observation" >> "$CALLS"
+      exit 124
+    )
+    exit "$?" ;;
   *) exec "$@" ;;
 esac`)
 	prepared := false
@@ -128,8 +163,12 @@ esac`)
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	want := "timeout --kill-after=1s 3s setpriv --reuid=berthy --regid=berthy --clear-groups "
-	if !strings.Contains(string(log), want+filepath.Join(tools, "berthy.new")+" agent setup-probe version\nstaged stdin: eof\n"+
-		want+filepath.Join(tools, "berthy")+" agent setup-probe version\n") {
+	observation := "staged stdin: eof"
+	if exitEarly {
+		observation = "staged probe exited before readiness"
+	}
+	if !strings.Contains(string(log), want+"berthy.new agent setup-probe version\n"+observation+"\n"+
+		want+"berthy agent setup-probe version\n") {
 		t.Fatalf("candidate selection calls: %q", log)
 	}
 	got, err := os.ReadFile(filepath.Join(tools, "berthy.setup-probe"))

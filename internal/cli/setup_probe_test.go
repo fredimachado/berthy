@@ -8,14 +8,59 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"berthy/internal/agentclient"
 	"berthy/internal/monitor"
 )
+
+type setupProbeTransport func(*http.Request) (*http.Response, error)
+
+func (f setupProbeTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSetupProbeDoctorSharesDeadlineWithLegacyRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const scoped = "/v1/projects/shop/environments/staging/doctor"
+		const legacy = "/v1/environments/staging/agent"
+		start := time.Now()
+		var paths []string
+		var legacyStarted time.Duration
+		client := agentclient.NewHTTPClient()
+		client.Transport = setupProbeTransport(func(r *http.Request) (*http.Response, error) {
+			paths = append(paths, r.URL.Path)
+			if r.URL.Path == legacy {
+				legacyStarted = time.Since(start)
+			}
+			timer := time.NewTimer(18 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			case <-timer.C:
+			}
+			status := http.StatusNotFound
+			if r.URL.Path == legacy {
+				status = http.StatusOK
+			}
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+		})
+		base := &url.URL{Scheme: "http", Host: "127.0.0.1:7710"}
+		var out, errout bytes.Buffer
+		code := setupProbeDoctor(client, base, "shop/staging", strings.NewReader("test-token\n"), &out, &errout)
+		if !slices.Equal(paths, []string{scoped, legacy}) || legacyStarted != 18*time.Second {
+			t.Fatalf("requests: %v, legacy started at %s", paths, legacyStarted)
+		}
+		if elapsed := time.Since(start); elapsed != 30*time.Second || code != 1 || out.Len() != 0 {
+			t.Fatalf("doctor took %s, want 30s (exit %d, stdout %q, stderr %q)", elapsed, code, &out, &errout)
+		}
+	})
+}
 
 func TestAgentSetupProbeHealth(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
