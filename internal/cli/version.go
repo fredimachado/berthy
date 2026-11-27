@@ -69,5 +69,8 @@ func versionNote(agent string) string {
 	if !version.Release() || !version.IsRelease(agent) || agent == cliVersion {
 		return ""
 	}
+	if c, ok := version.Compare(agent, cliVersion); ok && c > 0 {
+		return fmt.Sprintf("note: the agent runs %s, this CLI is %s; upgrade this CLI", agent, cliVersion)
+	}
 	return fmt.Sprintf("note: the agent runs %s, this CLI is %s; berthy setup upgrades the agent", agent, cliVersion)
 }

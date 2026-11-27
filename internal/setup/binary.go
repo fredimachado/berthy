@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"berthy/internal/version"
 )
 
 // DefaultReleaseURL is where releases are downloaded from. A release has berthy-linux-amd64, berthy-linux-arm64 and
@@ -177,6 +179,14 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 		if same {
 			return StatusOK, installedText(src), nil
+		}
+		// --binary has no version and stays the explicit override; a non-release
+		// (dev) version on either side leaves Compare ok=false and skips this.
+		if src.version != "" {
+			server := s.serverVersion(ctx)
+			if c, ok := version.Compare(server, src.version); ok && c > 0 {
+				return "", "", fmt.Errorf("the server runs berthy %s, newer than this CLI (%s): upgrade this CLI, or pass --binary to install another build", server, src.version)
+			}
 		}
 	}
 	verb := "install"
