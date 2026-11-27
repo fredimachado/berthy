@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
+	"berthy/internal/agent"
 	"berthy/internal/scope"
 	"berthy/internal/state"
 )
@@ -218,6 +220,127 @@ func TestRemovalRetryPreservesReplacementKeys(t *testing.T) {
 			removalFixtureHas(t, replacement, "replacement key")
 			removalFixtureHas(t, key+state.KeyNextSuffix, "next key")
 			removalFixtureHas(t, filepath.Join(dest, "nested", "compose.yml"), "compose data")
+		})
+	}
+}
+
+func TestRemovalRefusesBindMountedPeerPaths(t *testing.T) {
+	if err := exec.Command("unshare", "-Ur", "-m", "true").Run(); err != nil {
+		t.Skipf("unprivileged mount namespaces unavailable: %v", err)
+	}
+	for _, name := range []string{"key parent", "key inside peer tree", "key alias before cleanup", "state tree alias before cleanup"} {
+		t.Run(name, func(t *testing.T) {
+			root, tools := shellFixture(t)
+			shellTool(t, tools, "id", "exec /usr/bin/id -u")
+			stateDir := filepath.Join(root, "target", "state")
+			keyFile := filepath.Join(root, "target", "keys", "key")
+			peerDir := filepath.Join(root, "peer", "state")
+			peerKey := filepath.Join(root, "peer", "keys", "key")
+			for _, dir := range []string{stateDir, filepath.Dir(keyFile), peerDir, filepath.Dir(peerKey)} {
+				removalFixtureDir(t, dir)
+			}
+			removalFixtureWrite(t, keyFile, "target key")
+			removalFixtureWrite(t, peerKey, "peer key")
+			removalFixtureWrite(t, filepath.Join(stateDir, "sentinel"), "target state")
+			from, to := filepath.Dir(peerKey), filepath.Dir(keyFile)
+			switch name {
+			case "key inside peer tree":
+				from = filepath.Join(peerDir, "nested")
+				removalFixtureDir(t, from)
+				removalFixtureWrite(t, filepath.Join(from, "key"), "peer state")
+			case "key alias before cleanup":
+				from, to = to, from
+			case "state tree alias before cleanup":
+				from, to = stateDir, peerDir
+			}
+			rec := removal{ID: scope.ID{Project: "alpha", Environment: "dev"}, StateDir: stateDir, KeyFile: keyFile,
+				StateIdentity: removalIdentity(t, stateDir), KeyIdentity: removalIdentity(t, keyFile),
+				Archive: stateDir + ".removed-20261128T020000Z", Activated: true}
+			cfg := agent.File{Environments: []agent.Hosted{
+				{Project: "peer", Environment: "dev", StateDir: peerDir, KeyFile: peerKey},
+			}}
+			r := funcRunner{run: func(script string, stdin io.Reader) Result {
+				cmd := exec.Command("unshare", "-Ur", "-m", "--", "sh", "-c", `mount --bind "$1" "$2" || exit 99; exec sh -c "$3"`, "bind-fixture", from, to, script)
+				cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"))
+				out, err := cmd.Output()
+				if err == nil {
+					return Result{Stdout: out}
+				}
+				if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() != 99 {
+					return Result{Code: exit.ExitCode(), Stdout: out, Stderr: exit.Stderr}
+				}
+				t.Fatalf("bind fixture: %v", err)
+				return Result{}
+			}}
+			var err error
+			if strings.HasSuffix(name, "cleanup") {
+				s := &Session{R: r, removal: &rec, existing: &cfg}
+				_, _, err = removeStateStep(context.Background(), s)
+			} else {
+				_, err = inspectRemovalPaths(context.Background(), r, rec, cfg)
+			}
+			if err == nil {
+				t.Errorf("%s accepted the bind-mounted peer alias", name)
+			}
+			removalFixtureHas(t, keyFile, "target key")
+			removalFixtureHas(t, peerKey, "peer key")
+			removalFixtureHas(t, filepath.Join(stateDir, "sentinel"), "target state")
+			removalFixtureAbsent(t, rec.Archive)
+		})
+	}
+}
+
+func TestActivatedRemovalPreviewChecksCleanupProgress(t *testing.T) {
+	for _, name := range []string{"pending archive", "archived with keys pending", "already archived", "already purged", "replacement destination"} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newRemovalStateFixture(t, name == "already purged", false)
+			s.DryRun = true
+			r := s.removal
+			dest := r.destination()
+			if name != "pending archive" {
+				removalFixtureMove(t, r.StateDir, dest)
+			}
+			if name == "already archived" || name == "already purged" {
+				for _, p := range []string{r.KeyFile, r.KeyFile + state.KeyNextSuffix} {
+					if err := os.Remove(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			switch name {
+			case "replacement destination":
+				removalFixtureMove(t, dest, dest+".saved")
+				removalFixtureDir(t, dest)
+				removalFixtureWrite(t, filepath.Join(dest, "sentinel"), "replacement")
+			case "already purged":
+				if err := os.RemoveAll(dest); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status, detail, err := removeStateStep(context.Background(), s)
+			switch name {
+			case "replacement destination":
+				if err == nil || !strings.Contains(err.Error(), dest) {
+					t.Fatalf("conflicting preview = %q %q %v", status, detail, err)
+				}
+				removalFixtureHas(t, filepath.Join(dest, "sentinel"), "replacement")
+			case "already archived", "already purged":
+				if err != nil || status != StatusOK || !strings.Contains(detail, "already") {
+					t.Fatalf("completed preview = %q %q %v", status, detail, err)
+				}
+				removalFixtureAbsent(t, r.KeyFile)
+			case "archived with keys pending":
+				if err != nil || status != StatusWouldChange || !strings.Contains(detail, "already archived") {
+					t.Fatalf("key cleanup preview = %q %q %v", status, detail, err)
+				}
+				removalFixtureHas(t, r.KeyFile, "target key")
+			default:
+				if err != nil || status != StatusWouldChange || !strings.Contains(detail, "would archive") {
+					t.Fatalf("pending preview = %q %q %v", status, detail, err)
+				}
+				removalFixtureHas(t, r.KeyFile, "target key")
+				removalFixtureAbsent(t, dest)
+			}
 		})
 	}
 }

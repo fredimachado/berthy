@@ -51,6 +51,18 @@ func hostedRemovalPaths(stateDir, key string) []string {
 	return []string{stateDir, key, key + state.KeyNextSuffix, key + state.KeyPrevSuffix}
 }
 
+func removalPeers(config *agent.File, id scope.ID) []agent.Hosted {
+	var peers []agent.Hosted
+	if config != nil {
+		for _, h := range config.Environments {
+			if h.Project != id.Project || h.Environment != id.Environment {
+				peers = append(peers, h)
+			}
+		}
+	}
+	return peers
+}
+
 // GNU stat without -L describes the directory entry. With a verified parent, only ENOENT establishes absence.
 const removalStat = `export LC_ALL=C
 stat_entry() {
@@ -58,6 +70,61 @@ stat_entry() {
   case "$entry" in *": No such file or directory") entry=absent;; *) return 1;; esac
 }
 `
+
+// Compare both trees against the other pair's paths. find -samefile compares device and inode,
+// including through a bind mount whose spelling realpath leaves unchanged.
+func removalPeerCheckScript(peers []agent.Hosted) string {
+	if len(peers) == 0 {
+		return "peer_checks() { :; }\n"
+	}
+	script := `
+file_identity() {
+  stat_entry "$1" || return 1
+  identity=
+  if [ "$entry" != absent ]; then
+    set -- $entry
+    identity="$1 $2"
+  fi
+}
+tree_excludes() {
+  found=$(find "$1" -samefile "$2" -printf x -quit) && [ -z "$found" ]
+}
+peer_check() {
+  resolved=$(realpath -m -- "$1" && printf x) || return 1
+  peer_path=${resolved%"$(printf '\nx')"}
+  peer_kind=$2
+  target_tree=$3
+  shift 2
+  file_identity "$peer_path" || return 1
+  peer_identity=$identity
+  [ -n "$peer_identity" ] || return 0
+  if [ "$peer_kind" = tree ] && [ ! -d "$peer_path" ]; then return 1; fi
+  file_identity "$target_tree" || return 1
+  if [ -n "$identity" ]; then
+    tree_excludes "$target_tree" "$peer_path" || return 1
+  fi
+  for target_path do
+    file_identity "$target_path" || return 1
+    [ -n "$identity" ] || continue
+    [ "$identity" != "$peer_identity" ] || return 1
+    if [ "$peer_kind" = tree ]; then
+      tree_excludes "$peer_path" "$target_path" || return 1
+    fi
+  done
+}
+peer_checks() {
+`
+	for _, peer := range peers {
+		for i, path := range hostedRemovalPaths(peer.StateDir, peer.KeyFile) {
+			kind := "file"
+			if i == 0 {
+				kind = "tree"
+			}
+			script += "  peer_check " + shellQuote(path) + " " + kind + " \"$@\" || return 1\n"
+		}
+	}
+	return script + "}\n"
+}
 
 func inspectRemovalPaths(ctx context.Context, runner Runner, rec removal, original agent.File) (removal, error) {
 	paths := hostedRemovalPaths(rec.StateDir, rec.KeyFile)
@@ -79,10 +146,9 @@ func inspectRemovalPaths(ctx context.Context, runner Runner, rec removal, origin
 		}
 	}
 	var peers []string
-	for _, h := range original.Environments {
-		if h.Project != rec.ID.Project || h.Environment != rec.ID.Environment {
-			peers = append(peers, hostedRemovalPaths(h.StateDir, h.KeyFile)...)
-		}
+	survivors := removalPeers(&original, rec.ID)
+	for _, h := range survivors {
+		peers = append(peers, hostedRemovalPaths(h.StateDir, h.KeyFile)...)
 	}
 	checkOverlap := func(peer string) error {
 		if !removalPathOK(peer) {
@@ -100,7 +166,7 @@ func inspectRemovalPaths(ctx context.Context, runner Runner, rec removal, origin
 			return rec, err
 		}
 	}
-	script := "# inspect removal paths\nset -eu\n" + removalStat + `
+	script := "# inspect removal paths\nset -eu\n" + removalStat + removalPeerCheckScript(survivors) + `
 canonical() { [ "$(realpath -e -- "$1")" = "$1" ]; }
 owned_entry() {
   canonical "$(dirname -- "$1")"
@@ -127,6 +193,11 @@ owner=$(id -u berthy)
 		script += "owned_entry " + shellQuote(p) + " 600 'regular file' " + requirement + "\n"
 	}
 	script += "stat_entry " + shellQuote(dest) + "\n[ \"$entry\" = absent ]\n"
+	script += "peer_checks"
+	for _, p := range paths {
+		script += " " + shellQuote(p)
+	}
+	script += "\n"
 	for _, peer := range peers {
 		script += "realpath -zm -- " + shellQuote(peer) + "\n"
 	}
