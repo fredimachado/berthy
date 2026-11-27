@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -53,10 +54,22 @@ func TestInspectContainerHealthRequiresRunning(t *testing.T) {
 		{"no health", `{"Running":true}`, "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := inspectEngine(t, "/v1.44/containers/c1/json", `{"State":`+tc.state+`}`)
+			var calls atomic.Int32
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodGet || r.URL.Path != "/v1.44/containers/c1/json" {
+					t.Errorf("request %s %s", r.Method, r.URL.Path)
+				}
+				fmt.Fprint(w, `{"State":`+tc.state+`}`)
+			}))
+			defer s.Close()
+			e := &Engine{client: &http.Client{Transport: rewriteTransport{base: s.URL}}}
 			got, err := e.InspectContainerHealth(context.Background(), "c1")
 			if err != nil || got != tc.want {
 				t.Fatalf("health = %q, %v; want %q", got, err, tc.want)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("inspect calls = %d, want 1", calls.Load())
 			}
 		})
 	}
