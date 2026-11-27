@@ -50,6 +50,7 @@ type agentFake struct {
 	healthCode       int  // exit code of a health check alone
 	doctorCode       int
 	doctorBody       string
+	doctorStderr     string
 
 	calls    []call
 	restarts int
@@ -133,8 +134,8 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 		return Result{Stdout: []byte(f.journal)}, nil
 	case strings.HasPrefix(script, "# prepare setup probe"):
 		return Result{}, nil
-	case strings.Contains(script, "-H @-"):
-		return Result{Stdout: []byte(f.doctorBody), Code: f.doctorCode}, nil
+	case strings.Contains(script, "agent setup-probe doctor"):
+		return Result{Stdout: []byte(f.doctorBody), Stderr: []byte(f.doctorStderr), Code: f.doctorCode}, nil
 	case strings.Contains(script, "agent setup-probe health"):
 		return Result{Code: f.healthCode}, nil
 	}
@@ -1684,10 +1685,8 @@ func TestVerifyStep(t *testing.T) {
 		if asked != [4]string{"http://" + listenIP + ":7710", "shop", "p5", token} {
 			t.Errorf("asked = %v", asked)
 		}
-		for _, c := range f.calls {
-			if strings.Contains(c.script, "-H @-") {
-				t.Errorf("the request went through the server")
-			}
+		if f.ran("agent setup-probe doctor") {
+			t.Error("the request went through the server")
 		}
 	})
 	t.Run("a critical check that is not ok fails the step", func(t *testing.T) {
@@ -1703,19 +1702,20 @@ func TestVerifyStep(t *testing.T) {
 		}
 	})
 	t.Run("a refused token fails the step", func(t *testing.T) {
-		r, _ := runVerify(setUpAgent(t, exe), func(o *Options) {
+		f := setUpAgent(t, exe)
+		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
 			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 				return nil, errors.New("agent returned HTTP 401")
 			}
 		})
-		if r.Status != StatusFailed || r.Detail != "agent returned HTTP 401" {
+		if r.Status != StatusFailed || r.Detail != "agent returned HTTP 401" || f.ran("agent setup-probe doctor") {
 			t.Fatalf("verify = %+v", r)
 		}
 	})
 	t.Run("unreachable from here: checked on the server with the token on stdin only", func(t *testing.T) {
 		f := setUpAgent(t, exe)
-		f.probe = with(f.probe, "curl=/usr/bin/curl")
+		f.probe = without(f.probe, "curl=")
 		f.doctorBody = doctorBody(okChecks())
 		r, _ := runVerify(f, func(o *Options) {
 			withToken(o)
@@ -1724,15 +1724,17 @@ func TestVerifyStep(t *testing.T) {
 		if r.Status != StatusOK || !strings.HasPrefix(r.Detail, "this machine cannot reach http://"+listenIP+":7710; checked on the server: agent v0.0.1-test, 3 of 3 checks ok") {
 			t.Fatalf("verify = %+v", r)
 		}
-		c, ok := f.find("-H @-")
+		c, ok := f.find("agent setup-probe doctor")
 		if !ok {
 			t.Fatal("no request on the server")
 		}
-		if string(c.stdin) != "Authorization: Bearer "+token+"\n" {
-			t.Errorf("stdin = %q", c.stdin)
+		if string(c.stdin) != token+"\n" {
+			t.Error("server doctor did not receive the token alone on stdin")
 		}
-		if strings.Contains(c.script, token) || !strings.Contains(c.script, "curl -fsS --max-time 30 -H @- 'http://"+listenIP+":7710/v1/projects/shop/environments/p5/doctor'") {
-			t.Errorf("script = %q", c.script)
+		if strings.Contains(c.script, token) ||
+			!strings.Contains(c.script, "timeout --kill-after=1s 3s") ||
+			!strings.Contains(c.script, "agent setup-probe doctor --listen '"+listenIP+":7710' --scope 'shop/p5'") {
+			t.Error("server doctor script did not select a bounded probe for the requested scope")
 		}
 		for _, other := range f.calls {
 			if other.script != c.script && strings.Contains(other.script, token) {
@@ -1740,20 +1742,29 @@ func TestVerifyStep(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a failing server-side request is reported without the token", func(t *testing.T) {
-		f := setUpAgent(t, exe)
-		f.probe = with(f.probe, "curl=/usr/bin/curl")
-		f.doctorCode = 22
-		r, _ := runVerify(f, func(o *Options) {
-			withToken(o)
-			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
+	for _, tc := range []struct {
+		name, detail, body, stderr string
+		code                       int
+	}{
+		{"server doctor refusal", "checking on the server failed: doctor returned HTTP 401: <token>", "", "doctor returned HTTP 401: " + token, 1},
+		{"malformed server doctor answer", "the agent's doctor answer cannot be read", "invalid response " + token, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setUpAgent(t, exe)
+			f.probe = without(f.probe, "curl=")
+			f.doctorCode, f.doctorBody, f.doctorStderr = tc.code, tc.body, tc.stderr
+			r, _ := runVerify(f, func(o *Options) {
+				withToken(o)
+				o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
+			})
+			if r.Status != StatusFailed || strings.Contains(r.Detail, token) || !strings.Contains(r.Detail, tc.detail) {
+				t.Fatalf("verify = %+v", r)
+			}
 		})
-		if r.Status != StatusFailed || strings.Contains(r.Detail, token) || !strings.Contains(r.Detail, "checking on the server failed") {
-			t.Fatalf("verify = %+v", r)
-		}
-	})
+	}
 	t.Run("without a token the agent is only asked whether it answers", func(t *testing.T) {
 		f := setUpAgent(t, exe)
+		f.probe = without(f.probe, "curl=")
 		r, _ := runVerify(f, func(o *Options) {
 			o.Doctor = func(context.Context, string, string, string, string) ([]api.Check, error) {
 				panic("no token, no doctor")
@@ -1762,8 +1773,9 @@ func TestVerifyStep(t *testing.T) {
 		if r.Status != StatusOK || r.Detail != "the agent answers; run berthy doctor with an admin token to check it fully" {
 			t.Fatalf("verify = %+v", r)
 		}
-		if !f.ran("agent setup-probe health --listen '" + listenIP + ":7710'") {
-			t.Errorf("healthz was not asked")
+		c, ok := f.find("agent setup-probe health --listen '" + listenIP + ":7710'")
+		if !ok || len(c.stdin) != 0 || f.ran("agent setup-probe doctor") || !strings.Contains(c.script, "timeout --kill-after=1s 3s") {
+			t.Error("expected a bounded server health probe without credentials")
 		}
 	})
 	t.Run("without a token and without an answer it fails", func(t *testing.T) {

@@ -22,7 +22,15 @@ volumes=$(d volume ls -q) || exit 1
 for volume in "$server-docker" "$server-containerd"; do
   if grep -Fxq -- "$volume" <<<"$volumes"; then die "volume name already in use"; fi
 done
+blocked=0
+unblock_health() {
+  if [ "$blocked" -eq 1 ]; then
+    remote iptables -w -D INPUT "${rule[@]}" || return
+    blocked=0
+  fi
+}
 cleanup() {
+  unblock_health || echo "could not remove fixture health rule" >&2
   bash "$fixture" rm "$server" >/dev/null 2>&1 || echo "could not remove setup health fixture" >&2
   rm -rf "$private"
 }
@@ -52,9 +60,12 @@ sudo -n sh -c "! command -v curl && ! command -v wget"' || die "fetch tools stil
 pass "Docker answers over SSH and neither fetch tool resolves"
 
 cfg="$private/cli.json"
-"$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" \
+setup=("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" \
   --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" \
-  --no-install-docker --binary "$BIN" --json </dev/null >"$private/initial.json" 2>"$private/initial.stderr"
+  --no-install-docker --binary "$BIN" --json)
+run_setup() { "${setup[@]}" </dev/null >"$private/$1.json" 2>"$private/$1.stderr"; }
+operator_health() { curl --noproxy '*' --max-time 30 -sS -o /dev/null -w '%{http_code}' "http://$ip:7710/healthz"; }
+run_setup initial
 code=$?
 expect_code "setup without curl or wget" 0 "$code"
 if [ "$code" -ne 0 ]; then
@@ -77,6 +88,49 @@ else
 fi
 active=$(remote systemctl is-active berthy) || true
 expect_eq "berthy.service is active" active "$active"
-http_code=$(curl --noproxy '*' --max-time 30 -sS -o /dev/null -w '%{http_code}' "http://$ip:7710/healthz") || true
+http_code=$(operator_health) || true
 expect_eq "agent answers /healthz from the operator" 200 "$http_code"
+if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
+
+token=$(jq -er '.token | strings' "$private/initial.json") || die "initial setup did not return a token"
+case $token in bty."$PROJECT"."$ENVN".?*) ;; *) die "unexpected token shape";; esac
+token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg") ||
+  die "missing token_env"
+expected_env=$(printf 'BERTHY_%s_%s_TOKEN' "$PROJECT" "$ENVN" | tr '[:lower:]-' '[:upper:]_')
+if [[ ! $token_env =~ ^[A-Za-z_][A-Za-z0-9_]*$ || $token_env != "$expected_env" ]]; then die "unexpected token_env"; fi
+export "$token_env=$token"
+unset token
+
+operator_ip=$(ip -4 route get "$ip" | awk '{for (i=1; i<NF; i++) if ($i=="src") print $(i+1)}') || die "operator route unavailable"
+iface=$(remote ip -o -4 addr show to "$ip/32" | awk '{print $2}') || die "fixture interface unavailable"
+[[ $operator_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && $iface =~ ^[A-Za-z0-9_.-]+$ ]] || die "could not identify the operator bridge route"
+rule=(-i "$iface" -s "$operator_ip/32" -d "$ip/32" -p tcp --dport 7710 -j REJECT --reject-with tcp-reset)
+remote iptables -w -I INPUT "${rule[@]}" || die "could not block operator HTTP"
+blocked=1
+if operator_health >/dev/null 2>&1; then die "operator can still reach the agent"; fi
+ssh_server true || die "operator cannot reach SSH"
+remote /usr/local/bin/berthy agent setup-probe health --listen "$ip:7710" --timeout 3s ||
+  die "the agent does not answer inside the fixture"
+pass "operator HTTP is blocked while SSH and fixture-local health work"
+
+run_setup doctor
+expect_code "setup with doctor fallback" 0 "$?"
+if jq -e 'any(.steps[]; .step == "verify" and .status == "ok" and (.detail | contains("checked on the server")))' \
+  "$private/doctor.json" >/dev/null; then
+  pass "authenticated doctor checked on the server"
+else
+  fail "authenticated doctor checked on the server" "missing successful server verification"
+fi
+
+unset "$token_env"
+run_setup tokenless
+expect_code "setup without an admin token" 0 "$?"
+if jq -e '(.token == null) and any(.steps[]; .step == "token" and .status == "ok") and
+  any(.steps[]; .step == "verify" and .status == "ok" and
+  .detail == "the agent answers; run berthy doctor with an admin token to check it fully")' "$private/tokenless.json" >/dev/null; then
+  pass "setup verified /healthz on the server without a token"
+else
+  fail "setup verified /healthz on the server without a token" "missing successful tokenless verification"
+fi
+unblock_health || die "could not restore operator HTTP"
 finish

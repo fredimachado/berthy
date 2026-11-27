@@ -22,7 +22,7 @@ type doctorErrorRunner struct {
 }
 
 func (f *doctorErrorRunner) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
-	if strings.Contains(script, "-H @-") {
+	if strings.Contains(script, "agent setup-probe doctor") {
 		return Result{}, errors.New(f.message)
 	}
 	return f.agentFake.Run(ctx, script, stdin)
@@ -67,7 +67,7 @@ func TestVerifyRedactsStoredTokenFromDoctorDiagnostics(t *testing.T) {
 				}
 				doctor = func(context.Context, string, string, string, string) ([]api.Check, error) { return nil, ErrUnreachable }
 			}
-			s := &Session{R: runner, F: &Facts{Curl: true}, Opts: Options{Project: "shop", Env: "p5", ListenIP: net.ParseIP("127.0.0.1"), ListenPort: 7710, Tokens: store, Getenv: func(string) string { return "" }, Doctor: doctor}, TokenEnv: e.TokenEnv, cliEntry: e, cliConfigKnown: true}
+			s := &Session{R: runner, Opts: Options{Project: "shop", Env: "p5", ListenIP: net.ParseIP("127.0.0.1"), ListenPort: 7710, Tokens: store, Getenv: func(string) string { return "" }, Doctor: doctor}, TokenEnv: e.TokenEnv, cliEntry: e, cliConfigKnown: true}
 			_, detail, err := verifyStep(context.Background(), s)
 			if strings.Contains(detail, token) || err != nil && strings.Contains(err.Error(), token) {
 				t.Fatal("doctor diagnostics exposed the stored token")

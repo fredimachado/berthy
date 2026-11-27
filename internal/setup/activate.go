@@ -137,6 +137,7 @@ func wholeSeconds(d time.Duration) int {
 // Activate puts a staged agent in place and restarts the service, then waits until the agent answers /healthz on its listen
 // address. staged says which of the binary and the configuration the caller staged; a service with nothing staged is only
 // restarted. The previous binary and configuration are kept as berthy.prev and agent.json.prev for one generation.
+// The caller must prepare the retained probe before invoking Activate.
 //
 // If the agent does not answer within timeout, Activate puts the previous binary and configuration back, restarts the
 // service, and returns an *ActivateError with the agent's last log lines. When there was nothing to put back, which is the

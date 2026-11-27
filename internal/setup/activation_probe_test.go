@@ -99,6 +99,7 @@ trap '' TERM
 read -r release < "$CALLS.block"`)
 	shellTool(t, tools, "berthy", `printf 'berthy-setup-probe/1\n'`)
 	shellTool(t, tools, "install", `shift 7; exec /bin/cp "$@"`)
+	shellTool(t, tools, "mv", `[ "$1" = -fT ] && [ "$2" = -- ] || exit 2; shift 2; exec /bin/mv -f "$@"`)
 	shellTool(t, tools, "timeout", `
 exec 3<&0
 echo "timeout $*" >> "$CALLS"
