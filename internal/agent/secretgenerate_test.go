@@ -892,13 +892,17 @@ func TestNamedGenerateUsesStoredAndRecordedStateBeforeMissingComposeFile(t *test
 	}
 }
 
-func TestHeldGenerateAcceptsSingleCaseVariantDryRun(t *testing.T) {
+func TestHeldGenerateRefusesSingleCaseVariantDryRun(t *testing.T) {
 	f := newApprovalFixture(t, true, nil)
-	h := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS","DRY_RUN":false}`)
+	w := f.call("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS","DRY_RUN":false}`)
+	if w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"code":"bad_request","message":"invalid request"}` {
+		t.Fatalf("case variant: %d %s", w.Code, w.Body.String())
+	}
+	h := f.hold("POST", "/secrets/generate", apAgentAdmin, `{"name":"GEN_PASS","dry_run":false}`)
 	if !sameJSON(t, h.Plan, []byte(`{"action":"secret generate","name":"GEN_PASS","exists":false,"bytes":32,"format":"hex"}`)) {
 		t.Fatalf("unexpected plan %s", h.Plan)
 	}
-	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	w = f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
 	if w.Code != 200 {
 		t.Fatalf("approval status %d", w.Code)
 	}
@@ -933,7 +937,7 @@ func TestProtectedGenerationRejectsInvalidDryRunTypes(t *testing.T) {
 
 func TestProtectedGenerationAcceptsNullDryRun(t *testing.T) {
 	for _, tc := range []struct{ name, route, body string }{
-		{"named", "generate", `{"name":"GEN_PASS","DRY_RUN":null}`},
+		{"named", "generate", `{"name":"GEN_PASS","dry_run":null}`},
 		{"declared", "generate-declared", `{"manifest":{"project":"demo","network":"overlay","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}},"dry_run":null}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
