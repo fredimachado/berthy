@@ -157,7 +157,6 @@ setup_report() {
   if [[ $out =~ $token_pattern ]]; then
     setup_token=${BASH_REMATCH[1]}
     out=${out//"$setup_token"/[redacted]}
-    BASH_REMATCH=()
   fi
 }
 out=$("${setup_cmd[@]}" --project "$PROJECT" </dev/null); code=$?
@@ -165,7 +164,10 @@ setup_report
 expect_code "install the first hosted pair through setup" 0 "$code" "$out"
 [ "$code" -eq 0 ] && [ -n "$setup_token" ] || { fail "read first setup credential" "setup did not return a credential"; finish; }
 first_token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env' "$cfg") || exit 1
-export "$first_token_env=$setup_token"
+declare -n first_credential="$first_token_env"
+first_credential=$setup_token
+export "$first_token_env"
+unset -n first_credential
 unset setup_token
 remote cat /etc/berthy/agent.json > "$private/previous.json" || exit 1
 
