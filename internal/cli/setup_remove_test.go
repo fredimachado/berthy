@@ -159,7 +159,7 @@ func useSetupRemovalFixture(t *testing.T, r *setupRemovalFixture) (*[][2]any, *c
 	}
 	setupBuild = func() setup.Build { t.Fatal("removal selected an install binary"); return setup.Build{} }
 	KeyHome = func() (string, error) { t.Fatal("removal looked up a home for a key copy"); return "", nil }
-	hiddenInput = func() (func() ([]byte, error), bool) {
+	hiddenInput = func() (func(context.Context) ([]byte, error), bool) {
 		t.Fatal("removal tried to prompt for a secret")
 		return nil, false
 	}
