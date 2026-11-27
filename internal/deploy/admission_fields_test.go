@@ -186,7 +186,11 @@ func TestPublicAdmissionCoversRequestFields(t *testing.T) {
 		}
 	}
 	s := openStore(t)
-	if _, _, err := s.Admit(context.Background(), state.Admission{RequestID: "public", ActorID: "admin", Kind: "deploy", PublicRequest: raw}); err != nil {
+	op, _, err := s.Admit(context.Background(), state.Admission{RequestID: "public", ActorID: "admin", Kind: "deploy", PublicRequest: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(context.Background(), op.ID, state.Outcome{State: "failed"}); err != nil {
 		t.Fatal(err)
 	}
 }
