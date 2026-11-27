@@ -154,22 +154,23 @@ func TestTheGuardPutsThePreviousAgentBackWhenTheNewOneDoesNotAnswer(t *testing.T
 					os.WriteFile(p+".prev", []byte("old"), 0600)
 				}
 			}
-			os.WriteFile(filepath.Join(tools, "systemctl"), []byte("#!/bin/sh\necho \"$*\" >> \"$CALLS\"\ncase \"$1\" in is-failed) exit 0;; esac\nexit 0\n"), 0700)
-			curl := "#!/bin/sh\nif [ -f \"$CALLS.probed\" ]; then exit 0; fi\ntouch \"$CALLS.probed\"\nexit 1\n"
+			shellTool(t, tools, "systemctl", `echo "$*" >> "$CALLS"; case "$1" in show) echo active;; esac`)
+			probe := `if [ -f "$CALLS.probed" ]; then exit 0; fi; touch "$CALLS.probed"; ` + expireProbe
 			if tc.answer {
-				curl = "#!/bin/sh\nexit 0\n"
+				probe = "exit 0"
 			}
-			os.WriteFile(filepath.Join(tools, "curl"), []byte(curl), 0700)
-			os.WriteFile(filepath.Join(tools, "date"), []byte("#!/bin/sh\necho 0\n"), 0700)
+			shellTool(t, tools, "probe", probe)
+			shellClock(t, tools)
 			r := &guardRunner{stage: "up"}
 			_ = Activate(context.Background(), r, "x", Staged{Binary: true, Config: true}, time.Second)
 			os.WriteFile(filepath.Join(dir, "state"), []byte("pending\n"), 0600)
-			script := strings.NewReplacer(binPath, bin, configPath, cfg, guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(r.input)
+			script := strings.NewReplacer(guardProbePath, filepath.Join(tools, "probe"), binPath, bin, configPath, cfg,
+				guardState, filepath.Join(dir, "state"), guardLock, filepath.Join(dir, "lock")).Replace(r.input)
 			if script == "" {
 				t.Fatal("guard script not sent")
 			}
 			cmd := exec.Command("sh", "-c", script, "guard", tc.prev, tc.prev)
-			cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+filepath.Join(dir, "calls"))
+			cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+filepath.Join(dir, "calls"), "CLOCK="+filepath.Join(dir, "clock"))
 			if out, err := cmd.CombinedOutput(); err != nil && tc.name != "rollback" && tc.name != "prev gone" {
 				t.Fatalf("guard failed: %v %s", err, out)
 			}

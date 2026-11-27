@@ -10,6 +10,7 @@ import (
 // Where the agent lives on the server.
 const (
 	binPath        = "/usr/local/bin/berthy"
+	guardProbePath = binPath + ".setup-probe"
 	agentConfigDir = "/etc/berthy"
 	configPath     = "/etc/berthy/agent.json"
 	unitPath       = "/etc/systemd/system/berthy.service"
@@ -33,8 +34,6 @@ const recoveryUncertain = "setup may have started recovery; the server finishes 
 
 // guardDelay allows time for activation and its own rollback.
 func guardDelay(secs int) int { return 2*secs + 60 }
-
-const defaultHealthTimeout = 30 * time.Second
 
 // Staged says what a run left next to the live files for Activate to put in place: the binary as /usr/local/bin/berthy.new
 // and the configuration as /etc/berthy/agent.json.new.
@@ -66,26 +65,59 @@ func activationFailure(err error, outcome ConfigOutcome) error {
 	return &ActivateError{Message: err.Error(), Cause: err, ConfigOutcome: outcome}
 }
 
-// getFunc is a shell function that asks a URL and succeeds when it answers with a success status. It uses curl, or wget.
-const getFunc = `get() { if command -v curl >/dev/null 2>&1; then curl -fsS --max-time "$2" -o /dev/null "$1" >/dev/null 2>&1; else timeout "$2" wget --tries=1 -q -T "$2" -O /dev/null "$1" >/dev/null 2>&1; fi; }
+const probeAsAgent = "setpriv --reuid=berthy --regid=berthy --clear-groups "
+
+func selectProbeScript(staged Staged) string {
+	candidates := shellQuote(binPath) + " " + shellQuote(guardProbePath)
+	if staged.Binary {
+		candidates = shellQuote(binPath+".new") + " " + candidates
+	}
+	return `can_probe() (
+  marker=$(mktemp) || exit 1
+  trap 'rm -f "$marker"' EXIT
+  ulimit -f 1 || exit 1
+  timeout --kill-after=1s 3s ` + probeAsAgent + `"$1" agent setup-probe version </dev/null >"$marker" || exit 1
+  printf 'berthy-setup-probe/1\n' | cmp -s - "$marker"
+)
+for probe_bin in ` + candidates + `; do
+  if [ -x "$probe_bin" ] && can_probe "$probe_bin" 2>/dev/null; then break; fi
+  probe_bin=
+done
+if [ -z "$probe_bin" ]; then echo 'a probe-capable Berthy build is needed' >&2; exit 1; fi
 `
+}
 
-// healthURL is where the agent answers whether it is up.
-func healthURL(listen string) string { return "http://" + listen + "/healthz" }
+// prepareProbeScript retains a capable executable across the live and previous binary renames.
+func prepareProbeScript(staged Staged) string {
+	return "# prepare setup probe\n" + selectProbeScript(staged) + "retained=" + shellQuote(guardProbePath) + "\n" + `
+[ "$probe_bin" != "$retained" ] || exit 0
+publish_failed() { echo 'cannot publish the setup probe' >&2; exit 1; }
+tmp=$(mktemp "$retained.XXXXXX") || publish_failed
+trap 'rm -f "$tmp"' EXIT
+install -o root -g root -m 0755 -- "$probe_bin" "$tmp" && mv -fT -- "$tmp" "$retained" || publish_failed
+`
+}
 
-// waitScript succeeds as soon as url answers, and fails when secs seconds pass, or earlier when systemd has given the service
-// up.
-func waitScript(url string, secs int) string { return waitScriptOnSuccess(url, secs, "exit 0") }
+// waitScript selects a client for a standalone health check without replacing the retained copy.
+func waitScript(listen string, secs int) string {
+	return selectProbeScript(Staged{}) + waitForProbe(listen, secs, "exit 0")
+}
 
-func waitScriptOnSuccess(url string, secs int, success string) string {
-	return getFunc +
-		fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
+func waitScriptOnSuccess(probeBin, listen string, secs int, success string) string {
+	return "probe_bin=" + shellQuote(probeBin) + "\n" + waitForProbe(listen, secs, success)
+}
+
+// waitForProbe uses the selected probe_bin for the whole wait.
+func waitForProbe(listen string, secs int, success string) string {
+	return fmt.Sprintf("end=$(( $(date +%%s) + %d ))\n", secs) +
 		"while :; do\n" +
+		"  active_state=$(systemctl show --property=ActiveState --value berthy) || exit 1\n" +
+		"  case \"$active_state\" in active|activating|reloading) ;; *) exit 1 ;; esac\n" +
 		"  left=$((end - $(date +%s)))\n" +
 		"  [ \"$left\" -gt 0 ] || break\n" +
 		"  probe=$left; [ \"$probe\" -le 3 ] || probe=3\n" +
-		"  if get " + shellQuote(url) + " \"$probe\"; then " + success + "; fi\n" +
-		"  if systemctl is-failed --quiet berthy; then exit 1; fi\n" +
+		"  if " + probeAsAgent + "\"$probe_bin\" agent setup-probe health --listen " + shellQuote(listen) +
+		" --timeout \"${probe}s\" </dev/null >/dev/null 2>&1; then " + success + "; fi\n" +
 		"  [ \"$(date +%s)\" -lt \"$end\" ] || break\n" +
 		"  sleep 1\n" +
 		"done\n" +
@@ -103,6 +135,7 @@ func wholeSeconds(d time.Duration) int {
 // Activate puts a staged agent in place and restarts the service, then waits until the agent answers /healthz on its listen
 // address. staged says which of the binary and the configuration the caller staged; a service with nothing staged is only
 // restarted. The previous binary and configuration are kept as berthy.prev and agent.json.prev for one generation.
+// The caller must prepare the retained probe before invoking Activate.
 //
 // If the agent does not answer within timeout, Activate puts the previous binary and configuration back, restarts the
 // service, and returns an *ActivateError with the agent's last log lines. When there was nothing to put back, which is the
@@ -397,7 +430,7 @@ func restartScriptWithGuard(listen string, secs int, guarded bool) string {
 		success = fmt.Sprintf("set_state confirmed || exit %d; systemctl stop %s.timer >/dev/null 2>&1 || true; exit 0", guardRecordFailed, guardUnit)
 	}
 	return prefix + "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
-		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(healthURL(listen), secs, success)
+		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + waitScriptOnSuccess(guardProbePath, listen, secs, success)
 }
 
 // activateScripts lists the swap when staged and the restart for a successful activation.

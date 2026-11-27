@@ -126,10 +126,6 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 		return StatusSkipped, "would check the agent", nil
 	}
-	f, err := s.facts(ctx)
-	if err != nil {
-		return "", "", err
-	}
 	listen := s.Opts.listen()
 	base := agentURL(listen)
 	token := s.AdminToken()
@@ -148,11 +144,8 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrUnreachable):
-		if !f.Curl {
-			return "", "", fmt.Errorf("this machine cannot reach %s, and the server has no curl to check there", base)
-		}
 		prefix = fmt.Sprintf("this machine cannot reach %s; checked on the server: ", base)
-		if checks, err = s.doctorOnServer(ctx, base, token); err != nil {
+		if checks, err = s.doctorOnServer(ctx, listen, token); err != nil {
 			return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %s", base, redactDoctor(err.Error(), token))
 		}
 	default:
@@ -168,7 +161,7 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 func redactDoctor(s, token string) string { return strings.ReplaceAll(s, token, "<token>") }
 
 // healthScript asks the server whether the agent answers on listen, for five seconds.
-func healthScript(listen string) string { return waitScript(healthURL(listen), 5) }
+func healthScript(listen string) string { return waitScript(listen, 5) }
 
 // dryHasToken says whether a real run would have an admin token to verify with.
 func (s *Session) dryHasToken() bool {
@@ -181,22 +174,17 @@ func (s *Session) healthy(ctx context.Context) bool {
 	return err == nil && res.Code == 0
 }
 
-// doctorOnServer sends the doctor request from the server. The token goes to curl on its standard input as a header line, so
-// it is in no argument and no script.
-func (s *Session) doctorOnServer(ctx context.Context, base, token string) ([]api.Check, error) {
-	u := base + scope.ID{Project: s.Opts.Project, Environment: s.Opts.Env}.APIPath() + "doctor"
-	script := "curl -fsS --max-time 30 -H @- " + shellQuote(u)
-	res, err := s.R.Run(ctx, script, strings.NewReader("Authorization: Bearer "+token+"\n"))
+// doctorOnServer passes the token separately on stdin after selecting the probe.
+func (s *Session) doctorOnServer(ctx context.Context, listen, token string) ([]api.Check, error) {
+	id := scope.ID{Project: s.Opts.Project, Environment: s.Opts.Env}
+	script := selectProbeScript(Staged{}) + "exec " + probeAsAgent + "\"$probe_bin\" agent setup-probe doctor --listen " +
+		shellQuote(listen) + " --scope " + shellQuote(id.String())
+	res, err := s.R.Run(ctx, script, strings.NewReader(token+"\n"))
 	if err != nil {
 		return nil, err
 	}
 	if res.Code != 0 {
-		return nil, errors.New(failureText(Result{Stderr: redact(res.Stderr, token), Code: res.Code}))
+		return nil, errors.New(failureText(Result{Stderr: []byte(redactDoctor(string(res.Stderr), token)), Code: res.Code}))
 	}
 	return parseChecks(res.Stdout)
-}
-
-// redact removes the token from text that came from the server.
-func redact(b []byte, token string) []byte {
-	return []byte(strings.ReplaceAll(string(b), token, "<token>"))
 }

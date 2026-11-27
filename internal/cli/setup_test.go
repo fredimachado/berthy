@@ -88,7 +88,7 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 			out = strings.Replace(out, "network=overlay swarm true\n", "network=overlay swarm true "+match[1]+"\n", 1)
 		}
 		return setup.Result{Stdout: []byte(out)}, nil
-	case strings.Contains(script, "curl -fsS --max-time 30"):
+	case strings.Contains(script, "agent setup-probe doctor"):
 		return setup.Result{Stdout: []byte(`{"checks":[{"name":"agent","ok":true,"critical":true,"detail":"v0.0.1-test"}]}`)}, nil
 	case script == "cat /etc/berthy/agent.json":
 		return setup.Result{Stdout: []byte(s.config)}, nil
@@ -104,6 +104,8 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 			code, s.waits = s.waits[0], s.waits[1:]
 		}
 		return setup.Result{Code: code}, nil
+	case strings.HasPrefix(script, "# prepare setup probe"), strings.Contains(script, "agent setup-probe health"):
+		return setup.Result{}, nil
 	}
 	return setup.Result{}, nil
 }
@@ -416,7 +418,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
 	for _, sc := range server.scripts {
-		if strings.Contains(sc, "mktemp") || strings.Contains(sc, "systemctl restart") || strings.Contains(sc, "chown") {
+		command := strings.Replace(sc, "marker=$(mktemp)", "", 1)
+		if strings.Contains(command, "mktemp") || strings.Contains(command, "systemctl restart") || strings.Contains(command, "chown") {
 			t.Errorf("a set-up server was changed: %q", sc)
 		}
 	}

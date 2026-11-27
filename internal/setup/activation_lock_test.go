@@ -34,23 +34,23 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	if mode == "unreadable-state" {
 		shellTool(t, tools, "cat", "exit 1")
 	}
-	shellTool(t, tools, "date", "echo 0")
-	ctl := `echo "$*" >> "$CALLS"; case "$1" in is-failed) exit 0;; esac; exit 0`
+	shellClock(t, tools)
+	ctl := `echo "$*" >> "$CALLS"; case "$1" in show) echo active;; esac`
 	if mode == "timer-fails" {
-		ctl = `echo "$*" >> "$CALLS"; case "$1" in stop) exit 42;; esac; exit 0`
+		ctl = `echo "$*" >> "$CALLS"; case "$1" in stop) exit 42;; show) echo active;; esac`
 	}
 	if mode == "stop-fails" {
-		ctl = `echo "$*" >> "$CALLS"; case "$*" in 'stop berthy') exit 42;; is-failed*) exit 0;; esac; exit 0`
+		ctl = `echo "$*" >> "$CALLS"; case "$*" in 'stop berthy') exit 42;; show*) echo failed;; esac`
 	}
 	shellTool(t, tools, "systemctl", ctl)
-	curl := "exit 0"
+	probe := "exit 0"
 	if mode == "down" || mode == "stop-fails" || mode == "move-fails" {
-		curl = "exit 1"
+		probe = expireProbe
 	}
 	if mode == "restore" {
-		curl = `if [ -f "$CALLS.probed" ]; then exit 0; fi; touch "$CALLS.probed"; exit 1`
+		probe = `if [ -f "$CALLS.probed" ]; then exit 0; fi; touch "$CALLS.probed"; ` + expireProbe
 	}
-	shellTool(t, tools, "curl", curl)
+	shellTool(t, tools, "probe", probe)
 	if mode == "lock-timeout" {
 		shellTool(t, tools, "flock", `echo "flock $*" >> "$CALLS"; exit 1`)
 	}
@@ -67,9 +67,10 @@ func stateShell(t *testing.T, script, word, mode string, args ...string) (int, s
 	if err := os.WriteFile(bin+".prev", []byte("previous"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script = strings.NewReplacer(testStatePath, state, testLockPath, lock, "/nonexistent/bin", bin, "/nonexistent/cfg", filepath.Join(dir, "cfg")).Replace(script)
+	script = strings.NewReplacer(testStatePath, state, testLockPath, lock, "/nonexistent/bin", bin,
+		"/nonexistent/cfg", filepath.Join(dir, "cfg"), guardProbePath, filepath.Join(tools, "probe")).Replace(script)
 	cmd := exec.Command("sh", append([]string{"-c", script, "guard"}, args...)...)
-	cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+calls)
+	cmd.Env = append(os.Environ(), "PATH="+tools+":"+os.Getenv("PATH"), "CALLS="+calls, "CLOCK="+filepath.Join(dir, "clock"))
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -136,20 +137,6 @@ func TestGuardRecordsItsDecision(t *testing.T) {
 				t.Fatalf("code=%d output=%q state=%q want=%q", code, out, state, tc.want)
 			}
 		})
-	}
-}
-func TestWgetProbeIsBoundedAsAWhole(t *testing.T) {
-	dir, tools := shellFixture(t)
-	shellTool(t, tools, "date", "echo 0")
-	shellTool(t, tools, "systemctl", "exit 0")
-	shellTool(t, tools, "wget", `echo "wget $*" >> "$CALLS"; exit 1`)
-	shellTool(t, tools, "timeout", `echo "timeout $*" >> "$CALLS"; shift; exec "$@"`)
-	cmd := exec.Command("sh", "-c", waitScript("http://x", 3))
-	cmd.Env = append(os.Environ(), "PATH="+tools, "CALLS="+filepath.Join(dir, "calls"))
-	_ = cmd.Run()
-	data, _ := os.ReadFile(filepath.Join(dir, "calls"))
-	if !strings.Contains(string(data), "timeout 3 wget") || !strings.Contains(string(data), "--tries=1") {
-		t.Fatalf("wget not bounded: %q", data)
 	}
 }
 

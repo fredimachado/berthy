@@ -53,6 +53,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	first := f.UnitSHA == "" && !f.ServiceActive
 	restart := len(reasons) > 0 || !f.ServiceActive
+	wait := s.Opts.healthTimeout(s.hostedCount)
 	var text string
 	switch {
 	case first:
@@ -65,6 +66,9 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		text = "enable berthy.service"
 	}
 	if s.DryRun {
+		if restart {
+			s.Log.Would(prepareProbeScript(s.staged))
+		}
 		if s.unitChanged {
 			s.Log.Would(unitScript())
 		}
@@ -72,11 +76,19 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 			s.Log.Would(enableScript)
 		}
 		if restart {
-			for _, sc := range activateScripts(s.staged, s.Opts.listen(), s.Opts.healthTimeout()) {
+			for _, sc := range activateScripts(s.staged, s.Opts.listen(), wait) {
 				s.Log.Would(sc)
 			}
 		}
 		return StatusWouldChange, "would " + text, nil
+	}
+	if restart {
+		if _, err := s.change(ctx, "preparing the setup probe", prepareProbeScript(s.staged)); err != nil {
+			return "", "", activationFailure(err, ConfigPrevious)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", "", activationFailure(fmt.Errorf("preparing the setup probe: %w", err), ConfigPrevious)
+		}
 	}
 	if s.unitChanged {
 		res, err := s.R.Run(ctx, unitScript(), bytes.NewReader(unit))
@@ -93,7 +105,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 		}
 	}
 	if restart {
-		err := Activate(ctx, s.R, s.Opts.listen(), s.staged, s.Opts.healthTimeout())
+		err := Activate(ctx, s.R, s.Opts.listen(), s.staged, wait)
 		var ae *ActivateError
 		switch {
 		case err == nil:

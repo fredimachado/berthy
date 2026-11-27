@@ -63,7 +63,7 @@ type Options struct {
 	Build      Build
 	ReleaseURL string // BERTHY_RELEASE_URL: where releases are downloaded from; empty means GitHub
 
-	// HealthTimeout is how long the new agent has to answer. Zero means 30 seconds.
+	// HealthTimeout overrides the wait of one minute per hosted environment plus 30 seconds.
 	HealthTimeout time.Duration
 	// Now is the clock of token names. Nil means the system clock.
 	Now func() time.Time
@@ -89,11 +89,11 @@ func (o Options) getenv(name string) string {
 	return os.Getenv(name)
 }
 
-func (o Options) healthTimeout() time.Duration {
+func (o Options) healthTimeout(hostedCount int) time.Duration {
 	if o.HealthTimeout > 0 {
 		return o.HealthTimeout
 	}
-	return defaultHealthTimeout
+	return time.Duration(max(1, hostedCount))*time.Minute + 30*time.Second
 }
 
 // listen is the address the agent listens on, as ADDRESS:PORT, or empty when it is not known yet.
@@ -147,6 +147,7 @@ type Session struct {
 	existingRaw []byte
 	configRead  bool
 	newToken    *agent.Token
+	hostedCount int    // environments in the desired configuration
 	staged      Staged // what this run staged for the service step
 	unitChanged bool
 	serverVer   *string // the version the agent binary on the server reports; "" when it says none
