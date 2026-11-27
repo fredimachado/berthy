@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,9 +11,62 @@ import (
 
 type deployRun struct {
 	opID     string
+	rollback bool
 	prepared preparedPlan
 	work     []roleWork
+	ing      *ingressPublish
+	budget   time.Duration
+	deadline time.Time
+	bindings []state.Binding
 	outcome  state.Outcome
+}
+
+func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
+	req := d.prepared.Request
+	app := req.Manifest.Apps[req.App]
+	attempts := app.Deploy.StartAttemptLimit()
+	hold := c.monitorHold()
+	startupDeadline := time.Now().Add(d.budget)
+	for n, w := range d.work {
+		if !time.Now().Before(startupDeadline) {
+			c.unwindDeploy(ctx, d, errors.New("service health deadline exceeded"), d.work[:n])
+			return false
+		}
+		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
+		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
+		rollCtx, stopRoll := interruptible(roleCtx)
+		id := w.intent.ServiceID
+		health := app.Roles[w.intent.Role].Health
+		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
+		var e error
+		if w.intent.Kind == "create" {
+			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+		} else {
+			e = updateRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+		}
+		stopRoll()
+		stopRole()
+		if e != nil {
+			touched := n + 1
+			var before beforeServiceMutation
+			if errors.As(e, &before) {
+				touched = n
+			}
+			c.unwindDeploy(ctx, d, e, d.work[:touched])
+			return false
+		}
+		startupDeadline = startupDeadline.Add(hold)
+		d.bindings = append(d.bindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
+	}
+	deadline := startupDeadline
+	if hold > 0 {
+		if now := time.Now(); now.After(deadline) {
+			deadline = now
+		}
+		deadline = deadline.Add(rolloutVerificationGrace)
+	}
+	d.deadline = deadline
+	return true
 }
 
 // unwindDeploy takes the rollout back after a failure or a cancel, with the roles in touched changed.
@@ -91,4 +145,80 @@ func (c *Controller) verifyDeployRoles(ctx, verifyCtx context.Context, d *deploy
 		return false
 	}
 	return true
+}
+
+func (c *Controller) crossDeployBarrier(ctx, verifyCtx context.Context, d *deployRun, tag string) bool {
+	req := d.prepared.Request
+	before, after := d.outcome.SchemaBefore, d.outcome.SchemaAfter
+	recordingFailure := state.Outcome{
+		State: "recovery_required", Err: "release recording failed",
+		SchemaBefore: before, SchemaAfter: after,
+	}
+	manifestJSON, err := json.Marshal(req.Manifest)
+	if err != nil {
+		d.outcome = recordingFailure
+		return false
+	}
+	settings, err := releaseSettings(req, d.rollback)
+	if err != nil {
+		d.outcome = recordingFailure
+		return false
+	}
+	candidate := state.Outcome{
+		State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected,
+		Release: &state.Release{
+			App: req.App, Digest: d.prepared.Image, Tag: tag, Commit: req.Commit, Modified: req.Modified,
+			Manifest: manifestJSON, Bindings: d.bindings,
+		},
+		Settings: settings,
+	}
+	barrier, err := json.Marshal(candidate)
+	if err != nil {
+		d.outcome = recordingFailure
+		return false
+	}
+	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy
+	// commands follow. A cancel that was accepted before it takes the rollout back instead.
+	if err = c.cross(verifyCtx, d.opID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: d.deadline}, reasonSwitched); err != nil {
+		if isCancelled(err) {
+			d.outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
+			c.unwindDeploy(ctx, d, err, d.work)
+			return false
+		}
+		d.outcome = state.Outcome{State: "recovery_required", Err: "verification barrier unavailable", SchemaBefore: before, SchemaAfter: after}
+		return false
+	}
+	d.outcome = candidate
+	return true
+}
+
+func (c *Controller) finishDeployRelease(ctx context.Context, d *deployRun) {
+	req := d.prepared.Request
+	// The publish follows the barrier. A crash during it leaves the operation to recovery, which keeps the release. The
+	// next deploy or ingress apply brings any route or record it missed in line.
+	publishErr := c.publishIngress(ctx, d.opID, d.ing, req.ReplaceExisting)
+	var err error
+	if !d.rollback {
+		err = c.runPost(ctx, d.opID, d.prepared)
+	}
+	switch {
+	case err != nil && errors.Is(err, ErrOneOffUncertain):
+		d.outcome.State = "recovery_required"
+		d.outcome.Release = nil
+		d.outcome.Err = "post-deploy command outcome uncertain"
+		d.outcome.Reason = c.recordOneOffFailure(ctx, d.opID, err)
+	case err != nil:
+		d.outcome.State = "failed"
+		d.outcome.Err = hookFailureText(err, "post")
+		d.outcome.Reason = c.recordOneOffFailure(ctx, d.opID, err)
+	case publishErr != nil:
+		// The new version runs and its release is recorded. Only its routes are missing.
+		d.outcome.State = "failed"
+		d.outcome.Err = ingressFailure(publishErr, errIngressPublish)
+	}
+	if d.outcome.State == "succeeded" {
+		// The new version serves and its release is recorded. What the checks find is a warning, never a failure.
+		app := req.Manifest.Apps[req.App]
+		c.verifyDeploy(ctx, d.opID, req.Manifest.NetworkName(c.Environment), app, d.work, d.ing != nil)
+	}
 }
