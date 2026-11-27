@@ -149,12 +149,15 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 			return Result{}, errors.New("private payload")
 		}
 		return Result{}, nil
+	case script == prepareProbeScript(Staged{Config: true}):
+		r.mutations = append(r.mutations, "probe")
+		return Result{}, nil
 	case strings.Contains(script, "mv -f "+configPath+".new "+configPath):
 		r.mutations = append(r.mutations, "swap")
 		if r.onSwap != nil {
 			r.onSwap()
 		}
-		if strings.Contains(script, binPath) || !strings.Contains(string(payload()), "http://127.0.0.1:7710/healthz") {
+		if strings.Contains(script, binPath) || !strings.Contains(string(payload()), "agent setup-probe health --listen '127.0.0.1:7710'") {
 			r.t.Fatalf("wrong activation script %q", script)
 		}
 		r.guard = "pending"
@@ -174,8 +177,9 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 		return result("guard=restored\n")
 	case strings.Contains(script, "systemctl restart berthy"):
 		r.mutations = append(r.mutations, "restart")
-		if !strings.Contains(script, "http://127.0.0.1:7710/healthz") {
-			r.t.Fatalf("wrong process health URL: %q", script)
+		if !strings.Contains(script, "agent setup-probe health --listen '127.0.0.1:7710'") ||
+			strings.Contains(script, "candidate_health") {
+			r.t.Fatalf("wrong removal health probe: %q", script)
 		}
 		if r.restartErr {
 			return Result{}, errors.New("SSH connection lost")
@@ -229,7 +233,7 @@ func TestRemovalStagesOnlyConfigAndConfirmsProcessHealth(t *testing.T) {
 	if failure != "" || s.removal == nil || !s.removal.Activated || string(r.live) != want || !bytes.Equal(r.previous, original) {
 		t.Fatalf("activation: %q, record=%+v, config=%q", failure, s.removal, r.live)
 	}
-	r.checkMutations("record:pending,stage,swap,restart,record:confirmed")
+	r.checkMutations("record:pending,stage,probe,swap,restart,record:confirmed")
 }
 
 func TestRemovalRollbackLeavesTargetUsable(t *testing.T) {
@@ -239,9 +243,9 @@ func TestRemovalRollbackLeavesTargetUsable(t *testing.T) {
 		lost                     bool
 		mutations, text          string
 	}{
-		{"failed health", 1, 0, false, "record:pending,stage,swap,restart,recover", "previous one was put back"},
-		{"unconfirmed SSH", 0, 0, true, "record:pending,stage,swap,restart", "SSH connection lost"},
-		{"failed recovery", 1, 1, false, "record:pending,stage,swap,restart,recover", "previous one could not be put back"},
+		{"failed health", 1, 0, false, "record:pending,stage,probe,swap,restart,recover", "previous one was put back"},
+		{"unconfirmed SSH", 0, 0, true, "record:pending,stage,probe,swap,restart", "SSH connection lost"},
+		{"failed recovery", 1, 1, false, "record:pending,stage,probe,swap,restart,recover", "previous one could not be put back"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, opts := newRemovalRunner(t)
@@ -321,8 +325,8 @@ func TestRemovalResumesOnlyItsConfirmedGeneration(t *testing.T) {
 	for _, tt := range []struct {
 		name, guard, want, text string
 	}{
-		{"after staging", "", "stage,swap,restart,record:confirmed", ""},
-		{"restored", "restored", "stage,swap,restart,record:confirmed", ""},
+		{"after staging", "", "stage,probe,swap,restart,record:confirmed", ""},
+		{"restored", "restored", "stage,probe,swap,restart,record:confirmed", ""},
 		{"pending", "pending", "", "guard is still running"},
 		{"recovering", "recovering", "", "guard is still running"},
 		{"confirmed", "confirmed", "record:confirmed", ""},

@@ -109,6 +109,9 @@ func (r *setupRemovalFixture) Run(_ context.Context, script string, stdin io.Rea
 		r.writes = append(r.writes, "stage")
 		r.staged = read()
 		return answer("")
+	case strings.HasPrefix(script, "# prepare setup probe\n"):
+		r.writes = append(r.writes, "probe")
+		return answer("")
 	case strings.Contains(script, "mv -f /etc/berthy/agent.json.new /etc/berthy/agent.json"):
 		r.writes = append(r.writes, "swap")
 		r.live, r.previous, r.staged = r.staged, r.live, nil

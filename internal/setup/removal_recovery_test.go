@@ -79,7 +79,7 @@ func TestRemovalRecoversWhenTimerRegistrationFails(t *testing.T) {
 	if failure != "" || s.removal == nil || !s.removal.Activated {
 		t.Fatalf("orphan retry = %q", failure)
 	}
-	r.checkMutations("stage,swap,restart,record:confirmed")
+	r.checkMutations("stage,probe,swap,restart,record:confirmed")
 }
 
 func TestRemovalReplacesOnlyStaleUnactivatedRecord(t *testing.T) {
@@ -100,7 +100,7 @@ func TestRemovalReplacesOnlyStaleUnactivatedRecord(t *testing.T) {
 		if failure != "" || s.removal == nil || s.removal.OriginalSHA != freshSHA || s.removal.Archive != "" || !sameRemovalFiles(*s.removal, original) {
 			t.Fatalf("fresh removal = %q, record %+v", failure, s.removal)
 		}
-		r.checkMutations("record:pending,stage,swap,restart,record:confirmed")
+		r.checkMutations("record:pending,stage,probe,swap,restart,record:confirmed")
 	})
 	t.Run("activated", func(t *testing.T) {
 		r, opts := newRemovalRunner(t)

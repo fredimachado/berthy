@@ -112,7 +112,7 @@ func TestRemovalFinishesLocalContextAfterServerCleanup(t *testing.T) {
 				if ok || !strings.Contains(detail, "server cleanup finished") || r.record == nil || read().Projects["alpha"].Environments["dev"] != target {
 					t.Fatalf("write refusal = %q, success=%t, record retained=%t", detail, ok, r.record != nil)
 				}
-				r.checkMutations("record:pending,stage,swap,restart,record:confirmed,state,network")
+				r.checkMutations("record:pending,stage,probe,swap,restart,record:confirmed,state,network")
 				if err := os.Chmod(dir, 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -161,7 +161,7 @@ func TestRemovalFinishesLocalContextAfterServerCleanup(t *testing.T) {
 			case "write fails and retries":
 				r.checkMutations("clear")
 			default:
-				r.checkMutations("record:pending,stage,swap,restart,record:confirmed,state,network,clear")
+				r.checkMutations("record:pending,stage,probe,swap,restart,record:confirmed,state,network,clear")
 			}
 		})
 	}
