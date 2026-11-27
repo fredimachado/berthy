@@ -639,6 +639,10 @@ Quote the number in `max-file`, as the example does. A role with `logging` gets 
 
 The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fit inside the app's shared `deploy_timeout`. Run `berthy docs roles` for all health check fields and defaults.
 
+An uptime check measures survival of PID 1. Use a command check when you need evidence that the worker is making progress. An early exit spends a `deploy.start_attempts` attempt even when the worker exits with code 0. If the attempts run out during an update, Berthy restores the previous release.
+
+Berthy mounts its installed executable read-only at `/.berthy/berthy`. The bind covers any regular file the image ships at that path until the task stops. Install the agent as a static, world-executable file in a directory protected from untrusted writes. Before downgrading to a version without uptime support, redeploy affected roles with a supported health check.
+
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
 
 ```yaml

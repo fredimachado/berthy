@@ -241,6 +241,10 @@ The common fields are `interval`, `timeout`, `start_period`, `start_interval` an
 - **Command.** `test` starts with `CMD` or `CMD-SHELL` and succeeds on exit 0. The command runs inside the container and must be present in the image. With the example values, a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`. Confirm Swarm support in your Docker version before using `start_interval`.
 - **Uptime.** A positive `uptime` specifies how long PID 1 must stay alive. The default interval is `uptime` plus 100 ms, with zero grace. A shorter interval defaults `start_period` to `uptime` plus 100 ms. A positive grace must cover that sum. Zero grace requires an interval that covers it. An explicit `start_interval` must equal `interval`. With grace, the first eligible poll must fall strictly before `deploy_timeout` on both the ordinary interval and Docker's five-second startup cadence. With zero grace, the interval itself must fit. Roles using uptime reserve `/.berthy` and its descendants as mount targets.
 
+For uptime roles, Berthy bind-mounts the installed agent executable read-only at `/.berthy/berthy`. A regular image file there is covered while the task runs. An incompatible image path can cause a failed start. Image-declared volumes overlapping the reserved directory are refused in preflight. After an atomic agent upgrade, existing tasks retain their mounted executable and new tasks use the replacement. Redeploy uptime roles with a supported check before downgrading below uptime support.
+
+During an uptime rollout, a candidate task marked `complete`, `failed`, or `rejected` spends one attempt. The policy includes clean exits during the confirmation hold. The rollout checks the candidate service and generation, and counts each task ID once.
+
 ### Environment variables
 
 - **Plain** values are written in the manifest and reviewed like code.
