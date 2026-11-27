@@ -2,14 +2,81 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"berthy/internal/engine"
 	"berthy/internal/state"
 )
+
+type gateEngine struct{ service bool }
+
+var errGateEngine = errors.New("unexpected engine call")
+
+func (e gateEngine) InspectService(_ context.Context, name string) (engine.ServiceSnapshot, error) {
+	if !e.service || name != "demo-api-web" {
+		return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+	}
+	return engine.ServiceSnapshot{ID: "service1", Version: 1, Spec: json.RawMessage(`{"Name":"demo-api-web","TaskTemplate":{"ContainerSpec":{"Image":"ghcr.io/acme/api:v1","Labels":{"berthy.operation":"g1"}}},"Mode":{"Replicated":{"Replicas":1}}}`)}, nil
+}
+func (gateEngine) CreateService(context.Context, json.RawMessage, *engine.RegistryAuth) (string, error) {
+	return "", errGateEngine
+}
+func (gateEngine) UpdateService(context.Context, string, uint64, json.RawMessage, *engine.RegistryAuth) error {
+	return errGateEngine
+}
+func (gateEngine) DeleteService(context.Context, string) error { return errGateEngine }
+func (gateEngine) InspectNetwork(_ context.Context, name string) (engine.Network, error) {
+	return engine.Network{ID: "net", Name: name, Driver: "overlay", Scope: "swarm", Attachable: true}, nil
+}
+func (gateEngine) ResolveImage(context.Context, string, *engine.RegistryAuth) (string, error) {
+	return "", errGateEngine
+}
+func (gateEngine) PullImage(context.Context, string, *engine.RegistryAuth) error {
+	return errGateEngine
+}
+func (gateEngine) InspectImage(context.Context, string) (engine.Image, error) {
+	return engine.Image{}, errGateEngine
+}
+func (gateEngine) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
+	return []engine.ServiceTask{{ServiceID: "service1", State: "running", DesiredState: "running", Slot: 1, ContainerID: "c1", Labels: map[string]string{"berthy.operation": "g1"}}}, nil
+}
+func (gateEngine) InspectContainerHealth(context.Context, string) (string, error) {
+	return "healthy", nil
+}
+func (gateEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
+	return engine.ContainerSnapshot{ID: "c1", Running: true, Labels: map[string]string{"berthy.operation": "g1"}}, nil
+}
+func (gateEngine) Exec(context.Context, string, []string) (engine.ExecResult, error) {
+	return engine.ExecResult{}, errGateEngine
+}
+func (gateEngine) InventoryImages(context.Context) ([]engine.InventoryImage, error) { return nil, nil }
+func (gateEngine) InventoryContainers(context.Context) ([]engine.InventoryContainer, error) {
+	return nil, nil
+}
+func (gateEngine) InventoryServices(context.Context) ([]engine.InventoryService, error) {
+	return nil, nil
+}
+func (gateEngine) RemoveImageRef(context.Context, string) error  { return errGateEngine }
+func (gateEngine) RemoveContainer(context.Context, string) error { return errGateEngine }
+
+func seedGateRelease(t *testing.T, s *state.Store, id, digest string) {
+	t.Helper()
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, state.Admission{RequestID: id, ActorID: "seed", Kind: "deploy", App: "api", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := &state.Release{App: "api", Digest: digest, Tag: id, Manifest: json.RawMessage(apManifestSource), Bindings: []state.Binding{{App: "api", Role: "web", Name: "demo-api-web", ServiceID: "service1"}}}
+	if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: rel}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // gateRow is one kind of change the gate plans.
 type gateRow struct {
@@ -21,7 +88,11 @@ type gateRow struct {
 }
 
 func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
-	fixture := func(t *testing.T) *approvalFixture { return newApprovalFixture(t, true, nil) }
+	fixture := func(t *testing.T) *approvalFixture {
+		f := newApprovalFixture(t, true, nil)
+		t.Cleanup(func() { _ = f.ctrl.Drain(context.Background()) })
+		return f
+	}
 	nothing := func(*approvalFixture) {}
 	lock := func(f *approvalFixture) string {
 		v, err := f.s.Lock(context.Background())
@@ -44,6 +115,23 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 		}
 		return fmt.Sprintf("%t %s", ok, v.Manifest)
 	}
+	operation := func(id string) func(*approvalFixture) string {
+		return func(f *approvalFixture) string {
+			_, err := f.s.AdmissionForRequest(context.Background(), id, "", [32]byte{})
+			if errors.Is(err, sql.ErrNoRows) {
+				return "absent"
+			}
+			if errors.Is(err, state.ErrConflict) || err == nil {
+				return "admitted"
+			}
+			f.t.Fatal(err)
+			return ""
+		}
+	}
+	seed := func(f *approvalFixture) {
+		seedGateRelease(f.t, f.s, "seed1", apRunDigest)
+		f.ctrl.Engine = gateEngine{service: true}
+	}
 	cancelState := func(f *approvalFixture) string {
 		op, err := f.s.Active(context.Background())
 		if err != nil {
@@ -58,6 +146,23 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 		return fmt.Sprint(op.State, cancels)
 	}
 	rows := map[string]gateRow{
+		"deploy": {"POST", "/deploys", deployBody(t, false), fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("req-1")},
+		"rollback": {"POST", "/rollback", `{"app":"api","request_id":"r"}`, fixture, func(f *approvalFixture) {
+			seed(f)
+			seedGateRelease(f.t, f.s, "seed2", "ghcr.io/acme/api@sha256:"+strings.Repeat("b", 64))
+		}, operation("r")},
+		"restart": {"POST", "/restart", `{"app":"api","role":"web","request_id":"r"}`, fixture, seed, operation("r")},
+		"scale":   {"POST", "/scale", `{"app":"api","role":"web","replicas":2,"request_id":"r"}`, fixture, seed, operation("r")},
+		"exec":    {"POST", "/exec", `{"app":"api","role":"web","command":["true"],"request_id":"r"}`, fixture, seed, operation("r")},
+		"run": {"POST", "/run", `{"app":"api","command":["true"],"request_id":"r"}`, fixture, func(f *approvalFixture) {
+			seedRunApp(f.t, f.s)
+			e := &runEngine{started: make(chan struct{}), release: make(chan struct{})}
+			f.ctrl.Engine = e
+			f.t.Cleanup(func() { e.once.Do(func() { close(e.release) }) })
+		}, operation("r")},
+		"prune":        {"POST", "/prune", `{"request_id":"r"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
+		"remove":       {"POST", "/remove", `{"app":"api","request_id":"r"}`, fixture, seed, operation("r")},
+		"destroy":      {"POST", "/destroy", `{"request_id":"r","confirm":"demo/lab"}`, fixture, func(f *approvalFixture) { f.ctrl.Engine = gateEngine{} }, operation("r")},
 		"lock acquire": {"POST", "/lock/acquire", `{"message":"m"}`, fixture, nothing, lock},
 		"lock release": {"POST", "/lock/release", `{}`, fixture, func(f *approvalFixture) {
 			if err := f.s.AcquireManual(context.Background(), state.Actor{ID: "human", Name: "human"}, "human", "held"); err != nil {
@@ -140,6 +245,19 @@ func TestPlanningChangesNothingWhateverTheBody(t *testing.T) {
 			}
 			if kind == "cancel" {
 				f.waitTerminal(strings.Split(path, "/")[2])
+			} else if strings.HasPrefix(row.watched(f), "admitted") {
+				var answer struct {
+					ID string `json:"operation_id"`
+				}
+				if json.Unmarshal(w.Body.Bytes(), &answer) != nil || answer.ID == "" {
+					t.Fatalf("approval has no operation: %s", w.Body.String())
+				}
+				if e, ok := f.ctrl.Engine.(*runEngine); ok {
+					e.once.Do(func() { close(e.release) })
+				}
+				if stream := f.waitTerminal(answer.ID); !strings.Contains(stream, "event: terminal") {
+					t.Fatalf("missing terminal: %s", stream)
+				}
 			}
 			if after := row.watched(f); after == before {
 				t.Fatalf("approval did not change state: %q", after)
