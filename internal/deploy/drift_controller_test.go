@@ -16,7 +16,7 @@ import (
 func driftController(t *testing.T) (*Controller, *boundFake) {
 	t.Helper()
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: openStore(t), Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: openStore(t), Environment: "test"}
 	redeployWeb(t, c, "first", "a", webWith(map[string]string{"MODE": "fast"}, 1))
 	return c, f
 }

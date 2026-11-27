@@ -54,7 +54,7 @@ func (f *cancelFake) WaitContainer(ctx context.Context, id string) (int, error) 
 func cancelController(t *testing.T, f *cancelFake) (*Controller, *state.Store) {
 	t.Helper()
 	s := openStore(t)
-	return &Controller{Engine: f, Store: s, Environment: "test"}, s
+	return &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}, s
 }
 
 var cancelAdmin = Actor{ID: "tok-id", Name: "tok", Admin: true}

@@ -128,7 +128,7 @@ func waitOperation(t *testing.T, s *state.Store, id string) state.Operation {
 
 func TestDockerStoredSpecDeploysAppWithoutEnv(t *testing.T) {
 	s := openStore(t)
-	c := Controller{Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestDockerStoredSpecDeploysAppWithoutEnv(t *testing.T) {
 func TestDockerStoredSpecUpdatesToAppWithoutEnv(t *testing.T) {
 	s := openStore(t)
 	e := dockerSpecs{&positiveEngine{}}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	for _, req := range []Request{
 		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(map[string]string{"MODE": "fast"})},
 		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)},
@@ -232,7 +232,7 @@ func TestRoleHealthWithoutStartPeriodDeploys(t *testing.T) {
 		t.Fatalf("default start period %q", got)
 	}
 	s := openStore(t)
-	c := Controller{Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: dockerSpecs{&positiveEngine{}}, Store: s, Environment: "test"}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-start-period", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: *m})
 	if err != nil {
 		t.Fatal(err)
@@ -329,7 +329,7 @@ func volumeManifest() manifest.Manifest {
 func TestRoleWithANamedVolumeDeploysAndUpdates(t *testing.T) {
 	s := openStore(t)
 	e := dockerSpecs{&positiveEngine{}}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	for _, req := range []Request{
 		{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: volumeManifest()},
 		{RequestID: "second", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: volumeManifest()},

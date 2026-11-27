@@ -169,7 +169,7 @@ func exitedContainers(n int, health string) map[string]engine.ContainerDiagnosis
 func diagController(t *testing.T, f *diagFake) (*Controller, *state.Store) {
 	t.Helper()
 	s := openStore(t)
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{Engine: f, Store: s, Environment: "test", rolloutHold: new(time.Duration)}
 	return c, s
 }
 

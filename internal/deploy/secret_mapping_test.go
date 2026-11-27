@@ -29,7 +29,7 @@ func TestMappedSecretGivesItsVariableTheSecretsValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	m := mappedManifest(manifest.SecretVar{Var: "DATABASE_URL", Secret: "API_DATABASE_URL"})
 	op := runBound(t, s, c, Request{RequestID: "mapped", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m})
 	if op.State != "succeeded" {

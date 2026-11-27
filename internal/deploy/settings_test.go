@@ -31,7 +31,7 @@ func withChat(chat string) manifest.Manifest {
 
 func TestADeployWritesTheSettingsAndARollbackDoesNot(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &positiveEngine{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &positiveEngine{}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "deploy-1", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Commit: "c1", Manifest: withChat("1")})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)

@@ -45,8 +45,8 @@ func TestModifiedDeployIsRefusedOnAProtectedEnvironment(t *testing.T) {
 		c    *Controller
 		m    manifest.Manifest
 	}{
-		{"by the agent", &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}, dockerManifest(nil)},
-		{"by the manifest", &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}, protected},
+		{"by the agent", &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}, dockerManifest(nil)},
+		{"by the manifest", &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}, protected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := Request{RequestID: "modified", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Commit: "abc123", Modified: true, Manifest: tc.m}
@@ -70,7 +70,7 @@ func TestModifiedDeployIsRefusedOnAProtectedEnvironment(t *testing.T) {
 	if err = s.Finish(ctx, ok.ID, state.Outcome{State: "succeeded", Protected: true, Release: &state.Release{App: "web", Digest: "sha256:" + strings.Repeat("a", 64), Manifest: []byte(`{}`)}}); err != nil {
 		t.Fatal(err)
 	}
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	var refusal Refusal
 	req := Request{RequestID: "sticky", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Modified: true, Manifest: dockerManifest(nil)}
 	if _, _, err = admit(t, c, ctx, actor, req); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {
@@ -81,7 +81,7 @@ func TestModifiedDeployIsRefusedOnAProtectedEnvironment(t *testing.T) {
 // TestModifiedDeployOnAnUnprotectedEnvironmentIsRecorded: the release and the operation keep the flag and the commit.
 func TestModifiedDeployOnAnUnprotectedEnvironmentIsRecorded(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "modified", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Commit: "abc123", Modified: true, Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" || !op.Modified || op.Commit != "abc123" {
 		t.Fatalf("operation: %+v %s", op, op.Err)
@@ -99,12 +99,12 @@ func TestRollbackCarriesTheFlagOfTheReleaseItReturnsTo(t *testing.T) {
 	ctx := context.Background()
 	seedCommitRelease(t, s, "older", keepDigest("a"), "oldsha", true)
 	seedCommitRelease(t, s, "newer", keepDigest("b"), "newsha", false)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	resolved, err := c.rollbackRequest(ctx, Request{App: "web", Kind: "rollback"})
 	if err != nil || !resolved.Modified || resolved.Commit != "oldsha" {
 		t.Fatalf("resolved rollback: %+v %v", resolved, err)
 	}
-	protected := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}
+	protected := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}
 	actor := Actor{ID: "admin", Admin: true}
 	var refusal Refusal
 	if _, _, err = admit(t, protected, ctx, actor, Request{RequestID: "rollback", App: "web", Kind: "rollback"}); !errors.As(err, &refusal) || string(refusal) != localChangesRefusal {

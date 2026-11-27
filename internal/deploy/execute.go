@@ -333,6 +333,10 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		return
 	}
 	attempts := app.Deploy.StartAttemptLimit()
+	hold := rolloutMonitor
+	if c.rolloutHold != nil {
+		hold = *c.rolloutHold
+	}
 	deadline := time.Now().Add(budget)
 	// verifyCtx ends at the deploy timeout. rollCtx also ends when a cancel is accepted, so the wait for health can be cancelled,
 	// and the verification that follows it is not: it is short, and the cancel is settled at the barrier.
@@ -375,9 +379,9 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		id := w.intent.ServiceID
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
+			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
+			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
 		}
 		if e != nil {
 			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
@@ -669,7 +673,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
+	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0, 0)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

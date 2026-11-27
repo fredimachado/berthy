@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"berthy/internal/manifest"
 	"berthy/internal/state"
@@ -32,7 +33,7 @@ func TestProtectedPinSurvivesPlanAdmitAndRollout(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{}
 	obs := &recordingObserver{}
-	c := Controller{Engine: e, Store: store, Environment: "test", Protected: true, Observer: obs}
+	c := Controller{Engine: e, Store: store, Environment: "test", Protected: true, Observer: obs, rolloutHold: new(time.Duration)}
 	t.Cleanup(func() {
 		if err := c.Drain(ctx); err != nil {
 			t.Error(err)
@@ -200,7 +201,7 @@ func TestPinnedReplayAfterConcurrentCompletion(t *testing.T) {
 	ctx := context.Background()
 	store := openStore(t)
 	obs := &recordingObserver{}
-	c := &Controller{Store: store, Engine: &positiveEngine{}, Environment: "test", Protected: true, Observer: obs}
+	c := &Controller{Store: store, Engine: &positiveEngine{}, Environment: "test", Protected: true, Observer: obs, rolloutHold: new(time.Duration)}
 	t.Cleanup(func() {
 		if err := c.Drain(ctx); err != nil {
 			t.Error(err)
@@ -272,7 +273,7 @@ func TestFailedPinnedOperationHistoryKeepsLabel(t *testing.T) {
 	ctx := context.Background()
 	store := openStore(t)
 	obs := &recordingObserver{}
-	c := &Controller{Store: store, Environment: "test", Observer: obs}
+	c := &Controller{Store: store, Environment: "test", Observer: obs, rolloutHold: new(time.Duration)}
 	t.Cleanup(func() {
 		if err := c.Drain(ctx); err != nil {
 			t.Error(err)

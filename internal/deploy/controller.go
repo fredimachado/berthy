@@ -188,6 +188,8 @@ type Controller struct {
 	// Outside makes the requests of the outside check, which asks each hostname a role publishes. Nil: a client with the
 	// default timeout. Tests set it.
 	Outside *http.Client
+	// rolloutHold lets tests skip the monitor; nil uses the production duration.
+	rolloutHold *time.Duration
 	// outsidePause is the wait between two tries of the outside check. Zero is the default; tests shorten it.
 	outsidePause time.Duration
 }

@@ -59,7 +59,7 @@ func TestTagDeployGivesItsServiceTheIdentity(t *testing.T) {
 	s := openStore(t)
 	f := &boundFake{}
 	digest := "sha256:" + strings.Repeat("c", 64)
-	c := &Controller{Engine: tagResolver{Engine: f, digest: digest}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: tagResolver{Engine: f, digest: digest}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "tag", App: "web", Version: "v1.0.2", Manifest: dockerManifest(map[string]string{"MODE": "fast"})})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -79,7 +79,7 @@ func TestDigestDeployHasAnEmptyVersion(t *testing.T) {
 	s := openStore(t)
 	f := &boundFake{}
 	digest := "sha256:" + strings.Repeat("d", 64)
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "digest", App: "web", Version: digest, Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -100,7 +100,7 @@ func TestRollbackGivesTheIdentityOfTheReleaseItReturnsTo(t *testing.T) {
 	seedTaggedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64), "v1.0.1")
 	seedTaggedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), "v1.0.2", boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -125,7 +125,7 @@ func TestDeploysThatKeepTheVersionGiveTheSameEnvironment(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := openStore(t)
 			e := &positiveEngine{}
-			c := &Controller{Engine: tagResolver{Engine: dockerSpecs{e}, digest: digest}, Store: s, Environment: "test"}
+			c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: tagResolver{Engine: dockerSpecs{e}, digest: digest}, Store: s, Environment: "test"}
 			first := runBound(t, s, c, Request{RequestID: "tag", App: "web", Version: "v1.0.2", Manifest: dockerManifest(nil)})
 			if first.State != "succeeded" {
 				t.Fatalf("first deploy %s: %s", first.State, first.Err)

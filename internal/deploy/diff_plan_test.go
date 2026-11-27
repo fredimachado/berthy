@@ -19,7 +19,7 @@ func digestOfLetter(c string) string { return "sha256:" + strings.Repeat(c, 64) 
 func deployedWeb(t *testing.T, id, letter string, m manifest.Manifest) *Controller {
 	t.Helper()
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	redeployWeb(t, c, id, letter, m)
 	return c
 }

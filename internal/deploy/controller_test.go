@@ -40,7 +40,7 @@ func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{}
-	c := Controller{Engine: e, Store: store, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: store, Environment: "test"}
 	one := 1
 	req := Request{RequestID: "one", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
@@ -138,7 +138,7 @@ func TestUnhealthyFirstReleaseRemovesCreatedService(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	e := &positiveEngine{unhealthy: true}
-	c := Controller{Engine: e, Store: store, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: store, Environment: "test"}
 	one := 1
 	req := Request{RequestID: "bad", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "100ms", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "actor"}, req)
@@ -218,7 +218,7 @@ func TestManagedReleaseUpdatesBoundService(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	e := &positiveEngine{}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	one := 1
 	req := Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	for _, id := range []string{"first", "second"} {
@@ -270,7 +270,7 @@ func TestDeployRestoresManifestReplicasAfterScaleToZero(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	e := &positiveEngine{}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	// The role sets no replicas, so the manifest count is the default of one.
 	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	deployVersion := func(id, digit string) {
@@ -395,7 +395,7 @@ func TestDeployOverStoppedRoleSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	e := &stoppedServiceEngine{positiveEngine: &positiveEngine{}}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	// The role sets no replicas, so the manifest count is the default of one.
 	req := Request{App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}}
 	deployVersion := func(id, digit string) {
@@ -688,7 +688,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	body["Name"] = "existing"
 	spec, _ = json.Marshal(body)
 	e := &positiveEngine{spec: append(json.RawMessage(nil), spec...)}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	req := Request{RequestID: "adopt", Adopt: true, App: "web", Manifest: manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Roles: map[string]manifest.Role{"web": role}}}}}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
 	if err != nil {
@@ -751,7 +751,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	delete(task["ContainerSpec"].(map[string]any), "Labels")
 	spec, _ = json.Marshal(body)
 	e := &positiveEngine{spec: spec}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
 		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
@@ -813,6 +813,8 @@ func TestSchemaRevertRequiresKnownTargetBeforeRollout(t *testing.T) {
 		t.Fatal("unknown target accepted")
 	}
 }
+
+func zeroTestRolloutHold() *time.Duration { return new(time.Duration) }
 
 // admit is c.Admit, and the test waits for the operation's goroutine before its cleanups close the store, however the test
 // ends: one that fails while an operation runs would otherwise close the store under it, and the goroutine's panic would hide
@@ -1069,7 +1071,7 @@ func TestBoundServiceGoneIsRecreatedUnderBoundName(t *testing.T) {
 	s := openStore(t)
 	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "recreate", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1105,7 +1107,7 @@ func TestBoundServiceRenamedOutsideBerthyIsRefused(t *testing.T) {
 	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
 	f.add("old-id", json.RawMessage(`{"Name":"renamed-web"}`))
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "renamed", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
 	if op.State != "failed" || op.Err != "bound service unavailable" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1120,7 +1122,7 @@ func TestBoundNameWithDifferentIDIsRefused(t *testing.T) {
 	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
 	f.add("other-id", json.RawMessage(`{"Name":"legacy-web"}`))
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "replaced", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
 	if op.State != "failed" || op.Err != "bound service unavailable" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1135,7 +1137,7 @@ func TestBoundNameLookupErrorIsRefused(t *testing.T) {
 	seedRelease(t, s, "prior", "sha256:"+strings.Repeat("a", 64), boundBinding("legacy-web", "old-id"))
 	// The recorded ID is absent too, so only the failed name lookup stands between this deploy and a recreate.
 	f := &boundFake{failures: map[string]error{"legacy-web": &engine.StatusError{Code: 500}}}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "unreachable", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: dockerManifest(nil)})
 	if op.State != "failed" || op.Err != "bound service unavailable" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1150,7 +1152,7 @@ func TestRollbackRecreatesBoundServiceGone(t *testing.T) {
 	seedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64))
 	seedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1215,7 +1217,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	container["DNSConfig"], container["Hosts"], container["Init"] = map[string]any{}, []any{}, false
 	spec, _ = json.Marshal(body)
 	e := &positiveEngine{spec: spec}
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: e, Store: s, Environment: "test"}
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: testDeployTimeout, DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": role}}}}
 	for _, req := range []Request{{RequestID: "adopt", Adopt: true, App: "web", Manifest: m}, {RequestID: "deploy", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: m}} {
 		op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin", Admin: true}, req)
@@ -1259,7 +1261,7 @@ func TestRequestedTag(t *testing.T) {
 func TestDeployByTagRecordsTheTag(t *testing.T) {
 	s := openStore(t)
 	f := &boundFake{}
-	c := &Controller{Engine: tagResolver{Engine: f, digest: "sha256:" + strings.Repeat("c", 64)}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: tagResolver{Engine: f, digest: "sha256:" + strings.Repeat("c", 64)}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "by-tag", App: "web", Version: "v1.0.2", Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1272,7 +1274,7 @@ func TestDeployByTagRecordsTheTag(t *testing.T) {
 
 func TestDeployByDigestRecordsNoTag(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "by-digest", App: "web", Version: "sha256:" + strings.Repeat("d", 64), Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1288,7 +1290,7 @@ func TestRollbackRecordsTheTagOfTheReleaseItReturnsTo(t *testing.T) {
 	seedTaggedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64), "v1.0.1")
 	seedTaggedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), "v1.0.2", boundBinding("legacy-web", "old-id"))
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1331,7 +1333,7 @@ func TestIngressConnectorRecordsItsTagWhenGivenByTag(t *testing.T) {
 func TestADeployOfAnotherProjectsManifestIsRefused(t *testing.T) {
 	s := openStore(t)
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test", Project: "proj"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test", Project: "proj"}
 	op := runBound(t, s, c, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -1362,7 +1364,7 @@ func TestADeployOfAnotherProjectsManifestIsRefused(t *testing.T) {
 
 func TestAnEnvironmentKeepsItsProjectAfterEveryAppIsRemoved(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Project: "proj"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test", Project: "proj"}
 	op := runBound(t, s, c, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)

@@ -244,7 +244,7 @@ func TestSchemaRevertRollsBackImageBeforeRevert(t *testing.T) {
 	op := admitRevert(t, s)
 	f := newRevertFake(s, op.ID, []int{0, 0, 0}, "v2", "v1")
 	f.positiveEngine.spec = live
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{Engine: f, Store: s, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	c.execute(context.Background(), op, Actor{ID: "admin", Admin: true}, Request{Kind: "rollback", App: "app", RevertSchema: true})
 	got, err := s.Operation(context.Background(), op.ID)
 	if err != nil || got.State != "succeeded" || got.SchemaBefore != "v2" || got.SchemaAfter != "v1" {

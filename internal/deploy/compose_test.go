@@ -218,7 +218,7 @@ func composeController(t *testing.T, runner *fakeCompose, docker *composeDocker)
 	// A deploy polls compose ps at pollFast, twice before it calls the project ready.
 	paceWith(t, 5*time.Millisecond, 5*time.Millisecond, 0)
 	s := openStore(t)
-	return &Controller{Engine: docker, Store: s, Environment: "test", Compose: runner, StateDir: t.TempDir()}, s
+	return &Controller{rolloutHold: zeroTestRolloutHold(), Engine: docker, Store: s, Environment: "test", Compose: runner, StateDir: t.TempDir()}, s
 }
 
 func newComposeDocker(containers ...engine.ComposeContainer) *composeDocker {
@@ -1213,7 +1213,7 @@ func TestExecRefusesAFlagTheAppKindDoesNotTake(t *testing.T) {
 	if _, err := c.Plan(ctx, admin, Request{App: "db", Kind: "exec", Role: "web", Command: []string{"true"}}); !errors.Is(err, errComposeRole) {
 		t.Fatalf("compose app with a role, plan: %v", err)
 	}
-	image := Controller{Store: openStore(t), Engine: &positiveEngine{}, Environment: "test"}
+	image := Controller{rolloutHold: zeroTestRolloutHold(), Store: openStore(t), Engine: &positiveEngine{}, Environment: "test"}
 	if _, _, err := admit(t, &image, ctx, admin, Request{RequestID: "svc", App: "app", Kind: "exec", Service: "postgres", Command: []string{"true"}}); !errors.Is(err, errExecServiceImage) {
 		t.Fatalf("image app with a service, admit: %v", err)
 	}

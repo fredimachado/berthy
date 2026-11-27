@@ -98,7 +98,7 @@ func TestServiceSpecLogDriverIsByteStable(t *testing.T) {
 func TestDeployGivesNewServicesDefaultLogRotation(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
-	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "json-file", nil}, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: loggingDockerSpecs{dockerSpecs{pe}, "json-file", nil}, Store: s, Environment: "test"}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "first", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestDeployGivesNewServicesDefaultLogRotation(t *testing.T) {
 func TestDeployReplacesLogRotationWithTheRolesLogging(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
-	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "json-file", nil}, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: loggingDockerSpecs{dockerSpecs{pe}, "json-file", nil}, Store: s, Environment: "test"}
 	withLogging := dockerManifest(nil)
 	r := withLogging.Apps["web"].Roles["web"]
 	r.Logging = &manifest.Logging{Driver: "json-file", Options: map[string]string{"max-size": "50m", "max-file": "5"}}
@@ -145,7 +145,7 @@ func TestDeployReplacesLogRotationWithTheRolesLogging(t *testing.T) {
 func TestDeployFailsWithoutTheDaemonLogDriver(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
-	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "", errors.New("daemon down")}, Store: s, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Engine: loggingDockerSpecs{dockerSpecs{pe}, "", errors.New("daemon down")}, Store: s, Environment: "test"}
 	op, _, err := admit(t, &c, context.Background(), Actor{ID: "admin"}, Request{RequestID: "no-driver", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestDeployFailsWithoutTheDaemonLogDriver(t *testing.T) {
 func TestUpdateSetsAndRemovesTheRolesLogDriver(t *testing.T) {
 	s := openStore(t)
 	pe := &positiveEngine{}
-	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "", nil}, Store: s, Environment: "test"}
+	c := Controller{Engine: loggingDockerSpecs{dockerSpecs{pe}, "", nil}, Store: s, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	withLogging := dockerManifest(nil)
 	r := withLogging.Apps["web"].Roles["web"]
 	r.Logging = &manifest.Logging{Driver: "json-file", Options: map[string]string{"max-size": "50m", "max-file": "5"}}

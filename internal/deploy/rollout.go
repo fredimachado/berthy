@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/state"
@@ -146,6 +147,8 @@ type healthReader interface {
 	InspectContainerHealth(context.Context, string) (string, error)
 }
 
+const rolloutMonitor time.Duration = 5 * time.Second
+
 func healthyOnce(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
 	tasks, err := e.ServiceTasks(ctx, id)
 	if err != nil {
@@ -191,26 +194,45 @@ func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.St
 
 // waitHealthy waits until every replica of the generation runs healthy, the context ends, or, with a positive limit, the
 // generation has had limit failed tasks. Swarm keeps few old tasks, so failures are counted by task ID across polls.
-func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int) error {
+func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int, hold time.Duration) error {
 	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
 	failed := map[string]bool{}
+	var healthySince time.Time
 	for {
 		tasks, err := e.ServiceTasks(ctx, id)
 		if err == nil {
-			if healthyIn(ctx, e, tasks, id, generation, replicas) == nil {
-				return nil
-			}
+			newFailure := false
 			for _, t := range tasks {
-				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) {
+				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) && !failed[t.ID] {
 					failed[t.ID] = true
+					newFailure = true
 				}
 			}
 			if limit > 0 && len(failed) >= limit {
 				return &errStartAttempts{Failed: len(failed), Limit: limit}
 			}
+			if newFailure {
+				healthySince = time.Time{}
+			}
+			if healthyIn(ctx, e, tasks, id, generation, replicas) == nil {
+				if healthySince.IsZero() {
+					healthySince = time.Now()
+				}
+				if time.Since(healthySince) >= hold {
+					return nil
+				}
+			} else {
+				healthySince = time.Time{}
+			}
+		} else {
+			healthySince = time.Time{}
 		}
-		if !pace.wait(ctx) {
+		var next time.Time
+		if !healthySince.IsZero() {
+			next = healthySince.Add(hold)
+		}
+		if !pace.waitUntil(ctx, next) {
 			return errors.New("service health deadline exceeded")
 		}
 	}
@@ -262,7 +284,7 @@ func withRole(err error, role string) error {
 	return err
 }
 
-func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) (string, error) {
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) (string, error) {
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
 	if err := j.RecordIntent(ctx, op, i); err != nil {
@@ -286,7 +308,7 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
 		return "", err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
 		return "", withRole(err, i.Role)
 	}
 	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
@@ -295,7 +317,7 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	return live.ID, nil
 }
 
-func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) error {
+func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) error {
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
 	if err := applyIntent(ctx, j, e, op, i, auth); err != nil {
@@ -315,7 +337,7 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
 		return err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
 		return withRole(err, i.Role)
 	}
 	if updateHasTasks(i.Before) {

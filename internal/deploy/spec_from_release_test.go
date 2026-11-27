@@ -80,7 +80,7 @@ func TestUpdateSendsTheSameSpecAsCreate(t *testing.T) {
 	// The update: a first deploy of another version creates the service, then the release deploys over it.
 	s := openStore(t)
 	updating := newRecordingEngine()
-	c := Controller{Engine: updating, Store: s, Environment: "test"}
+	c := Controller{Engine: updating, Store: s, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	deploySucceeds(t, &c, s, "first", "a", dockerManifest(nil))
 	op := deploySucceeds(t, &c, s, "second", "b", m)
 	_, updates := updating.sent()
@@ -91,7 +91,7 @@ func TestUpdateSendsTheSameSpecAsCreate(t *testing.T) {
 	// The create: the same release on an empty daemon.
 	s2 := openStore(t)
 	creating := newRecordingEngine()
-	c2 := Controller{Engine: creating, Store: s2, Environment: "test"}
+	c2 := Controller{Engine: creating, Store: s2, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	op2 := deploySucceeds(t, &c2, s2, "only", "b", m)
 	creates, _ := creating.sent()
 	if len(creates) != 1 {
@@ -106,7 +106,7 @@ func TestUpdateSendsTheSameSpecAsCreate(t *testing.T) {
 func TestUpdateDropsAFieldChangedByHand(t *testing.T) {
 	s := openStore(t)
 	e := newRecordingEngine()
-	c := Controller{Engine: e, Store: s, Environment: "test"}
+	c := Controller{Engine: e, Store: s, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 	deploySucceeds(t, &c, s, "first", "a", dockerManifest(nil))
 
 	// Someone ran docker service update --user 1000 --hostname handmade.

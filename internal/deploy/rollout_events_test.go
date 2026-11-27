@@ -142,7 +142,7 @@ func TestRolloutEventsStartedBeforeUpdateAndReadyAfterVerify(t *testing.T) {
 		verifyHold:     make(chan struct{}, 1),
 		allowVerify:    make(chan struct{}),
 	}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	m := apiRoleManifest(testDeployTimeout)
 	first := admitAndDrain(t, c, Request{
 		RequestID: "first",

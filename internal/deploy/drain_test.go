@@ -24,7 +24,7 @@ func (h *holdingObserver) OperationEnded(ctx context.Context, e OperationEvent) 
 func TestDrainReturnsWhenTheOperationsHaveEnded(t *testing.T) {
 	s := openStore(t)
 	obs := &holdingObserver{release: make(chan struct{})}
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs, rolloutHold: new(time.Duration)}
 	m := dockerManifest(nil)
 	op, _, err := c.Admit(context.Background(), Actor{ID: "ci"}, Request{RequestID: "wait", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m})
 	if err != nil {
