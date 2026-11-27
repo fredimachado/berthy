@@ -243,6 +243,163 @@ func TestJobCheckUsesScheduledOccurrencesOfEveryStatus(t *testing.T) {
 	assert(monitor.Critical, "exit status 3: berthy job logs tick shows its output")
 }
 
+func TestJobCheckRestartsGraceAfterScheduleRedeploy(t *testing.T) {
+	s := openIngressStore(t)
+	ctx := context.Background()
+	daily := strings.Replace(jobsManifest, "* * * * *", "30 2 * * *", 1)
+	recordRelease(t, s, "daily", daily)
+	old := at(2, 30, 0)
+	id, err := s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: old, Started: old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishJobRun(ctx, id, "succeeded", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := at(12, 5, 0)
+	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w.now = func() time.Time { return now }
+	jobCheckFrom := func() monitor.Check {
+		t.Helper()
+		for _, c := range w.checks(ctx) {
+			if c.Name() == "job:tick" {
+				return c
+			}
+		}
+		t.Fatal("missing check")
+		return nil
+	}
+	_ = jobCheckFrom()
+	recordAppRelease(t, s, "hourly", "api", strings.Replace(daily, "30 2 * * *", "0 * * * *", 1))
+	check := jobCheckFrom()
+	if got := check.Run(ctx); got.State != monitor.OK {
+		t.Errorf("on redeploy: %+v", got)
+	}
+	now = at(13, 30, 0)
+	check = jobCheckFrom()
+	now = at(14, 0, 0)
+	if got := check.Run(ctx); got.State != monitor.OK {
+		t.Errorf("boundary: %+v", got)
+	}
+	now = at(14, 0, 1)
+	if got := check.Run(ctx); got.State != monitor.Warning || got.Detail != "missed scheduled run at 2026-11-16T13:00:00Z" {
+		t.Errorf("after grace: %+v", got)
+	}
+}
+
+func TestJobCheckRestartsGraceAfterTimezoneOnlyApply(t *testing.T) {
+	for _, withOld := range []bool{false, true} {
+		t.Run(strconv.FormatBool(withOld), func(t *testing.T) {
+			f := newApprovalFixture(t, false, nil)
+			ctx := context.Background()
+			daily := strings.Replace(jobsManifest, "* * * * *", "30 2 * * *", 1)
+			recordRelease(t, f.s, "daily", daily)
+			if withOld {
+				old := at(2, 30, 0)
+				id, err := f.s.StartJobRun(ctx, state.JobRun{Job: "tick", App: "api", Trigger: "schedule", Scheduled: old, Started: old})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.s.FinishJobRun(ctx, id, "succeeded", nil, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := at(16, 0, 0)
+			w := NewMonitoring(monitoringConfig(""), nil, nil, f.ctrl, func(string) {})
+			w.now = func() time.Time { return now }
+			get := func(w *Monitoring) monitor.Check {
+				t.Helper()
+				for _, c := range w.checks(ctx) {
+					if c.Name() == "job:tick" {
+						return c
+					}
+				}
+				t.Fatal("missing check")
+				return nil
+			}
+			_ = get(w)
+			before, err := f.s.History(ctx, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = at(18, 0, 0)
+			tokyo := strings.Replace(daily, `"network":"demo"`, `"network":"demo","timezone":"Asia/Tokyo"`, 1)
+			applyChanges(t, f, apDeployToken, applyBody(t, tokyo, false))
+			after, err := f.s.History(ctx, "")
+			if err != nil || len(before) != len(after) {
+				t.Fatalf("release history changed: %d %d %v", len(before), len(after), err)
+			}
+			check := get(w)
+			fresh := NewMonitoring(monitoringConfig(""), nil, nil, f.ctrl, func(string) {})
+			fresh.now = func() time.Time { return now }
+			freshCheck := get(fresh)
+			now = at(18, 30, 0).Add(24 * time.Hour)
+			want := monitor.Unknown
+			if withOld {
+				want = monitor.OK
+			}
+			for _, c := range []monitor.Check{check, freshCheck} {
+				if got := c.Run(ctx); got.State != want {
+					t.Errorf("boundary: %+v", got)
+				}
+			}
+			now = now.Add(time.Second)
+			for _, c := range []monitor.Check{check, freshCheck} {
+				if got := c.Run(ctx); got.State != monitor.Warning || got.Detail != "missed scheduled run at 2026-11-17T17:30:00Z" {
+					t.Errorf("after grace: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestJobCheckKeepsLastGoodRebuildOnInvalidSchedule(t *testing.T) {
+	s := openIngressStore(t)
+	ctx := context.Background()
+	hourly := strings.Replace(jobsManifest, "* * * * *", "0 * * * *", 1)
+	recordRelease(t, s, "valid", hourly)
+	now := at(12, 5, 0)
+	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w.now = func() time.Time { return now }
+	var previous monitor.Check
+	for _, c := range w.checks(ctx) {
+		if c.Name() == "job:tick" {
+			previous = c
+		}
+	}
+	if previous == nil {
+		t.Fatal("missing valid check")
+	}
+	now = at(13, 30, 0)
+	invalid, err := runningManifest(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := invalid.Jobs["tick"]
+	job.Schedule = "invalid"
+	invalid.Jobs["tick"] = job
+	if got, err := w.manifestChecks(ctx, invalid); err == nil || got != nil {
+		t.Errorf("invalid rebuild returned %d checks, error %v", len(got), err)
+	}
+	now = at(14, 0, 1)
+	if got := previous.Run(ctx); got.State != monitor.Warning || got.Detail != "missed scheduled run at 2026-11-16T13:00:00Z" {
+		t.Errorf("previous check: %+v", got)
+	}
+	recordAppRelease(t, s, "recovered", "api", hourly)
+	var recovered monitor.Check
+	for _, c := range w.checks(ctx) {
+		if c.Name() == "job:tick" {
+			recovered = c
+		}
+	}
+	if recovered == nil {
+		t.Fatal("recovery lost check")
+	}
+	if got := recovered.Run(ctx); got.State != monitor.Warning || got.Detail != "missed scheduled run at 2026-11-16T13:00:00Z" {
+		t.Errorf("recovered check: %+v", got)
+	}
+}
+
 func jobsHandler(t *testing.T, s *state.Store, exec jobs.Runner) http.Handler {
 	t.Helper()
 	return NewDeploymentHandlerWithJobs(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, nil, jobScheduler(s, exec))
