@@ -1008,6 +1008,17 @@ func TestBinaryStep(t *testing.T) {
 		{"BERTHY_RELEASE_URL on the internet over http", nil, func(o *Options) { release(o); o.ReleaseURL = "http://example.com/rel" }, StatusFailed, "BERTHY_RELEASE_URL must be an https URL, or an http URL on a loopback or private address", nil},
 		{"a development build", nil, func(o *Options) { o.Build = Build{OS: "darwin", Arch: "arm64", Version: "dev"} }, StatusFailed, "this CLI is a development build for darwin/arm64: pass --binary with a Linux amd64 build of Berthy", nil},
 		{"a development build for another Linux arch", nil, func(o *Options) { o.Build = Build{OS: "linux", Arch: "arm64", Path: arm, Version: "dev"} }, StatusFailed, "this CLI is a development build for linux/arm64: pass --binary with a Linux amd64 build of Berthy", nil},
+		{"a newer server refuses a release download", func(f *agentFake) { f.version = "berthy v1.3.0 linux/amd64\n" }, release, StatusFailed, "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build", nil},
+		{"a newer server refuses this CLI upload", func(f *agentFake) {
+			f.version = "berthy v1.3.0 linux/amd64\n"
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+		}, func(o *Options) {
+			o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
+		}, StatusFailed, "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build", nil},
+		{"--binary still replaces a newer server", func(f *agentFake) {
+			f.version = "berthy v1.3.0 linux/amd64\n"
+			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
+		}, func(o *Options) { o.Binary = x86 }, StatusChanged, "uploaded --binary berthy, sha256 ", []string{"cat > /usr/local/bin/berthy.new"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1035,6 +1046,24 @@ func TestBinaryStep(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a dry run refuses a newer server and stages nothing", func(t *testing.T) {
+		f := setUpAgent(t, x86)
+		f.version = "berthy v1.3.0 linux/amd64\n"
+		s := agentSession(t, f, x86, true, release)
+		var got []StepResult
+		Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
+		r := stepOf(t, got, "binary")
+		want := "the server runs berthy v1.3.0, newer than this CLI (v1.2.3): upgrade this CLI, or pass --binary to install another build"
+		if r.Status != StatusFailed || r.Detail != want {
+			t.Fatalf("binary = %+v", r)
+		}
+		if s.staged.Binary {
+			t.Errorf("staged.Binary = true")
+		}
+		if f.ran(binPath + ".new") {
+			t.Errorf("a binary was staged on a dry run that refused")
+		}
+	})
 }
 
 func TestReleaseDownloadChecksTheChecksum(t *testing.T) {
