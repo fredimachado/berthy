@@ -70,7 +70,10 @@ func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, ro
 		drain = "30s"
 	}
 	order, _ := app.UpdateOrder(role)
-	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
+	if err := checkUptimeImage(app, role, img); err != nil {
+		return nil, err
+	}
+	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver, prepared.ProbeSource)
 }
 
 // releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
@@ -97,7 +100,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
 		var refusal Refusal
-		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal))) {
+		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal)) || isUptimeRefusal(refusal)) {
 			outcome.Err = string(refusal)
 		}
 		return
@@ -121,7 +124,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if req.Adopt {
 		plan, bindings, e := c.planAdoption(ctx, req)
 		if e != nil {
-			outcome.Err = "adoption preflight failed"
+			outcome.Err = uptimePreflightMessage(e, "adoption preflight failed")
 			return
 		}
 		raw, e := json.Marshal(req.Manifest)
@@ -158,6 +161,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		return
 	}
+	prepared.ProbeSource, err = c.appProbeSource(req.Manifest.Apps[req.App])
+	if err != nil {
+		outcome.Err = uptimePreflightMessage(err, outcome.Err)
+		return
+	}
 	img, msg, err := c.ensureImage(ctx, prepared)
 	if err != nil {
 		outcome.Err = msg
@@ -178,12 +186,8 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		}
 	}
 	app := req.Manifest.Apps[req.App]
-	timeout := app.Deploy.DeployTimeout
-	if timeout == "" {
-		timeout = "120s"
-	}
-	budget, err := time.ParseDuration(timeout)
-	if err != nil || budget <= 0 {
+	budget, err := deployStartupBudget(app)
+	if err != nil {
 		return
 	}
 	work := make([]roleWork, 0, len(p.Roles))
@@ -191,7 +195,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		r := app.Roles[role]
 		spec, e := c.releaseRoleSpec(prepared, img, role, op.ID)
 		if e != nil {
-			outcome.Err = "role preflight failed"
+			outcome.Err = uptimePreflightMessage(e, "role preflight failed")
 			return
 		}
 		name := req.Manifest.ServiceName(c.Environment, req.App, role)

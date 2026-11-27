@@ -24,7 +24,8 @@ type preparedPlan struct {
 	// Identity is the BERTHY_* values of the app's containers; Env stays the app's own variables.
 	Identity identity
 	// LogDriver is the daemon's default log driver, which decides the rotation of a role that sets no logging.
-	LogDriver string
+	LogDriver   string
+	ProbeSource string
 }
 
 // identity is what an image app's container knows about itself, as the BERTHY_* variables. It holds only values that
@@ -91,6 +92,9 @@ func (c *Controller) prepare(ctx context.Context, req Request, image string) (Pl
 	// The tag is read from the requested image: prepare pins p.Image to its digest below.
 	p := Plan{App: req.App, Image: image, Tag: requestedTag(image)}
 	app := req.Manifest.Apps[req.App]
+	if _, err := c.appProbeSource(app); err != nil {
+		return Plan{}, err
+	}
 	for role := range app.Roles {
 		p.Roles = append(p.Roles, role)
 	}
@@ -241,6 +245,10 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 	if !ok || app.Kind != "image" {
 		return Plan{}, nil, errors.New("image app required")
 	}
+	probeSource, err := c.appProbeSource(app)
+	if err != nil {
+		return Plan{}, nil, err
+	}
 	if c.Engine == nil {
 		return Plan{}, nil, errors.New("Docker unavailable")
 	}
@@ -317,7 +325,7 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 				return "30s"
 			}
 			return app.Deploy.DrainTimeout
-		}(), spec.TaskTemplate.ContainerSpec.Healthcheck, daemonDriver)
+		}(), spec.TaskTemplate.ContainerSpec.Healthcheck, daemonDriver, probeSource)
 		if e != nil {
 			return Plan{}, nil, errors.New("adoption health configuration unavailable")
 		}
@@ -326,6 +334,15 @@ func (c *Controller) planAdoption(ctx context.Context, req Request) (Plan, []sta
 		}
 		if e = adoptableService(live.Spec, net.ID); e != nil {
 			return Plan{}, nil, errors.New("unsafe or incompatible adoption service")
+		}
+		if r.Health != nil && r.Health.Uptime != nil {
+			local, err := c.Engine.InspectImage(ctx, p.Image)
+			if err != nil || local.ID == "" {
+				return Plan{}, nil, errUptimeImageTiming
+			}
+			if err := checkUptimeImage(app, role, local); err != nil {
+				return Plan{}, nil, err
+			}
 		}
 		if e = adoptionVolumeMismatch(live.Spec, desired); e != nil {
 			return Plan{}, nil, e

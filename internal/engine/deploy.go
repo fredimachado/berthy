@@ -51,6 +51,7 @@ type Image struct {
 	ID          string
 	RepoDigests []string
 	Healthcheck json.RawMessage
+	Volumes     map[string]struct{}
 }
 type ContainerSnapshot struct {
 	ID, ImageID, State, StartedAt string
@@ -267,10 +268,13 @@ func (e *Engine) InspectImage(ctx context.Context, ref string) (Image, error) {
 	var x struct {
 		ID          string
 		RepoDigests []string
-		Config      struct{ Healthcheck json.RawMessage }
+		Config      struct {
+			Healthcheck json.RawMessage
+			Volumes     map[string]struct{}
+		}
 	}
 	err = e.jsonRequest(ctx, "GET", "/images/"+p+"/json", nil, nil, &x)
-	return Image{ID: x.ID, RepoDigests: x.RepoDigests, Healthcheck: x.Config.Healthcheck}, err
+	return Image{ID: x.ID, RepoDigests: x.RepoDigests, Healthcheck: x.Config.Healthcheck, Volumes: x.Config.Volumes}, err
 }
 func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceTask, error) {
 	if _, err := pathID(serviceID); err != nil {

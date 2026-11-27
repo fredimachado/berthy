@@ -215,7 +215,7 @@ func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 }
 
 func TestServiceSpecOmitsEmptyEnv(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "", "")
 	if err != nil || strings.Contains(string(b), `"Env"`) {
 		t.Fatalf("spec %s: %v", b, err)
 	}
@@ -251,7 +251,7 @@ func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
 		present bool
 	}{{"0s", false}, {"1s", true}} {
 		role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}, Interval: "5s", Timeout: "2s", StartPeriod: tc.start, Retries: &retries}}
-		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "")
+		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +388,7 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 func TestAServiceOfTwoEnvironmentsOfOneProjectHasTwoNames(t *testing.T) {
 	role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}
 	for _, env := range []string{"dev", "prod"} {
-		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -405,7 +405,7 @@ func TestAServiceOfTwoEnvironmentsOfOneProjectHasTwoNames(t *testing.T) {
 func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
 	role := manifest.Role{Volumes: []string{"data:/data"}, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
 	for _, env := range []string{"dev", "prod"} {
-		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -424,7 +424,7 @@ func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
 }
 
 func TestARoleIsReachableByAppAndRoleOnItsNetwork(t *testing.T) {
-	b, err := serviceSpec("prod", "shop", "api", "web", "shop-prod-api-web", "op", "shop-prod", "image", func(v string) string { return v }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
+	b, err := serviceSpec("prod", "shop", "api", "web", "shop-prod-api-web", "op", "shop-prod", "image", func(v string) string { return v }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

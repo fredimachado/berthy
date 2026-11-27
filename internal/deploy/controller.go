@@ -154,6 +154,7 @@ type Controller struct {
 	FinishReservation func(context.Context, []state.Claim, []state.Claim, []state.Claim) error
 	Foreign           func(context.Context) (Foreign, error)
 	Log               func(string)
+	ProbeSource       func() (string, error)
 	Engine            Engine
 	Store             *state.Store
 	Environment       string

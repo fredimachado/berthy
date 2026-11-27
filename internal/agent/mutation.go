@@ -35,6 +35,7 @@ func OpenDeployment(c Config, e *engine.Engine) (*deploy.Controller, error) {
 		return nil, err
 	}
 	controller := &deploy.Controller{Store: s, Environment: c.Environment, Project: c.Project, Protected: c.Protected, CloudflareURL: c.CloudflareAPIURL, StateDir: c.StateDir}
+	controller.ProbeSource = uptimeProbeSource
 	controller.Compose = engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}
 	if e != nil {
 		controller.Engine = e

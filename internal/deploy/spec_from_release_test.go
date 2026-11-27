@@ -130,7 +130,7 @@ func TestUpdateDropsAFieldChangedByHand(t *testing.T) {
 
 func TestServiceSpecSetsUserAndEntrypoint(t *testing.T) {
 	role := manifest.Role{User: "1000:1000", Entrypoint: []string{"/bin/app", "--serve"}, Command: []string{"-v"}, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestServiceSpecSetsUserAndEntrypoint(t *testing.T) {
 		t.Fatalf("container spec %+v", c)
 	}
 	// A role that sets neither leaves both to the image.
-	b, err = serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: role.Health}, "start-first", "10s", nil, "")
+	b, err = serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: role.Health}, "start-first", "10s", nil, "", "")
 	if err != nil || strings.Contains(string(b), `"User"`) || strings.Contains(string(b), `"Command"`) {
 		t.Fatalf("spec %s: %v", b, err)
 	}

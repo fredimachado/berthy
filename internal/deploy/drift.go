@@ -73,6 +73,10 @@ func (c *Controller) imageDrift(ctx context.Context, release state.Release, m ma
 	if err != nil {
 		return nil, nil, err
 	}
+	prepared.ProbeSource, err = c.appProbeSource(m.Apps[app])
+	if err != nil {
+		return nil, nil, err
+	}
 	// The release's image is read, never pulled: an image that is not here cannot be what runs.
 	img, err := c.Engine.InspectImage(ctx, prepared.Image)
 	if err != nil {
