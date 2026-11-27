@@ -96,18 +96,25 @@ func (h Health) checkUptime(p *Problems, path, where string, app App) {
 	if err != nil || budget <= 0 {
 		return // checkApp reports the invalid deploy_timeout.
 	}
-	if !timing.fitsBudget(budget) {
+	if !timing.FitsBudget(budget, 0, 0) {
 		p.add(path+".interval", "%s: uptime health must have an eligible poll before deploy_timeout", where)
 	}
 }
 
-func (u UptimeTiming) fitsBudget(budget time.Duration) bool {
-	if u.StartPeriod == 0 {
-		return u.Interval < budget
+// FitsBudget checks the first eligible poll on each supported scheduler. Docker inherits the image's grace when the
+// service supplies zero, and may use the image's startup cadence in place of the default.
+func (u UptimeTiming) FitsBudget(budget, imageGrace, imageCadence time.Duration) bool {
+	grace := u.StartPeriod
+	if grace == 0 {
+		grace = imageGrace
+	}
+	first := u.Threshold + uptimeMargin
+	if grace == 0 {
+		return u.Interval >= first && u.Interval < budget
 	}
 	const startupCadence = 5 * time.Second
-	first := u.Threshold + uptimeMargin
-	return pollFits(first, u.Interval, budget) && pollFits(first, startupCadence, budget)
+	return budget > 0 && grace >= first && pollFits(first, u.Interval, budget) && pollFits(first, startupCadence, budget) &&
+		(imageCadence == 0 || pollFits(first, imageCadence, budget))
 }
 
 func pollFits(first, cadence, budget time.Duration) bool {

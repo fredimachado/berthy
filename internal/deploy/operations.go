@@ -292,7 +292,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	}
 	allowance := serviceCleanupAllowance
 	if n > 0 {
-		budget, err := uptimeStartupBudget(m.Apps[req.App], b.Role)
+		budget, err := uptimeReplacementBudget(m.Apps[req.App], b.Role, live.Spec, n)
 		if err != nil {
 			return state.Outcome{State: "failed", Err: "operation preflight failed"}
 		}

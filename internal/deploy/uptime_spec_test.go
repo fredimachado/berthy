@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"berthy/internal/engine"
@@ -94,20 +99,80 @@ func runUptimeRequest(t *testing.T, c *Controller, req Request) state.Operation 
 }
 
 func TestUptimeImageTimingPreflight(t *testing.T) {
+	health := uptimeManifest("20s", "1m").Apps["web"].Roles["web"].Health
+	timing, err := health.UptimeTiming()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct{ name, health, budget, want string }{
 		{"no metadata", "", "21s", "succeeded"},
 		{"short image grace", `{"StartPeriod":20000000000}`, "1m", "failed"},
+		{"inherited grace just below the scheduling margin", fmt.Sprintf(`{"StartPeriod":%d}`, timing.Interval-1), "1m", "failed"},
 		{"image cadence misses", `{"StartPeriod":40000000000,"StartInterval":30000000000}`, "25s", "failed"},
 		{"fallback cadence misses", `{"StartPeriod":40000000000,"StartInterval":500000000}`, "21s", "failed"},
 		{"portable inherited cadence", `{"StartPeriod":40000000000,"StartInterval":2000000000}`, "26s", "succeeded"},
 		{"malformed", `{"StartPeriod":"bad"}`, "1m", "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &uptimeImageEngine{image: engine.Image{ID: "image", Healthcheck: json.RawMessage(tc.health)}}
+			f := &uptimeImageEngine{image: engine.Image{ID: "image", ConfigPresent: true, Healthcheck: json.RawMessage(tc.health)}}
 			c := &Controller{Store: openStore(t), Engine: f, Environment: "test", ProbeSource: testProbeSource, rolloutHold: zeroTestRolloutHold()}
 			op := runUptimeRequest(t, c, Request{RequestID: "candidate", App: "web", Version: digestOfLetter("a"), Manifest: uptimeManifest("20s", tc.budget)})
 			if op.State != tc.want || (tc.want == "failed" && len(f.createdSpecs()) != 0) {
 				t.Fatalf("state %s, error %q, service writes %d, want %s", op.State, op.Err, len(f.createdSpecs()), tc.want)
+			}
+		})
+	}
+}
+
+func TestUptimeImageConfigThroughDockerInspect(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply string
+		valid       bool
+	}{
+		{"missing", `{"Id":"image"}`, false},
+		{"null", `{"Id":"image","Config":null}`, false},
+		{"empty", `{"Id":"image","Config":{}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Keep the socket path short enough for sockaddr_un even when the test name is long.
+			dir, err := os.MkdirTemp("", "berthy-image-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+			path := filepath.Join(dir, "d.sock")
+			listener, err := net.Listen("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1.44/images/worker/json" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				_, _ = w.Write([]byte(tc.reply))
+			})}
+			done := make(chan struct{})
+			go func() { defer close(done); _ = server.Serve(listener) }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() { cancel(); _ = server.Close(); <-done }()
+			image, err := engine.New(path).InspectImage(ctx, "worker")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := uptimeManifest("20s", "1m")
+			f := &uptimeImageEngine{image: image}
+			c := &Controller{Store: openStore(t), Engine: f, Environment: "test", ProbeSource: testProbeSource, rolloutHold: zeroTestRolloutHold()}
+			op := runUptimeRequest(t, c, Request{RequestID: "candidate", App: "web", Version: digestOfLetter("a"), Manifest: m})
+			if tc.valid && op.State != "succeeded" || !tc.valid && (op.State != "failed" || op.Err != string(errUptimeImageTiming) || len(f.createdSpecs()) != 0) {
+				t.Errorf("deploy state %s, error %q, service writes %d", op.State, op.Err, len(f.createdSpecs()))
+			}
+			f.add("manual", adoptedService(t, adoptionRole(), ""))
+			role := m.Apps["web"].Roles["web"]
+			role.Service = "existing"
+			m.Apps["web"].Roles["web"] = role
+			_, err = c.Plan(ctx, Actor{Admin: true}, Request{App: "web", Manifest: m, Adopt: true, DryRun: true})
+			if tc.valid && err != nil || !tc.valid && !errors.Is(err, errUptimeImageTiming) {
+				t.Errorf("adoption error %v", err)
 			}
 		})
 	}
@@ -144,7 +209,7 @@ func TestUptimeImageVolumeConflict(t *testing.T) {
 		{"/", true}, {"/.berthy", true}, {"/.berthy/berthy", true}, {"/.berthy/other", true}, {"/.berthy-data", false}, {"/work", false},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
-			f := &uptimeImageEngine{image: engine.Image{ID: "image", Volumes: map[string]struct{}{tc.target: {}}}}
+			f := &uptimeImageEngine{image: engine.Image{ID: "image", ConfigPresent: true, Volumes: map[string]struct{}{tc.target: {}}}}
 			c := &Controller{Store: openStore(t), Engine: f, Environment: "test", ProbeSource: testProbeSource, rolloutHold: zeroTestRolloutHold()}
 			op := runUptimeRequest(t, c, Request{RequestID: "volume", App: "web", Version: digestOfLetter("a"), Manifest: uptimeManifest("20s", "1m")})
 			if tc.conflicts {

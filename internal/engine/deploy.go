@@ -48,10 +48,11 @@ type Network struct {
 	Attachable              bool
 }
 type Image struct {
-	ID          string
-	RepoDigests []string
-	Healthcheck json.RawMessage
-	Volumes     map[string]struct{}
+	ID            string
+	RepoDigests   []string
+	ConfigPresent bool // Docker returned a configuration object, which may be empty.
+	Healthcheck   json.RawMessage
+	Volumes       map[string]struct{}
 }
 type ContainerSnapshot struct {
 	ID, ImageID, State, StartedAt string
@@ -268,13 +269,19 @@ func (e *Engine) InspectImage(ctx context.Context, ref string) (Image, error) {
 	var x struct {
 		ID          string
 		RepoDigests []string
-		Config      struct {
+		Config      *struct {
 			Healthcheck json.RawMessage
 			Volumes     map[string]struct{}
 		}
 	}
 	err = e.jsonRequest(ctx, "GET", "/images/"+p+"/json", nil, nil, &x)
-	return Image{ID: x.ID, RepoDigests: x.RepoDigests, Healthcheck: x.Config.Healthcheck, Volumes: x.Config.Volumes}, err
+	image := Image{ID: x.ID, RepoDigests: x.RepoDigests}
+	if x.Config != nil {
+		image.ConfigPresent = true
+		image.Healthcheck = x.Config.Healthcheck
+		image.Volumes = x.Config.Volumes
+	}
+	return image, err
 }
 func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceTask, error) {
 	if _, err := pathID(serviceID); err != nil {

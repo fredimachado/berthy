@@ -108,6 +108,34 @@ func uptimeStartupBudget(app manifest.App, role string) (time.Duration, error) {
 	return deployStartupBudget(app)
 }
 
+func uptimeReplacementBudget(app manifest.App, role string, live json.RawMessage, targetReplicas int) (time.Duration, error) {
+	startup, err := uptimeStartupBudget(app, role)
+	if startup == 0 || err != nil {
+		return startup, err
+	}
+	var spec struct {
+		Mode         struct{ Replicated *struct{ Replicas int } }
+		UpdateConfig *struct{ Parallelism uint64 }
+	}
+	if json.Unmarshal(live, &spec) != nil || spec.Mode.Replicated == nil || spec.Mode.Replicated.Replicas < 0 {
+		return 0, errors.New("invalid live replacement configuration")
+	}
+	parallelism := uint64(1)
+	if spec.UpdateConfig != nil {
+		parallelism = spec.UpdateConfig.Parallelism
+	}
+	// A scale from zero still needs one startup batch. Swarm can start new slots together while replacing existing slots.
+	replacing := min(spec.Mode.Replicated.Replicas, targetReplicas)
+	batches := uint64(1)
+	if parallelism > 0 && replacing > 0 {
+		batches += uint64(replacing-1) / parallelism
+	}
+	if batches > uint64(math.MaxInt64/startup) {
+		return 0, errors.New("uptime startup allowance is too large")
+	}
+	return startup * time.Duration(batches), nil
+}
+
 const serviceCleanupAllowance = 2 * time.Minute
 
 func addStartupAllowance(total, budget time.Duration) (time.Duration, error) {
@@ -121,6 +149,9 @@ func checkUptimeImage(app manifest.App, role string, img engine.Image) error {
 	h := app.Roles[role].Health
 	if h == nil || h.Uptime == nil {
 		return nil
+	}
+	if !img.ConfigPresent {
+		return errUptimeImageTiming
 	}
 	for target := range img.Volumes {
 		if uptimeMountOverlap(target) {
@@ -140,29 +171,9 @@ func checkUptimeImage(app manifest.App, role string, img engine.Image) error {
 	if err != nil {
 		return errUptimeImageTiming
 	}
-	grace := timing.StartPeriod
-	if grace == 0 {
-		grace = image.StartPeriod
-	}
-	if grace == 0 {
-		return nil
-	}
 	budget, err := deployStartupBudget(app)
-	if err != nil {
+	if err != nil || !timing.FitsBudget(budget, image.StartPeriod, image.StartInterval) {
 		return errUptimeImageTiming
-	}
-	first := timing.Threshold + 100*time.Millisecond
-	if grace < first {
-		return errUptimeImageTiming
-	}
-	for _, cadence := range []time.Duration{timing.Interval, 5 * time.Second, image.StartInterval} {
-		if cadence == 0 {
-			continue
-		}
-		polls := (first-1)/cadence + 1
-		if polls > (budget-1)/cadence {
-			return errUptimeImageTiming
-		}
 	}
 	return nil
 }

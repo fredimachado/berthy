@@ -78,7 +78,7 @@ func (e *positiveEngine) ResolveImage(context.Context, string, *engine.RegistryA
 }
 func (e *positiveEngine) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (e *positiveEngine) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image"}, nil
+	return engine.Image{ID: "image", ConfigPresent: true}, nil
 }
 func (e *positiveEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
 	e.mu.Lock()
@@ -964,7 +964,7 @@ func (f *boundFake) ResolveImage(context.Context, string, *engine.RegistryAuth) 
 }
 func (f *boundFake) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (f *boundFake) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image"}, nil
+	return engine.Image{ID: "image", ConfigPresent: true}, nil
 }
 func (f *boundFake) InspectService(_ context.Context, ref string) (engine.ServiceSnapshot, error) {
 	f.mu.Lock()

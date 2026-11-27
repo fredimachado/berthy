@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -25,6 +26,7 @@ type uptimeRuntimeEngine struct {
 	taskReads, execs  int
 	updated, deadline time.Time
 	startup           time.Duration
+	replicaStarts     []time.Duration
 }
 
 func (f *uptimeRuntimeEngine) UpdateService(ctx context.Context, id string, version uint64, spec json.RawMessage, auth *engine.RegistryAuth) error {
@@ -45,14 +47,69 @@ func (f *uptimeRuntimeEngine) generation() string {
 
 func (f *uptimeRuntimeEngine) ServiceTasks(context.Context, string) ([]engine.ServiceTask, error) {
 	f.taskReads++
+	if len(f.replicaStarts) != 0 {
+		var tasks []engine.ServiceTask
+		for i := range f.replicaStarts {
+			task := runningTask(strconv.Itoa(i+1), f.generation())
+			task.ServiceID, task.Slot, task.ContainerID = "id", uint64(i+1), task.ID
+			tasks = append(tasks, task)
+		}
+		return tasks, nil
+	}
 	return []engine.ServiceTask{{ServiceID: "id", State: "running", DesiredState: "running", Slot: 1, ContainerID: "container", Labels: map[string]string{"berthy.operation": f.generation()}}}, nil
 }
 
-func (f *uptimeRuntimeEngine) InspectContainerHealth(context.Context, string) (string, error) {
-	if time.Since(f.updated) < f.startup {
+func (f *uptimeRuntimeEngine) InspectContainerHealth(_ context.Context, id string) (string, error) {
+	startup := f.startup
+	if len(f.replicaStarts) != 0 {
+		slot, err := strconv.Atoi(id)
+		if err != nil || slot < 1 || slot > len(f.replicaStarts) {
+			return "", errors.New("unexpected container")
+		}
+		startup = f.replicaStarts[slot-1]
+	}
+	if time.Since(f.updated) < startup {
 		return "starting", nil
 	}
 	return "healthy", nil
+}
+
+func TestUptimeRestartAllowsAllReplacementBatches(t *testing.T) {
+	const startup = 3*time.Minute + time.Second
+	for _, tc := range []struct {
+		parallelism int
+		ready       []time.Duration
+		allowance   time.Duration
+	}{
+		{1, []time.Duration{startup, 2 * startup, 3 * startup}, 17 * time.Minute},
+		{2, []time.Duration{startup, startup, 2 * startup}, 12 * time.Minute},
+		{0, []time.Duration{startup, startup, startup}, 7 * time.Minute},
+	} {
+		t.Run(strconv.Itoa(tc.parallelism), func(t *testing.T) {
+			s := openStore(t)
+			m := uptimeManifest("3m", "5m")
+			prior := seedUptimeRelease(t, s, m, boundBinding("existing", "id"))
+			spec := managedUptimeSpec(prior.ID, "3m0s", `,"Mounts":[`+probeBindJSON+`]`)
+			spec = json.RawMessage(strings.Replace(string(spec), `"Replicas":1}}}`, `"Replicas":3}},"UpdateConfig":{"Parallelism":`+strconv.Itoa(tc.parallelism)+`}}`, 1))
+			f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: spec}, replicaStarts: tc.ready}
+			c := &Controller{Store: s, Engine: f, Environment: "test", ProbeSource: testProbeSource}
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				start := time.Now()
+				op, out := finishUptimeOperation(t, ctx, c, f, Request{Kind: "restart", App: "web"})
+				if out.State != "succeeded" || !f.deadline.Equal(start.Add(tc.allowance)) {
+					t.Fatalf("restart %s (%s), deadline +%s, want succeeded at allowance %s", out.State, out.Err, f.deadline.Sub(start), tc.allowance)
+				}
+				intents, err := s.Intents(ctx, op.ID)
+				if err != nil || len(intents) != 1 || !intents[0].Deadline.Equal(f.deadline) {
+					t.Fatalf("journal deadline does not match operation deadline: %v", err)
+				}
+				if _, err := s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("lock: %v", err)
+				}
+			})
+		})
+	}
 }
 
 func (f *uptimeRuntimeEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {

@@ -269,7 +269,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 						priorApp := applied.Apps[req.App]
 						predecessor = &priorApp
 					}
-					startup, err := uptimeStartupBudget(*predecessor, role)
+					startup, err := uptimeReplacementBudget(*predecessor, role, live.Spec, previous.Mode.Replicated.Replicas)
 					if err != nil {
 						return
 					}
