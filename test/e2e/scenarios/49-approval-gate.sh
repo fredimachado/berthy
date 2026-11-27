@@ -1,9 +1,5 @@
 #!/bin/bash
-# 49-approval-gate reproduces two approval-gate findings on a real agent, and checks that the released v0.8.0 CLI still works.
-# Finding 1: planning a change rewrites the body with dry_run; an empty or null body is not rewritten, so the route carries
-# the change out (lock release, secret delete, cancel). Finding 2: the body decoder matches keys case-insensitively and lets
-# the last duplicate win, so a request planned as one command can run another. The scenario asserts the fixed answers; on
-# 9ecb7aa the checks the plan marks red fail. Part 4 is a pin that must pass throughout.
+# 49-approval-gate checks protected changes, strict bodies and the released v0.8.0 CLI.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -71,8 +67,7 @@ expect_eq "1.1 lock/release null is refused" 400 "$status"
 expect_eq "1.1 lock/release null answers invalid request" "$INVALID" "$(answer)"
 expect_eq "1.1 lock/release null adds no approval" "$before" "$(pending_ids)"
 
-# On 9ecb7aa the null release already freed the lock (finding 1); after the fix the person still holds it.
-adm lock release >/dev/null 2>&1 || true
+adm lock release >/dev/null || { echo "could not release the lock" >&2; exit 1; }
 expect_contains "the lock is free before 1.2" "$(admin_get lock)" '"locked":false'
 
 # 1.2 POST lock/acquire null while the lock is free.
@@ -140,51 +135,38 @@ else
     adm cancel "$id" >/dev/null 2>&1 || true
     wait "$pid" || true
   else
+    # 2.1 POST operations/<id>/cancel with no body. The hold is proved by lock_op and the audit, not by the 202 alone.
+    status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel")
+    expect_eq "2.1 the deploy still runs" "$id" "$(lock_op)"
+    expect_not_contains "2.1 nothing cancelled it" "$(adm audit 2>&1)" "cancel:$id"
+    expect_eq "2.1 cancel with no body is held" 202 "$status"
+    held=$(answer | sed -n 's/.*"approval_id":"\([^"]*\)".*/\1/p')
+    expect_contains "2.1 the held answer names an approval" "$(answer)" '"approval_id":"'
 
-  # 2.1 POST operations/<id>/cancel with no body. The hold is proved by lock_op and the audit, not by the 202 alone.
-  status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel")
-  expect_eq "2.1 the deploy still runs" "$id" "$(lock_op)"
-  expect_not_contains "2.1 nothing cancelled it" "$(adm audit 2>&1)" "cancel:$id"
-  expect_eq "2.1 cancel with no body is held" 202 "$status"
-  held=$(answer | sed -n 's/.*"approval_id":"\([^"]*\)".*/\1/p')
-  expect_contains "2.1 the held answer names an approval" "$(answer)" '"approval_id":"'
+    # 2.2 POST operations/<id>/cancel null.
+    before=$(pending_ids)
+    status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel" null)
+    expect_eq "2.2 cancel null is refused" 400 "$status"
+    expect_eq "2.2 cancel null answers invalid request" "$INVALID" "$(answer)"
+    expect_eq "2.2 the deploy still runs after null" "$id" "$(lock_op)"
+    expect_eq "2.2 cancel null adds no approval" "$before" "$(pending_ids)"
 
-  # 2.2 POST operations/<id>/cancel null.
-  before=$(pending_ids)
-  status=$(call "$BERTHY_CIADMIN_TOKEN" POST "operations/$id/cancel" null)
-  expect_eq "2.2 cancel null is refused" 400 "$status"
-  expect_eq "2.2 cancel null answers invalid request" "$INVALID" "$(answer)"
-  expect_eq "2.2 the deploy still runs after null" "$id" "$(lock_op)"
-  expect_eq "2.2 cancel null adds no approval" "$before" "$(pending_ids)"
-
-  # 2.3 Approve the held cancel from 2.1. On an earlier failure, cancel as admin so wait never sits out the 60 s hook.
-  out=$(adm approve "$held" 2>&1); code=$?
-  expect_code "2.3 approve the held cancel" 0 "$code" "$out"
-  if [ "$code" != 0 ]; then
-    adm cancel "$id" >/dev/null 2>&1 || true
-  fi
-  wait "$pid"; wcode=$?
-  if [ "$code" = 0 ]; then
-    expect_code "2.3 the approved cancel ends the deploy" 1 "$wcode" "$(cat "$LOG/gate-deploy.out")"
-    expect_contains "2.3 the deploy names who cancelled" "$(cat "$LOG/gate-deploy.out")" "cancelled by ci-admin (approved by admin)"
-    if lock_free; then pass "2.3 the lock is free after the approved cancel"; else fail "2.3 the lock is free after the approved cancel" "$(lock_json)"; fi
-  fi
-  # On 9ecb7aa the empty-body cancel can leave the operation in recovery_required with the lock held.
-  # Free it so part 3's finding-2 checks are not blocked by a conflict.
-  if ! lock_free; then
-    rid=$(lock_op)
-    if [ -n "$rid" ]; then
-      adm recovery resolve "$rid" -m "scenario cleanup" >/dev/null 2>&1 || true
-      adm cancel "$rid" >/dev/null 2>&1 || true
+    # 2.3 Approve the held cancel from 2.1. On an earlier failure, cancel as admin so wait never sits out the 60 s hook.
+    out=$(adm approve "$held" 2>&1); code=$?
+    expect_code "2.3 approve the held cancel" 0 "$code" "$out"
+    if [ "$code" != 0 ]; then
+      adm cancel "$id" >/dev/null 2>&1 || true
     fi
-  fi
+    wait "$pid"; wcode=$?
+    if [ "$code" = 0 ]; then
+      expect_code "2.3 the approved cancel ends the deploy" 1 "$wcode" "$(cat "$LOG/gate-deploy.out")"
+      expect_contains "2.3 the deploy names who cancelled" "$(cat "$LOG/gate-deploy.out")" "cancelled by ci-admin (approved by admin)"
+      if lock_free; then pass "2.3 the lock is free after the approved cancel"; else fail "2.3 the lock is free after the approved cancel" "$(lock_json)"; fi
+    fi
   fi
 fi
 
 clear_pending
-# Do not assert here: this only clears finding-1 fallout so part 3 can exercise finding 2.
-for i in $(seq 1 120); do lock_free && break; sleep 0.5; done
-
 # Part 3. A command sent twice under different spellings is refused for every token.
 { echo "protected: true"; base_manifest; } | write_manifest
 before_audit=$(adm audit 2>&1)
@@ -202,9 +184,6 @@ expect_eq "3.2 person's ambiguous run answers invalid request" "$INVALID" "$(ans
 expect_eq "3.2 person's ambiguous run leaves the audit unchanged" "$before_audit" "$(adm audit 2>&1)"
 
 clear_pending
-# Until slice 4, 3.2 admits a run that holds the lock briefly; wait so part 4's lock checks are not 409.
-for i in $(seq 1 120); do lock_free && break; sleep 0.5; done
-
 # Part 4. The released v0.8.0 CLI still talks to this agent.
 CLI080=$E2E_ROOT/bin/berthy-cli-v080
 OLD_SRC=$E2E_ROOT/src-v0.8.0
