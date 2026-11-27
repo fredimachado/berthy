@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -10,6 +11,35 @@ import (
 
 	"berthy/internal/version"
 )
+
+func TestReadRouteUsesItsDeclaredScope(t *testing.T) {
+	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{
+		{Name: "reader", Digest: Digest(apReadToken), Scope: "read"},
+		{Name: "deployer", Digest: Digest(apDeployToken), Scope: "deploy"},
+	}}
+	rt := &routeRuntime{tokens: newTokenSource(c, nil)}
+	row := &envRoute{pattern: "apps/{app}/logs", method: "GET", scope: "deploy", lane: legacyReadRoute,
+		handle: func(_ *routeRuntime, call routeCall) { call.w.WriteHeader(http.StatusNoContent) },
+	}
+	for _, tc := range []struct {
+		name, token string
+		status      int
+		body        string
+	}{
+		{"read scope", apReadToken, http.StatusForbidden, "{\"code\":\"forbidden\",\"message\":\"forbidden\"}\n"},
+		{"deploy scope", apDeployToken, http.StatusNoContent, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("GET", "/apps/web/logs", nil)
+			r.Header.Set("Authorization", "Bearer "+tc.token)
+			rt.serveRead(routeCall{w: w, r: r, row: row})
+			if w.Code != tc.status || w.Body.String() != tc.body {
+				t.Errorf("got %d %q, want %d %q for %s", w.Code, w.Body.String(), tc.status, tc.body, row.pattern)
+			}
+		})
+	}
+}
 
 func TestRouteRefusalOrder(t *testing.T) {
 	c := Config{Project: "demo", Environment: "lab", Tokens: []Token{

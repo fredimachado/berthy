@@ -274,8 +274,13 @@ func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector,
 }
 
 func (rt *routeRuntime) serveRead(call routeCall) {
-	authorize(rt.tokens, "read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if call.row == nil || call.row.lane != legacyReadRoute {
+	isReadRoute := call.row != nil && call.row.lane == legacyReadRoute
+	required := "read"
+	if isReadRoute {
+		required = call.row.scope
+	}
+	authorize(rt.tokens, required, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isReadRoute {
 			writeError(w, 404, "not_found", "not found")
 			return
 		}
