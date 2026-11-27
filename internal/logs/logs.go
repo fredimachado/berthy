@@ -244,9 +244,12 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			if n > MaxFrameBytes {
 				return errors.New("log frame exceeds limit")
 			}
-			data := make([]byte, n)
-			if _, err = io.ReadFull(br, data); err != nil {
+			data, err := io.ReadAll(io.LimitReader(br, int64(n)))
+			if err != nil {
 				return fmt.Errorf("truncated log frame: %w", err)
+			}
+			if len(data) != int(n) {
+				return fmt.Errorf("truncated log frame: %w", io.ErrUnexpectedEOF)
 			}
 			if err = consume(h[0], data); err != nil {
 				return err
