@@ -60,12 +60,16 @@ sudo -n sh -c "! command -v curl && ! command -v wget"' || die "fetch tools stil
 pass "Docker answers over SSH and neither fetch tool resolves"
 
 cfg="$private/cli.json"
-setup=("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" \
+setup=("$BIN" setup --project "$PROJECT" --host "ops@$server" \
   --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" \
   --no-install-docker --binary "$BIN" --json)
-run_setup() { "${setup[@]}" </dev/null >"$private/$1.json" 2>"$private/$1.stderr"; }
+run_setup() {
+  local report=$1
+  shift
+  "${setup[@]}" "$@" </dev/null >"$private/$report.json" 2>"$private/$report.stderr"
+}
 operator_health() { curl --noproxy '*' --max-time 30 -sS -o /dev/null -w '%{http_code}' "http://$ip:7710/healthz"; }
-run_setup initial
+run_setup initial -e "$ENVN"
 code=$?
 expect_code "setup without curl or wget" 0 "$code"
 if [ "$code" -ne 0 ]; then
@@ -113,7 +117,7 @@ remote /usr/local/bin/berthy agent setup-probe health --listen "$ip:7710" --time
   die "the agent does not answer inside the fixture"
 pass "operator HTTP is blocked while SSH and fixture-local health work"
 
-run_setup doctor
+run_setup doctor -e "$ENVN"
 expect_code "setup with doctor fallback" 0 "$?"
 if jq -e 'any(.steps[]; .step == "verify" and .status == "ok" and (.detail | contains("checked on the server")))' \
   "$private/doctor.json" >/dev/null; then
@@ -123,7 +127,7 @@ else
 fi
 
 unset "$token_env"
-run_setup tokenless
+run_setup tokenless -e "$ENVN"
 expect_code "setup without an admin token" 0 "$?"
 if jq -e '(.token == null) and any(.steps[]; .step == "token" and .status == "ok") and
   any(.steps[]; .step == "verify" and .status == "ok" and
@@ -133,4 +137,32 @@ else
   fail "setup verified /healthz on the server without a token" "missing successful tokenless verification"
 fi
 unblock_health || die "could not restore operator HTTP"
+if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
+
+second_env="$ENVN-next"
+run_setup second-plan -e "$second_env" --dry-run --verbose
+expect_code "plan setup of a second environment" 0 "$?"
+if jq -e '[.steps[] | select(.step == "service") | .commands[]] |
+  any(contains("$(date +%s) + 150 ))")) and any(contains("--on-active=360s "))' "$private/second-plan.json" >/dev/null; then
+  pass "two environments get a 150-second wait and 360-second guard"
+else
+  fail "two environments get a 150-second wait and 360-second guard" "planned service scripts have the wrong budgets"
+fi
+
+run_setup second -e "$second_env"
+expect_code "set up the second environment" 0 "$?"
+check_scope() {
+  local env_name=$1 setup_report=$2
+  jq -er '.token | strings' "$private/$setup_report.json" |
+    "$BIN" agent setup-probe doctor --listen "$ip:7710" --scope "$PROJECT/$env_name" |
+    jq -e 'any(.checks[]; .name == "agent" and .ok)' >/dev/null
+}
+for pair in "$ENVN:initial" "$second_env:second"; do
+  env_name=${pair%:*}
+  if check_scope "$env_name" "${pair#*:}"; then
+    pass "the agent answers for $PROJECT/$env_name"
+  else
+    fail "the agent answers for $PROJECT/$env_name" "scoped doctor failed"
+  fi
+done
 finish
