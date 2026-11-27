@@ -21,18 +21,6 @@ OLD_SRC=$E2E_ROOT/src-6acd0ce
 # The old agent's configuration, in its release's layout, with a state directory and a key of its own (see old_agent_state).
 OLD_CFG=$RUN/old/agent.json
 
-# stamped OUT VERSION TREE: builds TREE's cmd/berthy stamped with VERSION, or fails and keeps no partial file.
-stamped() {
-  local out=$1 version=$2 tree=$3
-  if (cd "$tree" && "$GO" build -buildvcs=false -ldflags "-X berthy/internal/version.Version=$version" -o "$out.new" ./cmd/berthy); then
-    mv -f "$out.new" "$out"
-  else
-    rm -f "$out.new"
-    echo "build of $version from $tree failed" >&2
-    return 1
-  fi
-}
-
 # start_with BINARY [CONFIG]: starts BINARY as the agent with CONFIG (the fixture's when none is given) and waits until /healthz
 # answers, as start_agent does for the fixture's own binary.
 start_with() {

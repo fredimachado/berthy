@@ -156,6 +156,18 @@ make_ciadmin() {
 # curl_local ARGS: curl to the loopback fakes and the registry, never through a proxy.
 curl_local() { curl --noproxy '*' -sS "$@"; }
 
+# stamped OUT VERSION TREE: builds TREE's cmd/berthy stamped with VERSION, or fails and keeps no partial file.
+stamped() {
+  local out=$1 version=$2 tree=$3
+  if (cd "$tree" && "$GO" build -buildvcs=false -ldflags "-X berthy/internal/version.Version=$version" -o "$out.new" ./cmd/berthy); then
+    mv -f "$out.new" "$out"
+  else
+    rm -f "$out.new"
+    echo "build of $version from $tree failed" >&2
+    return 1
+  fi
+}
+
 # owned PIDFILE BINARY: true when PIDFILE holds the pid of a live process that runs BINARY. A stale pid file can name a
 # reused pid, so the command line is checked too. A zombie has an empty command line and counts as gone.
 owned() {
