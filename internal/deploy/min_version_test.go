@@ -38,7 +38,7 @@ func needsBerthy(err error) bool {
 func TestAgentRefusesAManifestNewerThanItsRelease(t *testing.T) {
 	stampAgent(t, "v0.8.0")
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	ctx := context.Background()
 	actor := Actor{ID: "admin", Admin: true}
 
@@ -67,7 +67,7 @@ func TestAgentRefusesAManifestNewerThanItsRelease(t *testing.T) {
 func TestAgentSkipsTheVersionCheckInADevelopmentBuild(t *testing.T) {
 	stampAgent(t, "dev")
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	ctx := context.Background()
 	actor := Actor{ID: "admin", Admin: true}
 

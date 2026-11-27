@@ -160,7 +160,7 @@ func TestDeployPostCommandBackupRunsNewRelease(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	f := &jobFake{runFake: newRunFake(), streamOut: "dump"}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	c.Backups = realCommandBackup{c}
 	t.Cleanup(func() {
 		if err := c.Drain(context.Background()); err != nil {

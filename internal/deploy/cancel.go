@@ -153,16 +153,20 @@ func isCancelled(err error) bool {
 // operation's mutex, so exactly one of them happens first.
 func (c *Controller) cross(ctx context.Context, opID string, i state.Intent, reason string) error {
 	i.NoReturn = reason
+	write := c.Store.RecordIntent
+	if i.Kind == "barrier" && c.barrierWrite != nil {
+		write = c.barrierWrite
+	}
 	r := runFrom(ctx)
 	if r == nil {
-		return c.Store.RecordIntent(ctx, opID, i)
+		return write(ctx, opID, i)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.by != "" {
 		return &Cancelled{By: r.by}
 	}
-	return c.Store.RecordIntent(ctx, opID, i)
+	return write(ctx, opID, i)
 }
 
 // enter begins a step that a cancel is refused during, with the reason it gives. The returned function ends the step. When a

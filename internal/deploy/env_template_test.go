@@ -41,7 +41,7 @@ func TestImageDeployGivesTheContainerTheFilledTemplate(t *testing.T) {
 	s := openStore(t)
 	putSecret(t, s, "POSTGRES_PASSWORD", "pg-s3cret")
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "tpl", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: templateManifest()})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -72,7 +72,7 @@ func TestImageDeployGivesTheContainerTheFilledTemplate(t *testing.T) {
 func TestAMissingTemplateSecretStopsTheDeployBeforeAnyChange(t *testing.T) {
 	s := openStore(t)
 	f := &boundFake{}
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: f, Store: s, Environment: "test"}
 	req := Request{RequestID: "missing", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: templateManifest()}
 	want := "secret POSTGRES_PASSWORD is not set"
 	_, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, req)
@@ -130,7 +130,7 @@ func TestPublicMessageNamesOnlyAValidSecret(t *testing.T) {
 func TestTheFilledTemplateIsRedactedAsAWhole(t *testing.T) {
 	s := openStore(t)
 	putSecret(t, s, "POSTGRES_PASSWORD", "pg-s3cret")
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	if op := runBound(t, s, c, Request{RequestID: "tpl", App: "web", Version: "sha256:" + strings.Repeat("b", 64), Manifest: templateManifest()}); op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"berthy/internal/engine"
 	"berthy/internal/state"
@@ -87,9 +88,20 @@ func isZeroSpecValue(v any) bool {
 	return false
 }
 
+type beforeServiceMutation struct{ err error }
+
+func (e beforeServiceMutation) Error() string { return e.err.Error() }
+func (e beforeServiceMutation) Unwrap() error { return e.err }
+
 func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i state.Intent, auth *engine.RegistryAuth) error {
+	if err := ctx.Err(); err != nil {
+		return beforeServiceMutation{err}
+	}
 	if err := j.RecordIntent(ctx, op, i); err != nil {
-		return err
+		return beforeServiceMutation{err}
+	}
+	if err := ctx.Err(); err != nil {
+		return beforeServiceMutation{err}
 	}
 	if i.Kind == "create" {
 		_, err := e.CreateService(ctx, i.Desired, auth)
@@ -101,8 +113,11 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 		}
 	} else if i.Kind == "update" {
 		live, err := e.InspectService(ctx, i.Name)
+		if err := ctx.Err(); err != nil {
+			return beforeServiceMutation{err}
+		}
 		if err != nil || live.ID != i.ServiceID || !sameSpec(live.Spec, i.Before) {
-			return errors.New("service changed before update")
+			return beforeServiceMutation{errors.New("service changed before update")}
 		}
 		if err = e.UpdateService(ctx, live.ID, live.Version, i.Desired, auth); err != nil {
 			live, inspectErr := e.InspectService(ctx, i.Name)
@@ -111,7 +126,7 @@ func applyIntent(ctx context.Context, j journal, e serviceMutator, op string, i 
 			}
 		}
 	} else {
-		return errors.New("invalid service intent")
+		return beforeServiceMutation{errors.New("invalid service intent")}
 	}
 	return j.MarkStep(ctx, op, i.Ordinal, "issued", json.RawMessage(`{}`))
 }
@@ -144,6 +159,25 @@ func compensate(ctx context.Context, e serviceMutator, i state.Intent, auth *eng
 type healthReader interface {
 	ServiceTasks(context.Context, string) ([]engine.ServiceTask, error)
 	InspectContainerHealth(context.Context, string) (string, error)
+}
+
+const (
+	rolloutMonitor           time.Duration = 5 * time.Second
+	rolloutVerificationGrace time.Duration = 15 * time.Second
+)
+
+func rolloutAllowance(hold time.Duration) time.Duration {
+	if hold <= 0 {
+		return 0
+	}
+	return hold + rolloutVerificationGrace
+}
+
+func rolloutStartupContext(ctx context.Context, hold time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok && hold > 0 {
+		return context.WithDeadline(ctx, deadline.Add(-rolloutAllowance(hold)))
+	}
+	return ctx, func() {}
 }
 
 func healthyOnce(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
@@ -189,28 +223,71 @@ func (e *errStartAttempts) Error() string { return "service gave up after failed
 // start it.
 func startFailed(t engine.ServiceTask) bool { return t.State == "failed" || t.State == "rejected" }
 
-// waitHealthy waits until every replica of the generation runs healthy, the context ends, or, with a positive limit, the
-// generation has had limit failed tasks. Swarm keeps few old tasks, so failures are counted by task ID across polls.
-func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int) error {
+// waitHealthy confirms a positive hold only after continuous coverage and a fresh healthy poll begun at or after its
+// boundary. ctx is the role's hard deadline; startup ends at that deadline minus rolloutAllowance(hold), and coverage
+// lost after the startup cutoff ends the wait. Failed task IDs are counted across polls up to a positive limit.
+func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas, limit int, hold time.Duration) error {
 	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
+	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
+	defer stopStartup()
 	failed := map[string]bool{}
+	var healthySince time.Time
 	for {
-		tasks, err := e.ServiceTasks(ctx, id)
-		if err == nil {
-			if healthyIn(ctx, e, tasks, id, generation, replicas) == nil {
-				return nil
+		pollStarted := time.Now()
+		readCtx := ctx
+		if healthySince.IsZero() {
+			readCtx = startupCtx
+			if readCtx.Err() != nil {
+				return errors.New("service health deadline exceeded")
 			}
+		}
+		tasks, err := e.ServiceTasks(readCtx, id)
+		if err == nil {
+			newFailure := false
 			for _, t := range tasks {
-				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) {
+				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t) && !failed[t.ID] {
 					failed[t.ID] = true
+					newFailure = true
 				}
 			}
 			if limit > 0 && len(failed) >= limit {
 				return &errStartAttempts{Failed: len(failed), Limit: limit}
 			}
+			if newFailure {
+				healthySince = time.Time{}
+			}
+			if healthySince.IsZero() {
+				readCtx = startupCtx
+			}
+			if readCtx.Err() != nil {
+				return errors.New("service health deadline exceeded")
+			}
+			healthErr := healthyIn(readCtx, e, tasks, id, generation, replicas)
+			if readCtx.Err() != nil {
+				return errors.New("service health deadline exceeded")
+			}
+			if healthErr == nil {
+				if healthySince.IsZero() {
+					healthySince = time.Now()
+				}
+				if hold == 0 || !pollStarted.Before(healthySince.Add(hold)) {
+					return nil
+				}
+			} else {
+				healthySince = time.Time{}
+			}
+		} else {
+			healthySince = time.Time{}
 		}
-		if !pace.wait(ctx) {
+		var next time.Time
+		if !healthySince.IsZero() {
+			next = healthySince.Add(hold)
+			readCtx = ctx
+		} else {
+			readCtx = startupCtx
+		}
+		if !pace.waitUntil(readCtx, next) {
 			return errors.New("service health deadline exceeded")
 		}
 	}
@@ -262,17 +339,32 @@ func withRole(err error, role string) error {
 	return err
 }
 
-func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) (string, error) {
+// createRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) (string, error) {
+	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
+	defer stopStartup()
+	if startupCtx.Err() != nil {
+		return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
+	}
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
-	if err := j.RecordIntent(ctx, op, i); err != nil {
-		return "", err
+	if err := j.RecordIntent(startupCtx, op, i); err != nil {
+		if startupCtx.Err() != nil {
+			return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
+		}
+		return "", beforeServiceMutation{err}
 	}
-	createdID, err := e.CreateService(ctx, i.Desired, auth)
+	if startupCtx.Err() != nil {
+		return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
+	}
+	createdID, err := e.CreateService(startupCtx, i.Desired, auth)
 	if err != nil || createdID == "" {
 		return "", errors.New("service create outcome uncertain")
 	}
-	live, err := e.InspectService(ctx, i.Name)
+	live, err := e.InspectService(startupCtx, i.Name)
+	if startupCtx.Err() != nil {
+		return "", errors.New("service health deadline exceeded")
+	}
 	if err != nil || live.ID != createdID || !matchesStoredSpec(i.Desired, live.Spec) {
 		return "", errors.New("created service cannot be verified")
 	}
@@ -283,10 +375,14 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return "", err
 	}
-	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
+	err = j.MarkStep(startupCtx, op, i.Ordinal, "observed", receipt)
+	if startupCtx.Err() != nil {
+		return "", errors.New("service health deadline exceeded")
+	}
+	if err != nil {
 		return "", err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
 		return "", withRole(err, i.Role)
 	}
 	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
@@ -295,13 +391,30 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	return live.ID, nil
 }
 
-func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int) error {
+// updateRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
+func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas, limit int, hold time.Duration) error {
+	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
+	defer stopStartup()
+	if startupCtx.Err() != nil {
+		return beforeServiceMutation{errors.New("service health deadline exceeded")}
+	}
 	started := rolloutMilestone(i.Role, "started")
 	i.Event = &started
-	if err := applyIntent(ctx, j, e, op, i, auth); err != nil {
+	if err := applyIntent(startupCtx, j, e, op, i, auth); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			deadline := errors.New("service health deadline exceeded")
+			var before beforeServiceMutation
+			if errors.As(err, &before) {
+				return beforeServiceMutation{deadline}
+			}
+			return deadline
+		}
 		return err
 	}
-	live, err := e.InspectService(ctx, i.Name)
+	live, err := e.InspectService(startupCtx, i.Name)
+	if startupCtx.Err() != nil {
+		return errors.New("service health deadline exceeded")
+	}
 	if err != nil || live.ID != i.ServiceID || !matchesStoredSpec(i.Desired, live.Spec) {
 		return errors.New("updated service cannot be verified")
 	}
@@ -312,10 +425,14 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return err
 	}
-	if err = j.MarkStep(ctx, op, i.Ordinal, "observed", receipt); err != nil {
+	err = j.MarkStep(startupCtx, op, i.Ordinal, "observed", receipt)
+	if startupCtx.Err() != nil {
+		return errors.New("service health deadline exceeded")
+	}
+	if err != nil {
 		return err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit); err != nil {
+	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, limit, hold); err != nil {
 		return withRole(err, i.Role)
 	}
 	if updateHasTasks(i.Before) {

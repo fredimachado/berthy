@@ -513,21 +513,21 @@ The connector publishes no port. It makes outbound connections to Cloudflare onl
 
 ## Deploy lifecycle
 
-A deploy either finishes healthy or leaves the previous version running; it never leaves an app half-updated.
+An image deploy verifies the new version before recording the switch. A failure before that point attempts to restore the previous version. If ownership or cleanup cannot be confirmed, the operation needs recovery and retains the lock. Compose deploys follow the separate flow below.
 
 ### Image app deploy
 
 1. **Lock.** Take the environment's deploy lock. If someone holds it, stop and report who and why.
 2. **Check.** Validate the manifest, confirm every named secret has a value, pull the image by the request's digest. An ordinary unprotected request may still carry a tag for the agent to resolve. A protected request must already name a digest.
 3. **Pre-deploy hooks.** Run them in order. A failure stops the deploy with nothing changed.
-4. **Start new.** Start the new version beside the old one, or after the old one has stopped for a role that mounts a read-write volume (see "Stop first for a volume" below). It must pass its health check within `deploy_timeout`; failures during the check's `start_period` do not count. A new version whose tasks fail to start `start_attempts` times (3 by default) is given up on at once, without waiting for `deploy_timeout`.
-5. **Switch and drain.** Route traffic to the new version. The old one gets a stop signal and `drain_timeout` to finish requests in flight.
+4. **Start new.** Start the new version beside the old one, or after the old one has stopped for a role that mounts a read-write volume (see "Stop first for a volume" below). Each role must first be observed healthy within the shared `deploy_timeout` startup budget, then have running, healthy coverage at every observation for five seconds. Lost coverage, an unreadable observation that prevents confirming coverage, or a newly observed failed start restarts the hold. Docker's health-check `start_period` controls when failed probes count toward the container's unhealthy status. Failed starts during the hold count toward `start_attempts` (3 by default), and reaching the limit ends the wait at once.
+5. **Switch and drain.** Swarm switches traffic and gives the old version a stop signal and `drain_timeout` to finish requests in flight. The role's extended deadline covers the confirming read, native update completion and draining. After every role is verified, the agent checks the live services, health and drain again under a separate final deadline before recording the switch.
 6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
 8. **Reachability.** For each role with a `port`, open a TCP connection to `<service>:<port>` from the overlay helper, and for each hostname that the publish step served, make HTTPS requests to it from the agent (see "Reachability checks" below). A check that fails only warns.
 9. **Record and tidy.** Write the deploy record, prune old images, release the lock.
 
-If step 4 fails, the agent rolls back to the previous digest and records the deploy as failed. Whether anyone is told depends on `alerts.deploys` (see Alerts): by default a failed deploy sends one message on every alert channel.
+If the rollout or a final inspection, health or drain check fails before the barrier, the agent attempts to restore the previous digest or remove services created by a first deploy. It records a confirmed cleanup as failed or rolled back; unconfirmed ownership or cleanup leaves `recovery_required` and the lock held. Whether anyone is told depends on `alerts.deploys` (see Alerts): by default a failed deploy sends one message on every alert channel.
 
 ### When a deploy fails
 
@@ -671,14 +671,16 @@ An app that applies migrations when it starts can leave the schema ahead of the 
 
 | Setting | Meaning | Docker's default | Berthy default |
 | --- | --- | --- | --- |
-| `deploy_timeout` | Longest the new version may take to become healthy | No overall limit; bounded by the health check | 120s |
+| `deploy_timeout` | Shared startup budget for the new version's roles to become healthy | No overall limit; bounded by the health check | 120s |
 | `drain_timeout` | Time the old version gets to finish requests | 10s | 30s |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up, from 1 to 10 | Unlimited restarts | 3 |
 | `verify` | Whether the deploy checks at its end that each role's port and hostnames answer (see "Reachability checks") | None | true |
 
 The wait before health checks count is the health check's own `start_period`, set per role.
 
-**Start attempts.** Swarm restarts a task that exits or is killed as unhealthy. During a deploy Berthy counts those failures for each role of the new version and gives up as soon as one role's reach `start_attempts`: the old version keeps running, a service the deploy created is removed, and the deploy fails with a reason such as `role web: task exited with code 1 (gave up after 3 failed starts)`. A deploy that gives up this way does not wait out `deploy_timeout`. A new version that fails twice and starts on the third try passes with the default of 3. Failures of the old version, or from an earlier deploy, are not counted.
+The startup cutoff starts once, after pre-deploy work. Each role must start its mutation and first be observed healthy by its current cutoff. A hold can restart only before that cutoff; lost coverage after it fails the role. Its hard deadline is the cutoff plus the five-second hold and 15 seconds of verification grace, which also bounds native update completion, draining and the verified write. A successful hold moves the next role's startup cutoff forward by exactly five seconds; time spent in a failed hold or unused grace adds nothing. After the last role, final verification gets its own deadline, 15 seconds after the later of the remaining startup cutoff and the last role's completion. No role uses that final allowance.
+
+**Start attempts.** Swarm restarts a task that exits or is killed as unhealthy. During a deploy Berthy counts distinct failed and rejected task starts for each role of the new version, including those observed during the five-second hold. A newly observed failure below the limit restarts the hold; a repeated observation of the same failed task does not. Berthy gives up as soon as a role reaches `start_attempts`: it attempts to restore the old version or remove a service the deploy created, and reports a reason such as `role web: task exited with code 1 (gave up after 3 failed starts)`. A deploy that gives up this way does not wait out `deploy_timeout`. A new version that fails twice and starts on the third try can pass with the default of 3 after a full healthy hold. Failures of the old version, or from an earlier deploy, are not counted.
 
 **Reachability checks.** A role's health check runs inside its container, so it can pass while the role cannot be reached from anywhere else: the app listens on `127.0.0.1`, `port` is not the port it listens on, or the hostname does not lead to it. After the post-deploy hooks of a successful deploy or rollback, and for each role with a `port` that has at least one replica, the agent makes two checks. Neither changes the operation's outcome, and `deploy.verify: false` turns both off.
 

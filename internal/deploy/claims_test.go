@@ -614,7 +614,7 @@ func (e *failedFirstDeployEngine) VolumeExists(context.Context, string) (bool, e
 func TestAFailedFirstDeployKeepsItsNames(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
-	c := Controller{Store: s, Engine: &failedFirstDeployEngine{positiveEngine: &positiveEngine{}}, Project: "shop", Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Store: s, Engine: &failedFirstDeployEngine{positiveEngine: &positiveEngine{}}, Project: "shop", Environment: "test"}
 	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 		return s.AddClaimsNew(ctx, claims)
 	}
@@ -1072,7 +1072,7 @@ func TestFirstDeployRefusesExistingServiceAndKeepsItsClaim(t *testing.T) {
 	if err := s.RecordIntent(ctx, op.ID, state.Intent{Ordinal: 10000, Kind: "oneoff", Desired: json.RawMessage(`{"HostConfig":{"Mounts":[]}}`)}); err != nil {
 		t.Fatal(err)
 	}
-	c := Controller{Store: s, Engine: &positiveEngine{spec: json.RawMessage(`{"Name":"shop-test-api-web"}`)}, Environment: "test"}
+	c := Controller{rolloutHold: zeroTestRolloutHold(), Store: s, Engine: &positiveEngine{spec: json.RawMessage(`{"Name":"shop-test-api-web"}`)}, Environment: "test"}
 	c.Reserve = func(ctx context.Context, claims []state.Claim) ([]state.Claim, error) {
 		return s.AddClaimsNew(ctx, claims)
 	}

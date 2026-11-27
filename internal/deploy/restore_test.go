@@ -81,7 +81,7 @@ func (f *fakeRestorer) Restore(_ context.Context, opID, key, into string) error 
 
 func restoreController(t *testing.T, r *fakeRestorer) *Controller {
 	t.Helper()
-	return &Controller{Engine: &positiveEngine{}, Store: openStore(t), Environment: "test", Restorer: r}
+	return &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &positiveEngine{}, Store: openStore(t), Environment: "test", Restorer: r}
 }
 
 var restoreAdmin = Actor{ID: "admin", Name: "ops", Admin: true}

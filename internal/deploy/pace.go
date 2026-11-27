@@ -64,9 +64,16 @@ func (p *pacer) close() { p.stop() }
 
 // wait blocks until the next poll is due: an event of the service, or the interval. It reports false when ctx has ended.
 func (p *pacer) wait(ctx context.Context) bool {
+	return p.waitUntil(ctx, time.Time{})
+}
+
+func (p *pacer) waitUntil(ctx context.Context, next time.Time) bool {
 	every := pollFast
 	if p.src != nil && p.src.EventsLive() && time.Since(p.lastEvent) >= pollSettle {
 		every = pollSlow
+	}
+	if !next.IsZero() && time.Until(next) < every {
+		every = max(0, time.Until(next))
 	}
 	timer := time.NewTimer(every)
 	defer timer.Stop()

@@ -171,7 +171,7 @@ func newIngressFixture(t *testing.T) *ingressFixture {
 	t.Cleanup(srv.Close)
 	bound := &boundFake{}
 	docker := &loggedEngine{updatableFake: updatableFake{bound}, calls: calls}
-	ctrl := &Controller{Engine: docker, Store: s, Project: ingressID.Project, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4"}
+	ctrl := &Controller{Engine: docker, Store: s, Project: ingressID.Project, Environment: ingressEnv, CloudflareURL: srv.URL + "/client/v4", rolloutHold: zeroTestRolloutHold()}
 	// The hostnames of the fixture's apps lead nowhere, and a test must not ask the real network for them.
 	ctrl.Outside = &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("no network in tests")

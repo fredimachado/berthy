@@ -169,7 +169,7 @@ func exitedContainers(n int, health string) map[string]engine.ContainerDiagnosis
 func diagController(t *testing.T, f *diagFake) (*Controller, *state.Store) {
 	t.Helper()
 	s := openStore(t)
-	c := &Controller{Engine: f, Store: s, Environment: "test"}
+	c := &Controller{Engine: f, Store: s, Environment: "test", rolloutHold: new(time.Duration)}
 	return c, s
 }
 
@@ -268,7 +268,7 @@ func TestEvidenceKeepsFiveNewestTasksPerRole(t *testing.T) {
 		f.tails[fmt.Sprintf("c%d", i)] = fmt.Sprintf("line %d\n", i)
 	}
 	c, s := diagController(t, f)
-	op := deployWeb(t, c, s, "first", "a", webManifest("200ms", nil))
+	op := deployWeb(t, c, s, "first", "a", webManifest(testDeployTimeout, nil))
 	got := storedDiagnostics(t, s, op.ID)
 	if len(got) != 5 || got[0].TaskID != "t8" || got[4].TaskID != "t4" {
 		t.Fatalf("kept %d diagnostics: %+v", len(got), got)
@@ -756,6 +756,27 @@ func TestStartAttemptWordingOfTheReason(t *testing.T) {
 	retried := []Diagnostic{{Kind: "oneoff", Name: "migration_apply", ExitCode: exitCode(2), Attempts: 3}}
 	if got := failureReason(retried, "x"); got != "migration apply exited with code 2 (after 3 attempts)" {
 		t.Fatalf("reason %q", got)
+	}
+}
+
+func TestFinalRolloutFallbackIsPublic(t *testing.T) {
+	for _, reason := range []string{
+		"final verification unavailable",
+		"final health verification failed",
+		"final drain verification failed",
+		"service update did not complete",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			cause := finalRolloutFailure(reason)
+			for _, err := range []error{cause, fmt.Errorf("wrapped: %w", cause)} {
+				if got := rolloutFallback(err); got != reason {
+					t.Errorf("fallback for %v = %q, want %q", err, got, reason)
+				}
+			}
+		})
+	}
+	if got := rolloutFallback(errors.New("service health deadline exceeded")); got != "deploy deadline exceeded before the task was healthy" {
+		t.Fatalf("startup deadline fallback = %q", got)
 	}
 }
 

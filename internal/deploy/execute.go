@@ -333,13 +333,11 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		return
 	}
 	attempts := app.Deploy.StartAttemptLimit()
-	deadline := time.Now().Add(budget)
-	// verifyCtx ends at the deploy timeout. rollCtx also ends when a cancel is accepted, so the wait for health can be cancelled,
-	// and the verification that follows it is not: it is short, and the cancel is settled at the barrier.
-	verifyCtx, stop := context.WithDeadline(ctx, deadline)
-	defer stop()
-	rollCtx, stopRoll := interruptible(verifyCtx)
-	defer stopRoll()
+	hold := rolloutMonitor
+	if c.rolloutHold != nil {
+		hold = *c.rolloutHold
+	}
+	startupDeadline := time.Now().Add(budget)
 	// unwind takes the rollout back after a failure or a cancel, with the roles in touched changed.
 	unwind := func(e error, touched []roleWork) {
 		// The evidence is read first: compensation deletes a created service together with its tasks and their logs.
@@ -361,7 +359,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 			return
 		}
 		outcome.State = "failed"
-		for _, done := range work {
+		for _, done := range touched {
 			if done.intent.Kind == "update" {
 				outcome.State = "rolled_back"
 				break
@@ -371,20 +369,81 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	}
 	var releaseBindings []state.Binding
 	for n, w := range work {
-		w.intent.Deadline = deadline
+		if !time.Now().Before(startupDeadline) {
+			unwind(errors.New("service health deadline exceeded"), work[:n])
+			return
+		}
+		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
+		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
+		rollCtx, stopRoll := interruptible(roleCtx)
 		id := w.intent.ServiceID
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
+			id, e = createRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts)
+			e = updateRole(rollCtx, c.Store, c.Engine, op.ID, w.intent, prepared.Auth, w.replicas, attempts, hold)
 		}
+		stopRoll()
+		stopRole()
 		if e != nil {
-			// Only the roles up to this one were touched; the ones after it still run the version they ran before.
-			unwind(e, work[:n+1])
+			touched := n + 1
+			var before beforeServiceMutation
+			if errors.As(e, &before) {
+				touched = n
+			}
+			unwind(e, work[:touched])
 			return
 		}
+		startupDeadline = startupDeadline.Add(hold)
 		releaseBindings = append(releaseBindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
+	}
+	deadline := startupDeadline
+	if hold > 0 {
+		if now := time.Now(); now.After(deadline) {
+			deadline = now
+		}
+		deadline = deadline.Add(rolloutVerificationGrace)
+	}
+	verifyCtx, stopVerify := context.WithDeadline(ctx, deadline)
+	defer stopVerify()
+	steps, e := c.Store.Intents(verifyCtx, op.ID)
+	if e != nil {
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
+	}
+	seen := make(map[int]bool)
+	for _, i := range steps {
+		if i.Kind != "create" && i.Kind != "update" {
+			continue
+		}
+		if i.Ordinal < 0 || i.Ordinal >= len(work) || seen[i.Ordinal] {
+			outcome.State = "recovery_required"
+			outcome.Err = "verification unavailable"
+			return
+		}
+		expected := work[i.Ordinal].intent
+		if i.Kind != expected.Kind || i.Role != expected.Role || i.Name != expected.Name || i.Generation != expected.Generation || i.ServiceID != expected.ServiceID {
+			outcome.State = "recovery_required"
+			outcome.Err = "verification unavailable"
+			return
+		}
+		seen[i.Ordinal] = true
+	}
+	if len(seen) != len(work) {
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
+	}
+	if e = c.verifyRollout(verifyCtx, steps); e != nil {
+		var failed finalRolloutFailure
+		if errors.As(e, &failed) {
+			unwind(e, work)
+			return
+		}
+		outcome.State = "recovery_required"
+		outcome.Err = "verification unavailable"
+		return
 	}
 	manifestJSON, err := json.Marshal(req.Manifest)
 	if err != nil {
@@ -398,60 +457,24 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 		outcome.Err = "release recording failed"
 		return
 	}
-	for _, w := range work {
-		live, e := c.Engine.InspectService(verifyCtx, w.intent.Name)
-		if e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final verification unavailable"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final verification unavailable", nil)
-			return
-		}
-		if e = healthyOnce(verifyCtx, c.Engine, live.ID, op.ID, w.replicas); e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final health verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final health verification failed", nil)
-			return
-		}
-		if e = waitDrain(verifyCtx, c.Engine, live.ID, op.ID); e != nil {
-			outcome.State = "recovery_required"
-			outcome.Err = "final drain verification failed"
-			outcome.Reason = c.recordRolloutFailure(ctx, op.ID, work, "final drain verification failed", nil)
-			return
-		}
-	}
-	outcome = state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
-	barrier, e := json.Marshal(outcome)
+	candidate := state.Outcome{State: "succeeded", SchemaBefore: before, SchemaAfter: after, Protected: req.Manifest.Protected, Release: &state.Release{App: req.App, Digest: prepared.Image, Tag: p.Tag, Commit: req.Commit, Modified: req.Modified, Manifest: manifestJSON, Bindings: releaseBindings}, Settings: settings}
+	barrier, e := json.Marshal(candidate)
 	if e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		return
-	}
-	steps, e := c.Store.Intents(verifyCtx, op.ID)
-	if e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification unavailable"
-		return
-	}
-	if _, e = c.recoverBarrier(verifyCtx, steps, state.Intent{Desired: barrier}); e != nil {
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification unavailable"
+		outcome = state.Outcome{State: "recovery_required", Err: "release recording failed", SchemaBefore: before, SchemaAfter: after}
 		return
 	}
 	// Recording the barrier is the point of no return of a deploy: the release is verified, and the routes and the post-deploy
 	// commands follow. A cancel that was accepted before it takes the rollout back instead.
-	if e = c.cross(ctx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
+	if e = c.cross(verifyCtx, op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: barrier, Deadline: deadline}, reasonSwitched); e != nil {
 		if isCancelled(e) {
 			outcome = state.Outcome{SchemaBefore: before, SchemaAfter: after}
 			unwind(e, work)
 			return
 		}
-		outcome.State = "recovery_required"
-		outcome.Release = nil
-		outcome.Err = "verification barrier unavailable"
+		outcome = state.Outcome{State: "recovery_required", Err: "verification barrier unavailable", SchemaBefore: before, SchemaAfter: after}
 		return
 	}
+	outcome = candidate
 	// The publish follows the barrier. A crash during it leaves the operation to recovery, which keeps the release. The
 	// next deploy or ingress apply brings any route or record it missed in line.
 	publishErr := c.publishIngress(ctx, op.ID, ing, req.ReplaceExisting)
@@ -669,7 +692,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0)
+	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, 0, 0)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

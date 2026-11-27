@@ -17,7 +17,7 @@ func TestKeepVersionDeploysTheAppliedDigestAndTagWithTheNewManifest(t *testing.T
 	s := openStore(t)
 	seedTaggedRelease(t, s, "older", keepDigest("a"), "v1.0.1")
 	seedTaggedRelease(t, s, "current", keepDigest("b"), "v1.0.2")
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	m := dockerManifest(map[string]string{"GREETING": "changed"})
 
 	plan, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "plan", App: "web", KeepVersion: true, DryRun: true, Manifest: m})
@@ -44,7 +44,7 @@ func TestKeepVersionDeploysTheAppliedDigestAndTagWithTheNewManifest(t *testing.T
 func TestKeepVersionKeepsADigestDeployWithoutATag(t *testing.T) {
 	s := openStore(t)
 	seedRelease(t, s, "current", keepDigest("b"))
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	op := runBound(t, s, c, Request{RequestID: "keep", App: "web", KeepVersion: true, Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -57,7 +57,7 @@ func TestKeepVersionKeepsADigestDeployWithoutATag(t *testing.T) {
 
 func TestKeepVersionRefusals(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	ctx := context.Background()
 	actor := Actor{ID: "admin", Admin: true}
 	for _, tc := range []struct {
@@ -90,7 +90,7 @@ func TestKeepVersionRefusals(t *testing.T) {
 func TestKeepVersionIsAllowedOnAProtectedEnvironment(t *testing.T) {
 	s := openStore(t)
 	seedTaggedRelease(t, s, "current", keepDigest("b"), "v1.0.2")
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test", Protected: true}
 	op := runBound(t, s, c, Request{RequestID: "keep", App: "web", KeepVersion: true, Manifest: dockerManifest(nil)})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -114,7 +114,7 @@ func TestKeepVersionStillRefusesAnImageOfAnotherRepository(t *testing.T) {
 func TestKeepVersionIsPartOfTheRequestHash(t *testing.T) {
 	s := openStore(t)
 	seedRelease(t, s, "current", keepDigest("b"))
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	ctx := context.Background()
 	keep := Request{RequestID: "same", App: "web", KeepVersion: true, Manifest: dockerManifest(nil)}
 	op := runBound(t, s, c, keep)
@@ -146,7 +146,7 @@ func TestKeepVersionIsPartOfTheRequestHash(t *testing.T) {
 func TestKeepVersionWithTheAppliedDigestDeploysIt(t *testing.T) {
 	s := openStore(t)
 	seedTaggedRelease(t, s, "current", keepDigest("b"), "v1.0.2")
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	m := dockerManifest(nil)
 	plan, err := c.Plan(context.Background(), Actor{ID: "admin", Admin: true}, Request{RequestID: "plan", App: "web", KeepVersion: true, KeepDigest: keepDigest("b"), DryRun: true, Manifest: m})
 	if err != nil || !strings.HasSuffix(plan.Image, "@"+keepDigest("b")) {
@@ -168,7 +168,7 @@ const keepDigestChanged = "app web changed since its version was read: it runs s
 // at once, with nothing deployed.
 func TestKeepVersionRefusesADigestThatChanged(t *testing.T) {
 	s := openStore(t)
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "test"}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "test"}
 	m := dockerManifest(nil)
 	// What a client reads is the applied release's digest, with its repository.
 	seedRelease(t, s, "first", "example/web@"+keepDigest("a"))

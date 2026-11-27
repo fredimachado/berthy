@@ -61,7 +61,7 @@ func TestObserverHearsASuccessfulDeploy(t *testing.T) {
 	s := openStore(t)
 	digest := "sha256:" + strings.Repeat("c", 64)
 	obs := &recordingObserver{}
-	c := &Controller{Engine: tagResolver{Engine: &boundFake{}, digest: digest}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: tagResolver{Engine: &boundFake{}, digest: digest}, Store: s, Environment: "prod", Observer: obs}
 	op, _, err := admit(t, c, context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "ok", App: "web", Version: "v1.4.2", Manifest: dockerManifest(nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestObserverHearsADeployByDigestWithTheShortDigestAsItsVersion(t *testing.T
 	s := openStore(t)
 	digest := "sha256:" + strings.Repeat("d", 64)
 	obs := &recordingObserver{}
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
 	runBound(t, s, c, Request{RequestID: "by-digest", App: "web", Version: digest, Manifest: dockerManifest(nil)})
 	end := obs.waitEnded(t, 1)[0]
 	if end.Version != "sha256:"+strings.Repeat("d", 12) || end.Digest != digest {
@@ -103,7 +103,7 @@ func TestObserverHearsAFailedDeployWithItsPublicReason(t *testing.T) {
 	obs := &recordingObserver{}
 	one := 1
 	m := manifest.Manifest{Project: "proj", Network: "overlay", Apps: map[string]manifest.App{"web": {Kind: "image", Image: "example/web", Deploy: manifest.Deploy{DeployTimeout: "100ms", DrainTimeout: "1s"}, Roles: map[string]manifest.Role{"web": {Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}}}}}
-	c := &Controller{Engine: &positiveEngine{unhealthy: true}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &positiveEngine{unhealthy: true}, Store: s, Environment: "prod", Observer: obs}
 	op, _, err := admit(t, c, context.Background(), Actor{ID: "id-ci", Name: "ci"}, Request{RequestID: "bad", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: m})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestObserverHearsARollbackWithTheVersionItReturnsTo(t *testing.T) {
 	seedTaggedRelease(t, s, "older", "sha256:"+strings.Repeat("a", 64), "v1.0.1")
 	seedTaggedRelease(t, s, "current", "sha256:"+strings.Repeat("b", 64), "v1.0.2", boundBinding("legacy-web", "old-id"))
 	obs := &recordingObserver{}
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
 	op := runBound(t, s, c, Request{RequestID: "rollback", App: "web", Kind: "rollback"})
 	if op.State != "succeeded" {
 		t.Fatalf("state %s: %s", op.State, op.Err)
@@ -144,7 +144,7 @@ func TestObserverHearsARollbackWithTheVersionItReturnsTo(t *testing.T) {
 func TestObserverHearsEveryKindOfOperation(t *testing.T) {
 	s := openStore(t)
 	obs := &recordingObserver{}
-	c := &Controller{Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
+	c := &Controller{rolloutHold: zeroTestRolloutHold(), Engine: &boundFake{}, Store: s, Environment: "prod", Observer: obs}
 	// Nothing is deployed, so the restart ends as failed: its start and end are still told.
 	op := runBound(t, s, c, Request{RequestID: "restart", App: "web", Kind: "restart", Manifest: dockerManifest(nil)})
 	ends := obs.waitEnded(t, 1)
