@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"time"
 
 	"berthy/internal/engine"
@@ -491,7 +493,7 @@ func emptyInheritedRaw(raw json.RawMessage) bool {
 	return d.Decode(&v) == nil && emptyInherited(v)
 }
 
-func validateInheritedRuntime(raw json.RawMessage) error {
+func validateInheritedRuntime(raw json.RawMessage, expected *expectedUptimeProbe) error {
 	var x struct {
 		TaskTemplate struct {
 			Runtime       string
@@ -515,15 +517,41 @@ func validateInheritedRuntime(raw json.RawMessage) error {
 			return errors.New("unsafe inherited container settings")
 		}
 	}
-	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 && string(rawMounts) != "null" {
-		var mounts []struct{ Type string }
+	foundProbe := false
+	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 {
+		var mounts []json.RawMessage
 		if json.Unmarshal(rawMounts, &mounts) != nil {
 			return errors.New("invalid mounts")
 		}
 		for _, m := range mounts {
-			if m.Type != "volume" {
+			var mount struct{ Type string }
+			if json.Unmarshal(m, &mount) != nil {
+				return errors.New("invalid mounts")
+			}
+			if mount.Type == "volume" {
+				if expected == nil {
+					continue
+				}
+				var volume struct{ Target string }
+				if json.Unmarshal(m, &volume) != nil || uptimeMountOverlap(volume.Target) {
+					return errors.New("unsafe inherited mount")
+				}
+				continue
+			}
+			var bind map[string]any
+			if expected == nil || foundProbe || json.Unmarshal(m, &bind) != nil || !reflect.DeepEqual(bind, expected.mount) {
 				return errors.New("unsafe inherited mount")
 			}
+			foundProbe = true
+		}
+	}
+	if expected != nil {
+		if !foundProbe {
+			return errors.New("managed uptime mount unavailable")
+		}
+		var health struct{ Test []string }
+		if json.Unmarshal(x.TaskTemplate.ContainerSpec["Healthcheck"], &health) != nil || !slices.Equal(health.Test, expected.test) {
+			return errors.New("managed uptime health command changed")
 		}
 	}
 	var outer struct {

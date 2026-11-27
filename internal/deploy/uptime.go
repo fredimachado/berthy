@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -56,6 +57,32 @@ func uptimeMount(source string) map[string]any {
 	return map[string]any{"Type": "bind", "Source": source, "Target": manifest.UptimeProbeTarget, "ReadOnly": true}
 }
 
+type expectedUptimeProbe struct {
+	mount map[string]any
+	test  []string
+}
+
+func (c *Controller) expectedProbe(role manifest.Role) (*expectedUptimeProbe, error) {
+	if role.Health == nil || role.Health.Uptime == nil {
+		return nil, nil
+	}
+	timing, err := role.Health.UptimeTiming()
+	if err != nil {
+		return nil, err
+	}
+	source, err := c.resolveProbeSource()
+	if err != nil {
+		return nil, err
+	}
+	return &expectedUptimeProbe{mount: uptimeMount(source), test: uptimeCommand(timing.Threshold.String())}, nil
+}
+
+func uptimeMountOverlap(target string) bool {
+	target = path.Clean(target)
+	reserved := path.Dir(manifest.UptimeProbeTarget)
+	return target == "/" || target == reserved || strings.HasPrefix(target, reserved+"/")
+}
+
 func deployStartupBudget(app manifest.App) (time.Duration, error) {
 	value := app.Deploy.DeployTimeout
 	if value == "" {
@@ -68,15 +95,30 @@ func deployStartupBudget(app manifest.App) (time.Duration, error) {
 	return budget, nil
 }
 
+func uptimeStartupBudget(app manifest.App, role string) (time.Duration, error) {
+	health := app.Roles[role].Health
+	if health == nil || health.Uptime == nil {
+		return 0, nil
+	}
+	return deployStartupBudget(app)
+}
+
+const serviceCleanupAllowance = 2 * time.Minute
+
+func addStartupAllowance(total, budget time.Duration) (time.Duration, error) {
+	if budget > math.MaxInt64-total {
+		return 0, errors.New("uptime startup allowance is too large")
+	}
+	return total + budget, nil
+}
+
 func checkUptimeImage(app manifest.App, role string, img engine.Image) error {
 	h := app.Roles[role].Health
 	if h == nil || h.Uptime == nil {
 		return nil
 	}
-	reserved := path.Dir(manifest.UptimeProbeTarget)
 	for target := range img.Volumes {
-		target = path.Clean(target)
-		if target == "/" || target == reserved || strings.HasPrefix(target, reserved+"/") {
+		if uptimeMountOverlap(target) {
 			return errUptimeImageVolume
 		}
 	}

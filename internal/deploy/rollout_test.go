@@ -228,7 +228,7 @@ func TestDrainWaitsForRetiringTask(t *testing.T) {
 
 func TestRejectsInheritedCapabilities(t *testing.T) {
 	raw := json.RawMessage(`{"TaskTemplate":{"Runtime":"container","ContainerSpec":{"CapabilityAdd":["SYS_ADMIN"]}}}`)
-	if validateInheritedRuntime(raw) == nil {
+	if validateInheritedRuntime(raw, nil) == nil {
 		t.Fatal("host capabilities accepted")
 	}
 }
@@ -272,7 +272,7 @@ func TestAdoptedHealthRequiresPinnedTaskImage(t *testing.T) {
 
 func TestRuntimeValidationRejectsUnknownSecuritySettings(t *testing.T) {
 	for _, raw := range []string{`{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]}}}`, `{"TaskTemplate":{"ContainerSpec":{"UnexpectedHostAccess":true}}}`} {
-		if validateInheritedRuntime(json.RawMessage(raw)) == nil {
+		if validateInheritedRuntime(json.RawMessage(raw), nil) == nil {
 			t.Fatalf("unsafe runtime accepted: %s", raw)
 		}
 	}
@@ -636,7 +636,7 @@ func inheritedSpec(container string) json.RawMessage {
 
 func TestInheritedSettingsAreEmptyWhenDockerStoredThemEmpty(t *testing.T) {
 	live := inheritedSpec(dockerStoredContainer)
-	if err := validateInheritedRuntime(live); err != nil {
+	if err := validateInheritedRuntime(live, nil); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	if err := adoptableService(live, "net"); err != nil {
@@ -657,7 +657,7 @@ func TestInheritedSettingsWithAValueAreStillRefused(t *testing.T) {
 		if adoptableService(live, "net") == nil {
 			t.Errorf("%s: adoption accepted it", name)
 		}
-		if name != "isolation" && validateInheritedRuntime(live) == nil {
+		if name != "isolation" && validateInheritedRuntime(live, nil) == nil {
 			t.Errorf("%s: validate accepted it", name)
 		}
 	}

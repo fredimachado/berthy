@@ -16,7 +16,7 @@ import (
 // other than the shared one. It is called only by planAdoption, which reads the replica count and so refuses a service that
 // is not replicated itself.
 func adoptableService(live json.RawMessage, network string) error {
-	if err := validateInheritedRuntime(live); err != nil {
+	if err := validateInheritedRuntime(live, nil); err != nil {
 		return err
 	}
 	var x struct {
