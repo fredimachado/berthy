@@ -219,7 +219,16 @@ func parseAgentURL(raw string) (*url.URL, error) {
 
 // NewHTTPClient is the HTTP client for the agent: no proxy, short connect and header limits, and no redirects.
 func NewHTTPClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 20 * time.Second,
+			IdleConnTimeout:       60 * time.Second,
+		},
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // Send sends a request to the agent with the token. A nil body sends none. Every request goes through it, so it is the one place

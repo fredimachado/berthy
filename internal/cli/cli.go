@@ -236,7 +236,12 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 				return 1
 			}
 		}
-		server := http.Server{Addr: f.Listen, Handler: host, ReadHeaderTimeout: 5 * time.Second}
+		server := http.Server{
+			Addr:              f.Listen,
+			Handler:           host,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       90 * time.Second,
+		}
 		shutdown := make(chan struct{})
 		go func() {
 			defer close(shutdown)
