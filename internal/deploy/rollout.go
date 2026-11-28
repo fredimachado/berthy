@@ -179,6 +179,7 @@ type rolloutTiming struct {
 	window time.Duration
 	cutoff time.Time
 	hold   time.Duration
+	drain  time.Duration
 }
 
 func withRolloutCutoff(ctx context.Context, cutoff time.Time) (context.Context, context.CancelFunc) {
@@ -464,21 +465,21 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 		return err
 	}
 	stopStartup()
-	deadline, err := waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, timing)
-	if err != nil {
+	if _, err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, timing); err != nil {
 		return withRole(err, i.Role)
 	}
-	verifyCtx, stopVerification := withRolloutCutoff(ctx, deadline)
-	defer stopVerification()
+	// Add each duration separately so a long configured drain cannot overflow when the grace is added.
+	drainCtx, stopDrain := context.WithDeadline(ctx, time.Now().Add(timing.drain).Add(rolloutVerificationGrace))
+	defer stopDrain()
 	if updateHasTasks(i.Before) {
-		if err = waitUpdate(verifyCtx, e, i.Name, i.ServiceID); err != nil {
+		if err = waitUpdate(drainCtx, e, i.Name, i.ServiceID); err != nil {
 			return err
 		}
 	}
-	if err = waitDrain(verifyCtx, e, live.ID, i.Generation); err != nil {
+	if err = waitDrain(drainCtx, e, live.ID, i.Generation); err != nil {
 		return err
 	}
-	return j.MarkStep(verifyCtx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready"))
+	return j.MarkStep(drainCtx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready"))
 }
 
 func waitDrain(ctx context.Context, e healthReader, id, generation string) error {
@@ -488,6 +489,9 @@ func waitDrain(ctx context.Context, e healthReader, id, generation string) error
 		tasks, err := e.ServiceTasks(ctx, id)
 		if err != nil {
 			return errors.New("task inspection failed")
+		}
+		if ctx.Err() != nil {
+			return errors.New("service drain deadline exceeded")
 		}
 		pending := false
 		for _, t := range tasks {
@@ -603,6 +607,9 @@ func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
 		live, err := e.InspectService(ctx, name)
 		if err != nil || live.ID != id {
 			return errors.New("update status unavailable")
+		}
+		if ctx.Err() != nil {
+			return errors.New("update completion deadline exceeded")
 		}
 		switch live.UpdateStatus.State {
 		case "completed":

@@ -61,16 +61,20 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	_ = c.finish(ctx, op, outcome, t)
 }
 
+func deployDrainTimeout(app manifest.App) string {
+	if app.Deploy.DrainTimeout == "" {
+		return "30s"
+	}
+	return app.Deploy.DrainTimeout
+}
+
 // releaseRoleSpec is the Swarm service of a role at the release that prepared describes, as a deploy sends it. operation is
 // the generation label of the spec. A deploy and the drift check both build a role's spec here, so what a deploy would send
 // and what the check expects are the same.
 func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, role, operation string) (json.RawMessage, error) {
 	req := prepared.Request
 	app := req.Manifest.Apps[req.App]
-	drain := app.Deploy.DrainTimeout
-	if drain == "" {
-		drain = "30s"
-	}
+	drain := deployDrainTimeout(app)
 	order, _ := app.UpdateOrder(role)
 	if err := checkUptimeImage(app, role, img); err != nil {
 		return nil, err

@@ -242,6 +242,40 @@ func TestUpdateWaitsForNativeCompletion(t *testing.T) {
 	}
 }
 
+type lateCompletionEngine struct{ mutationFake }
+
+func (lateCompletionEngine) ServiceTasks(ctx context.Context, _ string) ([]engine.ServiceTask, error) {
+	<-ctx.Done()
+	return nil, nil
+}
+
+func (lateCompletionEngine) InspectService(ctx context.Context, id string) (engine.ServiceSnapshot, error) {
+	<-ctx.Done()
+	return engine.ServiceSnapshot{ID: id, UpdateStatus: engine.UpdateStatus{State: "completed"}}, nil
+}
+
+func TestRolloutRejectsLateDrainAndUpdateCompletion(t *testing.T) {
+	e := &lateCompletionEngine{}
+	t.Run("native completion", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if err := waitUpdate(ctx, e, "id", "id"); err == nil {
+				t.Fatal("accepted native completion after its context expired")
+			}
+		})
+	})
+	t.Run("old tasks drained", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if err := waitDrain(ctx, e, "id", "candidate"); err == nil {
+				t.Fatal("accepted drain completion after its context expired")
+			}
+		})
+	})
+}
+
 func TestUpdateHasTasks(t *testing.T) {
 	tests := []struct {
 		name, before string

@@ -29,6 +29,8 @@ type budgetEngine struct {
 	secondStarted                             time.Time
 	confirmedAt, finalAt, lostAt, nativeAt    time.Time
 	nativeReady                               time.Duration
+	oldReady                                  time.Duration
+	drainedAt                                 time.Time
 	restoredAt                                time.Time
 	healthyAt                                 time.Time
 	begin, finished                           time.Time
@@ -188,7 +190,19 @@ func (f *budgetEngine) ServiceTasks(ctx context.Context, id string) ([]engine.Se
 			return nil, err
 		}
 	}
-	return f.boundFake.ServiceTasks(ctx, id)
+	tasks, err := f.boundFake.ServiceTasks(ctx, id)
+	if err != nil || id != "old" || f.updates != 1 || f.oldReady == 0 {
+		return tasks, err
+	}
+	if time.Since(f.start) >= f.oldReady {
+		if f.drainedAt.IsZero() {
+			f.drainedAt = time.Now()
+		}
+		return tasks, nil
+	}
+	old := runningTask("retiring", "previous")
+	old.ServiceID, old.DesiredState = id, "shutdown"
+	return append(tasks, old), nil
 }
 
 func (f *budgetEngine) InspectContainerHealth(ctx context.Context, id string) (string, error) {
@@ -566,7 +580,7 @@ func TestNativeCompletionUsesTheExtendedRoleDeadline(t *testing.T) {
 		want  string
 	}{
 		{"completed before role deadline", 12 * time.Second, "succeeded"},
-		{"completed only after role deadline", 31 * time.Second, "rolled_back"},
+		{"completed only after drain deadline", 51 * time.Second, "rolled_back"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openStore(t)
@@ -574,6 +588,7 @@ func TestNativeCompletionUsesTheExtendedRoleDeadline(t *testing.T) {
 			seedBudgetUpdate(t, s, f)
 			m := budgetManifest()
 			app := m.Apps["web"]
+			app.Deploy.DrainTimeout = ""
 			delete(app.Roles, "b")
 			m.Apps["web"] = app
 			op, intents := budgetDeploy(t, f, s, Request{RequestID: "native-deadline", App: "web", Version: digestOfLetter("a"), Manifest: m})
@@ -587,8 +602,8 @@ func TestNativeCompletionUsesTheExtendedRoleDeadline(t *testing.T) {
 				t.Fatalf("operation %s, want %s: %s", op.State, tc.want, op.Reason)
 			}
 			if tc.want == "rolled_back" {
-				if got := f.restoredAt.Sub(f.start); got != 30*time.Second {
-					t.Fatalf("compensation started at %v, want 30s", got)
+				if got := f.restoredAt.Sub(f.start); got != 50*time.Second {
+					t.Fatalf("compensation started at %v, want 50s", got)
 				}
 			}
 			var barrier bool
@@ -614,6 +629,67 @@ func TestNativeCompletionUsesTheExtendedRoleDeadline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeployBoundsDrainSeparately(t *testing.T) {
+	for _, nativePending := range []bool{true, false} {
+		name := "old task pending"
+		if nativePending {
+			name = "native update pending"
+		}
+		for _, tc := range []struct {
+			name, state string
+			stopAt      time.Duration
+		}{
+			{"finishes", "succeeded", 45 * time.Second},
+			{"stuck", "rolled_back", 66 * time.Second},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				s := openStore(t)
+				f := &budgetEngine{boundFake: &boundFake{}, oldReady: tc.stopAt, secondReady: 54 * time.Second}
+				if nativePending {
+					f.nativeSlow, f.nativeReady = true, tc.stopAt
+				}
+				seedBudgetUpdate(t, s, f)
+				m := budgetManifest()
+				app := m.Apps["web"]
+				app.Deploy.DrainTimeout = "45s"
+				m.Apps["web"] = app
+				op, intents := budgetDeploy(t, f, s, Request{RequestID: "separate-drain", App: "web", Version: digestOfLetter("a"), Manifest: m})
+				requireBudgetStarted(t, f, op)
+				barrier := false
+				for _, intent := range intents {
+					barrier = barrier || intent.Kind == "barrier"
+				}
+				if tc.state != "succeeded" {
+					if got := f.restoredAt.Sub(f.start); got != rolloutMonitor+60*time.Second {
+						t.Errorf("compensation started at %v, want 65s", got)
+					}
+					if !f.drainedAt.IsZero() || !f.secondStarted.IsZero() || barrier {
+						t.Fatalf("stuck drain observed completion=%v, second role start=%v, barrier=%v", f.drainedAt, f.secondStarted, barrier)
+					}
+					applied, err := s.Applied(context.Background(), "web")
+					if err != nil || applied.Digest != digestOfLetter("b") {
+						t.Fatalf("previous applied digest=%q, err=%v", applied.Digest, err)
+					}
+					if _, err := s.Lock(context.Background()); !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("lock after compensation: %v", err)
+					}
+				} else {
+					if got := f.drainedAt.Sub(f.start); got != tc.stopAt {
+						t.Errorf("drain ended at %v, want %v", got, tc.stopAt)
+					}
+					if got := f.secondStarted.Sub(f.start); got != tc.stopAt || !barrier {
+						t.Errorf("second role started at %v, want %v and a barrier, got barrier=%v", got, tc.stopAt, barrier)
+					}
+					requireProgressOutcome(t, s, f, op, tc.state)
+				}
+				if op.State != tc.state {
+					t.Fatalf("operation %s, want %s: %s", op.State, tc.state, op.Reason)
+				}
+			})
+		}
 	}
 }
 

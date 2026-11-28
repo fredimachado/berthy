@@ -19,6 +19,7 @@ type deployRun struct {
 	work     []roleWork
 	ing      *ingressPublish
 	budget   time.Duration
+	drain    time.Duration
 	deadline time.Time
 	bindings []state.Binding
 	outcome  state.Outcome
@@ -100,7 +101,12 @@ func (c *Controller) prepareDeployRoles(ctx context.Context, d *deployRun, req R
 	if err != nil {
 		return false
 	}
+	drain, err := time.ParseDuration(deployDrainTimeout(app))
+	if err != nil {
+		return false
+	}
 	d.budget = budget
+	d.drain = drain
 	d.work = make([]roleWork, 0, len(p.Roles))
 	for ordinal, role := range p.Roles {
 		if !c.planRoleWork(ctx, d, img, byRole, ordinal, role) {
@@ -295,7 +301,7 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 	attempts := app.Deploy.StartAttemptLimit()
 	hold := c.monitorHold()
 	for n, w := range d.work {
-		timing := rolloutTiming{window: d.budget, cutoff: time.Now().Add(d.budget), hold: hold}
+		timing := rolloutTiming{window: d.budget, cutoff: time.Now().Add(d.budget), hold: hold, drain: d.drain}
 		w.intent.Deadline = timing.cutoff
 		rollCtx, stopRoll := interruptible(ctx)
 		id := w.intent.ServiceID
