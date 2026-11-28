@@ -43,7 +43,7 @@ expect_code "configure webhook secret" 0 "$code" "$out"
   base_manifest
   cat <<'YML'
 alerts:
-  reminder: 1s
+  reminder: 1ms
   webhook:
     url_secret: ALERT_WEBHOOK_URL
 YML
@@ -96,4 +96,12 @@ out=$(adm checks --json 2>&1); code=$?
 expect_code "read checks after passing memory sample" 0 "$code" "$out"
 expect_eq "memory retains its warning and detail" 'warning 9.9% available' \
   "$(jq -r '.[] | select(.name == "memory") | "\(.state) \(.detail)"' <<< "$out")"
+label=$(d inspect -f '{{index .Config.Labels "berthy.e2e.fixture"}}' "$name" 2>/dev/null) || label=
+if [ "$label" != "$owner" ]; then
+  fail "remove memory agent fixture" "container label is missing or foreign"
+elif d rm -f "$name" >/dev/null; then
+  pass "removed memory agent fixture"
+else
+  fail "remove memory agent fixture" "docker rm failed"
+fi
 finish
