@@ -27,6 +27,7 @@ import (
 	"berthy/internal/api"
 	"berthy/internal/dialtest"
 	"berthy/internal/keywrap"
+	"berthy/internal/manifest"
 	"berthy/internal/scope"
 	"berthy/internal/setup"
 )
@@ -237,6 +238,9 @@ func TestSetupUsageErrors(t *testing.T) {
 			if code != 2 || out != "" || errout == "" {
 				t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errout)
 			}
+			if name == "both host and local" && !strings.Contains(errout, setupUsage) {
+				t.Fatalf("usage missing from stderr: %q", errout)
+			}
 		})
 	}
 	if made[0] != nil {
@@ -341,6 +345,7 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 		host    string
 		local   bool
 		problem string
+		exit    int
 	}{
 		{name: "environment overlay", host: "ops@p5"},
 		{name: "base", args: []string{"--manifest-dir", baseOnly}, host: "ops@base"},
@@ -348,7 +353,7 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 		{name: "local", args: []string{"--local"}, local: true},
 		{name: "explicitly empty host", args: []string{"--host="}, problem: "invalid --host"},
 		{name: "cleared", args: []string{"-e", "cleared"}, problem: "a server in the manifest, or --local"},
-		{name: "invalid", args: []string{"-e", "invalid"}, problem: "servers.pg.ssh"},
+		{name: "invalid", args: []string{"-e", "invalid"}, problem: "servers.pg.ssh", exit: 1},
 		{name: "multiple", args: []string{"--manifest-dir", multi}, problem: "lists servers api1, pg: pass --server NAME"},
 		{name: "named", args: []string{"--manifest-dir", multi, "--server", "api1"}, host: "ops@api1"},
 		{name: "named base", args: []string{"--manifest-dir", multi, "--server", "pg"}, host: "ops@base"},
@@ -361,7 +366,11 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 			*made = [2]any{}
 			code, out, errout := runSetupCmd(append([]string{"--manifest-dir", dir, "--dry-run", "--json"}, tc.args...)...)
 			if tc.problem != "" {
-				if code != 2 || !strings.Contains(errout, tc.problem) || made[0] != nil {
+				want := 2
+				if tc.exit != 0 {
+					want = tc.exit
+				}
+				if code != want || !strings.Contains(errout, tc.problem) || made[0] != nil {
 					t.Fatalf("exit %d, output %q, error %q, runner %v", code, out, errout, made)
 				}
 				return
@@ -375,11 +384,16 @@ func TestSetupResolvesTheHostFromTheEnvironmentManifest(t *testing.T) {
 
 func TestSetupRefusesAnInvalidManifest(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("network: demo\nunknown_field: 1\n"), 0o600)
-	withSetupRunner(t, &setupServer{})
-	code, _, errout := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", dir, "--network", "demo")
-	if code != 2 || !strings.Contains(errout, "manifest of p5") {
-		t.Fatalf("exit %d: %s", code, errout)
+	// projectDir shape with bogus_knob on line 3, after network: and before apps:.
+	text := "project: shop\nnetwork: p5net\nbogus_knob: true\napps:\n  api:\n    kind: image\n    image: alpine\n    roles:\n      web: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	made := withSetupRunner(t, &setupServer{})
+	code, out, errout := runSetupCmd("--local", "--dry-run", "-e", "scratch", "--manifest-dir", dir)
+	wantErr := "berthy.yml:3:1: bogus_knob: unknown field \"bogus_knob\"\n1 problem\n"
+	if code != 1 || out != "" || errout != wantErr || made[0] != nil {
+		t.Fatalf("exit %d, stdout %q, stderr %q, runner %v", code, out, errout, made)
 	}
 }
 
@@ -934,7 +948,7 @@ func TestSetupRefusesAPairOverTheLengthBoundBeforeAnyServerStep(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte(longPairManifest), 0o600)
 	made := withSetupRunner(t, &setupServer{})
 	code, out, errout := runSetupCmd("-e", strings.Repeat("e", 30), "--host", "ops@s1", "--listen", "172.31.250.10:7710", "--manifest-dir", dir)
-	if code != 2 || out != "" || !strings.Contains(errout, longPairMessage) || made[0] != nil {
+	if code != 1 || out != "" || !strings.Contains(errout, longPairMessage) || made[0] != nil {
 		t.Fatalf("exit %d, runner made %v: %q %q", code, made[0] != nil, out, errout)
 	}
 }
@@ -949,7 +963,11 @@ func TestSetupWithAManifestWithoutANetworkUsesTheDefault(t *testing.T) {
 	if err := os.WriteFile(p, []byte(strings.Replace(string(b), "network: p5net\n", "", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := setupSettings(dir, "prod", "", "", false)
+	m, err := manifest.Load(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := setupSettings(dir, "prod", "", "", false, m)
 	if err != nil || got.network != "shop-prod" {
 		t.Fatalf("settings %+v: %v", got, err)
 	}
@@ -960,14 +978,14 @@ func TestSetupWithAManifestWithoutANetworkUsesTheDefault(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "shop-p5 (attachable overlay)") {
 		t.Fatalf("exit %d: %s %s", code, out, errout)
 	}
-	if _, err := setupSettings(dir, "prod", "", "other", false); err == nil {
+	if _, err := setupSettings(dir, "prod", "", "other", false, m); err == nil {
 		t.Fatal("accepted a different network flag")
 	}
 }
 
 func TestSetupWithoutAManifestNeedsAProject(t *testing.T) {
 	dir := t.TempDir()
-	_, err := setupSettings(dir, "prod", "", "", false)
+	_, err := setupSettings(dir, "prod", "", "", false, nil)
 	if err == nil || err.Error() != "there is no berthy.yml in "+dir+": pass --project NAME" {
 		t.Fatalf("error: %v", err)
 	}
