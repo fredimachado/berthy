@@ -1526,7 +1526,7 @@ berthy stats -e prod --since 5m # the last 5 minutes (at most 1h)
 berthy df    -e prod
 ```
 
-`stats` shows CPU, memory, swap, load, network and disk I/O for the server, and CPU, memory against limit, block and network I/O and restarts for each container. The agent samples every 10 seconds and keeps the last hour in memory. `df` shows disk space per mount and what Docker's images, containers, volumes and build cache use.
+`stats` shows CPU, memory, swap, load, network and disk I/O for the server, and CPU, memory against limit, block and network I/O and restarts for each container. The agent samples every 10 seconds and keeps the last hour in memory. `df` shows disk space per mount and what Docker's images, containers, volumes and build cache use. Both commands include each mount's total and free inode counts as `inodes_total` and `inodes_free`, including zero values.
 
 #### History
 
@@ -2158,7 +2158,7 @@ berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod
 
 They always run:
 
-- **Disk** and **Docker disk**: warning from 80 percent used, critical from 90 percent. They cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB.
+- **Disk** and **Docker disk**: bytes warn from 80 percent used and become critical from 90 percent; inodes warn from 95 percent used and become critical when none remain free. The check reports the more severe result, using bytes when both have the same severity. A mount reporting zero total inodes is judged by bytes alone. They cover `/`, the mount that holds Docker's data, and every mount of at least 1 GiB.
 - **Memory**: warning below 10 percent available, critical below 5 percent.
 - **Restart loops** of the apps Berthy manages: three restarts of one replica, or three failed or rejected Swarm tasks, within 10 minutes, or an out-of-memory kill. For ten minutes after the agent first reads the Docker inventory, a role with no issue found is unknown (`watching restarts since agent start`), so an agent restart cannot send a false recovery for a service that is still looping. A role that already shows a loop, task failures or an out-of-memory kill warns at once.
 - **Down**: each role of an image app and each service of a Compose app, named `down:<app>/<role or service>`. It is critical when fewer replicas run and are healthy than the app should run, for two minutes. An image role should run the replicas its service is set to, so a scale to 0 is fine. A Compose service should run the containers it has, so a container that is stopped by hand is down, and so is a service whose containers are gone. A container that runs and is unhealthy is not healthy. The app is named as its restart checks name it: a Compose app by its Compose project. Nothing is judged while a deploy, rollback, restart, scale, remove or ingress change of that app runs, or for two minutes after it ends. The detail says what was seen, for example `0 of 2 replicas running for 2m`, `1 of 2 replicas healthy (1 unhealthy) for 2m` or `exited with code 137 for 2m`. The exit code is read from the status of an exited Compose container; when the status gives none, the detail says `container exited`. A Compose container that exited with code 0 is a finished job, the same notion a Compose deploy accepts a one-shot by: the service does not want it running, so it is neither wanted nor down. For the first two minutes of a shortfall the check is unknown, with `not yet confirmed` in its detail, so an alert is never undone by a short gap.
@@ -2256,6 +2256,8 @@ telemetry:
   otlp_endpoint: http://10.0.0.6:4318
   headers_secret: OTLP_HEADERS
 ```
+
+Per mount, `berthy.filesystem.inodes.total` and `berthy.filesystem.inodes.free` report inode counts with unit `{inode}` and the `system.filesystem.mountpoint` attribute. Mounts reporting zero total inodes have no inode measurements; a counted mount with no free inodes reports zero free.
 
 `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form (`name=value,name=value`), for backends that need authorization. The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there. `doctor` shows a `telemetry` check.
 

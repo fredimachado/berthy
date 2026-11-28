@@ -184,6 +184,7 @@ type Samples func() (metrics.Sample, bool)
 const (
 	diskWarning  = 80.0
 	diskCritical = 90.0
+	inodeWarning = 95.0
 )
 
 // Memory thresholds: available memory warns below 10% and is critical below 5%.
@@ -266,28 +267,33 @@ func diskResult(samples Samples, mount, label string) Result {
 		if m.Path != mount {
 			continue
 		}
-		used, ok := usedPercent(m)
+		bytes, ok := usedPercent(m.Total, m.Available)
 		if !ok {
 			return Result{State: Unknown, Detail: "mount size not reported"}
 		}
-		state := OK
+		inodes, inodeOK := usedPercent(m.InodesTotal, m.InodesFree)
+		state, used, resource := OK, bytes, "bytes"
 		switch {
-		case used >= diskCritical:
+		case bytes >= diskCritical:
 			state = Critical
-		case used >= diskWarning:
+		case inodeOK && m.InodesFree == 0:
+			state, used, resource = Critical, inodes, "inodes"
+		case bytes >= diskWarning:
 			state = Warning
+		case inodeOK && inodes >= inodeWarning:
+			state, used, resource = Warning, inodes, "inodes"
 		}
-		return Result{State: state, Detail: fmt.Sprintf("%.1f%% used%s", used, label)}
+		return Result{State: state, Detail: fmt.Sprintf("%.1f%% %s used%s", used, resource, label)}
 	}
 	return Result{State: Unknown, Detail: "mount not reported"}
 }
 
-// usedPercent is the share of a mount in use, from its total and available space.
-func usedPercent(m metrics.Mount) (float64, bool) {
-	if m.Total == 0 || m.Available > m.Total {
+// usedPercent is the share in use, from a total and free count.
+func usedPercent(total, free uint64) (float64, bool) {
+	if total == 0 || free > total {
 		return 0, false
 	}
-	return 100 * float64(m.Total-m.Available) / float64(m.Total), true
+	return 100 * float64(total-free) / float64(total), true
 }
 
 // MemoryCheck returns the check of host memory, named memory.

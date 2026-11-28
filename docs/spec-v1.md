@@ -1081,7 +1081,7 @@ The agent shows what is happening now and raises alerts. History is kept by an O
 
 | Scope | Metrics | Read from |
 | --- | --- | --- |
-| Server | CPU, memory, swap, load, disk space per mount, disk I/O, network I/O | The kernel's `/proc` and filesystem stats |
+| Server | CPU, memory, swap, load, disk space and total and free inode counts per mount, disk I/O, network I/O | The kernel's `/proc` and filesystem stats |
 | Docker | Disk used by images, containers, volumes and build cache | The Docker API |
 | Container | CPU, memory against its limit, block I/O, network I/O, restarts, out-of-memory kills | Control groups and the Docker API |
 
@@ -1118,7 +1118,7 @@ telemetry:
 | Probe | An HTTP or TCP check the agent runs on a schedule, against a service name or a public URL | Alert |
 | Built-in condition | Disk space, Docker disk usage, memory, restart loops, missing replicas (down), drift from the applied release, overdue backup, silent peer, unhealthy tunnel with managed ingress, a credential refused, missing or about to expire | Alert |
 
-Proposed thresholds: disk space and Docker disk usage warn at 80% and go critical at 90%.
+Disk and Docker disk checks warn at 80% of bytes used and become critical at 90%; inode use warns at 95% and becomes critical when no inodes remain free. The more severe result wins, with bytes winning ties. A mount with zero total inodes is judged by bytes alone.
 
 **Where a probe runs.** The agent runs on the host, where Docker service names do not resolve and addresses on the shared overlay network cannot be reached.
 

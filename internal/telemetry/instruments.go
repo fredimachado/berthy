@@ -13,22 +13,24 @@ import (
 // instruments are the observable instruments of one meter provider. Each is read at export time from the collector's
 // latest sample and the stored check states, so no value is recorded twice.
 type instruments struct {
-	cpuUtilization   metric.Float64ObservableGauge
-	memoryUsage      metric.Int64ObservableGauge
-	memoryLimit      metric.Int64ObservableGauge
-	pagingUsage      metric.Int64ObservableGauge
-	loadAverage1m    metric.Float64ObservableGauge
-	loadAverage5m    metric.Float64ObservableGauge
-	loadAverage15m   metric.Float64ObservableGauge
-	filesystemUsage  metric.Int64ObservableGauge
-	diskIO           metric.Int64ObservableCounter
-	networkIO        metric.Int64ObservableCounter
-	containerCPU     metric.Float64ObservableGauge
-	containerMemory  metric.Int64ObservableGauge
-	containerLimit   metric.Int64ObservableGauge
-	containerNetwork metric.Int64ObservableCounter
-	containerDisk    metric.Int64ObservableCounter
-	checkState       metric.Int64ObservableGauge
+	cpuUtilization        metric.Float64ObservableGauge
+	memoryUsage           metric.Int64ObservableGauge
+	memoryLimit           metric.Int64ObservableGauge
+	pagingUsage           metric.Int64ObservableGauge
+	loadAverage1m         metric.Float64ObservableGauge
+	loadAverage5m         metric.Float64ObservableGauge
+	loadAverage15m        metric.Float64ObservableGauge
+	filesystemUsage       metric.Int64ObservableGauge
+	filesystemInodesTotal metric.Int64ObservableGauge
+	filesystemInodesFree  metric.Int64ObservableGauge
+	diskIO                metric.Int64ObservableCounter
+	networkIO             metric.Int64ObservableCounter
+	containerCPU          metric.Float64ObservableGauge
+	containerMemory       metric.Int64ObservableGauge
+	containerLimit        metric.Int64ObservableGauge
+	containerNetwork      metric.Int64ObservableCounter
+	containerDisk         metric.Int64ObservableCounter
+	checkState            metric.Int64ObservableGauge
 }
 
 // newInstruments creates the instruments on meter. It returns them with the same instruments as observables, for a callback.
@@ -59,6 +61,12 @@ func newInstruments(meter metric.Meter) (*instruments, []metric.Observable, erro
 	if in.filesystemUsage, err = meter.Int64ObservableGauge("system.filesystem.usage", metric.WithUnit("By"), metric.WithDescription("Bytes used (state used) or available to users (state free) on each mount")); err != nil {
 		return nil, nil, err
 	}
+	if in.filesystemInodesTotal, err = meter.Int64ObservableGauge("berthy.filesystem.inodes.total", metric.WithUnit("{inode}"), metric.WithDescription("Total inodes on each mount")); err != nil {
+		return nil, nil, err
+	}
+	if in.filesystemInodesFree, err = meter.Int64ObservableGauge("berthy.filesystem.inodes.free", metric.WithUnit("{inode}"), metric.WithDescription("Free inodes on each mount")); err != nil {
+		return nil, nil, err
+	}
 	if in.diskIO, err = meter.Int64ObservableCounter("system.disk.io", metric.WithUnit("By"), metric.WithDescription("Bytes read and written by whole physical disks since boot")); err != nil {
 		return nil, nil, err
 	}
@@ -85,7 +93,7 @@ func newInstruments(meter metric.Meter) (*instruments, []metric.Observable, erro
 	}
 	observables := []metric.Observable{
 		in.cpuUtilization, in.memoryUsage, in.memoryLimit, in.pagingUsage, in.loadAverage1m, in.loadAverage5m, in.loadAverage15m,
-		in.filesystemUsage, in.diskIO, in.networkIO, in.containerCPU, in.containerMemory, in.containerLimit, in.containerNetwork,
+		in.filesystemUsage, in.filesystemInodesTotal, in.filesystemInodesFree, in.diskIO, in.networkIO, in.containerCPU, in.containerMemory, in.containerLimit, in.containerNetwork,
 		in.containerDisk, in.checkState,
 	}
 	return &in, observables, nil
@@ -165,6 +173,10 @@ func observeHost(o metric.Observer, in *instruments, h metrics.Host) {
 		mount := attribute.String("system.filesystem.mountpoint", m.Path)
 		o.ObserveInt64(in.filesystemUsage, toInt64(used(m.Total, m.Available)), metric.WithAttributes(mount, attribute.String("system.filesystem.state", "used")))
 		o.ObserveInt64(in.filesystemUsage, toInt64(m.Available), metric.WithAttributes(mount, attribute.String("system.filesystem.state", "free")))
+		if m.InodesTotal > 0 {
+			o.ObserveInt64(in.filesystemInodesTotal, toInt64(m.InodesTotal), metric.WithAttributes(mount))
+			o.ObserveInt64(in.filesystemInodesFree, toInt64(m.InodesFree), metric.WithAttributes(mount))
+		}
 	}
 	if h.DiskReadBytes != nil {
 		o.ObserveInt64(in.diskIO, toInt64(*h.DiskReadBytes), metric.WithAttributes(attribute.String("disk.io.direction", "read")))
@@ -224,7 +236,7 @@ func used(total, free uint64) uint64 {
 	return total - free
 }
 
-// toInt64 converts a byte count to the instrument's type, clamping values beyond its range.
+// toInt64 converts a count to the instrument's type, clamping values beyond its range.
 func toInt64(v uint64) int64 {
 	if v > math.MaxInt64 {
 		return math.MaxInt64

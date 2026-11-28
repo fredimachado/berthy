@@ -4,12 +4,14 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -200,6 +202,42 @@ func TestStatfsTimeoutHungPathStartsOneCall(t *testing.T) {
 	}
 }
 
+func TestStatMountsReportsInodeCounts(t *testing.T) {
+	orig := statfsFunc
+	t.Cleanup(func() { statfsFunc = orig })
+	statfsFunc = func(path string, st *syscall.Statfs_t) error {
+		st.Bsize, st.Blocks, st.Bavail = 4096, 10, 4
+		if path == "/counted" {
+			st.Files, st.Ffree = 123, 7
+		}
+		return nil
+	}
+	synctest.Test(t, func(t *testing.T) {
+		mounts, failures := statMounts([]mountEntry{{"/counted", "ext4"}, {"/zero", "ext4"}}, time.Second)
+		if len(failures) != 0 || len(mounts) != 2 {
+			t.Fatalf("mounts = %+v, failures = %v", mounts, failures)
+		}
+		for i, want := range []map[string]any{
+			{"path": "/counted", "total": float64(40960), "available": float64(16384), "inodes_total": float64(123), "inodes_free": float64(7)},
+			{"path": "/zero", "total": float64(40960), "available": float64(16384), "inodes_total": float64(0), "inodes_free": float64(0)},
+		} {
+			data, err := json.Marshal(mounts[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range want {
+				if actual, ok := got[key]; !ok || actual != value {
+					t.Errorf("mount %d %s = %v (present %v), want %v", i, key, actual, ok, value)
+				}
+			}
+		}
+	})
+}
+
 func TestStatMountsRunsConcurrently(t *testing.T) {
 	orig := statfsFunc
 	t.Cleanup(func() { statfsFunc = orig })
@@ -222,9 +260,9 @@ func TestStatMountsRunsConcurrently(t *testing.T) {
 		t.Fatalf("statMounts took %v; statfs calls ran serially", elapsed)
 	}
 	wantMounts := []Mount{
-		{"/a", 10 * 4096, 4 * 4096},
-		{"/b", 10 * 4096, 4 * 4096},
-		{"/c", 10 * 4096, 4 * 4096},
+		{Path: "/a", Total: 10 * 4096, Available: 4 * 4096},
+		{Path: "/b", Total: 10 * 4096, Available: 4 * 4096},
+		{Path: "/c", Total: 10 * 4096, Available: 4 * 4096},
 	}
 	if !reflect.DeepEqual(mounts, wantMounts) {
 		t.Fatalf("mounts:\n got %+v\nwant %+v", mounts, wantMounts)

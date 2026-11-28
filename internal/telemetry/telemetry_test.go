@@ -59,7 +59,11 @@ func testHost() metrics.Host {
 		DiskWriteBytes:  &written,
 		NetworkRXBytes:  &rx,
 		NetworkTXBytes:  &tx,
-		Mounts:          []metrics.Mount{{Path: "/", Total: 1000, Available: 250}},
+		Mounts: []metrics.Mount{
+			{Path: "/", Total: 1000, Available: 250, InodesTotal: 1234, InodesFree: 56},
+			{Path: "/byte-only", Total: 2000, Available: 1000},
+			{Path: "/full-inodes", Total: 3000, Available: 1500, InodesTotal: 500, InodesFree: 0},
+		},
 	}
 }
 
@@ -183,6 +187,16 @@ func TestObservationsCoverHostContainersAndChecks(t *testing.T) {
 	checkPoint(t, points, "system.cpu.load_average.15m", nil, 0.7)
 	checkPoint(t, points, "system.filesystem.usage", map[string]string{"system.filesystem.mountpoint": "/", "system.filesystem.state": "used"}, 750)
 	checkPoint(t, points, "system.filesystem.usage", map[string]string{"system.filesystem.mountpoint": "/", "system.filesystem.state": "free"}, 250)
+	checkPoint(t, points, "system.filesystem.usage", map[string]string{"system.filesystem.mountpoint": "/byte-only", "system.filesystem.state": "free"}, 1000)
+	checkPoint(t, points, "berthy.filesystem.inodes.total", map[string]string{"system.filesystem.mountpoint": "/"}, 1234)
+	checkPoint(t, points, "berthy.filesystem.inodes.free", map[string]string{"system.filesystem.mountpoint": "/"}, 56)
+	checkPoint(t, points, "berthy.filesystem.inodes.total", map[string]string{"system.filesystem.mountpoint": "/full-inodes"}, 500)
+	checkPoint(t, points, "berthy.filesystem.inodes.free", map[string]string{"system.filesystem.mountpoint": "/full-inodes"}, 0)
+	for _, name := range []string{"berthy.filesystem.inodes.total", "berthy.filesystem.inodes.free"} {
+		if len(points[name]) != 2 {
+			t.Errorf("%s: got %d points, want 2 counted mounts", name, len(points[name]))
+		}
+	}
 	checkPoint(t, points, "system.disk.io", map[string]string{"disk.io.direction": "read"}, 4096)
 	checkPoint(t, points, "system.disk.io", map[string]string{"disk.io.direction": "write"}, 2048)
 	checkPoint(t, points, "system.network.io", map[string]string{"network.io.direction": "receive"}, 100)
@@ -207,6 +221,11 @@ func TestObservationsCoverHostContainersAndChecks(t *testing.T) {
 	counters := map[string]bool{"system.disk.io": true, "system.network.io": true, "container.network.io": true, "container.disk.io": true}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
+			if strings.HasPrefix(m.Name, "berthy.filesystem.inodes.") {
+				if _, ok := m.Data.(metricdata.Gauge[int64]); !ok || m.Unit != "{inode}" {
+					t.Errorf("%s: data %T unit %q, want int64 gauge with unit {inode}", m.Name, m.Data, m.Unit)
+				}
+			}
 			if _, ok := m.Data.(metricdata.Sum[int64]); ok != counters[m.Name] {
 				t.Errorf("%s: counter %v, want %v", m.Name, ok, counters[m.Name])
 			}
@@ -411,6 +430,10 @@ func TestExportDeliversMetricsWithHeaders(t *testing.T) {
 	checkPoint(t, points, "system.cpu.utilization", nil, 0.25)
 	checkPoint(t, points, "system.memory.usage", map[string]string{"system.memory.state": "used"}, 600)
 	checkPoint(t, points, "system.filesystem.usage", map[string]string{"system.filesystem.mountpoint": "/", "system.filesystem.state": "free"}, 250)
+	checkPoint(t, points, "berthy.filesystem.inodes.total", map[string]string{"system.filesystem.mountpoint": "/"}, 1234)
+	checkPoint(t, points, "berthy.filesystem.inodes.free", map[string]string{"system.filesystem.mountpoint": "/"}, 56)
+	checkPoint(t, points, "berthy.filesystem.inodes.total", map[string]string{"system.filesystem.mountpoint": "/full-inodes"}, 500)
+	checkPoint(t, points, "berthy.filesystem.inodes.free", map[string]string{"system.filesystem.mountpoint": "/full-inodes"}, 0)
 	checkPoint(t, points, "system.network.io", map[string]string{"network.io.direction": "transmit"}, 200)
 	checkPoint(t, points, "container.memory.usage", map[string]string{"container.id": "0123456789ab"}, 300)
 	checkPoint(t, points, "berthy.check.state", map[string]string{"berthy.check": "probe:web"}, 2)
