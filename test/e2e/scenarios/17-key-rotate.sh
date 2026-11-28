@@ -2,7 +2,7 @@
 # 17-key-rotate proves `key rotate` on the real agent. A secret reaches its container before a rotation and after it, on the
 # next deploy. A dry run changes nothing. The rotation prints key IDs and the command that copies the key, never a key; it
 # keeps the old key as <key>.prev, records key_rotate in the audit log and shows a state_key check in the doctor. An agent
-# token cannot rotate. The agent starts again with only the new key, and it refuses to start with only the old one.
+# token cannot rotate. The agent starts again with only the new key, and refuses the environment with only the old one.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
@@ -97,13 +97,18 @@ expect_code "deploy v1 with only the new key" 0 "$code" "$out"
 expect_contains "the secret still reaches the container" "$(service_spec "$svc")" '"DATABASE_URL=postgres://before-the-rotation"'
 expect_eq "the restart leaves the key file as it was" "$new_sum" "$(key_sum)"
 
-# 7. The old key alone does not open the state. The agent does not start and says so.
+# 7. The host stays up, but the environment refuses requests when the old key cannot open its state.
 stop_agent
 cp "$key" "$RUN/new.key"
 cp "$RUN/old.key" "$key"
 chmod 600 "$key"
 start_agent >/dev/null 2>&1; code=$?
-if [ "$code" -ne 0 ]; then pass "the agent does not start with the old key alone"; else fail "the agent does not start with the old key alone" "it started"; fi
+expect_code "the host starts with the old key" 0 "$code"
+body=$RUN/old-key-response.json
+status=$(curl_local -o "$body" -w '%{http_code}' -H "Authorization: Bearer $BERTHY_ADMIN_TOKEN" \
+  "http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN/agent")
+expect_eq "the environment refuses the old key" 503 "$status"
+expect_eq "the environment reports startup failure" environment_failed "$(jq -r '.code' "$body")"
 expect_contains "the agent says the key does not open the state" "$(cat "$LOG/agent.log")" "the key does not open this state"
 stop_agent
 
