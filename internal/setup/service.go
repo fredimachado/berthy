@@ -93,7 +93,7 @@ func serviceStep(ctx context.Context, s *Session) (string, string, error) {
 	if s.unitChanged {
 		res, err := s.R.Run(ctx, unitScript(), bytes.NewReader(unit))
 		if err != nil {
-			return "", "", errors.New("installing berthy.service: " + err.Error())
+			return "", "", fmt.Errorf("installing berthy.service: %w", err)
 		}
 		if res.Code != 0 {
 			return "", "", errors.New("installing berthy.service: " + failureText(res))

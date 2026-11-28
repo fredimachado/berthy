@@ -285,7 +285,11 @@ func uploadBinary(ctx context.Context, s *Session, src *binarySource, script str
 		return fmt.Errorf("uploading the binary: %s", failureText(res))
 	}
 	if firstField(res.Stdout) != src.sha {
-		_, _ = s.R.Run(ctx, "rm -f "+binPath+".new", nil)
+		_, cleanupErr := s.R.Run(ctx, "rm -f "+binPath+".new", nil)
+		var transport *SSHTransportError
+		if errors.As(cleanupErr, &transport) {
+			return fmt.Errorf("the uploaded binary does not match the local file (SHA-256 differs); cleanup could not be confirmed: %w", cleanupErr)
+		}
 		return errors.New("the uploaded binary does not match the local file (SHA-256 differs)")
 	}
 	return nil

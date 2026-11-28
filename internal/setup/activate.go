@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -205,7 +206,19 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 		switch result {
 		case guardRestored, guardRestoredDown, guardStopped, guardStopFailed, guardRestoreFailed:
 			if detail == "" {
-				detail, _ = journalTail(ctx, r)
+				var journalErr error
+				detail, journalErr = journalTail(ctx, r)
+				var transport *SSHTransportError
+				if errors.As(journalErr, &transport) {
+					outcomeErr := guardOutcome(result, prevCfg, outcome, detail)
+					var ae *ActivateError
+					if errors.As(outcomeErr, &ae) {
+						ae.Message += "; " + journalErr.Error()
+						ae.Cause = journalErr
+						return ae
+					}
+					return activationFailure(journalErr, outcome)
+				}
 			}
 		}
 		return guardOutcome(result, prevCfg, outcome, detail)
@@ -221,7 +234,8 @@ func Activate(ctx context.Context, r Runner, listen string, staged Staged, timeo
 	}
 	if detail == "" {
 		detail, err = journalTail(ctx, r)
-		if err != nil && staged.Added == nil {
+		var transport *SSHTransportError
+		if err != nil && (staged.Added == nil || errors.As(err, &transport)) {
 			return guarded(err)
 		}
 	}

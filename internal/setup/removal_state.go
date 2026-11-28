@@ -33,6 +33,10 @@ func removeStateStep(ctx context.Context, s *Session) (string, string, error) {
 	}
 	script, paths := removeStateScript(rec, removalPeers(s.existing, rec.ID), s.DryRun)
 	res, err := s.R.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return "", "", err
+	}
 	if err == nil && len(res.Stderr) == 0 {
 		switch {
 		case s.DryRun && res.Code == 0 && string(res.Stdout) == "keys\n":

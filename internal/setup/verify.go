@@ -130,7 +130,11 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	base := agentURL(listen)
 	token := s.AdminToken()
 	if token == "" {
-		if !s.healthy(ctx) {
+		healthy, err := s.healthy(ctx)
+		if err != nil {
+			return "", "", err
+		}
+		if !healthy {
 			return "", "", fmt.Errorf("the agent does not answer on %s", base)
 		}
 		return StatusOK, "the agent answers; run berthy doctor with an admin token to check it fully", nil
@@ -146,6 +150,11 @@ func verifyStep(ctx context.Context, s *Session) (string, string, error) {
 	case errors.Is(err, ErrUnreachable):
 		prefix = fmt.Sprintf("this machine cannot reach %s; checked on the server: ", base)
 		if checks, err = s.doctorOnServer(ctx, listen, token); err != nil {
+			var transport *SSHTransportError
+			if errors.As(err, &transport) {
+				safe := &SSHTransportError{Target: redactDoctor(transport.Target, token), reason: redactDoctor(transport.reason, token)}
+				return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %w", base, safe)
+			}
 			return "", "", fmt.Errorf("this machine cannot reach %s; checking on the server failed: %s", base, redactDoctor(err.Error(), token))
 		}
 	default:
@@ -169,9 +178,9 @@ func (s *Session) dryHasToken() bool {
 }
 
 // healthy reports whether the agent answers /healthz, asked from the server.
-func (s *Session) healthy(ctx context.Context) bool {
+func (s *Session) healthy(ctx context.Context) (bool, error) {
 	res, err := s.R.Run(ctx, healthScript(s.Opts.listen()), nil)
-	return err == nil && res.Code == 0
+	return res.Code == 0 && err == nil, err
 }
 
 // doctorOnServer passes the token separately on stdin after selecting the probe.

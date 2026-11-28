@@ -213,6 +213,10 @@ owner=$(id -u berthy)
 	script += "awk '{print $5}' /proc/self/mountinfo\n"
 
 	res, err := runner.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return rec, err
+	}
 	if err != nil || res.Code != 0 || len(res.Stderr) != 0 || len(res.Stdout) >= maxCaptured || !strings.HasSuffix(string(res.Stdout), "\n") {
 		return rec, errors.New("could not verify the removal state, key paths or unused destination")
 	}

@@ -42,6 +42,10 @@ for file in /etc/berthy/agent.json.new /etc/berthy/agent.json.prev; do
 done
 ` + removalReadLimit(configPath) + "printf 'present\\n'\n"
 	res, err := s.R.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return nil, err
+	}
 	if err != nil || res.Code != 0 || string(res.Stdout) != "present\n" || len(res.Stderr) != 0 {
 		return nil, errors.New("could not verify the live agent configuration and its staging paths")
 	}
@@ -87,7 +91,14 @@ func prepareRemoval(ctx context.Context, s *Session, purge bool) (string, string
 		}
 	}
 	if guard, err := settledRemovalGuard(ctx, s.R); err != nil {
-		if guard != "pending" || pending == nil || !orphanedRemovalGuard(ctx, s.R, pending.OriginalSHA) {
+		if guard != "pending" || pending == nil {
+			return "", "", err
+		}
+		orphaned, probeErr := orphanedRemovalGuard(ctx, s.R, pending.OriginalSHA)
+		if probeErr != nil {
+			return "", "", probeErr
+		}
+		if !orphaned {
 			return "", "", err
 		}
 	}
@@ -178,7 +189,7 @@ func settledRemovalGuard(ctx context.Context, r Runner) (string, error) {
 }
 
 // The swap holds this same lock from the pending write through timer registration and the configuration swap.
-func orphanedRemovalGuard(ctx context.Context, r Runner, original string) bool {
+func orphanedRemovalGuard(ctx context.Context, r Runner, original string) (bool, error) {
 	script := "# check for orphaned removal guard\nset -eu\n" + removalStat +
 		"exec 9<" + shellQuote(guardLock) + "\nflock -n 9\n" +
 		"state=" + shellQuote(guardState) + "\nstat_entry \"$state\"\n" +
@@ -191,7 +202,11 @@ func orphanedRemovalGuard(ctx context.Context, r Runner, original string) bool {
 		"jobs=$(systemctl list-jobs --plain --no-legend --no-pager)\n" +
 		"printf '%s\\n' \"$jobs\" | awk '$2 == \"" + guardUnit + ".timer\" || $2 == \"" + guardUnit + ".service\" { found = 1 } END { exit found }'\n"
 	res, err := r.Run(ctx, script, nil)
-	return err == nil && res.Code == 0 && len(res.Stdout) == 0 && len(res.Stderr) == 0
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return false, err
+	}
+	return err == nil && res.Code == 0 && len(res.Stdout) == 0 && len(res.Stderr) == 0, nil
 }
 
 func resumeLiveRemoval(ctx context.Context, s *Session, cfg *agent.File, rec *removal) (string, string, error) {
@@ -201,6 +216,10 @@ func resumeLiveRemoval(ctx context.Context, s *Session, cfg *agent.File, rec *re
 			return "", "", err
 		}
 		raw, err := readRemovalFile(ctx, s.R, "previous removal configuration", configPath+".prev", "$(id -u berthy)")
+		var transport *SSHTransportError
+		if errors.As(err, &transport) {
+			return "", "", err
+		}
 		if err != nil || raw == nil || configDigest(raw) != rec.OriginalSHA {
 			return "", "", errors.New("could not verify the previous configuration for this removal")
 		}
@@ -242,6 +261,10 @@ func stageRemoval(ctx context.Context, s *Session) (string, string, error) {
 		return StatusOK, configPath + " already excludes " + s.removal.ID.String(), nil
 	}
 	if err := s.stageConfig(ctx, s.removalCandidate); err != nil {
+		var transport *SSHTransportError
+		if errors.As(err, &transport) {
+			return "", "", err
+		}
 		return "", "", errors.New("could not stage " + configPath)
 	}
 	if s.DryRun {
