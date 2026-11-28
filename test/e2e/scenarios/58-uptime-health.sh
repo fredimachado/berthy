@@ -37,7 +37,7 @@ cleanup() {
   if [ -n "$service_attempted" ]; then
     for name in "$service" "$sibling" "$adopted_service"; do
       current=$(d service inspect "$name" 2>/dev/null | jq -r --arg project "$PROJECT" --arg env "$ENVN" --arg app "$app" --arg adopted "$adopted_app" --arg owner "$owner" --arg repo "$repo@" \
-        '.[0] | select((.Spec.TaskTemplate.ContainerSpec.Image | startswith($repo)) and
+        '.[0] | select(((.Spec.TaskTemplate.ContainerSpec.Image // "") | startswith($repo)) and
           (.Spec.Labels["berthy.e2e.uptime"] == $owner or
            (.Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and
             (.Spec.Labels["berthy.app"] == $app or .Spec.Labels["berthy.app"] == $adopted)))) | .ID' || true)
@@ -403,6 +403,9 @@ pass 'printed reason and stored diagnostics name only the failing sibling'
 
 build_image adopted stay
 adopted_digest=$digest
+manifest "$default" 90s "$adopted_app" "$adopted_service" | write_manifest
+record_deploy "$PROJECT" "$ENVN" "$adopted_app" --manifest-dir "$MAN" ||
+  die 'record the adoption fixture name before creating it'
 out=$(d service create --detach --no-resolve-image --name "$adopted_service" --network "$NETWORK" \
   --label "berthy.e2e.uptime=$owner" "$repo@$adopted_digest" 2>&1) ||
   die 'create command-checked worker to adopt' "$out"
@@ -415,7 +418,6 @@ wait_for 'worker for adoption becomes Docker healthy' adoptable_worker_healthy |
   die 'worker for adoption becomes Docker healthy'
 before_spec=$(d service inspect -f '{{json .Spec}}' "$adopted_service")
 
-manifest "$default" 90s "$adopted_app" "$adopted_service" | write_manifest
 out=$(adm deploy "$adopted_app" --adopt --version "$adopted_digest" --manifest-dir "$MAN" 2>&1) ||
   die 'adopt command-checked worker with an uptime manifest' "$out"
 expect_contains 'adoption succeeds' "$out" 'state: succeeded'
