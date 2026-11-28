@@ -109,10 +109,12 @@ func runTokenCommand(ctx context.Context, f commandFlags, base *url.URL, prefix,
 	if body != nil {
 		payload, _ = json.Marshal(body)
 	}
-	status, data, older, ok := askAgent(ctx, agentclient.NewHTTPClient(), agentURL(base, prefix, endpoint), token, method, payload, errout)
-	if !ok {
+	result, err := askAgent(ctx, agentclient.NewHTTPClient(), agentURL(base, prefix, endpoint), token, method, payload)
+	if err != nil {
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 		return 1
 	}
+	status, data, older := result.Status, result.Data, result.Older
 	if status != http.StatusOK {
 		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), !f.json, older)
 		return 1

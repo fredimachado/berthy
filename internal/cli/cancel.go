@@ -91,7 +91,7 @@ func runJobCancel(ctx context.Context, f commandFlags, base *url.URL, prefix, to
 	result, err := agentclient.DoResult(ctx, agentclient.NewHTTPClient(), base, prefix, token, "POST", "jobs/"+url.PathEscape(f.pos[1])+"/cancel", "", nil)
 	data, status := result.Data, result.Status
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 		return 1
 	}
 	if status == http.StatusAccepted {

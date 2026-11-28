@@ -90,10 +90,12 @@ func generateDeclared(ctx context.Context, client *http.Client, target *agentcli
 		fmt.Fprintln(errout, "the Compose files of the apps that read declared secrets do not fit in one request")
 		return res, declaredFailed
 	}
-	status, data, older, ok := askAgent(ctx, client, agentURL(target.Base, target.Prefix, "secrets/generate-declared"), target.Token, "POST", payload, errout)
-	if !ok {
+	result, err := askAgent(ctx, client, agentURL(target.Base, target.Prefix, "secrets/generate-declared"), target.Token, "POST", payload)
+	if err != nil {
+		printAgentRequestError(out, errout, *target, err, asJSON)
 		return res, declaredFailed
 	}
+	status, data, older := result.Status, result.Data, result.Older
 	if status == http.StatusAccepted {
 		if guide {
 			if reportGuideDeclaredHeld(data, out, target.Token) {

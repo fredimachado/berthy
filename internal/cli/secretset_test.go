@@ -779,7 +779,7 @@ func TestSecretSetAtATerminalFailsBeforeAskingWhenTheAgentCannotBeReached(t *tes
 	var out, errout bytes.Buffer
 	args := []string{"secret", "set", "DB_URL", "-e", "dev", "--config", cfg, "--manifest-dir", secretManifestDir(t, ingressBerthyYML)}
 	if code := Run(args, &out, &errout); code != 1 || errout.String() != "agent connection failed at "+strings.TrimPrefix(agentURL, "http://")+": EOF\n" {
-		t.Fatalf("exit %d stderr %q, want exit 1 with only %q", code, errout.String(), "agent connection failed")
+		t.Fatalf("exit %d stderr %q, want the endpoint and EOF", code, errout.String())
 	}
 	if reads.Load() != 0 || out.Len() != 0 {
 		t.Fatalf("the value was asked for %d times, stdout %q: want no prompt", reads.Load(), out.String())

@@ -520,7 +520,7 @@ func runSingleTagDeploy(ctx context.Context, client *http.Client, target *agentc
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
+		printAgentProtectionError(out, errout, target, err, f.json)
 		return 1
 	}
 	if (policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected) && len(co.Changed) != 0 {

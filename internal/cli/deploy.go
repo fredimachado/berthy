@@ -946,13 +946,16 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 				fmt.Fprintln(errout, err)
 				return 1
 			}
+			for _, entry := range imp.Secrets {
+				enteredValues = append(enteredValues, entry.Value)
+			}
 			endpoint = "secrets/import"
 			method = "POST"
 			body = imp
 		} else if len(f.pos) == 2 && (f.pos[0] == "set" || f.pos[0] == "delete" || f.pos[0] == "rm") {
 			if f.pos[0] == "set" {
 				stored := func() ([]storedSecret, bool) {
-					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, errout, !f.json)
+					return storedSecrets(ctx, client, agentURL(u, prefix, "secrets"), token, out, errout, !f.json)
 				}
 				value, registry, code := secretValue(ctx, f, errout, stored, token)
 				if code != 0 {
@@ -1080,13 +1083,14 @@ func sendCommand(ctx context.Context, client *http.Client, base *url.URL, prefix
 		}
 	}
 	progress := startWait(errout, !f.json, requestWaitLabel(cmd, f, method))
-	var requestErr bytes.Buffer
-	status, data, older, ok := askAgent(ctx, client, u, token, method, payload, &requestErr)
+	result, err := askAgent(ctx, client, u, token, method, payload)
 	progress.Close()
-	if !ok {
-		_, _ = io.Copy(errout, &requestErr)
+	if err != nil {
+		extra := append([]string{f.redactToken}, enteredValues...)
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json, extra...)
 		return 1
 	}
+	status, data, older := result.Status, result.Data, result.Older
 	var promotionMarkers []cliTone
 	if f.redactToken != "" && (status == http.StatusOK || status == http.StatusAccepted) {
 		safe, err := safePromotionResponse(data, token, f.redactToken)
@@ -1209,21 +1213,18 @@ func agentURL(base *url.URL, prefix, endpoint string) *url.URL {
 	return &copied
 }
 
-// askAgent sends one request to the agent at u with the token, with payload as its body when it is not nil, and reads the
-// answer. When the agent cannot be reached or its answer cannot be read, it prints why and returns ok false.
-func askAgent(ctx context.Context, client *http.Client, u *url.URL, token, method string, payload []byte, errout io.Writer) (status int, data []byte, older, ok bool) {
+// askAgent sends one request and reads its bounded response.
+func askAgent(ctx context.Context, client *http.Client, u *url.URL, token, method string, payload []byte) (agentclient.Result, error) {
 	resp, err := agentclient.Send(ctx, client, method, u.String(), token, payload)
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
-		return 0, nil, false, false
+		return agentclient.Result{}, err
 	}
 	defer resp.Body.Close()
-	data, err = io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
-		fmt.Fprintln(errout, "invalid agent response")
-		return 0, nil, false, false
+		return agentclient.Result{}, agentclient.ErrInvalidResponse
 	}
-	return resp.StatusCode, data, agentclient.IsOlderAgent(resp), true
+	return agentclient.Result{Status: resp.StatusCode, Data: data, Older: agentclient.IsOlderAgent(resp)}, nil
 }
 
 // newRequestID is a fresh random request ID, which the agent uses to recognize a retry of the same request.

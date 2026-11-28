@@ -149,3 +149,17 @@ func TestTaggedDeployReportsPolicyConnectionFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestTaggedDeployInvalidPolicyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{}`) }))
+	defer server.Close()
+	cfg := ingressCLIConfig(t, server.URL)
+	dir := writeAliasDir(t, versionsManifest)
+	for _, args := range [][]string{{"deploy", "api", "--version", "stable"}, {"deploy", "--version", "api=stable"}} {
+		argv := append(append([]string{}, args...), "-e", "dev", "--config", cfg, "--manifest-dir", dir, "--dry-run", "--json")
+		var out, errs bytes.Buffer
+		if code := Run(argv, &out, &errs); code != 1 || out.Len() != 0 || errs.String() != "invalid agent response\n" {
+			t.Errorf("exit=%d stdout=%q stderr=%q", code, out.String(), errs.String())
+		}
+	}
+}

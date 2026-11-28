@@ -128,7 +128,7 @@ func runSecretList(ctx context.Context, f commandFlags, u *url.URL, prefix, toke
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	held, ok := storedSecrets(ctx, agentclient.NewHTTPClient(), agentURL(u, prefix, "secrets"), token, errout, !f.json)
+	held, ok := storedSecrets(ctx, agentclient.NewHTTPClient(), agentURL(u, prefix, "secrets"), token, out, errout, !f.json)
 	if !ok {
 		return 1
 	}

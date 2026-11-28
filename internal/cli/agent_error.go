@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 )
 
 func printAgentRequestError(out, errout io.Writer, target agentclient.Target, err error, asJSON bool, extra ...string) {
@@ -26,4 +27,13 @@ func printAgentRequestError(out, errout io.Writer, target agentclient.Target, er
 	} else {
 		fmt.Fprintln(errout, reason)
 	}
+}
+
+func printAgentProtectionError(out, errout io.Writer, target *agentclient.Target, err error, asJSON bool) {
+	var urlErr *url.Error
+	if errors.Is(err, agentclient.ErrInvalidResponse) || errors.As(err, &urlErr) {
+		printAgentRequestError(out, errout, *target, err, asJSON)
+		return
+	}
+	printAgentRefusal(errout, terminalSafe(err.Error()), !asJSON, agentclient.IsOlderAgentError(err))
 }

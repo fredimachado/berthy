@@ -408,11 +408,13 @@ func wireSecret(value string) string {
 
 // storedSecrets asks the agent which secrets it holds, at u. ok is false when the agent did not answer with the list, and the
 // reason has been printed.
-func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token string, errout io.Writer, human bool) ([]storedSecret, bool) {
-	status, data, older, ok := askAgent(ctx, client, u, token, http.MethodGet, nil, errout)
-	if !ok {
+func storedSecrets(ctx context.Context, client *http.Client, u *url.URL, token string, out, errout io.Writer, human bool) ([]storedSecret, bool) {
+	result, err := askAgent(ctx, client, u, token, http.MethodGet, nil)
+	if err != nil {
+		printAgentRequestError(out, errout, agentclient.Target{Base: u, Token: token}, err, !human)
 		return nil, false
 	}
+	status, data, older := result.Status, result.Data, result.Older
 	if status != http.StatusOK {
 		printAgentRefusal(errout, safeSecretText(agentclient.Message(status, data), token), human, older)
 		return nil, false

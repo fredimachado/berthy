@@ -30,7 +30,7 @@ func prepareBatchTags(ctx context.Context, client *http.Client, target *agentcli
 	policy, err := agentclient.AgentProtection(ctx, client, target)
 	progress.Close()
 	if err != nil {
-		printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
+		printAgentProtectionError(out, errout, target, err, f.json)
 		return true, 1
 	}
 	protected := m.Protected || policy == agentclient.ProtectionProtected || policy == agentclient.ProtectionLegacyProtected

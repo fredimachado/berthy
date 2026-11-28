@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -71,7 +70,7 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 		}
 	}
 	endpoint := agentURL(target.Base, target.Prefix, "secrets")
-	held, ok := storedSecrets(ctx, client, endpoint, target.Token, errout, true)
+	held, ok := storedSecrets(ctx, client, endpoint, target.Token, out, errout, true)
 	if !ok {
 		return nil, guideFailed
 	}
@@ -136,13 +135,13 @@ func guideSecrets(ctx context.Context, client *http.Client, target *agentclient.
 			}
 			payload, _ := json.Marshal(map[string]string{"name": n.Name, "value": value, "registry": n.Registry})
 			progress := startWait(errout, true, "storing secret")
-			var diagnostic bytes.Buffer
-			status, data, older, ok := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload, &diagnostic)
+			agentResult, err := askAgent(ctx, client, endpoint, target.Token, http.MethodPost, payload)
 			progress.Close()
-			_, _ = io.Copy(errout, &diagnostic)
-			if !ok {
+			if err != nil {
+				printAgentRequestError(out, errout, *target, err, false, value, wireSecret(value))
 				return remaining, guideFailed
 			}
+			status, data, older := agentResult.Status, agentResult.Data, agentResult.Older
 			if status == http.StatusAccepted {
 				if reportGuideHeld(data, value, n.Name, n.Registry, out, target.Token) {
 					return remaining, guideHeld
