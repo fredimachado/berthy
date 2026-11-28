@@ -127,11 +127,15 @@ func (w *Monitoring) followEvents(ctx context.Context, events <-chan engine.Even
 			return
 		case ev := <-events:
 			if prefixes := eventPrefixes(ev); prefixes != nil {
-				w.readNow.Store(true)
-				w.mon.Kick(prefixes...)
+				w.wakeChecks(prefixes...)
 			}
 		}
 	}
+}
+
+func (w *Monitoring) wakeChecks(prefixes ...string) {
+	w.readNow.Store(true)
+	w.mon.Kick(prefixes...)
 }
 
 // eventPrefixes names the checks an event wakes, by the start of their names, or nil when the event wakes none. A container

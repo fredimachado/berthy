@@ -66,6 +66,11 @@ func (d *downFake) push(line string) { d.events <- line }
 
 func newDownFake(t *testing.T) *downFake {
 	t.Helper()
+	return newDownFakeWithService(t, "shop-api-web", "svc-1")
+}
+
+func newDownFakeWithService(t *testing.T, name, id string) *downFake {
+	t.Helper()
 	d := &downFake{events: make(chan string, 64), filters: make(chan map[string][]string, 1)}
 	// The directory is short on purpose: a Unix socket path holds about 108 bytes.
 	dir, err := os.MkdirTemp("", "bd")
@@ -79,7 +84,7 @@ func newDownFake(t *testing.T) *downFake {
 		t.Skipf("no Unix sockets here: %v", err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const service = `{"ID":"svc-1","Version":{"Index":1},"Spec":{"Name":"shop-api-web","Mode":{"Replicated":{"Replicas":2}}}}`
+		service := fmt.Sprintf(`{"ID":%q,"Version":{"Index":1},"Spec":{"Name":%q,"Mode":{"Replicated":{"Replicas":2}}}}`, id, name)
 		switch r.URL.Path {
 		case "/version":
 			w.Write([]byte(`{"ApiVersion":"1.50","MinAPIVersion":"1.24"}`))
@@ -129,16 +134,18 @@ func newDownFake(t *testing.T) *downFake {
 			d.mu.Unlock()
 			fmt.Fprintf(w, `{"RestartCount":0,"State":{"OOMKilled":%t,"Health":{"Status":"healthy"}}}`, oom)
 		case "/v1.44/services":
-			w.Write([]byte(`[{"ID":"svc-1","Spec":{"Name":"shop-api-web","Mode":{"Replicated":{"Replicas":2}}}}]`))
-		case "/v1.44/services/shop-api-web":
+			w.Write([]byte("[" + service + "]"))
+		case "/v1.44/services/" + name:
 			w.Write([]byte(service))
 		case "/v1.44/tasks":
-			w.Write([]byte(`[{"ID":"t1","ServiceID":"svc-1","DesiredState":"running","Status":{"State":"running"}}]`))
+			fmt.Fprintf(w, `[{"ID":"t1","ServiceID":%q,"DesiredState":"running","Status":{"State":"running"}}]`, id)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"message":"no such route"}`))
 		}
 	})}
+	// A client inside synctest must not keep a socket read waiting after a response.
+	srv.SetKeepAlivesEnabled(false)
 	go srv.Serve(l)
 	t.Cleanup(func() { srv.Close() })
 	d.eng = engine.New(sock)
