@@ -2100,8 +2100,8 @@ The webhook gets one `POST` of a small JSON document for each alert, with `Conte
 
 | Field | Meaning |
 | --- | --- |
-| `environment` | The selected environment for an environment alert, deploy report or test alert. |
-| `server` | The agent's hostname for a server alert, in place of `environment`. |
+| `environment` | The selected environment for an environment alert, deploy report or test alert. Empty for a server alert. |
+| `server` | The agent's hostname for a server alert. Omitted for environment alerts. |
 | `kind` | `check` for a check, `deploy` for a deploy or rollback. A test alert says `test`. |
 | `name` | The check, such as `probe:site`, or the app of a deploy. |
 | `state` | The state of the check (`critical`, `warning`, `ok`), or how the deploy ended (`failed`, `rolled_back`, `interrupted`, `recovery_required`, `succeeded`). |

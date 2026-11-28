@@ -284,7 +284,7 @@ webhook_count() {
       select(.name == $name and .state == $state and (.detail | contains($detail))) |
       select(if $name == "test" then .kind == "test" else .kind == "check" end) |
       select(if $host == "" then .environment == $env and (has("server") | not)
-        else .server == $host and (has("environment") | not) end)] | length'
+        else .server == $host and .environment == "" end)] | length'
 }
 notified() { inside /root/fixture-cluster notified "$cluster_dir/state/state.db" "$1" "$2" </dev/null; }
 server_delivered() {

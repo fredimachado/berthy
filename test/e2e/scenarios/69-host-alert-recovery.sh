@@ -19,7 +19,7 @@ trap cleanup EXIT
 memory_post() {
   hook_requests | jq -ce '
     first(.[] | select(.method == "POST") | .body | fromjson |
-      select(.kind == "check" and (.server | type == "string" and length > 0) and (has("environment") | not) and .name == "memory"))'
+      select(.kind == "check" and (.server | type == "string" and length > 0) and .environment == "" and .name == "memory"))'
 }
 
 warning_delivered() {
