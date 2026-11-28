@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"berthy/internal/agentclient"
+	"berthy/internal/api"
 	"berthy/internal/deploy"
 	"berthy/internal/gitcheck"
 	"berthy/internal/manifest"
@@ -937,18 +938,11 @@ func runDeployment(cmd string, args []string, out, errout io.Writer, dir string,
 		if len(f.pos) == 1 && f.pos[0] == "list" {
 			endpoint = "secrets"
 		} else if len(f.pos) == 1 && f.pos[0] == "import" {
-			if stdinTerminal() {
-				printRefusal(errout, "pipe NAME=value lines into secret import: standard input is a terminal", !f.json)
-				return 2
+			imp, values, code := prepareSecretImport(ctx, f, errout)
+			if code != 0 {
+				return code
 			}
-			imp, err := readSecretImport(ctx, f.dry)
-			if err != nil {
-				fmt.Fprintln(errout, err)
-				return 1
-			}
-			for _, entry := range imp.Secrets {
-				enteredValues = append(enteredValues, entry.Value)
-			}
+			enteredValues = append(enteredValues, values...)
 			endpoint = "secrets/import"
 			method = "POST"
 			body = imp
@@ -1043,6 +1037,24 @@ func requestWaitLabel(cmd string, f commandFlags, method string) string {
 		}
 	}
 	return ""
+}
+
+// prepareSecretImport reads the import and keeps its values for later redaction.
+func prepareSecretImport(ctx context.Context, f commandFlags, errout io.Writer) (api.SecretImport, []string, int) {
+	if stdinTerminal() {
+		printRefusal(errout, "pipe NAME=value lines into secret import: standard input is a terminal", !f.json)
+		return api.SecretImport{}, nil, 2
+	}
+	imp, err := readSecretImport(ctx, f.dry)
+	if err != nil {
+		fmt.Fprintln(errout, err)
+		return api.SecretImport{}, nil, 1
+	}
+	var values []string
+	for _, entry := range imp.Secrets {
+		values = append(values, entry.Value)
+	}
+	return imp, values, 0
 }
 
 // sendCommand sends one change or read request to the agent and follows what the agent answers: a held approval, an
