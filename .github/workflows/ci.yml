@@ -36,7 +36,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
-            git diff --name-only "$BASE...$HEAD" > "$RUNNER_TEMP/changed-files"
+            git diff --no-renames --name-only "$BASE...$HEAD" > "$RUNNER_TEMP/changed-files"
             flags=$(bash test/e2e/changes.sh < "$RUNNER_TEMP/changed-files")
           else
             flags='go=true e2e=true harness=true actions=true'
