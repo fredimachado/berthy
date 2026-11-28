@@ -92,12 +92,13 @@ func TestStateBackupExitsNonZeroWhenTheSnapshotFails(t *testing.T) {
 
 // snapshotInBucket takes a state backup of project demo into a fake bucket.
 func snapshotInBucket(t *testing.T) (endpoint, object, keyPath string) {
-	return snapshotInBucketFor(t, "demo")
+	endpoint, object, keyPath, _ = snapshotInBucketFor(t, "demo")
+	return endpoint, object, keyPath
 }
 
 // snapshotInBucketFor takes a state backup of project into a fake bucket, with the Runner the agent uses. It returns the
-// endpoint, the key of the snapshot and the saved key file.
-func snapshotInBucketFor(t *testing.T, project string) (endpoint, object, keyPath string) {
+// endpoint, the snapshot object key, the saved key file and the source schema version.
+func snapshotInBucketFor(t *testing.T, project string) (endpoint, object, keyPath string, schemaVersion int) {
 	t.Helper()
 	ctx := context.Background()
 	key := make([]byte, 32)
@@ -147,7 +148,11 @@ func snapshotInBucketFor(t *testing.T, project string) (endpoint, object, keyPat
 	if res.Run.Status != "succeeded" {
 		t.Fatalf("snapshot: %+v", res.Run)
 	}
-	return srv.URL, res.Run.Key, keyPath
+	schemaVersion, err = store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv.URL, res.Run.Key, keyPath, schemaVersion
 }
 
 // stateRestoreArgs are the arguments of a restore of object from the bucket at endpoint into out.
@@ -180,7 +185,7 @@ func TestStateRestoreTakesCredentialsOnlyFromTheEnvironment(t *testing.T) {
 }
 
 func TestStateRestoreRebuildsTheStateAndPrintsWhatItHolds(t *testing.T) {
-	endpoint, object, keyPath := snapshotInBucket(t)
+	endpoint, object, keyPath, schemaVersion := snapshotInBucketFor(t, "demo")
 	out := filepath.Join(t.TempDir(), "restored")
 	t.Setenv("BERTHY_S3_ACCESS_KEY", "AKIATESTACCESS")
 	t.Setenv("BERTHY_S3_SECRET_KEY", "test-secret-key-0123456789")
@@ -188,16 +193,7 @@ func TestStateRestoreRebuildsTheStateAndPrintsWhatItHolds(t *testing.T) {
 	if code := Run(stateRestoreArgs(endpoint, object, out, keyPath), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d, err %q", code, stderr.String())
 	}
-	restored, err := state.Open(out, keyPath, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restored.Close()
-	version, err := restored.SchemaVersion(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"environment: prod", fmt.Sprintf("schema: %d", version), "secrets: 1", "DB_PASSWORD"} {
+	for _, want := range []string{"environment: prod", fmt.Sprintf("schema: %d\n", schemaVersion), "secrets: 1", "DB_PASSWORD"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout.String())
 		}
@@ -368,7 +364,7 @@ func TestStateRestoreRefusesAnAmbiguousEnvironment(t *testing.T) {
 }
 
 func TestStateRestoreProjectFlagWinsOverTheManifest(t *testing.T) {
-	endpoint, object, keyPath := snapshotInBucketFor(t, "other")
+	endpoint, object, keyPath, _ := snapshotInBucketFor(t, "other")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "berthy.yml"), []byte("project: demo\nnetwork: demo\n"), 0600); err != nil {
 		t.Fatal(err)
