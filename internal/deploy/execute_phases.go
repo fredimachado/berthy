@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"berthy/internal/engine"
@@ -344,13 +345,7 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 	var gaveUp *errStartAttempts
 	errors.As(cause, &gaveUp)
 	d.outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, d.opID, d.work, rolloutFallback(cause), gaveUp), app, touched)
-	allowance := serviceCleanupAllowance
-	if len(touched) > 0 {
-		allowance = touched[len(touched)-1].recoveryAllowance
-	}
-	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), allowance)
-	recoveryErr := c.compensateRollout(recoveryCtx, d.opID, req.App)
-	recoveryCancel()
+	recoveryErr := c.compensateTouchedRoles(d.opID, req.App, touched)
 	if recoveryErr != nil {
 		for _, message := range compensationMessages(recoveryErr) {
 			if c.Log != nil {
@@ -370,6 +365,24 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 		}
 	}
 	d.outcome.Err = "rollout failed and was cleaned up"
+}
+
+func (c *Controller) compensateTouchedRoles(opID, app string, touched []roleWork) error {
+	if len(touched) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), touched[len(touched)-1].recoveryAllowance)
+	defer cancel()
+	intents, err := c.Store.Intents(ctx, opID)
+	if err != nil {
+		return errors.New(compensationIntents)
+	}
+	ordinals := make(map[int]bool, len(touched))
+	for _, w := range touched {
+		ordinals[w.intent.Ordinal] = true
+	}
+	intents = slices.DeleteFunc(intents, func(i state.Intent) bool { return !ordinals[i.Ordinal] })
+	return c.compensateRollout(ctx, app, intents)
 }
 
 func (c *Controller) verifyDeployRoles(ctx, verifyCtx context.Context, d *deployRun) bool {

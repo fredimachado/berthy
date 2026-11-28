@@ -229,11 +229,7 @@ func compensationMessages(err error) []string {
 	}
 }
 
-func (c *Controller) compensateRollout(ctx context.Context, opID, app string) error {
-	intents, err := c.Store.Intents(ctx, opID)
-	if err != nil {
-		return errors.New(compensationIntents)
-	}
+func (c *Controller) compensateRollout(ctx context.Context, app string, intents []state.Intent) error {
 	var combined error
 	for n := len(intents) - 1; n >= 0; n-- {
 		i := intents[n]
