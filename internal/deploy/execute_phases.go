@@ -483,10 +483,11 @@ func (c *Controller) finishDeployRelease(ctx context.Context, d *deployRun) {
 	}
 	switch {
 	case err != nil && errors.Is(err, ErrOneOffUncertain):
-		d.outcome.State = "recovery_required"
-		d.outcome.Release = nil
-		d.outcome.Err = "post-deploy command outcome uncertain"
-		d.outcome.Reason = c.recordOneOffFailure(ctx, d.opID, err)
+		d.outcome = state.Outcome{
+			State: "recovery_required", Err: "post-deploy command outcome uncertain",
+			SchemaBefore: d.outcome.SchemaBefore, SchemaAfter: d.outcome.SchemaAfter,
+			Reason: c.recordOneOffFailure(ctx, d.opID, err),
+		}
 	case err != nil:
 		d.outcome.State = "failed"
 		d.outcome.Err = hookFailureText(err, "post")
