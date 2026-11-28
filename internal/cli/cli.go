@@ -42,7 +42,7 @@ func Run(args []string, out, errout io.Writer) int { return runIn(args, out, err
 // intent is non-nil only for an expanded alias: the dispatcher checks the real parsers against it before resolving a target.
 func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <setup|context|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
+		fmt.Fprintf(errout, "usage: berthy <%s>\n", strings.Join(publicCommands, "|"))
 		return 2
 	}
 	cmd := args[0]
