@@ -104,19 +104,6 @@ first_scope="/v1/projects/$PROJECT/environments/$ENVN"
 second_scope="/v1/projects/$peer/environments/$ENVN"
 first_reader=$(cli "$PROJECT" token create cluster-reader --scope read --json | jq -er '.token')
 second_reader=$(cli "$peer" token create cluster-reader --scope read --json | jq -er '.token')
-expect_eq "the first project's read token can read cluster checks" 200 \
-  "$(cluster_request GET "$first_scope/cluster/checks" "$first_reader")"
-if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
-first_rows=$(jq -ec 'select(type == "array")' "$private/cluster-response.json")
-expect_eq "the second project's read token can read cluster checks" 200 \
-  "$(cluster_request GET "$second_scope/cluster/checks" "$second_reader")"
-second_rows=$(jq -ec 'select(type == "array")' "$private/cluster-response.json")
-expect_eq "both scoped reads return the same cluster rows" "$first_rows" "$second_rows"
-expect_eq "$PROJECT/$ENVN checks --cluster matches its scoped GET" "$first_rows" \
-  "$(cli "$PROJECT" checks --cluster --json | jq -ec 'select(type == "array")')"
-expect_eq "$peer/$ENVN checks --cluster matches its scoped GET" "$second_rows" \
-  "$(cli "$peer" checks --cluster --json | jq -ec 'select(type == "array")')"
-if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 expect_eq "a cluster read refuses the other project's token" 401 \
   "$(cluster_request GET "$second_scope/cluster/checks" "$first_reader")"
 expect_eq "cluster checks refuse POST" 405 \
@@ -135,7 +122,6 @@ PUT settings
 POST alerts/test
 REQUESTS
 done
-unset first_reader second_reader
 
 doctor_cluster() {
   local project
@@ -190,9 +176,28 @@ inside sh -ec 'umask 077; cat > /root/fixture-cluster; chmod 700 /root/fixture-c
 inside systemctl restart berthy
 wait_for "agent API after installing the Telegram endpoint" cli "$PROJECT" agent-info --json
 hostname=$(cli "$PROJECT" agent-info --json | jq -er '.hostname | select(length > 0)')
+marker_row() {
+  jq -ecS --arg marker "$marker" --arg host "$hostname" '
+    .[] | select(.name == "public_ports" and .server == $host and .state == "warning" and (.detail | contains($marker)))'
+}
 marker_checked() {
-  cli "$1" checks --cluster --json | jq -e --arg marker "$marker" --arg host "$hostname" '
-    any(.[]; .name == "public_ports" and .server == $host and .state == "warning" and (.detail | contains($marker)))'
+  cli "$1" checks --cluster --json | marker_row
+}
+check_cluster_reads() {
+  local expected
+  expected=$(cli "$PROJECT" checks --cluster --json | marker_row)
+  expect_eq "the first project's read token can read cluster checks" 200 \
+    "$(cluster_request GET "$first_scope/cluster/checks" "$first_reader")"
+  expect_eq "the first scoped GET returns the persisted port warning" "$expected" \
+    "$(marker_row < "$private/cluster-response.json")"
+  expect_eq "the second project's read token can read cluster checks" 200 \
+    "$(cluster_request GET "$second_scope/cluster/checks" "$second_reader")"
+  expect_eq "the second scoped GET returns the persisted port warning" "$expected" \
+    "$(marker_row < "$private/cluster-response.json")"
+  expect_eq "$PROJECT/$ENVN checks --cluster returns the persisted port warning" "$expected" \
+    "$(marker_checked "$PROJECT")"
+  expect_eq "$peer/$ENVN checks --cluster returns the persisted port warning" "$expected" \
+    "$(marker_checked "$peer")"
 }
 for project in "$PROJECT" "$peer"; do
   wait_for "public_ports sees the marker for $project/$ENVN" marker_checked "$project"
@@ -202,6 +207,10 @@ for project in "$PROJECT" "$peer"; do
     any(.checks[]; .name == "public_ports" and (.critical | not) and (.detail | contains($marker)))' >/dev/null
   pass "$project/$ENVN live doctor and stored cluster checks identify the same server and marker"
 done
+# The marker is in the stored checks now. Other checks can still be written while we compare this row.
+check_cluster_reads
+unset first_reader second_reader
+[ "$E2E_FAILS" -eq 0 ] || finish
 
 enable_environment_alerts() {
   local project=$1 chat=$2 hook=$3 dir="$private/$1"
