@@ -130,7 +130,7 @@ jobs:
           persist-credentials: false
 
       - name: Check shell scripts
-        run: shellcheck test/phase1/*.sh test/e2e/shard.sh test/e2e/tests/shard.sh
+        run: shellcheck test/phase1/*.sh test/e2e/shard.sh test/e2e/tests/shard.sh test/e2e/ci-prepare.sh
 
       - name: Check e2e shard coverage
         run: bash test/e2e/tests/shard.sh
@@ -140,6 +140,47 @@ jobs:
 
       - name: Ingress script ignores an inherited Docker context
         run: bash test/phase1/ingress-context-test.sh
+
+  e2e:
+    name: ${{ format('End-to-end ({0}/6)', matrix.shard) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare the fixture
+        run: |
+          echo "GO=$(command -v go)" >> "$GITHUB_ENV"
+          echo "DOCKER_BIN=$(command -v docker)" >> "$GITHUB_ENV"
+          echo "SOCK=/var/run/docker.sock" >> "$GITHUB_ENV"
+          echo "COMPOSE_BIN=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')" >> "$GITHUB_ENV"
+          DOCKER_BIN=$(command -v docker) SOCK=/var/run/docker.sock bash test/e2e/ci-prepare.sh
+
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" 6)
+          test "${#scenarios[@]}" -gt 0
+          bash test/e2e/run.sh "${scenarios[@]}"
+
+      - name: Keep the scenario logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-logs-${{ matrix.shard }}
+          path: ~/berthy-e2e/harness/runs
 
   lint-actions:
     name: GitHub Actions audit

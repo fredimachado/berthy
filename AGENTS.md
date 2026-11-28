@@ -11,6 +11,8 @@
 
 ## Before and after a push
 
+- CI runs the e2e harness in shards on every pull request and push to `main`.
+
 - CI runs the tests on Linux, macOS and Windows. Run `go test ./...` on Windows
   as well as Linux before pushing.
 - `gofmt` covers `third_party/` too, because CI checks it.

@@ -14,6 +14,9 @@ From inside WSL:
 
     bash /mnt/d/code/berthy/test/e2e/run.sh 00-smoke
 
+CI runs the harness in six shards on every pull request and push to `main`. Run one shard locally against the
+configured fixture with `mapfile -t scenarios < <(bash test/e2e/shard.sh 1 6); bash test/e2e/run.sh "${scenarios[@]}"`.
+
 With no scenario names, every `scenarios/*.sh` runs in name order. `--no-build` reuses the binaries already in
 `$E2E_ROOT/bin`. `--keep` leaves the agent and the fakes running after the run; stop them with `stop.sh`. The exit code
 is 0 when every scenario passes and 1 otherwise. From Git Bash, never inline a `$` expansion in `wsl -- bash -c '...'`:
