@@ -142,6 +142,9 @@ jobs:
         run: bash test/phase1/ingress-context-test.sh
 
   e2e:
+    env:
+      PROJECT: shop
+      ENVN: stage
     name: ${{ format('End-to-end ({0}/6)', matrix.shard) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
