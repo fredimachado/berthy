@@ -81,6 +81,11 @@ YML
           timeout: 2s
           retries: 1
 YML
+    if [ "$3" = false ]; then
+      cat <<'YML'
+        entrypoint: ["sh", "-c", "exit 7"]
+YML
+    fi
   fi
 }
 
@@ -235,7 +240,7 @@ run_runtime() {
 }
 
 run_compensation() {
-  local out code service sentinel previous
+  local out code service sentinel previous id
   app="compensation-$nonce"
   begin_app main sentinel
   seed_slow true
@@ -247,11 +252,18 @@ run_compensation() {
   out=$(adm deploy "$app" --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
   printf '%s\n' "$out" >"$LOG/compensation-operation.out"
   expect_code 'unhealthy candidate exits 1' 1 "$code" "$out"
-  expect_contains 'later role exhausted its start attempts' "$out" 'gave up after 1 failed starts'
+  id=$(printf '%s\n' "$out" | sed -n 's/^id: \([0-9a-f]\{32\}\)$/\1/p')
+  if [ -n "$id" ] && adm diagnostics "$id" --json >"$LOG/compensation-diagnostics.json" 2>&1 &&
+    jq -e 'any(.diagnostics[]; .role == "sentinel" and .gave_up_after == 1)' "$LOG/compensation-diagnostics.json" >/dev/null; then
+    pass 'later role exhausted its start attempts'
+  else
+    fail 'later role exhausted its start attempts' "$out"
+  fi
   expect_contains 'candidate rolled back' "$out" 'state: rolled_back'
   expect_eq 'predecessor digest remains applied' "$repo@$WEB_V1_DIGEST" "$(applied)"
   d service ps --no-trunc "$service" >"$LOG/compensation-main-tasks.txt"
   d service ps --no-trunc "$sentinel" >"$LOG/compensation-sentinel-tasks.txt"
+  expect_contains 'main ran v2 before restoring v1' "$(cat "$LOG/compensation-main-tasks.txt")" "$repo@$WEB_V2_DIGEST"
   adm lock status --json >"$LOG/compensation-lock.json" 2>&1
   expect_contains 'compensation releases the lock' "$(cat "$LOG/compensation-lock.json")" '"locked": false'
   expect_eq 'prior main generation was restored' "$previous" "$(live_generation "$service")"
