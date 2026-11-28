@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -15,6 +16,23 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
+
+// readThroughMarker reads from r until marker appears and returns the bytes before it.
+// The peer must write marker so a short payload mismatches instead of hanging.
+func readThroughMarker(r io.Reader, marker []byte) ([]byte, error) {
+	var buf []byte
+	tmp := make([]byte, 64)
+	for {
+		n, err := r.Read(tmp)
+		buf = append(buf, tmp[:n]...)
+		if i := bytes.Index(buf, marker); i >= 0 {
+			return buf[:i], nil
+		}
+		if err != nil {
+			return buf, err
+		}
+	}
+}
 
 func TestConfirmDeployTerminal(t *testing.T) {
 	for _, tc := range []struct {
@@ -60,8 +78,12 @@ func TestConfirmDeployTerminal(t *testing.T) {
 				if n, err := unix.Poll(fds, 0); err != nil || n != 1 || fds[0].Revents&unix.POLLIN == 0 {
 					t.Fatalf("next line unavailable: n=%d events=%v err=%v", n, fds[0].Revents, err)
 				}
-				next := make([]byte, len("next\n"))
-				if _, err := io.ReadFull(tty, next); err != nil || string(next) != "next\n" {
+				marker := []byte{0x1e, 'N', 0x1e}
+				if _, err := master.Write(marker); err != nil {
+					t.Fatal(err)
+				}
+				next, err := readThroughMarker(tty, marker)
+				if err != nil || string(next) != "next\n" {
 					t.Fatalf("next=%q err=%v", next, err)
 				}
 			}
@@ -104,8 +126,12 @@ func TestConfirmDeployCanonicalQuotedEnter(t *testing.T) {
 	if got.ok || got.err != nil {
 		t.Errorf("quoted Enter: ok=%v err=%v", got.ok, got.err)
 	}
-	transcript := make([]byte, len("y\r\n"))
-	if _, err := io.ReadFull(master, transcript); err != nil || string(transcript) != "y\r\n" {
+	marker := []byte{0x1e, 'E', 0x1e}
+	if _, err := tty.Write(marker); err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := readThroughMarker(master, marker)
+	if err != nil || string(transcript) != "y\r\n" {
 		t.Errorf("transcript = %q err=%v", transcript, err)
 	}
 	after, err := term.GetState(tty.Fd())
