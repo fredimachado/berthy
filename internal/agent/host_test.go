@@ -1440,7 +1440,15 @@ func TestTheFirstExportOfTwoRuntimesIsScoped(t *testing.T) {
 		if err := h.order[i].exporter.Flush(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		ids := containerIDsIn(sinks[i].wait(t, t.Context()))
+		req := sinks[i].wait(t, t.Context())
+		resource := map[string]string{}
+		for _, kv := range req.GetResourceMetrics()[0].GetResource().GetAttributes() {
+			resource[kv.GetKey()] = kv.GetValue().GetStringValue()
+		}
+		if resource["berthy.project"] != id.Project || resource["deployment.environment.name"] != id.Environment {
+			t.Errorf("%s resource %v", id, resource)
+		}
+		ids := containerIDsIn(req)
 		want := id.Environment + "-web"
 		other := "prod-web"
 		if id == prod {

@@ -432,7 +432,7 @@ func TestReportsSendOneLogRecordAtTheStartAndOneAtTheEndOfEveryOperation(t *test
 	}
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	if rc.res["deployment.environment.name"] != "lab" || rc.res["service.name"] != "berthy-agent" {
+	if rc.res["berthy.project"] != "demo" || rc.res["deployment.environment.name"] != "lab" || rc.res["service.name"] != "berthy-agent" {
 		t.Errorf("resource %v", rc.res)
 	}
 }

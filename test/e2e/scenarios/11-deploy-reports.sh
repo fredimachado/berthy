@@ -129,6 +129,8 @@ expect_eq "deploys: none sends no message" 0 "$(wait_messages 1)"
 
 # Telemetry: two records for each operation, of every kind.
 wait_records "$ok_id" 2
+expect_eq "the telemetry resource names the project" "$PROJECT" "$(jq -r '.resource_attributes["berthy.project"]' "$RUN/otlp-summary.json")"
+expect_eq "the telemetry resource names the environment" "$ENVN" "$(jq -r '.resource_attributes["deployment.environment.name"]' "$RUN/otlp-summary.json")"
 records=$(log_records "$ok_id")
 expect_eq "the successful deploy has a start record and an end record" 2 "$(printf '%s\n' "$records" | wc -l)"
 start=$(printf '%s\n' "$records" | jq -c 'select(.body == "deploy started")')
