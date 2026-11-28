@@ -81,7 +81,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(server.server_port, flush=True)
 server.serve_forever()
 PY
@@ -93,16 +93,26 @@ jq --arg url "http://127.0.0.1:$cf_port/client/v4" '.cloudflare_api_url = $url' 
   || { fail "point the agent at the Cloudflare stand-in" "jq failed"; finish; }
 start_agent || { fail "restart the agent with the Cloudflare stand-in" "the agent did not answer"; finish; }
 
-# 4. Doctor returns the complete report: a noncritical tunnel warning and a successful compose check.
+# 4. Doctor returns the complete report: a noncritical tunnel warning, then a successful compose check,
+# with the concurrent Cloudflare token check accepted (the stand-in answers credentials on another thread).
 adm doctor --json >"$RUN/doctor.out" 2>"$RUN/doctor.err"
 code=$?
 out=$(cat "$RUN/doctor.out")
 err=$(cat "$RUN/doctor.err")
-compact=${out//[[:space:]]/}
 expect_code "doctor --json exits 0 after a slow tunnel check" 0 "$code" "$err$out"
 if [ -f "$cf_seen" ]; then pass "the stand-in saw the tunnel GET"; else fail "the stand-in saw the tunnel GET" "marker missing"; fi
-expect_contains "ingress_tunnel reports unavailable" "$compact" '"name":"ingress_tunnel","ok":false,"critical":false,"detail":"unavailable"'
-expect_contains "compose check follows and succeeds" "$compact" '"name":"compose","ok":true'
+tunnel_row=$(printf '%s' "$out" | jq -c '.checks[] | select(.name == "ingress_tunnel")')
+expect_eq "ingress_tunnel reports unavailable" \
+  '{"name":"ingress_tunnel","ok":false,"critical":false,"detail":"unavailable"}' "$tunnel_row"
+token_ok=$(printf '%s' "$out" | jq -r '.checks[] | select(.name == "cloudflare_token") | .ok')
+expect_eq "cloudflare_token reports ok" "true" "$token_ok"
+compose_after_tunnel=$(printf '%s' "$out" | jq '
+  ([.checks | map(.name) | index("ingress_tunnel")][0]) as $t
+  | ([.checks | map(.name) | index("compose")][0]) as $c
+  | ($t != null) and ($c != null) and ($c > $t)
+    and (.checks[$c] | .name == "compose" and .ok == true)
+')
+expect_eq "compose check follows the tunnel warning and succeeds" "true" "$compose_after_tunnel"
 expect_not_contains "doctor does not report a connection failure" "$err" "agent connection failed"
 
 finish
