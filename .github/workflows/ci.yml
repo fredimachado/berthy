@@ -166,10 +166,13 @@ jobs:
           persist-credentials: false
 
       - name: Check shell scripts
-        run: shellcheck test/phase1/*.sh test/e2e/shard.sh test/e2e/tests/shard.sh test/e2e/ci-prepare.sh test/e2e/changes.sh test/e2e/tests/changes.sh
+        run: shellcheck test/phase1/*.sh test/e2e/shard.sh test/e2e/tests/shard.sh test/e2e/ci-prepare.sh test/e2e/tests/ci-prepare.sh test/e2e/changes.sh test/e2e/tests/changes.sh
 
       - name: Check change classification
         run: bash test/e2e/tests/changes.sh
+
+      - name: Check fakeserver build selection
+        run: bash test/e2e/tests/ci-prepare.sh
 
       - name: Check e2e shard coverage
         run: bash test/e2e/tests/shard.sh
@@ -205,6 +208,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Prepare the fixture
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
         run: |
           {
             echo "GO=$(command -v go)"
@@ -212,7 +218,9 @@ jobs:
             echo "SOCK=/var/run/docker.sock"
             echo "COMPOSE_BIN=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')"
           } >> "$GITHUB_ENV"
-          DOCKER_BIN=$(command -v docker) SOCK=/var/run/docker.sock bash test/e2e/ci-prepare.sh
+          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" "$SHARDS")
+          test "${#scenarios[@]}" -gt 0
+          DOCKER_BIN=$(command -v docker) SOCK=/var/run/docker.sock bash test/e2e/ci-prepare.sh "${scenarios[@]}"
 
       - name: Run shard
         env:
