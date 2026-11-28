@@ -121,14 +121,14 @@ check test ! -e "$keys/berthy.$PROJECT.$ENVN.$new_id.key"
 "${doctor[@]}" >"$private/doctor-text" 2>"$private/doctor-text-err"; doctor_code=$?
 "${doctor[@]}" --json >"$private/doctor-after" 2>"$private/doctor-after-err"; doctor_json_code=$?
 warning="warning: this machine has no saved copy of the current state key $new_id. Run remote berthy setup for $PROJECT/$ENVN from this machine without --key-file to save a copy."
+label="doctor key IDs"
+check jq -e --arg id "$old_id" '.key_id == $id' "$private/doctor-before"
+check jq -e --arg id "$new_id" '.key_id == $id' "$private/doctor-after"
 label="missing current key copy warning"
 check test "$(grep -Fxc -- "$warning" "$private/doctor-text")" -eq 1
 check test "$doctor_code" -eq 0
 check test "$doctor_json_code" -eq 0
 check test "$(grep -Fxc -- "$warning" "$private/doctor-after-err")" -eq 1
-label="doctor key IDs"
-check jq -e --arg id "$old_id" '.key_id == $id' "$private/doctor-before"
-check jq -e --arg id "$new_id" '.key_id == $id' "$private/doctor-after"
 out=$("${setup[@]}" </dev/null 2>/dev/null); code=$?
 label="rotated key copy"
 check test "$code" -eq 0
