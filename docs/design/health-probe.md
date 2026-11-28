@@ -112,8 +112,9 @@ start time from `/proc/1/stat` and compares it with the monotonic boot uptime.
 The experiment's `d exec <task> /.berthy/probe uptime 99999s` returned 1;
 `uptime 0s` returned 0. It used 100 clock ticks per second, so production
 must obtain or correctly establish the Linux clock tick rate and parse the
-process name safely. Validate timing against deploy timeout, and set check
-interval and start period so early failures do not exhaust retries before the
+process name safely. Validate that the first eligible probe falls strictly
+within one `deploy_timeout` progress window. Set the check interval and
+start period so early failures do not exhaust retries before the
 threshold. `startFailed` counts only failed and rejected tasks
 (`internal/deploy/rollout.go:224`), so a worker that exits 0 before the
 threshold can repeatedly complete without consuming start attempts. Change

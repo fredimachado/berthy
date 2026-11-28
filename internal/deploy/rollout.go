@@ -175,41 +175,50 @@ func rolloutAllowance(hold time.Duration) time.Duration {
 	return hold + rolloutVerificationGrace
 }
 
-func rolloutStartupContext(ctx context.Context, hold time.Duration) (context.Context, context.CancelFunc) {
-	if deadline, ok := ctx.Deadline(); ok && hold > 0 {
-		return context.WithDeadline(ctx, deadline.Add(-rolloutAllowance(hold)))
+type rolloutTiming struct {
+	window time.Duration
+	cutoff time.Time
+	hold   time.Duration
+	drain  time.Duration
+}
+
+func withRolloutCutoff(ctx context.Context, cutoff time.Time) (context.Context, context.CancelFunc) {
+	if !cutoff.IsZero() {
+		return context.WithDeadline(ctx, cutoff)
 	}
 	return ctx, func() {}
 }
 
 func healthyOnce(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
 	tasks, err := e.ServiceTasks(ctx, id)
-	if err != nil {
+	if err != nil || ctx.Err() != nil {
 		return errors.New("task inspection failed")
 	}
-	return healthyIn(ctx, e, tasks, id, generation, replicas)
+	if healthyIn(ctx, e, tasks, id, generation) < replicas || ctx.Err() != nil {
+		return errors.New("service generation is not healthy")
+	}
+	return nil
 }
 
-// healthyIn reports whether every replica slot of the generation has a running task whose container is healthy.
-func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id string, generation string, replicas int) error {
+// healthyIn counts distinct healthy slots of the candidate generation.
+func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id, generation string) int {
 	slots := make(map[uint64]bool)
 	for _, t := range tasks {
 		if t.ServiceID != id || t.DesiredState != "running" || t.State != "running" || t.Labels["berthy.operation"] != generation || t.Slot == 0 || t.ContainerID == "" {
 			continue
 		}
 		health, err := e.InspectContainerHealth(ctx, t.ContainerID)
+		if ctx.Err() != nil {
+			break
+		}
 		if err == nil && health == "healthy" {
 			slots[t.Slot] = true
 		}
 	}
-	if !slotsCover(slots, replicas) {
-		return errors.New("service generation is not healthy")
-	}
-	return nil
+	return len(slots)
 }
 
-// slotsCover reports whether the healthy slots are as many as the replicas. Slot numbers are Swarm's names for replicas,
-// not positions: a service scaled up and down by hand keeps the replica that started last, which can be slot 2 of 1.
+// Slot numbers are Swarm's names for replicas. A service scaled down to one replica can still be running slot 2.
 func slotsCover(slots map[uint64]bool, replicas int) bool { return len(slots) >= replicas }
 
 // errStartAttempts reports that the new version used up its start attempts: a rollout stops waiting as soon as the
@@ -231,26 +240,34 @@ func startFailed(t engine.ServiceTask, budget startBudget) bool {
 	return t.State == "failed" || t.State == "rejected" || budget.countComplete && t.State == "complete"
 }
 
-// waitHealthy confirms a positive hold only after continuous coverage and a fresh healthy poll begun at or after its
-// boundary. ctx is the role's hard deadline; startup ends at that deadline minus rolloutAllowance(hold), and coverage
-// lost after the startup cutoff ends the wait. Failed task IDs are counted across polls up to a positive limit.
-func waitHealthy(ctx context.Context, e healthReader, id string, generation string, replicas int, budget startBudget, hold time.Duration) error {
+// waitHealthy renews startup time on a new high count of healthy slots. The hold ends only after a fresh healthy
+// poll begun at or after its boundary. Losing coverage returns the wait to the last startup cutoff.
+func waitHealthy(ctx context.Context, e healthReader, id, generation string, replicas int, budget startBudget, timing rolloutTiming) (time.Time, error) {
 	pace := newPacer(e, serviceEvents(id))
 	defer pace.close()
-	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
-	defer stopStartup()
+	readCutoff := timing.cutoff
+	readCtx, stopRead := withRolloutCutoff(ctx, readCutoff)
+	defer func() { stopRead() }()
+	setReadCutoff := func(cutoff time.Time) {
+		if !cutoff.Equal(readCutoff) {
+			stopRead()
+			readCutoff = cutoff
+			readCtx, stopRead = withRolloutCutoff(ctx, cutoff)
+		}
+	}
+	expired := errors.New("service health deadline exceeded")
 	failed := map[string]bool{}
+	best := 0
 	var healthySince time.Time
 	for {
-		pollStarted := time.Now()
-		readCtx := ctx
-		if healthySince.IsZero() {
-			readCtx = startupCtx
-			if readCtx.Err() != nil {
-				return errors.New("service health deadline exceeded")
-			}
+		if readCtx.Err() != nil {
+			return time.Time{}, expired
 		}
+		pollStarted := time.Now()
 		tasks, err := e.ServiceTasks(readCtx, id)
+		if readCtx.Err() != nil {
+			return time.Time{}, expired
+		}
 		if err == nil {
 			newFailure := false
 			for _, t := range tasks {
@@ -260,27 +277,30 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 				}
 			}
 			if budget.limit > 0 && len(failed) >= budget.limit {
-				return &errStartAttempts{Failed: len(failed), Limit: budget.limit}
+				return time.Time{}, &errStartAttempts{Failed: len(failed), Limit: budget.limit}
 			}
 			if newFailure {
 				healthySince = time.Time{}
-			}
-			if healthySince.IsZero() {
-				readCtx = startupCtx
+				setReadCutoff(timing.cutoff)
 			}
 			if readCtx.Err() != nil {
-				return errors.New("service health deadline exceeded")
+				return time.Time{}, expired
 			}
-			healthErr := healthyIn(readCtx, e, tasks, id, generation, replicas)
+			healthy := healthyIn(readCtx, e, tasks, id, generation)
 			if readCtx.Err() != nil {
-				return errors.New("service health deadline exceeded")
+				return time.Time{}, expired
 			}
-			if healthErr == nil {
+			if timing.window > 0 && healthy > best {
+				best = healthy
+				timing.cutoff = time.Now().Add(timing.window)
+			}
+			if healthy >= replicas {
 				if healthySince.IsZero() {
 					healthySince = time.Now()
 				}
-				if hold == 0 || !pollStarted.Before(healthySince.Add(hold)) {
-					return nil
+				if timing.hold == 0 || !pollStarted.Before(healthySince.Add(timing.hold)) {
+					deadline, _ := readCtx.Deadline()
+					return deadline, nil
 				}
 			} else {
 				healthySince = time.Time{}
@@ -289,14 +309,16 @@ func waitHealthy(ctx context.Context, e healthReader, id string, generation stri
 			healthySince = time.Time{}
 		}
 		var next time.Time
+		cutoff := timing.cutoff
 		if !healthySince.IsZero() {
-			next = healthySince.Add(hold)
-			readCtx = ctx
-		} else {
-			readCtx = startupCtx
+			next = healthySince.Add(timing.hold)
+			if !cutoff.IsZero() {
+				cutoff = cutoff.Add(rolloutAllowance(timing.hold))
+			}
 		}
+		setReadCutoff(cutoff)
 		if !pace.waitUntil(readCtx, next) {
-			return errors.New("service health deadline exceeded")
+			return time.Time{}, expired
 		}
 	}
 }
@@ -347,9 +369,8 @@ func withRole(err error, role string) error {
 	return err
 }
 
-// createRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
-func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, hold time.Duration) (string, error) {
-	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
+func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, timing rolloutTiming) (string, error) {
+	startupCtx, stopStartup := withRolloutCutoff(ctx, timing.cutoff)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
 		return "", beforeServiceMutation{errors.New("service health deadline exceeded")}
@@ -390,18 +411,21 @@ func createRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return "", err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, hold); err != nil {
+	stopStartup()
+	deadline, err := waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, timing)
+	if err != nil {
 		return "", withRole(err, i.Role)
 	}
-	if err = j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
+	verifyCtx, stopVerification := withRolloutCutoff(ctx, deadline)
+	defer stopVerification()
+	if err = j.MarkStep(verifyCtx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready")); err != nil {
 		return "", err
 	}
 	return live.ID, nil
 }
 
-// updateRole takes the role's hard deadline; waitHealthy applies the startup cutoff and hold contract.
-func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, hold time.Duration) error {
-	startupCtx, stopStartup := rolloutStartupContext(ctx, hold)
+func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i state.Intent, auth *engine.RegistryAuth, replicas int, budget startBudget, timing rolloutTiming) error {
+	startupCtx, stopStartup := withRolloutCutoff(ctx, timing.cutoff)
 	defer stopStartup()
 	if startupCtx.Err() != nil {
 		return beforeServiceMutation{errors.New("service health deadline exceeded")}
@@ -440,18 +464,22 @@ func updateRole(ctx context.Context, j journal, e rolloutEngine, op string, i st
 	if err != nil {
 		return err
 	}
-	if err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, hold); err != nil {
+	stopStartup()
+	if _, err = waitHealthy(ctx, e, live.ID, i.Generation, replicas, budget, timing); err != nil {
 		return withRole(err, i.Role)
 	}
+	// Add each duration separately so a long configured drain cannot overflow when the grace is added.
+	drainCtx, stopDrain := context.WithDeadline(ctx, time.Now().Add(timing.drain).Add(rolloutVerificationGrace))
+	defer stopDrain()
 	if updateHasTasks(i.Before) {
-		if err = waitUpdate(ctx, e, i.Name, i.ServiceID); err != nil {
+		if err = waitUpdate(drainCtx, e, i.Name, i.ServiceID); err != nil {
 			return err
 		}
 	}
-	if err = waitDrain(ctx, e, live.ID, i.Generation); err != nil {
+	if err = waitDrain(drainCtx, e, live.ID, i.Generation); err != nil {
 		return err
 	}
-	return j.MarkStep(ctx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready"))
+	return j.MarkStep(drainCtx, op, i.Ordinal, "verified", receipt, rolloutMilestone(i.Role, "ready"))
 }
 
 func waitDrain(ctx context.Context, e healthReader, id, generation string) error {
@@ -461,6 +489,9 @@ func waitDrain(ctx context.Context, e healthReader, id, generation string) error
 		tasks, err := e.ServiceTasks(ctx, id)
 		if err != nil {
 			return errors.New("task inspection failed")
+		}
+		if ctx.Err() != nil {
+			return errors.New("service drain deadline exceeded")
 		}
 		pending := false
 		for _, t := range tasks {
@@ -576,6 +607,9 @@ func waitUpdate(ctx context.Context, e serviceMutator, name, id string) error {
 		live, err := e.InspectService(ctx, name)
 		if err != nil || live.ID != id {
 			return errors.New("update status unavailable")
+		}
+		if ctx.Err() != nil {
+			return errors.New("update completion deadline exceeded")
 		}
 		switch live.UpdateStatus.State {
 		case "completed":

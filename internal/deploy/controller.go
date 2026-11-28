@@ -792,7 +792,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: string(errComposeInterrupted), SchemaBefore: before, SchemaAfter: after}, target{})
 	}
 	reason = c.captureInterrupted(ctx, op.ID, intents)
-	if err = c.compensateRollout(ctx, op.ID, op.App); err != nil {
+	if err = c.compensateRollout(ctx, op.App, intents); err != nil {
 		return required("service recovery required")
 	}
 	return c.finish(ctx, op, state.Outcome{State: "interrupted", Err: "operation interrupted and cleaned up", SchemaBefore: before, SchemaAfter: after, Reason: reason}, target{})

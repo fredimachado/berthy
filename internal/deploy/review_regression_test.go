@@ -49,7 +49,8 @@ func TestRolloutPollMustStartAfterHoldBoundary(t *testing.T) {
 		done, exited := make(chan error, 1), make(chan struct{})
 		go func() {
 			defer close(exited)
-			done <- waitHealthy(ctx, f, "s", "op", 2, startBudget{limit: 1}, 5*time.Second)
+			_, err := waitHealthy(ctx, f, "s", "op", 2, startBudget{limit: 1}, rolloutTiming{hold: rolloutMonitor})
+			done <- err
 		}()
 		defer func() { cancel(); <-exited }()
 		synctest.Wait()
@@ -193,6 +194,7 @@ func TestObservedReceiptWriteStopsAtStartupCutoff(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
+				cutoff := start.Add(10 * time.Second)
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				before, desired := json.RawMessage(`{"Name":"svc","version":"old"}`), json.RawMessage(`{"Name":"svc","version":"new"}`)
@@ -204,9 +206,9 @@ func TestObservedReceiptWriteStopsAtStartupCutoff(t *testing.T) {
 				i := state.Intent{Kind: kind, Name: "svc", ServiceID: "id", Before: before, Desired: desired, Generation: "op"}
 				var err error
 				if kind == "create" {
-					_, err = createRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
+					_, err = createRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, rolloutTiming{cutoff: cutoff, hold: rolloutMonitor})
 				} else {
-					err = updateRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
+					err = updateRole(ctx, j, m, "op", i, nil, 1, startBudget{limit: 1}, rolloutTiming{cutoff: cutoff, hold: rolloutMonitor})
 				}
 				if j.endedAt.IsZero() {
 					t.Fatalf("observed write never started: %v", err)

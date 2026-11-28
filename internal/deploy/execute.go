@@ -61,16 +61,20 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 	_ = c.finish(ctx, op, outcome, t)
 }
 
+func deployDrainTimeout(app manifest.App) string {
+	if app.Deploy.DrainTimeout == "" {
+		return "30s"
+	}
+	return app.Deploy.DrainTimeout
+}
+
 // releaseRoleSpec is the Swarm service of a role at the release that prepared describes, as a deploy sends it. operation is
 // the generation label of the spec. A deploy and the drift check both build a role's spec here, so what a deploy would send
 // and what the check expects are the same.
 func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, role, operation string) (json.RawMessage, error) {
 	req := prepared.Request
 	app := req.Manifest.Apps[req.App]
-	drain := app.Deploy.DrainTimeout
-	if drain == "" {
-		drain = "30s"
-	}
+	drain := deployDrainTimeout(app)
 	order, _ := app.UpdateOrder(role)
 	if err := checkUptimeImage(app, role, img); err != nil {
 		return nil, err
@@ -225,11 +229,7 @@ func compensationMessages(err error) []string {
 	}
 }
 
-func (c *Controller) compensateRollout(ctx context.Context, opID, app string) error {
-	intents, err := c.Store.Intents(ctx, opID)
-	if err != nil {
-		return errors.New(compensationIntents)
-	}
+func (c *Controller) compensateRollout(ctx context.Context, app string, intents []state.Intent) error {
 	var combined error
 	for n := len(intents) - 1; n >= 0; n-- {
 		i := intents[n]
@@ -343,7 +343,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, 0)
+	_, err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, rolloutTiming{})
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

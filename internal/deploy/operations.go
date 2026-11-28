@@ -290,16 +290,17 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
-	allowance := serviceCleanupAllowance
-	if n > 0 {
-		budget, err := uptimeReplacementBudget(m.Apps[req.App], b.Role, live.Spec, n)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: "operation preflight failed"}
-		}
-		allowance, err = addStartupAllowance(allowance, budget)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: "operation preflight failed"}
-		}
+	var replacement replacementSpec
+	if json.Unmarshal(live.Spec, &replacement) != nil || replacement.Mode.Replicated == nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
+	budget, err := replacementBudget(m.Apps[req.App], replacement.Mode.Replicated.Replicas, n, replacement.parallelism())
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
+	allowance, err := addStartupAllowance(serviceCleanupAllowance, budget)
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, allowance)
 	defer cancel()
@@ -308,7 +309,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err = applyIntent(ctx, c.Store, c.Engine, op.ID, i, auth); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service update requires recovery"}
 	}
-	if err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{}, 0); err != nil {
+	if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{}, rolloutTiming{}); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service health requires recovery"}
 	}
 	if err = waitDrain(ctx, c.Engine, b.ServiceID, op.ID); err != nil {
@@ -361,7 +362,7 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 		if generation == "" {
 			return errors.New("service generation unavailable")
 		}
-		if err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas, startBudget{}, 0); err != nil {
+		if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas, startBudget{}, rolloutTiming{}); err != nil {
 			return err
 		}
 	}

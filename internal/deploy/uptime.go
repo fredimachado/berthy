@@ -100,38 +100,37 @@ func deployStartupBudget(app manifest.App) (time.Duration, error) {
 	return budget, nil
 }
 
-func uptimeStartupBudget(app manifest.App, role string) (time.Duration, error) {
-	health := app.Roles[role].Health
-	if health == nil || health.Uptime == nil {
-		return 0, nil
-	}
-	return deployStartupBudget(app)
+type replacementSpec struct {
+	Mode         struct{ Replicated *struct{ Replicas int } }
+	UpdateConfig *struct{ Parallelism uint64 }
 }
 
-func uptimeReplacementBudget(app manifest.App, role string, live json.RawMessage, targetReplicas int) (time.Duration, error) {
-	startup, err := uptimeStartupBudget(app, role)
-	if startup == 0 || err != nil {
-		return startup, err
+func (s replacementSpec) parallelism() uint64 {
+	if s.UpdateConfig == nil {
+		return 1
 	}
-	var spec struct {
-		Mode         struct{ Replicated *struct{ Replicas int } }
-		UpdateConfig *struct{ Parallelism uint64 }
+	return s.UpdateConfig.Parallelism
+}
+
+func replacementBudget(app manifest.App, fromReplicas, toReplicas int, parallelism uint64) (time.Duration, error) {
+	if fromReplicas < 0 || toReplicas < 0 {
+		return 0, errors.New("invalid replica count")
 	}
-	if json.Unmarshal(live, &spec) != nil || spec.Mode.Replicated == nil || spec.Mode.Replicated.Replicas < 0 {
-		return 0, errors.New("invalid live replacement configuration")
+	if toReplicas == 0 {
+		return 0, nil
 	}
-	parallelism := uint64(1)
-	if spec.UpdateConfig != nil {
-		parallelism = spec.UpdateConfig.Parallelism
+	startup, err := deployStartupBudget(app)
+	if err != nil {
+		return 0, err
 	}
 	// A scale from zero still needs one startup batch. Swarm can start new slots together while replacing existing slots.
-	replacing := min(spec.Mode.Replicated.Replicas, targetReplicas)
+	replacing := min(fromReplicas, toReplicas)
 	batches := uint64(1)
 	if parallelism > 0 && replacing > 0 {
 		batches += uint64(replacing-1) / parallelism
 	}
 	if batches > uint64(math.MaxInt64/startup) {
-		return 0, errors.New("uptime startup allowance is too large")
+		return 0, errors.New("replacement startup allowance is too large")
 	}
 	return startup * time.Duration(batches), nil
 }
@@ -140,7 +139,7 @@ const serviceCleanupAllowance = 2 * time.Minute
 
 func addStartupAllowance(total, budget time.Duration) (time.Duration, error) {
 	if budget > math.MaxInt64-total {
-		return 0, errors.New("uptime startup allowance is too large")
+		return 0, errors.New("replacement startup allowance is too large")
 	}
 	return total + budget, nil
 }

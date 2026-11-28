@@ -30,6 +30,30 @@ func TestReferenceTextOfOneSection(t *testing.T) {
 			t.Errorf("line of %d characters: %q", len(line), line)
 		}
 	}
+	t.Run("apps", func(t *testing.T) {
+		got, err := ReferenceText("apps")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for key, phrases := range map[string][]string{
+			"deploy_timeout": {"120s", "another replica of the new version to become healthy", "each increase in healthy replicas", "each verified role starts a fresh window"},
+			"drain_timeout":  {"30s", "once berthy confirms the new replicas are healthy", "plus 15 seconds", "swarm to complete the update", "old tasks to drain"},
+		} {
+			t.Run(key, func(t *testing.T) {
+				_, tail, found := strings.Cut(got, "\n  deploy."+key+" ")
+				if !found {
+					t.Fatalf("apps reference lacks deploy.%s", key)
+				}
+				entry, _, _ := strings.Cut(tail, "\n  deploy.") // Both timeout entries precede another deploy key.
+				entry = strings.Join(strings.Fields(entry), " ")
+				for _, phrase := range phrases {
+					if !strings.Contains(strings.ToLower(entry), phrase) {
+						t.Errorf("deploy.%s entry %q lacks %q", key, entry, phrase)
+					}
+				}
+			})
+		}
+	})
 }
 
 func TestReferenceTextOfEverything(t *testing.T) {

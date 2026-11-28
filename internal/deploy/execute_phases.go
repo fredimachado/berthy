@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"berthy/internal/engine"
@@ -19,6 +20,7 @@ type deployRun struct {
 	work     []roleWork
 	ing      *ingressPublish
 	budget   time.Duration
+	drain    time.Duration
 	deadline time.Time
 	bindings []state.Binding
 	outcome  state.Outcome
@@ -100,7 +102,12 @@ func (c *Controller) prepareDeployRoles(ctx context.Context, d *deployRun, req R
 	if err != nil {
 		return false
 	}
+	drain, err := time.ParseDuration(deployDrainTimeout(app))
+	if err != nil {
+		return false
+	}
 	d.budget = budget
+	d.drain = drain
 	d.work = make([]roleWork, 0, len(p.Roles))
 	for ordinal, role := range p.Roles {
 		if !c.planRoleWork(ctx, d, img, byRole, ordinal, role) {
@@ -130,9 +137,17 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 	req := d.prepared.Request
 	app := req.Manifest.Apps[req.App]
 	r := app.Roles[role]
-	recoveryAllowance := serviceCleanupAllowance
+	replicas := 1
+	if r.Replicas != nil {
+		replicas = *r.Replicas
+	}
+	var recoveryAllowance time.Duration
 	if len(d.work) > 0 {
 		recoveryAllowance = d.work[len(d.work)-1].recoveryAllowance
+	}
+	recoveryAllowance, e := addStartupAllowance(recoveryAllowance, serviceCleanupAllowance)
+	if e != nil {
+		return false
 	}
 	spec, e := c.releaseRoleSpec(d.prepared, img, role, d.opID)
 	if e != nil {
@@ -184,15 +199,15 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 				}
 			}
 			var previous struct {
+				replacementSpec
 				TaskTemplate struct {
 					ContainerSpec struct {
 						Labels map[string]string
 						Image  string
 					}
 				}
-				Mode struct{ Replicated *struct{ Replicas int } }
 			}
-			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
+			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil || previous.Mode.Replicated.Replicas < 0 {
 				d.outcome.Err = "prior service health cannot be verified"
 				return false
 			}
@@ -206,7 +221,7 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 					priorApp := applied.Apps[req.App]
 					d.predecessor = &priorApp
 				}
-				startup, err := uptimeReplacementBudget(*d.predecessor, role, live.Spec, previous.Mode.Replicated.Replicas)
+				startup, err := replacementBudget(*d.predecessor, replicas, previous.Mode.Replicated.Replicas, previous.parallelism())
 				if err != nil {
 					return false
 				}
@@ -245,10 +260,6 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 			d.outcome.Err = "service name is unavailable"
 			return false
 		}
-	}
-	replicas := 1
-	if r.Replicas != nil {
-		replicas = *r.Replicas
 	}
 	d.work = append(d.work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	return true
@@ -294,26 +305,20 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 	app := req.Manifest.Apps[req.App]
 	attempts := app.Deploy.StartAttemptLimit()
 	hold := c.monitorHold()
-	startupDeadline := time.Now().Add(d.budget)
 	for n, w := range d.work {
-		if !time.Now().Before(startupDeadline) {
-			c.unwindDeploy(ctx, d, errors.New("service health deadline exceeded"), d.work[:n])
-			return false
-		}
-		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
-		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
-		rollCtx, stopRoll := interruptible(roleCtx)
+		timing := rolloutTiming{window: d.budget, cutoff: time.Now().Add(d.budget), hold: hold, drain: d.drain}
+		w.intent.Deadline = timing.cutoff
+		rollCtx, stopRoll := interruptible(ctx)
 		id := w.intent.ServiceID
 		health := app.Roles[w.intent.Role].Health
 		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+			e = updateRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
 		}
 		stopRoll()
-		stopRole()
 		if e != nil {
 			touched := n + 1
 			var before beforeServiceMutation
@@ -323,17 +328,12 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 			c.unwindDeploy(ctx, d, e, d.work[:touched])
 			return false
 		}
-		startupDeadline = startupDeadline.Add(hold)
 		d.bindings = append(d.bindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
 	}
-	deadline := startupDeadline
+	d.deadline = time.Now().Add(d.budget)
 	if hold > 0 {
-		if now := time.Now(); now.After(deadline) {
-			deadline = now
-		}
-		deadline = deadline.Add(rolloutVerificationGrace)
+		d.deadline = d.deadline.Add(rolloutVerificationGrace)
 	}
-	d.deadline = deadline
 	return true
 }
 
@@ -345,13 +345,7 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 	var gaveUp *errStartAttempts
 	errors.As(cause, &gaveUp)
 	d.outcome.Reason = addStoppedFirst(c.recordRolloutFailure(ctx, d.opID, d.work, rolloutFallback(cause), gaveUp), app, touched)
-	allowance := serviceCleanupAllowance
-	if len(touched) > 0 {
-		allowance = touched[len(touched)-1].recoveryAllowance
-	}
-	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), allowance)
-	recoveryErr := c.compensateRollout(recoveryCtx, d.opID, req.App)
-	recoveryCancel()
+	recoveryErr := c.compensateTouchedRoles(d.opID, req.App, touched)
 	if recoveryErr != nil {
 		for _, message := range compensationMessages(recoveryErr) {
 			if c.Log != nil {
@@ -371,6 +365,24 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 		}
 	}
 	d.outcome.Err = "rollout failed and was cleaned up"
+}
+
+func (c *Controller) compensateTouchedRoles(opID, app string, touched []roleWork) error {
+	if len(touched) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), touched[len(touched)-1].recoveryAllowance)
+	defer cancel()
+	intents, err := c.Store.Intents(ctx, opID)
+	if err != nil {
+		return errors.New(compensationIntents)
+	}
+	ordinals := make(map[int]bool, len(touched))
+	for _, w := range touched {
+		ordinals[w.intent.Ordinal] = true
+	}
+	intents = slices.DeleteFunc(intents, func(i state.Intent) bool { return !ordinals[i.Ordinal] })
+	return c.compensateRollout(ctx, app, intents)
 }
 
 func (c *Controller) verifyDeployRoles(ctx, verifyCtx context.Context, d *deployRun) bool {
