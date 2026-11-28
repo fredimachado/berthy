@@ -37,6 +37,19 @@ func FileName(id scope.ID, keyID string) string {
 	return "berthy." + id.Project + "." + id.Environment + "." + keyID + ".key"
 }
 
+// Present checks only the named copy, without reading it or creating directories.
+func Present(home string, id scope.ID, keyID string) (bool, error) {
+	path := appendComponent(appendComponent(appendComponent(home, ".berthy"), "keys"), FileName(id, keyID))
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
+}
+
 func cannotWrite(path string, err error) error {
 	var pe *fs.PathError
 	if errors.As(err, &pe) {

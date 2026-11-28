@@ -40,7 +40,8 @@ wait_for "port $port listening" port_busy "$port"
 # 2. The doctor names the port as a warning, and still exits 0.
 out=$(adm doctor 2>&1); code=$?
 expect_code "doctor exits 0 with the public port warning" 0 "$code" "$out"
-json=$(adm doctor --json 2>&1); code=$?
+json=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
+expect_contains "doctor sends the key copy warning to stderr" "$(cat "$RUN/doctor-keycopy-stderr")" "warning: this machine has no saved copy of the current state key"
 compact=${json//[[:space:]]/}
 expect_code "doctor --json exits 0 with the public port warning" 0 "$code" "$json"
 expect_contains "public_ports names the published port" "$json" "$port on 0.0.0.0 (published by a container)"
@@ -90,7 +91,7 @@ fi
 out=$(d rm -f "$name" 2>&1); code=$?
 expect_code "remove the container" 0 "$code" "$out"
 wait_for "port $port released" port_free "$port"
-json=$(adm doctor --json 2>&1); code=$?
+json=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
 expect_code "doctor exits 0 once the container is gone" 0 "$code" "$json"
 expect_not_contains "public_ports no longer names the port" "$json" "$port on 0.0.0.0"
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"berthy/internal/scope"
 	"context"
 	"io"
 	"net/http"
@@ -52,7 +53,7 @@ func TestReadWaitStopsBeforeResponse(t *testing.T) {
 		u, _ := url.Parse("http://agent.invalid/ps")
 		var out, errout progressTestBuffer
 		done := make(chan int, 1)
-		go func() { done <- runReadRequest(ctx, client, u, "token", "ps", false, false, &out, &errout) }()
+		go func() { done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, false, false, &out, &errout) }()
 		<-entered
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
@@ -113,7 +114,9 @@ func TestReadWaitResultModes(t *testing.T) {
 				u, _ := url.Parse("http://agent.invalid/ps")
 				var out, errs progressTestBuffer
 				done := make(chan int, 1)
-				go func() { done <- runReadRequest(ctx, client, u, "token", "ps", tc.stream, tc.json, &out, &errs) }()
+				go func() {
+					done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, tc.stream, tc.json, &out, &errs)
+				}()
 				<-entered
 				if !tc.fast {
 					time.Sleep(250 * time.Millisecond)
@@ -314,7 +317,7 @@ func TestReadWaitClearsBeforeReadFailure(t *testing.T) {
 		u, _ := url.Parse("http://agent.invalid")
 		var out, errs progressTestBuffer
 		done := make(chan int, 1)
-		go func() { done <- runReadRequest(ctx, c, u, "token", "ps", false, false, &out, &errs) }()
+		go func() { done <- runReadRequest(ctx, c, u, "token", "ps", scope.ID{}, false, false, &out, &errs) }()
 		<-entered
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()

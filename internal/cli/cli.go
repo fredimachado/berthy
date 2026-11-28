@@ -5,6 +5,7 @@ import (
 	"berthy/internal/agentclient"
 	"berthy/internal/api"
 	"berthy/internal/engine"
+	"berthy/internal/keycopy"
 	"berthy/internal/logs"
 	"berthy/internal/manifest"
 	"berthy/internal/mcp"
@@ -26,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -339,7 +341,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}
 		u.RawQuery = q.Encode()
 	}
-	return runReadRequest(ctx, newReadClient(cmd, watch || follow), &u, token, cmd, watch || follow, jsonOutput, out, errout)
+	return runReadRequest(ctx, newReadClient(cmd, watch || follow), &u, token, cmd, scope.ID{Project: target.Project, Environment: target.Env}, watch || follow, jsonOutput, out, errout)
 }
 
 // newReadClient is the HTTP client for a read command. Doctor uses the agent's check budget; streaming reads keep headers
@@ -356,7 +358,7 @@ func newReadClient(cmd string, stream bool) *http.Client {
 	return client
 }
 
-func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, stream, jsonOutput bool, out, errout io.Writer) int {
+func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, id scope.ID, stream, jsonOutput bool, out, errout io.Writer) int {
 	progress := startWait(errout, !jsonOutput && !stream, "reading "+cmd)
 	resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
 	if err != nil {
@@ -388,6 +390,13 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 	if cmd == "logs" && !jsonOutput {
 		return printLogLines(out, errout, body)
 	}
+	var report api.DoctorReport
+	if cmd == "doctor" {
+		if json.Unmarshal(body, &report) != nil || !validDoctorKeyID(report.KeyID) {
+			fmt.Fprintln(errout, "invalid agent response")
+			return 1
+		}
+	}
 	if jsonOutput {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, body, "", "  ") != nil {
@@ -404,7 +413,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			return 1
 		}
 		if cmd == "doctor" {
-			agentVersion, known := doctorAgentVersion(body)
+			agentVersion, known := doctorAgentVersion(report.Checks)
 			if !known {
 				agentVersion = "unknown"
 			}
@@ -430,13 +439,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 	}
 
 	if cmd == "doctor" {
-		var d struct {
-			Checks []api.Check `json:"checks"`
-		}
-		if json.Unmarshal(body, &d) != nil {
-			return 1
-		}
-		agentVersion, _ := doctorAgentVersion(body)
+		agentVersion, _ := doctorAgentVersion(report.Checks)
 		if note := versionNote(agentVersion); note != "" {
 			// stdout stays one JSON document under --json, so the note goes to stderr then.
 			noteOut := out
@@ -445,13 +448,39 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 			}
 			fmt.Fprintln(noteOut, styleFor(noteOut, !jsonOutput).paint(toneInfo, "note:")+strings.TrimPrefix(note, "note:"))
 		}
-		for _, ch := range d.Checks {
+		if report.KeyID != "" {
+			if home, err := KeyHome(); err == nil && filepath.IsAbs(home) {
+				if present, err := keycopy.Present(home, id, report.KeyID); err == nil && !present {
+					warningOut := out
+					if jsonOutput {
+						warningOut = errout
+					}
+					fmt.Fprintf(warningOut, "warning: this machine has no saved copy of the current state key %s. Run remote berthy setup for %s/%s from this machine without --key-file to save a copy.\n", report.KeyID, id.Project, id.Environment)
+				}
+			}
+		}
+		for _, ch := range report.Checks {
 			if ch.Critical && !ch.OK {
 				return 1
 			}
 		}
 	}
 	return 0
+}
+
+func validDoctorKeyID(id string) bool {
+	if id == "" {
+		return true
+	}
+	if len(id) != 16 {
+		return false
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // runProbeHelper serves the overlay helper's probes until it is stopped. Its token comes from the environment, and the

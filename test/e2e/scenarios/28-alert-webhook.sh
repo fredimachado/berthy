@@ -191,7 +191,8 @@ expect_eq "the heartbeat check is ok" ok "$(beat_state state)"
 detail=$(beat_state detail)
 echo "  heartbeat detail: $detail"
 expect_contains "checks shows when the last ping was accepted" "$detail" "last ping accepted at 20"
-doc=$(adm doctor --json 2>&1)
+doc=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr")
+expect_contains "doctor sends the key copy warning to stderr" "$(cat "$RUN/doctor-keycopy-stderr")" "warning: this machine has no saved copy of the current state key"
 expect_eq "doctor shows the heartbeat as ok" true "$(printf '%s' "$doc" | jq -r '.checks[] | select(.name == "heartbeat") | .ok')"
 expect_contains "doctor shows when the last ping was accepted" "$(printf '%s' "$doc" | jq -r '.checks[] | select(.name == "heartbeat") | .detail')" "last ping accepted at 20"
 
@@ -238,12 +239,12 @@ expect_contains "the agent logs the webhook failure" "$line" "webhook: webhook u
 start_hook || fail "the fake webhook restarts" "it did not answer"
 
 # 6. The doctor checks that the secrets of every channel are stored.
-out=$(adm doctor --json 2>&1)
+out=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr")
 expect_eq "doctor shows the webhook check as ok" true "$(printf '%s' "$out" | jq -r '.checks[] | select(.name == "webhook") | .ok')"
 expect_eq "doctor shows the Telegram check as ok" true "$(printf '%s' "$out" | jq -r '.checks[] | select(.name == "telegram") | .ok')"
 rm_out=$(adm secret rm ALERT_WEBHOOK_HEADERS 2>&1); code=$?
 expect_code "secret ALERT_WEBHOOK_HEADERS is removed" 0 "$code" "$rm_out"
-out2=$(adm doctor --json 2>&1)
+out2=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr")
 expect_eq "doctor shows the webhook check failing when a secret is gone" false "$(printf '%s' "$out2" | jq -r '.checks[] | select(.name == "webhook") | .ok')"
 expect_contains "doctor says which secret" "$out2" "webhook headers secret missing"
 out3=$(adm alerts test 2>&1); code=$?

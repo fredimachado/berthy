@@ -47,6 +47,11 @@ func (r Replica) FinishedOneShot() bool {
 	return r.State == "exited" && r.ExitCode != nil && *r.ExitCode == 0
 }
 
+type DoctorReport struct {
+	Checks []Check `json:"checks"`
+	KeyID  string  `json:"key_id,omitempty"`
+}
+
 type Check struct {
 	Name     string `json:"name"`
 	OK       bool   `json:"ok"`

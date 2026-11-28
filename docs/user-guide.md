@@ -491,7 +491,17 @@ berthy agent-info -e prod
 
 `berthy version` needs no agent. It prints the CLI's version and platform (`berthy dev linux/amd64` for a development build). `--json` prints an object with `version`, `release`, `os` and `arch`.
 
-`berthy doctor` asks the agent to check itself, and prints the CLI's and the agent's versions first. If the agent is an older release, it adds a note that `berthy setup` upgrades the agent; if the agent is newer, it says to upgrade this CLI. It exits `1` when a critical check fails. The checks are:
+`berthy doctor` asks the agent to check itself, and prints the CLI's and the agent's versions first. If the agent is an older release, it adds a note that `berthy setup` upgrades the agent; if the agent is newer, it says to upgrade this CLI. It exits `1` when a critical check fails.
+
+When this machine has no regular file at the current state key's expected setup filename under `~/.berthy/keys`, doctor also prints, for example:
+
+```text
+warning: this machine has no saved copy of the current state key 3f2a9c01e4b7d210. Run remote berthy setup for todo/prod from this machine without --key-file to save a copy.
+```
+
+The warning does not change the exit code. With `--json`, the report goes to stdout and the warning to stderr. An older agent may omit the key ID, so the CLI cannot check for a local copy.
+
+The agent's checks are:
 
 | Check | What it looks at |
 | --- | --- |
@@ -2573,6 +2583,14 @@ or, on the server, in a POSIX shell, copy it by hand and then move the file to a
 ```
 
 The agent makes a new key on the server, seals every secret, held request and diagnostic again in one transaction, and records `key_rotate` in the audit log with the token that asked. It never prints a key: the IDs only name keys. Then run `berthy setup` again from your machine: it saves the new key in `~/.berthy/keys`, beside the copy of the old one. The last line is the way to copy it by hand (see [Copying by hand](#copying-by-hand)). Keep the old copy as long as you keep a state snapshot from before the rotation, because that snapshot opens only with the old key.
+
+Until a regular file with the new key's expected setup filename exists under `~/.berthy/keys`, `berthy doctor` prints, for example:
+
+```text
+warning: this machine has no saved copy of the current state key 3f2a9c01e4b7d210. Run remote berthy setup for todo/prod from this machine without --key-file to save a copy.
+```
+
+The warning clears when a regular file exists at that filename. Doctor cannot detect a manually named copy. Leave out `--key-file`: it supplies a key to setup, and the old copy will not match the rotated server's key.
 
 The old key stays on the server as `/var/lib/berthy/environments/todo/prod/key.prev` until the next state snapshot succeeds with the new key. Then the agent deletes it. Until then `berthy doctor` shows a `state_key` check. Without a `state_backup` block no snapshot runs, so the previous key stays; delete it yourself when you no longer need it.
 

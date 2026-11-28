@@ -416,6 +416,7 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 	var err error
 	host, _ := os.Hostname()
 	checks := []api.Check{{Name: "agent", OK: true, Critical: true, Detail: version.String()}, {Name: "host", OK: host != "", Critical: true, Detail: host}}
+	var keyID string
 	mounts, _ := hostDisk()
 	checks = append(checks, rootDiskCheck(mounts))
 	var dockerVersion struct {
@@ -476,6 +477,7 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 		checks = append(checks, <-credentials...)
 	}
 	if deployment != nil && deployment.Store != nil {
+		keyID = deployment.Store.KeyID()
 		checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
 		if check, ok := stateKeyCheck(deployment.Store); ok {
 			checks = append(checks, check)
@@ -503,7 +505,7 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 			}
 		}
 	}
-	writeReadResult(w, map[string]any{"checks": checks}, nil)
+	writeReadResult(w, api.DoctorReport{Checks: checks, KeyID: keyID}, nil)
 }
 
 func writeReadResult(w http.ResponseWriter, result any, err error) {
