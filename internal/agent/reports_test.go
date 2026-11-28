@@ -87,41 +87,41 @@ func succeededDeploy() deploy.OperationEvent {
 	return e
 }
 
-func TestDeployAlertText(t *testing.T) {
+func TestADeployReportNamesTheProject(t *testing.T) {
 	failed := failedDeploy()
 	for name, tc := range map[string]struct {
 		mutate func(*deploy.OperationEvent)
 		want   string
 	}{
-		"success": {func(e *deploy.OperationEvent) { *e = succeededDeploy() }, "✅ prod: api v1.4.2 deployed by ci in 48s"},
+		"success": {func(e *deploy.OperationEvent) { *e = succeededDeploy() }, "✅ demo/lab: api v1.4.2 deployed by ci in 48s"},
 		"rolled back": {func(*deploy.OperationEvent) {},
-			"🔴 prod: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"failed": {func(e *deploy.OperationEvent) { e.State = "failed" },
-			"🔴 prod: api v1.4.3 failed: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 failed: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"interrupted": {func(e *deploy.OperationEvent) { e.State = "interrupted" },
-			"🔴 prod: api v1.4.3 interrupted: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 interrupted: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"recovery required": {func(e *deploy.OperationEvent) { e.State = "recovery_required" },
-			"🔴 prod: api v1.4.3 needs recovery: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 needs recovery: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"no reason falls back to the public category": {func(e *deploy.OperationEvent) { e.State, e.Reason = "failed", "" },
-			"🔴 prod: api v1.4.3 failed: rollout failed and was cleaned up\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 failed: rollout failed and was cleaned up\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"private category is not shown": {func(e *deploy.OperationEvent) {
 			e.State, e.Reason, e.Err = "failed", "", "dial tcp 10.0.0.9:5432: refused"
 		},
-			"🔴 prod: api v1.4.3 failed: operation failed\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 failed: operation failed\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"reason with application output is dropped": {func(e *deploy.OperationEvent) { e.State, e.Reason, e.Err = "failed", "caf\u00e9\nsecret=1", "" },
-			"🔴 prod: api v1.4.3 failed\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api v1.4.3 failed\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"no version": {func(e *deploy.OperationEvent) { e.Version = "" },
-			"🔴 prod: api rolled back: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api rolled back: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"short digest": {func(e *deploy.OperationEvent) { *e = succeededDeploy(); e.Version = "sha256:0123456789ab" },
-			"✅ prod: api sha256:0123456789ab deployed by ci in 48s"},
+			"✅ demo/lab: api sha256:0123456789ab deployed by ci in 48s"},
 		"minutes": {func(e *deploy.OperationEvent) { *e = succeededDeploy(); e.Ended = e.Started.Add(125 * time.Second) },
-			"✅ prod: api v1.4.2 deployed by ci in 2m5s"},
+			"✅ demo/lab: api v1.4.2 deployed by ci in 2m5s"},
 		"rollback success": {func(e *deploy.OperationEvent) { *e = succeededDeploy(); e.Kind = "rollback"; e.Version = "v1.0.1" },
-			"✅ prod: api rolled back to v1.0.1 by ci in 48s"},
+			"✅ demo/lab: api rolled back to v1.0.1 by ci in 48s"},
 		"rollback failure": {func(e *deploy.OperationEvent) { e.Kind = "rollback"; e.State = "failed"; e.Version = "v1.0.1" },
-			"🔴 prod: api rollback to v1.0.1 failed: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e prod"},
+			"🔴 demo/lab: api rollback to v1.0.1 failed: role web: container never became healthy (last check: exit 1)\nby ci in 48s\nberthy diagnostics op123 -e lab --project demo"},
 		"control characters in the actor": {func(e *deploy.OperationEvent) { *e = succeededDeploy(); e.Actor = "ci\nbot" },
-			"✅ prod: api v1.4.2 deployed by ci bot in 48s"},
+			"✅ demo/lab: api v1.4.2 deployed by ci bot in 48s"},
 	} {
 		e := failed
 		tc.mutate(&e)
@@ -171,7 +171,7 @@ func TestDeployReportsSendOneMessageForAFailedDeployUnderTheDefaultPolicy(t *tes
 	if len(got) != 1 {
 		t.Fatalf("messages %q", got)
 	}
-	for _, want := range []string{"prod", "api", "v1.4.3", "by ci", "container never became healthy (last check: exit 1)", "berthy diagnostics op123 -e prod", "48s"} {
+	for _, want := range []string{"demo/lab", "api", "v1.4.3", "by ci", "container never became healthy (last check: exit 1)", "berthy diagnostics op123 -e lab --project demo", "48s"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("message lacks %q: %q", want, got[0])
 		}
@@ -185,7 +185,7 @@ func TestDeployReportsPolicies(t *testing.T) {
 		want   []string
 	}{
 		{`,"deploys":"failed"`, []deploy.OperationEvent{succeededDeploy()}, nil},
-		{`,"deploys":"all"`, []deploy.OperationEvent{succeededDeploy()}, []string{"✅ prod: api v1.4.2 deployed by ci in 48s"}},
+		{`,"deploys":"all"`, []deploy.OperationEvent{succeededDeploy()}, []string{"✅ demo/lab: api v1.4.2 deployed by ci in 48s"}},
 		{`,"deploys":"all"`, []deploy.OperationEvent{failedDeploy()}, []string{deployAlertText(failedDeploy())}},
 		{`,"deploys":"none"`, []deploy.OperationEvent{succeededDeploy(), failedDeploy()}, nil},
 	} {
@@ -395,6 +395,10 @@ func TestReportsSendOneLogRecordAtTheStartAndOneAtTheEndOfEveryOperation(t *test
 	}
 	byBody := map[string]*logspb.LogRecord{}
 	for _, rec := range recs {
+		attrs, _ := recordAttrs(rec)
+		if attrs["berthy.project"] != "demo" || attrs["berthy.environment"] != "lab" {
+			t.Errorf("record identity %v", attrs)
+		}
 		byBody[rec.GetBody().GetStringValue()+"/"+attrStr(rec, "berthy.operation.id")] = rec
 	}
 	started := byBody["deploy started/op123"]
@@ -403,7 +407,7 @@ func TestReportsSendOneLogRecordAtTheStartAndOneAtTheEndOfEveryOperation(t *test
 		t.Fatalf("records %v", byBody)
 	}
 	str, num := recordAttrs(started)
-	for k, want := range map[string]string{"berthy.environment": "prod", "berthy.app": "api", "berthy.operation.id": "op123", "berthy.operation.kind": "deploy", "berthy.version": "v1.4.3", "berthy.operation.state": "running", "berthy.actor": "ci"} {
+	for k, want := range map[string]string{"berthy.environment": "lab", "berthy.app": "api", "berthy.operation.id": "op123", "berthy.operation.kind": "deploy", "berthy.version": "v1.4.3", "berthy.operation.state": "running", "berthy.actor": "ci"} {
 		if str[k] != want {
 			t.Errorf("start %s = %q, want %q", k, str[k], want)
 		}

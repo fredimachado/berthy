@@ -120,8 +120,11 @@ func TestAFailedDeployIsOnePostAndOneTelegramMessage(t *testing.T) {
 	if call.method != http.MethodPost || call.path != hookPath || call.header.Get("Content-Type") != "application/json" || call.header.Get("Authorization") != "Bearer hook-secret-value" {
 		t.Fatalf("request %s %s %v", call.method, call.path, call.header)
 	}
+	if !strings.HasPrefix(texts[0], "🔴 demo/lab: api") || !strings.HasSuffix(texts[0], "\nberthy diagnostics op123 -e lab --project demo") {
+		t.Errorf("report text %q", texts[0])
+	}
 	want := map[string]any{
-		"environment": "prod", "kind": "deploy", "name": "api", "state": "rolled_back",
+		"project": "demo", "environment": "lab", "kind": "deploy", "name": "api", "state": "rolled_back",
 		"detail": "role web: container never became healthy (last check: exit 1)",
 		"since":  "2026-11-18T10:00:48Z", "text": texts[0],
 	}

@@ -201,6 +201,7 @@ expect_eq "a failed deploy is one POST of kind deploy" 1 "$(posts deploy | jq 'l
 body=$(posts deploy | jq -c '.[0]')
 echo "  deploy alert: $body"
 expect_eq "the deploy POST names the app" web "$(printf '%s' "$body" | jq -r '.name')"
+expect_eq "the deploy POST names the project" "$PROJECT" "$(printf '%s' "$body" | jq -r '.project')"
 expect_eq "the deploy POST names the environment" "$ENVN" "$(printf '%s' "$body" | jq -r '.environment')"
 case $(printf '%s' "$body" | jq -r '.state') in
   failed | rolled_back) pass "the deploy POST says the deploy did not succeed" ;;
