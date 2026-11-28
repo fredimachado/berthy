@@ -413,7 +413,7 @@ func (rt *routeRuntime) handleIngressStatus(call routeCall) {
 		writeError(call.w, 503, "unavailable", "ingress status unavailable")
 		return
 	}
-	json.NewEncoder(call.w).Encode(status)
+	json.NewEncoder(call.w).Encode(status) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {

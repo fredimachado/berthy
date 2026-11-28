@@ -27,7 +27,7 @@ linters:
           pkg: '^berthy/internal/agent$'
           msg: Agent routes must use the shared body decoder instead of readBody.
     funlen:
-      lines: 584
+      lines: 580
       statements: -1
       ignore-comments: false
   exclusions:
