@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -166,21 +167,27 @@ func logsInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact fu
 // compensation removes anything: newest tasks first, at most five per role, including failed, shut down and rejected ones.
 // A task that runs healthy needs none. Each Docker call has a short timeout, and a piece that cannot be read is noted in
 // that diagnostic's Error instead of failing the capture. The total is kept within 1 MiB by dropping the logs of the oldest
-// tasks first.
-func (c *Controller) captureRollout(ctx context.Context, opID string, work []roleWork) []Diagnostic {
+// tasks first. The role set records uptime roles with full replica coverage at capture time.
+func (c *Controller) captureRollout(ctx context.Context, opID string, work []roleWork) ([]Diagnostic, map[string]bool) {
 	redact, redactable := c.redactor(ctx)
 	if !redactable {
 		redact = func(string) string { return "" }
 	}
 	de, _ := c.Engine.(diagnosticEngine)
 	var out []Diagnostic
+	ready := make(map[string]bool)
 	for _, w := range work {
-		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, w.intent.Uptime, de, redact, redactable)...)
+		evidence, covered := c.captureRole(ctx, opID, w.intent, de, redact, redactable)
+		out = append(out, evidence...)
+		if covered {
+			ready[w.intent.Role] = true
+		}
 	}
-	return capDiagnostics(out)
+	return capDiagnostics(out), ready
 }
 
-func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceID string, uptime time.Duration, de diagnosticEngine, redact func(string) string, redactable bool) []Diagnostic {
+func (c *Controller) captureRole(ctx context.Context, opID string, intent state.Intent, de diagnosticEngine, redact func(string) string, redactable bool) ([]Diagnostic, bool) {
+	role, name, serviceID, uptime := intent.Role, intent.Name, intent.ServiceID, intent.Uptime
 	unavailable := func(note string) []Diagnostic {
 		return []Diagnostic{{Kind: "task", Name: name, Role: role, Error: note, Captured: time.Now().UTC()}}
 	}
@@ -191,22 +198,34 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 		if err != nil {
 			var status *engine.StatusError
 			if errors.As(err, &status) && status.Code == 404 {
-				return nil // the role was never created
+				return nil, false // the role was never created
 			}
-			return unavailable("service unavailable")
+			return unavailable("service unavailable"), false
 		}
 		serviceID = live.ID
 	}
 	tasks, err := c.Engine.ServiceTasks(callCtx, serviceID)
 	if err != nil {
-		return unavailable("tasks unavailable")
+		return unavailable("tasks unavailable"), false
 	}
 	var mine []engine.ServiceTask
+	ready := make(map[uint64]bool)
+	now := time.Now()
 	for _, t := range tasks {
-		if t.ServiceID == serviceID && t.Labels["berthy.operation"] == opID {
-			mine = append(mine, t)
+		if t.ServiceID != serviceID || t.Labels["berthy.operation"] != opID {
+			continue
 		}
+		if uptime > 0 {
+			if qualifies, _ := taskReady(ctx, c.Engine, t, uptime, now); qualifies {
+				ready[t.Slot] = true
+				continue
+			}
+		}
+		mine = append(mine, t)
 	}
+	var spec replacementSpec
+	covered := len(ready) > 0 && json.Unmarshal(intent.Desired, &spec) == nil && spec.Mode.Replicated != nil &&
+		spec.Mode.Replicated.Replicas > 0 && slotsCover(ready, spec.Mode.Replicated.Replicas)
 	sort.SliceStable(mine, func(i, j int) bool {
 		if !mine[i].Timestamp.Equal(mine[j].Timestamp) {
 			return mine[i].Timestamp.After(mine[j].Timestamp)
@@ -214,15 +233,9 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 		return mine[i].Version > mine[j].Version
 	})
 	var out []Diagnostic
-	now := time.Now()
 	for _, t := range mine {
 		if len(out) == diagnosticTasksPerRole {
 			break
-		}
-		if uptime > 0 {
-			if ready, _ := taskReady(ctx, c.Engine, t, uptime, now); ready {
-				continue
-			}
 		}
 		d := Diagnostic{Kind: "task", Name: name, Role: role, TaskID: t.ID, Container: t.ContainerID, State: t.State, Captured: time.Now().UTC()}
 		if t.Err != "" {
@@ -243,7 +256,7 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 		}
 		out = append(out, d)
 	}
-	return out
+	return out, covered
 }
 
 // captureOneOff collects evidence for a failed or timed-out one-off container: its state, exit code, error and last lines
@@ -284,9 +297,8 @@ func capDiagnostics(d []Diagnostic) []Diagnostic {
 	return d
 }
 
-// storeDiagnostics keeps the evidence with the operation and returns the public reason it adds up to. Recording the
-// evidence is best effort: a failure to store it must not hide the failure it explains.
-func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diagnostic, fallback string) string {
+// storeDiagnostics keeps the evidence with the operation. A failure to store it must not hide the failure it explains.
+func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diagnostic) {
 	if len(d) > 0 && c.Store != nil {
 		items := make([]json.RawMessage, 0, len(d))
 		for _, item := range d {
@@ -296,15 +308,14 @@ func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diag
 		}
 		_ = c.Store.PutDiagnostics(ctx, opID, items) //nolint:errcheck // Diagnostics are best effort and must not hide the rollout failure.
 	}
-	return failureReason(d, fallback)
 }
 
 // recordRolloutFailure captures and stores the evidence of a failed rollout and returns the public reason. It runs before
-// anything is cleaned up. fallback is the reason when no task left evidence.
+// anything is cleaned up. The fallback applies when the evidence names no failing role.
 func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work []roleWork, fallback string, gaveUp *errStartAttempts) string {
 	capCtx, cancel := captureContext(ctx)
 	defer cancel()
-	d := c.captureRollout(capCtx, opID, work)
+	d, ready := c.captureRollout(capCtx, opID, work)
 	if gaveUp != nil {
 		for i := range d {
 			if d[i].Kind == "task" && d[i].Role == gaveUp.Role {
@@ -312,7 +323,9 @@ func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work
 			}
 		}
 	}
-	return c.storeDiagnostics(capCtx, opID, d, fallback)
+	c.storeDiagnostics(capCtx, opID, d)
+	d = slices.DeleteFunc(d, func(item Diagnostic) bool { return ready[item.Role] })
+	return failureReason(d, fallback)
 }
 
 func (c *Controller) recordComposeUpFailure(ctx context.Context, opID string, req Request, stderr []byte) {
@@ -335,7 +348,7 @@ func (c *Controller) recordComposeUpFailure(ctx context.Context, opID string, re
 		id := scope.ID{Project: req.Manifest.Project, Environment: c.Environment}
 		d.Logs, d.Truncated = composeDiagnosticTail(stderr, values, id)
 	}
-	c.storeDiagnostics(capCtx, opID, capDiagnostics([]Diagnostic{d}), string(errComposeUp))
+	c.storeDiagnostics(capCtx, opID, capDiagnostics([]Diagnostic{d}))
 }
 
 func composeDiagnosticTail(stderr []byte, secrets [][]byte, id scope.ID) (logs string, truncated bool) {
@@ -513,7 +526,9 @@ func (c *Controller) captureInterrupted(ctx context.Context, opID string, intent
 func (c *Controller) recordOneOffFailure(ctx context.Context, opID string, err error) string {
 	capCtx, cancel := captureContext(ctx)
 	defer cancel()
-	return c.storeDiagnostics(capCtx, opID, failureDiagnostics(err), "")
+	d := failureDiagnostics(err)
+	c.storeDiagnostics(capCtx, opID, d)
+	return failureReason(d, "")
 }
 
 // rolloutFallback is the public reason when no task left evidence, chosen from the rollout's own error. The texts are fixed.

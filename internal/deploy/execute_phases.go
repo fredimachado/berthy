@@ -351,7 +351,7 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 			if c.Log != nil {
 				c.Log(message)
 			}
-			c.storeDiagnostics(context.Background(), d.opID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}}, "")
+			c.storeDiagnostics(context.Background(), d.opID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}})
 		}
 		d.outcome.State = "recovery_required"
 		d.outcome.Err = "rollout recovery required"

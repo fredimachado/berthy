@@ -1004,3 +1004,53 @@ func TestRolloutDiagnosticsKeepExitedContainerWithRetainedHealth(t *testing.T) {
 		}
 	})
 }
+
+func TestRolloutFailureKeepsHistoryWithoutBlamingRecoveredRole(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		slot uint64
+		want string
+	}{
+		{"full coverage", 7, "role web: task exited with code 1"},
+		{"only one distinct slot", 2, "role worker: task exited with code 1; role web: task exited with code 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDiagFake()
+			c, s := diagController(t, f)
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				op, _, err := s.Admit(ctx, state.Admission{RequestID: "recovered", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.spec = json.RawMessage(fmt.Sprintf(`{"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":%q}}}}`, op.ID))
+				const threshold = 20 * time.Second
+				first, second := runningTask("replacement", op.ID), runningTask("second", op.ID)
+				first.Slot, second.Slot = 2, tc.slot
+				first.RunningSince = time.Now().Add(-threshold)
+				second.RunningSince = first.RunningSince
+				exits := failedTasks(op.ID, 2)
+				exits[0].Slot = first.Slot
+				f.tasksFor = func(_, _ string) []engine.ServiceTask {
+					return append(onService("worker", first, second, exits[0]), onService("web", exits[1])...)
+				}
+				f.diagnose = exitedContainers(2, "none")
+				f.tails = map[string]string{"c1": "worker's earlier exit", "c2": "failing sibling output"}
+				work := []roleWork{
+					{intent: state.Intent{Role: "worker", Name: "worker", ServiceID: "worker", Uptime: threshold, Desired: json.RawMessage(`{"Mode":{"Replicated":{"Replicas":2}}}`)}, replicas: 2},
+					{intent: state.Intent{Role: "web", Name: "web", ServiceID: "web", Uptime: threshold, Desired: json.RawMessage(`{"Mode":{"Replicated":{"Replicas":1}}}`)}, replicas: 1},
+				}
+
+				reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
+				evidence := storedDiagnostics(t, s, op.ID)
+				if len(evidence) != 2 || evidence[0].Role != "worker" || evidence[0].Logs != f.tails["c1"] ||
+					evidence[0].ExitCode == nil || *evidence[0].ExitCode != 1 || evidence[1].Role != "web" || evidence[1].Logs != f.tails["c2"] {
+					t.Fatalf("missing exit evidence: %+v", evidence)
+				}
+				if reason != tc.want {
+					t.Fatalf("reason %q, want %q", reason, tc.want)
+				}
+			})
+		})
+	}
+}
