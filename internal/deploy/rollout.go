@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
-	"slices"
 	"time"
 
 	"berthy/internal/engine"
@@ -189,33 +187,59 @@ func withRolloutCutoff(ctx context.Context, cutoff time.Time) (context.Context, 
 	return ctx, func() {}
 }
 
-func healthyOnce(ctx context.Context, e healthReader, id string, generation string, replicas int) error {
+func healthyOnce(ctx context.Context, e healthReader, id, generation string, replicas int, uptime time.Duration) error {
 	tasks, err := e.ServiceTasks(ctx, id)
 	if err != nil || ctx.Err() != nil {
 		return errors.New("task inspection failed")
 	}
-	if healthyIn(ctx, e, tasks, id, generation) < replicas || ctx.Err() != nil {
-		return errors.New("service generation is not healthy")
-	}
-	return nil
+	_, err = healthyIn(ctx, e, tasks, id, generation, replicas, uptime, time.Now())
+	return err
 }
 
-// healthyIn counts distinct healthy slots of the candidate generation.
-func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id, generation string) int {
+func healthyIn(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id, generation string, replicas int, uptime time.Duration, now time.Time) (next time.Time, err error) {
+	slots, next := readySlots(ctx, e, tasks, id, generation, uptime, now)
+	if !slotsCover(slots, replicas) || ctx.Err() != nil {
+		return next, errors.New("service generation is not healthy")
+	}
+	return time.Time{}, nil
+}
+
+func readySlots(ctx context.Context, e healthReader, tasks []engine.ServiceTask, id, generation string, uptime time.Duration, now time.Time) (map[uint64]bool, time.Time) {
 	slots := make(map[uint64]bool)
+	var next time.Time
 	for _, t := range tasks {
-		if t.ServiceID != id || t.DesiredState != "running" || t.State != "running" || t.Labels["berthy.operation"] != generation || t.Slot == 0 || t.ContainerID == "" {
+		if t.ServiceID != id || t.Labels["berthy.operation"] != generation {
 			continue
 		}
-		health, err := e.InspectContainerHealth(ctx, t.ContainerID)
+		ready, eligible := taskReady(ctx, e, t, uptime, now)
 		if ctx.Err() != nil {
 			break
 		}
-		if err == nil && health == "healthy" {
+		if ready {
 			slots[t.Slot] = true
+		} else if !eligible.IsZero() && (next.IsZero() || eligible.Before(next)) {
+			next = eligible
 		}
 	}
-	return len(slots)
+	return slots, next
+}
+
+func taskReady(ctx context.Context, e healthReader, t engine.ServiceTask, uptime time.Duration, now time.Time) (ready bool, next time.Time) {
+	if t.DesiredState != "running" || t.State != "running" || t.Slot == 0 || t.ContainerID == "" {
+		return false, time.Time{}
+	}
+	if uptime == 0 {
+		health, err := e.InspectContainerHealth(ctx, t.ContainerID)
+		return err == nil && health == "healthy", time.Time{}
+	}
+	if t.ID == "" || t.RunningSince.IsZero() {
+		return false, time.Time{}
+	}
+	eligible := t.RunningSince.Add(uptime)
+	if now.Before(eligible) {
+		return false, eligible
+	}
+	return true, time.Time{}
 }
 
 // Slot numbers are Swarm's names for replicas. A service scaled down to one replica can still be running slot 2.
@@ -231,13 +255,13 @@ type errStartAttempts struct {
 func (e *errStartAttempts) Error() string { return "service gave up after failed starts" }
 
 type startBudget struct {
-	limit         int
-	countComplete bool
+	limit  int
+	uptime time.Duration
 }
 
 // An uptime rollout also spends an attempt when a candidate exits cleanly. Swarm can already want that task shut down.
 func startFailed(t engine.ServiceTask, budget startBudget) bool {
-	return t.State == "failed" || t.State == "rejected" || budget.countComplete && t.State == "complete"
+	return t.State == "failed" || t.State == "rejected" || budget.uptime > 0 && t.State == "complete"
 }
 
 // waitHealthy renews startup time on a new high count of healthy slots. The hold ends only after a fresh healthy
@@ -268,10 +292,11 @@ func waitHealthy(ctx context.Context, e healthReader, id, generation string, rep
 		if readCtx.Err() != nil {
 			return time.Time{}, expired
 		}
+		var next time.Time
 		if err == nil {
 			newFailure := false
 			for _, t := range tasks {
-				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && startFailed(t, budget) && !failed[t.ID] {
+				if t.ServiceID == id && t.Labels["berthy.operation"] == generation && t.ID != "" && startFailed(t, budget) && !failed[t.ID] {
 					failed[t.ID] = true
 					newFailure = true
 				}
@@ -286,15 +311,15 @@ func waitHealthy(ctx context.Context, e healthReader, id, generation string, rep
 			if readCtx.Err() != nil {
 				return time.Time{}, expired
 			}
-			healthy := healthyIn(readCtx, e, tasks, id, generation)
+			slots, eligible := readySlots(readCtx, e, tasks, id, generation, budget.uptime, pollStarted)
 			if readCtx.Err() != nil {
 				return time.Time{}, expired
 			}
-			if timing.window > 0 && healthy > best {
-				best = healthy
+			if timing.window > 0 && len(slots) > best {
+				best = len(slots)
 				timing.cutoff = time.Now().Add(timing.window)
 			}
-			if healthy >= replicas {
+			if slotsCover(slots, replicas) {
 				if healthySince.IsZero() {
 					healthySince = time.Now()
 				}
@@ -304,11 +329,11 @@ func waitHealthy(ctx context.Context, e healthReader, id, generation string, rep
 				}
 			} else {
 				healthySince = time.Time{}
+				next = eligible
 			}
 		} else {
 			healthySince = time.Time{}
 		}
-		var next time.Time
 		cutoff := timing.cutoff
 		if !healthySince.IsZero() {
 			next = healthySince.Add(timing.hold)
@@ -530,7 +555,7 @@ func emptyInheritedRaw(raw json.RawMessage) bool {
 	return d.Decode(&v) == nil && emptyInherited(v)
 }
 
-func validateInheritedRuntime(raw json.RawMessage, expected *expectedUptimeProbe) error {
+func validateInheritedRuntime(raw json.RawMessage) error {
 	var x struct {
 		TaskTemplate struct {
 			Runtime       string
@@ -554,7 +579,6 @@ func validateInheritedRuntime(raw json.RawMessage, expected *expectedUptimeProbe
 			return errors.New("unsafe inherited container settings")
 		}
 	}
-	foundProbe := false
 	if rawMounts := x.TaskTemplate.ContainerSpec["Mounts"]; len(rawMounts) > 0 {
 		var mounts []json.RawMessage
 		if json.Unmarshal(rawMounts, &mounts) != nil {
@@ -565,30 +589,9 @@ func validateInheritedRuntime(raw json.RawMessage, expected *expectedUptimeProbe
 			if json.Unmarshal(m, &mount) != nil {
 				return errors.New("invalid mounts")
 			}
-			if mount.Type == "volume" {
-				if expected == nil {
-					continue
-				}
-				var volume struct{ Target string }
-				if json.Unmarshal(m, &volume) != nil || uptimeMountOverlap(volume.Target) {
-					return errors.New("unsafe inherited mount")
-				}
-				continue
-			}
-			var bind map[string]any
-			if expected == nil || foundProbe || json.Unmarshal(m, &bind) != nil || !reflect.DeepEqual(bind, expected.mount) {
+			if mount.Type != "volume" {
 				return errors.New("unsafe inherited mount")
 			}
-			foundProbe = true
-		}
-	}
-	if expected != nil {
-		if !foundProbe {
-			return errors.New("managed uptime mount unavailable")
-		}
-		var health struct{ Test []string }
-		if json.Unmarshal(x.TaskTemplate.ContainerSpec["Healthcheck"], &health) != nil || !slices.Equal(health.Test, expected.test) {
-			return errors.New("managed uptime health command changed")
 		}
 	}
 	var outer struct {

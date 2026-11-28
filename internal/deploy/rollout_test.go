@@ -83,7 +83,7 @@ func TestCompensationRefusesForeignCreate(t *testing.T) {
 func TestNewServiceUsesStartFirstAndPinnedImage(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, "start-first", "10s", nil, "", "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "operation", "network", "registry/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,14 +110,14 @@ func (h healthFake) InspectContainerHealth(context.Context, string) (string, err
 }
 func TestHealthRejectsStartingContainer(t *testing.T) {
 	e := healthFake{tasks: []engine.ServiceTask{{ID: "t", ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "op"}}}, status: "starting"}
-	if healthyOnce(context.Background(), e, "s", "op", 1) == nil {
+	if healthyOnce(context.Background(), e, "s", "op", 1, 0) == nil {
 		t.Fatal("starting task counted healthy")
 	}
 }
 
 func TestHealthRejectsOldGeneration(t *testing.T) {
 	e := healthFake{tasks: []engine.ServiceTask{{ID: "t", ServiceID: "s", ContainerID: "c", State: "running", DesiredState: "running", Slot: 1, Labels: map[string]string{"berthy.operation": "old"}}}, status: "healthy"}
-	if healthyOnce(context.Background(), e, "s", "new", 1) == nil {
+	if healthyOnce(context.Background(), e, "s", "new", 1, 0) == nil {
 		t.Fatal("old task counted healthy")
 	}
 }
@@ -149,7 +149,7 @@ func TestCreatedSpecAcceptsEngineDefaults(t *testing.T) {
 func TestServiceSpecUsesNamedVolumesAndResourceLimits(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data:ro"}, Resources: &manifest.Resources{CPU: "0.5", Memory: "64MiB"}, Port: 8080}
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, "start-first", "10s", nil, "", "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestServiceSpecUsesNamedVolumesAndResourceLimits(t *testing.T) {
 }
 
 func TestServiceSpecInheritsImageHealth(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{}, "start-first", "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`), "", "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{}, "start-first", "10s", json.RawMessage(`{"Test":["CMD","true"],"Interval":1000000000}`), "")
 	if err != nil || !strings.Contains(string(b), `"Healthcheck"`) {
 		t.Fatalf("image health: %s %v", b, err)
 	}
@@ -228,7 +228,7 @@ func TestDrainWaitsForRetiringTask(t *testing.T) {
 
 func TestRejectsInheritedCapabilities(t *testing.T) {
 	raw := json.RawMessage(`{"TaskTemplate":{"Runtime":"container","ContainerSpec":{"CapabilityAdd":["SYS_ADMIN"]}}}`)
-	if validateInheritedRuntime(raw, nil) == nil {
+	if validateInheritedRuntime(raw) == nil {
 		t.Fatal("host capabilities accepted")
 	}
 }
@@ -306,7 +306,7 @@ func TestAdoptedHealthRequiresPinnedTaskImage(t *testing.T) {
 
 func TestRuntimeValidationRejectsUnknownSecuritySettings(t *testing.T) {
 	for _, raw := range []string{`{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]}}}`, `{"TaskTemplate":{"ContainerSpec":{"UnexpectedHostAccess":true}}}`} {
-		if validateInheritedRuntime(json.RawMessage(raw), nil) == nil {
+		if validateInheritedRuntime(json.RawMessage(raw)) == nil {
 			t.Fatalf("unsafe runtime accepted: %s", raw)
 		}
 	}
@@ -646,7 +646,7 @@ func TestUpdateRoleStopsAtTheStartAttemptLimit(t *testing.T) {
 
 func TestServiceSpecLetsBerthyDecideWhenAnUpdateFails(t *testing.T) {
 	one := 1
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "", "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func inheritedSpec(container string) json.RawMessage {
 
 func TestInheritedSettingsAreEmptyWhenDockerStoredThemEmpty(t *testing.T) {
 	live := inheritedSpec(dockerStoredContainer)
-	if err := validateInheritedRuntime(live, nil); err != nil {
+	if err := validateInheritedRuntime(live); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	if err := adoptableService(live, "net"); err != nil {
@@ -704,7 +704,7 @@ func TestInheritedSettingsWithAValueAreStillRefused(t *testing.T) {
 		if adoptableService(live, "net") == nil {
 			t.Errorf("%s: adoption accepted it", name)
 		}
-		if name != "isolation" && validateInheritedRuntime(live, nil) == nil {
+		if name != "isolation" && validateInheritedRuntime(live) == nil {
 			t.Errorf("%s: validate accepted it", name)
 		}
 	}

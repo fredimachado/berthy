@@ -22,19 +22,19 @@ func healthyTask(id, generation string, slot uint64) engine.ServiceTask {
 // Swarm keeps the task that started last. The replica count is how many slots run healthy, not which slot numbers.
 func TestHealthCountsAReplicaInAnySlot(t *testing.T) {
 	e := healthFake{tasks: []engine.ServiceTask{healthyTask("a", "op", 2)}, status: "healthy"}
-	if err := healthyOnce(context.Background(), e, "s", "op", 1); err != nil {
+	if err := healthyOnce(context.Background(), e, "s", "op", 1, 0); err != nil {
 		t.Fatalf("one healthy replica in slot 2 of 1: %v", err)
 	}
 	two := healthFake{tasks: []engine.ServiceTask{healthyTask("a", "op", 1), healthyTask("b", "op", 3)}, status: "healthy"}
-	if err := healthyOnce(context.Background(), two, "s", "op", 2); err != nil {
+	if err := healthyOnce(context.Background(), two, "s", "op", 2, 0); err != nil {
 		t.Fatalf("two healthy replicas in slots 1 and 3 of 2: %v", err)
 	}
-	if healthyOnce(context.Background(), e, "s", "op", 2) == nil {
+	if healthyOnce(context.Background(), e, "s", "op", 2, 0) == nil {
 		t.Fatal("one healthy replica counted as two")
 	}
 	// Two tasks in one slot are one replica.
 	same := healthFake{tasks: []engine.ServiceTask{healthyTask("a", "op", 2), healthyTask("b", "op", 2)}, status: "healthy"}
-	if healthyOnce(context.Background(), same, "s", "op", 2) == nil {
+	if healthyOnce(context.Background(), same, "s", "op", 2, 0) == nil {
 		t.Fatal("two tasks of one slot counted as two replicas")
 	}
 }

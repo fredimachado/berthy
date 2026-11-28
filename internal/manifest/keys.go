@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-const uptimeProbeDirectory = "/.berthy"
-
-// UptimeProbeTarget is the mounted executable path inside a Swarm task.
-const UptimeProbeTarget = uptimeProbeDirectory + "/berthy"
-
 // Key documents one manifest key. Keys is the only place a key's meaning is written down: the user guide's reference,
 // `berthy docs` and the JSON Schema are generated from it, and a test keeps it in step with the Manifest type and with
 // Validate. To add a manifest key, add its field to the type and its Key here, then run: go generate ./internal/manifest
@@ -131,14 +126,14 @@ var Keys = slices.Concat(
 		{Path: "apps.<name>.roles.<role>.user", Section: "roles", Type: "string", Default: "the image's", Description: "The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`."},
 		{Path: "apps.<name>.roles.<role>.replicas", Section: "roles", Type: "integer", Default: "1", Description: "The number of replicas, at least 1."},
 		{Path: "apps.<name>.roles.<role>.port", Section: "roles", Type: "integer", Description: "The port the role listens on, from 0 to 65535. Needed for `hostnames`."},
-		{Path: "apps.<name>.roles.<role>.health", Section: "roles", Type: "map", Default: "the image's", Description: "The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic."},
+		{Path: "apps.<name>.roles.<role>.health", Section: "roles", Type: "map", Default: "the image's", Description: "Readiness for a Swarm image role. Set exactly one of `test` and `uptime`."},
 		{Path: "apps.<name>.roles.<role>.health.test", Section: "roles", Type: "list", Description: "The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command."},
-		{Path: "apps.<name>.roles.<role>.health.uptime", Section: "roles", Type: "duration", Description: "For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fall strictly within one `deploy.deploy_timeout` progress window. The probe reserves `/.berthy` and its descendants as mount targets."},
-		{Path: "apps.<name>.roles.<role>.health.interval", Section: "roles", Type: "duration", Default: "30s for test", Description: "Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`."},
-		{Path: "apps.<name>.roles.<role>.health.timeout", Section: "roles", Type: "duration", Default: "30s", Description: "The longest one check may take. For uptime it must be at least `1ms`."},
-		{Path: "apps.<name>.roles.<role>.health.start_period", Section: "roles", Type: "duration", Default: "0s for test", Description: "Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself."},
-		{Path: "apps.<name>.roles.<role>.health.start_interval", Section: "roles", Type: "duration", Default: "Docker's for test", Description: "Time between checks during the start period. For command checks, confirm Swarm support in your Docker version. Uptime uses `interval` for portable Swarm scheduling, so omit `start_interval` or set it equal to `interval`."},
-		{Path: "apps.<name>.roles.<role>.health.retries", Section: "roles", Type: "integer", Default: "3", Description: "Failed checks in a row before the container is unhealthy, at least 1."},
+		{Path: "apps.<name>.roles.<role>.health.uptime", Section: "roles", Type: "duration", Description: "How long each Swarm task must stay running before Berthy counts it as ready. Use a positive duration shorter than `deploy.deploy_timeout`, such as `20s`. Set uptime alone. Berthy disables Docker health checks for the role."},
+		{Path: "apps.<name>.roles.<role>.health.interval", Section: "roles", Type: "duration", Default: "30s for test", Description: "Time between Docker command checks."},
+		{Path: "apps.<name>.roles.<role>.health.timeout", Section: "roles", Type: "duration", Default: "30s for test", Description: "The longest one Docker command check may take."},
+		{Path: "apps.<name>.roles.<role>.health.start_period", Section: "roles", Type: "duration", Default: "0s for test", Description: "Grace time after the container starts. Docker ignores command check failures during this time."},
+		{Path: "apps.<name>.roles.<role>.health.start_interval", Section: "roles", Type: "duration", Default: "Docker's for test", Description: "Time between command checks during the start period. Confirm Swarm support in your Docker version."},
+		{Path: "apps.<name>.roles.<role>.health.retries", Section: "roles", Type: "integer", Default: "3 for test", Description: "Failed command checks in a row before Docker marks the container unhealthy, at least 1."},
 		{Path: "apps.<name>.roles.<role>.volumes", Section: "roles", Type: "list", Description: "Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path."},
 		{Path: "apps.<name>.roles.<role>.resources", Section: "roles", Type: "map", Description: "Resource limits of each container."},
 		{Path: "apps.<name>.roles.<role>.resources.cpu", Section: "roles", Type: "string", Default: "no limit", Description: "Cores, as a string such as `\"0.5\"`."},

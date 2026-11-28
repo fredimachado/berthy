@@ -157,7 +157,7 @@ You could put all three in one Compose file. Berthy keeps them apart on purpose:
 - **`stateful` is per app.** The database is protected from being recreated. The cache and the API are not.
 - **Each app has its own history and rollback.** A bad API deploy rolls back without touching the database.
 - **Backups and restarts are scoped.** You can restart `redis` without touching `postgres`.
-- **Image apps get zero-downtime rollouts.** Swarm starts the new API version first, checks its health, then stops the old one. A Compose app cannot do that.
+- **Image apps support start-first rollouts.** With a Docker health check, Swarm can verify the replacement before stopping the previous task. With uptime health, Swarm can stop the previous task as soon as its replacement starts, before the uptime threshold passes. A failed update can interrupt traffic until Berthy restores the previous release and verifies its workers.
 
 ### What each environment looks like
 
@@ -670,13 +670,11 @@ Quote the number in `max-file`, as the example does. A role with `logging` gets 
 **The health check** for a Swarm image role takes one of `test` and `uptime`. Omit `health` to inherit the image's check.
 
 - Use `test` for a command that runs inside the container and returns exit 0 when healthy. Start the list with `CMD` or `CMD-SHELL`. The image must contain the command (`curl` here).
-- Use `health: {uptime: 20s}` for a worker that should keep PID 1 alive for at least 20 seconds. Berthy supplies the executable for this check. Keep named volume mounts outside `/.berthy`. When switching from a command check in an overlay, set `test: null` alongside `uptime`.
+- Use `health: {uptime: 20s}` to require each worker's Swarm task to stay running for at least 20 seconds. Berthy reads task state from outside the container and disables Docker's check for that role, including any check in the image. Set `uptime` alone to a positive duration shorter than `deploy.deploy_timeout` (120 seconds by default).
 
-The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fall strictly within one `deploy_timeout` progress window. Run `berthy docs roles` for all health check fields and defaults.
+When switching from a command check in an overlay, set `test: null` and clear any inherited `interval`, `timeout`, `start_period`, `start_interval`, and `retries` with `null`. Run `berthy docs roles` for the available fields and defaults.
 
-An uptime check measures survival of PID 1. Use a command check when you need evidence that the worker is making progress. An early exit spends a `deploy.start_attempts` attempt even when the worker exits with code 0. If the attempts run out during an update, Berthy restores the previous release.
-
-Berthy mounts its installed executable read-only at `/.berthy/berthy`. The bind covers any regular file the image ships at that path until the task stops. Install the agent as a static, world-executable file in a directory protected from untrusted writes. Before downgrading to a version without uptime support, redeploy affected roles with a supported health check.
+Use a command check when you need evidence that the worker is making progress. A candidate that exits early spends a `deploy.start_attempts` attempt even when it exits with code 0. If the attempts run out during an update, Berthy restores the previous release and verifies its workers. Before downgrading to a version without uptime support, redeploy affected roles with a supported check.
 
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
 
@@ -1737,7 +1735,7 @@ A run of a job is not an operation, and a job has one run at a time, so `berthy 
 
 #### When a deploy fails
 
-A new version can fail for reasons only its own output explains: a missing setting, a migration that did not apply, a health check that never passed. The old version keeps serving. The evidence is kept before anything is cleaned up.
+A new version can fail for reasons only its own output explains: a missing setting, a migration that did not apply, a health check that never passed. With uptime health, Swarm can stop the previous task when the replacement starts, before the uptime threshold passes. When an update fails and Berthy reports `rolled_back`, it has restored the previous release and verified its workers. Berthy keeps the evidence before cleaning up.
 
 1. The deploy command prints a one-line reason and where to look:
 
@@ -3160,14 +3158,14 @@ Roles belong to image apps.
 | `user` | string | the image's | The user the container runs as: a name or a number, with a group after a colon, such as `1000:1000`. |
 | `replicas` | integer | `1` | The number of replicas, at least 1. |
 | `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
-| `health` | map | the image's | The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic. |
+| `health` | map | the image's | Readiness for a Swarm image role. Set exactly one of `test` and `uptime`. |
 | `health.test` | list | none | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
-| `health.uptime` | duration | none | For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fall strictly within one `deploy.deploy_timeout` progress window. The probe reserves `/.berthy` and its descendants as mount targets. |
-| `health.interval` | duration | 30s for test | Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`. |
-| `health.timeout` | duration | `30s` | The longest one check may take. For uptime it must be at least `1ms`. |
-| `health.start_period` | duration | 0s for test | Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself. |
-| `health.start_interval` | duration | Docker's for test | Time between checks during the start period. For command checks, confirm Swarm support in your Docker version. Uptime uses `interval` for portable Swarm scheduling, so omit `start_interval` or set it equal to `interval`. |
-| `health.retries` | integer | `3` | Failed checks in a row before the container is unhealthy, at least 1. |
+| `health.uptime` | duration | none | How long each Swarm task must stay running before Berthy counts it as ready. Use a positive duration shorter than `deploy.deploy_timeout`, such as `20s`. Set uptime alone. Berthy disables Docker health checks for the role. |
+| `health.interval` | duration | 30s for test | Time between Docker command checks. |
+| `health.timeout` | duration | 30s for test | The longest one Docker command check may take. |
+| `health.start_period` | duration | 0s for test | Grace time after the container starts. Docker ignores command check failures during this time. |
+| `health.start_interval` | duration | Docker's for test | Time between command checks during the start period. Confirm Swarm support in your Docker version. |
+| `health.retries` | integer | 3 for test | Failed command checks in a row before Docker marks the container unhealthy, at least 1. |
 | `volumes` | list | none | Named volumes to mount, each `name:/absolute/path`, with `:ro` or `:rw` at the end. A named volume, never a host path. |
 | `resources` | map | none | Resource limits of each container. |
 | `resources.cpu` | string | no limit | Cores, as a string such as `"0.5"`. |

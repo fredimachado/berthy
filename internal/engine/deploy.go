@@ -38,6 +38,8 @@ type ServiceTask struct {
 	Labels                                                         map[string]string
 	// Timestamp is when the task last changed state: Docker's status timestamp, or its last update when that is missing.
 	Timestamp time.Time
+	// RunningSince is the status timestamp of a running task. UpdatedAt cannot establish when it started.
+	RunningSince time.Time
 	// Err and Message are Docker's task status error and message, such as "task: non-zero exit (1)". ExitCode is the
 	// container's exit code when Docker reports one.
 	Err, Message string
@@ -48,11 +50,9 @@ type Network struct {
 	Attachable              bool
 }
 type Image struct {
-	ID            string
-	RepoDigests   []string
-	ConfigPresent bool // Docker returned a configuration object, which may be empty.
-	Healthcheck   json.RawMessage
-	Volumes       map[string]struct{}
+	ID          string
+	RepoDigests []string
+	Healthcheck json.RawMessage
 }
 type ContainerSnapshot struct {
 	ID, ImageID, State, StartedAt, Health string
@@ -272,15 +272,12 @@ func (e *Engine) InspectImage(ctx context.Context, ref string) (Image, error) {
 		RepoDigests []string
 		Config      *struct {
 			Healthcheck json.RawMessage
-			Volumes     map[string]struct{}
 		}
 	}
 	err = e.jsonRequest(ctx, "GET", "/images/"+p+"/json", nil, nil, &x)
 	image := Image{ID: x.ID, RepoDigests: x.RepoDigests}
 	if x.Config != nil {
-		image.ConfigPresent = true
 		image.Healthcheck = x.Config.Healthcheck
-		image.Volumes = x.Config.Volumes
 	}
 	return image, err
 }
@@ -323,7 +320,11 @@ func (e *Engine) ServiceTasks(ctx context.Context, serviceID string) ([]ServiceT
 		if at.IsZero() {
 			at = t.UpdatedAt
 		}
-		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image, Timestamp: at, Err: t.Status.Err, Message: t.Status.Message, ExitCode: t.Status.ContainerStatus.ExitCode})
+		var runningSince time.Time
+		if t.Status.State == "running" {
+			runningSince = t.Status.Timestamp
+		}
+		out = append(out, ServiceTask{ID: t.ID, ServiceID: t.ServiceID, NodeID: t.NodeID, ContainerID: t.Status.ContainerStatus.ContainerID, State: t.Status.State, DesiredState: t.DesiredState, Slot: t.Slot, Version: t.Version.Index, SpecVersion: t.SpecVersion.Index, Labels: t.Spec.ContainerSpec.Labels, Image: t.Spec.ContainerSpec.Image, Timestamp: at, RunningSince: runningSince, Err: t.Status.Err, Message: t.Status.Message, ExitCode: t.Status.ContainerStatus.ExitCode})
 	}
 	return out, nil
 }

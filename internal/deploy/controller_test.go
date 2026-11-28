@@ -88,7 +88,7 @@ func (e *positiveEngine) ResolveImage(context.Context, string, *engine.RegistryA
 }
 func (e *positiveEngine) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (e *positiveEngine) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image", ConfigPresent: true}, nil
+	return engine.Image{ID: "image"}, nil
 }
 func (e *positiveEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
 	e.mu.Lock()
@@ -486,8 +486,8 @@ func TestRecoverBarrierAcceptsStoppedServiceUpdate(t *testing.T) {
 	// Swarm reports no update status for a service stopped at zero replicas, so the barrier must not wait for one.
 	e := &stoppedServiceEngine{positiveEngine: &positiveEngine{spec: desired}, noStatus: true}
 	c := Controller{Engine: e}
-	intent := state.Intent{Ordinal: 1, Kind: "update", Name: "svc", ServiceID: "id", Generation: "op", Before: stopped, Desired: desired, Phase: "verified", Receipt: receipt}
-	barrier := state.Intent{Desired: json.RawMessage(`{"Release":{"App":"web"}}`)}
+	intent := state.Intent{Ordinal: 1, Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "op", Before: stopped, Desired: desired, Phase: "verified", Receipt: receipt}
+	barrier := state.Intent{Desired: json.RawMessage(`{"Release":{"App":"web","Manifest":` + string(testReleaseManifest(t)) + `}}`)}
 	if _, err = c.recoverBarrier(context.Background(), []state.Intent{intent}, barrier); err != nil {
 		t.Fatalf("barrier over a stopped service's update: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestRecoveryCleansExactUnacknowledgedCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"owned"},"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"owned"}}}}`)
-	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
+	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
 		t.Fatal(err)
 	}
 	e := &positiveEngine{spec: spec}
@@ -608,7 +608,7 @@ func TestAdoptionPlansExistingHealthyPinnedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,13 +644,13 @@ func TestRecoveryPreservesVerifiedReleaseAfterPostHookInterruption(t *testing.T)
 		t.Fatal(err)
 	}
 	spec := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"owned"},"Mode":{"Replicated":{"Replicas":1}}}`)
-	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
+	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "owned", Desired: spec}); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.MarkStep(context.Background(), op.ID, 0, "verified", json.RawMessage(`{"id":"id","spec":{"Name":"svc","Labels":{"berthy.operation":"owned"},"Mode":{"Replicated":{"Replicas":1}}}}`)); err != nil {
 		t.Fatal(err)
 	}
-	out := state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "digest", Manifest: json.RawMessage(`{}`), Bindings: []state.Binding{{App: "web", Role: "web", Name: "svc", ServiceID: "id"}}}}
+	out := state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "digest", Manifest: testReleaseManifest(t), Bindings: []state.Binding{{App: "web", Role: "web", Name: "svc", ServiceID: "id"}}}}
 	b, _ := json.Marshal(out)
 	if err = s.RecordIntent(context.Background(), op.ID, state.Intent{Ordinal: 9999, Kind: "barrier", Desired: b}); err != nil {
 		t.Fatal(err)
@@ -689,7 +689,7 @@ func TestAdoptionPersistsBindingWithoutServiceWrite(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func TestDeployUpdatesUnlabeledAdoptedService(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -978,7 +978,7 @@ func (f *boundFake) ResolveImage(context.Context, string, *engine.RegistryAuth) 
 }
 func (f *boundFake) PullImage(context.Context, string, *engine.RegistryAuth) error { return nil }
 func (f *boundFake) InspectImage(context.Context, string) (engine.Image, error) {
-	return engine.Image{ID: "image", ConfigPresent: true}, nil
+	return engine.Image{ID: "image"}, nil
 }
 func (f *boundFake) InspectService(_ context.Context, ref string) (engine.ServiceSnapshot, error) {
 	f.mu.Lock()
@@ -1042,6 +1042,15 @@ func (f *boundFake) ServiceTasks(_ context.Context, id string) ([]engine.Service
 }
 func (f *boundFake) InspectContainerHealth(context.Context, string) (string, error) {
 	return "healthy", nil
+}
+
+func testReleaseManifest(t *testing.T) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(dockerManifest(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 // seedRelease records a succeeded deploy of app web at digest that binds the given services.
@@ -1217,7 +1226,7 @@ func TestAdoptedServiceWithDockerStoredEmptySettingsIsAdoptedAndUpdated(t *testi
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1413,7 +1422,7 @@ func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
 	one := 1
 	role := manifest.Role{Service: "existing", Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}, Volumes: []string{"data:/data"}}
-	spec, err := serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return v }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err := serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return v }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1426,7 +1435,7 @@ func TestAdoptionRefusesAnExistingUnscopedVolume(t *testing.T) {
 	if !PublicMessage(err.Error()) {
 		t.Fatalf("refusal is not public: %v", err)
 	}
-	spec, err = serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return req.Manifest.VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	spec, err = serviceSpec("test", "proj", "web", "web", "existing", "prior", "net", digest, func(v string) string { return req.Manifest.VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

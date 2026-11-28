@@ -15,6 +15,7 @@ import (
 type roleWork struct {
 	intent   state.Intent
 	replicas int
+	uptime   time.Duration
 	// Recovery allowance if this role and every earlier role in the rollout need to be unwound.
 	recoveryAllowance time.Duration
 }
@@ -79,10 +80,7 @@ func (c *Controller) releaseRoleSpec(prepared preparedPlan, img engine.Image, ro
 	app := req.Manifest.Apps[req.App]
 	drain := deployDrainTimeout(app)
 	order, _ := app.UpdateOrder(role)
-	if err := checkUptimeImage(app, role, img); err != nil {
-		return nil, err
-	}
-	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver, prepared.ProbeSource)
+	return serviceSpec(c.Environment, req.Manifest.Project, req.App, role, req.Manifest.ServiceName(c.Environment, req.App, role), operation, prepared.NetworkID, prepared.Image, func(v string) string { return req.Manifest.VolumeName(c.Environment, v) }, prepared.containerEnv(role), app.Roles[role], order, drain, img.Healthcheck, prepared.LogDriver)
 }
 
 // releaseSettings is the environment settings that the release of req applies: the environment scope of its manifest. A rollback
@@ -116,7 +114,7 @@ func (c *Controller) runDeploy(ctx context.Context, op state.Operation, actor Ac
 	if err != nil {
 		// A secret the app reads but the agent does not hold is named, so the operator knows what to set.
 		var refusal Refusal
-		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal)) || isUptimeRefusal(refusal)) {
+		if errors.As(err, &refusal) && (secretMessage.MatchString(string(refusal)) || networkNameMessage.MatchString(string(refusal))) {
 			outcome.Err = string(refusal)
 		}
 		return
@@ -345,8 +343,24 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		}
 		return err
 	}
+	rel, err := c.Store.Applied(ctx, app)
+	if err != nil {
+		return errors.New("applied release unavailable")
+	}
+	var m manifest.Manifest
+	if json.Unmarshal(rel.Manifest, &m) != nil {
+		return errors.New("applied manifest unavailable")
+	}
+	role, ok := m.Apps[app].Roles[i.Role]
+	if !ok {
+		return errors.New("prior role unavailable")
+	}
+	uptime, err := retainedUptime(role.Health, i.Before)
+	if err != nil {
+		return err
+	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	_, err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, rolloutTiming{})
+	_, err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{uptime: uptime}, rolloutTiming{})
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}

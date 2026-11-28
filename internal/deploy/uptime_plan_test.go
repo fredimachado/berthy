@@ -11,12 +11,12 @@ import (
 	"berthy/internal/manifest"
 )
 
-func TestUptimePlanIsStableAndShowsProbe(t *testing.T) {
+func TestUptimePlanIsStableAndShowsThreshold(t *testing.T) {
 	m := uptimeManifest("20s", "1m")
 	app := m.Apps["web"]
 	app.Roles["aux"] = uptimeManifest("12s", "1m").Apps["web"].Roles["web"]
 	s := openStore(t)
-	c := &Controller{Store: s, Engine: &boundFake{}, Environment: "test", ProbeSource: testProbeSource}
+	c := &Controller{Store: s, Engine: &boundFake{}, Environment: "test"}
 	ctx := context.Background()
 	actor := Actor{ID: "admin", Admin: true}
 	req := Request{App: "web", Version: digestOfLetter("b"), DryRun: true, Manifest: m}
@@ -67,15 +67,15 @@ func TestReleaseDiffShowsUptimeTransitions(t *testing.T) {
 	role.Health = nil
 	inherited.Apps["web"].Roles["web"] = role
 	for _, tc := range []struct {
-		name         string
-		from, to     manifest.Manifest
-		uptime, bind string
+		name     string
+		from, to manifest.Manifest
+		uptime   string
 	}{
-		{"inherit to uptime", inherited, uptime, "health.uptime none -> 20s", ""},
-		{"command to uptime", command, uptime, "health.uptime none -> 20s", ""},
-		{"duration only", uptime, later, "health.uptime 20s -> 25s", ""},
-		{"uptime to inherit", uptime, inherited, "health.uptime 20s -> none", ""},
-		{"uptime to command", uptime, command, "health.uptime 20s -> none", ""},
+		{"inherit to uptime", inherited, uptime, "health.uptime none -> 20s"},
+		{"command to uptime", command, uptime, "health.uptime none -> 20s"},
+		{"duration only", uptime, later, "health.uptime 20s -> 25s"},
+		{"uptime to inherit", uptime, inherited, "health.uptime 20s -> none"},
+		{"uptime to command", uptime, command, "health.uptime 20s -> none"},
 		{name: "unchanged", from: uptime, to: uptime},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,9 +93,6 @@ func TestReleaseDiffShowsUptimeTransitions(t *testing.T) {
 			if tc.uptime != "" {
 				want = append(want, tc.uptime)
 			}
-			if tc.bind != "" {
-				want = append(want, tc.bind)
-			}
 			if !slices.Equal(changes, want) || diff.Same != (tc.uptime == "") {
 				t.Fatalf("diff %+v, want uptime changes %q", diff, want)
 			}
@@ -103,7 +100,7 @@ func TestReleaseDiffShowsUptimeTransitions(t *testing.T) {
 	}
 }
 
-func TestAdoptionShowsDesiredOnlyUptimeMountAndCheck(t *testing.T) {
+func TestAdoptionShowsFirstDeployUptimeAndDisabledCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		volume, command bool
@@ -123,7 +120,7 @@ func TestAdoptionShowsDesiredOnlyUptimeMountAndCheck(t *testing.T) {
 			want := old
 			threshold := "20s"
 			want.Health = &manifest.Health{Uptime: &threshold}
-			c := Controller{Engine: loggingPositive{&positiveEngine{spec: live}, "json-file", nil}, Environment: "test", ProbeSource: testProbeSource}
+			c := Controller{Engine: loggingPositive{&positiveEngine{spec: live}, "json-file", nil}, Environment: "test"}
 			req := adoptionRequest(want)
 			app := req.Manifest.Apps["web"]
 			app.Deploy.DeployTimeout = "1m"
@@ -133,7 +130,7 @@ func TestAdoptionShowsDesiredOnlyUptimeMountAndCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines := strings.Join(plan.Changes, "\n")
-			if strings.Count(lines, `["NONE"]`) != 1 || strings.Contains(lines, "bind") || strings.Contains(lines, "volumes ") {
+			if strings.Count(lines, `["NONE"]`) != 1 || !strings.Contains(lines, "first deploy disables the Docker health check and applies uptime 20s") || strings.Contains(lines, "bind") || strings.Contains(lines, "volumes ") {
 				t.Fatalf("changes %q, want disabled check and no bind", plan.Changes)
 			}
 			if tc.command && !strings.Contains(lines, `(now ["CMD","true"])`) {

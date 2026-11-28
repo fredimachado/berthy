@@ -237,7 +237,7 @@ func TestSchemaRevertRollsBackImageBeforeRevert(t *testing.T) {
 	seedDeploy(t, s, "old", "", state.Outcome{State: "succeeded", Release: releaseOf(oldImage)})
 	binding := state.Binding{App: "app", Role: "web", Name: "proj-app-web", ServiceID: "id"}
 	seedDeploy(t, s, "new", newImage, state.Outcome{State: "succeeded", SchemaBefore: "v1", SchemaAfter: "v2", Release: releaseOf(newImage, binding)})
-	live, err := serviceSpec("test", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "app", "web"), "prior", "net", newImage, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "", "")
+	live, err := serviceSpec("test", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "app", "web"), "prior", "net", newImage, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "1s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

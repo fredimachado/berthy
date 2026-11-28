@@ -23,7 +23,7 @@ func TestServiceSpecSendsTheUpdateOrderToUpdateAndRollback(t *testing.T) {
 	one := 1
 	r := manifest.Role{Replicas: &one, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
 	for _, order := range []string{"start-first", "stop-first"} {
-		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, order, "10s", nil, "", "")
+		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, r, order, "10s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}

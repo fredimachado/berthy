@@ -17,7 +17,7 @@ import (
 
 const probeBindJSON = `{"Type":"bind","Source":"/usr/local/bin/berthy","Target":"/.berthy/berthy","ReadOnly":true}`
 
-func managedUptimeSpec(generation, duration, mounts string) json.RawMessage {
+func legacyUptimeSpec(generation, duration, mounts string) json.RawMessage {
 	return json.RawMessage(`{"Name":"existing","TaskTemplate":{"Networks":[{"Target":"net"}],"ContainerSpec":{"Image":"docker.io/example/web@` + digestOfLetter("a") + `","Labels":{"berthy.operation":"` + generation + `"},"Healthcheck":{"Test":["CMD","/.berthy/berthy","probe","uptime","` + duration + `"]}` + mounts + `}},"Mode":{"Replicated":{"Replicas":1}}}`)
 }
 
@@ -89,10 +89,10 @@ func TestUptimeRestartAllowsAllReplacementBatches(t *testing.T) {
 			s := openStore(t)
 			m := uptimeManifest("3m", "5m")
 			prior := seedUptimeRelease(t, s, m, boundBinding("existing", "id"))
-			spec := managedUptimeSpec(prior.ID, "3m0s", `,"Mounts":[`+probeBindJSON+`]`)
+			spec := legacyUptimeSpec(prior.ID, "3m0s", "")
 			spec = json.RawMessage(strings.Replace(string(spec), `"Replicas":1}}}`, `"Replicas":3}},"UpdateConfig":{"Parallelism":`+strconv.Itoa(tc.parallelism)+`}}`, 1))
 			f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: spec}, replicaStarts: tc.ready}
-			c := &Controller{Store: s, Engine: f, Environment: "test", ProbeSource: testProbeSource}
+			c := &Controller{Store: s, Engine: f, Environment: "test"}
 			synctest.Test(t, func(t *testing.T) {
 				ctx := context.Background()
 				start := time.Now()
@@ -132,7 +132,7 @@ func TestCommandHealthOperationsAllowReplacementBatches(t *testing.T) {
 			m.Apps["web"] = app
 			prior := seedUptimeRelease(t, s, m, boundBinding("existing", "id"))
 			spec, err := serviceSpec("test", "proj", "web", "web", "existing", prior.ID, "net",
-				"docker.io/example/web@"+digestOfLetter("a"), func(v string) string { return v }, nil, role, "start-first", "1s", nil, "", "")
+				"docker.io/example/web@"+digestOfLetter("a"), func(v string) string { return v }, nil, role, "start-first", "1s", nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,8 @@ func TestManagedUptimeMountPolicy(t *testing.T) {
 	}{
 		{"exact", "20s", probeBindJSON, false},
 		{"wrong duration", "0s", probeBindJSON, false},
-		{"missing", "20s", "", false},
+		{"no bind", "20s", "", true},
+		{"named volume", "20s", `{"Type":"volume","Source":"data","Target":"/.berthy"}`, true},
 		{"duplicate", "20s", probeBindJSON + "," + probeBindJSON, false},
 		{"foreign options", "20s", strings.TrimSuffix(probeBindJSON, "}") + `,"BindOptions":{"Propagation":"shared"}}`, false},
 		{"different source", "20s", strings.Replace(probeBindJSON, "/usr/local/bin/berthy", "/other", 1), false},
@@ -213,8 +214,8 @@ func TestManagedUptimeMountPolicy(t *testing.T) {
 				if tc.mounts != "" {
 					mounts = `,"Mounts":[` + tc.mounts + `]`
 				}
-				f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: managedUptimeSpec(prior.ID, tc.duration, mounts)}}
-				c := &Controller{Store: s, Engine: f, Environment: "test", ProbeSource: testProbeSource}
+				f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: legacyUptimeSpec(prior.ID, tc.duration, mounts)}}
+				c := &Controller{Store: s, Engine: f, Environment: "test"}
 				one := 1
 				var op state.Operation
 				var out state.Outcome
@@ -240,8 +241,8 @@ func TestManagedUptimeMountPolicy(t *testing.T) {
 		role := app.Roles["web"]
 		role.Service = "existing"
 		app.Roles["web"] = role
-		f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, spec: managedUptimeSpec("old", "20s", `,"Mounts":[`+probeBindJSON+`]`)}}
-		c := &Controller{Engine: f, Environment: "test", ProbeSource: testProbeSource}
+		f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, spec: legacyUptimeSpec("old", "20s", `,"Mounts":[`+probeBindJSON+`]`)}}
+		c := &Controller{Engine: f, Environment: "test"}
 		_, err := c.Plan(context.Background(), Actor{Admin: true}, Request{Adopt: true, App: "web", Manifest: m})
 		if err == nil || err.Error() != "unsafe or incompatible adoption service" || f.taskReads != 0 || f.updates != 0 || f.execs != 0 {
 			t.Fatalf("adoption returned %v, task reads %d, updates %d, execs %d", err, f.taskReads, f.updates, f.execs)
@@ -254,8 +255,8 @@ func TestUptimeRestartUsesAppliedStartupBudget(t *testing.T) {
 		t.Run(caller.String(), func(t *testing.T) {
 			s := openStore(t)
 			prior := seedUptimeRelease(t, s, uptimeManifest("3m", "5m"), boundBinding("existing", "id"))
-			f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: managedUptimeSpec(prior.ID, "3m0s", `,"Mounts":[`+probeBindJSON+`]`)}, startup: 3 * time.Minute}
-			c := &Controller{Store: s, Engine: f, Environment: "test", ProbeSource: testProbeSource}
+			f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: legacyUptimeSpec(prior.ID, "3m0s", "")}, startup: 3 * time.Minute}
+			c := &Controller{Store: s, Engine: f, Environment: "test"}
 			synctest.Test(t, func(t *testing.T) {
 				ctx := context.Background()
 				want := 7 * time.Minute

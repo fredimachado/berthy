@@ -152,8 +152,8 @@ func (b schemaBuilder) object(t reflect.Type, path string) (map[string]any, erro
 		props["test"].(map[string]any)["minItems"] = 1
 		props["uptime"].(map[string]any)["minLength"] = 1
 		node["oneOf"] = []any{
-			map[string]any{"required": []string{"test"}},
-			map[string]any{"required": []string{"uptime"}},
+			map[string]any{"required": []string{"test"}, "not": map[string]any{"required": []string{"uptime"}}},
+			map[string]any{"required": []string{"uptime"}, "maxProperties": 1},
 		}
 	}
 	if len(required) > 0 {

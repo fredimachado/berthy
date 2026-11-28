@@ -80,7 +80,7 @@ func TestRoleLogDriver(t *testing.T) {
 // read in.
 func TestServiceSpecLogDriverIsByteStable(t *testing.T) {
 	role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}, Logging: &manifest.Logging{Driver: "json-file", Options: map[string]string{"max-size": "50m", "max-file": "5", "a": "1", "b": "2", "c": "3", "z": "9"}}}
-	first, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "journald", "")
+	first, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "journald")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestServiceSpecLogDriverIsByteStable(t *testing.T) {
 		t.Fatalf("log driver %#v in %s", got, first)
 	}
 	for i := 0; i < 50; i++ {
-		again, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "journald", "")
+		again, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "journald")
 		if err != nil || !bytes.Equal(first, again) {
 			t.Fatalf("spec changed between calls: %s and %s (%v)", first, again, err)
 		}
@@ -190,7 +190,7 @@ func TestUpdateSetsAndRemovesTheRolesLogDriver(t *testing.T) {
 func adoptedService(t *testing.T, role manifest.Role, daemonDriver string) json.RawMessage {
 	t.Helper()
 	digest := "docker.io/example/web@sha256:" + strings.Repeat("a", 64)
-	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "30s", nil, daemonDriver, "")
+	spec, err := serviceSpec("test", "proj", "web", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "web", "web"), "prior", "net", digest, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, nil, role, "start-first", "30s", nil, daemonDriver)
 	if err != nil {
 		t.Fatal(err)
 	}

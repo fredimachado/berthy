@@ -944,14 +944,12 @@ func (m *Manifest) defaults() {
 				n := 1
 				r.Replicas = &n
 			}
-			if h := r.Health; h != nil {
-				if h.Uptime == nil {
-					if h.Interval == "" {
-						h.Interval = "30s"
-					}
-					if h.StartPeriod == "" {
-						h.StartPeriod = "0s"
-					}
+			if h := r.Health; h != nil && h.Uptime == nil {
+				if h.Interval == "" {
+					h.Interval = "30s"
+				}
+				if h.StartPeriod == "" {
+					h.StartPeriod = "0s"
 				}
 				if h.Timeout == "" {
 					h.Timeout = "30s"

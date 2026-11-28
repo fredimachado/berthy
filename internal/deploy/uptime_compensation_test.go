@@ -20,6 +20,7 @@ import (
 
 type uptimeRestoreEngine struct {
 	boundFake
+	uptime     bool
 	restoredAt map[string]time.Time
 	ready      map[string][]time.Duration
 	restored   []string
@@ -66,10 +67,35 @@ func (f *uptimeRestoreEngine) ServiceTasks(ctx context.Context, id string) ([]en
 			tasks = append(tasks, task)
 		}
 	}
+	if f.uptime {
+		f.mu.Lock()
+		restoredAt := f.restoredAt[id]
+		f.mu.Unlock()
+		for i := range tasks {
+			task := &tasks[i]
+			if task.State != "running" {
+				continue
+			}
+			task.ID = task.ContainerID
+			if restoredAt.IsZero() {
+				task.RunningSince = time.Now().Add(-time.Second)
+				continue
+			}
+			started := restoredAt.Add(time.Duration(i) * (3*time.Minute + time.Second))
+			if time.Now().Before(started) {
+				task.State = "starting"
+			} else {
+				task.RunningSince = started
+			}
+		}
+	}
 	return tasks, err
 }
 
 func (f *uptimeRestoreEngine) InspectContainerHealth(_ context.Context, container string) (string, error) {
+	if f.uptime {
+		return "none", nil
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	service, slot, _ := strings.Cut(strings.TrimPrefix(container, "c-"), "/")
@@ -133,7 +159,7 @@ func TestCompensationAllowsAllTouchedCommandHealthRoles(t *testing.T) {
 	oldImage := "docker.io/example/web@" + digestOfLetter("a")
 	for _, b := range bindings {
 		spec, err := serviceSpec("test", "proj", "web", b.Role, b.Name, old.ID, "net", oldImage, func(v string) string { return v },
-			nil, prior.Apps["web"].Roles[b.Role], "start-first", "1s", nil, "", "")
+			nil, prior.Apps["web"].Roles[b.Role], "start-first", "1s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +198,7 @@ func TestCompensationAllowsAllTouchedCommandHealthRoles(t *testing.T) {
 			if err != nil || !sameSpec(live.Spec, before[b.Role]) {
 				t.Fatalf("%s predecessor spec not restored: %v", b.Role, err)
 			}
-			if err := healthyOnce(ctx, f, b.ServiceID, old.ID, *prior.Apps["web"].Roles[b.Role].Replicas); err != nil {
+			if err := healthyOnce(ctx, f, b.ServiceID, old.ID, *prior.Apps["web"].Roles[b.Role].Replicas, 0); err != nil {
 				t.Fatalf("%s predecessor not healthy: %v", b.Role, err)
 			}
 		}
@@ -196,8 +222,8 @@ func TestStopFirstRestoresLongUptimePredecessor(t *testing.T) {
 		roles := tc.roles
 		t.Run(fmt.Sprintf("%d-roles-%d-aux", len(roles), tc.auxReplicas), func(t *testing.T) {
 			s := openStore(t)
-			f := &uptimeRestoreEngine{restoredAt: map[string]time.Time{}}
-			c := &Controller{Store: s, Engine: f, Environment: "test", ProbeSource: testProbeSource, rolloutHold: zeroTestRolloutHold()}
+			f := &uptimeRestoreEngine{uptime: true, restoredAt: map[string]time.Time{}}
+			c := &Controller{Store: s, Engine: f, Environment: "test", rolloutHold: zeroTestRolloutHold()}
 			prior := uptimeManifest("3m", "5m")
 			candidate := uptimeManifest("1s", "21s")
 			for _, m := range []manifest.Manifest{prior, candidate} {
@@ -222,7 +248,7 @@ func TestStopFirstRestoresLongUptimePredecessor(t *testing.T) {
 			before := make(map[string]json.RawMessage)
 			oldImage := "docker.io/example/web@" + digestOfLetter("a")
 			for _, b := range bindings {
-				spec, err := serviceSpec("test", "proj", "web", b.Role, b.Name, oldOperation.ID, "net", oldImage, func(v string) string { return v }, nil, prior.Apps["web"].Roles[b.Role], manifest.StopFirst, "1s", nil, "", fixtureProbeSource)
+				spec, err := serviceSpec("test", "proj", "web", b.Role, b.Name, oldOperation.ID, "net", oldImage, func(v string) string { return v }, nil, prior.Apps["web"].Roles[b.Role], manifest.StopFirst, "1s", nil, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -232,6 +258,13 @@ func TestStopFirstRestoresLongUptimePredecessor(t *testing.T) {
 			var op state.Operation
 			synctest.Test(t, func(t *testing.T) {
 				op = runUptimeRequest(t, c, Request{RequestID: "candidate", App: "web", Version: digestOfLetter("b"), Manifest: candidate})
+				if op.State == "rolled_back" {
+					last := f.restoredAt[f.restored[len(f.restored)-1]]
+					want := 3*time.Minute + time.Duration(max(0, tc.auxReplicas-1))*(3*time.Minute+time.Second)
+					if got := time.Since(last); got != want {
+						t.Fatalf("previous replicas verified after %s, want %s", got, want)
+					}
+				}
 			})
 			if op.State != "rolled_back" {
 				t.Fatalf("state %s, error %q, restored %v, allowance %s", op.State, op.Err, f.restored, f.deadline.Sub(f.restoredAt["web"]))

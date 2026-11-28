@@ -171,12 +171,12 @@ func (c *Controller) captureRollout(ctx context.Context, opID string, work []rol
 	de, _ := c.Engine.(diagnosticEngine)
 	var out []Diagnostic
 	for _, w := range work {
-		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, de, redact, redactable)...)
+		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, w.uptime, de, redact, redactable)...)
 	}
 	return capDiagnostics(out)
 }
 
-func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceID string, de diagnosticEngine, redact func(string) string, redactable bool) []Diagnostic {
+func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceID string, uptime time.Duration, de diagnosticEngine, redact func(string) string, redactable bool) []Diagnostic {
 	unavailable := func(note string) []Diagnostic {
 		return []Diagnostic{{Kind: "task", Name: name, Role: role, Error: note, Captured: time.Now().UTC()}}
 	}
@@ -210,9 +210,15 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 		return mine[i].Version > mine[j].Version
 	})
 	var out []Diagnostic
+	now := time.Now()
 	for _, t := range mine {
 		if len(out) == diagnosticTasksPerRole {
 			break
+		}
+		if uptime > 0 {
+			if ready, _ := taskReady(ctx, c.Engine, t, uptime, now); ready {
+				continue
+			}
 		}
 		d := Diagnostic{Kind: "task", Name: name, Role: role, TaskID: t.ID, Container: t.ContainerID, State: t.State, Captured: time.Now().UTC()}
 		if t.Err != "" {
@@ -226,7 +232,7 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 		}
 		if t.ContainerID != "" && de != nil {
 			inspectInto(ctx, de, &d, redact)
-			if t.State == "running" && d.Health == "healthy" {
+			if uptime == 0 && t.State == "running" && d.Health == "healthy" {
 				continue
 			}
 			logsInto(ctx, de, &d, redact, redactable)

@@ -71,7 +71,7 @@ func describeLogDriver(ld map[string]any) string {
 
 // serviceSpec is the Swarm service of a role at one release. order is how an update replaces the old version, from
 // App.UpdateOrder; the update and its rollback config both carry it.
-func serviceSpec(env, project, app, role, name, operation, network, image string, volumeName func(string) string, values []string, r manifest.Role, order, drain string, imageHealth json.RawMessage, daemonLogDriver, probeSource string) (json.RawMessage, error) {
+func serviceSpec(env, project, app, role, name, operation, network, image string, volumeName func(string) string, values []string, r manifest.Role, order, drain string, imageHealth json.RawMessage, daemonLogDriver string) (json.RawMessage, error) {
 
 	grace, err := time.ParseDuration(drain)
 	if err != nil {
@@ -79,7 +79,6 @@ func serviceSpec(env, project, app, role, name, operation, network, image string
 	}
 	labels := map[string]string{"berthy.environment": env, "berthy.project": project, "berthy.app": app, "berthy.role": role, "berthy.operation": operation}
 	health := map[string]any{}
-	uptime := r.Health != nil && r.Health.Uptime != nil
 	if r.Health == nil {
 		if json.Unmarshal(imageHealth, &health) != nil {
 			return nil, errors.New("role healthcheck required")
@@ -88,26 +87,10 @@ func serviceSpec(env, project, app, role, name, operation, network, image string
 		if !ok || len(test) == 0 || test[0] == "NONE" {
 			return nil, errors.New("role healthcheck required")
 		}
+	} else if r.Health.Uptime != nil {
+		health["Test"] = []string{"NONE"}
 	} else {
-		h := *r.Health
-		if uptime {
-			if probeSource == "" {
-				return nil, errUptimeProbeSource
-			}
-			timing, err := h.UptimeTiming()
-			if err != nil {
-				return nil, err
-			}
-			h.Test = uptimeCommand(timing.Threshold.String())
-			h.Interval, h.StartPeriod, h.StartInterval = timing.Interval.String(), timing.StartPeriod.String(), ""
-			if h.Timeout == "" {
-				h.Timeout = "30s"
-			}
-			if h.Retries == nil {
-				retries := 3
-				h.Retries = &retries
-			}
-		}
+		h := r.Health
 		health["Test"] = h.Test
 		// Docker keeps no zero duration in a health check. A zero one, such as the default start period, is left out
 		// rather than written, so the created service matches what Docker stores.
@@ -134,13 +117,10 @@ func serviceSpec(env, project, app, role, name, operation, network, image string
 	if len(values) > 0 {
 		container["Env"] = values
 	}
-	if len(r.Volumes) > 0 || uptime {
+	if len(r.Volumes) > 0 {
 		mounts, e := volumeMounts(r.Volumes, volumeName)
 		if e != nil {
 			return nil, e
-		}
-		if uptime {
-			mounts = append(mounts, uptimeMount(probeSource))
 		}
 		container["Mounts"] = mounts
 	}

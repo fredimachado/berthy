@@ -53,6 +53,18 @@ func (w *shapeWalk) walk(n *yaml.Node, t reflect.Type, path, field, owner string
 	}
 	switch t.Kind() {
 	case reflect.Struct:
+		// A supplied empty command option is indistinguishable from an omitted field after decoding Health.
+		if t == reflect.TypeOf(Health{}) && keyIndex(n, "uptime") >= 0 {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				key, value := n.Content[i].Value, n.Content[i+1]
+				switch key {
+				case "interval", "timeout", "start_period", "start_interval":
+					if value.Tag == "!!str" && value.Value == "" {
+						w.shape(join(path, key), key+" is only allowed with health.test")
+					}
+				}
+			}
+		}
 		fields := map[string]reflect.Type{}
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)

@@ -138,11 +138,7 @@ func (c *Controller) inspectOperation(ctx context.Context, req Request, operatio
 	if json.Unmarshal(rel.Manifest, &m) != nil {
 		return b, live, nil, 0, errors.New("applied manifest unavailable")
 	}
-	expected, err := c.expectedProbe(m.Apps[req.App].Roles[b.Role])
-	if err != nil {
-		return b, live, nil, 0, err
-	}
-	if err = validateInheritedRuntime(live.Spec, expected); err != nil {
+	if err = validateInheritedRuntime(live.Spec); err != nil {
 		return b, live, nil, 0, err
 	}
 	desired, n, err := runtimeSpec(live.Spec, b, m.Project, c.Environment, operation, req.Kind, req.Replicas)
@@ -284,7 +280,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	}
 	b, live, desired, n, err := c.inspectOperation(ctx, req, op.ID)
 	if err != nil {
-		return state.Outcome{State: "failed", Err: uptimePreflightMessage(err, "operation preflight failed")}
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
 	auth, err := c.operationAuth(ctx, req.App, live.Spec)
 	if err != nil {
@@ -679,11 +675,7 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, strin
 	if err != nil || live.ID != b.ServiceID {
 		return "", "", errors.New("bound service unavailable")
 	}
-	expected, err := c.expectedProbe(m.Apps[req.App].Roles[b.Role])
-	if err != nil {
-		return "", "", err
-	}
-	if err = validateInheritedRuntime(live.Spec, expected); err != nil {
+	if err = validateInheritedRuntime(live.Spec); err != nil {
 		return "", "", err
 	}
 	var spec struct {

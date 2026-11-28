@@ -86,7 +86,7 @@ func TestStartupDoesNotSearchPATH(t *testing.T) {
 	}
 }
 
-func TestMountedProbeAndOrdinaryProbeAlias(t *testing.T) {
+func TestProbeAlias(t *testing.T) {
 	bin := buildBerthy(t)
 	dir := t.TempDir()
 	config := filepath.Join(dir, "config.json")
@@ -110,8 +110,6 @@ aliases:
 		args              []string
 		code              int
 	}{
-		{"mounted usage", "invalid", "usage: berthy probe uptime DURATION", []string{"probe"}, 2},
-		{"mounted bad duration", "invalid", "usage: berthy probe uptime DURATION", []string{"probe", "uptime", "-1s"}, 2},
 		{"validate manifest", "none", "", []string{"config", "validate"}, 0},
 		{"probe alias", "none", `"project": "demo"`, []string{"probe"}, 0},
 		{"other alias", "none", "", []string{"validate"}, 0},
@@ -120,9 +118,6 @@ aliases:
 			cmd := exec.Command(bin, tc.args...)
 			cmd.Dir = dir
 			cmd.Env = []string{"HOME=" + dir, "BERTHY_CONFIG=" + config, "BERTHY_TOKEN_STORE=" + tc.store, "BERTHY_ENV=dev"}
-			if tc.store == "invalid" {
-				cmd.Args[0] = "/.berthy/berthy"
-			}
 			out, err := cmd.CombinedOutput()
 			code := 0
 			if err != nil {
