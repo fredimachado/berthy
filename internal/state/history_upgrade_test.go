@@ -104,9 +104,26 @@ func TestUpgradeVersion19DefersRetentionUntilATerminalWrite(t *testing.T) {
 	if retired := counted(t, s, `SELECT count(*) FROM audit WHERE retired_request_id IS NOT NULL OR retired_release_id IS NOT NULL`); retired != 0 {
 		t.Fatalf("upgrade retired %d audit references before the first write", retired)
 	}
+	assertFailureHistory := func(want ...string) {
+		t.Helper()
+		history, err := s.DeployHistory(ctx, "api")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, operation := range history {
+			ids = append(ids, operation.OperationID)
+		}
+		if !slices.Equal(ids, want) {
+			t.Fatalf("failure history %v, want %v", ids, want)
+		}
+	}
+	assertFailureHistory("legacy-7", "legacy-6", "legacy-5")
 	op := retentionAdmit(t, s, Admission{RequestID: "first-new-write", ActorID: "admin", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+	assertFailureHistory("legacy-7", "legacy-6", "legacy-5")
 	retentionFinish(t, s, op, Outcome{State: "failed"})
 	assertReleases([]int64{4, 3})
+	assertFailureHistory(op.ID, "legacy-7")
 	if physical := counted(t, s, `SELECT count(*) FROM operations WHERE id NOT IN ('legacy-3','legacy-4','legacy-7',?)`, op.ID); physical != 0 {
 		t.Fatalf("first write left %d unexpected operation rows", physical)
 	}

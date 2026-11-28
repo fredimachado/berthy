@@ -177,15 +177,10 @@ type HistoryOperation struct {
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	keep, err := releaseRetention(s.queryRow(ctx, retentionRelease, s.env, app), app)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations o
-		WHERE id IN (SELECT id FROM operations WHERE environment=?1 AND app=?2 AND state IN `+terminalStates+` ORDER BY started DESC,rowid DESC LIMIT ?3)
-		AND state IN ('failed','rolled_back','interrupted')
+		WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted')
 		AND NOT EXISTS(SELECT 1 FROM audit WHERE environment=o.environment AND operation_id=o.id AND retired_request_id IS NOT NULL)
-		ORDER BY started DESC,rowid DESC`, s.env, app, keep)
+		ORDER BY started DESC,rowid DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}
