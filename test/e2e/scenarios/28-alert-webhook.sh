@@ -79,21 +79,33 @@ wait_beat_state() {
   return 1
 }
 
-# wait_posts KIND N SECONDS: waits up to SECONDS for N posts of that kind, then 3 s more so a surplus one would show, and prints
-# the count.
+# wait_posts KIND N SECONDS [NAME]: waits up to SECONDS for N matching posts, then prints the count.
 wait_posts() {
   local i
   for i in $(seq 1 $(($3 * 4))); do
     [ "$(posts "$1" "${4:-}" | jq 'length')" -ge "$2" ] && break
     sleep 0.25
   done
-  sleep 3
   posts "$1" "${4:-}" | jq 'length'
 }
 
 # Count only the alert under test, but show all received texts when it fails.
 tg_count() { tg_messages | jq --arg text "$1" '[.[] | select(.text | test($text))] | length'; }
-probe_message_received() { [ "$(tg_count "probe:broken")" -ge 1 ]; }
+message_received() { [ "$(tg_count "$1")" -ge 1 ]; }
+probe_notified() {
+  python3 -c 'import sqlite3, sys
+with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:
+    row = db.execute("SELECT notified_state FROM checks WHERE environment = ? AND name = ?", (sys.argv[2], "probe:broken")).fetchone()
+    sys.exit(0 if row and row[0] == "critical" else 1)' "$RUN/state/state.db" "$ENVN"
+}
+agent_stopped() { ! owned "$RUN/agent.pid" "$BIN"; }
+finish_senders() {
+  local pid
+  pid=$(cat "$RUN/agent.pid") || return 1
+  kill -TERM "$pid" || return 1
+  wait_for "agent shutdown" agent_stopped || return 1
+  rm -f "$RUN/agent.pid"
+}
 expect_tg_count() {
   local messages count
   messages=$(tg_messages)
@@ -122,7 +134,10 @@ out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1" 0 "$code" "$out"
 
 # 1. A failing probe is one POST and one Telegram message. The monitor reads the manifest every minute, so this takes a while.
-expect_eq "a failing probe is one POST" 1 "$(wait_posts check 1 120 probe:broken)"
+wait_posts check 1 120 probe:broken >/dev/null
+wait_for "probe Telegram alert" message_received "probe:broken" || fail "the probe Telegram alert arrives" "timed out"
+wait_for "probe alert completion" probe_notified || fail "the probe alert completes" "timed out"
+expect_eq "a failing probe is one POST" 1 "$(posts check probe:broken | jq 'length')"
 body=$(posts check probe:broken | jq -c '.[0]')
 echo "  probe alert: $body"
 expect_eq "the POST names the environment" "$ENVN" "$(printf '%s' "$body" | jq -r '.environment')"
@@ -133,7 +148,6 @@ case $(printf '%s' "$body" | jq -r '.since') in
   20??-??-??T*Z) pass "the POST gives the time the state began" ;;
   *) fail "the POST gives the time the state began" "got $(printf '%s' "$body" | jq -r '.since')" ;;
 esac
-wait_for "probe Telegram alert" probe_message_received || fail "the probe Telegram alert arrives" "timed out"
 expect_tg_count "the probe is one Telegram message too" 1 "probe:broken"
 expect_eq "the webhook text is the Telegram text" "$(tg_messages | jq -r '[.[] | select(.text | contains("probe:broken"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
 expect_contains "the text says which check failed" "$(printf '%s' "$body" | jq -r '.text')" "probe:broken"
@@ -145,8 +159,10 @@ out=$(adm alerts test 2>&1); code=$?
 expect_code "alerts test succeeds when both channels do" 0 "$code" "$out"
 expect_contains "alerts test reports Telegram" "$out" "telegram: ok"
 expect_contains "alerts test reports the webhook" "$out" "webhook: ok"
-req=$(hook_requests | jq -c '.[0]')
-expect_eq "the test alert is one POST" POST "$(printf '%s' "$req" | jq -r '.method')"
+requests=$(hook_requests | jq -c '[.[] | select(.method == "POST") | select((.body | fromjson? | .kind) == "test")]')
+expect_eq "the test alert is one POST" 1 "$(printf '%s' "$requests" | jq 'length')"
+req=$(printf '%s' "$requests" | jq -c '.[0]')
+expect_eq "the test alert uses POST" POST "$(printf '%s' "$req" | jq -r '.method')"
 expect_eq "the POST goes to the path of the URL secret" "$hook_path" "$(printf '%s' "$req" | jq -r '.path')"
 expect_eq "the POST carries the header of the headers secret" "$hook_header" "$(printf '%s' "$req" | jq -r '.headers.Authorization[0]')"
 expect_eq "the POST is JSON" application/json "$(printf '%s' "$req" | jq -r '.headers["Content-Type"][0]')"
@@ -168,7 +184,10 @@ if { [ "$op_state" = failed ] || [ "$op_state" = rolled_back ]; } && [ "$(printf
 else
   fail "the failed deploy ended in a state that releases the lock" "state $op_state error $op_error lock $lock"
 fi
-expect_eq "a failed deploy is one POST of kind deploy" 1 "$(wait_posts deploy 1 20)"
+wait_posts deploy 1 20 >/dev/null
+wait_for "failed deploy Telegram alert" message_received "web v2 (failed|rolled back):" || fail "the failed deploy Telegram alert arrives" "timed out"
+finish_senders || fail "the agent drains the failed deploy alert" "shutdown failed"
+expect_eq "a failed deploy is one POST of kind deploy" 1 "$(posts deploy | jq 'length')"
 body=$(posts deploy | jq -c '.[0]')
 echo "  deploy alert: $body"
 expect_eq "the deploy POST names the app" web "$(printf '%s' "$body" | jq -r '.name')"
@@ -183,17 +202,23 @@ expect_tg_count "the failed deploy is one Telegram message" 1 "web v2 (failed|ro
 expect_eq "the webhook text is the Telegram text of the deploy" "$(tg_messages | jq -r '[.[] | select(.text | test("web v2 (failed|rolled back):"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
 
 # 4. alerts.deploys: all sends the success to both channels too.
+start_agent || fail "the agent restarts after the failed deploy" "it did not answer"
 tg_reset
 hook_reset
 alerts_manifest all true | write_manifest
 out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v2 with deploys: all" 0 "$code" "$out"
-expect_eq "deploys: all sends the success as one POST" 1 "$(wait_posts deploy 1 20)"
+wait_posts deploy 1 20 >/dev/null
+wait_for "successful deploy Telegram alert" message_received "web v2 deployed" || fail "the successful deploy Telegram alert arrives" "timed out"
+finish_senders || fail "the agent drains the successful deploy alert" "shutdown failed"
+expect_eq "deploys: all sends the success as one POST" 1 "$(posts deploy | jq 'length')"
+expect_tg_count "deploys: all sends the success as one Telegram message" 1 "web v2 deployed"
 expect_eq "the success POST says succeeded" succeeded "$(posts deploy | jq -r '.[0].state')"
 expect_eq "the success POST gives the version" v2 "$(posts deploy | jq -r '.[0].detail')"
 
 # 4b. The heartbeat is a GET about every 10 seconds, and checks and doctor show when the last one was accepted. The monitor reads
 # the manifest every minute, so the first ping can take a while.
+start_agent || fail "the agent restarts after the successful deploy" "it did not answer"
 if wait_beat_state ok 120; then pass "the heartbeat check turns ok once the agent has read the manifest"; else fail "the heartbeat check turns ok once the agent has read the manifest" "state $(beat_state state): $(beat_state detail)"; fi
 hook_reset
 sleep 28
