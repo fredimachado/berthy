@@ -13,6 +13,21 @@ import (
 	"berthy/internal/state"
 )
 
+const (
+	readTimeout          = 5 * time.Second  // shared read context for legacy read routes
+	doctorIngressTimeout = 10 * time.Second // TunnelHealth during doctor
+	doctorComposeTimeout = 5 * time.Second  // Compose version during doctor
+	doctorPeerTimeout    = 5 * time.Second  // one peer probe during doctor
+	doctorLogTimeout     = 10 * time.Second // compose log check during doctor
+	doctorResponseMargin = 5 * time.Second  // connection and report delivery
+
+	// DoctorRequestTimeout is the CLI's HTTP budget for doctor: the agent's check budgets plus time to deliver the report.
+	DoctorRequestTimeout = readTimeout +
+		max(doctorIngressTimeout+doctorComposeTimeout, credentialDoctorTimeout) +
+		doctorPeerTimeout + driftTimeout + doctorLogTimeout +
+		hostDoctorTimeout + doctorResponseMargin
+)
+
 // doctorNetwork returns the shared network the doctor checks: the configured one, else the network of the environment's
 // settings. It returns false when neither is known, as on a fresh agent before its first deploy.
 func doctorNetwork(ctx context.Context, c Config, deployment *deploy.Controller) (string, bool) {
