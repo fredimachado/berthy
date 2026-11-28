@@ -112,7 +112,7 @@ func (s *Store) expireDue(ctx context.Context, tx *sql.Tx, actor Actor, now time
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
-			rows.Close()
+			rows.Close() //nolint:errcheck // The scan failure is already returned; closing releases the cursor.
 			return nil, err
 		}
 		ids = append(ids, id)
@@ -249,7 +249,7 @@ func (s *Store) FinishApproval(ctx context.Context, id, status, result string) e
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrApprovalNotPending
 	}
 	return nil

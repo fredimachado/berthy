@@ -139,7 +139,9 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 		var selection struct {
 			Tag string `json:"version_tag"`
 		}
-		_ = json.Unmarshal(public, &selection)
+		if err := json.Unmarshal(public, &selection); err != nil {
+			return nil, err
+		}
 		o.Tag = selection.Tag
 		o.Started = time.UnixMilli(ms).UTC()
 		out = append(out, o)

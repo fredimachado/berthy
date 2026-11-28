@@ -132,7 +132,7 @@ func (rt *routeRuntime) handleStateBackupRuns(call routeCall) {
 	for _, run := range runs {
 		out = append(out, stateBackupRunStatus(run))
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleStateBackupRun(call routeCall) {
@@ -153,7 +153,7 @@ func (rt *routeRuntime) handleStateBackupRun(call routeCall) {
 	}
 	b.startState(p, actor)
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]int64{"state_backup_run_id": p.ID()})
+	json.NewEncoder(w).Encode(map[string]int64{"state_backup_run_id": p.ID()}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func stateBackupRunStatus(r state.StateBackupRun) api.StateBackupRun {

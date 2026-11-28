@@ -284,7 +284,7 @@ func (c *Controller) storeDiagnostics(ctx context.Context, opID string, d []Diag
 				items = append(items, b)
 			}
 		}
-		_ = c.Store.PutDiagnostics(ctx, opID, items)
+		_ = c.Store.PutDiagnostics(ctx, opID, items) //nolint:errcheck // Diagnostics are best effort and must not hide the rollout failure.
 	}
 	return failureReason(d, fallback)
 }

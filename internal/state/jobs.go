@@ -77,7 +77,7 @@ func (s *Store) StartJobRun(ctx context.Context, r JobRun) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return 0, ErrConflict
 	}
 	id, err := res.LastInsertId()
@@ -138,7 +138,7 @@ func (s *Store) FinishJobRunWithOutput(ctx context.Context, id int64, status str
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrConflict
 	}
 	return nil
@@ -253,7 +253,7 @@ func (s *Store) SetJobRunContainer(ctx context.Context, id int64, container stri
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrConflict
 	}
 	return nil

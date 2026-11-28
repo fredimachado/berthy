@@ -45,8 +45,8 @@ func sameSpec(a, b json.RawMessage) bool {
 	if da.Decode(&x) != nil || db.Decode(&y) != nil {
 		return false
 	}
-	ax, _ := json.Marshal(canonicalSpec(x))
-	by, _ := json.Marshal(canonicalSpec(y))
+	ax, _ := json.Marshal(canonicalSpec(x)) //nolint:errcheck // Canonicalization retains only decoded JSON values.
+	by, _ := json.Marshal(canonicalSpec(y)) //nolint:errcheck // Canonicalization retains only decoded JSON values.
 	return bytes.Equal(ax, by)
 }
 
@@ -328,8 +328,8 @@ func matchesStoredSpec(desired, live json.RawMessage) bool {
 	}
 	dropEngineDefaults(d)
 	dropEngineDefaults(l)
-	db, _ := json.Marshal(d)
-	lb, _ := json.Marshal(l)
+	db, _ := json.Marshal(d) //nolint:errcheck // Defaults are removed from decoded JSON values only.
+	lb, _ := json.Marshal(l) //nolint:errcheck // Defaults are removed from decoded JSON values only.
 	return sameSpec(db, lb)
 }
 

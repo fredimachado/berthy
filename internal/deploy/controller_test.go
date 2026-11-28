@@ -53,6 +53,16 @@ func TestAdmitCreatesHealthyFirstRelease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var public struct {
+			App     string `json:"app"`
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(got.PublicRequest, &public); err != nil {
+			t.Fatal(err)
+		}
+		if public.App != req.App || public.Version != req.Version {
+			t.Fatalf("stored public request: got app %q version %q, want %q and %q", public.App, public.Version, req.App, req.Version)
+		}
 		if got.State != "running" {
 			if got.State != "succeeded" {
 				t.Fatalf("state %s: %s", got.State, got.Err)

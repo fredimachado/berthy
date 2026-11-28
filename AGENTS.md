@@ -60,6 +60,10 @@
 - A flaky test is a bug until shown otherwise. Find the cause instead of
   rerunning it or adding a sleep; several flakes here were real bugs. Run the
   tests with `-race` in WSL, because some races only show there.
+- CI reports test `time.Sleep` calls with forbidigo; this check is report-only
+  until a follow-up makes it blocking.
+- CI reports errcheck and staticcheck findings without blocking until a
+  follow-up resolves them. Explain intentional error discards at the call.
 - Windows and macOS file systems ignore case; Linux does not. A lookup that
   opens a file by a name the user typed, such as a time zone, can pass there
   and fail on Linux. Check the spelling against the canonical name instead.
@@ -83,6 +87,8 @@
 
 ## Design rules
 
+- Blocking funlen limits functions to 580 counted lines.
+
 - During automatic `cli_key` download, the encryption key crosses SSH and sudo only wrapped for a key pair that lives in one setup run (`internal/keywrap`). No script reads, hashes or prints it for transport, and what the hand-over prints never reaches `failureText` or a step detail.
 - While `<key>.next` exists the key file may be stale. Code that takes a key off the server reads it with `state.ReadSettledKey`.
 - A file that holds a secret on the operator’s machine is written through `internal/keycopy`: pinned directories, checks on the opened handle, never replaced.
@@ -102,6 +108,9 @@
   keys matched to fields only by their exact name, no key twice at any depth.
   Preserve decision fields when redacting metadata so approval comparison
   can detect a changed outcome.
+  Blocking forbidigo checks request-body access and calls to `readBody` in
+  agent production code; the shared decoder and approval gate have narrow
+  exceptions.
 - Each manifest key is defined once, in `internal/manifest/keys.go`. The guide
   reference, `berthy docs` and the JSON Schema are generated from it with
   `go generate`, and a test fails if they drift.
@@ -114,10 +123,9 @@
 - `third_party/` holds vendored packages with patches (for example, `xid`
   reads the machine id lazily so startup never searches PATH). Don't replace
   them with upstream copies.
-- A new field on `deploy.Request` goes in three places: the struct, the
-  request hash in `Admit` (the same request id with another value is a
-  conflict), and the allowlist in `state.publicJSON`. Without the last one,
-  every request with the field is refused as an invalid admission.
+- A new field on `deploy.Request` needs a public visibility decision. The
+  admission field tests check the request hash, public projection and state
+  allowlist; the successful admission test checks persisted app and version.
 - Every return path in `runDeploy` leaves an outcome that `state.Store.Finish`
   accepts: never `Settings` or `Protected` without a `Release`. Build a fresh
   outcome on a failure path rather than clearing fields of a successful one.
@@ -139,8 +147,12 @@
 - A reader never returns `(0, nil)` at the end of its input, which makes its
   caller loop forever. A stream cut inside a frame ends with
   `io.ErrUnexpectedEOF`.
+  `TestAttachEndsCleanlyBetweenFrames` and
+  `TestAttachReportsAStreamCutInsideAPayload` check those two endings.
 - A helper container whose output holds backup data or secrets sets its log
   driver to `none`, so Docker does not keep a copy of that output on disk.
+  The archive and restore tests check volume helper specs; the two streamed
+  image command tests check backup and restore helper specs.
 - Released CLIs and agents refuse unknown manifest keys. A new key can't
   appear in berthy-examples or in instructions for released versions until a
   release ships it.
@@ -149,11 +161,13 @@
   `berthy mcp` never reads it: the agent's approval gate holds only tokens
   marked `agent`, so an MCP server or a script's entry that fell back to it
   would bypass approvals.
+  Blocking depguard restricts direct keyring imports to `internal/credstore`.
 - Redact the active bearer token and any entered secret before displaying
   agent or registry diagnostics, including preflight errors. Exercise
   version preflight with a release-stamped CLI because dev builds skip it.
 
 ## Docs
+
 
 - `docs/user-guide.md` repeats exact CLI output, such as the next steps that
   `berthy setup` prints. When a message changes, search `docs/` for its old

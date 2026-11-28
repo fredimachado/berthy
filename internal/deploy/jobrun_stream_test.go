@@ -15,6 +15,19 @@ import (
 
 var dumpJob = manifest.Job{App: "web", Role: "web", Command: []string{"sh", "-c", "dump"}, Timeout: "1m"}
 
+func requireNoDockerLog(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var spec struct {
+		HostConfig struct{ LogConfig struct{ Type string } }
+	}
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("decode helper log driver: %v", err)
+	}
+	if driver := spec.HostConfig.LogConfig.Type; driver != "none" {
+		t.Fatalf("helper log driver = %q, want none", driver)
+	}
+}
+
 func TestRunCommandStreamsTheOutputOfAnImageAppFromAContainerOfItsOwn(t *testing.T) {
 	c, f := jobFixture(t)
 	f.streamOut = "the dump"
@@ -33,7 +46,6 @@ func TestRunCommandStreamsTheOutputOfAnImageAppFromAContainerOfItsOwn(t *testing
 		OpenStdin  bool
 		StdinOnce  bool
 		Tty        bool
-		HostConfig struct{ LogConfig struct{ Type string } }
 	}
 	if err = json.Unmarshal(f.specs[0], &spec); err != nil {
 		t.Fatal(err)
@@ -41,10 +53,7 @@ func TestRunCommandStreamsTheOutputOfAnImageAppFromAContainerOfItsOwn(t *testing
 	if !spec.OpenStdin || !spec.StdinOnce || spec.Tty || spec.Entrypoint[0] != "sh" {
 		t.Errorf("stdin and terminal: %s", f.specs[0])
 	}
-	// What the command writes is the product, so Docker must not keep a copy of it in a log on the server's disk.
-	if spec.HostConfig.LogConfig.Type != "none" {
-		t.Errorf("the container logs its output: %s", f.specs[0])
-	}
+	requireNoDockerLog(t, f.specs[0])
 	if spec.Labels["berthy.environment"] != "test" || spec.Labels["berthy.backup"] != "main-db" || spec.Labels["berthy.oneoff"] != "backup" {
 		t.Errorf("labels %v", spec.Labels)
 	}
@@ -84,6 +93,7 @@ func TestRunCommandGivesAnImageAppsCommandItsInput(t *testing.T) {
 	if err != nil || res.Exit == nil || *res.Exit != 0 || string(f.streamIn) != "the dump" {
 		t.Fatalf("outcome %+v %v, input %q", res, err, f.streamIn)
 	}
+	requireNoDockerLog(t, f.specs[0])
 }
 
 func TestRunCommandStreamsTheOutputOfAComposeAppFromItsServiceContainer(t *testing.T) {

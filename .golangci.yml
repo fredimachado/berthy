@@ -1,0 +1,53 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - forbidigo
+    - funlen
+  settings:
+    depguard:
+      rules:
+        credential-store:
+          files:
+            - $all
+            - '!**/internal/credstore/*.go'
+          deny:
+            - pkg: github.com/zalando/go-keyring$
+              desc: Use internal/credstore for OS credential access.
+    forbidigo:
+      analyze-types: true
+      exclude-godoc-examples: false
+      forbid:
+        - pattern: '^http\.Request\.Body$'
+          pkg: '^net/http$'
+          msg: Agent routes must use the shared body decoder.
+        - pattern: '^agent\.readBody$'
+          pkg: '^berthy/internal/agent$'
+          msg: Agent routes must use the shared body decoder instead of readBody.
+    funlen:
+      lines: 580
+      statements: -1
+      ignore-comments: false
+  exclusions:
+    paths:
+      - '^third_party/'
+    rules:
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder\.'
+        path-except: '^internal/agent/[^/]*\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder\.'
+        path: '_test\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder instead of readBody\.'
+        path-except: '^internal/agent/[^/]*\.go$'
+      - linters: [forbidigo]
+        text: 'Agent routes must use the shared body decoder instead of readBody\.'
+        path: '_test\.go$'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false

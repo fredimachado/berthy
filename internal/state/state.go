@@ -505,7 +505,7 @@ func (s *Store) markStep(ctx context.Context, id string, ordinal int, phase stri
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 	if n != 1 {
 		return sql.ErrNoRows
 	}
@@ -1012,7 +1012,7 @@ func (s *Store) DeleteOperationSecret(ctx context.Context, opID, name string) er
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 	if n != 1 {
 		return sql.ErrNoRows
 	}
@@ -1067,7 +1067,7 @@ func (s *Store) DeleteSecret(ctx context.Context, actor Actor, name string) erro
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 	if n != 1 {
 		return sql.ErrNoRows
 	}
@@ -1114,7 +1114,7 @@ func (s *Store) ReleaseManual(ctx context.Context, actor Actor) error {
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 	if n != 1 {
 		return ErrConflict
 	}
@@ -1175,7 +1175,9 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 		var selection struct {
 			Tag string `json:"version_tag"`
 		}
-		_ = json.Unmarshal(public, &selection)
+		if err := json.Unmarshal(public, &selection); err != nil {
+			return nil, err
+		}
 		a.Tag = selection.Tag
 		a.Time = time.UnixMilli(ms).UTC()
 		out = append(out, a)
@@ -1431,7 +1433,7 @@ func (s *Store) DeleteIngressRoute(ctx context.Context, opID, hostname string) e
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 	if n != 1 {
 		return sql.ErrNoRows
 	}

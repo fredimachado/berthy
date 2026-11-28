@@ -77,6 +77,29 @@ type Request struct {
 	recordTag string
 	rollback  bool
 }
+
+func (req Request) publicRequest() (json.RawMessage, error) {
+	return json.Marshal(struct {
+		App             string `json:"app"`
+		Version         string `json:"version"`
+		Commit          string `json:"commit"`
+		Modified        bool   `json:"modified,omitempty"`
+		Adopt           bool   `json:"adopt"`
+		RevertSchema    bool   `json:"revert_schema,omitempty"`
+		TargetRelease   int64  `json:"target_release,omitempty"`
+		ReplaceExisting bool   `json:"replace_existing,omitempty"`
+		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
+		Volumes         bool   `json:"volumes,omitempty"`
+		Tunnel          bool   `json:"tunnel,omitempty"`
+		RestoreKey      string `json:"restore_key,omitempty"`
+		RestoreInto     string `json:"restore_into,omitempty"`
+		KeepVersion     bool   `json:"keep_version,omitempty"`
+		KeepDigest      string `json:"keep_digest,omitempty"`
+		VersionTag      string `json:"version_tag,omitempty"`
+		ExpectedApplied *int64 `json:"expected_applied,omitempty"`
+	}{req.App, req.Version, req.Commit, req.Modified, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest, req.VersionTag, req.ExpectedApplied})
+}
+
 type Actor struct {
 	ID, Name, Remote string
 	Admin            bool
@@ -632,25 +655,7 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 			return state.Operation{}, false, err
 		}
 	}
-	public, err := json.Marshal(struct {
-		App             string `json:"app"`
-		Version         string `json:"version"`
-		Commit          string `json:"commit"`
-		Modified        bool   `json:"modified,omitempty"`
-		Adopt           bool   `json:"adopt"`
-		RevertSchema    bool   `json:"revert_schema,omitempty"`
-		TargetRelease   int64  `json:"target_release,omitempty"`
-		ReplaceExisting bool   `json:"replace_existing,omitempty"`
-		AllowRecreate   bool   `json:"allow_recreate,omitempty"`
-		Volumes         bool   `json:"volumes,omitempty"`
-		Tunnel          bool   `json:"tunnel,omitempty"`
-		RestoreKey      string `json:"restore_key,omitempty"`
-		RestoreInto     string `json:"restore_into,omitempty"`
-		KeepVersion     bool   `json:"keep_version,omitempty"`
-		KeepDigest      string `json:"keep_digest,omitempty"`
-		VersionTag      string `json:"version_tag,omitempty"`
-		ExpectedApplied *int64 `json:"expected_applied,omitempty"`
-	}{req.App, req.Version, req.Commit, req.Modified, req.Adopt, req.RevertSchema, req.TargetRelease, req.ReplaceExisting, req.AllowRecreate, req.Volumes, req.Tunnel, req.RestoreKey, req.RestoreInto, req.KeepVersion, req.KeepDigest, req.VersionTag, req.ExpectedApplied})
+	public, err := req.publicRequest()
 	if err != nil {
 		return state.Operation{}, false, err
 	}

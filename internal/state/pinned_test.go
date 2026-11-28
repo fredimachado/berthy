@@ -156,3 +156,24 @@ func TestLegacyRequestsRetainEmptyAuditAndHistoryTag(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryAndAuditRejectInvalidStoredRequest(t *testing.T) {
+	s, _, _ := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "bad-json", ActorID: "actor", Kind: "deploy", App: "api", PublicRequest: json.RawMessage(`{"app":"api"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, op.ID, Outcome{State: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE operations SET public_request=? WHERE id=?`, `{`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeployHistory(ctx, "api"); err == nil {
+		t.Error("history accepted invalid stored request")
+	}
+	if _, err := s.AuditLog(ctx, 100); err == nil {
+		t.Error("audit accepted invalid stored request")
+	}
+}

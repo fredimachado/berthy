@@ -66,7 +66,7 @@ func handler(token string, dial monitor.DialFunc) http.Handler {
 			return
 		}
 		ok, detail := run(r.Context(), req, dial)
-		_ = json.NewEncoder(w).Encode(response{OK: ok, Detail: detail})
+		_ = json.NewEncoder(w).Encode(response{OK: ok, Detail: detail}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 	})
 }
 
@@ -224,5 +224,5 @@ type response struct {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }

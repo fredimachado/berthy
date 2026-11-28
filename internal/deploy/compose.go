@@ -804,7 +804,7 @@ func failedWith(err error) state.Outcome {
 
 // reasonEvent is the public event data for one blocker.
 func reasonEvent(text string) json.RawMessage {
-	b, _ := json.Marshal(map[string]string{"reason": text})
+	b, _ := json.Marshal(map[string]string{"reason": text}) //nolint:errcheck // A string-only map always marshals as JSON.
 	return b
 }
 

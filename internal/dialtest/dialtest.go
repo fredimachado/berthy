@@ -37,7 +37,7 @@ func HangUp(t testing.TB) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, err := http.NewResponseController(w).Hijack()
 		if err == nil {
-			conn.Close()
+			conn.Close() //nolint:errcheck // This fixture deliberately hangs up without sending a response.
 		}
 	}))
 	t.Cleanup(srv.Close)

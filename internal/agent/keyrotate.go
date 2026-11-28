@@ -29,5 +29,5 @@ func (rt *routeRuntime) serveKeyRotate(call routeCall, read readRouteBody[dryRun
 		writeError(w, 500, "key_rotation_failed", "key rotation failed")
 		return
 	}
-	json.NewEncoder(w).Encode(api.KeyRotation{OldKeyID: rep.OldKeyID, NewKeyID: rep.NewKeyID, Values: rep.Values, KeyFile: rep.KeyFile, DryRun: req.DryRun})
+	json.NewEncoder(w).Encode(api.KeyRotation{OldKeyID: rep.OldKeyID, NewKeyID: rep.NewKeyID, Values: rep.Values, KeyFile: rep.KeyFile, DryRun: req.DryRun}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }

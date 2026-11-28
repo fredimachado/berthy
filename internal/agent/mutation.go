@@ -145,14 +145,14 @@ func (rt *routeRuntime) handleLockStatus(call routeCall) {
 	w, ctx, d := call.w, call.r.Context(), rt.d
 	l, err := d.Store.Lock(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		json.NewEncoder(w).Encode(map[string]bool{"locked": false})
+		json.NewEncoder(w).Encode(map[string]bool{"locked": false}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	if err != nil {
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID})
+	json.NewEncoder(w).Encode(map[string]any{"locked": true, "holder": l.Holder, "reason": l.Reason, "acquired": l.Acquired, "operation_id": l.OperationID}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleLockAcquire(call routeCall, read readRouteBody[lockBody]) {
@@ -184,7 +184,7 @@ func (rt *routeRuntime) changeLock(call routeCall, read readRouteBody[lockBody],
 		if req.Message != "" {
 			plan["message"] = req.Message
 		}
-		json.NewEncoder(w).Encode(plan)
+		json.NewEncoder(w).Encode(plan) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	err = change(req)
@@ -192,7 +192,7 @@ func (rt *routeRuntime) changeLock(call routeCall, read readRouteBody[lockBody],
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleSecretList(call routeCall) {
@@ -206,7 +206,7 @@ func (rt *routeRuntime) handleSecretList(call routeCall) {
 	for _, v := range rows {
 		out = append(out, map[string]string{"name": v.Name, "registry": v.Registry})
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleSecretSet(call routeCall, read readRouteBody[secretBody]) {
@@ -266,7 +266,7 @@ func (rt *routeRuntime) changeSecret(call routeCall, read readRouteBody[secretBo
 				}
 			}
 		}
-		json.NewEncoder(w).Encode(plan)
+		json.NewEncoder(w).Encode(plan) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	if deleting {
@@ -279,7 +279,7 @@ func (rt *routeRuntime) changeSecret(call routeCall, read readRouteBody[secretBo
 		return
 	}
 	if deleting || req.Registry == "" {
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	// A registry password: Swarm keeps its own copy with each service that pulls from the registry.
@@ -300,7 +300,7 @@ func (rt *routeRuntime) changeSecret(call routeCall, read readRouteBody[secretBo
 	if refreshErr != nil || len(refreshed) > 0 {
 		d.Store.RecordAudit(ctx, sa, "registry_auth_refresh:"+req.Registry, outcome)
 	}
-	json.NewEncoder(w).Encode(answer)
+	json.NewEncoder(w).Encode(answer) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleChecks(call routeCall) {
@@ -314,7 +314,7 @@ func (rt *routeRuntime) handleChecks(call routeCall) {
 	for _, row := range rows {
 		out = append(out, map[string]any{"name": row.Name, "state": row.State, "detail": row.Detail, "since": row.Since})
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleAlertsTest(call routeCall) {
@@ -338,7 +338,7 @@ func (rt *routeRuntime) handleAlertsTest(call routeCall) {
 		alertError(w, sendErr)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results})
+	json.NewEncoder(w).Encode(map[string][]channelResult{"channels": results}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleAdmission(call routeCall, read readRouteBody[deploy.Request]) {
@@ -368,7 +368,7 @@ func (rt *routeRuntime) handleApply(call routeCall, read readRouteBody[deploy.Ap
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(result) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleRestore(call routeCall, read readRouteBody[restoreBody]) {
@@ -413,7 +413,7 @@ func (rt *routeRuntime) handleIngressStatus(call routeCall) {
 		writeError(call.w, 503, "unavailable", "ingress status unavailable")
 		return
 	}
-	json.NewEncoder(call.w).Encode(status)
+	json.NewEncoder(call.w).Encode(status) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {
@@ -429,7 +429,7 @@ func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {
 			writeDeployFieldPreview(w, plan)
 			return
 		}
-		json.NewEncoder(w).Encode(plan)
+		json.NewEncoder(w).Encode(plan) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	op, _, err := rt.d.Admit(ctx, actor, req)
@@ -440,7 +440,7 @@ func (rt *routeRuntime) planOrAdmit(call routeCall, req deploy.Request) {
 	path := apiPrefix(rt.c) + "operations/" + op.ID + "/events"
 	w.Header().Set("Location", path)
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path})
+	json.NewEncoder(w).Encode(map[string]string{"operation_id": op.ID, "events_url": path}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleOperation(call routeCall) {
@@ -451,7 +451,7 @@ func (rt *routeRuntime) handleOperation(call routeCall) {
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(publicOperation(op))
+	json.NewEncoder(w).Encode(publicOperation(op)) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleOutput(call routeCall) {
@@ -481,7 +481,7 @@ func (rt *routeRuntime) handleOutput(call routeCall) {
 				writeError(w, 503, "unavailable", "output unavailable")
 				return
 			}
-			json.NewEncoder(w).Encode(output)
+			json.NewEncoder(w).Encode(output) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 			return
 		}
 	}
@@ -505,7 +505,7 @@ func (rt *routeRuntime) handleDiagnostics(call routeCall) {
 		writeError(w, 404, "not_found", "no diagnostics for this operation")
 		return
 	}
-	json.NewEncoder(w).Encode(struct {
+	json.NewEncoder(w).Encode(struct { //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		OperationID string            `json:"operation_id"`
 		Reason      string            `json:"reason"`
 		Diagnostics []json.RawMessage `json:"diagnostics"`
@@ -529,7 +529,7 @@ func (rt *routeRuntime) handleResolve(call routeCall, read readRouteBody[resolve
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(report)
+	json.NewEncoder(w).Encode(report) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleCancel(call routeCall, read readRouteBody[dryRunBody]) {
@@ -550,7 +550,7 @@ func (rt *routeRuntime) handleCancel(call routeCall, read readRouteBody[dryRunBo
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(plan)
+	json.NewEncoder(w).Encode(plan) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleEvents(call routeCall) {
@@ -574,7 +574,7 @@ func (rt *routeRuntime) handleWait(call routeCall) {
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleApplied(call routeCall) {
@@ -595,7 +595,7 @@ func (rt *routeRuntime) handleApplied(call routeCall) {
 	if release.Tag != "" {
 		row["tag"] = release.Tag
 	}
-	json.NewEncoder(w).Encode(row)
+	json.NewEncoder(w).Encode(row) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleHistoryDiff(call routeCall) {
@@ -611,7 +611,7 @@ func (rt *routeRuntime) handleHistoryDiff(call routeCall) {
 		operationError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(diff)
+	json.NewEncoder(w).Encode(diff) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleHistory(call routeCall) {
@@ -646,7 +646,7 @@ func (rt *routeRuntime) handleHistory(call routeCall) {
 		out = append(out, row)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i]["created"].(time.Time).After(out[j]["created"].(time.Time)) })
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleAudit(call routeCall) {
@@ -665,7 +665,7 @@ func (rt *routeRuntime) handleAudit(call routeCall) {
 		}
 		out = append(out, row)
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func publicRelease(r state.Release) map[string]any {
@@ -761,7 +761,7 @@ func serveSecretImport(w http.ResponseWriter, r *http.Request, d *deploy.Control
 			secretImportError(w, err)
 			return
 		}
-		json.NewEncoder(w).Encode(api.SecretImportPlan{Action: "secret import", Create: create, Replace: replace})
+		json.NewEncoder(w).Encode(api.SecretImportPlan{Action: "secret import", Create: create, Replace: replace}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 		return
 	}
 	writes := make([]state.SecretWrite, 0, len(req.Secrets))
@@ -773,7 +773,7 @@ func serveSecretImport(w http.ResponseWriter, r *http.Request, d *deploy.Control
 		secretImportError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(api.SecretImportResult{Created: created, Replaced: replaced})
+	json.NewEncoder(w).Encode(api.SecretImportResult{Created: created, Replaced: replaced}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 // secretImportError answers a failed import. A registry password name gets a refusal that says what to use instead; any other

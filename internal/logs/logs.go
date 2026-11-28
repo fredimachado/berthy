@@ -131,7 +131,7 @@ func readAll(ctx context.Context, source Source, ids []Identity, opts Options, f
 			go func() {
 				select {
 				case <-ctx.Done():
-					stream.Close()
+					stream.Close() //nolint:errcheck // Cancellation closes the stream only to unblock the reader.
 				case <-closed:
 				}
 			}()
@@ -142,7 +142,7 @@ func readAll(ctx context.Context, source Source, ids []Identity, opts Options, f
 				return nil
 			})
 			close(closed)
-			stream.Close()
+			stream.Close() //nolint:errcheck // The read result already determines whether log collection succeeded.
 			if err != nil {
 				err = fmt.Errorf("logs for %s: %w", id.ContainerID, err)
 			}

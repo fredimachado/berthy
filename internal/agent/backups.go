@@ -351,7 +351,7 @@ func (rt *routeRuntime) handleBackups(call routeCall) {
 		backupError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(entries)
+	json.NewEncoder(w).Encode(entries) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) backupManifest(call routeCall) (manifest.Manifest, bool) {
@@ -395,7 +395,7 @@ func (rt *routeRuntime) handleBackupRuns(call routeCall) {
 	for _, run := range runs {
 		out = append(out, backupRunStatus(run))
 	}
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func (rt *routeRuntime) handleBackupRun(call routeCall) {
@@ -412,7 +412,7 @@ func (rt *routeRuntime) handleBackupRun(call routeCall) {
 	}
 	b.start(p, actor, rest[1])
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]int64{"backup_run_id": p.ID()})
+	json.NewEncoder(w).Encode(map[string]int64{"backup_run_id": p.ID()}) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
 func backupRunStatus(r state.BackupRun) api.BackupRun {

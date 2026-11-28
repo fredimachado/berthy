@@ -57,7 +57,7 @@ func (s *Store) StartBackup(ctx context.Context, b BackupRun) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return 0, ErrConflict
 	}
 	id, err := res.LastInsertId()
@@ -91,7 +91,7 @@ func (s *Store) FinishBackup(ctx context.Context, id int64, status string, size 
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrConflict
 	}
 	return nil
@@ -133,7 +133,7 @@ func (s *Store) SetBackupObjectKey(ctx context.Context, id int64, key string) er
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 { //nolint:errcheck // The SQLite driver returns a stored row count with no error.
 		return ErrConflict
 	}
 	return nil
@@ -198,7 +198,7 @@ func (s *Store) BackupHistory(ctx context.Context, backup string) (BackupHistory
 	for rows.Next() {
 		r, err := scanBackupRun(rows)
 		if err != nil {
-			rows.Close()
+			rows.Close() //nolint:errcheck // The scan failure is already returned; closing releases the cursor.
 			return h, err
 		}
 		h.Successes = append(h.Successes, r)
