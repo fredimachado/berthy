@@ -75,7 +75,8 @@ type setupReport struct {
 }
 
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
-// step is ok or changed (or would change, in a dry run), 1 that a step failed, 2 that the command line is wrong.
+// step is ok or changed (or would change, in a dry run), 1 that a step failed or the manifest could not be loaded (before
+// setup starts), 2 that the command line is wrong (usage is printed).
 func runSetup(args []string, out, errout io.Writer) int {
 	ctx, stop := commandContext()
 	defer stop()
@@ -381,11 +382,9 @@ type setupFrom struct {
 }
 
 // setupSettings finds the network and protected setting: from a loaded manifest when m is set, from the flags otherwise.
-// A flag that disagrees with the manifest is an error. A nil m is the no-manifest path.
+// A flag that disagrees with the manifest is an error. A nil m is the no-manifest path. The caller has already refused an
+// invalid --project.
 func setupSettings(dir, env, project, network string, protected bool, m *manifest.Manifest) (setupFrom, error) {
-	if project != "" && !scope.ValidProject(project) {
-		return setupFrom{}, fmt.Errorf("invalid --project %q", project)
-	}
 	if m != nil {
 		if project != "" && project != m.Project {
 			return setupFrom{}, fmt.Errorf("--project %s differs from the project %s in the manifest", project, m.Project)

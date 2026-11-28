@@ -7,6 +7,7 @@ set -uo pipefail
 
 python3 - "$BIN" "$RUN" "$PROJECT" "$ENVN" <<'PY'
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -15,31 +16,35 @@ import time
 binary, run, project, environment = sys.argv[1:]
 config = os.path.join(run, 'admin.json')
 watchdog = 120
-out_path = os.path.join(run, 'stats-watch.out')
 err_path = os.path.join(run, 'stats-watch.err')
 
 child = None
 try:
-    with open(out_path, 'wb') as stdout, open(err_path, 'wb') as stderr:
+    with open(err_path, 'wb') as stderr:
         child = subprocess.Popen(
             [binary, 'stats', '-e', environment, '--project', project, '--config', config, '--watch'],
-            stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
             env={**os.environ, 'NO_COLOR': '1', 'NO_PROXY': '127.0.0.1'},
         )
         deadline = time.monotonic() + watchdog
-        while time.monotonic() < deadline:
+        buf = b''
+        lines = []
+        while True:
             assert child.poll() is None, 'CLI exited before the second sample'
-            with open(out_path, 'rb') as current:
-                text = current.read().decode()
-            top_time = [line for line in text.splitlines() if line.startswith('time:')]
-            if len(top_time) >= 2:
+            remaining = max(0, deadline - time.monotonic())
+            if remaining == 0:
+                raise AssertionError('second top-level time: line did not arrive')
+            ready, _, _ = select.select([child.stdout], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(child.stdout.fileno(), 65536)
+            assert chunk, 'stats stream ended before the second sample'
+            buf += chunk
+            while b'\n' in buf:
+                line, buf = buf.split(b'\n', 1)
+                lines.append(line.decode())
+            if sum(1 for line in lines if line.startswith('time:')) >= 2:
                 break
-            time.sleep(0.2)
-        else:
-            raise AssertionError('second top-level time: line did not arrive')
-    with open(out_path, 'rb') as current:
-        text = current.read().decode()
-    lines = text.splitlines()
     first_time = next(i for i, line in enumerate(lines) if line.startswith('time:'))
     next_containers = next(
         i for i, line in enumerate(lines[first_time + 1 :], first_time + 1)
@@ -57,8 +62,10 @@ finally:
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
+    if child is not None and child.stdout is not None:
+        child.stdout.close()
 PY
 code=$?
-expect_code "stats --watch separates human samples" 0 "$code" "$(cat "$RUN/stats-watch.err" 2>/dev/null; cat "$RUN/stats-watch.out" 2>/dev/null | head -n 40)"
+expect_code "stats --watch separates human samples" 0 "$code" "$(cat "$RUN/stats-watch.err" 2>/dev/null | head -n 40)"
 
 finish

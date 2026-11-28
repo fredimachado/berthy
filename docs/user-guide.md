@@ -281,7 +281,7 @@ If you want a machine-readable result, add `--json`. It prints one object and no
  "token": "<token>", "key_copy": "/home/me/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key", "next_steps": ["..."]}
 ```
 
-Exit codes: `0` all steps fine, `1` a step failed (the output names it), `2` the command line is wrong. If a later step fails after the configuration holding the token went live, setup prints the token if the save was not confirmed or `--show-token` was given. If activation is interrupted while installing or rolling back the configuration and setup cannot tell which configuration remains, the failed run also shows the token in case the server kept it. The token is not saved or treated as live in that case. A key copy that could not be saved does not change the exit code.
+Exit codes: `0` all steps fine, `1` a step failed (the output names it) or the manifest could not be loaded (before setup starts), `2` the command line is wrong (usage is printed). If a later step fails after the configuration holding the token went live, setup prints the token if the save was not confirmed or `--show-token` was given. If activation is interrupted while installing or rolling back the configuration and setup cannot tell which configuration remains, the failed run also shows the token in case the server kept it. The token is not saved or treated as live in that case. A key copy that could not be saved does not change the exit code.
 
 #### Where the binary comes from
 
@@ -3038,7 +3038,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, or add or remove one hosted environment over SSH or on the server. Exit 0 all steps fine, 1 a step failed, 2 wrong command line. Run one setup at a time against a server. |
+| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, or add or remove one hosted environment over SSH or on the server. Exit 0 all steps fine, 1 a step failed or the manifest could not be loaded (before setup starts), 2 wrong command line (usage). Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--save-token`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. With `--save-token`, reads the token and saves it in the credential store. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. With no entries, or a missing file, prints `no contexts configured`; with `--json`, `[]`. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
@@ -3060,8 +3060,8 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 | Code | Meaning |
 | --- | --- |
 | `0` | Done. For `deploy`, `rollback`, `restart` and the like: the operation `succeeded`. For `job run`, `backup run`, `state-backup`: the run succeeded. For `doctor`: no critical check failed. |
-| `1` | Failed: the operation `failed`, `rolled_back`, `interrupted` or needs `recovery_required`; the agent refused (the message says why); the agent could not be reached; the CLI configuration file could not be read (the message names it); a setup step failed. |
-| `2` | The command line is wrong: an unknown flag, a missing argument, a missing `-e`. |
+| `1` | Failed: the operation `failed`, `rolled_back`, `interrupted` or needs `recovery_required`; the agent refused (the message says why); the agent could not be reached; the CLI configuration file could not be read (the message names it); a setup step failed; setup could not load the manifest (before any step runs). |
+| `2` | The command line is wrong: an unknown flag, a missing argument, a missing `-e`. Setup prints usage with the refusal. |
 | `3` | Held for approval: an AI agent's token asked for a change on a protected environment. Not done, not failed. |
 
 ### Manifest keys
