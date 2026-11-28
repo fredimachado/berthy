@@ -194,7 +194,7 @@ func (t *tools) send(ctx context.Context, client *http.Client, method, path, que
 		if errors.Is(err, agentclient.ErrInvalidResponse) {
 			return nil, 0, t.fail("invalid agent response")
 		}
-		return nil, 0, t.fail("agent connection failed")
+		return nil, 0, failure(agentclient.ConnectionMessage(t.c.Target.Base, err, t.c.Target.Redact))
 	}
 	return data, status, nil
 }

@@ -110,7 +110,7 @@ func runJobLogs(ctx context.Context, f commandFlags, base *url.URL, prefix, toke
 	call := agentclient.Caller(ctx, agentclient.NewHTTPClient(), base, prefix, token)
 	data, status, err := call("GET", "jobs/"+url.PathEscape(f.pos[1])+"/logs", query)
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 		return 1
 	}
 	if status == http.StatusNotFound {
@@ -177,7 +177,7 @@ func runJobRun(ctx context.Context, client *http.Client, base *url.URL, prefix, 
 	result, err := agentclient.DoResult(ctx, client, base, prefix, token, "POST", "jobs/"+name+"/run", "", nil)
 	data, status := result.Data, result.Status
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, asJSON)
 		return 1
 	}
 	var started struct {

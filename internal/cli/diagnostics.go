@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"berthy/internal/agentclient"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -98,24 +99,7 @@ func printDiagnostics(out, errout io.Writer, body []byte) int {
 	return 0
 }
 
-// terminalSafe replaces control characters, which an app's output could use to rewrite the terminal, with visible escapes.
-// A line break in a single-line field becomes a space.
-func terminalSafe(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '\t':
-			b.WriteString("    ")
-		case r == '\n' || r == '\r':
-			b.WriteByte(' ')
-		case r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0:
-			fmt.Fprintf(&b, `\x%02x`, r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+func terminalSafe(s string) string { return agentclient.TerminalSafe(s) }
 
 // failureHint is the pointer a failed deploy leaves for the person or agent that must find out why. The operation's own
 // output already carries its reason.

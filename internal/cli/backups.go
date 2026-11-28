@@ -125,7 +125,8 @@ func printRestorePlan(out, errout io.Writer, data []byte) int {
 
 // runBackupCommand runs "backup list" and "backup run NAME".
 func runBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix, token string, out, errout io.Writer) int {
-	call := agentclient.CallerResult(ctx, agentclient.NewHTTPClient(), base, prefix, token)
+	client := agentclient.NewHTTPClient()
+	call := agentclient.CallerResult(ctx, client, base, prefix, token)
 	redact := func(s string) string { return redactSecretText(s, token) }
 	switch {
 	case len(f.pos) == 1 && f.pos[0] == "list":
@@ -138,7 +139,7 @@ func runBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix
 		data, status := result.Data, result.Status
 		progress.Close()
 		if err != nil {
-			fmt.Fprintln(errout, "agent connection failed")
+			printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 			return 1
 		}
 		if status != http.StatusOK {
@@ -147,7 +148,7 @@ func runBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix
 		}
 		return printBackups(out, errout, data, f.json)
 	case len(f.pos) == 2 && f.pos[0] == "run" && f.pos[1] != "" && f.backup == "":
-		return runBackupRunResult(ctx, call, f.pos[1], f.json, out, errout, redact)
+		return runBackupRun(ctx, client, base, prefix, token, f.pos[1], f.json, out, errout)
 	}
 	fmt.Fprintln(errout, "usage: backup list [--backup NAME] | backup run NAME")
 	return 2
@@ -155,19 +156,14 @@ func runBackupCommand(ctx context.Context, f commandFlags, base *url.URL, prefix
 
 // runBackupRun asks the agent to start the backup, waits for the run to finish, and prints the result. It exits 0 only when
 // the run succeeded.
-func runBackupRun(ctx context.Context, call func(method, path, query string) ([]byte, int, error), name string, asJSON bool, out, errout io.Writer, redact func(string) string) int {
-	return runBackupRunResult(ctx, func(method, path, query string) (agentclient.Result, error) {
-		data, status, err := call(method, path, query)
-		return agentclient.Result{Data: data, Status: status}, err
-	}, name, asJSON, out, errout, redact)
-}
-
-func runBackupRunResult(ctx context.Context, call func(method, path, query string) (agentclient.Result, error), name string, asJSON bool, out, errout io.Writer, redact func(string) string) int {
+func runBackupRun(ctx context.Context, client *http.Client, base *url.URL, prefix, token, name string, asJSON bool, out, errout io.Writer) int {
+	call := agentclient.CallerResult(ctx, client, base, prefix, token)
+	redact := func(s string) string { return redactSecretText(s, token) }
 	escaped := url.PathEscape(name)
 	result, err := call("POST", "backups/"+escaped+"/run", "")
 	data, status := result.Data, result.Status
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, asJSON)
 		return 1
 	}
 	if status != http.StatusAccepted {

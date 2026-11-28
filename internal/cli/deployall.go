@@ -200,7 +200,7 @@ func runDeployAll(ctx context.Context, f commandFlags, target *agentclient.Targe
 		if !m.Protected {
 			policy, err = agentclient.AgentProtection(ctx, client, target)
 			if err != nil {
-				printAgentRefusal(errout, terminalSafe(err.Error()), !f.json, agentclient.IsOlderAgentError(err))
+				printAgentProtectionError(out, errout, target, err, f.json)
 				return 1
 			}
 		}

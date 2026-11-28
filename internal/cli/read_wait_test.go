@@ -1,12 +1,20 @@
 package cli
 
 import (
+	"berthy/internal/dialtest"
 	"berthy/internal/scope"
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -396,4 +404,73 @@ func TestWaitCommandClearsBeforeReadFailure(t *testing.T) {
 			t.Errorf("late stdout=%q", got)
 		}
 	})
+}
+
+func TestReadRequestConnectionFailures(t *testing.T) {
+	cases := []struct {
+		name, address, reason string
+		cause                 error
+		refused               bool
+	}{
+		{"refused", "http://" + dialtest.Refused, "connection refused", nil, true},
+		{"not found", "http://agent.invalid:7710", "name not found", &net.DNSError{IsNotFound: true}, false},
+		{"dns", "http://agent.invalid", "DNS lookup failed", &net.DNSError{Err: "broken"}, false},
+		{"dns timeout", "http://agent.invalid", "connection timed out", &net.DNSError{IsTimeout: true}, false},
+		{"timeout", "http://agent.invalid", "connection timed out", context.DeadlineExceeded, false},
+		{"network", "http://agent.invalid", "network unreachable", syscall.ENETUNREACH, false},
+		{"host", "http://agent.invalid", "network unreachable", syscall.EHOSTUNREACH, false},
+		{"fallback", "http://agent.invalid", "connection failed", errors.New("failure fixture-token\n \x1b"), false},
+	}
+	if runtime.GOOS == "windows" {
+		cases = append(cases, struct {
+			name, address, reason string
+			cause                 error
+			refused               bool
+		}{"winsock refused", "http://agent.invalid", "connection refused", syscall.Errno(10061), false},
+			struct {
+				name, address, reason string
+				cause                 error
+				refused               bool
+			}{"winsock network", "http://agent.invalid", "network unreachable", syscall.Errno(10051), false},
+			struct {
+				name, address, reason string
+				cause                 error
+				refused               bool
+			}{"winsock host", "http://agent.invalid", "network unreachable", syscall.Errno(10065), false})
+	}
+	for _, tc := range cases {
+		for _, jsonMode := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%v", tc.name, jsonMode), func(t *testing.T) {
+				u, _ := url.Parse(tc.address + "/ps?grep=private-query")
+				client := dialtest.Client()
+				if !tc.refused {
+					client = &http.Client{Transport: progressRoundTrip(func(*http.Request) (*http.Response, error) { return nil, tc.cause })}
+				}
+				var out, errs bytes.Buffer
+				code := runReadRequest(context.Background(), client, u, "fixture-token", "ps", scope.ID{}, false, jsonMode, &out, &errs)
+				port := u.Port()
+				if port == "" {
+					port = "80"
+				}
+				want := "agent connection failed at " + net.JoinHostPort(u.Hostname(), port) + ": " + tc.reason
+				if code != 1 {
+					t.Errorf("exit=%d", code)
+				}
+				if jsonMode {
+					var got struct {
+						Code   string `json:"code"`
+						Reason string `json:"reason"`
+					}
+					if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.Code != "agent_connection_failed" || got.Reason != want || errs.Len() != 0 {
+						t.Errorf("stdout=%q stderr=%q decoded=%+v err=%v", out.String(), errs.String(), got, err)
+					}
+				} else if out.Len() != 0 || errs.String() != want+"\n" {
+					t.Errorf("stdout=%q stderr=%q want=%q", out.String(), errs.String(), want)
+				}
+				if strings.Contains(out.String()+errs.String(), "fixture-token") || strings.Contains(out.String()+errs.String(), "private-query") {
+					t.Error("credential or query leaked")
+				}
+			})
+		}
+	}
 }

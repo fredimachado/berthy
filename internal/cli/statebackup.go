@@ -179,7 +179,7 @@ func runStateBackup(ctx context.Context, client *http.Client, base *url.URL, pre
 	result, err := agentclient.DoResult(ctx, client, base, prefix, token, "POST", "state-backup", "", nil)
 	data, status := result.Data, result.Status
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, asJSON)
 		return 1
 	}
 	if status != http.StatusAccepted {

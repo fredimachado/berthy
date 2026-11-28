@@ -220,7 +220,7 @@ func runApprovalCommand(ctx context.Context, cmd string, f commandFlags, base *u
 		result, err := call("GET", "approvals", query, nil)
 		data, status := result.Data, result.Status
 		if err != nil {
-			fmt.Fprintln(errout, "agent connection failed")
+			printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 			return 1
 		}
 		if status != http.StatusOK {
@@ -236,7 +236,7 @@ func runApprovalCommand(ctx context.Context, cmd string, f commandFlags, base *u
 		result, err := call("POST", "approvals/"+url.PathEscape(f.pos[0])+"/reject", "", body)
 		data, status := result.Data, result.Status
 		if err != nil {
-			fmt.Fprintln(errout, "agent connection failed")
+			printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 			return 1
 		}
 		if status != http.StatusOK {
@@ -287,7 +287,7 @@ func runApproveResult(ctx context.Context, call func(method, endpoint, query str
 	data, status := result.Data, result.Status
 	progress.Close()
 	if err != nil {
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: base, Token: token}, err, f.json)
 		return 1
 	}
 	var accepted struct {

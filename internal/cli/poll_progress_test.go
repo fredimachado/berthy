@@ -10,7 +10,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"berthy/internal/agentclient"
 	"berthy/internal/api"
 )
 
@@ -92,7 +91,7 @@ func TestPollProgressUntilMatchingRun(t *testing.T) {
 					case "job":
 						done <- runJobRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 					case "backup":
-						done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &out, &errout, func(s string) string { return safeSecretText(s, "token") })
+						done <- runBackupRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 					case "state backup":
 						done <- runStateBackup(ctx, client, base, "", "token", false, &out, &errout)
 					case "cancellation":
@@ -222,7 +221,7 @@ func TestPollCancellationClearsProgress(t *testing.T) {
 					case "job":
 						done <- runJobRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 					case "backup":
-						done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &out, &errout, func(s string) string { return safeSecretText(s, "token") })
+						done <- runBackupRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 					case "state backup":
 						done <- runStateBackup(ctx, client, base, "", "token", false, &out, &errout)
 					case "cancellation":
@@ -298,7 +297,7 @@ func TestPollSelectsAdmittedRun(t *testing.T) {
 				case "job":
 					code = runJobRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 				case "backup":
-					code = runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &out, &errout, func(s string) string { return safeSecretText(s, "token") })
+					code = runBackupRun(ctx, client, base, "", "token", "task", false, &out, &errout)
 				case "state backup":
 					code = runStateBackup(ctx, client, base, "", "token", false, &out, &errout)
 				}
@@ -403,7 +402,7 @@ func TestPollOutcomeProgress(t *testing.T) {
 						case "job":
 							done <- runJobRun(ctx, client, base, "", "token", "task", false, &combined, &combined)
 						case "backup":
-							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &combined, &combined, func(s string) string { return safeSecretText(s, "token") })
+							done <- runBackupRun(ctx, client, base, "", "token", "task", false, &combined, &combined)
 						case "state backup":
 							done <- runStateBackup(ctx, client, base, "", "token", false, &combined, &combined)
 						case "cancellation":
@@ -558,7 +557,7 @@ func TestPollFinalLookupErrorsClearProgress(t *testing.T) {
 						case "job":
 							done <- runJobRun(ctx, client, base, "", "token", "task", false, &output, &output)
 						case "backup":
-							done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", false, &output, &output, func(s string) string { return safeSecretText(s, "token") })
+							done <- runBackupRun(ctx, client, base, "", "token", "task", false, &output, &output)
 						case "state backup":
 							done <- runStateBackup(ctx, client, base, "", "token", false, &output, &output)
 						}
@@ -683,7 +682,7 @@ func TestPollJSONOutput(t *testing.T) {
 					case "job":
 						done <- runJobRun(ctx, client, base, "", "token", "task", true, &out, &errout)
 					case "backup":
-						done <- runBackupRun(ctx, agentclient.Caller(ctx, client, base, "", "token"), "task", true, &out, &errout, func(s string) string { return safeSecretText(s, "token") })
+						done <- runBackupRun(ctx, client, base, "", "token", "task", true, &out, &errout)
 					case "state backup":
 						done <- runStateBackup(ctx, client, base, "", "token", true, &out, &errout)
 					case "cancellation":

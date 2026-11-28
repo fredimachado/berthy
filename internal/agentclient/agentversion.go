@@ -45,7 +45,7 @@ func AgentProtection(ctx context.Context, c *http.Client, t *Target) (Protection
 	result, err := DoResult(ctx, &client, t.Base, t.Prefix, t.Token, "GET", "agent", "", nil)
 	data, status := result.Data, result.Status
 	if err != nil {
-		return ProtectionUnknown, errors.New("agent protection lookup failed")
+		return ProtectionUnknown, err
 	}
 	if status != http.StatusOK {
 		message := t.Redact(Message(status, data))
