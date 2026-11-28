@@ -110,6 +110,84 @@ func TestRollbackReportsRetiredTarget(t *testing.T) {
 	}
 }
 
+func TestRetiredTargetsUseTheSameRefusal(t *testing.T) {
+	s := openStore(t)
+	ctx := t.Context()
+	keep := 1
+	m := apiManifest(func(_ *manifest.Manifest, a *manifest.App) { a.Deploy.Retain = &keep })
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releases []int64
+	for _, request := range []string{"first", "second"} {
+		op := admitRetentionFixture(t, s, request, "deploy", "api")
+		finishRetentionFixture(t, s, op, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Digest: newDigest, Manifest: raw}})
+		release, err := s.Applied(ctx, "api")
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release.ID)
+	}
+	retired, current := releases[0], releases[1]
+	c := &Controller{Store: s}
+	actor := Actor{ID: "admin", Admin: true}
+	req := Request{Kind: "rollback", App: "api"}
+	assertRetired := func(label string, err error) {
+		t.Helper()
+		if !errors.Is(err, errReleaseRetired) {
+			t.Errorf("%s = %v, want %q", label, err, errReleaseRetired)
+		}
+	}
+	_, err = c.Plan(ctx, actor, req)
+	assertRetired("implicit rollback", err)
+	_, err = c.DiffReleases(ctx, "api", retired, 0)
+	assertRetired("diff of retired release", err)
+	_, err = c.DiffReleases(ctx, "api", current, retired)
+	assertRetired("diff against retired base", err)
+	if _, err := c.DiffReleases(ctx, "api", current, current+1); err != notARelease(current+1, "api") {
+		t.Errorf("diff of unknown base = %v", err)
+	}
+	req.TargetRelease, req.RevertSchema = retired, true
+	_, err = c.Plan(ctx, actor, req)
+	assertRetired("schema rollback without a recorded migration", err)
+	if _, _, err := c.Admit(ctx, actor, Request{Kind: "rollback", App: "api", RevertSchema: true, TargetRelease: retired, RequestID: "schema"}); !errors.Is(err, errReleaseRetired) {
+		// On regression the worker may have started, so join it before closing the store.
+		if drainErr := c.Drain(ctx); drainErr != nil {
+			t.Fatal(drainErr)
+		}
+		t.Errorf("schema admission without a recorded migration = %v", err)
+	}
+	remove := admitRetentionFixture(t, s, "remove", "remove", "api")
+	if err := s.ForgetApp(ctx, remove.ID, "api"); err != nil {
+		t.Fatal(err)
+	}
+	finishRetentionFixture(t, s, remove, state.Outcome{State: "succeeded"})
+	req.RevertSchema = false
+	_, err = c.Plan(ctx, actor, req)
+	assertRetired("rollback after app removal", err)
+	req.TargetRelease = current + 1
+	if _, err := c.Plan(ctx, actor, req); err == nil || err.Error() != "applied release unavailable" {
+		t.Errorf("rollback of unknown release after removal = %v", err)
+	}
+
+	app := m.Apps["api"]
+	app.Migrations = revertManifest().Apps["app"].Migrations
+	m.Apps["api"] = app
+	source, err := json.Marshal(map[string]any{"manifest": m, "image": newImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := admitRetentionFixture(t, s, "migration", "deploy", "api")
+	if err := s.RecordIntent(ctx, migration.ID, state.Intent{Kind: "schema_source", Desired: source}); err != nil {
+		t.Fatal(err)
+	}
+	finishRetentionFixture(t, s, migration, state.Outcome{State: "succeeded", SchemaBefore: "v1", SchemaAfter: "v2",
+		Release: &state.Release{App: "api", Digest: newDigest, Manifest: raw}})
+	_, err = c.schemaRevertPlan(ctx, Request{Kind: "rollback", App: "api", RevertSchema: true})
+	assertRetired("implicit schema rollback", err)
+}
+
 func TestHistoryDiffReportsExpiredPredecessor(t *testing.T) {
 	s := openStore(t)
 	ctx := t.Context()
@@ -135,7 +213,7 @@ func TestHistoryDiffReportsExpiredPredecessor(t *testing.T) {
 			}
 		}
 	}
-	const want = "previous release is outside retained history"
+	const want = string(errReleaseRetired)
 	if diff, err := c.DiffReleases(ctx, "api", releases[1], 0); err == nil || err.Error() != want {
 		t.Errorf("oldest retained release diff = %+v, error %v, want %q", diff, err, want)
 	}

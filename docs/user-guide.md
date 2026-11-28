@@ -1521,7 +1521,7 @@ berthy history api -e prod --diff <release id>
 berthy history api -e prod --diff <release id> <other release id>
 ```
 
-The first form compares the release with the one before it. The app's first-ever release shows `new app`. If the preceding release has expired, it reports `previous release is outside retained history`. The second form compares the two releases you choose, whichever is older. Both IDs must appear in the app's history. The output uses the same lines as a dry run and shows no secret values. `--json` prints `{"changes": [{"area", "change"}]}`.
+The first form compares the release with the one before it. The app's first-ever release shows `new app`. The second form compares the two releases you choose, whichever is older. If either comparison needs an expired release, it reports `rollback release is outside retained history; choose a release from berthy history`. The output uses the same lines as a dry run and shows no secret values. `--json` prints `{"changes": [{"area", "change"}]}`.
 
 #### Wait for health
 
@@ -1773,7 +1773,7 @@ berthy rollback api -e prod
 berthy rollback api -e prod --to <release id>
 ```
 
-`rollback` redeploys the **previous retained** digest with its saved manifest. Use a release ID from `history` with `--to`. If that release has expired, the command exits unsuccessfully with `rollback release is outside retained history; choose a release from berthy history` and leaves the app running its current release. **Secrets stay at their current values.** Prune keeps the images of retained releases for apps that are still applied.
+`rollback` redeploys the previous digest with its saved manifest. Use a release ID from `history` with `--to`. With `retain: 1`, there is no previous release for an ordinary rollback. If the requested or previous release has expired, the command exits unsuccessfully with `rollback release is outside retained history; choose a release from berthy history` and leaves the app running its current release. **Secrets stay at their current values.** Prune keeps the images of retained releases for apps that are still applied.
 
 A rollback takes back the app, with its jobs, its backups and its service probes, and nothing else. The environment's settings (the alerts, the peers, the other probes, the destinations, telemetry and the rest, see [Apply environment settings](#apply-environment-settings)) stay as the last deploy or `apply` left them, and so does every other app.
 
@@ -3142,7 +3142,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
 | `deploy.order` | image | string | none | How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one. One of `start-first`, `stop-first`. |
 | `deploy.verify` | image | boolean | `true` | Whether a deploy checks, once the new version serves, that each role with a `port` answers on the shared network and that each of its `hostnames` answers from outside. A check that fails only warns: the deploy still succeeds. `false` turns both off. |
-| `deploy.retain` | both | integer | `5` | The number of recent releases and, separately, terminal operation journals kept per app, at least 1. The applied release is kept as well. |
+| `deploy.retain` | both | integer | `5` | The number of recent releases and, separately, terminal operation journals kept per app, at least 1. The applied release is kept as well. A value of 1 leaves no previous release for an ordinary rollback. |
 | `hooks` | image | map | none | Steps that run around a deploy. An overlay's list replaces the base manifest's. |
 | `hooks.pre_deploy` | image | list | none | Steps that run in order before the new version starts. A failed step stops the deploy. |
 | `hooks.post_deploy` | image | list | none | Steps that run in order after the new version is serving. |

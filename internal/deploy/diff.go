@@ -138,6 +138,9 @@ func (c *Controller) DiffReleases(ctx context.Context, app string, id, base int6
 	}
 	at := slices.IndexFunc(history, func(r state.Release) bool { return r.ID == id })
 	if at < 0 {
+		if err := c.checkRetiredRelease(ctx, app, id, 0); err != nil {
+			return Diff{}, err
+		}
 		return Diff{}, notARelease(id, app)
 	}
 	var prev *state.Release
@@ -145,6 +148,9 @@ func (c *Controller) DiffReleases(ctx context.Context, app string, id, base int6
 	case base != 0:
 		i := slices.IndexFunc(history, func(r state.Release) bool { return r.ID == base })
 		if i < 0 {
+			if err := c.checkRetiredRelease(ctx, app, base, 0); err != nil {
+				return Diff{}, err
+			}
 			return Diff{}, notARelease(base, app)
 		}
 		prev = &history[i]
@@ -154,12 +160,8 @@ func (c *Controller) DiffReleases(ctx context.Context, app string, id, base int6
 			prev = &history[at+1]
 			previousID = prev.ID
 		}
-		retiredID, err := c.Store.LatestRetiredReleaseBefore(ctx, app, id)
-		if err != nil {
-			return Diff{}, errors.New("release history unavailable")
-		}
-		if retiredID > previousID {
-			return Diff{}, Refusal("previous release is outside retained history")
+		if err := c.checkRetiredRelease(ctx, app, previousID, id); err != nil {
+			return Diff{}, err
 		}
 	}
 	next, err := releaseSide(history[at])

@@ -742,7 +742,7 @@ An image app that sets nothing else runs with these Swarm settings.
 
 ### Rollback
 
-`berthy rollback <app> -e <env>` redeploys the previous retained digest with its saved manifest. `--to <release id>` selects an ID from `berthy history`. An ID that expired from the app's history is refused with `rollback release is outside retained history; choose a release from berthy history`. The applied release and workload stay in place on refusal. Secrets stay at their current values. A successful rollback restores the app's roles, hooks, jobs, backups and service probes. Environment settings such as alerts, peers and other probes keep their current values.
+`berthy rollback <app> -e <env>` redeploys the previous digest with its saved manifest. `--to <release id>` selects an ID from `berthy history`. With `retain: 1`, there is no previous release for an ordinary rollback. A requested or previous release that expired from the app's history is refused with `rollback release is outside retained history; choose a release from berthy history`. The applied release and workload stay in place on refusal. Secrets stay at their current values. A successful rollback restores the app's roles, hooks, jobs, backups and service probes. Environment settings such as alerts, peers and other probes keep their current values.
 
 ### Applying environment settings
 
@@ -885,7 +885,7 @@ The plan of an image deploy, a Compose deploy and a rollback has a `diff`: what 
 - **Variables.** A variable is plain, from a secret or a template. A plain variable that is added or removed shows as `+ NAME (plain)` or `- NAME (plain)`, and one whose value changes shows both values, cut at 60 characters. A secret variable shows its name and the name of its secret (`~ DATABASE_URL now from secret API_DATABASE_URL`), a template variable its name and its template text, which names secrets and holds no value. A change of the value stored under a secret name is not in the manifests, so it is not in the diff.
 - **Lines.** `Lines()` of the diff is the text of the CLI, the TUI and the MCP server: the area, padded to 8 characters or the longest area, and the change. `new app` and `no changes: the same release would be recorded` stand for the first deploy and for no difference.
 - **Approvals.** The diff is part of the plan, so a held request stores it and `approve` plans again and compares: a release recorded since the request changes the diff, and then nothing runs. What a person read is what runs.
-- **Two releases.** `GET /v1/projects/<project>/environments/<env>/history/<app>/diff?release=<id>[&base=<id>]` (`read`) compares `release` against `base`, or against the release before it. An explicit ID outside the app's retained releases gives `release <id> is not a release of app <app>`. If the implicit predecessor expired, the agent reports `previous release is outside retained history`. If the app had no predecessor, the diff is `new app`. `berthy history <app> --diff <id> [<id>]` calls it.
+- **Two releases.** `GET /v1/projects/<project>/environments/<env>/history/<app>/diff?release=<id>[&base=<id>]` (`read`) compares `release` against `base`, or against the release before it. For an expired release or baseline, the agent reports `rollback release is outside retained history; choose a release from berthy history`. An unknown ID gives `release <id> is not a release of app <app>`. If the app had no predecessor, the diff is `new app`. `berthy history <app> --diff <id> [<id>]` calls it.
 
 ## Interfaces
 

@@ -595,10 +595,8 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	}
 	if req.Kind == "rollback" && req.RevertSchema && req.TargetRelease != 0 && c.Store != nil && c.Foreign == nil {
 		// A hosted controller already checked the schema plan while resolving foreign claims.
-		if retired, err := c.Store.ReleaseWasRetired(ctx, req.App, req.TargetRelease); err == nil && retired {
-			if _, err := c.schemaRevertPlan(ctx, req); errors.Is(err, errReleaseRetired) {
-				return state.Operation{}, false, err
-			}
+		if err := c.checkRetiredRelease(ctx, req.App, req.TargetRelease, 0); errors.Is(err, errReleaseRetired) {
+			return state.Operation{}, false, err
 		}
 	}
 	if err := c.refuseLocalChanges(ctx, planned); err != nil {
@@ -1019,23 +1017,55 @@ func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent,
 func (c *Controller) selectRollback(ctx context.Context, req Request) (state.Release, error) {
 	current, err := c.Store.Applied(ctx, req.App)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) && req.TargetRelease != 0 {
+			if retired := c.checkRetiredRelease(ctx, req.App, req.TargetRelease, 0); retired != nil {
+				return state.Release{}, retired
+			}
+		}
 		return state.Release{}, errors.New("applied release unavailable")
 	}
 	history, err := c.Store.History(ctx, req.App)
 	if err != nil {
 		return state.Release{}, err
 	}
+	var previous state.Release
 	for _, r := range history {
-		if req.TargetRelease != 0 && r.ID == req.TargetRelease || req.TargetRelease == 0 && r.ID < current.ID {
+		if req.TargetRelease != 0 && r.ID == req.TargetRelease {
 			return r, nil
 		}
+		if req.TargetRelease == 0 && r.ID < current.ID {
+			previous = r
+			break
+		}
 	}
-	return state.Release{}, c.missingRollbackTarget(ctx, req, errors.New("rollback release unavailable"))
+	var retired error
+	if req.TargetRelease != 0 {
+		retired = c.checkRetiredRelease(ctx, req.App, req.TargetRelease, 0)
+	} else {
+		retired = c.checkRetiredRelease(ctx, req.App, previous.ID, current.ID)
+	}
+	if retired != nil {
+		return state.Release{}, retired
+	}
+	if previous.ID != 0 {
+		return previous, nil
+	}
+	return state.Release{}, errors.New("rollback release unavailable")
 }
 
-func (c *Controller) missingRollbackTarget(ctx context.Context, req Request, fallback error) error {
-	if req.TargetRelease != 0 {
-		retired, err := c.Store.ReleaseWasRetired(ctx, req.App, req.TargetRelease)
+// A nonzero predecessorOf checks whether the immediate predecessor was retired after the last retained candidate, id.
+// Otherwise the check is for id itself.
+func (c *Controller) checkRetiredRelease(ctx context.Context, app string, id, predecessorOf int64) error {
+	if predecessorOf != 0 {
+		retired, err := c.Store.LatestRetiredReleaseBefore(ctx, app, predecessorOf)
+		if err != nil {
+			return err
+		}
+		if retired > id {
+			return errReleaseRetired
+		}
+	} else {
+		retired, err := c.Store.ReleaseWasRetired(ctx, app, id)
 		if err != nil {
 			return err
 		}
@@ -1043,7 +1073,7 @@ func (c *Controller) missingRollbackTarget(ctx context.Context, req Request, fal
 			return errReleaseRetired
 		}
 	}
-	return fallback
+	return nil
 }
 
 // planSchemaRevert describes a schema revert without changing anything.
@@ -1088,6 +1118,11 @@ type schemaRevert struct {
 func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaRevert, error) {
 	if c.Store == nil || req.App == "" {
 		return schemaRevert{}, errors.New("schema revert unavailable")
+	}
+	if req.TargetRelease != 0 {
+		if err := c.checkRetiredRelease(ctx, req.App, req.TargetRelease, 0); err != nil {
+			return schemaRevert{}, err
+		}
 	}
 	src, err := c.Store.LatestMigration(ctx, req.App)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1144,10 +1179,7 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 				break
 			}
 		}
-		if rel == nil {
-			return schemaRevert{}, c.missingRollbackTarget(ctx, req, errTargetMissing)
-		}
-		if rel.SchemaAfter == "" || !rel.Created.Before(src.Started) {
+		if rel == nil || rel.SchemaAfter == "" || !rel.Created.Before(src.Started) {
 			return schemaRevert{}, errTargetMissing
 		}
 		target = rel.SchemaAfter
@@ -1158,11 +1190,16 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 		target = src.SchemaBefore
 		switch {
 		case hasCurrent && current.OperationID == src.ID:
+			var previousID int64
 			for i := range history {
 				if history[i].ID < current.ID {
 					image = &history[i]
+					previousID = image.ID
 					break
 				}
+			}
+			if err := c.checkRetiredRelease(ctx, req.App, previousID, current.ID); err != nil {
+				return schemaRevert{}, err
 			}
 			if image == nil {
 				return schemaRevert{}, errNoEarlierRelease
