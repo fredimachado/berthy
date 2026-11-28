@@ -2,6 +2,7 @@
 Description=Berthy agent
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 User=berthy
@@ -12,7 +13,8 @@ ExecStartPre=+/usr/bin/rm -f /run/berthy-startup/result
 ExecStartPre=+/usr/bin/install -o root -g berthy -m 0620 /dev/null /run/berthy-startup/result
 Environment=BERTHY_STARTUP_RESULT=/run/berthy-startup/result
 ExecStart=/usr/local/bin/berthy agent --config /etc/berthy/agent.json
-Restart=on-failure
+Restart=always
+RestartSec=5
 NoNewPrivileges=true
 StateDirectory=berthy
 StateDirectoryMode=0700
