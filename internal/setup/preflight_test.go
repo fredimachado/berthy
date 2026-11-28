@@ -3,6 +3,8 @@ package setup
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -127,4 +129,29 @@ func TestSetupChecksBothReleaseAssetsBeforeProvisioning(t *testing.T) {
 			t.Fatalf("%+v", got)
 		}
 	})
+}
+
+func TestSetupClearsThePreparedKeyOnExit(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint("later failure=", fail), func(t *testing.T) {
+			exe := elfFile(t, emX86)
+			f := freshAgentServer(t)
+			key := keyBytes()
+			file := writeKey(t, key)
+			s := agentSession(t, f, exe, false, func(o *Options) { o.KeyFile = file })
+			var captured []byte
+			steps := Steps()
+			if fail {
+				steps = []Step{steps[0], steps[1], {Name: "fail", Run: func(context.Context, *Session) (string, string, error) { return "", "", errors.New("forced failure") }}}
+			}
+			ok := Run(context.Background(), s, steps, func(r StepResult) {
+				if r.Step == "check" {
+					captured = s.suppliedKey
+				}
+			})
+			if ok == fail || len(captured) != 32 || s.suppliedKey != nil || !bytes.Equal(captured, make([]byte, 32)) {
+				t.Fatalf("ok=%v captured=%v retained=%v", ok, captured, s.suppliedKey)
+			}
+		})
+	}
 }

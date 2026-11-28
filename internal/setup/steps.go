@@ -106,12 +106,16 @@ func (o Options) listen() string {
 
 // Session is the state of one run, shared by its steps.
 type Session struct {
-	KeyCopyPath  string // verified copy on this machine
-	KeyUnsettled bool   // the server refused a copy during an unfinished rotation
-	R            Runner
-	F            *Facts
-	Opts         Options
-	DryRun       bool
+	binary         binaryPlan
+	binaryErr      error
+	suppliedKey    []byte
+	suppliedKeyErr error
+	KeyCopyPath    string // verified copy on this machine
+	KeyUnsettled   bool   // the server refused a copy during an unfinished rotation
+	R              Runner
+	F              *Facts
+	Opts           Options
+	DryRun         bool
 
 	// Login is who setup runs as, found by the connect step.
 	Login Login
@@ -199,6 +203,7 @@ func Steps() []Step {
 
 // Run runs steps in order and reports each result as it happens. It stops at the first step that fails and returns false.
 func Run(ctx context.Context, s *Session, steps []Step, report func(StepResult)) bool {
+	defer func() { clear(s.suppliedKey); s.suppliedKey = nil }()
 	for _, step := range steps {
 		s.Log.begin(step.Name)
 		if s.Opts.StepStarted != nil {
@@ -306,6 +311,16 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 			return "", "", fmt.Errorf("%s is not assigned to this server: the manifest's address for it must be one of its addresses", s.Opts.ListenIP)
 		}
 		return "", "", fmt.Errorf("%s is not assigned to this server: --listen needs one of its addresses", s.Opts.ListenIP)
+	}
+	s.binary, s.binaryErr = s.prepareBinary(ctx, f, arch)
+	if s.binaryErr != nil && !s.DryRun {
+		return "", "", s.binaryErr
+	}
+	if s.Opts.KeyFile != "" {
+		s.suppliedKey, s.suppliedKeyErr = readKeyFile(s.Opts.KeyFile)
+		if s.suppliedKeyErr != nil && !s.DryRun {
+			return "", "", s.suppliedKeyErr
+		}
 	}
 	return StatusOK, fmt.Sprintf("linux %s, systemd, %s assigned", arch, s.Opts.ListenIP), nil
 }

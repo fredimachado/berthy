@@ -97,14 +97,22 @@ func setUpServer() []string {
 	return with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)
 }
 
-func newSession(f *fakeServer, dry bool) *Session {
-	return &Session{R: f, DryRun: dry, Opts: Options{Project: "shop", Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710}}
+func newSession(t *testing.T, f *fakeServer, dry bool) *Session {
+	t.Helper()
+	arch, machine := "amd64", uint16(emX86)
+	for _, line := range f.probe {
+		if line == "arch=aarch64" {
+			arch, machine = "arm64", emArm
+		}
+	}
+	exe := elfFile(t, machine)
+	return &Session{R: f, DryRun: dry, Opts: Options{Project: "shop", Env: "p5", Network: "p5net", ListenIP: net.ParseIP(listenIP), ListenPort: 7710, Build: Build{OS: "linux", Arch: arch, Path: exe}}}
 }
 
 func runAll(t *testing.T, f *fakeServer, dry bool) ([]StepResult, bool) {
 	t.Helper()
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, dry), dockerSteps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(t, f, dry), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	return got, ok
 }
 
@@ -131,7 +139,7 @@ func TestFreshServerInstallsDockerSwarmAndNetwork(t *testing.T) {
 		with(base(), with(dockerUp("29.9.3"), "swarm=active true")...),
 	}}
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(t, f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if !ok {
 		t.Fatalf("setup failed: %+v", got)
 	}
@@ -272,7 +280,7 @@ func TestRootLoginUsesNoSudo(t *testing.T) {
 func TestBareHostNamesTheUser(t *testing.T) {
 	f := &bareHost{fakeServer: newServer(setUpServer())}
 	var got []StepResult
-	Run(context.Background(), newSession(f.fakeServer, false).withRunner(f), Steps()[:1], func(r StepResult) { got = append(got, r) })
+	Run(context.Background(), newSession(t, f.fakeServer, false).withRunner(f), Steps()[:1], func(r StepResult) { got = append(got, r) })
 	if got[0].Detail != "ops@s1 (sudo)" {
 		t.Fatalf("detail = %q", got[0].Detail)
 	}
@@ -305,7 +313,7 @@ func (d *deadServer) Run(ctx context.Context, script string, stdin io.Reader) (R
 
 func TestConnectFailureNamesTheCause(t *testing.T) {
 	var got []StepResult
-	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(&deadServer{}), dockerSteps(), func(r StepResult) { got = append(got, r) })
+	Run(context.Background(), newSession(t, &fakeServer{}, false).withRunner(&deadServer{}), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if len(got) != 1 || got[0].Status != StatusFailed || !strings.Contains(got[0].Detail, "Connection refused") {
 		t.Fatalf("got %+v", got)
 	}
@@ -314,7 +322,7 @@ func TestConnectFailureNamesTheCause(t *testing.T) {
 func TestRunnerErrorFailsTheStep(t *testing.T) {
 	r := &erroring{err: errors.New("boom")}
 	var got []StepResult
-	Run(context.Background(), newSession(&fakeServer{}, false).withRunner(r), dockerSteps(), func(x StepResult) { got = append(got, x) })
+	Run(context.Background(), newSession(t, &fakeServer{}, false).withRunner(r), dockerSteps(), func(x StepResult) { got = append(got, x) })
 	if len(got) != 1 || got[0].Step != "connect" || got[0].Status != StatusFailed || !strings.Contains(got[0].Detail, "boom") {
 		t.Fatalf("got %+v", got)
 	}
@@ -355,7 +363,7 @@ func TestStepFailures(t *testing.T) {
 		for _, dry := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s dry=%v", tc.name, dry), func(t *testing.T) {
 				f := newServer(tc.probe)
-				s := newSession(f, dry)
+				s := newSession(t, f, dry)
 				if tc.opts != nil {
 					tc.opts(&s.Opts)
 				}
@@ -378,7 +386,7 @@ func TestDockerStoppedAndDisabledIsStartedAndEnabled(t *testing.T) {
 	f := newServer(stopped)
 	g := &sequenceServer{fakeServer: f, outputs: [][]string{stopped, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)}}
 	var got []StepResult
-	ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
+	ok := Run(context.Background(), newSession(t, f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 	if !ok {
 		t.Fatalf("failed: %+v", got)
 	}
@@ -440,7 +448,7 @@ func TestInstallUsesWgetWithoutCurl(t *testing.T) {
 	g := &sequenceServer{fakeServer: f, outputs: [][]string{probe, with(base(), with(dockerUp("29.9.3"), "swarm=active true", "network=overlay swarm true p5net")...)}}
 	got, _ := func() ([]StepResult, bool) {
 		var got []StepResult
-		ok := Run(context.Background(), newSession(f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
+		ok := Run(context.Background(), newSession(t, f, false).withRunner(g), dockerSteps(), func(r StepResult) { got = append(got, r) })
 		return got, ok
 	}()
 	if got[1].Detail != "linux arm64, systemd, 172.31.250.10 assigned" {
