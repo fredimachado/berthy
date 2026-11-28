@@ -204,3 +204,53 @@ func TestSlice5UnavailableMarkersFailClosed(t *testing.T) {
 		t.Errorf("unavailable source markers: %q", out.String())
 	}
 }
+
+func TestStatsWatchSeparatesHumanSamples(t *testing.T) {
+	var out, errs bytes.Buffer
+	body := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+	defer srv.Close()
+	cfg := ingressCLIConfig(t, srv.URL)
+	for _, tc := range []struct {
+		name string
+		body string
+		json bool
+		want string
+	}{
+		{
+			name: "one human sample",
+			body: "event: stats\ndata: {\"containers_fresh\":true}\n\nevent: done\ndata: {\"complete\":true}\n\n",
+			want: "containers_fresh: true\n",
+		},
+		{
+			name: "two human samples",
+			body: "event: stats\ndata: {\"containers_fresh\":true}\n\nevent: stats\ndata: {\"containers_fresh\":false}\n\nevent: done\ndata: {\"complete\":true}\n\n",
+			want: "containers_fresh: true\n\ncontainers_fresh: false\n",
+		},
+		{
+			name: "two JSON samples",
+			body: "event: stats\ndata: {\"containers_fresh\":true}\n\nevent: stats\ndata: {\"containers_fresh\":false}\n\nevent: done\ndata: {\"complete\":true}\n\n",
+			json: true,
+			want: "{\"containers_fresh\":true}\n{\"containers_fresh\":false}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body = tc.body
+			out.Reset()
+			errs.Reset()
+			args := []string{"stats", "--watch", "-e", "dev", "--config", cfg}
+			if tc.json {
+				args = append(args, "--json")
+			}
+			if code := Run(args, &out, &errs); code != 0 {
+				t.Fatalf("exit %d: %s", code, errs.String())
+			}
+			if errs.Len() != 0 {
+				t.Fatalf("stderr %q", errs.String())
+			}
+			if out.String() != tc.want {
+				t.Errorf("stdout = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}

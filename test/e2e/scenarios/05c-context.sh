@@ -7,6 +7,23 @@ set -uo pipefail
 
 cp "$RUN/admin.json" "$RUN/ctx.json" || exit 1
 
+empty_cfg="$RUN/empty-contexts.json"
+printf '%s\n' '{"projects":{}}' >"$empty_cfg" || exit 1
+printf '%s\n' 'no contexts configured' >"$RUN/empty-contexts.want"
+printf '%s\n' '[]' >"$RUN/empty-contexts-json.want"
+"$BIN" context list --config "$empty_cfg" >"$RUN/empty-contexts.out" 2>"$RUN/empty-contexts.err"
+code=$?
+expect_code "context list of an empty config" 0 "$code" "$(cat "$RUN/empty-contexts.err")"
+if [ -s "$RUN/empty-contexts.err" ]; then fail "empty context list stderr is empty" "$(cat "$RUN/empty-contexts.err")"; else pass "empty context list stderr is empty"; fi
+if cmp -s "$RUN/empty-contexts.want" "$RUN/empty-contexts.out"; then pass "empty context list prints the empty-state message"; else fail "empty context list prints the empty-state message" "$(cat "$RUN/empty-contexts.out")"; fi
+"$BIN" context list --config "$empty_cfg" --json >"$RUN/empty-contexts-json.out" 2>"$RUN/empty-contexts-json.err"
+code=$?
+expect_code "context list --json of an empty config" 0 "$code" "$(cat "$RUN/empty-contexts-json.err")"
+if [ -s "$RUN/empty-contexts-json.err" ]; then fail "empty context list --json stderr is empty" "$(cat "$RUN/empty-contexts-json.err")"; else pass "empty context list --json stderr is empty"; fi
+if cmp -s "$RUN/empty-contexts-json.want" "$RUN/empty-contexts-json.out"; then pass "empty context list --json prints []"; else fail "empty context list --json prints []" "$(cat "$RUN/empty-contexts-json.out")"; fi
+python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert data==[], data' "$RUN/empty-contexts-json.out"
+expect_code "empty context list --json parses as an empty array" 0 "$?"
+
 out=$("$BIN" context list --config "$RUN/ctx.json" 2>&1); code=$?
 expect_code "context list of the harness admin file" 0 "$code" "$out"
 expect_contains "list names the project" "$out" "$PROJECT"

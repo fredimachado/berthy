@@ -75,4 +75,27 @@ out=$("$BIN" nosuch -e "$ENVN" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "an unknown name is an unknown command" 2 "$code" "$out"
 expect_contains "the message names the unknown command" "$out" "unknown command nosuch"
 
+# Bare berthy lists every public command and omits the internal helpers.
+BERTHY_CONFIG="$RUN/admin.json" "$BIN" >"$RUN/bare.out" 2>"$RUN/bare.err"
+code=$?
+expect_code "bare berthy exits 2" 2 "$code" "$(cat "$RUN/bare.err")"
+if [ -s "$RUN/bare.out" ]; then fail "bare berthy stdout is empty" "$(cat "$RUN/bare.out")"; else pass "bare berthy stdout is empty"; fi
+bare=$(cat "$RUN/bare.err")
+tokens=$(printf '%s' "$bare" | sed -n 's/^usage: berthy <\(.*\)>$/\1/p' | tr '|' '\n')
+expect_eq "bare usage is one usage line" 1 "$(printf '%s' "$bare" | grep -c '^usage: berthy <' || true)"
+for cmd in deploy config ps backup; do
+  if printf '%s\n' "$tokens" | grep -Fxq -- "$cmd"; then
+    pass "bare usage lists $cmd"
+  else
+    fail "bare usage lists $cmd" "$bare"
+  fi
+done
+for helper in probe-helper volume-archive volume-extract; do
+  if printf '%s\n' "$tokens" | grep -Fxq -- "$helper"; then
+    fail "bare usage omits $helper" "$bare"
+  else
+    pass "bare usage omits $helper"
+  fi
+done
+
 finish

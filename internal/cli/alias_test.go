@@ -247,9 +247,33 @@ func TestUnknownCommandSaysSo(t *testing.T) {
 	}
 }
 
-// probeOnlyCommands are the built-ins that serve or write a volume whatever flags they get, so Run would start them. The
-// list checks them by name only.
-var probeOnlyCommands = []string{"probe-helper", "volume-archive", "volume-extract"}
+func TestBareUsageListsPublicCommands(t *testing.T) {
+	code, out, errs := runCLI()
+	if code != 2 || out != "" {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	line, ok := strings.CutPrefix(strings.TrimSuffix(errs, "\n"), "usage: berthy <")
+	if !ok || !strings.HasSuffix(line, ">") || strings.Count(errs, "\n") != 1 {
+		t.Fatalf("stderr %q", errs)
+	}
+	tokens := strings.Split(strings.TrimSuffix(line, ">"), "|")
+	for _, want := range []string{"deploy", "rollback", "config", "versions", "backup", "ps", "state-restore"} {
+		if !slices.Contains(tokens, want) {
+			t.Errorf("usage lacks %s: %q", want, errs)
+		}
+	}
+	for _, helper := range helperCommands {
+		if slices.Contains(tokens, helper) {
+			t.Errorf("usage lists helper %s: %q", helper, errs)
+		}
+	}
+	want := slices.DeleteFunc(slices.Clone(builtinCommands), func(name string) bool {
+		return slices.Contains(helperCommands, name)
+	})
+	if !slices.Equal(tokens, want) {
+		t.Errorf("tokens = %v, want public built-ins %v", tokens, want)
+	}
+}
 
 // TestBuiltinCommandsAllDispatch keeps builtinCommands in step with Run: every name reaches its handler, and a made-up name
 // does not. A local command is given a flag it does not read, so it fails at once; an agent command is given an environment,
@@ -259,7 +283,7 @@ func TestBuiltinCommandsAllDispatch(t *testing.T) {
 	t.Setenv(agentclient.EnvironmentEnv, "")
 	t.Setenv("BERTHY_CONFIG", ingressCLIConfig(t, "http://127.0.0.1:1"))
 	for _, name := range builtinCommands {
-		if slices.Contains(probeOnlyCommands, name) {
+		if slices.Contains(helperCommands, name) {
 			continue
 		}
 		args := []string{name, "--nonsense"}

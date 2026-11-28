@@ -75,7 +75,8 @@ type setupReport struct {
 }
 
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
-// step is ok or changed (or would change, in a dry run), 1 that a step failed, 2 that the command line is wrong.
+// step is ok or changed (or would change, in a dry run), 1 that a step failed or the manifest could not be loaded (before
+// setup starts), 2 that the command line is wrong (usage is printed).
 func runSetup(args []string, out, errout io.Writer) int {
 	ctx, stop := commandContext()
 	defer stop()
@@ -83,9 +84,9 @@ func runSetup(args []string, out, errout io.Writer) int {
 }
 
 func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writer) int {
-	f, from, ok := parseSetupFlags(args, errout)
-	if !ok {
-		return 2
+	f, from, status := parseSetupFlags(args, errout)
+	if status != 0 {
+		return status
 	}
 	where := "on " + f.host
 	if f.local {
@@ -227,7 +228,7 @@ type setupFlags struct {
 	listenPort                                                  int
 }
 
-func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bool) {
+func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, int) {
 	var f setupFlags
 	fset := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fset.SetOutput(errout)
@@ -253,7 +254,7 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bo
 	fset.BoolVar(&f.asJSON, "json", false, "report as JSON")
 	fset.BoolVar(&f.verbose, "verbose", false, "print each command setup sends and its exit status on standard error; with --dry-run, the commands a real run would send")
 	if err := fset.Parse(args); err != nil {
-		return setupFlags{}, setupFrom{}, false
+		return setupFlags{}, setupFrom{}, 2
 	}
 	var envGiven, hostGiven, serverGiven, purgeGiven bool
 	var installOnly string
@@ -280,10 +281,10 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bo
 		}
 	})
 	f.env, f.envFromVariable = agentclient.EnvironmentName(f.env, envGiven)
-	usage := func(format string, a ...any) (setupFlags, setupFrom, bool) {
+	usage := func(format string, a ...any) (setupFlags, setupFrom, int) {
 		printRefusal(errout, fmt.Sprintf(format, a...), !f.asJSON)
 		fmt.Fprintln(errout, setupUsage)
-		return setupFlags{}, setupFrom{}, false
+		return setupFlags{}, setupFrom{}, 2
 	}
 	chosen := 0
 	if hostGiven {
@@ -321,7 +322,23 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bo
 			return usage("%v", err)
 		}
 	}
-	from, err := setupSettings(f.dir, f.env, *project, *network, *protected)
+	if *project != "" && !scope.ValidProject(*project) {
+		return usage("invalid --project %q", *project)
+	}
+	m, err := manifest.Load(f.dir, f.env)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		m = nil
+	case err != nil:
+		var problems manifest.Problems
+		if errors.As(err, &problems) {
+			printProblems(errout, problems, !f.asJSON)
+			return setupFlags{}, setupFrom{}, 1
+		}
+		printRefusal(errout, err.Error(), !f.asJSON)
+		return setupFlags{}, setupFrom{}, 1
+	}
+	from, err := setupSettings(f.dir, f.env, *project, *network, *protected, m)
 	if err != nil {
 		return usage("%v", err)
 	}
@@ -335,7 +352,7 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bo
 			f.defaultListenIP = net.ParseIP(dest.Address)
 		}
 	}
-	return f, from, true
+	return f, from, 0
 }
 
 func checkSetupTokenEnv(project, env, config string) error {
@@ -364,15 +381,11 @@ type setupFrom struct {
 	ingress   bool // the manifest declares managed ingress
 }
 
-// setupSettings finds the network and protected setting: from the merged manifest of the environment when the directory has
-// one, from the flags otherwise. A flag that disagrees with the manifest is an error.
-func setupSettings(dir, env, project, network string, protected bool) (setupFrom, error) {
-	if project != "" && !scope.ValidProject(project) {
-		return setupFrom{}, fmt.Errorf("invalid --project %q", project)
-	}
-	m, err := manifest.Load(dir, env)
-	switch {
-	case err == nil:
+// setupSettings finds the network and protected setting: from a loaded manifest when m is set, from the flags otherwise.
+// A flag that disagrees with the manifest is an error. A nil m is the no-manifest path. The caller has already refused an
+// invalid --project.
+func setupSettings(dir, env, project, network string, protected bool, m *manifest.Manifest) (setupFrom, error) {
+	if m != nil {
 		if project != "" && project != m.Project {
 			return setupFrom{}, fmt.Errorf("--project %s differs from the project %s in the manifest", project, m.Project)
 		}
@@ -381,22 +394,20 @@ func setupSettings(dir, env, project, network string, protected bool) (setupFrom
 			return setupFrom{}, fmt.Errorf("--network %s differs from the network %s in the manifest of %s", network, name, env)
 		}
 		return setupFrom{manifest: m, project: m.Project, network: name, protected: m.Protected || protected, ingress: m.Ingress != nil}, nil
-	case errors.Is(err, fs.ErrNotExist):
-		if project == "" {
-			return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --project NAME", dir)
-		}
-		if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
-			return setupFrom{}, err
-		}
-		if network == "" {
-			network = (&manifest.Manifest{Project: project}).NetworkName(env)
-		}
-		if !manifest.ValidNetwork(network) {
-			return setupFrom{}, fmt.Errorf("invalid --network %q: lowercase letters, digits, - and _", network)
-		}
-		return setupFrom{project: project, network: network, protected: protected}, nil
 	}
-	return setupFrom{}, fmt.Errorf("manifest of %s: %v", env, err)
+	if project == "" {
+		return setupFrom{}, fmt.Errorf("there is no berthy.yml in %s: pass --project NAME", dir)
+	}
+	if err := (scope.ID{Project: project, Environment: env}).CheckLength(); err != nil {
+		return setupFrom{}, err
+	}
+	if network == "" {
+		network = (&manifest.Manifest{Project: project}).NetworkName(env)
+	}
+	if !manifest.ValidNetwork(network) {
+		return setupFrom{}, fmt.Errorf("invalid --network %q: lowercase letters, digits, - and _", network)
+	}
+	return setupFrom{project: project, network: network, protected: protected}, nil
 }
 
 // setupDestination picks the server entry from the manifest's servers: the one named by --server, or the only one.

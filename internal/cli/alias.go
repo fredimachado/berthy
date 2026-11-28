@@ -22,15 +22,21 @@ var deploymentCommands = []string{"config", "versions", "promote", "deploy", "ap
 // readCommandNames are the commands Run serves with a GET.
 var readCommandNames = []string{"ps", "describe", "stats", "logs", "df", "doctor", "checks", "jobs", "agent-info"}
 
-// localCommands are the built-ins that never call the agent through a manifest alias: they serve, set up or print locally.
-var localCommands = []string{"version", "docs", "probe-helper", "volume-archive", "volume-extract", "mcp", "ui", "setup", "context", "state-restore", "agent"}
+// localCommands are the public built-ins that never call the agent through a manifest alias: they serve, set up or print locally.
+var localCommands = []string{"version", "docs", "mcp", "ui", "setup", "context", "state-restore", "agent"}
+
+// helperCommands are internal entry points. They stay in builtinCommands so aliases cannot take their names, but bare usage omits them.
+var helperCommands = []string{"probe-helper", "volume-archive", "volume-extract"}
 
 // agentCommands are the commands that call the agent, and so may be the first word of an alias.
 var agentCommands = slices.Concat(deploymentCommands, readCommandNames)
 
+// publicCommands is every first word the bare usage lists.
+var publicCommands = slices.Concat(localCommands, agentCommands)
+
 // builtinCommands is every first word Run dispatches. An alias may not take one of these names. TestBuiltinCommandsAllDispatch
 // keeps it in step with Run.
-var builtinCommands = slices.Concat(localCommands, agentCommands)
+var builtinCommands = slices.Concat(publicCommands, helperCommands)
 
 // checkAliases reports the first alias, in name order, that the CLI cannot run. An alias may not take the name of a built-in
 // command. Its first word must be a command that talks to an agent, not another alias. It may not set -e, --config or

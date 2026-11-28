@@ -217,7 +217,7 @@ func runContextList(args []string, out, errout io.Writer) int {
 		TokenStored  bool   `json:"token_stored"`
 		storedStatus string
 	}
-	var rows []row
+	rows := []row{}
 	projects := make([]string, 0, len(c.Projects))
 	for name := range c.Projects {
 		projects = append(projects, name)
@@ -262,9 +262,6 @@ func runContextList(args []string, out, errout io.Writer) int {
 	if stop() {
 		return credentialSignalStatus(ctx)
 	}
-	if len(rows) == 0 {
-		return 0
-	}
 	if *asJSON {
 		b, err := json.MarshalIndent(rows, "", "  ")
 		if err != nil {
@@ -272,6 +269,10 @@ func runContextList(args []string, out, errout io.Writer) int {
 			return 1
 		}
 		fmt.Fprintln(out, string(b))
+		return 0
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "no contexts configured")
 		return 0
 	}
 	s := styleFor(out, true)

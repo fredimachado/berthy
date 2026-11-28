@@ -42,7 +42,7 @@ func Run(args []string, out, errout io.Writer) int { return runIn(args, out, err
 // intent is non-nil only for an expanded alias: the dispatcher checks the real parsers against it before resolving a target.
 func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errout, "usage: berthy <setup|context|agent|version|docs|ps|describe|logs|stats|df|doctor|checks|jobs|job|agent-info|mcp|ui>")
+		fmt.Fprintf(errout, "usage: berthy <%s>\n", strings.Join(publicCommands, "|"))
 		return 2
 	}
 	cmd := args[0]
@@ -718,6 +718,7 @@ func printLogLines(out, errout io.Writer, body []byte) int {
 
 func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	failed := false
+	printedStats := false
 	s := styleFor(out, !jsonOutput)
 	err := agentclient.ReadEvents(ctx, r, func(event, payload string) error {
 		switch event {
@@ -762,7 +763,11 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 			}
 			fmt.Fprintln(out, compact.String())
 		} else {
-			printStyledText(out, v, "", styleFor(out, true), shapeStats)
+			if printedStats {
+				fmt.Fprintln(out)
+			}
+			printStyledText(out, v, "", s, shapeStats)
+			printedStats = true
 		}
 		return nil
 	})

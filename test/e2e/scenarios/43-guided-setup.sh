@@ -7,6 +7,24 @@ export HOME="$FS_HOME"
 mkdir -p "$FS_HOME/bin"
 ln -sf "$DOCKER_BIN" "$FS_HOME/bin/docker"
 export PATH="$FS_HOME/bin:/usr/bin:/bin"
+
+# An invalid manifest is refused with its file location before setup connects or writes a config.
+cfg="$RUN/guided-setup.json"
+bad_dir="$RUN/guided-invalid-manifest"
+mkdir -p "$bad_dir" || exit 1
+base_manifest | awk 'NR == 1 { print; print ""; print "bogus_knob: true"; next } { print }' > "$bad_dir/berthy.yml"
+printf '%s\n' 'berthy.yml:3:1: bogus_knob: unknown field "bogus_knob"' '1 problem' >"$RUN/guided-invalid.want"
+"$BIN" setup --local --dry-run -e "$ENVN" --manifest-dir "$bad_dir" --config "$cfg" >"$RUN/guided-invalid.out" 2>"$RUN/guided-invalid.err"
+code=$?
+expect_code "setup refuses an invalid manifest before connecting" 1 "$code" "$(cat "$RUN/guided-invalid.err")"
+if [ -s "$RUN/guided-invalid.out" ]; then fail "setup invalid-manifest stdout is empty" "$(cat "$RUN/guided-invalid.out")"; else pass "setup invalid-manifest stdout is empty"; fi
+if cmp -s "$RUN/guided-invalid.want" "$RUN/guided-invalid.err"; then pass "setup prints the manifest location"; else fail "setup prints the manifest location" "$(cat "$RUN/guided-invalid.err")"; fi
+if [ -e "$cfg" ]; then fail "setup did not write a config for an invalid manifest" "found $cfg"; else pass "setup did not write a config for an invalid manifest"; fi
+"$BIN" config validate -e "$ENVN" --manifest-dir "$bad_dir" >"$RUN/guided-validate.out" 2>"$RUN/guided-validate.err"
+code=$?
+expect_code "config validate refuses the same invalid manifest" 1 "$code" "$(cat "$RUN/guided-validate.err")"
+if cmp -s "$RUN/guided-invalid.want" "$RUN/guided-validate.err"; then pass "config validate names the same location"; else fail "config validate names the same location" "$(cat "$RUN/guided-validate.err")"; fi
+
 fixture="$REPO/test/fakeserver/fakeserver.sh"
 private=$(mktemp -d /dev/shm/berthy-guided.XXXXXXXX) || exit 1
 trap 'rm -rf "$private"' EXIT
@@ -28,7 +46,6 @@ cleanup() { bash "$fixture" rm "$server" >/dev/null 2>&1 || echo "could not remo
 trap cleanup EXIT
 bash "$fixture" start "$server" >/dev/null || exit 1
 ip=$(bash "$fixture" ip "$server") || exit 1
-cfg="$RUN/guided-setup.json"
 cat <<YML | write_manifest
 project: $PROJECT
 network: $NETWORK
