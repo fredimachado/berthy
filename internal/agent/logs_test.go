@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -325,5 +326,28 @@ func TestLogsOfAnotherEnvironmentsServiceAre404(t *testing.T) {
 	serveLogs(w, httptest.NewRequest("GET", "/logs", nil), inventoryDocker(t), "foreign", d, newLimits())
 	if w.Code != 404 {
 		t.Fatalf("logs: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type framedLogSource []byte
+
+func (f framedLogSource) Open(context.Context, string, logs.OpenOptions) (io.ReadCloser, bool, error) {
+	return io.NopCloser(strings.NewReader(string(f))), false, nil
+}
+
+func TestRedactRecordsJoinsSecretAcrossTimestampedFrames(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	secret := "distinct-first-distinct-second"
+	half := len(secret) / 2
+	filler := strings.Repeat("x", logs.MaxLineBytes)
+	wire := append(dockerFrame(1, []byte(stamp+"safe "+secret[:half])), dockerFrame(1, []byte(stamp+secret[half:]+filler+"\n"))...)
+	rows, err := logs.Tail(context.Background(), framedLogSource(wire), []logs.Identity{{ContainerID: "a"}}, logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := redactRecords(rows, []string{secret}, nil)
+	want := "safe [REDACTED]" + filler[:logs.MaxLineBytes-len(stamp)-len("safe ")-len(secret)] + logs.TruncationMarker
+	if len(got) != 1 || got[0].Message != want || strings.Contains(got[0].Message, secret[:half]) || strings.Contains(got[0].Message, secret[half:]) {
+		t.Fatal("secret or filler differs")
 	}
 }

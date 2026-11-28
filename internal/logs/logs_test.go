@@ -190,3 +190,57 @@ func FuzzMultiplexedLogs(f *testing.F) {
 		}
 	})
 }
+
+func TestLongLineKeepsPrefixAndNextRecord(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	line := strings.Repeat("abc", 100*1024)
+	id := Identity{Role: "web", Replica: "2", ContainerID: "a"}
+	want := []Record{
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: "before"},
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: line[:MaxLineBytes-len(stamp)] + TruncationMarker, Truncated: true},
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: "after"},
+	}
+	for _, tc := range []struct {
+		name, wire string
+		tty        bool
+	}{
+		{"single frame", frame(1, stamp+"before\n"+stamp+line+"\n"+stamp+"after\n"), false},
+		{"continuations", frame(1, stamp+"before\n") + frame(1, stamp+line[:100000]) + frame(1, stamp+line[100000:200000]) + frame(1, stamp+line[200000:]+"\n") + frame(1, stamp+"after\n"), false},
+		{"tty", stamp + "before\n" + stamp + line + "\n" + stamp + "after\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakeSource{tty: tc.tty, data: map[string]string{"a": tc.wire}}
+			for _, follow := range []bool{false, true} {
+				var got []Record
+				var err error
+				if follow {
+					err = Follow(context.Background(), f, []Identity{id}, Options{}, func(r Record) error { got = append(got, r); return nil })
+				} else {
+					got, err = Tail(context.Background(), f, []Identity{id}, Options{})
+				}
+				if err != nil {
+					t.Errorf("follow=%v: %v", follow, err)
+					continue
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("follow=%v: records differ", follow)
+				}
+			}
+		})
+	}
+}
+
+func TestLongLineStateBelongsToItsStream(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	long := strings.Repeat("x", MaxLineBytes+10)
+	exact := strings.Repeat("y", MaxLineBytes-len(stamp))
+	wire := frame(1, stamp+long) + frame(2, stamp+"error\n") + frame(1, stamp+"discard\n") + frame(1, stamp+exact[:100]) + frame(1, stamp+exact[100:]+"\n")
+	var got []Record
+	err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(r Record) error { got = append(got, r); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Stream != "stderr" || got[0].Message != "error" || got[1].Message != long[:MaxLineBytes-len(stamp)]+TruncationMarker || !got[1].Truncated || got[2].Message != exact || got[2].Truncated {
+		t.Fatal("stream state or boundary incorrect")
+	}
+}
