@@ -22,7 +22,7 @@ revision() {
 
 hook_ids() {
   d ps -aq --no-trunc --filter "label=berthy.project=$PROJECT" --filter "label=berthy.environment=$ENVN" \
-    --filter 'label=berthy.app=web' --filter 'label=berthy.oneoff=pre_hook'
+    --filter 'label=berthy.oneoff=pre_hook'
 }
 
 check_historical_evidence() {
