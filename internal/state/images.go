@@ -10,6 +10,24 @@ import (
 
 type AcquiredImage struct{ Ref, ID string }
 
+// ReleaseDigestsForAppliedApps lists the release digests of apps that are still applied.
+func (s *Store) ReleaseDigestsForAppliedApps(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.query(ctx, `SELECT a.app,r.digest FROM applied a JOIN releases r ON r.environment=a.environment AND r.app=a.app WHERE a.environment=?`, s.env)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	digests := map[string][]string{}
+	for rows.Next() {
+		var app, digest string
+		if err := rows.Scan(&app, &digest); err != nil {
+			return nil, err
+		}
+		digests[app] = append(digests[app], digest)
+	}
+	return digests, rows.Err()
+}
+
 func (s *Store) RecordImageAcquired(ctx context.Context, ref, id string) error {
 	if ref == "" || id == "" {
 		return errors.New("image ref and ID required")

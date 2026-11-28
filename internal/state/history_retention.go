@@ -184,6 +184,20 @@ func releaseVictims(ctx context.Context, tx *sql.Tx, env, app string, keep int) 
 	return victims, rows.Err()
 }
 
+// ReleaseWasRetired reports whether this app and environment recorded and then retired the release.
+func (s *Store) ReleaseWasRetired(ctx context.Context, app string, id int64) (bool, error) {
+	var retired bool
+	err := s.queryRow(ctx, `SELECT EXISTS(SELECT 1 FROM audit WHERE environment=? AND retired_app=? AND retired_release_id=?)`, s.env, app, id).Scan(&retired)
+	return retired, err
+}
+
+// LatestRetiredReleaseBefore returns the most recent retired release older than id, or zero if none exists.
+func (s *Store) LatestRetiredReleaseBefore(ctx context.Context, app string, id int64) (int64, error) {
+	var previous int64
+	err := s.queryRow(ctx, `SELECT COALESCE(MAX(retired_release_id),0) FROM audit WHERE environment=? AND retired_app=? AND retired_release_id<?`, s.env, app, id).Scan(&previous)
+	return previous, err
+}
+
 func publicRequestTag(public []byte) (string, error) {
 	var selection struct {
 		Tag string `json:"version_tag"`

@@ -589,6 +589,16 @@ func (c *Controller) Admit(ctx context.Context, actor Actor, req Request) (state
 	if req.Kind == "rollback" && !req.RevertSchema {
 		if resolved, err := c.rollbackRequest(ctx, req); err == nil {
 			planned = resolved
+		} else if errors.Is(err, errReleaseRetired) {
+			return state.Operation{}, false, err
+		}
+	}
+	if req.Kind == "rollback" && req.RevertSchema && req.TargetRelease != 0 && c.Store != nil && c.Foreign == nil {
+		// A hosted controller already checked the schema plan while resolving foreign claims.
+		if retired, err := c.Store.ReleaseWasRetired(ctx, req.App, req.TargetRelease); err == nil && retired {
+			if _, err := c.schemaRevertPlan(ctx, req); errors.Is(err, errReleaseRetired) {
+				return state.Operation{}, false, err
+			}
 		}
 	}
 	if err := c.refuseLocalChanges(ctx, planned); err != nil {
@@ -1020,7 +1030,20 @@ func (c *Controller) selectRollback(ctx context.Context, req Request) (state.Rel
 			return r, nil
 		}
 	}
-	return state.Release{}, errors.New("rollback release unavailable")
+	return state.Release{}, c.missingRollbackTarget(ctx, req, errors.New("rollback release unavailable"))
+}
+
+func (c *Controller) missingRollbackTarget(ctx context.Context, req Request, fallback error) error {
+	if req.TargetRelease != 0 {
+		retired, err := c.Store.ReleaseWasRetired(ctx, req.App, req.TargetRelease)
+		if err != nil {
+			return err
+		}
+		if retired {
+			return errReleaseRetired
+		}
+	}
+	return fallback
 }
 
 // planSchemaRevert describes a schema revert without changing anything.
@@ -1121,7 +1144,10 @@ func (c *Controller) schemaRevertPlan(ctx context.Context, req Request) (schemaR
 				break
 			}
 		}
-		if rel == nil || rel.SchemaAfter == "" || !rel.Created.Before(src.Started) {
+		if rel == nil {
+			return schemaRevert{}, c.missingRollbackTarget(ctx, req, errTargetMissing)
+		}
+		if rel.SchemaAfter == "" || !rel.Created.Before(src.Started) {
 			return schemaRevert{}, errTargetMissing
 		}
 		target = rel.SchemaAfter

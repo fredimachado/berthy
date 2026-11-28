@@ -23,6 +23,7 @@ const (
 	errSourceNotPinned  Refusal = "source image is not pinned"
 	errTargetMissing    Refusal = "schema revert target unavailable"
 	errNoEarlierRelease Refusal = "rollback release unavailable"
+	errReleaseRetired   Refusal = "rollback release is outside retained history; choose a release from berthy history"
 	errNewerRelease     Refusal = "a newer release followed the migration; use --to"
 	errBadRevertCommand Refusal = "invalid schema revert command"
 	errAdminRequired    Refusal = "schema revert requires administrator access"
@@ -60,7 +61,7 @@ var sharedComposeProjectMessage = regexp.MustCompile(`^Compose project [a-z0-9][
 func PublicMessage(s string) bool {
 	switch Refusal(s) {
 	case errUptimeProbeSource, errUptimeImageTiming, errUptimeImageVolume,
-		compensationIntents, compensationChanged, compensationUpdate, compensationHealth, compensationRemove, compensationFailed, "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
+		compensationIntents, compensationChanged, compensationUpdate, compensationHealth, compensationRemove, compensationFailed, "invalid project or network", errNoMigration, errSourceMissing, errNoRevertCommand, errSourceImage, errSourceNotPinned, errTargetMissing, errNoEarlierRelease, errReleaseRetired, errNewerRelease, errBadRevertCommand, errAdminRequired, errNotRecovering, errResolveAdmin,
 		errReplaceAdmin, errCloudflareSecret, errCloudflareToken, errCloudflareUnavailable, errTunnelNotRemote, errTunnelForeign, errIngressConflict, errIngressPublish, errIngressNotConfigured, errTunnelToken, errTunnelTokenRemoval, errConnectorRemoval, errIngressState,
 		errIngressNotApplied, errIngressChanged,
 		errRunCommand, errRunTimeout, errRunCompose, errRunRoles, errRunRoleUnknown, errRunNonzero,

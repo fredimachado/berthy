@@ -148,8 +148,19 @@ func (c *Controller) DiffReleases(ctx context.Context, app string, id, base int6
 			return Diff{}, notARelease(base, app)
 		}
 		prev = &history[i]
-	case at+1 < len(history):
-		prev = &history[at+1]
+	default:
+		var previousID int64
+		if at+1 < len(history) {
+			prev = &history[at+1]
+			previousID = prev.ID
+		}
+		retiredID, err := c.Store.LatestRetiredReleaseBefore(ctx, app, id)
+		if err != nil {
+			return Diff{}, errors.New("release history unavailable")
+		}
+		if retiredID > previousID {
+			return Diff{}, Refusal("previous release is outside retained history")
+		}
 	}
 	next, err := releaseSide(history[at])
 	if err != nil {

@@ -778,6 +778,36 @@ func TestPruneFailsWhenTheOthersRetainedImagesCannotBeRead(t *testing.T) {
 
 const operationsReleaseManifest = `{"project":"demo","apps":{"app":{"kind":"image","image":"example/web","roles":{"web":{}},"deploy":{"retain":2}}}}`
 
+func TestPruneReadsOnlyTheAppliedManifest(t *testing.T) {
+	dir := t.TempDir()
+	s := openStoreAt(t, dir)
+	ctx := t.Context()
+	for _, digest := range []string{"prior", "current"} {
+		op := admitRetentionFixture(t, s, digest, "deploy", "app")
+		finishRetentionFixture(t, s, op, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: digest, Manifest: []byte(operationsReleaseManifest)}})
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// A historical payload stored as TEXT cannot be read into Release.Manifest, but its digest is still valid.
+	if _, err := db.Exec(`UPDATE releases SET manifest=CAST(manifest AS TEXT) WHERE digest='prior'`); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s}
+	refs, err := c.RetainedImages(ctx)
+	if err != nil || !refs["prior"] || !refs["current"] {
+		t.Errorf("prune references = %v, error %v", refs, err)
+	}
+	if _, err := db.Exec(`UPDATE releases SET manifest=? WHERE digest='current'`, []byte(`{"apps":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RetainedImages(ctx); err == nil || err.Error() != "applied manifest unavailable" {
+		t.Errorf("unreadable applied manifest = %v", err)
+	}
+}
+
 func TestRetainedImagesIsTheRuleOfPrune(t *testing.T) {
 	dir := t.TempDir()
 	s := openStoreAt(t, dir)

@@ -34,6 +34,9 @@ func (c *Controller) execute(ctx context.Context, op state.Operation, actor Acto
 		resolved, err := c.rollbackRequest(ctx, req)
 		if err != nil {
 			outcome = state.Outcome{State: "failed", Err: "rollback release unavailable"}
+			if errors.Is(err, errReleaseRetired) {
+				outcome.Err = string(errReleaseRetired)
+			}
 			break
 		}
 		resolved.Kind = "deploy"

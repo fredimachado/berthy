@@ -595,48 +595,33 @@ func (c *Controller) RetainedImages(ctx context.Context) (map[string]bool, error
 }
 
 func (c *Controller) retainedImages(ctx context.Context, goneApps map[string]bool) (map[string]bool, error) {
-	history, err := c.Store.History(ctx, "")
+	history, err := c.Store.ReleaseDigestsForAppliedApps(ctx)
 	if err != nil {
 		return nil, errPruneHistory
 	}
 	refs := map[string]bool{}
-	seen := map[string]int{}
-	retains := map[string]int{}
-	for _, r := range history {
-		if _, ok := retains[r.App]; !ok {
-			current, e := c.Store.Applied(ctx, r.App)
-			if goneApps[r.App] {
-				e = sql.ErrNoRows
-			}
-			switch {
-			case errors.Is(e, sql.ErrNoRows):
-				// An app that was removed, such as the connector once managed ingress is gone, or an app taken down with
-				// berthy remove, keeps its history but has no applied release. Nothing runs from it, and nothing can
-				// roll back to it, so none of its releases protects an image.
-				retains[r.App] = 0
-				continue
-			case e != nil:
-				return nil, errors.New("applied release unavailable")
-			}
-			refs[current.Digest] = true
-			var m manifest.Manifest
-			if json.Unmarshal(current.Manifest, &m) != nil {
-				return nil, errors.New("applied manifest unavailable")
-			}
-			app, ok := m.Apps[r.App]
-			if !ok {
-				return nil, errors.New("applied app unavailable")
-			}
-			if app.Deploy.Retain == nil {
-				retains[r.App] = len(history)
-			} else {
-				retains[r.App] = *app.Deploy.Retain
-			}
+	for app, digests := range history {
+		if goneApps[app] {
+			continue
 		}
-		if seen[r.App] < retains[r.App] {
-			refs[r.Digest] = true
+		current, err := c.Store.Applied(ctx, app)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
-		seen[r.App]++
+		if err != nil {
+			return nil, errors.New("applied release unavailable")
+		}
+		var m manifest.Manifest
+		if json.Unmarshal(current.Manifest, &m) != nil {
+			return nil, errors.New("applied manifest unavailable")
+		}
+		if _, ok := m.Apps[app]; !ok {
+			return nil, errors.New("applied app unavailable")
+		}
+		refs[current.Digest] = true
+		for _, digest := range digests {
+			refs[digest] = true
+		}
 	}
 	return refs, nil
 }

@@ -131,6 +131,48 @@ func (f *approvalFixture) noOperation() {
 	}
 }
 
+func TestApprovalFailsWhenRollbackTargetAgesOut(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	ctx := t.Context()
+	t.Cleanup(func() {
+		if err := f.ctrl.Drain(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	f.ctrl.Engine = gateEngine{service: true}
+	seedGateRelease(t, f.s, "target", apRunDigest)
+	target, err := f.s.Applied(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGateRelease(t, f.s, "current", apRunDigest)
+	const request = "held-rollback"
+	h := f.hold("POST", "/rollback", apAgentDeploy, fmt.Sprintf(`{"app":"api","target_release":%d,"request_id":%q}`, target.ID, request))
+	for i := range 4 {
+		seedGateRelease(t, f.s, fmt.Sprintf("later-%d", i), apRunDigest)
+	}
+	current, err := f.s.Applied(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "the plan can no longer be computed (rollback release is outside retained history; choose a release from berthy history)") {
+		t.Errorf("approval = %d %s", w.Code, w.Body.String())
+	}
+	if a, err := f.s.Approval(ctx, h.ID); err != nil || a.Status != "failed" || a.Result != "the plan can no longer be computed" {
+		t.Errorf("stored approval = %s %q, error %v", a.Status, a.Result, err)
+	}
+	if err := f.ctrl.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.AdmissionForRequest(ctx, request, "", [32]byte{}); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("rollback admission lookup = %v, want no rows", err)
+	}
+	if applied, err := f.s.Applied(ctx, "api"); err != nil || applied.ID != current.ID {
+		t.Fatalf("applied release = %d, want %d, error %v", applied.ID, current.ID, err)
+	}
+}
+
 func (f *approvalFixture) status(id string) string {
 	f.t.Helper()
 	a, err := f.s.Approval(context.Background(), id)
