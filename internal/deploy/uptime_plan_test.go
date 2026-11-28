@@ -21,8 +21,8 @@ func TestUptimePlanIsStableAndShowsProbe(t *testing.T) {
 	actor := Actor{ID: "admin", Admin: true}
 	req := Request{App: "web", Version: digestOfLetter("b"), DryRun: true, Manifest: m}
 	want := []string{
-		`role aux: uptime 12s, health check ["CMD","/.berthy/berthy","probe","uptime","12s"], read-only bind /usr/local/bin/berthy -> /.berthy/berthy`,
-		`role web: uptime 20s, health check ["CMD","/.berthy/berthy","probe","uptime","20s"], read-only bind /usr/local/bin/berthy -> /.berthy/berthy`,
+		`role aux: uptime 12s`,
+		`role web: uptime 20s`,
 	}
 	check := func(t *testing.T, req Request) []byte {
 		t.Helper()
@@ -71,11 +71,11 @@ func TestReleaseDiffShowsUptimeTransitions(t *testing.T) {
 		from, to     manifest.Manifest
 		uptime, bind string
 	}{
-		{"inherit to uptime", inherited, uptime, "health.uptime none -> 20s", "+ read-only probe bind /.berthy/berthy"},
-		{"command to uptime", command, uptime, "health.uptime none -> 20s", "+ read-only probe bind /.berthy/berthy"},
+		{"inherit to uptime", inherited, uptime, "health.uptime none -> 20s", ""},
+		{"command to uptime", command, uptime, "health.uptime none -> 20s", ""},
 		{"duration only", uptime, later, "health.uptime 20s -> 25s", ""},
-		{"uptime to inherit", uptime, inherited, "health.uptime 20s -> none", "- read-only probe bind /.berthy/berthy"},
-		{"uptime to command", uptime, command, "health.uptime 20s -> none", "- read-only probe bind /.berthy/berthy"},
+		{"uptime to inherit", uptime, inherited, "health.uptime 20s -> none", ""},
+		{"uptime to command", uptime, command, "health.uptime 20s -> none", ""},
 		{name: "unchanged", from: uptime, to: uptime},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,10 +133,8 @@ func TestAdoptionShowsDesiredOnlyUptimeMountAndCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines := strings.Join(plan.Changes, "\n")
-			if strings.Count(lines, `["CMD","/.berthy/berthy","probe","uptime","20s"]`) != 1 ||
-				strings.Count(lines, "read-only bind /usr/local/bin/berthy -> /.berthy/berthy") != 1 ||
-				strings.Contains(lines, "volumes ") || strings.Contains(lines, "...") {
-				t.Fatalf("changes %q, want one full check and bind", plan.Changes)
+			if strings.Count(lines, `["NONE"]`) != 1 || strings.Contains(lines, "bind") || strings.Contains(lines, "volumes ") {
+				t.Fatalf("changes %q, want disabled check and no bind", plan.Changes)
 			}
 			if tc.command && !strings.Contains(lines, `(now ["CMD","true"])`) {
 				t.Fatalf("old command missing: %q", plan.Changes)

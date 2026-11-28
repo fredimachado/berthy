@@ -193,7 +193,7 @@ func TestManagedUptimeMountPolicy(t *testing.T) {
 		name, duration, mounts string
 		valid                  bool
 	}{
-		{"exact", "20s", probeBindJSON, true},
+		{"exact", "20s", probeBindJSON, false},
 		{"wrong duration", "0s", probeBindJSON, false},
 		{"missing", "20s", "", false},
 		{"duplicate", "20s", probeBindJSON + "," + probeBindJSON, false},

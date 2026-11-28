@@ -193,3 +193,10 @@ func TestUptimeHealthThresholdAndCommandOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestUptimeAllowsNamedVolumeAtFormerProbePath(t *testing.T) {
+	_, err := loadWorkerHealth(t, "        health: {uptime: 20s}\n        volumes: ['data:/.berthy:ro']", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
