@@ -59,7 +59,7 @@ run_refusal() {
 }
 run_refusal dev "$BIN" "pass --binary with a Linux"
 # SSH is listening, and port 1 has no listener on the fixture.
-if remote sh -c 'ss -lnt | awk "NR > 1 {print \\$4}" | grep -Eq ":1$"'; then die "loopback test port is occupied"; fi
+if remote sh -c 'ss -lnt | grep -Eq ":1[[:space:]]"'; then die "loopback test port is occupied"; fi
 run_refusal release "$release" "cannot fetch release v9.0.0 asset"
 remote sh -ec 'mv -f /usr/bin/uname.real /usr/bin/uname' || die "cannot restore uname"
 "$BIN" "${base_args[@]}" --binary "$BIN" </dev/null >"$private/success.json" 2>"$private/success.err"; code=$?
