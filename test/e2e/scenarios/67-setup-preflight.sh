@@ -12,6 +12,7 @@ ln -sf "$DOCKER_BIN" "$FS_HOME/bin/docker" || exit 1
 export PATH="$FS_HOME/bin:/usr/bin:/bin"
 fixture="$REPO/test/fakeserver/fakeserver.sh"
 private=$(mktemp -d /dev/shm/berthy-preflight.XXXXXXXX) || exit 1
+trap 'rm -rf "$private"' EXIT
 scope=$(printf '%s' "$PROJECT/$ENVN" | sha256sum | cut -c1-8)
 nonce=$(printf '%s' "$private" | sha256sum | cut -c1-16)
 server="p${scope}-${nonce}"
