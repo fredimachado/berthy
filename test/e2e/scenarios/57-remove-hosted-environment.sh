@@ -93,6 +93,21 @@ check agent_info "$PROJECT"
 check agent_info "$peer"
 pass "$label"
 
+cat > "$FS_HOME/bin/ssh" <<'SH'
+#!/bin/sh
+case "$*" in *'# check applied apps'*) exit 255;; esac
+exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
+SH
+chmod 700 "$FS_HOME/bin/ssh"
+code=0
+remove --dry-run --json > "$private/dropped.json" 2> "$private/dropped.stderr" || code=$?
+label="lost applied-app check connection"
+check test "$code" -eq 1
+jq -r '.steps[] | select(.status == "failed") | .detail' "$private/dropped.json" >&2
+check jq -e --arg target "ops@$server" 'any(.steps[]; .step == "check" and .status == "failed" and (.detail | contains("SSH connection to " + $target + " failed")))' "$private/dropped.json"
+check agent_info "$PROJECT"
+rm -f "$FS_HOME/bin/ssh"
+
 if ! remove --dry-run --json > "$private/initial.json" 2> "$private/initial.stderr"; then
   fail "preview hosted removal" "$(sed -n '1p' "$private/initial.stderr")"
   finish
