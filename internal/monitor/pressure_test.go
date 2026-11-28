@@ -16,8 +16,8 @@ func TestHostChecksRecoverAfterTenConsecutivePasses(t *testing.T) {
 		passing, warning, critical                uint64
 		passDetail, warningDetail, criticalDetail string
 	}{
-		{"disk", func(s Samples) Check { return DiskCheck(s, "/", false) }, 210, 199, 99, "79.0% used", "80.1% used", "90.1% used"},
-		{"docker disk", func(s Samples) Check { return DockerDiskCheck(s, "/") }, 210, 199, 99, "79.0% used (Docker data)", "80.1% used (Docker data)", "90.1% used (Docker data)"},
+		{"disk", func(s Samples) Check { return DiskCheck(s, "/", false) }, 210, 199, 99, "79.0% bytes used", "80.1% bytes used", "90.1% bytes used"},
+		{"docker disk", func(s Samples) Check { return DockerDiskCheck(s, "/") }, 210, 199, 99, "79.0% bytes used (Docker data)", "80.1% bytes used (Docker data)", "90.1% bytes used (Docker data)"},
 		{"memory", MemoryCheck, 101, 99, 49, "10.1% available", "9.9% available", "4.9% available"},
 	}
 	for _, tc := range cases {
@@ -108,11 +108,11 @@ func TestDiskMountsRecoverIndependently(t *testing.T) {
 	}
 	b = 199
 	r.step(30 * time.Second)
-	if got := r.stored("disk:/a"); got.State != OK || got.Detail != "79.0% used" {
+	if got := r.stored("disk:/a"); got.State != OK || got.Detail != "79.0% bytes used" {
 		t.Fatalf("first mount: %+v", got)
 	}
 	if got := r.stored("disk:/b"); got.State != Warning || got.Detail != initialB.Detail || !got.Since.Equal(initialB.Since) {
 		t.Fatalf("second mount: %+v", got)
 	}
-	expectMessages(t, r.notifier.messages(), "🟠 lab disk:/a: 80.1% used", "🟠 lab disk:/b: 80.1% used", "✅ lab disk:/a recovered")
+	expectMessages(t, r.notifier.messages(), "🟠 lab disk:/a: 80.1% bytes used", "🟠 lab disk:/b: 80.1% bytes used", "✅ lab disk:/a recovered")
 }

@@ -81,6 +81,16 @@ echo "  check: $(jq -c --arg n "disk:$mountdir" '.[]? | select(.name == $n)' <<<
 expect_code 'read df' 0 "$df_code" "$df_json"
 expect_code 'read stats' 0 "$stats_code" "$stats_json"
 expect_code 'read checks' 0 "$checks_code" "$checks_json"
+inode_percent=$(awk -v total="$total" -v free="$free" 'BEGIN { printf "%.1f", 100 * (total - free) / total }')
+check=$(jq -c --arg n "disk:$mountdir" '.[]? | select(.name == $n)' <<< "$checks_json")
+expect_eq 'inode pressure reports warning' warning "$(jq -r '.state // "missing"' <<< "$check")"
+expect_eq 'disk check reports inode use' "$inode_percent% inodes used" "$(jq -r '.detail // "missing"' <<< "$check")"
+df_row=$(jq -c --arg p "$mountdir" '.host[]? | select(.path == $p)' <<< "$df_json")
+if jq -e '(.total > 0) and (.available / .total > 0.2)' <<< "$df_row" >/dev/null; then
+  pass 'df reports byte use below warning'
+else
+  fail 'df reports byte use below warning' "$df_row"
+fi
 for kind in df stats; do
   if [ "$kind" = df ]; then row=$(jq -c --arg p "$mountdir" '.host[]? | select(.path == $p)' <<< "$df_json"); else row=$(jq -c --arg p "$mountdir" '.host.mounts[]? | select(.path == $p)' <<< "$stats_json"); fi
   expect_eq "$kind total inodes" "$total" "$(jq -r '.inodes_total // "missing"' <<< "$row")"

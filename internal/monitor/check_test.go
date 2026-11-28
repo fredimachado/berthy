@@ -32,12 +32,12 @@ func TestDiskThresholdsUseUsedSpace(t *testing.T) {
 		state     string
 		detail    string
 	}{
-		{"well below", 75, OK, "25.0% used"},
-		{"warning boundary", 20, Warning, "80.0% used"},
-		{"warning", 15, Warning, "85.0% used"},
-		{"critical boundary", 10, Critical, "90.0% used"},
-		{"critical", 5, Critical, "95.0% used"},
-		{"full", 0, Critical, "100.0% used"},
+		{"well below", 75, OK, "25.0% bytes used"},
+		{"warning boundary", 20, Warning, "80.0% bytes used"},
+		{"warning", 15, Warning, "85.0% bytes used"},
+		{"critical boundary", 10, Critical, "90.0% bytes used"},
+		{"critical", 5, Critical, "95.0% bytes used"},
+		{"full", 0, Critical, "100.0% bytes used"},
 	}
 	for _, tc := range cases {
 		s := metrics.Sample{Host: metrics.Host{Mounts: []metrics.Mount{mount("/", 100, tc.available)}}}
@@ -47,8 +47,40 @@ func TestDiskThresholdsUseUsedSpace(t *testing.T) {
 		}
 	}
 	s := metrics.Sample{Host: metrics.Host{Mounts: []metrics.Mount{mount("/", 100, 15)}}}
-	if got := DiskCheck(samplesWith(s), "/", true).Run(context.Background()); got.Detail != "85.0% used (Docker data)" {
+	if got := DiskCheck(samplesWith(s), "/", true).Run(context.Background()); got.Detail != "85.0% bytes used (Docker data)" {
 		t.Fatalf("Docker data label: %+v", got)
+	}
+}
+
+func TestDiskCheckReportsInodePressure(t *testing.T) {
+	cases := []struct {
+		name                             string
+		available, inodeTotal, inodeFree uint64
+		docker                           bool
+		state, detail                    string
+	}{
+		{"inode warning", 50, 100, 3, false, Warning, "97.0% inodes used"},
+		{"byte critical wins", 8, 100, 3, false, Critical, "92.0% bytes used"},
+		{"byte warning wins tie", 15, 100, 3, false, Warning, "85.0% bytes used"},
+		{"inodes exhausted", 50, 100, 0, false, Critical, "100.0% inodes used"},
+		{"inodes critical beats byte warning", 15, 100, 0, false, Critical, "100.0% inodes used"},
+		{"byte critical wins critical tie", 8, 100, 0, false, Critical, "92.0% bytes used"},
+		{"warning boundary", 50, 100, 5, false, Warning, "95.0% inodes used"},
+		{"below warning boundary", 50, 10000, 501, false, OK, "50.0% bytes used"},
+		{"zero inode total", 50, 0, 0, false, OK, "50.0% bytes used"},
+		{"invalid inode free", 50, 100, 101, false, OK, "50.0% bytes used"},
+		{"docker data", 50, 100, 3, true, Warning, "97.0% inodes used (Docker data)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mount("/", 100, tc.available)
+			m.InodesTotal, m.InodesFree = tc.inodeTotal, tc.inodeFree
+			s := metrics.Sample{Host: metrics.Host{Mounts: []metrics.Mount{m}}}
+			got := DiskCheck(samplesWith(s), "/", tc.docker).Run(context.Background())
+			if got.State != tc.state || got.Detail != tc.detail {
+				t.Errorf("got %+v, want %s %q", got, tc.state, tc.detail)
+			}
+		})
 	}
 }
 
@@ -89,7 +121,7 @@ func TestDockerDiskUsesTheMountHoldingTheDataRoot(t *testing.T) {
 	}
 	s := metrics.Sample{Host: metrics.Host{Mounts: []metrics.Mount{mount("/", 100, 5), mount("/data", 100, 50)}}}
 	got := DockerDiskCheck(samplesWith(s), "/").Run(context.Background())
-	if got.State != Critical || got.Detail != "95.0% used (Docker data)" {
+	if got.State != Critical || got.Detail != "95.0% bytes used (Docker data)" {
 		t.Fatalf("docker disk: %+v", got)
 	}
 	if got := DockerDiskCheck(samplesWith(s), "").Run(context.Background()); got.State != Unknown || got.Detail != "Docker data root unknown" {

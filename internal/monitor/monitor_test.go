@@ -259,21 +259,21 @@ func TestReminderCadenceAndDisable(t *testing.T) {
 	c := &scripted{name: "disk:/", interval: 30 * time.Second, failures: 1}
 	r.checks = []Check{c}
 	r.reminder = time.Hour
-	c.set(Critical, "96.0% used")
+	c.set(Critical, "96.0% bytes used")
 	r.step(0)
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% bytes used")
 	for i := 0; i < 119; i++ { // 59.5 minutes after the alert
 		r.step(30 * time.Second)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% bytes used")
 	r.step(30 * time.Second) // one hour after the alert
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% bytes used", "🔁 still failing: lab disk:/: 96.0% bytes used")
 	for i := 0; i < 119; i++ {
 		r.step(30 * time.Second)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% bytes used", "🔁 still failing: lab disk:/: 96.0% bytes used")
 	r.step(30 * time.Second) // one hour after the first reminder
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% bytes used", "🔁 still failing: lab disk:/: 96.0% bytes used", "🔁 still failing: lab disk:/: 96.0% bytes used")
 
 	r.reminder = 0
 	before := len(r.notifier.messages())
@@ -538,7 +538,7 @@ func TestMessagesStayWithinTelegramLimits(t *testing.T) {
 	if got := message("lab", "disk:/", state.CheckState{State: OK}, false); got != "✅ lab disk:/ recovered" {
 		t.Fatalf("recovery text: %q", got)
 	}
-	if got := message("lab", "disk:/", state.CheckState{State: Warning, Detail: "81.0% used"}, false); got != "🟠 lab disk:/: 81.0% used" {
+	if got := message("lab", "disk:/", state.CheckState{State: Warning, Detail: "81.0% bytes used"}, false); got != "🟠 lab disk:/: 81.0% bytes used" {
 		t.Fatalf("warning text: %q", got)
 	}
 }
