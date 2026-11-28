@@ -1275,7 +1275,7 @@ func TestSetupThatCannotReachTheAgentKeepsTheOldNextSteps(t *testing.T) {
 	withSetupRunner(t, server)
 	reads := fakeTerminal(t, "unused")
 	code, out, stderr := runSetupCmd("-e", "p5", "--host", "ops@s1", "--listen", addr, "--manifest-dir", projectDir(t), "--config", filepath.Join(t.TempDir(), "config.json"))
-	if code != 0 || reads.Load() != 0 || strings.Count(stderr, "agent connection failed at "+addr+": EOF") != 1 || !strings.Contains(out, "set the secrets the manifest names:") {
+	if code != 0 || reads.Load() != 0 || strings.Count(stderr, "agent connection failed at "+addr+": connection failed") != 1 || !strings.Contains(out, "set the secrets the manifest names:") {
 		t.Fatalf("exit %d reads %d stderr %q", code, reads.Load(), stderr)
 	}
 }

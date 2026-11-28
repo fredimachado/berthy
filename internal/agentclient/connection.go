@@ -33,11 +33,7 @@ func ConnectionMessage(base *url.URL, err error, redact func(string) string) str
 	case errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.Errno(10051)) || errors.Is(err, syscall.Errno(10065)):
 		reason = "network unreachable"
 	default:
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			err = urlErr.Err
-		}
-		reason = err.Error()
+		reason = "connection failed"
 	}
 	return TerminalSafe(redact(fmt.Sprintf("agent connection failed at %s: %s", net.JoinHostPort(base.Hostname(), port), reason)))
 }

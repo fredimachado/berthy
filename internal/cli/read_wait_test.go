@@ -419,7 +419,7 @@ func TestReadRequestConnectionFailures(t *testing.T) {
 		{"timeout", "http://agent.invalid", "connection timed out", context.DeadlineExceeded, false},
 		{"network", "http://agent.invalid", "network unreachable", syscall.ENETUNREACH, false},
 		{"host", "http://agent.invalid", "network unreachable", syscall.EHOSTUNREACH, false},
-		{"fallback", "http://agent.invalid", `failure [redacted]  \x1b`, errors.New("failure fixture-token\n \x1b"), false},
+		{"fallback", "http://agent.invalid", "connection failed", errors.New("failure fixture-token\n \x1b"), false},
 	}
 	if runtime.GOOS == "windows" {
 		cases = append(cases, struct {
