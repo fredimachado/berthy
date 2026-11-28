@@ -30,7 +30,7 @@ bash "$fixture" start "$server" >/dev/null || die "could not start server"
 ip=$(bash "$fixture" ip "$server") || die "cannot find fixture IP"
 remote() { bash "$fixture" exec "$server" "$@"; }
 baseline() {
-  remote sh -c 'command -v docker || :; systemctl is-active docker || :; docker info --format "{{.Swarm.LocalNodeState}}" 2>/dev/null || :; docker network ls --format "{{.Name}}" 2>/dev/null | sort || :; id berthy 2>/dev/null || :; for p in /usr/local/bin/berthy /usr/local/bin/berthy.new /etc/berthy /var/lib/berthy; do test ! -e "$p" || ls -ld "$p"; done'
+  remote sh -c 'command -v docker || :; active=$(systemctl is-active docker 2>/dev/null) || :; printf "%s\n" "$active"; if [ "$active" = active ]; then docker info --format "{{.Swarm.LocalNodeState}}" 2>/dev/null || :; docker network ls --format "{{.Name}}" 2>/dev/null | sort || :; fi; id berthy 2>/dev/null || :; for p in /usr/local/bin/berthy /usr/local/bin/berthy.new /etc/berthy /var/lib/berthy; do test ! -e "$p" || ls -ld "$p"; done'
 }
 baseline >"$private/before"
 "$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-preflight-empty" --config "$private/config.json" --binary "$BIN" --key-file "$private/missing" --json </dev/null >"$private/result.json" 2>"$private/error"; code=$?
@@ -43,7 +43,7 @@ ssh -o BatchMode=yes -T -- "ops@$server" true || die "SSH is unavailable"
 baseline >"$private/port.before"
 "$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:22" --manifest-dir "$RUN/setup-preflight-empty" --config "$private/config.json" --binary "$BIN" --json </dev/null >"$private/port.json" 2>"$private/port.err"; code=$?
 expect_code "occupied listen address rejected" 1 "$code"
-if jq -e --arg endpoint "$ip:22" '(.steps | length == 2) and .steps[0].step == "connect" and .steps[0].status == "ok" and .steps[1].step == "check" and .steps[1].status == "failed" and (.steps[1].detail | contains($endpoint))' "$private/port.json" >/dev/null; then pass "occupied listen address fails at check"; else fail "occupied listen address fails at check" "unexpected steps"; jq -r '.steps[] | "\(.step)=\(.status) \(.detail)"' "$private/port.json"; fi
+if jq -e --arg endpoint "$ip:22" '(.steps | length == 2) and .steps[0].step == "connect" and .steps[0].status == "ok" and .steps[1].step == "check" and .steps[1].status == "failed" and (.steps[1].detail == ("listen address " + $endpoint + " is already in use"))' "$private/port.json" >/dev/null; then pass "occupied listen address fails at check"; else fail "occupied listen address fails at check" "unexpected steps"; jq -r '.steps[] | "\(.step)=\(.status) \(.detail)"' "$private/port.json"; fi
 baseline >"$private/port.after"
 if cmp -s "$private/port.before" "$private/port.after"; then pass "occupied listen address leaves server unchanged"; else fail "occupied listen address leaves server unchanged" "server changed"; diff -u "$private/port.before" "$private/port.after" || :; fi
 ssh -o BatchMode=yes -T -- "ops@$server" true || die "SSH became unavailable"
