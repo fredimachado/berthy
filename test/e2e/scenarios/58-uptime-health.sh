@@ -163,7 +163,7 @@ if [ "$(printf '%s\n' "$good" "$nonzero" "$clean" "$final" | sort -u | wc -l)" -
 fi
 
 default='{uptime: 20s}'
-manifest '{uptime: 20s, interval: 1h, start_interval: 2s}' 30s | write_manifest
+manifest '{uptime: 20s, start_interval: 2s}' 30s | write_manifest
 code=0
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1) || code=$?
 printf '%s\n' "$out" >"$LOG/uptime-incompatible-validate.txt"
