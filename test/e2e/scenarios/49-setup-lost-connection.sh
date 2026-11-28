@@ -25,6 +25,41 @@ trap cleanup EXIT
 bash "$fixture" start "$server" >/dev/null || exit 1
 ip=$(bash "$fixture" ip "$server") || exit 1
 cfg="$RUN/lost-connection.json"
+export LOGIN_RECORD="$private/login-calls" LOGIN_DROP=1
+cat > "$FS_HOME/bin/ssh" <<'SH'
+#!/bin/sh
+connect=no interval=no count=no
+for arg do
+ case "$arg" in
+  ConnectTimeout=30) connect=yes;; ServerAliveInterval=15) interval=yes;; ServerAliveCountMax=3) count=yes;;
+ esac
+done
+case "$*" in
+ *'sudo -n true'*|*'id -u; id -un'*) kind=login;;
+ *'uname -s'*) kind=facts;;
+ *) kind=other;;
+esac
+printf '%s %s %s %s\n' "$kind" "$connect" "$interval" "$count" >> "$LOGIN_RECORD"
+case "$*" in *'sudo -n true'*) [ "$LOGIN_DROP" != 1 ] || exit 255;; esac
+exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
+SH
+chmod 700 "$FS_HOME/bin/ssh"
+login_setup=("$BIN" setup --dry-run --json --project "$PROJECT" -e "$ENVN" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/setup-empty" --config "$cfg" --binary "$BIN")
+out=$("${login_setup[@]}" 2>"$private/login-drop.stderr"); code=$?
+expect_code "login connection dropped" 1 "$code"
+if jq -e --arg target "ops@$server" 'any(.steps[]; .step == "connect" and .status == "failed" and (.detail | contains("SSH connection to " + $target + " failed")))' <<<"$out" >/dev/null; then pass "login drop reported"; else fail "login drop reported" "missing SSH diagnosis"; fi
+: > "$LOGIN_RECORD"
+export LOGIN_DROP=0
+out=$("${login_setup[@]}" 2>"$private/login-ok.stderr"); code=$?
+expect_code "login dry run" 0 "$code"
+if awk '$1 == "facts" { found=1; exit } $1 == "login" { n++ } END { exit !(found && n == 1) }' "$LOGIN_RECORD"; then pass "one login before facts"; else fail "one login before facts" "$(cat "$LOGIN_RECORD")"; fi
+if awk '$2 != "yes" || $3 != "yes" || $4 != "yes" { exit 1 }' "$LOGIN_RECORD"; then pass "SSH options on every call"; else fail "SSH options on every call" "$(cat "$LOGIN_RECORD")"; fi
+cat > "$FS_HOME/bin/ssh" <<'SH'
+#!/bin/sh
+exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
+SH
+chmod 700 "$FS_HOME/bin/ssh"
+unset out LOGIN_DROP LOGIN_RECORD
 setup_failure() {
  jq -r '.steps[]? | select(.status == "failed") | "\(.step): \(.detail)"' <<<"$out" >&2 2>/dev/null || true
  cat "$1" >&2
