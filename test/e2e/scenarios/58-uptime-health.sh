@@ -343,6 +343,23 @@ d image inspect "$repo:final" | jq -e '.[0].Config.Healthcheck.Test == ["CMD","/
 check_healthy final "$final"
 expect_eq 'the final surviving digest is applied' "$repo@$final" "$(applied)"
 
+runtime_slots_match() {
+  jq -e --argjson count "$1" '(map(.Slot) | unique | length) == $count and
+    all(.[]; (.Slot | type == "number" and . > 0) and .DesiredState == "running" and .Status.State == "running")' <<<"$2" >/dev/null
+}
+
+check_runtime_slot_fixture() {
+  local specs='[
+    {"Slot":2,"DesiredState":"running","Status":{"State":"running"}},
+    {"Slot":7,"DesiredState":"running","Status":{"State":"running"}}
+  ]'
+  runtime_slots_match 2 "$specs" || die 'accept two distinct positive Swarm slots with gaps'
+  if runtime_slots_match 2 "${specs/\"Slot\":7/\"Slot\":2}" ||
+     runtime_slots_match 2 "${specs/\"Slot\":7/\"Slot\":0}"; then
+    die 'reject duplicate or nonpositive Swarm slots'
+  fi
+}
+
 check_runtime_slots() {
   local step=$1 count=$2 generation ids task_ids specs stamp started
   local -a containers tasks
@@ -355,8 +372,7 @@ check_runtime_slots() {
   task_ids=$(d inspect "${containers[@]}" | jq -er '.[] | select(.State.Running and .Config.Healthcheck.Test == ["NONE"] and (.State | has("Health") | not)) | .Config.Labels["com.docker.swarm.task.id"]')
   mapfile -t tasks <<<"$task_ids"
   specs=$(d inspect --type task "${tasks[@]}")
-  jq -e --argjson count "$count" '(map(.Slot) | sort) == [range(1; $count+1)] and
-    all(.[]; .DesiredState == "running" and .Status.State == "running")' <<<"$specs" >/dev/null ||
+  runtime_slots_match "$count" "$specs" ||
     die "$step has $count running replacement slots" "$specs"
   while IFS= read -r stamp; do
     started=$(date -u -d "$stamp" +%s%N)
@@ -367,6 +383,7 @@ check_runtime_slots() {
   pass "$step completed with $count replacement slot(s) past the uptime threshold"
 }
 
+check_runtime_slot_fixture
 out=$(adm restart "$app" 2>&1) || die 'restart of uptime worker succeeds' "$out"
 terminal=$(date +%s%N)
 check_runtime_slots restart 1
