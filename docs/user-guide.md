@@ -3309,7 +3309,7 @@ A probe has exactly one of `http`, `tcp` and `service`.
 | `telegram` | map | none | Alerts to one Telegram chat. |
 | `telegram.bot_token_secret` | secret name | required | The secret that holds the bot token. |
 | `telegram.chat_id` | string | required | A numeric chat ID, or `@channel_name`. Quote it. |
-| `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `project`, `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
+| `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `project`, `environment`, `kind` (`check`, `deploy` or `test`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
 | `webhook.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. The URL is often the credential, so it is never in the manifest. |
 | `heartbeat` | map | none | Dead man's switch: the agent sends one `GET` to a URL every `interval` while it runs and Docker answers, with a 5-second timeout and no retries. A service that watches for the pings raises the alarm when they stop. `berthy checks` and `doctor` show a `heartbeat` entry with the time of the last accepted ping. It is `unknown` when the URL cannot be reached, and it never alerts. |
 | `heartbeat.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. A 2xx answer counts as accepted. |

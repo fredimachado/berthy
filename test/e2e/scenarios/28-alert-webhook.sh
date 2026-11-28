@@ -165,7 +165,7 @@ out=$(adm alerts test 2>&1); code=$?
 expect_code "alerts test succeeds when both channels do" 0 "$code" "$out"
 expect_contains "alerts test reports Telegram" "$out" "telegram: ok"
 expect_contains "alerts test reports the webhook" "$out" "webhook: ok"
-requests=$(hook_requests | jq -c '[.[] | select(.method == "POST") | select((.body | fromjson? | .kind) == "test")]')
+requests=$(hook_requests | jq -c --arg path "$hook_path" '[.[] | select(.method == "POST" and .path == $path) | select((.body | fromjson? | .kind) == "test")]')
 expect_eq "the test alert is one POST" 1 "$(printf '%s' "$requests" | jq 'length')"
 req=$(printf '%s' "$requests" | jq -c '.[0]')
 first_test=$(printf '%s' "$req" | jq -c '.body | fromjson')
