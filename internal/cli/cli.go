@@ -128,7 +128,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 	var config, env, project string
 	var jsonOutput, watch, projectGiven, configGiven, envGiven bool
 	var since, tail, grep, role, replica string
-	var follow bool
+	var follow, cluster bool
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -178,6 +178,12 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 			since = args[i]
 		case "--json":
 			jsonOutput = true
+		case "--cluster":
+			if cmd != "checks" {
+				fmt.Fprintln(errout, "unknown flag --cluster")
+				return 2
+			}
+			cluster = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				fmt.Fprintf(errout, "unknown flag %s\n", args[i])
@@ -303,7 +309,12 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		endpoint = "apps/" + url.PathEscape(positional[0]) + "/logs"
 	case "df", "doctor":
 		endpoint = cmd
-	case "checks", "jobs":
+	case "checks":
+		endpoint = "checks"
+		if cluster {
+			endpoint = "cluster/checks"
+		}
+	case "jobs":
 		endpoint = cmd
 	case "agent-info":
 		endpoint = "agent"
@@ -344,7 +355,7 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}
 		u.RawQuery = q.Encode()
 	}
-	return runReadRequest(ctx, newReadClient(cmd, watch || follow), &u, token, cmd, scope.ID{Project: target.Project, Environment: target.Env}, watch || follow, jsonOutput, out, errout)
+	return runReadRequest(ctx, newReadClient(cmd, watch || follow), &u, token, cmd, scope.ID{Project: target.Project, Environment: target.Env}, watch || follow, jsonOutput, cluster, out, errout)
 }
 
 // newReadClient is the HTTP client for a read command. Doctor uses the agent's check budget; streaming reads keep headers
@@ -361,7 +372,7 @@ func newReadClient(cmd string, stream bool) *http.Client {
 	return client
 }
 
-func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, id scope.ID, stream, jsonOutput bool, out, errout io.Writer) int {
+func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, id scope.ID, stream, jsonOutput, cluster bool, out, errout io.Writer) int {
 	progress := startWait(errout, !jsonOutput && !stream, "reading "+cmd)
 	resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
 	if err != nil {
@@ -385,7 +396,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 		return 1
 	}
 	if cmd == "checks" {
-		return printChecks(out, errout, body, jsonOutput)
+		return printChecks(out, errout, body, jsonOutput, cluster)
 	}
 	if cmd == "jobs" {
 		return printJobs(out, errout, body, jsonOutput)
@@ -793,7 +804,7 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 }
 
 // printChecks prints the stored check states as a table, or as indented JSON when asJSON is set.
-func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
+func printChecks(out, errout io.Writer, body []byte, asJSON, cluster bool) int {
 	if asJSON {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, body, "", "  ") != nil {
@@ -804,6 +815,7 @@ func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 		return 0
 	}
 	var rows []struct {
+		Server string    `json:"server"`
 		Name   string    `json:"name"`
 		State  string    `json:"state"`
 		Detail string    `json:"detail"`
@@ -819,9 +831,17 @@ func printChecks(out, errout io.Writer, body []byte, asJSON bool) int {
 	}
 	s := styleFor(out, true)
 	var table cliTable
-	table.header(s, "NAME", "STATE", "SINCE", "DETAIL")
+	header := []string{"NAME", "STATE", "SINCE", "DETAIL"}
+	if cluster {
+		header = append([]string{"SERVER"}, header...)
+	}
+	table.header(s, header...)
 	for _, r := range rows {
-		table.row(terminalSafe(r.Name), s.Status(r.State), s.paint(toneMuted, r.Since.UTC().Format(time.RFC3339)), terminalSafe(r.Detail))
+		cells := []string{terminalSafe(r.Name), s.Status(r.State), s.paint(toneMuted, r.Since.UTC().Format(time.RFC3339)), terminalSafe(r.Detail)}
+		if cluster {
+			cells = append([]string{terminalSafe(r.Server)}, cells...)
+		}
+		table.row(cells...)
 	}
 	if err := table.write(out, s); err != nil {
 		fmt.Fprintln(errout, err)

@@ -110,8 +110,13 @@ if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 first_rows=$(jq -ec 'select(type == "array")' "$private/cluster-response.json")
 expect_eq "the second project's read token can read cluster checks" 200 \
   "$(cluster_request GET "$second_scope/cluster/checks" "$second_reader")"
-expect_eq "both scoped reads return the same cluster rows" "$first_rows" \
-  "$(jq -ec 'select(type == "array")' "$private/cluster-response.json")"
+second_rows=$(jq -ec 'select(type == "array")' "$private/cluster-response.json")
+expect_eq "both scoped reads return the same cluster rows" "$first_rows" "$second_rows"
+expect_eq "$PROJECT/$ENVN checks --cluster matches its scoped GET" "$first_rows" \
+  "$(cli "$PROJECT" checks --cluster --json | jq -ec 'select(type == "array")')"
+expect_eq "$peer/$ENVN checks --cluster matches its scoped GET" "$second_rows" \
+  "$(cli "$peer" checks --cluster --json | jq -ec 'select(type == "array")')"
+if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 expect_eq "a cluster read refuses the other project's token" 401 \
   "$(cluster_request GET "$second_scope/cluster/checks" "$first_reader")"
 expect_eq "cluster checks refuse POST" 405 \
@@ -221,6 +226,9 @@ enable_environment_alerts() {
   PROJECT="$project" base_manifest > "$dir/berthy.yml"
   cat >> "$dir/berthy.yml" <<YML
 network: $project-$ENVN
+probes:
+  scope-$chat:
+    tcp: $TG_LISTEN
 alerts:
   reminder: 0s
   telegram:
@@ -239,6 +247,16 @@ enable_environment_alerts "$PROJECT" "$first_chat" "$first_hook"
 enable_environment_alerts "$peer" "$second_chat" "$second_hook"
 [ "$E2E_FAILS" -eq 0 ] || finish
 inside systemctl restart berthy
+
+has_own_probe() {
+  cli "$1" checks --json | jq -e --arg own "probe:scope-$2" --arg other "probe:scope-$3" '
+    any(.[]; .name == $own and .state == "ok") and all(.[]; .name != $other and (has("server") | not))' >/dev/null
+}
+for pair in "$PROJECT:$first_chat:$second_chat" "$peer:$second_chat:$first_chat"; do
+  IFS=: read -r project own other <<< "$pair"
+  wait_for "ordinary checks for $project/$ENVN" has_own_probe "$project" "$own" "$other" || exit 1
+  pass "$project/$ENVN ordinary checks show its own probe"
+done
 
 telegram_warnings() {
   tg_messages | jq -e --arg chat "$1" --arg marker "$marker" '
