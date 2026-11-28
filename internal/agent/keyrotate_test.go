@@ -117,6 +117,32 @@ func TestRotateKeyIsRefusedWhileTheEnvironmentIsLocked(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsTheActiveKeyIDAcrossRotation(t *testing.T) {
+	f := newApprovalFixture(t, false, nil)
+	doctor := func() string {
+		t.Helper()
+		w := f.call("GET", "/doctor", apReadToken, "")
+		var report struct {
+			KeyID string `json:"key_id"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil {
+			t.Fatalf("doctor: %d %s", w.Code, w.Body.String())
+		}
+		return report.KeyID
+	}
+	before, oldStoreID := doctor(), f.s.KeyID()
+	w := f.call("POST", "/key/rotate", apAdminToken, `{}`)
+	var rotation api.KeyRotation
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rotation) != nil {
+		t.Fatalf("rotate: %d %s", w.Code, w.Body.String())
+	}
+	after, newStoreID := doctor(), f.s.KeyID()
+	if rotation.OldKeyID == "" || rotation.NewKeyID == "" || rotation.OldKeyID == rotation.NewKeyID ||
+		before != oldStoreID || before != rotation.OldKeyID || after != newStoreID || after != rotation.NewKeyID {
+		t.Fatalf("doctor IDs %q -> %q, rotation IDs %q -> %q, store IDs %q -> %q", before, after, rotation.OldKeyID, rotation.NewKeyID, oldStoreID, newStoreID)
+	}
+}
+
 func TestDoctorSaysWhenAPreviousStateKeyIsKept(t *testing.T) {
 	e, _ := doctorDocker(t, map[string]string{"demo": attachableOverlay})
 	s := openIngressStore(t)

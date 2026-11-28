@@ -109,16 +109,43 @@ expected_env=$(printf 'BERTHY_%s_%s_TOKEN' "$PROJECT" "$ENVN" | tr '[:lower:]-' 
 label="token environment"
 check test "$token_env" = "$expected_env"
 export "$token_env=$token"
-"$BIN" key rotate -e "$ENVN" --config "$cfg" --project "$PROJECT" >"$private/rotate" 2>&1 || { echo "key rotation failed" >&2; exit 1; }
+doctor=("$BIN" doctor -e "$ENVN" --config "$cfg" --project "$PROJECT")
+"${doctor[@]}" --json >"$private/doctor-before" 2>"$private/doctor-before-err" || { echo "doctor before rotation failed" >&2; exit 1; }
+"$BIN" key rotate -e "$ENVN" --config "$cfg" --project "$PROJECT" --json >"$private/rotate" 2>"$private/rotate-err" || { echo "key rotation failed" >&2; exit 1; }
+old_id=$(jq -er '.old_key_id | strings' "$private/rotate") || exit 1
+new_id=$(jq -er '.new_key_id | strings' "$private/rotate") || exit 1
+label="rotation key filenames"
+check test "$old_id" != "$new_id"
+check test "$first" = "$keys/berthy.$PROJECT.$ENVN.$old_id.key"
+check test ! -e "$keys/berthy.$PROJECT.$ENVN.$new_id.key"
+"${doctor[@]}" >"$private/doctor-text" 2>"$private/doctor-text-err"; doctor_code=$?
+"${doctor[@]}" --json >"$private/doctor-after" 2>"$private/doctor-after-err"; doctor_json_code=$?
+warning="warning: this machine has no saved copy of the current state key $new_id. Run remote berthy setup for $PROJECT/$ENVN from this machine without --key-file to save a copy."
+label="missing current key copy warning"
+check test "$(grep -Fxc -- "$warning" "$private/doctor-text")" -eq 1
+check test "$doctor_code" -eq 0
+check test "$doctor_json_code" -eq 0
+check test "$(grep -Fxc -- "$warning" "$private/doctor-after-err")" -eq 1
+label="doctor key IDs"
+check jq -e --arg id "$old_id" '.key_id == $id' "$private/doctor-before"
+check jq -e --arg id "$new_id" '.key_id == $id' "$private/doctor-after"
 out=$("${setup[@]}" </dev/null 2>/dev/null); code=$?
 label="rotated key copy"
 check test "$code" -eq 0
 check jq -e '[.steps[] | select(.step == "cli_key" and .status == "changed")] | length == 1' <<<"$out" >/dev/null
 second=$(jq -er '.key_copy | strings' <<<"$out") || exit 1
+check test "$second" = "$keys/berthy.$PROJECT.$ENVN.$new_id.key"
+check test -f "$first"
 check test "$second" != "$first"
 check test "$(count)" -eq 2
 check test "$(sum "$first")" = "$(server_sum "$key.prev")"
 check test "$(sum "$second")" = "$(server_sum "$key")"
+"${doctor[@]}" >"$private/doctor-saved" 2>"$private/doctor-saved-err" || { echo "doctor after setup failed" >&2; exit 1; }
+"${doctor[@]}" --json >"$private/doctor-saved-json" 2>"$private/doctor-saved-json-err" || { echo "doctor JSON after setup failed" >&2; exit 1; }
+label="saved current key copy"
+check jq -e --arg id "$new_id" '.key_id == $id' "$private/doctor-saved-json"
+check absent "$warning" "$private/doctor-saved"
+check absent "$warning" "$private/doctor-saved-json-err"
 # The first record must remain byte-identical after the new file appears.
 stat -c '%n %i %y' "$first" > "$private/first"
 sha256sum "$first" >> "$private/first"
