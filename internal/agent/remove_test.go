@@ -52,7 +52,7 @@ func TestRemovedAppsAreNotMonitoredOrScheduledEvenWhileTheManifestNamesThem(t *t
 	ctx := context.Background()
 	recordRelease(t, s, "release", removedAppManifest)
 	d := &deploy.Controller{Store: s, Environment: "lab"}
-	w := NewMonitoring(monitoringConfig(""), nil, nil, d, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, d, func(string) {})
 	before := checkNames(ctx, w)
 	for _, name := range []string{"job:tick", "job:sweep", "probe:api-up", "probe:worker-up", "probe:site"} {
 		if !before[name] {

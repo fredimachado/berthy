@@ -35,7 +35,7 @@ type removalRunner struct {
 
 func newRemovalRunner(t *testing.T) (*removalRunner, Options) {
 	t.Helper()
-	config := `{"listen":"127.0.0.1:7710","environments":[` +
+	config := `{"listen":"127.0.0.1:7710","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[` +
 		strings.Replace(removalHostedJSON("alpha", "dev", "/custom/target", "1"), `"tokens"`, `"network":"alpha-dev","tokens"`, 1) +
 		",\n" + removalHostedJSON("peer", "dev", "/peer", "2") + "]}\n"
 	cli := filepath.Join(t.TempDir(), "config.json")
@@ -226,7 +226,7 @@ func (r *removalRunner) checkMutations(want string) {
 func TestRemovalStagesOnlyConfigAndConfirmsProcessHealth(t *testing.T) {
 	r, opts := newRemovalRunner(t)
 	original := bytes.Clone(r.live)
-	want := `{"listen":"127.0.0.1:7710","environments":[` + removalHostedJSON("peer", "dev", "/peer", "2") + "]}\n"
+	want := `{"listen":"127.0.0.1:7710","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[` + removalHostedJSON("peer", "dev", "/peer", "2") + "]}\n"
 	if _, failure := runRemoval(r, opts, false, true); failure != "" || !bytes.Equal(r.live, original) {
 		t.Fatalf("preview: %q, config changed=%t", failure, !bytes.Equal(r.live, original))
 	}

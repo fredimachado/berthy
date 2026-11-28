@@ -35,7 +35,7 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 		run       func(io.Writer, io.Writer) int
 	}{
 		{"checks", "NAME\tSTATE\tSINCE\tDETAIL\n界\thealthy\t2026-01-01T00:00:00Z\tok\né\tfailed\t2026-01-01T00:00:00Z\t\n", func(o, e io.Writer) int {
-			return printChecks(o, e, []byte(`[{"name":"界","state":"healthy","detail":"ok","since":"2026-01-01T00:00:00Z"},{"name":"é","state":"failed","detail":"","since":"2026-01-01T00:00:00Z"}]`), false)
+			return printChecks(o, e, []byte(`[{"name":"界","state":"healthy","detail":"ok","since":"2026-01-01T00:00:00Z"},{"name":"é","state":"failed","detail":"","since":"2026-01-01T00:00:00Z"}]`), false, false)
 		}},
 		{"jobs", "NAME\tTARGET\tSCHEDULE\tNEXT\tLAST\tWHEN\n界\tapp\ton demand\t-\tfailed: detail\t2026-01-01T00:00:00Z\né\tapp\ton demand\t-\t-\t-\n", func(o, e io.Writer) int {
 			return printJobs(o, e, []byte(`[{"name":"界","app":"app","last":{"status":"failed","detail":"detail","started":"2026-01-01T00:00:00Z"}},{"name":"é","app":"app"}]`), false)
@@ -150,7 +150,7 @@ func TestCLITableColumnsAndPlainBytes(t *testing.T) {
 		name, want string
 		run        func(io.Writer, io.Writer) int
 	}{
-		{"checks", "no checks yet\n", func(o, e io.Writer) int { return printChecks(o, e, []byte(`[]`), false) }},
+		{"checks", "no checks yet\n", func(o, e io.Writer) int { return printChecks(o, e, []byte(`[]`), false, false) }},
 		{"jobs", "no jobs\n", func(o, e io.Writer) int { return printJobs(o, e, []byte(`[]`), false) }},
 		{"approvals", "no pending approvals\n", func(o, e io.Writer) int { return printApprovals(o, e, []byte(`[]`), false, false) }},
 		{"approvals all", "no approvals\n", func(o, e io.Writer) int { return printApprovals(o, e, []byte(`[]`), true, false) }},
@@ -254,7 +254,7 @@ func testBatchAndFollowLogMetadataSpans(t *testing.T) {
 		client := &http.Client{Transport: progressRoundTrip(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
 		})}
-		if code := runReadRequest(context.Background(), client, u, "fixture-token", "logs", scope.ID{}, streaming, jsonMode, &out, &errs); code != 0 {
+		if code := runReadRequest(context.Background(), client, u, "fixture-token", "logs", scope.ID{}, streaming, jsonMode, false, &out, &errs); code != 0 {
 			t.Fatalf("read exit %d: %s", code, errs.String())
 		}
 		return out.String()

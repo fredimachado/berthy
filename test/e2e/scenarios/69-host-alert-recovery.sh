@@ -17,44 +17,26 @@ cleanup() {
 trap cleanup EXIT
 
 memory_post() {
-  hook_requests | jq -ce --arg env "$ENVN" '
+  hook_requests | jq -ce '
     first(.[] | select(.method == "POST") | .body | fromjson |
-      select(.kind == "check" and .environment == $env and .name == "memory"))'
+      select(.kind == "check" and (.server | type == "string" and length > 0) and .environment == "" and .name == "memory"))'
 }
 
 warning_delivered() {
   memory_post | jq -e '.state == "warning" and .detail == "9.9% available"' >/dev/null || return 1
-  python3 - "$RUN/state/state.db" "$ENVN" <<'PY'
-import sqlite3, sys
-with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:
-    row = db.execute("SELECT notified_state FROM checks WHERE environment=? AND name='memory'", (sys.argv[2],)).fetchone()
-sys.exit(row != ("warning",))
-PY
+  "$CLUSTER_BIN" notified "$RUN/cluster/state/state.db" memory warning
 }
 
 write_memory() {
   printf 'MemTotal: 1000 kB\nMemAvailable: %s kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' "$1" > "$meminfo"
 }
 
-out=$(printf 'http://%s/memory' "$HOOK_LISTEN" | adm secret set ALERT_WEBHOOK_URL 2>&1); code=$?
-expect_code "configure webhook secret" 0 "$code" "$out"
-[ "$code" -eq 0 ] || finish
-{
-  base_manifest
-  cat <<'YML'
-alerts:
-  reminder: 1ms
-  webhook:
-    url_secret: ALERT_WEBHOOK_URL
-YML
-} | write_manifest || exit 1
-out=$(adm apply --manifest-dir "$MAN" 2>&1); code=$?
-expect_code "apply webhook settings" 0 "$code" "$out"
-[ "$code" -eq 0 ] || finish
-
 existing=$(d ps -aq --no-trunc --filter "name=^/${name}\$") || exit 1
 [ -z "$existing" ] || { fail "create memory agent" "container name already exists"; finish; }
 stop_agent
+(umask 077; jq '.cluster.alerts = {reminder: "1ms", webhook: {url_secret: "ALERT_WEBHOOK_URL"}}' "$RUN/agent.json" > "$RUN/agent.json.new") &&
+  mv -f "$RUN/agent.json.new" "$RUN/agent.json" || exit 1
+printf 'http://%s/memory' "$HOOK_LISTEN" | "$CLUSTER_BIN" secret "$RUN/agent.json" ALERT_WEBHOOK_URL || exit 1
 write_memory 99 || exit 1
 hook_reset || exit 1
 groups=()
@@ -92,7 +74,7 @@ if wait_for "first memory post after restart" memory_post; then
 else
   fail "first memory post after restart" "no memory post received"
 fi
-out=$(adm checks --json 2>&1); code=$?
+out=$(adm checks --cluster --json 2>&1); code=$?
 expect_code "read checks after passing memory sample" 0 "$code" "$out"
 expect_eq "memory retains its warning and detail" 'warning 9.9% available' \
   "$(jq -r '.[] | select(.name == "memory") | "\(.state) \(.detail)"' <<< "$out")"

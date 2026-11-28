@@ -75,7 +75,7 @@ func (l *CommandLog) exited(res Result, err error) {
 		return
 	}
 	if err != nil {
-		if l.step == "cli_key" {
+		if l.step == "cli_key" || l.step == "cluster_secret" {
 			fmt.Fprintln(l.w, "→ could not run")
 			return
 		}

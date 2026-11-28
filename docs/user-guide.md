@@ -221,16 +221,16 @@ The steps run in this order. Each one checks first and only acts when something 
 | `network` | Creates the attachable overlay network for this hosted environment (`todo-prod` by default, or the name in the manifest), unless it exists. An existing network that is not an attachable overlay stops the run. |
 | `user` | Creates the `berthy` system user and adds it to the `docker` group. |
 | `binary` | Installs the Berthy binary as `/usr/local/bin/berthy` (see "Where the binary comes from"). |
-| `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and makes the encryption key `/var/lib/berthy/environments/todo/prod/key`. It never replaces an existing key. |
+| `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and its encryption key at `/var/lib/berthy/environments/todo/prod/key`. It also prepares `/var/lib/berthy/cluster/state` and its independent key at `/var/lib/berthy/cluster/key`. Setup preserves existing keys. |
 | `token` | Creates the first `admin` token. The agent keeps only its digest. |
-| `config` | Writes `/etc/berthy/agent.json`. It sets the environment, the listen address, `docker_socket` (`/var/run/docker.sock`), the state directory and key file, `protected` and `network`, and the tokens. |
+| `config` | Writes `/etc/berthy/agent.json`. It sets the listen address, `docker_socket` (`/var/run/docker.sock`), the cluster paths, and the hosted environment's state directory, key file, `protected` setting, network and tokens. |
 | `service` | Installs, enables and starts `berthy.service`, and waits until the agent answers. |
 | `cli_config` | Adds the environment to the CLI configuration file: the one `--config` names, or else the one the CLI finds (see [How to read the commands](#how-to-read-the-commands)). Without any location it is skipped, with a hint of the entry to add yourself. |
 | `cli_token` | Saves the new admin token in this machine's credential store, or shows it when the save is unavailable or unconfirmed. |
 | `verify` | Runs `doctor` on the new agent (see below). |
 | `cli_key` | Saves a copy of the encryption key on this machine, in `~/.berthy/keys` (see [Save three things](#save-three-things)). With `--local` it is skipped. |
 
-Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo-prod`), and the details are what setup prints:
+Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This example shows a first run for `todo/prod` on `ops@10.0.0.5` with the network `todo-prod`. The server lacks an update notifier, and its only warning is that no server alert channel is configured.
 
 ```text
 ✓ connect     ops@10.0.0.5 (sudo)
@@ -240,13 +240,13 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo-prod
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
+✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared the cluster state directory and key
 ✓ token       created an admin token named admin
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
 ✓ cli_config  wrote prod at http://10.0.0.5:7710 to config.json (token in $BERTHY_TODO_PROD_TOKEN)
 – cli_token   no credential store on this machine: the token is shown below; set it in $BERTHY_TODO_PROD_TOKEN
-✓ verify      agent v0.1.0-me, 9 of 9 checks ok
+✓ verify      agent v0.1.0-me, 10 of 11 checks ok (not ok: cluster_alerts: no cluster alert channel: host problems alert nobody; run berthy setup --cluster-alerts FILE)
 ✓ cli_key     saved a copy of the encryption key in /home/me/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key
 setup of todo/prod on ops@10.0.0.5: done
 
@@ -258,6 +258,7 @@ next steps:
   3. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
   5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
+  6. host problems alert nobody yet: run setup again with --cluster-alerts FILE
 ```
 
 This sample is a non-terminal run with no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. The post-setup secret, ingress and deploy commands name `--project` only when setup ran without a manifest. With one, each of those commands reads the project from `berthy.yml` in the directory you run it from, or in `--manifest-dir`. A `--local` key-copy handoff still names `--project` even when a manifest supplied the project. Relative `--manifest-dir` and `--config` resolve from the directory where you ran setup, so return there before the other commands. When the key copy could not be saved, `cli_key` says `not saved` with the reason and the first next step says what to do instead. The exit code stays 0. (The sample above is from a run on a test server, shortened where its details differ.)
@@ -270,7 +271,7 @@ A **second run** keeps the existing token and shows no new token. With a stored 
 ✓ binary      this CLI (v0.1.0-me) is installed
 ✓ token       the tokens of /etc/berthy/agent.json are kept
 ✓ cli_token   the admin token is in the Secret Service
-✓ verify      agent v0.1.0-me, 9 of 9 checks ok
+✓ verify      agent v0.1.0-me, 10 of 11 checks ok (not ok: cluster_alerts: no cluster alert channel: host problems alert nobody; run berthy setup --cluster-alerts FILE)
 ✓ cli_key     the copy of the encryption key is in /home/me/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key
 ```
 
@@ -381,6 +382,8 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it. |
+| `--cluster-alerts FILE\|none` | Replace the server's alert destinations from YAML, or clear them with `none`. Omitting the flag keeps the saved settings. |
+| `--cluster-secret NAME` | Write one server alert credential on an installed agent. This maintenance command uses the setup host selector and briefly stops and starts `berthy.service`. |
 | `--remove` | Remove one hosted environment after destroying its applied apps. The server must still host another environment. |
 | `--purge` | Delete the removed environment's state instead of archiving it. Requires `--remove`. |
 | `--dry-run` | Check and report what would change, without changing anything. |
@@ -392,6 +395,25 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--show-token` | Print the newly created admin token as well as saving it. |
 
 If the directory has a manifest, setup reads the project, `network`, `protected` and the server's SSH destination (`servers`) from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
+
+Server alert destinations use a YAML file with the same reminder, Telegram and webhook fields as manifest alerts. The file holds secret names. Set each value separately through SSH or `--local` as an operator who can run setup with root privileges. An agent API token has no access to server alert credentials.
+
+```yaml
+reminder: 4h
+telegram:
+  bot_token_secret: SERVER_TELEGRAM_TOKEN
+  chat_id: "-12345678"
+webhook:
+  url_secret: SERVER_WEBHOOK_URL
+```
+
+```sh
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-secret SERVER_TELEGRAM_TOKEN
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-secret SERVER_WEBHOOK_URL
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-alerts server-alerts.yml
+```
+
+Each `--cluster-secret` command reads one hidden or piped value and can preload or replace a credential. It starts the agent again and verifies startup. Hosted workloads keep running during the service interruption. Add `--dry-run` to preview the operation without reading a value. `--cluster-alerts none` clears the destinations and keeps the cluster state and key.
 
 #### What setup leaves on the server
 
@@ -453,7 +475,7 @@ To delete an OS-stored token too, run `berthy context remove --project todo -e p
 
 #### Alerts about the server
 
-Host checks (disk, memory, Docker, public ports, reboot) run inside every hosted environment's monitor. Each environment evaluates them independently and sends any resulting alerts to its configured Telegram and webhook channels. A startup failure produces a critical `hosted:<project>/<environment>` alert from each running environment with an alert channel. After repair and restart, the same check sends recovery. Most alert and telemetry records identify the environment without its project. Server-level alert channels and project names in those records are planned in #55 and #56.
+One monitor per agent checks the server's disk, memory, Docker storage, public ports and reboot status. Configure the server's channels using [setup](#the-other-setup-options). Read its stored host checks with `berthy checks --cluster -e prod` from any environment on the server. Each running environment still sends its own critical `hosted:<project>/<environment>` alert for an environment that failed to start, and a recovery after repair and restart.
 
 #### Another laptop
 
@@ -526,6 +548,8 @@ The agent's checks are:
 | telemetry | The OTLP exporter, when configured. |
 
 A backup, a credential, an alert or a host warning in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent. The two host checks change nothing on the server. The firewall and the packages stay with your provisioning.
+
+`doctor` evaluates public ports and reboot status live. It also checks whether the server's configured alert credentials are usable, or tells you to run `berthy setup --cluster-alerts FILE` if the server has no destinations. `checks --cluster` shows the last stored results of the monitor.
 
 `berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version. A capable agent also reports `effective_protected` (configured or sticky protection). A legacy agent omits that field.
 
@@ -1543,14 +1567,15 @@ berthy audit -e prod
 
 | Command | Shows |
 | --- | --- |
-| `berthy checks` | The stored state of every probe and built-in condition, and since when. |
+| `berthy checks` | The stored state of the selected environment's probes and conditions, and since when. |
 | `berthy jobs` | Every scheduled or on-demand job and its last run. |
 | `berthy lock status` | Whether the deploy lock is held, by whom and why. |
 | `berthy backup list` | The backups in object storage. |
 | `berthy ingress status` | The tunnel, its connectors, hostnames and DNS records. |
 | `berthy approvals` | Changes waiting for a person. |
 | `berthy agent-info` | Environment, host, protected flag and version. |
-| `berthy doctor` | The agent's own health checks. |
+| `berthy checks --cluster` | Stored host checks for the server that hosts the selected environment. |
+| `berthy doctor` | Live diagnosis of the agent, server and selected environment. |
 
 ---
 
@@ -2053,9 +2078,9 @@ berthy secret set ALERT_WEBHOOK_URL -e prod
 berthy alerts test -e prod
 ```
 
-`alerts test` sends a test message to every configured channel and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
+`alerts test` sends a test message to each of the selected environment's configured channels and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
 
-Host checks (disk, memory, Docker, public ports, reboot) are evaluated by this environment's monitor like every other check. Any resulting alerts go to all of this environment's configured channels; with none configured, nothing is sent. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project, are planned: #55, #56.
+Manifest alerts cover this environment's probes, apps and other environment checks. The agent evaluates host checks once and delivers host warnings and recoveries through the server-level destinations set by setup. Host alert text starts with the severity symbol and `server HOSTNAME`. Without a server destination, the agent still records host checks and `doctor` reports that host problems alert nobody.
 
 ##### The webhook
 
@@ -2075,7 +2100,8 @@ The webhook gets one `POST` of a small JSON document for each alert, with `Conte
 
 | Field | Meaning |
 | --- | --- |
-| `environment` | The environment that sent the alert. |
+| `environment` | The selected environment for an environment alert, deploy report or test alert. Empty for a server alert. |
+| `server` | The agent's hostname for a server alert. Omitted for environment alerts. |
 | `kind` | `check` for a check, `deploy` for a deploy or rollback. A test alert says `test`. |
 | `name` | The check, such as `probe:site`, or the app of a deploy. |
 | `state` | The state of the check (`critical`, `warning`, `ok`), or how the deploy ended (`failed`, `rolled_back`, `interrupted`, `recovery_required`, `succeeded`). |
@@ -2978,7 +3004,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 | `history <app>` | read | `--diff <release id> [<other release id>]` | Releases and failed deploys, with reasons and operation ids. With `--diff`, what a release changes compared with another. |
 | `wait <app>` | read | `--healthy`, `--role <name>`, `--timeout <duration up to 10m>` | Block until the app is healthy. Exit 0 when it is. |
 | `doctor` | read | | The agent's own checks. Exit 1 when a critical one fails. |
-| `checks` | read | | Stored state of every probe and built-in condition. |
+| `checks` | read | `--cluster`, `--json` | Stored checks for the selected environment. `--cluster` shows the server's stored checks and their hostname. |
 | `jobs` | read | | Every job, its schedule, next occurrence and last run. |
 | `audit` | read | | The last 100 changes: who, what, when, outcome. |
 | `agent-info` | read | | Environment, host, protected flag, agent version. |
@@ -3045,7 +3071,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, or add or remove one hosted environment over SSH or on the server. Exit 0 all steps fine, 1 a step failed or the manifest could not be loaded (before setup starts), 2 wrong command line (usage). Run one setup at a time against a server. |
+| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--cluster-alerts FILE\|none`, `--cluster-secret NAME`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, manage hosted environments, and configure server alerts over SSH or on the server. Exit 0 when setup succeeds, 1 when a step fails or the manifest could not be loaded before setup starts, 2 for invalid command-line usage. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--save-token`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. With `--save-token`, reads the token and saves it in the credential store. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. With no entries, or a missing file, prints `no contexts configured`; with `--json`, `[]`. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
@@ -3327,6 +3353,7 @@ The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` wr
 | `compose_command` | no | The Compose command as a list. Default `["docker", "compose"]`. The Compose plugin must be installed system-wide, or this must name a standalone Compose binary. |
 | `cloudflare_api_url` | no | Overrides the Cloudflare API base URL. `https`, or `http` on a loopback host. For tests. |
 | `telegram_api_url` | no | Overrides the Telegram Bot API base URL. Same rule. For tests. |
+| `cluster` | yes | The server's `state_dir` and `key_file` plus optional `alerts`. Setup uses `/var/lib/berthy/cluster/state` and `/var/lib/berthy/cluster/key`. These paths must be separate from all hosted state directories, keys and key rotation files. |
 | `environments` | yes, at least one | List of hosted environments. Each entry is below. A (project, environment) pair, a `state_dir`, a `key_file` and a `network` each appear once in the file. |
 
 Each entry of `environments`:
@@ -3348,6 +3375,10 @@ Example (the digest is a placeholder):
   "listen": "10.0.0.5:7710",
   "docker_socket": "/var/run/docker.sock",
   "approval_ttl": "15m",
+  "cluster": {
+    "state_dir": "/var/lib/berthy/cluster/state",
+    "key_file": "/var/lib/berthy/cluster/key"
+  },
   "environments": [
     {
       "project": "todo",

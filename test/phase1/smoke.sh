@@ -70,7 +70,7 @@ except urllib.error.HTTPError as e:
 else:
     raise AssertionError('wrong environment accepted')
 PY
-printf '{"listen":"0.0.0.0:19087","docker_socket":"/nonexistent","environments":[{"project":"demo","environment":"lab","state_dir":"/nonexistent/state","key_file":"/nonexistent/key","tokens":[{"digest":"%064d","scope":"read"}]}]}\n' 0 > "$dir/invalid.json"
+printf '{"listen":"0.0.0.0:19087","docker_socket":"/nonexistent","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[{"project":"demo","environment":"lab","state_dir":"/nonexistent/state","key_file":"/nonexistent/key","tokens":[{"digest":"%064d","scope":"read"}]}]}\n' 0 > "$dir/invalid.json"
 if "$bin" agent --config "$dir/invalid.json" > "$dir/invalid.out" 2>&1; then
   echo 'wildcard bind unexpectedly accepted' >&2; exit 1
 fi

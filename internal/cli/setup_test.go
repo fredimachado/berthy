@@ -80,6 +80,12 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	case strings.Contains(script, "uid=$(id -u)"):
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
+		if strings.Contains(script, "s='/var/lib/berthy/cluster/state'") {
+			if s.config == "" {
+				return setup.Result{}, nil
+			}
+			return setup.Result{Stdout: []byte("state_dir_stat=berthy:berthy 700\nstate_db=yes\nkey_stat=32 berthy:berthy 600\nparent_0=berthy:berthy 700\n")}, nil
+		}
 		out := s.nextProbe()
 		if strings.Contains(out, "state_dir_stat=") && !strings.Contains(out, "parent_0=") {
 			out += "\nparent_0=root:berthy 750\nparent_1=root:berthy 750\nparent_2=berthy:berthy 700\n"
@@ -176,6 +182,7 @@ func installedServer(t *testing.T, target string) *setupServer {
 	}
 	cfg, err := json.MarshalIndent(agent.File{
 		Listen: "172.31.250.10:7710", DockerSocket: "/var/run/docker.sock",
+		Cluster:      agent.ClusterConfig{StateDir: "/var/lib/berthy/cluster/state", KeyFile: "/var/lib/berthy/cluster/key"},
 		Environments: []agent.Hosted{{Project: "shop", Environment: "p5", StateDir: "/var/lib/berthy/environments/shop/p5/state", KeyFile: "/var/lib/berthy/environments/shop/p5/key", Network: "p5net", Tokens: []agent.Token{{Name: "admin", Digest: strings.Repeat("a", 64), Scope: "admin"}}}},
 	}, "", "  ")
 	if err != nil {
@@ -429,7 +436,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"\nnext steps:\n" +
 		"  1. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, config: "", local: false, tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[0] + "\n" +
 		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --manifest-dir " + shellWord(dir) + "\n" +
-		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --manifest-dir " + shellWord(dir) + " --version REF)\n"
+		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --manifest-dir " + shellWord(dir) + " --version REF)\n" +
+		"  4. host problems alert nobody yet: run setup again with --cluster-alerts FILE\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -545,7 +553,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 4 || len(got.Steps) != 15 {
+	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 15 {
 		t.Fatalf("report = %+v", got)
 	}
 	if !strings.Contains(got.NextSteps[0], "run the same berthy setup command again") {

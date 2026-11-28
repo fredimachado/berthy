@@ -7,17 +7,25 @@ import (
 	"time"
 )
 
-// Alert is one message for the people who run the environment: a check that changed state or keeps failing, or the end of a
-// deploy. Every channel renders it its own way. Text is the line Telegram sends, ready to show; no field holds application
+// Alert reports a check or the end of a deploy. Text is the line Telegram sends, ready to show. No field holds application
 // output or a secret value.
 type Alert struct {
 	Environment string
+	Server      string
 	Kind        string // "check" or "deploy"
 	Name        string // the check, or the app of a deploy
 	State       string // the check's state, or the end state of the deploy
 	Detail      string
 	Since       time.Time // when the state began; zero when it is not known
 	Text        string
+}
+
+// Subject names the server or environment the alert concerns.
+func (a Alert) Subject() string {
+	if a.Server != "" {
+		return "server " + a.Server
+	}
+	return a.Environment
 }
 
 // Notifier delivers an alert to one channel.

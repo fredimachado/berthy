@@ -18,7 +18,9 @@ import (
 	"strings"
 	"time"
 
+	"berthy/internal/agent"
 	"berthy/internal/agentclient"
+	"berthy/internal/api"
 	"berthy/internal/keywrap"
 	"berthy/internal/manifest"
 	"berthy/internal/scope"
@@ -29,7 +31,9 @@ import (
 
 const setupUsage = "usage: berthy setup -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 	"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
-	"                    [--no-install-docker] [--dry-run] [--json] [--verbose]\n" +
+	"                    [--no-install-docker] [--cluster-alerts FILE|none] [--dry-run] [--json] [--verbose]\n" +
+	"       berthy setup --cluster-secret NAME -e ENV [--host USER@SERVER | --server NAME | --local]\n" +
+	"                    [--project NAME] [--manifest-dir DIR] [--dry-run] [--json] [--verbose]\n" +
 	"       berthy setup --remove -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME]\n" +
 	"                    [--manifest-dir DIR] [--config PATH] [--purge] [--dry-run] [--json] [--verbose]"
 
@@ -68,10 +72,11 @@ type setupReport struct {
 	Steps       []setup.StepResult `json:"steps"`
 	OK          bool               `json:"ok"`
 	// Token is the admin token this run made when the output rule requires it.
-	Token       string   `json:"token,omitempty"`
-	TokenStored bool     `json:"token_stored,omitempty"`
-	KeyCopy     string   `json:"key_copy,omitempty"`
-	NextSteps   []string `json:"next_steps,omitempty"`
+	Token         string   `json:"token,omitempty"`
+	TokenStored   bool     `json:"token_stored,omitempty"`
+	KeyCopy       string   `json:"key_copy,omitempty"`
+	NextSteps     []string `json:"next_steps,omitempty"`
+	clusterSecret bool
 }
 
 // runSetup runs "setup": it connects to a server over ssh, or runs on it, and gets it ready for the agent. Exit 0 means every
@@ -87,6 +92,9 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 	f, from, status := parseSetupFlags(args, errout)
 	if status != 0 {
 		return status
+	}
+	if f.clusterSecretGiven {
+		return runSetupClusterSecret(ctx, f, from, os.Stdin, out, errout)
 	}
 	where := "on " + f.host
 	if f.local {
@@ -108,6 +116,7 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		}
 		opts.NewWrapKey = setupNewWrapKey
 		opts.Network, opts.Protected = from.network, from.protected
+		opts.ClusterAlertsGiven, opts.ClusterAlerts = f.clusterAlertsGiven, f.clusterAlerts
 		opts.ListenIP, opts.ListenPort, opts.DefaultListenIP = f.listenIP, f.listenPort, f.defaultListenIP
 		opts.Binary, opts.KeyFile, opts.NewToken, opts.NoInstallDocker = f.binary, f.keyFile, f.newToken, f.noInstall
 		opts.Build, opts.ReleaseURL, opts.Doctor = setupBuild(), os.Getenv("BERTHY_RELEASE_URL"), setupDoctor
@@ -136,23 +145,26 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		report.Target = runner.Target()
 		session = &setup.Session{R: runner, Opts: opts, DryRun: f.dry}
 		if f.verbose {
-			// The log prints to standard error as the run goes; the report reads the same log for each step's commands.
-			logStyle := styleFor(errout, !f.asJSON)
-			session.Log = setup.NewStyledCommandLog(errout, setup.CommandLogStyle{
-				Prompt: func(v string) string { return logStyle.paint(toneAccent, v) },
-				Exit: func(code int, v string) string {
-					if code == 0 {
-						return logStyle.paint(toneOK, v)
-					}
-					return logStyle.paint(toneError, v)
-				},
-			})
+			session.Log = setupCommandLog(errout, f.asJSON)
 			session.R = setup.Recording(runner, session.Log)
 		}
 		report.OK = setup.Run(ctx, session, steps, show)
 	}
 	progress.Close()
 	return writeSetupReport(ctx, f, from, report, session, out, errout)
+}
+
+func setupCommandLog(errout io.Writer, json bool) *setup.CommandLog {
+	s := styleFor(errout, !json)
+	return setup.NewStyledCommandLog(errout, setup.CommandLogStyle{
+		Prompt: func(v string) string { return s.paint(toneAccent, v) },
+		Exit: func(code int, v string) string {
+			if code == 0 {
+				return s.paint(toneOK, v)
+			}
+			return s.paint(toneError, v)
+		},
+	})
 }
 
 func writeSetupReport(ctx context.Context, f setupFlags, from setupFrom, report setupReport, session *setup.Session, out, errout io.Writer) int {
@@ -179,7 +191,7 @@ func writeSetupReport(ctx context.Context, f setupFlags, from setupFrom, report 
 		if report.Token != "" {
 			fmt.Fprintf(out, "\nadmin token for %s (%s): %s\n", terminalSafe(from.project+"/"+f.env), styleFor(out, true).paint(toneWarning, "shown once, store it now"), report.Token)
 		}
-		if !f.remove && report.OK && !f.dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
+		if !f.remove && session != nil && report.OK && !f.dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
 			if read, ok := hiddenInput(); ok {
 				id := scope.ID{Project: from.project, Environment: f.env}
 				base, _ := url.Parse(session.AgentURL())
@@ -193,8 +205,9 @@ func writeSetupReport(ctx context.Context, f setupFlags, from setupFrom, report 
 			}
 		}
 	}
-	if !f.remove && report.OK && !f.dry {
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: f.env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, keyFileGiven: f.keyFileGiven, envFromVariable: f.envFromVariable, newToken: f.newToken, config: f.config, local: f.local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
+	if !f.remove && session != nil && report.OK && !f.dry {
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: f.env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, keyFileGiven: f.keyFileGiven, envFromVariable: f.envFromVariable, newToken: f.newToken, config: f.config, local: f.local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil,
+			clusterSetup: f.clusterSetupCommand(from.project), clusterSecrets: session.ClusterAlertSecretNames()})
 	}
 	if f.asJSON {
 		// Keep characters in next steps readable.
@@ -226,6 +239,9 @@ type setupFlags struct {
 	envFromVariable, keyFileGiven, dirGiven                     bool
 	listenIP, defaultListenIP                                   net.IP
 	listenPort                                                  int
+	server, clusterSecret                                       string
+	clusterAlertsGiven, clusterSecretGiven                      bool
+	clusterAlerts                                               *agent.ClusterAlerts
 }
 
 func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, int) {
@@ -238,7 +254,9 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 	fset.BoolVar(&f.purge, "purge", false, "delete this removal's state instead of archiving it")
 	project := fset.String("project", "", "project name")
 	fset.StringVar(&f.host, "host", "", "USER@SERVER to set up over ssh")
-	server := fset.String("server", "", "NAME of the manifest server to set up")
+	fset.StringVar(&f.server, "server", "", "NAME of the manifest server to set up")
+	clusterAlerts := fset.String("cluster-alerts", "", "FILE with server alert destinations, or none to clear them")
+	fset.StringVar(&f.clusterSecret, "cluster-secret", "", "write one server alert credential (hidden input or stdin)")
 	fset.BoolVar(&f.local, "local", false, "set up the server this command runs on")
 	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run unless the manifest gives the server's address")
 	network := fset.String("network", "", "the shared network, when there is no manifest")
@@ -256,7 +274,7 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 	if err := fset.Parse(args); err != nil {
 		return setupFlags{}, setupFrom{}, 2
 	}
-	var envGiven, hostGiven, serverGiven, purgeGiven bool
+	var envGiven, hostGiven, serverGiven, purgeGiven, configGiven bool
 	var installOnly string
 	fset.Visit(func(present *flag.Flag) {
 		switch present.Name {
@@ -272,6 +290,12 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 			serverGiven = true
 		case "purge":
 			purgeGiven = true
+		case "config":
+			configGiven = true
+		case "cluster-alerts":
+			f.clusterAlertsGiven = true
+		case "cluster-secret":
+			f.clusterSecretGiven = true
 		}
 		switch present.Name {
 		case "listen", "network", "protected", "binary", "key-file", "new-token", "show-token", "no-install-docker":
@@ -303,6 +327,12 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 		return usage("--purge requires --remove")
 	case f.remove && installOnly != "":
 		return usage("--%s cannot be used with --remove", installOnly)
+	case f.remove && f.clusterAlertsGiven:
+		return usage("--cluster-alerts cannot be used with --remove")
+	case f.clusterSecretGiven && (f.remove || f.clusterAlertsGiven || configGiven):
+		return usage("--cluster-secret cannot be used with --remove, --cluster-alerts or --config")
+	case f.clusterSecretGiven && installOnly != "":
+		return usage("--%s cannot be used with --cluster-secret", installOnly)
 	case f.env == "":
 		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
 	case !scope.ValidEnvironment(f.env):
@@ -314,6 +344,18 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 		return usage("use only one of --host, --server and --local")
 	case hostGiven && !sshhost.Valid(f.host):
 		return usage("invalid --host %q: use USER@SERVER or SERVER", f.host)
+	}
+	if f.clusterSecretGiven {
+		if err := api.CheckSecretName(f.clusterSecret); err != nil {
+			return usage("--cluster-secret: %v", err)
+		}
+	}
+	if f.clusterAlertsGiven && *clusterAlerts != "none" {
+		var err error
+		f.clusterAlerts, err = readClusterAlerts(*clusterAlerts)
+		if err != nil {
+			return usage("%v", err)
+		}
 	}
 	// The agent's address is needed on a first run only; the server's own configuration has it afterwards.
 	if *listen != "" {
@@ -343,7 +385,7 @@ func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, in
 		return usage("%v", err)
 	}
 	if !f.local && !hostGiven {
-		dest, err := setupDestination(from.manifest, f.env, *server, serverGiven)
+		dest, err := setupDestination(from.manifest, f.env, f.server, serverGiven)
 		if err != nil {
 			return usage("%v", err)
 		}
@@ -461,6 +503,8 @@ type nextSteps struct {
 	storeToken      bool
 	ingress         bool
 	inferProject    bool // setup loaded a manifest, so the follow-up commands read the project from it
+	clusterSetup    string
+	clusterSecrets  []string
 }
 
 // setupNextSteps describes what follows a successful setup.
@@ -517,7 +561,16 @@ func setupNextSteps(n nextSteps) []string {
 	if n.ingress {
 		steps = append(steps, fmt.Sprintf("apply the managed ingress: berthy ingress apply -e %s%s", env, config))
 	}
-	return append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))
+	steps = append(steps, fmt.Sprintf("deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e %s%s --version APP=REF (or one app: berthy deploy APP -e %s%s --version REF)", env, config, env, config))
+	if n.clusterSetup != "" {
+		if len(n.clusterSecrets) == 0 {
+			steps = append(steps, "host problems alert nobody yet: run setup again with --cluster-alerts FILE")
+		}
+		for _, name := range n.clusterSecrets {
+			steps = append(steps, n.clusterSetup+" --cluster-secret "+shellWord(name))
+		}
+	}
+	return steps
 }
 
 // keyFileName names the manual rotation copy for the environment.
@@ -566,6 +619,9 @@ func setupSummary(r setupReport, s cliStyle) string {
 		action = "removal"
 	}
 	prefix := fmt.Sprintf("%s of %s on %s: ", action, terminalSafe(r.Project+"/"+r.Environment), terminalSafe(r.Target))
+	if r.clusterSecret {
+		prefix = fmt.Sprintf("cluster credential on %s: ", terminalSafe(r.Target))
+	}
 	if !r.OK {
 		failed := "connect"
 		for _, s := range r.Steps {

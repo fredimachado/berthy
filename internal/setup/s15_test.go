@@ -14,7 +14,8 @@ import (
 
 func s15File(t *testing.T, project, env, network string) agent.File {
 	t.Helper()
-	return agent.File{Listen: listenIP + ":7710", DockerSocket: dockerSocket, Environments: []agent.Hosted{{Project: project, Environment: env, StateDir: "/var/lib/berthy/environments/" + project + "/" + env + "/state", KeyFile: "/var/lib/berthy/environments/" + project + "/" + env + "/key", Network: network, Tokens: []agent.Token{{Name: "admin", Scope: "admin", Digest: strings.Repeat("a", 64)}}}}}
+	dir, key := clusterPaths()
+	return agent.File{Listen: listenIP + ":7710", DockerSocket: dockerSocket, Cluster: agent.ClusterConfig{StateDir: dir, KeyFile: key}, Environments: []agent.Hosted{{Project: project, Environment: env, StateDir: "/var/lib/berthy/environments/" + project + "/" + env + "/state", KeyFile: "/var/lib/berthy/environments/" + project + "/" + env + "/key", Network: network, Tokens: []agent.Token{{Name: "admin", Scope: "admin", Digest: strings.Repeat("a", 64)}}}}}
 }
 
 func s15Server(t *testing.T, file agent.File) *agentFake {
@@ -105,7 +106,7 @@ func TestAddingAnEnvironmentLeavesTheOtherEntriesByteIdentical(t *testing.T) {
 	before := s15File(t, "other", "prod", "other-prod")
 	f := s15Server(t, before)
 	raw := `{ "tokens" : [ { "scope": "admin", "digest": "` + strings.Repeat("a", 64) + `", "name": "admin" } ], "network": "other-prod", "key_file": "/var/lib/berthy/environments/other/prod/key", "state_dir": "/var/lib/berthy/environments/other/prod/state", "environment": "prod", "project": "other" }`
-	f.config = `{"listen":"` + listenIP + `:7710", "docker_socket":"/var/run/docker.sock", "environments":[` + raw + `]}`
+	f.config = `{"listen":"` + listenIP + `:7710", "docker_socket":"/var/run/docker.sock", "cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"}, "environments":[` + raw + `]}`
 	s := agentSession(t, f, elfFile(t, emX86), false, nil)
 	got, ok := runSteps(s)
 	if !ok {

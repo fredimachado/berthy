@@ -61,7 +61,9 @@ func TestReadWaitStopsBeforeResponse(t *testing.T) {
 		u, _ := url.Parse("http://agent.invalid/ps")
 		var out, errout progressTestBuffer
 		done := make(chan int, 1)
-		go func() { done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, false, false, &out, &errout) }()
+		go func() {
+			done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, false, false, false, &out, &errout)
+		}()
 		<-entered
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
@@ -123,7 +125,7 @@ func TestReadWaitResultModes(t *testing.T) {
 				var out, errs progressTestBuffer
 				done := make(chan int, 1)
 				go func() {
-					done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, tc.stream, tc.json, &out, &errs)
+					done <- runReadRequest(ctx, client, u, "token", "ps", scope.ID{}, tc.stream, tc.json, false, &out, &errs)
 				}()
 				<-entered
 				if !tc.fast {
@@ -325,7 +327,7 @@ func TestReadWaitClearsBeforeReadFailure(t *testing.T) {
 		u, _ := url.Parse("http://agent.invalid")
 		var out, errs progressTestBuffer
 		done := make(chan int, 1)
-		go func() { done <- runReadRequest(ctx, c, u, "token", "ps", scope.ID{}, false, false, &out, &errs) }()
+		go func() { done <- runReadRequest(ctx, c, u, "token", "ps", scope.ID{}, false, false, false, &out, &errs) }()
 		<-entered
 		time.Sleep(250 * time.Millisecond)
 		synctest.Wait()
@@ -447,7 +449,7 @@ func TestReadRequestConnectionFailures(t *testing.T) {
 					client = &http.Client{Transport: progressRoundTrip(func(*http.Request) (*http.Response, error) { return nil, tc.cause })}
 				}
 				var out, errs bytes.Buffer
-				code := runReadRequest(context.Background(), client, u, "fixture-token", "ps", scope.ID{}, false, jsonMode, &out, &errs)
+				code := runReadRequest(context.Background(), client, u, "fixture-token", "ps", scope.ID{}, false, jsonMode, false, &out, &errs)
 				port := u.Port()
 				if port == "" {
 					port = "80"

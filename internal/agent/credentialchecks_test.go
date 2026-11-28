@@ -340,7 +340,7 @@ func TestMonitorChecksTheSameCredentials(t *testing.T) {
 	setIngress(t, s)
 	putRegistryPassword(t, s, host, "pw-one")
 	putPlainSecret(t, s, "CF_API_TOKEN", "cf-token-1")
-	w := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(cfg, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	lookup := func() map[string]monitor.Check {
 		checks := map[string]monitor.Check{}
 		for _, c := range w.checks(ctx) {
@@ -374,7 +374,7 @@ func TestMonitorChecksTheSameCredentials(t *testing.T) {
 	s2 := openIngressStore(t)
 	recordRelease(t, s2, "release-closed", registryManifest(closed))
 	putRegistryPassword(t, s2, closed, "pw-one")
-	w2 := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s2, Environment: "lab"}, func(string) {})
+	w2 := NewMonitoring(cfg, nil, &deploy.Controller{Store: s2, Environment: "lab"}, func(string) {})
 	for _, c := range w2.checks(ctx) {
 		if c.Name() == "registry:"+closed {
 			if got := c.Run(ctx); got.State != monitor.Unknown {

@@ -137,6 +137,7 @@ func declaredRoutes() []envRoute {
 		jsonRoute[deploy.Request](envRoute{pattern: "ingress/apply", method: "POST", scope: "deploy", kind: "ingress apply", gateDryRun: true, summary: summarizeKind}, (*routeRuntime).handleIngressApply),
 		{pattern: "ingress/status", method: "GET", scope: "read", handle: (*routeRuntime).handleIngressStatus},
 		{pattern: "checks", method: "GET", scope: "read", handle: (*routeRuntime).handleChecks},
+		{pattern: "cluster/checks", method: "GET", scope: "read", handle: (*routeRuntime).handleClusterChecks},
 		{pattern: "jobs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobs},
 		{pattern: "jobs/{name}/runs", method: "GET", scope: "read", handle: (*routeRuntime).handleJobRuns},
 		{pattern: "jobs/{name}/run", method: "POST", scope: "deploy", kind: "job run", summary: summarizeTarget, describeTarget: true, handle: (*routeRuntime).handleJobRun},

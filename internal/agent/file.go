@@ -11,19 +11,42 @@ import (
 	"runtime"
 	"strings"
 
+	"berthy/internal/manifest"
 	"berthy/internal/state"
 )
 
 // File is agent.json: what the agent process needs, and the environments it hosts.
 type File struct {
-	Listen           string   `json:"listen"`
-	DockerSocket     string   `json:"docker_socket"`
-	CloudflareAPIURL string   `json:"cloudflare_api_url,omitempty"`
-	TelegramAPIURL   string   `json:"telegram_api_url,omitempty"`
-	ComposeCommand   []string `json:"compose_command,omitempty"`
-	ApprovalTTL      string   `json:"approval_ttl,omitempty"`
-	Environments     []Hosted `json:"environments"`
+	Listen           string        `json:"listen"`
+	DockerSocket     string        `json:"docker_socket"`
+	CloudflareAPIURL string        `json:"cloudflare_api_url,omitempty"`
+	TelegramAPIURL   string        `json:"telegram_api_url,omitempty"`
+	ComposeCommand   []string      `json:"compose_command,omitempty"`
+	ApprovalTTL      string        `json:"approval_ttl,omitempty"`
+	Cluster          ClusterConfig `json:"cluster"`
+	Environments     []Hosted      `json:"environments"`
 }
+
+// ClusterConfig holds the server's state and alert settings.
+type ClusterConfig struct {
+	StateDir string         `json:"state_dir"`
+	KeyFile  string         `json:"key_file"`
+	Alerts   *ClusterAlerts `json:"alerts,omitempty"`
+}
+
+// ClusterAlerts configures delivery of server alerts.
+type ClusterAlerts struct {
+	Reminder string             `json:"reminder,omitempty" yaml:"reminder,omitempty"`
+	Telegram *manifest.Telegram `json:"telegram,omitempty" yaml:"telegram,omitempty"`
+	Webhook  *manifest.Webhook  `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+}
+
+func (a ClusterAlerts) manifestAlerts() manifest.Alerts {
+	return manifest.Alerts{Reminder: a.Reminder, Telegram: a.Telegram, Webhook: a.Webhook}
+}
+
+// Validate checks the server alert settings using the manifest's channel rules.
+func (a ClusterAlerts) Validate() error { return manifest.CheckAlertChannels(a.manifestAlerts()) }
 
 // Hosted is one hosted environment of agent.json.
 type Hosted struct {
@@ -97,6 +120,15 @@ func (f File) Validate() error {
 	if len(f.Environments) == 0 {
 		return fmt.Errorf("at least one environment is required")
 	}
+	if f.Cluster.StateDir == "" || f.Cluster.KeyFile == "" {
+		return errors.New("cluster needs state_dir and key_file")
+	}
+	if f.Cluster.Alerts != nil {
+		if err := f.Cluster.Alerts.Validate(); err != nil {
+			return fmt.Errorf("cluster: %w", err)
+		}
+	}
+	clusterPaths := Hosted{StateDir: f.Cluster.StateDir, KeyFile: f.Cluster.KeyFile}
 	ids := map[string]bool{}
 	prefixes := map[string]bool{}
 	states := map[string]bool{}
@@ -109,6 +141,9 @@ func (f File) Validate() error {
 		}
 		if h.StateDir == "" || h.KeyFile == "" {
 			return fmt.Errorf("a hosted environment needs state_dir and key_file")
+		}
+		if hostedPathsOverlap(clusterPaths, h) {
+			return fmt.Errorf("cluster and hosted environment paths overlap: %s/%s", h.Project, h.Environment)
 		}
 		id := h.Project + "/" + h.Environment
 		if ids[id] {

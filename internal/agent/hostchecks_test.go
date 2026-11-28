@@ -10,7 +10,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"berthy/internal/deploy"
 	"berthy/internal/monitor"
 )
 
@@ -316,10 +315,9 @@ func TestRebootCheckIsSkippedWhereTheHostHasNoMechanism(t *testing.T) {
 
 func TestMonitorChecksTheHostOnTenMinutes(t *testing.T) {
 	setHostFiles(t, updateNotifierFiles(""))
-	s := openIngressStore(t)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	c := &Cluster{}
 	found := map[string]bool{}
-	for _, c := range w.checks(context.Background()) {
+	for _, c := range c.checks(context.Background()) {
 		if c.Name() != "public_ports" && c.Name() != "reboot_required" {
 			continue
 		}

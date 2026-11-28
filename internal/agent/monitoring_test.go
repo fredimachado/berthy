@@ -18,7 +18,6 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/dialtest"
 	"berthy/internal/manifest"
-	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
@@ -248,12 +247,12 @@ func TestMonitoringChecksFollowTheLastAppliedManifest(t *testing.T) {
 		},
 		"peers":{"prod":"http://10.0.0.5:8080"},
 		"alerts":{"telegram":{"bot_token_secret":"TELEGRAM_BOT_TOKEN","chat_id":"1"}}`))
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	checks := map[string]monitor.Check{}
 	for _, c := range w.checks(ctx) {
 		checks[c.Name()] = c
 	}
-	for _, name := range []string{"probe:site", "probe:pg", "probe:web", "peer:prod", "telegram", "memory", "docker_disk"} {
+	for _, name := range []string{"probe:site", "probe:pg", "probe:web", "peer:prod", "telegram"} {
 		if checks[name] == nil {
 			t.Errorf("missing check %s; have %d checks", name, len(checks))
 		}
@@ -289,40 +288,11 @@ func TestMonitoringChecksFollowTheLastAppliedManifest(t *testing.T) {
 	}
 }
 
-func TestMonitoringWaitsForTheFirstHostSample(t *testing.T) {
-	s := openIngressStore(t)
-	col := metrics.New(metrics.NewHostReader(), nilDocker{})
-	w := NewMonitoring(monitoringConfig(""), nil, col, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
-	if got := w.checks(context.Background()); got != nil {
-		t.Fatalf("checks named before the first sample: %d", len(got))
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go col.Run(ctx)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, ok := col.Latest(); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no sample")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	found := false
-	for _, c := range w.checks(context.Background()) {
-		found = found || c.Name() == "memory"
-	}
-	if !found {
-		t.Fatal("memory check missing after the first sample")
-	}
-}
-
 func TestMonitoringWithoutStateIsNil(t *testing.T) {
-	if NewMonitoring(monitoringConfig(""), nil, nil, nil, func(string) {}) != nil {
+	if NewMonitoring(monitoringConfig(""), nil, nil, func(string) {}) != nil {
 		t.Fatal("monitoring without state")
 	}
-	if NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{}, func(string) {}) != nil {
+	if NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{}, func(string) {}) != nil {
 		t.Fatal("monitoring with a controller that has no store")
 	}
 	var none *Monitoring
@@ -339,7 +309,7 @@ func TestManagedIngressAddsTheTunnelCheck(t *testing.T) {
 	if err = s.SetIngress(ctx, op.ID, state.IngressState{AccountID: "acct", APITokenSecret: "CF_TOKEN", TunnelID: "t", TunnelName: "demo-lab"}); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	for _, c := range w.checks(ctx) {
 		if c.Name() == "tunnel" {
 			if c.Interval() != 2*time.Minute || c.Failures() != 2 {

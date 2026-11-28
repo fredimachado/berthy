@@ -96,6 +96,25 @@ http_code=$(operator_health) || true
 expect_eq "agent answers /healthz from the operator" 200 "$http_code"
 if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 
+cluster_dir=/var/lib/berthy/cluster
+cluster_layout() {
+  remote cat /etc/berthy/agent.json | jq -e --arg dir "$cluster_dir" '
+    .cluster == {state_dir: ($dir + "/state"), key_file: ($dir + "/key")}' >/dev/null
+}
+cluster_identity() { remote stat -c '%d:%i' "$cluster_dir/state/state.db" "$cluster_dir/key"; }
+if cluster_layout; then
+  pass "setup without alert flags configures the cluster paths"
+  expect_eq "the cluster directory and key are private" $'700 berthy:berthy\n600 berthy:berthy' \
+    "$(remote stat -c '%a %U:%G' "$cluster_dir/state" "$cluster_dir/key")"
+  env_key="/var/lib/berthy/environments/$PROJECT/$ENVN/key"
+  remote cmp -s "$env_key" "$cluster_dir/key"; code=$?
+  expect_eq "the cluster key differs from the environment key" 1 "$code"
+  cluster_before=$(cluster_identity) || die "setup did not open the cluster database"
+else
+  fail "setup without alert flags configures the cluster paths" "missing default cluster state and key"
+  finish
+fi
+
 token=$(jq -er '.token | strings' "$private/initial.json") || die "initial setup did not return a token"
 case $token in bty."$PROJECT"."$ENVN".?*) ;; *) die "unexpected token shape";; esac
 token_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg") ||
@@ -151,6 +170,7 @@ fi
 
 run_setup second -e "$second_env"
 expect_code "set up the second environment" 0 "$?"
+expect_eq "adding an environment keeps the cluster database and key" "$cluster_before" "$(cluster_identity)"
 check_scope() {
   local env_name=$1 setup_report=$2
   jq -er '.token | strings' "$private/$setup_report.json" |

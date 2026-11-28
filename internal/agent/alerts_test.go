@@ -230,7 +230,7 @@ func TestAFailingProbeIsOnePostAndOneTelegramMessage(t *testing.T) {
 	var logged []string
 	cfg := monitoringConfig(tg.srv.URL)
 	cfg.dial = dialtest.Dial
-	w := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(line string) {
+	w := NewMonitoring(cfg, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(line string) {
 		mu.Lock()
 		defer mu.Unlock()
 		logged = append(logged, line)
@@ -264,7 +264,7 @@ func TestAFailingProbeIsOnePostAndOneTelegramMessage(t *testing.T) {
 func TestTheMonitorsReminderIntervalIsTheAlertsBlocks(t *testing.T) {
 	hook := newHookReceiver(t)
 	s := bothChannelsStore(t, hook.url(), "", `,"reminder":"90m"`)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	n, reminder, err := w.notifier(context.Background())
 	if err != nil || n == nil || reminder != 90*time.Minute {
 		t.Fatalf("notifier %v, reminder %v, error %v", n, reminder, err)
@@ -398,7 +398,7 @@ func TestDoctorAndTheMonitorCheckTheWebhookSecrets(t *testing.T) {
 	}
 	monitored := func() map[string]monitor.Check {
 		t.Helper()
-		w := NewMonitoring(monitoringConfig(tg.srv.URL), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+		w := NewMonitoring(monitoringConfig(tg.srv.URL), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 		out := map[string]monitor.Check{}
 		for _, c := range w.checks(ctx) {
 			out[c.Name()] = c

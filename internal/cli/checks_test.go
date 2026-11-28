@@ -2,14 +2,139 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 const checksBody = `[{"name":"disk:/","state":"ok","detail":"40.0% used","since":"2026-11-16T10:00:00Z"},{"name":"probe:site","state":"critical","detail":"HTTP 503","since":"2026-11-16T10:05:00Z"}]`
+
+const clusterChecksBody = `[{"server":"hills\u001b[31m","name":"public_ports","state":"warning","detail":"published port","since":"2026-11-16T10:00:00Z"},{"server":"","name":"telegram","state":"ok","detail":"bot token secret present","since":"2026-11-16T10:05:00Z"}]`
+
+func TestChecksClusterUsesSelectedEnvironmentPrefix(t *testing.T) {
+	requests := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requests <- r.Method + " " + r.URL.RequestURI() + " " + r.Header.Get("Authorization"):
+		default:
+			t.Error("unexpected additional request")
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+	t.Setenv("CLUSTER_ALPHA_TOKEN", "alpha-token")
+	t.Setenv("CLUSTER_BRAVO_TOKEN", "bravo-token")
+	config := filepath.Join(t.TempDir(), "cli.json")
+	if err := os.WriteFile(config, fmt.Appendf(nil, `{"projects":{
+		"alpha":{"environments":{"dev":{"url":%q,"token_env":"CLUSTER_ALPHA_TOKEN"}}},
+		"bravo":{"environments":{"dev":{"url":%q,"token_env":"CLUSTER_BRAVO_TOKEN"}}}
+	}}`, server.URL+"/proxy/team", server.URL), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		project, want string
+		cluster       bool
+	}{
+		{"alpha", "GET /proxy/team/v1/projects/alpha/environments/dev/cluster/checks Bearer alpha-token", true},
+		{"bravo", "GET /v1/projects/bravo/environments/dev/cluster/checks Bearer bravo-token", true},
+		{"alpha", "GET /proxy/team/v1/projects/alpha/environments/dev/checks Bearer alpha-token", false},
+		{"bravo", "GET /v1/projects/bravo/environments/dev/checks Bearer bravo-token", false},
+	} {
+		args := []string{"checks", "-e", "dev", "--project", tc.project, "--config", config, "--json"}
+		if tc.cluster {
+			args = append(args, "--cluster")
+		}
+		var out, diag bytes.Buffer
+		if code := Run(args, &out, &diag); code != 0 || out.String() != "[]\n" {
+			t.Errorf("%s (cluster=%v): exit %d, stdout %q, stderr %q", tc.project, tc.cluster, code, out.String(), diag.String())
+			continue
+		}
+		select {
+		case got := <-requests:
+			if got != tc.want {
+				t.Errorf("request = %q, want %q", got, tc.want)
+			}
+		default:
+			t.Error("checks made no request")
+		}
+	}
+}
+
+func TestChecksClusterPrintsServerAndPreservesJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/cluster/checks") {
+			fmt.Fprint(w, clusterChecksBody)
+			return
+		}
+		fmt.Fprint(w, checksBody)
+	}))
+	defer server.Close()
+	args := []string{"checks", "-e", "dev", "--project", "demo", "--config", ingressCLIConfig(t, server.URL)}
+	run := func(flags ...string) string {
+		t.Helper()
+		var out, diag bytes.Buffer
+		if code := Run(append(args, flags...), &out, &diag); code != 0 {
+			t.Errorf("checks %v: exit %d, stderr %s", flags, code, diag.String())
+		}
+		return out.String()
+	}
+	ordinary := strings.Split(strings.TrimSuffix(run(), "\n"), "\n")
+	if strings.Join(strings.Fields(ordinary[0]), " ") != "NAME STATE SINCE DETAIL" || len(ordinary) != 3 || !strings.HasPrefix(ordinary[1], "disk:/") {
+		t.Errorf("ordinary table = %q", ordinary)
+	}
+	cluster := strings.Split(strings.TrimSuffix(run("--cluster"), "\n"), "\n")
+	nameCol := strings.Index(cluster[0], "NAME")
+	if strings.Join(strings.Fields(cluster[0]), " ") != "SERVER NAME STATE SINCE DETAIL" || len(cluster) != 3 ||
+		nameCol < 0 || len(cluster[1]) < nameCol || len(cluster[2]) < nameCol ||
+		!strings.HasPrefix(cluster[1], `hills\x1b[31m`) || !strings.HasPrefix(cluster[1][nameCol:], "public_ports") ||
+		!strings.HasPrefix(cluster[2][nameCol:], "telegram") || strings.TrimSpace(cluster[2][:nameCol]) != "" {
+		t.Errorf("cluster table = %q", cluster)
+	}
+	var got, want []map[string]string
+	if err := json.Unmarshal([]byte(clusterChecksBody), &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(run("--cluster", "--json")), &got); err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("cluster JSON = %v (%v), want %v", got, err, want)
+	}
+}
+
+func TestClusterFlagCannotSelectASecretOrTestCommand(t *testing.T) {
+	var requests, sends atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/alerts/test") {
+			sends.Add(1)
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+	read := fakeTerminal(t, "unused-secret")
+	withStdinFile(t, "unused-secret\n")
+	target := []string{"--cluster", "-e", "dev", "--project", "demo", "--config", ingressCLIConfig(t, server.URL)}
+	for _, prefix := range [][]string{{"secret", "set", "HOOK"}, {"alerts", "test"}, {"ps"}, {"doctor"}, {"jobs"}} {
+		var out, diag bytes.Buffer
+		if code := Run(append(prefix, target...), &out, &diag); code != 2 || !strings.Contains(diag.String(), "--cluster") {
+			t.Errorf("%v: exit %d, stderr %q", prefix, code, diag.String())
+		}
+	}
+	offset, err := os.Stdin.Seek(0, io.SeekCurrent)
+	if err != nil || offset != 0 || read.Load() != 0 || requests.Load() != 0 || sends.Load() != 0 {
+		t.Fatalf("refused commands used stdin or HTTP: offset %d (%v), hidden reads %d, HTTP %d, sends %d", offset, err, read.Load(), requests.Load(), sends.Load())
+	}
+	var out, diag bytes.Buffer
+	if code := Run(append([]string{"checks", "--json"}, target...), &out, &diag); code != 0 || out.String() != "[]\n" || requests.Load() != 1 || sends.Load() != 0 {
+		t.Errorf("checks positive control: exit %d, stdout %q, stderr %q, HTTP %d, sends %d", code, out.String(), diag.String(), requests.Load(), sends.Load())
+	}
+}
 
 func TestChecksPrintsATableOrJSON(t *testing.T) {
 	var seen string
@@ -50,7 +175,7 @@ func TestChecksPrintsATableOrJSON(t *testing.T) {
 func TestPrintChecksMakesAgentTextTerminalSafe(t *testing.T) {
 	body := []byte(`[{"name":"probe:\tsite","state":"ok\u001b","detail":"HTTP \u001b[31m503","since":"2026-11-16T10:00:00Z"}]`)
 	var out, errout bytes.Buffer
-	if code := printChecks(&out, &errout, body, false); code != 0 {
+	if code := printChecks(&out, &errout, body, false, false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errout.String())
 	}
 	text := out.String()

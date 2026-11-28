@@ -19,6 +19,7 @@ import (
 
 // Host is the hosted environments of one agent and the router of their API.
 type Host struct {
+	cluster *Cluster
 	// runtimes is by ID and never changes after Open, so requests read it without a lock. order is the order of the file.
 	runtimes map[scope.ID]*Runtime
 	order    []*Runtime
@@ -35,7 +36,12 @@ type Host struct {
 // Open opens the environments of a validated file and wires what they share. Only stores with verified ownership and
 // readable claims supply peer evidence. Nothing runs and nothing is served yet.
 func Open(sh Shared, f File) (*Host, error) {
+	cluster, err := OpenCluster(sh, f)
+	if err != nil {
+		return nil, err
+	}
 	h := &Host{
+		cluster:  cluster,
 		runtimes: map[scope.ID]*Runtime{}, failed: map[scope.ID]string{}, failures: map[scope.ID]http.Handler{},
 		log: sh.Log, leases: map[scope.ID]map[state.Claim]int{},
 	}
@@ -45,6 +51,8 @@ func Open(sh Shared, f File) (*Host, error) {
 		id := c.ID()
 		h.ids = append(h.ids, id)
 		c.startupChecks = h.startupChecks
+		c.clusterChecks = cluster.ChannelChecks
+		c.clusterCheckRows = cluster.CheckRows
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
 			h.fail(c, nil, stateOpenReason(err), err)
@@ -310,6 +318,7 @@ func (h *Host) Start(ctx context.Context) error {
 	for _, entry := range ready {
 		entry.r.startWorkers(entry.ctx)
 	}
+	h.cluster.Start(ctx)
 	return nil
 }
 
@@ -356,4 +365,5 @@ func (h *Host) Close() {
 	for i := len(h.order) - 1; i >= 0; i-- {
 		h.order[i].closeStore()
 	}
+	h.cluster.Close()
 }

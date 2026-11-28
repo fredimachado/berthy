@@ -251,7 +251,7 @@ func TestDoctorReceivesSlowTunnelWarning(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errout bytes.Buffer
-		code := runReadRequest(context.Background(), client, u, "token", "doctor", scope.ID{}, false, true, &out, &errout)
+		code := runReadRequest(context.Background(), client, u, "token", "doctor", scope.ID{}, false, true, false, &out, &errout)
 		clientConn.Close()
 		peerConn.Close()
 		<-peerErr

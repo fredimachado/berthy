@@ -30,8 +30,12 @@ func TestAgentPublishesEveryStartupResultBeforeServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := agent.File{Listen: listener.Addr().String(), DockerSocket: filepath.Join(root, "no-docker")}
 	defer listener.Close()
+	f := agent.File{Listen: listener.Addr().String(), DockerSocket: filepath.Join(root, "no-docker"),
+		Cluster: agent.ClusterConfig{StateDir: filepath.Join(root, "cluster-state"), KeyFile: filepath.Join(root, "cluster-key")}}
+	if err := os.WriteFile(f.Cluster.KeyFile, bytes.Repeat([]byte{2}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
 	ids := []scope.ID{{Project: "shop", Environment: "dev"}, {Project: "demo", Environment: "dev"}, {Project: "tools", Environment: "dev"}}
 	var failedToken string
 	for i, id := range ids {

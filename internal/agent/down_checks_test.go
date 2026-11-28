@@ -158,7 +158,7 @@ func TestDownAndRestartChecksShareOneInventoryRead(t *testing.T) {
 	recordBoundRelease(t, s, "rel-shop", `{"project":"shop","network":"shop","apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{}}}}}`,
 		[]state.Binding{{App: "api", Role: "web", Name: "shop-api-web", ServiceID: "svc-1"}})
 	m := &manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image"}, "db": {Kind: "compose"}}}
-	w := NewMonitoring(monitoringConfig(""), e, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), e, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 
 	names := map[string]bool{}
 	for _, c := range w.appChecks(context.Background(), m) {
@@ -186,7 +186,7 @@ func TestDownAndRestartChecksShareOneInventoryRead(t *testing.T) {
 func TestDownQuietFollowsTheOperationsOfAnApp(t *testing.T) {
 	s := openIngressStore(t)
 	ctx := context.Background()
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	m := &manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"api": {Kind: "image"}, "db": {Kind: "compose"}, "tools": {Kind: "image"}}}
 	api1 := api.AppRef{Kind: "image", Name: "api"}
 	db := api.AppRef{Kind: "compose", Name: "shop-lab-db"}

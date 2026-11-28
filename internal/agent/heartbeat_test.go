@@ -34,7 +34,7 @@ func heartbeatCheck(t *testing.T, s *state.Store, dial monitor.DialFunc) (monito
 	t.Helper()
 	cfg := monitoringConfig("")
 	cfg.dial = dial
-	w := NewMonitoring(cfg, nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(cfg, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.beat.Alive = func(context.Context) bool { return true }
 	for _, c := range w.checks(context.Background()) {
 		if c.Name() == "heartbeat" {
@@ -74,7 +74,7 @@ func TestHeartbeatIsUnknownAndSendsNothingWithoutADockerThatAnswers(t *testing.T
 	hook := newHookReceiver(t)
 	s := heartbeatStore(t, hook.url(), "10s")
 	// This monitoring has no engine, so Docker does not answer.
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	var check monitor.Check
 	for _, c := range w.checks(context.Background()) {
 		if c.Name() == "heartbeat" {

@@ -23,7 +23,7 @@ func (r *removedContextServer) Run(_ context.Context, script string, input io.Re
 	if input != nil {
 		r.t.Fatalf("unexpected upload: %q", script)
 	}
-	cfg := `{"listen":"127.0.0.1:7710","environments":[{"project":"peer","environment":"dev","state_dir":"/peer/state","key_file":"/peer/key","tokens":[{"digest":"` +
+	cfg := `{"listen":"127.0.0.1:7710","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[{"project":"peer","environment":"dev","state_dir":"/peer/state","key_file":"/peer/key","tokens":[{"digest":"` +
 		strings.Repeat("a", 64) + `","scope":"admin"}]}]}`
 	switch {
 	case strings.Contains(script, "uid=$(id -u)"):

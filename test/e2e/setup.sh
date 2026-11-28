@@ -36,6 +36,7 @@ unset admin_out admin_token
 
 # Secrets and fake-server credentials. The state key must be exactly 32 bytes; the agent refuses anything else.
 head -c 32 /dev/urandom > "$RUN/state.key" && chmod 600 "$RUN/state.key" || die "cannot write the state key"
+prepare_cluster_fixture "$RUN/cluster" || die "cannot prepare the cluster state and key"
 openssl rand -hex 16 > "$RUN/tg-token" || die "cannot write the Telegram token"
 printf 'Bearer e2e-otlp' > "$RUN/otlp-auth" || die "cannot write the OTLP authorization"
 
