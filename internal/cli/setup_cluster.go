@@ -154,15 +154,27 @@ func runSetupClusterSecretWriter(args []string, stdin io.Reader, errout io.Write
 		fmt.Fprintln(errout, "setup-cluster-secret: cannot load the installed agent configuration")
 		return 1
 	}
-	value, err := readClusterSecretValue(stdin)
-	if err != nil {
-		fmt.Fprintln(errout, "setup-cluster-secret: invalid credential input")
-		return 1
-	}
-	defer clear(value)
-	if err := agent.WriteClusterSecret(context.Background(), f.Cluster, args[0], value); err != nil {
-		fmt.Fprintln(errout, "setup-cluster-secret: cannot store the cluster credential")
+	if err := storeSetupClusterSecret(f.Cluster, args[0], stdin); err != nil {
+		fmt.Fprintln(errout, "setup-cluster-secret:", err)
 		return 1
 	}
 	return 0
+}
+
+func storeSetupClusterSecret(cluster agent.ClusterConfig, name string, stdin io.Reader) error {
+	const maxFrame = api.MaxSecretValue + len(setup.ClusterSecretEnd)
+	raw, err := io.ReadAll(io.LimitReader(stdin, int64(maxFrame)+1))
+	defer clear(raw)
+	value, complete := bytes.CutSuffix(raw, []byte(setup.ClusterSecretEnd))
+	if err != nil || !complete || len(raw) > maxFrame {
+		return errors.New("invalid credential input")
+	}
+	value, err = normalizeClusterSecret(value, nil)
+	if err != nil {
+		return errors.New("invalid credential input")
+	}
+	if err := agent.WriteClusterSecret(context.Background(), cluster, name, value); err != nil {
+		return errors.New("cannot store the cluster credential")
+	}
+	return nil
 }

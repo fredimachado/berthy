@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"strings"
 
 	"berthy/internal/api"
 )
+
+// ClusterSecretEnd terminates the private writer's input. A credential cannot contain NUL.
+const ClusterSecretEnd = "\x00"
 
 // PreviewClusterSecret checks the server and records the maintenance command without sending it.
 func (s *Session) PreviewClusterSecret(ctx context.Context, name string) error {
@@ -26,7 +31,7 @@ func SetClusterSecret(ctx context.Context, r Runner, name string, value []byte) 
 	if err != nil {
 		return err
 	}
-	res, err := r.Run(ctx, script, bytes.NewReader(value))
+	res, err := r.Run(ctx, script, io.MultiReader(bytes.NewReader(value), strings.NewReader(ClusterSecretEnd)))
 	if err != nil {
 		return errors.New("could not confirm the cluster credential write or service startup")
 	}

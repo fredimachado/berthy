@@ -210,8 +210,8 @@ func TestSetupClusterSecretUsesOnlyPrivilegedStdin(t *testing.T) {
 				t.Fatal("the value escaped privileged stdin")
 			}
 			for i, in := range server.stdins {
-				if len(in) != 0 && (string(in) != value || !strings.Contains(server.scripts[i], "setpriv --reuid=berthy --regid=berthy --clear-groups")) {
-					t.Fatal("stdin went to a command other than the privileged writer")
+				if len(in) != 0 && (string(in) != value+"\x00" || !strings.Contains(server.scripts[i], "setpriv --reuid=berthy --regid=berthy --clear-groups")) {
+					t.Fatal("stdin did not send the complete credential frame to the privileged writer")
 				}
 			}
 			if tc.flag == "--dry-run" && (!strings.Contains(out, "would_change") || !strings.Contains(out, "berthy.service")) {
@@ -282,7 +282,7 @@ sleep() { exit 99; }
 `, startCode, writeCode)
 	cmd := exec.Command("sh", "-c", prelude+strings.ReplaceAll(script, "test -x /usr/local/bin/berthy", ":"))
 	cmd.Env = append(os.Environ(), "TRACE="+trace)
-	cmd.Stdin = strings.NewReader("fixture-credential")
+	cmd.Stdin = strings.NewReader("fixture-credential\x00")
 	output, runErr := cmd.CombinedOutput()
 	got, err := os.ReadFile(trace)
 	if runErr == nil || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != code {
@@ -398,5 +398,50 @@ func TestSetupClusterSecretWritesOnlyTheClaimedStore(t *testing.T) {
 	s = open(env.StateDir, env.KeyFile, env.Environment)
 	if _, got, err := s.Secret(ctx, "HOOK"); err != nil || string(got) != "environment" {
 		t.Fatal("the refused write changed the environment secret")
+	}
+}
+
+func TestSetupClusterSecretWriterRequiresCompleteInput(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cluster := agent.ClusterConfig{StateDir: filepath.Join(dir, "state"), KeyFile: filepath.Join(dir, "key")}
+	if err := os.WriteFile(cluster.KeyFile, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(cluster.StateDir, cluster.KeyFile, agent.ClusterEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(store.Claim(ctx, agent.ClusterProject), store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	const previous = "previous-fixture-value"
+	if err := agent.WriteClusterSecret(ctx, cluster, "HOOK", []byte(previous)); err != nil {
+		t.Fatal(err)
+	}
+	replacement := strings.Repeat("x", api.MaxSecretValue)
+	for _, tc := range []struct {
+		name, input, want string
+		complete          bool
+	}{
+		{"partial value", "replacement-pre", previous, false},
+		{"missing terminator at size limit", replacement, previous, false},
+		{"bytes after terminator", "replacement\x00extra", previous, false},
+		{"complete at size limit", replacement + "\x00", replacement, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := storeSetupClusterSecret(cluster, "HOOK", strings.NewReader(tc.input))
+			if (err == nil) != tc.complete {
+				t.Errorf("writer success = %t, want %t", err == nil, tc.complete)
+			}
+			s, err := state.Open(cluster.StateDir, cluster.KeyFile, agent.ClusterEnvironment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			if _, got, err := s.Secret(ctx, "HOOK"); err != nil || string(got) != tc.want {
+				t.Errorf("stored credential differs from the expected value: %v", err)
+			}
+		})
 	}
 }
