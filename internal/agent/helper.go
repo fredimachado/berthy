@@ -733,21 +733,30 @@ func helperSpec(id scope.ID, network, image, token string) (json.RawMessage, err
 	})
 }
 
-// publishedPort returns the host port the helper is published on. The helper's port must be the only publication, and it
-// must be on 127.0.0.1.
+// publishedPort returns the host port the helper is published on. The helper's port must be the only publication,
+// on 127.0.0.1, at one host port. Docker 28 can list the same binding twice; identical entries count once.
 func publishedPort(c engine.ContainerDetail) (string, bool) {
 	if len(c.Ports) != 1 {
 		return "", false
 	}
 	bindings := c.Ports[helperPortKey]
-	if len(bindings) != 1 || bindings[0].HostIP != "127.0.0.1" {
+	if len(bindings) == 0 {
 		return "", false
 	}
-	n, err := strconv.Atoi(bindings[0].HostPort)
+	first := bindings[0]
+	for _, b := range bindings {
+		if b != first {
+			return "", false
+		}
+	}
+	if first.HostIP != "127.0.0.1" {
+		return "", false
+	}
+	n, err := strconv.Atoi(first.HostPort)
 	if err != nil || n < 1 || n > 65535 {
 		return "", false
 	}
-	return bindings[0].HostPort, true
+	return first.HostPort, true
 }
 
 // requestedOnLoopback reports whether the container asked for exactly one publication, of the helper's port on 127.0.0.1.
