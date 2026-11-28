@@ -46,11 +46,12 @@ remote cp -p /etc/berthy/agent.json /root/agent-original.json || die "could not 
 # Recreate the previously shipped policy on an otherwise healthy installation.
 remote sed -i -e '/^StartLimitIntervalSec=/d' -e '/^RestartSec=/d' -e 's/^Restart=.*/Restart=on-failure/' /etc/systemd/system/berthy.service || die "could not install old policy"
 remote systemctl daemon-reload || die "could not load old policy"
+remote systemctl is-active --quiet berthy && remote systemctl is-enabled --quiet berthy || die "old service is not active and enabled"
 echo "old policy: $(remote systemctl show berthy -p Restart -p RestartUSec -p StartLimitIntervalUSec -p StartLimitBurst | tr '\n' ' ')"
 late=10.254.90.61
 remote ip address show to "$late/32" | grep -q . && die "late address already assigned"
 set_late() {
-  remote sh -ec "sed 's/$ip:7710/$late:7710/' /root/agent-original.json > /root/agent-late.json; cat /root/agent-late.json > /etc/berthy/agent.json" || die "could not change listen address"
+  remote sh -ec "sed '/\"listen\"[[:space:]]*:/s/$ip:7710/$late:7710/' /root/agent-original.json > /root/agent-late.json; cat /root/agent-late.json > /etc/berthy/agent.json" || die "could not change listen address"
 }
 cursor() { remote journalctl -u berthy -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p'; }
 wait_failures() {
@@ -81,7 +82,7 @@ remote systemctl start berthy >/dev/null 2>&1 || true
 wait_failures "$new_cursor" 7 || die "retries did not continue"
 remote ip address add "$late/32" dev lo || die "could not assign late address"
 # The journal signals startup, then the probe establishes readiness.
-remote timeout 120s sh -c 'while ! /usr/local/bin/berthy agent setup-probe health --listen "$1:7710" --timeout 3s >/dev/null 2>&1; do systemctl is-failed --quiet berthy && exit 1; done' sh "$late" || die "agent did not recover"
+remote timeout 120s sh -c 'while ! /usr/local/bin/berthy agent setup-probe health --listen "$1:7710" --timeout 3s >/dev/null 2>&1; do :; done' sh "$late" || die "agent did not recover"
 remote systemctl is-active --quiet berthy || die "agent is not active"
 pass "agent recovers after the address appears without intervention"
 finish
