@@ -2257,6 +2257,8 @@ telemetry:
   headers_secret: OTLP_HEADERS
 ```
 
+Per mount, `berthy.filesystem.inodes.total` and `berthy.filesystem.inodes.free` report inode counts with unit `{inode}` and the `system.filesystem.mountpoint` attribute. Mounts reporting zero total inodes have no inode measurements; a counted mount with no free inodes reports zero free.
+
 `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form (`name=value,name=value`), for backends that need authorization. The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there. `doctor` shows a `telemetry` check.
 
 With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the environment's settings, so the deploy that first turns telemetry on sends its end record only.

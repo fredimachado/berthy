@@ -101,5 +101,16 @@ for kind in df stats; do
   expect_contains "human $kind total inodes" "$block" "inodes_total: $total"
   expect_contains "human $kind free inodes" "$block" "inodes_free: $free"
 done
+inode_metrics_exported() {
+  jq -e '(.metric_names | index("berthy.filesystem.inodes.total")) != null and
+         (.metric_names | index("berthy.filesystem.inodes.free")) != null' "$RUN/otlp-summary.json" >/dev/null 2>&1
+}
+# The exporter sends periodically after configuration and a sample are available.
+for i in $(seq 1 180); do inode_metrics_exported && break; sleep 1; done
+if inode_metrics_exported; then
+  pass 'inode metrics reach the OTLP receiver'
+else
+  fail 'inode metrics reach the OTLP receiver' 'total or free inode metric is missing'
+fi
 if cleanup; then trap - EXIT; else fail 'clean up inode fixture' "$fixture remains"; fi
 finish
