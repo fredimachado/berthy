@@ -18,6 +18,42 @@ import (
 
 var testID = scope.ID{Project: "shop", Environment: "prod"}
 
+func TestPresentChecksOnlyTheNamedEntry(t *testing.T) {
+	home := t.TempDir()
+	oldID, currentID := "0123456789abcdef", "fedcba9876543210"
+	check := func(want bool) {
+		t.Helper()
+		got, err := Present(home, testID, currentID)
+		if err != nil || got != want {
+			t.Fatalf("present = %v, %v; want %v", got, err, want)
+		}
+	}
+	check(false)
+	dir := filepath.Join(home, ".berthy", "keys")
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("lookup created directory: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, FileName(testID, oldID))
+	current := filepath.Join(dir, FileName(testID, currentID))
+	if err := os.WriteFile(old, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := os.WriteFile(current, []byte("marker"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+	for path, want := range map[string]string{old: "old", current: "marker"} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("entry %s changed: %q, %v", path, got, err)
+		}
+	}
+}
+
 func testKey(n byte) []byte { return bytes.Repeat([]byte{n}, 32) }
 
 func TestAppendComponentPreservesRootAndTrailingSeparators(t *testing.T) {

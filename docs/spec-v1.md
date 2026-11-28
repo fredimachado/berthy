@@ -904,6 +904,8 @@ Flags are checked before anything is sent. A read command refuses an unknown fla
 
 Every command goes through the agent's API except `setup`, which runs over SSH or on the server and has no MCP tool, and `context`, which edits the CLI configuration on this machine.
 
+The scoped doctor response has `checks` and, when a store is available, an additive `key_id` naming its active state key. An older agent may omit the ID. For a valid ID, the CLI checks the expected local key-copy filename and warns if it is absent; it does not read the file. In text mode the warning goes to stdout. With `--json`, stdout remains the agent's report and the warning goes to stderr. The warning does not change the exit code.
+
 | Command | Purpose | Changes things |
 | --- | --- | --- |
 | `ps` | Apps, roles, replicas, health, running version | No |

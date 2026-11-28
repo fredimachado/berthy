@@ -47,7 +47,8 @@ expect_contains "the warning names the service without a limit" "$out" "$PROJECT
 expect_not_contains "the warning leaves out the capped service" "$out" "$PROJECT-$ENVN-shop/capped"
 
 # The JSON answer: the check is not ok and not critical, so it cannot fail the doctor. Spaces are dropped for the match.
-json=$(adm doctor --json 2>&1); code=$?
+json=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
+expect_contains "doctor sends the key copy warning to stderr" "$(cat "$RUN/doctor-keycopy-stderr")" "warning: this machine has no saved copy of the current state key"
 compact=${json//[[:space:]]/}
 expect_code "doctor --json exits 0 with the warning" 0 "$code" "$json"
 expect_contains "the JSON check is a warning, not critical" "$compact" '"name":"compose_log_limit","ok":false,"critical":false'

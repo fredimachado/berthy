@@ -47,14 +47,8 @@ func runVersion(args []string, out, errout io.Writer) int {
 
 // doctorAgentVersion returns the agent's version as the doctor's agent check reports it. It is false when the agent reports
 // none, as an agent older than that check does not.
-func doctorAgentVersion(body []byte) (string, bool) {
-	var d struct {
-		Checks []api.Check `json:"checks"`
-	}
-	if json.Unmarshal(body, &d) != nil {
-		return "", false
-	}
-	for _, c := range d.Checks {
+func doctorAgentVersion(checks []api.Check) (string, bool) {
+	for _, c := range checks {
 		if c.Name == "agent" {
 			return c.Detail, true
 		}

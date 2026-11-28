@@ -91,7 +91,8 @@ status=$(curl_local -o "$body" -w '%{http_code}' -H "Authorization: Bearer ${!to
 expect_eq "failed pair $SECOND/$ENVN returns authenticated HTTP 503" 503 "$status"
 expect_eq "failed pair returns the environment_failed code" environment_failed "$(jq -r '.code' "$body")"
 
-doc=$(env_cmd "$PROJECT" "$ENVN" doctor --json 2>&1); code=$?
+doc=$(HOME="$RUN/doctor-no-copy" env_cmd "$PROJECT" "$ENVN" doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
+expect_contains "doctor sends the key copy warning to stderr" "$(cat "$RUN/doctor-keycopy-stderr")" "warning: this machine has no saved copy of the current state key"
 expect_code "doctor succeeds for the healthy pair" 0 "$code" "$doc"
 expect_eq "doctor gives the failed peer's noncritical reason" "false false $reason" \
   "$(jq -r --arg name "$check_name" '.checks[] | select(.name == $name) | "\(.ok) \(.critical) \(.detail)"' <<< "$doc")"
@@ -109,7 +110,7 @@ for project in "$PROJECT" "$SECOND"; do
   out=$(env_cmd "$project" "$ENVN" agent-info --json 2>&1); code=$?
   expect_code "pair $project/$ENVN answers after key restoration" 0 "$code" "$out"
 done
-doc=$(env_cmd "$PROJECT" "$ENVN" doctor --json 2>&1); code=$?
+doc=$(HOME="$RUN/doctor-no-copy" env_cmd "$PROJECT" "$ENVN" doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
 expect_code "doctor succeeds after key restoration" 0 "$code" "$doc"
 expect_eq "doctor clears the hosted startup finding" 0 \
   "$(jq '[.checks[] | select(.name | startswith("hosted:"))] | length' <<< "$doc")"

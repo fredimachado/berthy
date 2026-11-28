@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"berthy/internal/scope"
 	"bytes"
 	"context"
 	"errors"
@@ -253,7 +254,7 @@ func testBatchAndFollowLogMetadataSpans(t *testing.T) {
 		client := &http.Client{Transport: progressRoundTrip(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
 		})}
-		if code := runReadRequest(context.Background(), client, u, "fixture-token", "logs", streaming, jsonMode, &out, &errs); code != 0 {
+		if code := runReadRequest(context.Background(), client, u, "fixture-token", "logs", scope.ID{}, streaming, jsonMode, &out, &errs); code != 0 {
 			t.Fatalf("read exit %d: %s", code, errs.String())
 		}
 		return out.String()
