@@ -93,9 +93,19 @@ func restOf(path string) []string {
 
 // readBody reads a request body of at most 1 MiB and puts it back, so the handler can read it again.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	controller := http.NewResponseController(w)
+	deadlineErr := controller.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+		return nil, deadlineErr
+	}
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxRequestBody)) //nolint:forbidigo // The shared reader bounds the original request body.
 	if err != nil {
 		return nil, err
+	}
+	if deadlineErr == nil {
+		if err := controller.SetReadDeadline(time.Time{}); err != nil {
+			return nil, err
+		}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(b)) //nolint:forbidigo // Rewind the bounded body for the route handler.
 	return b, nil

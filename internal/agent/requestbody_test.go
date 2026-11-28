@@ -1,15 +1,21 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"berthy/internal/api"
 	"berthy/internal/deploy"
@@ -348,4 +354,171 @@ func TestPlanningFailsClosedWithoutDryRun(t *testing.T) {
 	if err := decodeBody(httptest.NewRecorder(), r, &struct{}{}); !errors.Is(err, errNoDryRun) {
 		t.Fatalf("planning without dry_run: %v", err)
 	}
+}
+
+type bodyTestListener struct {
+	conn net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (l *bodyTestListener) Accept() (net.Conn, error) {
+	if l.conn != nil {
+		conn := l.conn
+		l.conn = nil
+		return conn, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+func (l *bodyTestListener) Close() error   { l.once.Do(func() { close(l.done) }); return nil }
+func (l *bodyTestListener) Addr() net.Addr { return bodyTestAddr("pipe") }
+
+type bodyTestAddr string
+
+func (a bodyTestAddr) Network() string { return string(a) }
+func (a bodyTestAddr) String() string  { return string(a) }
+
+func TestRequestBodyDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name, token string
+		protected   bool
+	}{
+		{"ordinary", apAdminToken, false},
+		{"protected", apAgentAdmin, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApprovalFixture(t, tc.protected, nil)
+			synctest.Test(t, func(t *testing.T) {
+				client, peer := net.Pipe()
+				listener := &bodyTestListener{conn: peer, done: make(chan struct{})}
+				handlerDone := make(chan struct{})
+				handlerStarted := make(chan struct{})
+				started := false
+				server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(handlerStarted)
+					defer close(handlerDone)
+					f.h.ServeHTTP(w, r)
+				})}
+				served := make(chan error, 1)
+				go func() { served <- server.Serve(listener) }()
+				type result struct {
+					status     int
+					body       string
+					err        error
+					cleanClose bool
+				}
+				answer := make(chan result, 1)
+				go func() {
+					_, err := fmt.Fprintf(client, "POST /v1/projects/demo/environments/lab/secrets HTTP/1.1\r\nHost: agent\r\nAuthorization: Bearer %s\r\nContent-Length: 100\r\n\r\n{\"name\":", tc.token)
+					if err != nil {
+						answer <- result{err: err}
+						return
+					}
+					reader := bufio.NewReader(client)
+					if _, err := reader.Peek(1); err != nil {
+						answer <- result{err: err, cleanClose: err == io.EOF}
+						return
+					}
+					resp, err := http.ReadResponse(reader, nil)
+					if err != nil {
+						answer <- result{err: err}
+						return
+					}
+					body, err := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					answer <- result{status: resp.StatusCode, body: string(body), err: err}
+				}()
+				defer func() {
+					client.Close()
+					peer.Close()
+					listener.Close()
+					<-answer
+					<-served
+					if started {
+						<-handlerDone
+					}
+				}()
+				synctest.Wait()
+				select {
+				case <-handlerStarted:
+					started = true
+				default:
+					t.Fatal("handler did not start")
+				}
+				time.Sleep(10*time.Second - time.Nanosecond)
+				synctest.Wait()
+				select {
+				case got := <-answer:
+					answer <- got
+					t.Fatalf("request ended before deadline: %+v", got)
+				default:
+				}
+				time.Sleep(time.Nanosecond)
+				synctest.Wait()
+				select {
+				case got := <-answer:
+					answer <- got
+					if !got.cleanClose && (got.err != nil || got.status != http.StatusBadRequest || strings.TrimSpace(got.body) != `{"code":"bad_request","message":"invalid request"}`) {
+						t.Fatalf("client response: %+v", got)
+					}
+				default:
+					t.Fatal("client still waiting at body deadline")
+				}
+				if tc.protected {
+					rows, err := f.s.Approvals(context.Background(), "", f.now)
+					if err != nil || len(rows) != 0 {
+						t.Fatalf("approvals: %v, %v", rows, err)
+					}
+				}
+			})
+		})
+	}
+}
+
+type bodyDeadlineWriter struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func (w *bodyDeadlineWriter) SetReadDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	return nil
+}
+
+type deadlineObservedReader struct {
+	io.Reader
+	writer   *bodyDeadlineWriter
+	observed time.Time
+}
+
+func (r *deadlineObservedReader) Read(p []byte) (int, error) {
+	if len(r.writer.deadlines) > 0 {
+		r.observed = r.writer.deadlines[len(r.writer.deadlines)-1]
+	}
+	return r.Reader.Read(p)
+}
+
+func TestCompleteBodyClearsReadDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := &bodyDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+		body := `{"name":"example","value":"secret"}`
+		reader := &deadlineObservedReader{Reader: strings.NewReader(body), writer: w}
+		r := httptest.NewRequest("POST", "/", reader)
+		start := time.Now()
+		got, err := readBody(w, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reader.observed.Equal(start.Add(10 * time.Second)) {
+			t.Errorf("deadline during read = %v, want %v", reader.observed, start.Add(10*time.Second))
+		}
+		if len(w.deadlines) != 2 || !w.deadlines[len(w.deadlines)-1].IsZero() {
+			t.Errorf("deadline calls = %v, want installed then cleared", w.deadlines)
+		}
+		replay, err := io.ReadAll(r.Body)
+		if err != nil || string(got) != body || string(replay) != body {
+			t.Fatalf("body %q replay %q: %v", got, replay, err)
+		}
+	})
 }

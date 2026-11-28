@@ -1,9 +1,11 @@
 package agentclient
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
@@ -444,4 +448,81 @@ func TestResolveRefusesAPairOverTheLengthBound(t *testing.T) {
 			t.Errorf("selector %+v: %v", sel, err)
 		}
 	}
+}
+
+func TestAgentClientExpiresIdleConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := WithTimeout(NewHTTPClient(), 0)
+		transport := client.Transport.(*http.Transport)
+		peers := make([]net.Conn, 0, 2)
+		results := make([]chan error, 0, 2)
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
+			c, peer := net.Pipe()
+			peers = append(peers, peer)
+			result := make(chan error, 1)
+			results = append(results, result)
+			go func() {
+				req, err := http.ReadRequest(bufio.NewReader(peer))
+				if err == nil {
+					err = req.Body.Close()
+				}
+				if err == nil {
+					_, err = io.WriteString(peer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+				}
+				if err == nil {
+					var b [1]byte
+					_, err = peer.Read(b[:])
+				}
+				result <- err
+				close(result)
+			}()
+			return c, nil
+		}
+		defer func() {
+			client.CloseIdleConnections()
+			for _, peer := range peers {
+				peer.Close()
+			}
+			for _, result := range results {
+				if result != nil {
+					<-result
+				}
+			}
+		}()
+		request := func() {
+			resp, err := client.Get("http://agent/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || string(body) != "ok" {
+				t.Fatalf("response %q: %v", body, err)
+			}
+		}
+		request()
+		synctest.Wait()
+		time.Sleep(60*time.Second - time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-results[0]:
+			t.Fatalf("peer closed before expiry: %v", err)
+		default:
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-results[0]:
+			if err != io.EOF {
+				t.Fatalf("peer read: %v, want EOF", err)
+			}
+			results[0] = nil
+		default:
+			t.Fatal("peer remained open at idle expiry")
+		}
+		request()
+		if len(peers) != 2 {
+			t.Fatalf("dialed %d connections, want 2", len(peers))
+		}
+	})
 }
