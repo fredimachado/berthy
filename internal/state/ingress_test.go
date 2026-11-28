@@ -269,7 +269,7 @@ func TestUpgradeVersionEightKeepsRoutesCreatedByBerthy(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	routes, err := upgraded.IngressRoutes(ctx, "")

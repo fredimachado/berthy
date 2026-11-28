@@ -1,0 +1,163 @@
+package state
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+
+	"berthy/internal/manifest"
+)
+
+const (
+	factSecret   = "secret"
+	factVariable = "variable"
+	factTemplate = "template"
+)
+
+func (s *Store) rememberRelease(ctx context.Context, tx *sql.Tx, r Release) error {
+	m, err := manifest.DecodeRelease(r.Manifest, r.App == manifest.ConnectorAppName)
+	if err != nil {
+		return err
+	}
+	app, ok := m.Apps[r.App]
+	if !ok {
+		return errors.New("released app is missing from its manifest")
+	}
+	insert := func(app, kind, value string) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO release_facts(environment,app,kind,value) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, s.env, app, kind, value)
+		return err
+	}
+	for _, name := range app.Env.SecretNames() {
+		if err := insert(r.App, factSecret, name); err != nil {
+			return err
+		}
+	}
+	for _, name := range app.Env.SensitiveVars() {
+		if err := insert(r.App, factVariable, name); err != nil {
+			return err
+		}
+	}
+	for _, a := range m.Apps {
+		for _, source := range a.Env.Template {
+			if err := insert("", factTemplate, source); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) historicalFacts(ctx context.Context, app, kind string) ([]string, error) {
+	rows, err := s.query(ctx, `SELECT value FROM release_facts WHERE environment=? AND app=? AND kind=? ORDER BY value`, s.env, app, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var facts []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		facts = append(facts, value)
+	}
+	return facts, rows.Err()
+}
+
+func (s *Store) HistoricalSecretNames(ctx context.Context, app string) ([]string, error) {
+	return s.historicalFacts(ctx, app, factSecret)
+}
+
+func (s *Store) HistoricalSensitiveVars(ctx context.Context, app string) ([]string, error) {
+	return s.historicalFacts(ctx, app, factVariable)
+}
+
+func (s *Store) HistoricalTemplates(ctx context.Context) ([]string, error) {
+	return s.historicalFacts(ctx, "", factTemplate)
+}
+
+// HistoricalSecretReader returns the first app in lexical order, or an empty string if none read name.
+func (s *Store) HistoricalSecretReader(ctx context.Context, name string) (string, error) {
+	var app string
+	err := s.queryRow(ctx, `SELECT app FROM release_facts WHERE environment=? AND kind='secret' AND value=? ORDER BY app LIMIT 1`, s.env, name).Scan(&app)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return app, err
+}
+
+func (s *Store) HistoricalComposeTargets(ctx context.Context, project string) ([]Claim, error) {
+	rows, err := s.query(ctx, `SELECT kind,name FROM compose_down_targets WHERE environment=? AND project=? ORDER BY kind,name`, s.env, project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var claims []Claim
+	for rows.Next() {
+		var claim Claim
+		if err := rows.Scan(&claim.Kind, &claim.Name); err != nil {
+			return nil, err
+		}
+		claims = append(claims, claim)
+	}
+	return claims, rows.Err()
+}
+
+func (s *Store) rememberOperationReceipts(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, completedOneOffsQuery+` AND i.operation_id IN (SELECT id FROM retiring_operations WHERE NOT archived) ORDER BY i.operation_id,i.ordinal`, s.env)
+	if err != nil {
+		return err
+	}
+	hooks, err := s.readCompletedOneOffs(rows)
+	if err != nil {
+		return err
+	}
+	for _, hook := range hooks {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO prune_oneoffs(environment,operation_id,id,name,role) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, s.env, hook.OperationID, hook.ID, hook.Name, hook.Role); err != nil {
+			return err
+		}
+	}
+	targets, err := s.readComposeTargets(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for project, claims := range targets {
+		for _, claim := range claims {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO compose_down_targets(environment,project,kind,name) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, s.env, project, claim.Kind, claim.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) readComposeTargets(ctx context.Context, tx *sql.Tx) (map[string][]Claim, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.receipt FROM intents i
+		WHERE i.operation_id IN (SELECT id FROM retiring_operations WHERE NOT archived) AND i.kind='compose_down'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byProject := map[string][]Claim{}
+	for rows.Next() {
+		var ordinal int
+		var id, project string
+		var sealed []byte
+		if err := rows.Scan(&id, &ordinal, &project, &sealed); err != nil {
+			return nil, err
+		}
+		plain, err := s.openFor(s.env, intentRecord(id, ordinal, "receipt"), sealed)
+		if err != nil {
+			return nil, err
+		}
+		var receipt struct {
+			Targets []Claim `json:"targets"`
+		}
+		if err := json.Unmarshal(plain, &receipt); err != nil {
+			return nil, err
+		}
+		byProject[project] = append(byProject[project], receipt.Targets...)
+	}
+	return byProject, rows.Err()
+}

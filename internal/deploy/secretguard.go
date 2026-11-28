@@ -22,28 +22,36 @@ type GuardFinding struct{ App, Volume string }
 
 // GuardSecret refuses generation when a reader may hold an earlier value.
 func (c *Controller) GuardSecret(ctx context.Context, name string, sub *Submitted) (*GuardFinding, error) {
+	const historyUnavailable = Refusal("the recorded releases cannot be read, so nothing is generated")
 	releases, err := c.Store.Releases(ctx)
 	if err != nil {
-		return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
+		return nil, historyUnavailable
 	}
 	deployed := map[string]bool{}
-	readers := map[string]bool{}
+	var firstReader string
 	for _, release := range releases {
 		m, err := manifest.DecodeRelease(release.Manifest, release.App == manifest.ConnectorAppName)
 		if err != nil {
-			return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
+			return nil, historyUnavailable
 		}
 		app, ok := m.Apps[release.App]
 		if !ok {
-			return nil, Refusal("the recorded releases cannot be read, so nothing is generated")
+			return nil, historyUnavailable
 		}
 		deployed[release.App] = true
-		if slices.Contains(app.Env.SecretNames(), name) {
-			readers[release.App] = true
+		if slices.Contains(app.Env.SecretNames(), name) && (firstReader == "" || release.App < firstReader) {
+			firstReader = release.App
 		}
 	}
-	for _, app := range sortedKeys(readers) {
-		return &GuardFinding{App: app}, nil
+	historical, err := c.Store.HistoricalSecretReader(ctx, name)
+	if err != nil {
+		return nil, historyUnavailable
+	}
+	if historical != "" && (firstReader == "" || historical < firstReader) {
+		firstReader = historical
+	}
+	if firstReader != "" {
+		return &GuardFinding{App: firstReader}, nil
 	}
 	if sub == nil {
 		return nil, nil

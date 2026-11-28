@@ -218,6 +218,9 @@ func (e Env) SecretNames() []string {
 
 const defaultDeployTimeout = "120s"
 
+// DefaultReleaseRetention is the release count when deploy.retain is omitted.
+const DefaultReleaseRetention = 5
+
 type Deploy struct {
 	DeployTimeout string `json:"deploy_timeout,omitempty" yaml:"deploy_timeout,omitempty"`
 	DrainTimeout  string `json:"drain_timeout,omitempty" yaml:"drain_timeout,omitempty"`
@@ -228,6 +231,14 @@ type Deploy struct {
 	Order string `json:"order,omitempty" yaml:"order,omitempty"`
 	// Verify turns off the checks, at the end of a deploy, that the roles can be reached. Nil is on: use Verifies.
 	Verify *bool `json:"verify,omitempty" yaml:"verify,omitempty"`
+}
+
+// ReleaseRetention returns the resolved count for a deploy or a stored release.
+func (d Deploy) ReleaseRetention() int {
+	if d.Retain != nil && *d.Retain > 0 {
+		return *d.Retain
+	}
+	return DefaultReleaseRetention
 }
 
 // Verifies reports whether a deploy checks, once it is done, that its roles can be reached. It is true unless the manifest
@@ -900,7 +911,7 @@ func (m *Manifest) defaults() {
 			a.Deploy.DrainTimeout = "30s"
 		}
 		if a.Deploy.Retain == nil {
-			n := 5
+			n := DefaultReleaseRetention
 			a.Deploy.Retain = &n
 		}
 		if a.Deploy.StartAttempts == nil {

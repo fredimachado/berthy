@@ -738,7 +738,7 @@ services:
 | `deploy_timeout` | How long an image rollout waits for the next gain in healthy replicas. A new high count and moving to the next role after verification each start a fresh window. | `120s` |
 | `drain_timeout` | Swarm's stop grace period for requests in flight. After Berthy confirms candidate health, it allows this duration plus 15 seconds for Swarm to complete the update and the old tasks to drain. | `30s` |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up (1 to 10). | `3` |
-| `retain` | How many deploys' images are kept, so a rollback needs no pull. At least 1. | `5` |
+| `retain` | How many recent releases and, separately, terminal operation journals to keep for the app. At least 1. The applied release is kept as well. | `5` |
 | `verify` | Whether the deploy checks, at its end, that each role's port and hostnames answer. A failed check warns and never fails the deploy. | `true` |
 
 With the example values, Docker marks a container that never becomes healthy as unhealthy after about 75 to 90 seconds, within one 120-second progress window.
@@ -1388,7 +1388,7 @@ A deploy verifies the new version before recording the switch. If a rollout fail
 7. **Publish.** With managed ingress, updates the app's routes and DNS records. A failure here is reported and the command exits non-zero, but the new version stays running.
 8. **Post-deploy hooks.** Runs them in order. A failure is reported, but does not undo the deploy.
 9. **Reachability.** For each role with a `port`, checks that the port answers on the shared network, and for each of its `hostnames` that the hostname answers from outside. A check that fails only warns. See "Reachability checks" below.
-10. **Record and tidy.** Writes the release, removes old images beyond `retain`, releases the lock.
+10. **Record and tidy.** Writes the release, trims the app's release and operation history to `retain`, and releases the lock. Use `prune` to remove eligible images and stopped hooks.
 
 If the rollout or its final inspection, health or drain check fails before the switch is recorded, the agent attempts to **roll back to the previous digest**. A failed *first* deploy has nothing to roll back to, so the agent removes the service it created. If the agent cannot confirm ownership or cleanup, it records `recovery_required` and keeps the lock for inspection. Alerts follow the `alerts.deploys` setting.
 
@@ -1512,6 +1512,8 @@ berthy history api -e prod
 
 `history` lists the app's releases newest first. Each row has an `id` (the release id you can roll back to), the digest, the commit and the time. A release deployed with `--version v1.0.2` also shows its `tag` (`tag: v1.0.2`), so you can tell which version it is without matching digests. A deploy by digest has no `tag` line, and a rollback shows the tag of the release it returns to. **Failed** deploys appear too, with their `operation_id`, `state` and a one-line `reason` such as `role web: container never became healthy (last check: exit 1)`. A release or a failed deploy from a checkout with local changes shows `(modified)` after its commit.
 
+Each app keeps its newest `deploy.retain` release IDs (default 5) and its applied release if it falls outside that window. Deploys of the same digest count separately. Terminal operation journals have their own window of the same size. Only failures in that window appear in `history`. Operations without an app have an environment-wide window of 5. On an upgraded agent, a new operation completing for an app applies the limit to that app's existing history.
+
 To see what a release changed, compare it with another:
 
 ```bash
@@ -1519,7 +1521,7 @@ berthy history api -e prod --diff <release id>
 berthy history api -e prod --diff <release id> <other release id>
 ```
 
-The first form compares the release with the one before it, and the first release of an app is `new app`. The second compares it with the other one, whichever is older. The answer is the same lines a dry run prints: what the first release changes compared with the second. Both ids must be releases of the app, from the `id` column of `history`. A secret value is never in it. `--json` prints `{"changes": [{"area", "change"}]}`.
+The first form compares the release with the one before it. The app's first-ever release shows `new app`. The second form compares the two releases you choose, whichever is older. If either comparison needs an expired release, it reports `rollback release is outside retained history; choose a release from berthy history`. The output uses the same lines as a dry run and shows no secret values. `--json` prints `{"changes": [{"area", "change"}]}`.
 
 #### Wait for health
 
@@ -1761,6 +1763,8 @@ A new version can fail for reasons only its own output explains: a missing setti
 
    For each role of the new version it shows the newest tasks (at most 5 per role): Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
 
+   After an operation journal expires, its ID still answers status with a compact terminal record. Audit entries and request replay protection survive. Detailed steps and command output can expire with the journal. Diagnostics have their own limit, and an approved `exec` or `run` keeps its output while the approval result is available.
+
 #### Roll back
 
 ```bash
@@ -1769,7 +1773,7 @@ berthy rollback api -e prod
 berthy rollback api -e prod --to <release id>
 ```
 
-`rollback` redeploys the **previous** recorded digest with the manifest saved at that deploy. `--to` picks an older release: use the `id` column of `history`. **Secrets stay at their current values.** The images of the last `retain` deploys are kept on the server, so a rollback needs no pull.
+`rollback` redeploys the previous digest with its saved manifest. Use a release ID from `history` with `--to`. With `retain: 1`, there is no previous release for an ordinary rollback. If the requested or previous release has expired, the command exits unsuccessfully with `rollback release is outside retained history; choose a release from berthy history` and leaves the app running its current release. **Secrets stay at their current values.** Prune keeps the images of retained releases for apps that are still applied.
 
 A rollback takes back the app, with its jobs, its backups and its service probes, and nothing else. The environment's settings (the alerts, the peers, the other probes, the destinations, telemetry and the rest, see [Apply environment settings](#apply-environment-settings)) stay as the last deploy or `apply` left them, and so does every other app.
 
@@ -2843,7 +2847,7 @@ Only an `admin` token can pass `--allow-recreate`. On a protected environment an
 berthy prune -e prod
 ```
 
-`prune` removes old images and stopped containers now (it needs an `admin` token). It never removes volumes. A deploy already does this after each success, keeping the images of the last `retain` deploys. Containers of finished migration steps and timed-out commands stay until `prune` removes them; their output is already in the diagnostics.
+`prune` needs an `admin` token. It removes images Berthy acquired when they are unused by containers and services and unneeded by any applied app's retained releases. A removed app keeps bounded history and protects no image. Prune also removes stopped, journaled hooks and migration containers, including ones whose operation journal has expired. It leaves volumes alone.
 
 #### Remove one app
 
@@ -3138,7 +3142,7 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
 | `deploy.order` | image | string | none | How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one. One of `start-first`, `stop-first`. |
 | `deploy.verify` | image | boolean | `true` | Whether a deploy checks, once the new version serves, that each role with a `port` answers on the shared network and that each of its `hostnames` answers from outside. A check that fails only warns: the deploy still succeeds. `false` turns both off. |
-| `deploy.retain` | image | integer | `5` | The number of deploys whose images are kept, at least 1. |
+| `deploy.retain` | both | integer | `5` | The number of recent releases and, separately, terminal operation journals kept per app, at least 1. The applied release is kept as well. A value of 1 leaves no previous release for an ordinary rollback. |
 | `hooks` | image | map | none | Steps that run around a deploy. An overlay's list replaces the base manifest's. |
 | `hooks.pre_deploy` | image | list | none | Steps that run in order before the new version starts. A failed step stops the deploy. |
 | `hooks.post_deploy` | image | list | none | Steps that run in order after the new version is serving. |

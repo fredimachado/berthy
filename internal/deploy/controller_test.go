@@ -846,7 +846,11 @@ func admit(t *testing.T, c *Controller, ctx context.Context, actor Actor, req Re
 
 func openStore(t *testing.T) *state.Store {
 	t.Helper()
-	dir := t.TempDir()
+	return openStoreAt(t, t.TempDir())
+}
+
+func openStoreAt(t testing.TB, dir string) *state.Store {
+	t.Helper()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}

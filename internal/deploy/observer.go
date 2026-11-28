@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -49,10 +50,21 @@ type target struct {
 // so what the observer hears is what the state holds. It tells nobody when the write fails.
 func (c *Controller) finish(ctx context.Context, op state.Operation, o state.Outcome, t target) error {
 	o = conclude(ctx, o)
-	if err := c.Store.Finish(ctx, op.ID, o); err != nil {
+	if err := c.reportHistoryMaintenance(op.ID, c.Store.Finish(ctx, op.ID, o)); err != nil {
 		return err
 	}
 	c.reportEnd(ctx, op, o, t)
+	return nil
+}
+
+func (c *Controller) reportHistoryMaintenance(id string, err error) error {
+	var pending *state.CommittedMaintenanceError
+	if !errors.As(err, &pending) {
+		return err
+	}
+	if c.ReportMaintenance != nil {
+		c.ReportMaintenance("operation " + id + " committed with history cleanup pending")
+	}
 	return nil
 }
 

@@ -25,7 +25,7 @@ func TestPruneAfterManagedIngressIsRemoved(t *testing.T) {
 		if err = s.RecordImageAcquired(ctx, digest, "id-"+digest); err != nil {
 			t.Fatal(err)
 		}
-		release := &state.Release{App: "ingress", Digest: digest, Manifest: json.RawMessage(`{"apps":{"ingress":{"deploy":{"retain":1}}}}`)}
+		release := &state.Release{App: "ingress", Digest: digest, Manifest: json.RawMessage(connectorStored)}
 		if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: release}); err != nil {
 			t.Fatal(err)
 		}

@@ -14,12 +14,12 @@ import (
 	"time"
 )
 
-func testStore(t *testing.T) (*Store, string, string) {
+func testStore(t testing.TB) (*Store, string, string) {
 	t.Helper()
 	return testStoreEnv(t, "test")
 }
 
-func testStoreEnv(t *testing.T, env string) (*Store, string, string) {
+func testStoreEnv(t testing.TB, env string) (*Store, string, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
 	if err := os.Mkdir(dir, 0700); err != nil {

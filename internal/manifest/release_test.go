@@ -20,3 +20,29 @@ func TestConnectorReleaseDecodesOnlyAsConnector(t *testing.T) {
 }
 
 const connectorStored = `{"project":"demo","network":"demo","apps":{"ingress":{"kind":"image","image":"docker.io/cloudflare/cloudflared","roles":{"connector":{"replicas":1}},"env":{"secret":["TUNNEL_TOKEN"]}}}}`
+
+func TestReleaseRetentionUsesTheAppliedAppsSetting(t *testing.T) {
+	m, err := DecodeRelease([]byte(`{"project":"demo","apps":{"app":{"kind":"image","image":"example/web","roles":{"web":{}},"deploy":{"retain":2}}}}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector, _, err := connectorManifest(t, "cloudflare/cloudflared:2026.11.0", "").ConnectorApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		deploy Deploy
+		want   int
+	}{
+		{"omitted", Deploy{}, 5},
+		{"explicit", m.Apps["app"].Deploy, 2},
+		{"connector", connector.Deploy, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.deploy.ReleaseRetention(); got != tc.want {
+				t.Fatalf("release retention = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

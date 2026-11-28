@@ -10,6 +10,24 @@ import (
 
 type AcquiredImage struct{ Ref, ID string }
 
+// ReleaseDigestsForAppliedApps lists the release digests of apps that are still applied.
+func (s *Store) ReleaseDigestsForAppliedApps(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.query(ctx, `SELECT a.app,r.digest FROM applied a JOIN releases r ON r.environment=a.environment AND r.app=a.app WHERE a.environment=?`, s.env)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	digests := map[string][]string{}
+	for rows.Next() {
+		var app, digest string
+		if err := rows.Scan(&app, &digest); err != nil {
+			return nil, err
+		}
+		digests[app] = append(digests[app], digest)
+	}
+	return digests, rows.Err()
+}
+
 func (s *Store) RecordImageAcquired(ctx context.Context, ref, id string) error {
 	if ref == "" || id == "" {
 		return errors.New("image ref and ID required")
@@ -78,14 +96,44 @@ func (s *Store) ForgetImage(ctx context.Context, ref, id string) error {
 
 type CompletedOneOff struct{ OperationID, ID, Name, Role string }
 
+const completedOneOffsQuery = `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i
+	JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted')
+	AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after','run'))`
+
 // CompletedOneOffs lists the one-off containers of finished operations that Berthy may prune: the hooks and migration
 // commands that finished, and any one-off that created a container but never finished, such as one that timed out. Their
 // output lives on in the operation's diagnostics. A step that never created a container has none to list.
 func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error) {
-	rows, err := s.query(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.role,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.state IN ('succeeded','failed','rolled_back','interrupted') AND i.kind='oneoff' AND (i.phase<>'finished' OR i.role IN ('pre_hook','post_hook','schema_before','migration_apply','schema_after','run')) ORDER BY i.operation_id,i.ordinal`, s.env)
+	rows, err := s.query(ctx, completedOneOffsQuery+` ORDER BY i.operation_id,i.ordinal`, s.env)
 	if err != nil {
 		return nil, err
 	}
+	out, err := s.readCompletedOneOffs(rows)
+	if err != nil {
+		return nil, err
+	}
+	rows, err = s.query(ctx, `SELECT operation_id,id,name,role FROM prune_oneoffs WHERE environment=? ORDER BY operation_id,id`, s.env)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := make(map[string]bool, len(out))
+	for _, hook := range out {
+		seen[hook.ID] = true
+	}
+	for rows.Next() {
+		var hook CompletedOneOff
+		if err := rows.Scan(&hook.OperationID, &hook.ID, &hook.Name, &hook.Role); err != nil {
+			return nil, err
+		}
+		if !seen[hook.ID] {
+			out = append(out, hook)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) readCompletedOneOffs(rows *sql.Rows) ([]CompletedOneOff, error) {
 	defer rows.Close()
 	var out []CompletedOneOff
 	for rows.Next() {
@@ -93,10 +141,10 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 		var ordinal int
 		var phase string
 		var sealed []byte
-		if err = rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &phase, &sealed); err != nil {
+		if err := rows.Scan(&x.OperationID, &ordinal, &x.Name, &x.Role, &phase, &sealed); err != nil {
 			return nil, err
 		}
-		plain, e := s.open(intentRecord(x.OperationID, ordinal, "receipt"), sealed)
+		plain, e := s.openFor(s.env, intentRecord(x.OperationID, ordinal, "receipt"), sealed)
 		if e != nil {
 			return nil, e
 		}
@@ -115,6 +163,12 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 	return out, rows.Err()
 }
 
+// ForgetCompletedOneOff acknowledges a container that Docker confirmed is absent.
+func (s *Store) ForgetCompletedOneOff(ctx context.Context, h CompletedOneOff) error {
+	_, err := s.exec(ctx, `DELETE FROM prune_oneoffs WHERE environment=? AND id=? AND operation_id=? AND name=? AND role=?`, s.env, h.ID, h.OperationID, h.Name, h.Role)
+	return err
+}
+
 type HistoryOperation struct {
 	OperationID, Kind, App, Commit, State  string
 	SchemaBefore, SchemaAfter, Reason, Tag string
@@ -123,7 +177,10 @@ type HistoryOperation struct {
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations o
+		WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted')
+		AND NOT EXISTS(SELECT 1 FROM audit WHERE environment=o.environment AND operation_id=o.id AND retired_request_id IS NOT NULL)
+		ORDER BY started DESC,rowid DESC`, s.env, app)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +193,10 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified, &public); err != nil {
 			return nil, err
 		}
-		var selection struct {
-			Tag string `json:"version_tag"`
-		}
-		if err := json.Unmarshal(public, &selection); err != nil {
+		o.Tag, err = publicRequestTag(public)
+		if err != nil {
 			return nil, err
 		}
-		o.Tag = selection.Tag
 		o.Started = time.UnixMilli(ms).UTC()
 		out = append(out, o)
 	}

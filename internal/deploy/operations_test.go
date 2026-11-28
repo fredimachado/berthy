@@ -6,6 +6,7 @@ import (
 	"berthy/internal/scope"
 	"berthy/internal/state"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -392,6 +393,63 @@ func TestPruneProtectsContainersAndRetainedReleases(t *testing.T) {
 	}
 }
 
+func BenchmarkPruneAfter5000Deploys(b *testing.B) {
+	dir := b.TempDir()
+	s := openStoreAt(b, dir)
+	ctx := context.Background()
+	const retained = "example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const unused = "example/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	data := []byte(operationsReleaseManifest)
+	if _, err := manifest.DecodeRelease(data, false); err != nil {
+		b.Fatal(err)
+	}
+	for i := range 5000 {
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: fmt.Sprintf("deploy-%d", i), ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			b.Fatalf("admit deploy %d: %v", i, err)
+		}
+		if i == 0 {
+			for _, image := range []state.AcquiredImage{{Ref: retained, ID: "id-retained"}, {Ref: unused, ID: "id-unused"}} {
+				if err := s.RecordImageAcquired(ctx, image.Ref, image.ID); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+		if err := s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: retained, Manifest: data}}); err != nil {
+			b.Fatalf("finish deploy %d: %v", i, err)
+		}
+	}
+	f := &pruneEngine{runtimeEngine: &runtimeEngine{}, images: []engine.InventoryImage{
+		{ID: "id-retained", RepoDigests: []string{retained}},
+		{ID: "id-unused", RepoDigests: []string{unused}},
+	}}
+	c := Controller{Store: s, Engine: f}
+	candidates, err := c.prunePlan(ctx)
+	if err != nil || len(candidates) != 1 || candidates[0].Ref != unused || candidates[0].ID != "id-unused" {
+		b.Fatalf("prune candidates %v, error %v", candidates, err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+	var releases int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM releases`).Scan(&releases); err != nil {
+		b.Fatal(err)
+	}
+	actor, request := Actor{Admin: true}, Request{Kind: "prune"}
+	for b.Loop() {
+		if _, err := c.planOperation(ctx, actor, request); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(releases), "release_rows")
+}
+
 // TestPruneLeavesTheHelperAlone checks that prune cannot select the overlay helper: its image was never acquired by a
 // deploy, so it is not a candidate, and its container is not a journaled hook. Only the acquired image goes.
 func TestPruneLeavesTheHelperAlone(t *testing.T) {
@@ -718,17 +776,62 @@ func TestPruneFailsWhenTheOthersRetainedImagesCannotBeRead(t *testing.T) {
 	}
 }
 
+const operationsReleaseManifest = `{"project":"demo","apps":{"app":{"kind":"image","image":"example/web","roles":{"web":{}},"deploy":{"retain":2}}}}`
+
+func TestPruneReadsOnlyTheAppliedManifest(t *testing.T) {
+	dir := t.TempDir()
+	s := openStoreAt(t, dir)
+	ctx := t.Context()
+	for _, digest := range []string{"prior", "current"} {
+		op := admitRetentionFixture(t, s, digest, "deploy", "app")
+		finishRetentionFixture(t, s, op, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: digest, Manifest: []byte(operationsReleaseManifest)}})
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// A historical payload stored as TEXT cannot be read into Release.Manifest, but its digest is still valid.
+	if _, err := db.Exec(`UPDATE releases SET manifest=CAST(manifest AS TEXT) WHERE digest='prior'`); err != nil {
+		t.Fatal(err)
+	}
+	c := Controller{Store: s}
+	refs, err := c.RetainedImages(ctx)
+	if err != nil || !refs["prior"] || !refs["current"] {
+		t.Errorf("prune references = %v, error %v", refs, err)
+	}
+	if _, err := db.Exec(`UPDATE releases SET manifest=? WHERE digest='current'`, []byte(`{"apps":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RetainedImages(ctx); err == nil || err.Error() != "applied manifest unavailable" {
+		t.Errorf("unreadable applied manifest = %v", err)
+	}
+}
+
 func TestRetainedImagesIsTheRuleOfPrune(t *testing.T) {
-	s := openStore(t)
+	dir := t.TempDir()
+	s := openStoreAt(t, dir)
 	ctx := context.Background()
+	data := []byte(operationsReleaseManifest)
+	if _, err := manifest.DecodeRelease(data, false); err != nil {
+		t.Fatalf("release fixture: %v", err)
+	}
+	var firstID int64
 	for _, release := range []struct{ id, digest string }{{"one", "old"}, {"two", "prev"}, {"three", "current"}} {
 		op, _, err := s.Admit(ctx, state.Admission{RequestID: release.id, ActorID: "a", Kind: "deploy", App: "app", PublicRequest: []byte(`{}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: release.digest, Manifest: []byte(`{"apps":{"app":{"deploy":{"retain":2}}}}`)}})
+		err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Digest: release.digest, Manifest: data}})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if release.id == "one" {
+			applied, err := s.Applied(ctx, "app")
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstID = applied.ID
 		}
 	}
 	c := Controller{Store: s}
@@ -739,4 +842,22 @@ func TestRetainedImagesIsTheRuleOfPrune(t *testing.T) {
 	if refs["old"] || !refs["prev"] || !refs["current"] {
 		t.Fatalf("retained %v", refs)
 	}
+	t.Run("stored releases", func(t *testing.T) {
+		db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		var old, total int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN id=? THEN 1 END), COUNT(*) FROM releases WHERE environment=? AND app=?`, firstID, "test", "app").Scan(&old, &total); err != nil {
+			t.Fatal(err)
+		}
+		if old != 0 || total != 2 {
+			t.Fatalf("release %d has %d rows and app has %d rows, want 0 and 2", firstID, old, total)
+		}
+	})
 }

@@ -183,7 +183,7 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		if _, err := c.prunePlan(ctx); err != nil {
 			return Plan{}, err
 		}
-		if _, err := c.prunableHooks(ctx); err != nil {
+		if _, err := c.prunableHooks(ctx, false); err != nil {
 			return Plan{}, err
 		}
 		return Plan{}, nil
@@ -436,7 +436,7 @@ func (c *Controller) pruneNowWithForeign(ctx context.Context, foreignImages map[
 	if err != nil {
 		return nil, pruneFailure(err)
 	}
-	hooks, err := c.prunableHooks(ctx)
+	hooks, err := c.prunableHooks(ctx, true)
 	if err != nil {
 		return nil, "hook inventory unavailable"
 	}
@@ -445,17 +445,19 @@ func (c *Controller) pruneNowWithForeign(ctx context.Context, foreignImages map[
 		for _, h := range hooks {
 			container, e := he.InspectContainer(ctx, h.ID)
 			if e != nil {
-				var status *engine.StatusError
-				if errors.As(e, &status) && status.Code == 404 {
+				if !statusIs(e, 404) {
+					return nil, "hook inspection failed"
+				}
+			} else {
+				if !ownedFinishedHook(container, h, c.id()) {
 					continue
 				}
-				return nil, "hook inspection failed"
+				if e = he.RemoveContainer(ctx, h.ID); e != nil && !statusIs(e, 404) {
+					return nil, "hook removal failed"
+				}
 			}
-			if !ownedFinishedHook(container, h, c.id()) {
-				continue
-			}
-			if e = he.RemoveContainer(ctx, h.ID); e != nil {
-				return nil, "hook removal failed"
+			if e = c.Store.ForgetCompletedOneOff(ctx, h); e != nil {
+				return nil, "hook inventory unavailable"
 			}
 		}
 	}
@@ -593,48 +595,33 @@ func (c *Controller) RetainedImages(ctx context.Context) (map[string]bool, error
 }
 
 func (c *Controller) retainedImages(ctx context.Context, goneApps map[string]bool) (map[string]bool, error) {
-	history, err := c.Store.History(ctx, "")
+	history, err := c.Store.ReleaseDigestsForAppliedApps(ctx)
 	if err != nil {
 		return nil, errPruneHistory
 	}
 	refs := map[string]bool{}
-	seen := map[string]int{}
-	retains := map[string]int{}
-	for _, r := range history {
-		if _, ok := retains[r.App]; !ok {
-			current, e := c.Store.Applied(ctx, r.App)
-			if goneApps[r.App] {
-				e = sql.ErrNoRows
-			}
-			switch {
-			case errors.Is(e, sql.ErrNoRows):
-				// An app that was removed, such as the connector once managed ingress is gone, or an app taken down with
-				// berthy remove, keeps its history but has no applied release. Nothing runs from it, and nothing can
-				// roll back to it, so none of its releases protects an image.
-				retains[r.App] = 0
-				continue
-			case e != nil:
-				return nil, errors.New("applied release unavailable")
-			}
-			refs[current.Digest] = true
-			var m manifest.Manifest
-			if json.Unmarshal(current.Manifest, &m) != nil {
-				return nil, errors.New("applied manifest unavailable")
-			}
-			app, ok := m.Apps[r.App]
-			if !ok {
-				return nil, errors.New("applied app unavailable")
-			}
-			if app.Deploy.Retain == nil {
-				retains[r.App] = len(history)
-			} else {
-				retains[r.App] = *app.Deploy.Retain
-			}
+	for app, digests := range history {
+		if goneApps[app] {
+			continue
 		}
-		if seen[r.App] < retains[r.App] {
-			refs[r.Digest] = true
+		current, err := c.Store.Applied(ctx, app)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
-		seen[r.App]++
+		if err != nil {
+			return nil, errors.New("applied release unavailable")
+		}
+		var m manifest.Manifest
+		if json.Unmarshal(current.Manifest, &m) != nil {
+			return nil, errors.New("applied manifest unavailable")
+		}
+		if _, ok := m.Apps[app]; !ok {
+			return nil, errors.New("applied app unavailable")
+		}
+		refs[current.Digest] = true
+		for _, digest := range digests {
+			refs[digest] = true
+		}
 	}
 	return refs, nil
 }
@@ -834,7 +821,7 @@ func ownedFinishedHook(c engine.ContainerSnapshot, h state.CompletedOneOff, id s
 	return !c.Running && c.ID == h.ID && id.Owns(c.Labels) && c.Labels["berthy.operation"] == h.OperationID && c.Labels["berthy.oneoff"] == h.Role
 }
 
-func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff, error) {
+func (c *Controller) prunableHooks(ctx context.Context, acknowledgeMissing bool) ([]state.CompletedOneOff, error) {
 	hooks, err := c.Store.CompletedOneOffs(ctx)
 	if err != nil {
 		return nil, err
@@ -850,8 +837,12 @@ func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff
 	for _, h := range hooks {
 		container, err := e.InspectContainer(ctx, h.ID)
 		if err != nil {
-			var status *engine.StatusError
-			if errors.As(err, &status) && status.Code == 404 {
+			if statusIs(err, 404) {
+				if acknowledgeMissing {
+					if err := c.Store.ForgetCompletedOneOff(ctx, h); err != nil {
+						return nil, err
+					}
+				}
 				continue
 			}
 			return nil, errors.New("hook inspection failed")
