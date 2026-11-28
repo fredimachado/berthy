@@ -319,12 +319,6 @@ func (d *differ) role(name string, p, n manifest.Role) {
 	}
 	before, after := uptimeDiffValue(p.Health), uptimeDiffValue(n.Health)
 	setting("health.uptime", before, after)
-	switch {
-	case before == "" && after != "":
-		d.add(name, "+ read-only probe bind %s", manifest.UptimeProbeTarget)
-	case before != "" && after == "":
-		d.add(name, "- read-only probe bind %s", manifest.UptimeProbeTarget)
-	}
 	for _, v := range added(p.Volumes, n.Volumes) {
 		d.add(name, "+ volume %s", v)
 		d.row([]string{"roles", name, "volumes"}, nil, &v)
@@ -366,8 +360,8 @@ func uptimeDiffValue(h *manifest.Health) string {
 	if h == nil || h.Uptime == nil {
 		return ""
 	}
-	if timing, err := h.UptimeTiming(); err == nil {
-		return timing.Threshold.String()
+	if threshold, err := h.UptimeThreshold(); err == nil {
+		return threshold.String()
 	}
 	return *h.Uptime
 }

@@ -278,12 +278,8 @@ func (m *Manifest) checkRole(p *Problems, name string, a App, rn string, r Role,
 		}
 	}
 	for i, v := range r.Volumes {
-		mount, err := ParseMount(v)
-		if err != nil {
+		if _, err := ParseMount(v); err != nil {
 			p.add(path+".volumes."+strconv.Itoa(i), "%s: invalid volume", where)
-		} else if r.Health != nil && r.Health.Uptime != nil &&
-			(mount.Target == uptimeProbeDirectory || strings.HasPrefix(mount.Target, uptimeProbeDirectory+"/")) {
-			p.add(path+".volumes."+strconv.Itoa(i), "%s: %s is reserved for uptime health checks", where, uptimeProbeDirectory)
 		}
 	}
 	if r.Resources != nil {

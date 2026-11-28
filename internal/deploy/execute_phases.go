@@ -32,7 +32,7 @@ func (c *Controller) runAdoption(ctx context.Context, op state.Operation, req Re
 	outcome := state.Outcome{State: "failed", Err: "deployment preflight failed"}
 	plan, bindings, e := c.planAdoption(ctx, req)
 	if e != nil {
-		outcome.Err = uptimePreflightMessage(e, "adoption preflight failed")
+		outcome.Err = "adoption preflight failed"
 		return outcome
 	}
 	raw, e := json.Marshal(req.Manifest)
@@ -69,11 +69,6 @@ func (c *Controller) runAdoption(ctx context.Context, op state.Operation, req Re
 func (c *Controller) prepareDeployRoles(ctx context.Context, d *deployRun, req Request, p Plan) bool {
 	prepared, err := c.prepareExecution(ctx, req, p)
 	if err != nil {
-		return false
-	}
-	prepared.ProbeSource, err = c.appProbeSource(req.Manifest.Apps[req.App])
-	if err != nil {
-		d.outcome.Err = uptimePreflightMessage(err, d.outcome.Err)
 		return false
 	}
 	d.prepared = prepared
@@ -137,6 +132,11 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 	req := d.prepared.Request
 	app := req.Manifest.Apps[req.App]
 	r := app.Roles[role]
+	uptime, e := r.Health.UptimeThreshold()
+	if e != nil {
+		d.outcome.Err = "role preflight failed"
+		return false
+	}
 	replicas := 1
 	if r.Replicas != nil {
 		replicas = *r.Replicas
@@ -145,13 +145,13 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 	if len(d.work) > 0 {
 		recoveryAllowance = d.work[len(d.work)-1].recoveryAllowance
 	}
-	recoveryAllowance, e := addStartupAllowance(recoveryAllowance, serviceCleanupAllowance)
+	recoveryAllowance, e = addStartupAllowance(recoveryAllowance, serviceCleanupAllowance)
 	if e != nil {
 		return false
 	}
 	spec, e := c.releaseRoleSpec(d.prepared, img, role, d.opID)
 	if e != nil {
-		d.outcome.Err = uptimePreflightMessage(e, "role preflight failed")
+		d.outcome.Err = "role preflight failed"
 		return false
 	}
 	name := req.Manifest.ServiceName(c.Environment, req.App, role)
@@ -261,6 +261,7 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 			return false
 		}
 	}
+	intent.Uptime = uptime
 	d.work = append(d.work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	return true
 }
@@ -310,8 +311,7 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 		w.intent.Deadline = timing.cutoff
 		rollCtx, stopRoll := interruptible(ctx)
 		id := w.intent.ServiceID
-		health := app.Roles[w.intent.Role].Health
-		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
+		starts := startBudget{limit: attempts, uptime: w.intent.Uptime}
 		var e error
 		if w.intent.Kind == "create" {
 			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
@@ -351,7 +351,7 @@ func (c *Controller) unwindDeploy(ctx context.Context, d *deployRun, cause error
 			if c.Log != nil {
 				c.Log(message)
 			}
-			c.storeDiagnostics(context.Background(), d.opID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}}, "")
+			c.storeDiagnostics(context.Background(), d.opID, []Diagnostic{{Kind: "compensation", Error: message, Captured: time.Now().UTC()}})
 		}
 		d.outcome.State = "recovery_required"
 		d.outcome.Err = "rollout recovery required"
@@ -415,7 +415,8 @@ func (c *Controller) verifyDeployRoles(ctx, verifyCtx context.Context, d *deploy
 		d.outcome = unavailable
 		return false
 	}
-	if e = c.verifyRollout(verifyCtx, steps); e != nil {
+	req := d.prepared.Request
+	if e = c.verifyRollout(verifyCtx, steps, req.Manifest.Apps[req.App]); e != nil {
 		var failed finalRolloutFailure
 		if errors.As(e, &failed) {
 			c.unwindDeploy(ctx, d, e, d.work)

@@ -215,7 +215,7 @@ func TestRecoveryKeepsUnhealthyCandidateAfterRecordedBarrier(t *testing.T) {
 	if err := s.MarkStep(ctx, op.ID, 0, "verified", receipt); err != nil {
 		t.Fatal(err)
 	}
-	out := state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "candidate-digest", Manifest: json.RawMessage(`{}`), Bindings: []state.Binding{{App: "web", Role: "web", Name: "svc", ServiceID: "id"}}}}
+	out := state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "candidate-digest", Manifest: testReleaseManifest(t), Bindings: []state.Binding{{App: "web", Role: "web", Name: "svc", ServiceID: "id"}}}}
 	barrier, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
@@ -245,5 +245,51 @@ func TestRecoveryKeepsUnhealthyCandidateAfterRecordedBarrier(t *testing.T) {
 	applied, err := s.Applied(ctx, "web")
 	if err != nil || applied.ID != previous.ID || applied.Digest != previous.Digest {
 		t.Fatalf("previous applied release = %+v, %v; want ID %d digest %q", applied, err, previous.ID, previous.Digest)
+	}
+}
+
+func TestBarrierRecoveryUsesCandidateUptime(t *testing.T) {
+	const generation = "candidate"
+	spec := json.RawMessage(`{"Name":"svc","Mode":{"Replicated":{"Replicas":1}},"TaskTemplate":{"ContainerSpec":{"Healthcheck":{"Test":["NONE"]},"Labels":{"berthy.operation":"candidate"}}}}`)
+	receipt, err := json.Marshal(map[string]any{"id": "id", "spec": spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(uptimeManifest("20s", "1m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	barrier, err := json.Marshal(state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Manifest: raw}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intents := []state.Intent{{Kind: "create", Role: "web", Name: "svc", Phase: "verified", Generation: generation, Receipt: receipt}}
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+		want string
+	}{
+		{"qualified", 20 * time.Second, "post-deploy completion was interrupted"},
+		{"young replacement", 19 * time.Second, "final health verification failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newDiagFake()
+				f.spec = spec
+				task := runningTask("latest", generation)
+				task.ServiceID, task.RunningSince = "id", time.Now().Add(-tc.age)
+				f.tasksFor = func(_, _ string) []engine.ServiceTask { return []engine.ServiceTask{task} }
+				f.diagnose = map[string]engine.ContainerDiagnosis{task.ContainerID: {State: "running", Health: "none"}}
+				c := Controller{Engine: f}
+				out, err := c.recoverBarrier(context.Background(), intents, state.Intent{Desired: barrier})
+				if tc.name == "qualified" {
+					if err != nil || out.State != "failed" || out.Err != tc.want || out.Release == nil {
+						t.Fatalf("qualified recovery = %+v, %v", out, err)
+					}
+				} else if err == nil || err.Error() != tc.want || out.Release != nil {
+					t.Fatalf("young recovery = %+v, %v", out, err)
+				}
+			})
+		})
 	}
 }

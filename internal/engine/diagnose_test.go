@@ -176,3 +176,22 @@ func TestLogTailReportsDockerDaemonError(t *testing.T) {
 		t.Fatalf("tail %q truncated %v: %v", text, truncated, err)
 	}
 }
+
+func TestDiagnoseContainerReadsRunningWithHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		running    bool
+	}{
+		{"running", `{"State":{"Status":"running","Running":true,"Health":{"Status":"healthy"}}}`, true},
+		{"exited", `{"State":{"Status":"exited","Running":false,"Health":{"Status":"healthy"}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d, err := inspectEngine(t, "/v1.44/containers/c1/json", tc.body).DiagnoseContainer(ctx, "c1")
+			if err != nil || d.Running != tc.running || d.Health != "healthy" {
+				t.Fatalf("running=%v health=%q, error %v, want running=%v and healthy", d.Running, d.Health, err, tc.running)
+			}
+		})
+	}
+}

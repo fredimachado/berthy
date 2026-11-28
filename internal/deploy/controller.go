@@ -179,7 +179,6 @@ type Controller struct {
 	FinishReservation func(context.Context, []state.Claim, []state.Claim, []state.Claim) error
 	Foreign           func(context.Context) (Foreign, error)
 	Log               func(string)
-	ProbeSource       func() (string, error)
 	Engine            Engine
 	Store             *state.Store
 	Environment       string
@@ -959,7 +958,7 @@ type finalRolloutFailure string
 
 func (e finalRolloutFailure) Error() string { return string(e) }
 
-func (c *Controller) verifyRollout(ctx context.Context, intents []state.Intent) error {
+func (c *Controller) verifyRollout(ctx context.Context, intents []state.Intent, app manifest.App) error {
 	for _, i := range intents {
 		if i.Kind != "create" && i.Kind != "update" {
 			continue
@@ -987,7 +986,15 @@ func (c *Controller) verifyRollout(ctx context.Context, intents []state.Intent) 
 		if json.Unmarshal(live.Spec, &spec) != nil || spec.Mode.Replicated == nil {
 			return errors.New("invalid service mode")
 		}
-		if err = healthyOnce(ctx, c.Engine, live.ID, i.Generation, spec.Mode.Replicated.Replicas); err != nil {
+		role, ok := app.Roles[i.Role]
+		if !ok {
+			return errors.New("candidate role unavailable")
+		}
+		uptime, err := role.Health.UptimeThreshold()
+		if err != nil {
+			return err
+		}
+		if err = healthyOnce(ctx, c.Engine, live.ID, i.Generation, spec.Mode.Replicated.Replicas, uptime); err != nil {
 			return finalRolloutFailure("final health verification failed")
 		}
 		if err = waitDrain(ctx, c.Engine, live.ID, i.Generation); err != nil {
@@ -1005,7 +1012,15 @@ func (c *Controller) recoverBarrier(ctx context.Context, intents []state.Intent,
 	if json.Unmarshal(barrier.Desired, &out) != nil || out.Release == nil {
 		return state.Outcome{}, errors.New("invalid verification barrier")
 	}
-	if err := c.verifyRollout(ctx, intents); err != nil {
+	var m manifest.Manifest
+	if json.Unmarshal(out.Release.Manifest, &m) != nil {
+		return state.Outcome{}, errors.New("candidate manifest unavailable")
+	}
+	app, ok := m.Apps[out.Release.App]
+	if !ok {
+		return state.Outcome{}, errors.New("candidate app unavailable")
+	}
+	if err := c.verifyRollout(ctx, intents, app); err != nil {
 		return state.Outcome{}, err
 	}
 	out.State = "failed"

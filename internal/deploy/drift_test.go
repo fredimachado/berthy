@@ -14,7 +14,7 @@ const driftImage = "docker.io/example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 // driftDesired is the spec of a role at a release: two replicas, two variables.
 func driftDesired(t *testing.T, role manifest.Role) json.RawMessage {
 	t.Helper()
-	spec, err := serviceSpec("test", "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "api", "web"), "op-deploy", "net", driftImage, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, []string{"DATABASE_URL=postgres://secret", "MODE=fast"}, role, "start-first", "10s", nil, "json-file", "")
+	spec, err := serviceSpec("test", "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("test", "api", "web"), "op-deploy", "net", driftImage, func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("test", v) }, []string{"DATABASE_URL=postgres://secret", "MODE=fast"}, role, "start-first", "10s", nil, "json-file")
 	if err != nil {
 		t.Fatal(err)
 	}

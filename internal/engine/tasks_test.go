@@ -87,3 +87,29 @@ func TestRollingUpdateShutdownsAreNotFailures(t *testing.T) {
 		t.Fatalf("rolling update counted %d failures, want 0", n)
 	}
 }
+
+func TestServiceTasksReportsRunningSince(t *testing.T) {
+	body := strings.Replace(cannedTasks, `"Slot":9,"UpdatedAt":"2026-11-16T10:02:00Z","Status":{"State":"failed"}`, `"Slot":9,"UpdatedAt":"2026-11-16T10:02:00Z","Status":{"State":"running"}`, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tasks, err := tasksEngine(t, body).ServiceTasks(ctx, "svc1")
+	if err != nil || len(tasks) != 9 {
+		t.Fatalf("tasks: %d %v", len(tasks), err)
+	}
+	for _, task := range tasks {
+		switch task.ID {
+		case "t-running":
+			want := time.Date(2026, 11, 16, 10, 9, 0, 0, time.UTC)
+			if !task.RunningSince.Equal(want) {
+				t.Errorf("running since %v, want %v", task.RunningSince, want)
+			}
+		default:
+			if !task.RunningSince.IsZero() {
+				t.Errorf("task %s has unexpected running-since evidence %v", task.ID, task.RunningSince)
+			}
+		}
+		if task.ID == "t-fallback" && task.Timestamp.IsZero() {
+			t.Error("missing fallback timestamp for diagnostics")
+		}
+	}
+}

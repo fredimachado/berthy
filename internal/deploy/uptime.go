@@ -3,89 +3,40 @@ package deploy
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
-	"path"
-	"strings"
 	"time"
 
-	"berthy/internal/engine"
 	"berthy/internal/manifest"
 )
 
-const (
-	errUptimeProbeSource Refusal = "uptime probe unavailable: run the installed static Berthy executable from a protected, world-executable path"
-	errUptimeImageTiming Refusal = "uptime health cannot use this image's health settings: check the image healthcheck and deploy_timeout"
-	errUptimeImageVolume Refusal = "uptime health cannot use an image that declares a volume overlapping /.berthy"
-)
-
-func isUptimeRefusal(err Refusal) bool {
-	return err == errUptimeProbeSource || err == errUptimeImageTiming || err == errUptimeImageVolume
-}
-
-func uptimePreflightMessage(err error, fallback string) string {
-	var refusal Refusal
-	if errors.As(err, &refusal) && isUptimeRefusal(refusal) {
-		return string(refusal)
+func appliedRoleUptime(app manifest.App, role string, spec json.RawMessage) (time.Duration, error) {
+	r, ok := app.Roles[role]
+	if !ok {
+		return 0, errors.New("applied role unavailable")
 	}
-	return fallback
+	return retainedUptime(r.Health, spec)
 }
 
-func (c *Controller) resolveProbeSource() (string, error) {
-	if c.ProbeSource != nil {
-		source, err := c.ProbeSource()
-		if err == nil && path.IsAbs(source) && path.Clean(source) == source {
-			return source, nil
+// retainedUptime requires both a threshold and an explicit Docker health override in the retained spec.
+func retainedUptime(health *manifest.Health, spec json.RawMessage) (time.Duration, error) {
+	threshold, err := health.UptimeThreshold()
+	if err != nil || threshold == 0 {
+		return 0, err
+	}
+	var service struct {
+		TaskTemplate struct {
+			ContainerSpec struct {
+				Healthcheck struct{ Test []string }
+			}
 		}
 	}
-	return "", errUptimeProbeSource
-}
-
-func (c *Controller) appProbeSource(app manifest.App) (string, error) {
-	for _, role := range app.Roles {
-		if role.Health != nil && role.Health.Uptime != nil {
-			return c.resolveProbeSource()
-		}
+	if err := json.Unmarshal(spec, &service); err != nil {
+		return 0, err
 	}
-	return "", nil
-}
-
-func uptimeCommand(duration string) []string {
-	return []string{"CMD", manifest.UptimeProbeTarget, "probe", "uptime", duration}
-}
-
-func uptimeMount(source string) map[string]any {
-	return map[string]any{"Type": "bind", "Source": source, "Target": manifest.UptimeProbeTarget, "ReadOnly": true}
-}
-
-func describeUptimeBind(source string) string {
-	return fmt.Sprintf("read-only bind %s -> %s", source, manifest.UptimeProbeTarget)
-}
-
-type expectedUptimeProbe struct {
-	mount map[string]any
-	test  []string
-}
-
-func (c *Controller) expectedProbe(role manifest.Role) (*expectedUptimeProbe, error) {
-	if role.Health == nil || role.Health.Uptime == nil {
-		return nil, nil
+	if test := service.TaskTemplate.ContainerSpec.Healthcheck.Test; len(test) == 1 && test[0] == "NONE" {
+		return threshold, nil
 	}
-	timing, err := role.Health.UptimeTiming()
-	if err != nil {
-		return nil, err
-	}
-	source, err := c.resolveProbeSource()
-	if err != nil {
-		return nil, err
-	}
-	return &expectedUptimeProbe{mount: uptimeMount(source), test: uptimeCommand(timing.Threshold.String())}, nil
-}
-
-func uptimeMountOverlap(target string) bool {
-	target = path.Clean(target)
-	reserved := path.Dir(manifest.UptimeProbeTarget)
-	return target == "/" || target == reserved || strings.HasPrefix(target, reserved+"/")
+	return 0, nil
 }
 
 func deployStartupBudget(app manifest.App) (time.Duration, error) {
@@ -142,37 +93,4 @@ func addStartupAllowance(total, budget time.Duration) (time.Duration, error) {
 		return 0, errors.New("replacement startup allowance is too large")
 	}
 	return total + budget, nil
-}
-
-func checkUptimeImage(app manifest.App, role string, img engine.Image) error {
-	h := app.Roles[role].Health
-	if h == nil || h.Uptime == nil {
-		return nil
-	}
-	if !img.ConfigPresent {
-		return errUptimeImageTiming
-	}
-	for target := range img.Volumes {
-		if uptimeMountOverlap(target) {
-			return errUptimeImageVolume
-		}
-	}
-	var image struct {
-		Test                                          []string
-		Interval, Timeout, StartPeriod, StartInterval time.Duration
-		Retries                                       int
-	}
-	if len(img.Healthcheck) > 0 && json.Unmarshal(img.Healthcheck, &image) != nil ||
-		image.Interval < 0 || image.Timeout < 0 || image.StartPeriod < 0 || image.StartInterval < 0 || image.Retries < 0 {
-		return errUptimeImageTiming
-	}
-	timing, err := h.UptimeTiming()
-	if err != nil {
-		return errUptimeImageTiming
-	}
-	budget, err := deployStartupBudget(app)
-	if err != nil || !timing.FitsBudget(budget, image.StartPeriod, image.StartInterval) {
-		return errUptimeImageTiming
-	}
-	return nil
 }

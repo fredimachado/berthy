@@ -173,7 +173,7 @@ func TestRecoveryAcceptsJournaledNullEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: json.RawMessage(`{}`)}}); err != nil {
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: testReleaseManifest(t)}}); err != nil {
 		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "update", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
@@ -182,7 +182,7 @@ func TestRecoveryAcceptsJournaledNullEnv(t *testing.T) {
 	}
 	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `","Env":null,"Labels":{"berthy.operation":"new"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
 	// Swarm applied the journaled update, and Docker stored it without the null field.
@@ -215,7 +215,7 @@ func TestSpecComparisonIgnoresZeroMapFields(t *testing.T) {
 }
 
 func TestServiceSpecOmitsEmptyEnv(t *testing.T) {
-	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "", "")
+	b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
 	if err != nil || strings.Contains(string(b), `"Env"`) {
 		t.Fatalf("spec %s: %v", b, err)
 	}
@@ -251,7 +251,7 @@ func TestServiceSpecWritesOnlyNonZeroHealthDurations(t *testing.T) {
 		present bool
 	}{{"0s", false}, {"1s", true}} {
 		role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}, Interval: "5s", Timeout: "2s", StartPeriod: tc.start, Retries: &retries}}
-		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "", "")
+		b, err := serviceSpec("env", "proj", "app", "web", (&manifest.Manifest{Project: "proj"}).ServiceName("env", "app", "web"), "op", "network", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName("env", v) }, nil, role, "start-first", "10s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +356,7 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: json.RawMessage(`{}`)}}); err != nil {
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: testReleaseManifest(t)}}); err != nil {
 		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "update", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
@@ -366,7 +366,7 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 	mount := `"Mounts":[{"Type":"volume","Source":"data","Target":"/data","ReadOnly":false}]`
 	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `",` + mount + `,"Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `",` + mount + `,"Labels":{"berthy.operation":"new"}}},"Mode":{"Replicated":{"Replicas":1}}}`)
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
 	e := dockerSpecs{&positiveEngine{spec: withDockerDefaults(storedAsDocker(desired))}}
@@ -388,7 +388,7 @@ func TestRecoveryAcceptsAJournaledVolumeMount(t *testing.T) {
 func TestAServiceOfTwoEnvironmentsOfOneProjectHasTwoNames(t *testing.T) {
 	role := manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}
 	for _, env := range []string{"dev", "prod"} {
-		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "", "")
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -405,7 +405,7 @@ func TestAServiceOfTwoEnvironmentsOfOneProjectHasTwoNames(t *testing.T) {
 func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
 	role := manifest.Role{Volumes: []string{"data:/data"}, Health: &manifest.Health{Test: []string{"CMD", "true"}}}
 	for _, env := range []string{"dev", "prod"} {
-		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "", "")
+		b, err := serviceSpec(env, "proj", "api", "web", (&manifest.Manifest{Project: "proj"}).ServiceName(env, "api", "web"), "op", "net", "image", func(v string) string { return (&manifest.Manifest{Project: "proj"}).VolumeName(env, v) }, nil, role, "start-first", "1s", nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -424,7 +424,7 @@ func TestARoleVolumeIsMountedUnderTheEnvironmentsName(t *testing.T) {
 }
 
 func TestARoleIsReachableByAppAndRoleOnItsNetwork(t *testing.T) {
-	b, err := serviceSpec("prod", "shop", "api", "web", "shop-prod-api-web", "op", "shop-prod", "image", func(v string) string { return v }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "", "")
+	b, err := serviceSpec("prod", "shop", "api", "web", "shop-prod-api-web", "op", "shop-prod", "image", func(v string) string { return v }, nil, manifest.Role{Health: &manifest.Health{Test: []string{"CMD", "true"}}}, "start-first", "10s", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

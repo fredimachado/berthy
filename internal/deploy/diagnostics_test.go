@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/engine"
@@ -287,7 +288,7 @@ func TestUpdatedRoleThatNeverBecameHealthyRecordsItsHealthLog(t *testing.T) {
 	probe := func(sec int) engine.HealthProbe {
 		return engine.HealthProbe{Start: time.Date(2026, 11, 16, 10, 0, sec, 0, time.UTC), ExitCode: 1, Output: "cannot connect to hunter2-secret@db"}
 	}
-	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
+	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Running: true, Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
 	f.tails = map[string]string{"c-bad": "2026-11-16T10:00:01Z stdout waiting for the database\n"}
 	c, s := diagController(t, f)
 	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
@@ -712,7 +713,7 @@ func TestRecoveryRestoresTheSpecOfAnUpdateThatBerthyWasWatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: json.RawMessage(`{}`)}}); err != nil {
+	if err = s.Finish(ctx, prior.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "web", Digest: "docker.io/example/web@sha256:" + strings.Repeat("a", 64), Manifest: testReleaseManifest(t)}}); err != nil {
 		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "update", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage(`{}`)})
@@ -721,7 +722,7 @@ func TestRecoveryRestoresTheSpecOfAnUpdateThatBerthyWasWatching(t *testing.T) {
 	}
 	before := withDockerDefaults(json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"old"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("a", 64) + `","Labels":{"berthy.operation":"old"}}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"rollback","Order":"start-first"}}`))
 	desired := json.RawMessage(`{"Name":"svc","Labels":{"berthy.operation":"new"},"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/example/web@sha256:` + strings.Repeat("b", 64) + `","Labels":{"berthy.operation":"new"}},"RestartPolicy":{"Condition":"any","Delay":5000000000}},"Mode":{"Replicated":{"Replicas":1}},"UpdateConfig":{"FailureAction":"continue","Order":"start-first"}}`)
-	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
+	if err = s.RecordIntent(ctx, op.ID, state.Intent{Kind: "update", Role: "web", Name: "svc", ServiceID: "id", Generation: "new", Before: before, Desired: desired}); err != nil {
 		t.Fatal(err)
 	}
 	// The agent stopped while the update ran and Berthy was still waiting for the new version: Swarm keeps replacing its
@@ -845,13 +846,17 @@ func TestFailedCompensationRecordsCategoryAndKeepsLock(t *testing.T) {
 
 func TestCompensationReportsPreviousHealthDeadline(t *testing.T) {
 	before := json.RawMessage(`{"Name":"svc","Mode":{"Replicated":{"Replicas":1}},"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"old"}}}}`)
-	c := Controller{Engine: &positiveEngine{spec: before, unhealthy: true}}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
-	defer cancel()
-	err := c.restoreUpdate(ctx, "web", state.Intent{Name: "svc", ServiceID: "id", Before: before})
-	if got := compensationMessages(err); len(got) != 1 || got[0] != "compensation: previous release did not become healthy before the deadline" {
-		t.Fatalf("category %v, error %v", got, err)
-	}
+	s := openStore(t)
+	seedUptimeRelease(t, s, dockerManifest(nil))
+	c := Controller{Engine: &positiveEngine{spec: before, unhealthy: true}, Store: s}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		err := c.restoreUpdate(ctx, "web", state.Intent{Role: "web", Name: "svc", ServiceID: "id", Before: before})
+		if got := compensationMessages(err); len(got) != 1 || got[0] != "compensation: previous release did not become healthy before the deadline" {
+			t.Fatalf("category %v, error %v", got, err)
+		}
+	})
 }
 
 func TestCompensationReportsReplacedService(t *testing.T) {
@@ -864,5 +869,195 @@ func TestCompensationReportsReplacedService(t *testing.T) {
 	}
 	if string(e.spec) != string(live) {
 		t.Fatalf("replaced service was modified: %s", e.spec)
+	}
+}
+
+func TestRolloutFailureOmitsReadyUptimeSibling(t *testing.T) {
+	f := newDiagFake()
+	c, s := diagController(t, f)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "uptime-failure", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.spec, err = json.Marshal(map[string]any{"TaskTemplate": map[string]any{"ContainerSpec": map[string]any{"Labels": map[string]string{"berthy.operation": op.ID}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const threshold = 20 * time.Second
+		ready := runningTask("ready", op.ID)
+		ready.RunningSince = time.Now().Add(-threshold)
+		failed := failedTasks(op.ID, 1)[0]
+		failed.ServiceID = "id"
+		f.tasksFor = func(_, _ string) []engine.ServiceTask { return []engine.ServiceTask{ready, failed} }
+		f.diagnose = exitedContainers(1, "none")
+		f.diagnose[ready.ContainerID] = engine.ContainerDiagnosis{State: "running", Health: "none"}
+		f.tails = map[string]string{ready.ContainerID: "worker running", failed.ContainerID: "worker exited"}
+		work := []roleWork{
+			{intent: state.Intent{Role: "ready", Name: "ready", ServiceID: ready.ServiceID, Uptime: threshold}},
+			{intent: state.Intent{Role: "failed", Name: "failed", ServiceID: failed.ServiceID, Uptime: threshold}},
+		}
+		reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
+		evidence := storedDiagnostics(t, s, op.ID)
+		if reason != "role failed: task exited with code 1" || len(evidence) != 1 || evidence[0].Role != "failed" ||
+			f.callIndex("Diagnose:"+ready.ContainerID) != -1 || f.callIndex("LogTail:"+ready.ContainerID) != -1 {
+			t.Fatalf("reason %q, evidence %+v, calls %v", reason, evidence, f.calls)
+		}
+	})
+}
+
+type interruptedDiagnosticsEngine struct {
+	*boundFake
+	diagnostics *diagFake
+	tasks       map[string][]engine.ServiceTask
+}
+
+func (f *interruptedDiagnosticsEngine) ServiceTasks(_ context.Context, id string) ([]engine.ServiceTask, error) {
+	return f.tasks[id], nil
+}
+func (f *interruptedDiagnosticsEngine) DiagnoseContainer(ctx context.Context, id string) (engine.ContainerDiagnosis, error) {
+	return f.diagnostics.DiagnoseContainer(ctx, id)
+}
+func (f *interruptedDiagnosticsEngine) LogTail(ctx context.Context, id string, lines, maxBytes int) (string, bool, error) {
+	return f.diagnostics.LogTail(ctx, id, lines, maxBytes)
+}
+
+func TestInterruptedRolloutOmitsReadyUptimeSibling(t *testing.T) {
+	s := openStore(t)
+	docker := &interruptedDiagnosticsEngine{boundFake: &boundFake{}, diagnostics: newDiagFake()}
+	c := Controller{Engine: docker, Store: s, Environment: "test"}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "interrupted", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := uptimeManifest("20s", "1m")
+		m.Apps["web"].Roles["worker"] = m.Apps["web"].Roles["web"]
+		req := Request{App: "web", Manifest: m}
+		d := deployRun{opID: op.ID, prepared: preparedPlan{Request: req}}
+		for ordinal, role := range []string{"worker", "web"} {
+			if !c.planRoleWork(ctx, &d, engine.Image{}, nil, ordinal, role) {
+				t.Fatalf("plan %s: %s", role, d.outcome.Err)
+			}
+			intent := d.work[ordinal].intent
+			if err := s.RecordIntent(ctx, op.ID, intent); err != nil {
+				t.Fatal(err)
+			}
+			docker.add(role, intent.Desired)
+			receipt := json.RawMessage(fmt.Sprintf(`{"id":%q,"spec":%s}`, role, intent.Desired))
+			phase := "observed"
+			if role == "worker" {
+				phase = "verified"
+			}
+			if err := s.MarkStep(ctx, op.ID, ordinal, phase, receipt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		worker := runningTask("worker", op.ID)
+		worker.RunningSince = time.Now().Add(-20 * time.Second)
+		failed := failedTasks(op.ID, 1)[0]
+		docker.tasks = map[string][]engine.ServiceTask{
+			"worker": onService("worker", worker),
+			"web":    onService("web", failed),
+		}
+		logs := docker.diagnostics
+		logs.diagnose = exitedContainers(1, "none")
+		logs.diagnose[worker.ContainerID] = engine.ContainerDiagnosis{State: "running", Health: "none"}
+		logs.tails = map[string]string{worker.ContainerID: "worker running", failed.ContainerID: "failed sibling output"}
+
+		if err := c.Recover(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Operation(ctx, op.ID)
+		evidence := storedDiagnostics(t, s, op.ID)
+		if err != nil || got.State != "interrupted" || got.Reason != "role web: task exited with code 1" ||
+			len(evidence) != 1 || evidence[0].Role != "web" || evidence[0].Logs != "failed sibling output" ||
+			logs.callIndex("LogTail:"+failed.ContainerID) < 0 || logs.callIndex("LogTail:"+worker.ContainerID) >= 0 {
+			t.Fatalf("recovery %s reason %q (%v), evidence %+v, calls %v", got.State, got.Reason, err, evidence, logs.calls)
+		}
+	})
+}
+
+func TestRolloutDiagnosticsKeepExitedContainerWithRetainedHealth(t *testing.T) {
+	f := newDiagFake()
+	c, s := diagController(t, f)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "retained-health", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.spec = json.RawMessage(fmt.Sprintf(`{"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":%q}}}}`, op.ID))
+		task := runningTask("web", op.ID)
+		f.tasksFor = func(_, _ string) []engine.ServiceTask { return onService("id", task) }
+		f.diagnose = map[string]engine.ContainerDiagnosis{task.ContainerID: {State: "exited", Health: "healthy", ExitCode: 1}}
+		f.tails = map[string]string{task.ContainerID: "exited after passing its check"}
+
+		work := []roleWork{{intent: state.Intent{Role: "web", Name: "web", ServiceID: "id"}}}
+		reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
+		evidence := storedDiagnostics(t, s, op.ID)
+		if reason != "role web: task exited with code 1" || len(evidence) != 1 || evidence[0].Logs != f.tails[task.ContainerID] ||
+			evidence[0].ExitCode == nil || *evidence[0].ExitCode != 1 {
+			t.Fatalf("reason %q, evidence %+v, calls %v", reason, evidence, f.calls)
+		}
+	})
+}
+
+func TestRolloutFailureKeepsHistoryWithoutBlamingRecoveredRole(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		slot   uint64
+		gaveUp *errStartAttempts
+		want   string
+	}{
+		{"full coverage", 7, nil, "role web: task exited with code 1"},
+		{"only one distinct slot", 2, nil, "role worker: task exited with code 1; role web: task exited with code 1"},
+		{"attempts exhausted with full coverage", 7, &errStartAttempts{Role: "worker", Failed: 1, Limit: 1},
+			"role worker: task exited with code 1 (gave up after 1 failed starts); role web: task exited with code 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDiagFake()
+			c, s := diagController(t, f)
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				op, _, err := s.Admit(ctx, state.Admission{RequestID: "recovered", ActorID: "admin", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.spec = json.RawMessage(fmt.Sprintf(`{"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":%q}}}}`, op.ID))
+				const threshold = 20 * time.Second
+				first, second := runningTask("replacement", op.ID), runningTask("second", op.ID)
+				first.Slot, second.Slot = 2, tc.slot
+				first.RunningSince = time.Now().Add(-threshold)
+				second.RunningSince = first.RunningSince
+				exits := failedTasks(op.ID, 2)
+				exits[0].Slot = first.Slot
+				f.tasksFor = func(_, _ string) []engine.ServiceTask {
+					return append(onService("worker", first, second, exits[0]), onService("web", exits[1])...)
+				}
+				f.diagnose = exitedContainers(2, "none")
+				f.tails = map[string]string{"c1": "worker's earlier exit", "c2": "failing sibling output"}
+				work := []roleWork{
+					{intent: state.Intent{Role: "worker", Name: "worker", ServiceID: "worker", Uptime: threshold, Desired: json.RawMessage(`{"Mode":{"Replicated":{"Replicas":2}}}`)}, replicas: 2},
+					{intent: state.Intent{Role: "web", Name: "web", ServiceID: "web", Uptime: threshold, Desired: json.RawMessage(`{"Mode":{"Replicated":{"Replicas":1}}}`)}, replicas: 1},
+				}
+
+				fallback := "rollout failed"
+				if tc.gaveUp != nil {
+					fallback = rolloutFallback(tc.gaveUp)
+				}
+				reason := c.recordRolloutFailure(ctx, op.ID, work, fallback, tc.gaveUp)
+				evidence := storedDiagnostics(t, s, op.ID)
+				if len(evidence) != 2 || evidence[0].Role != "worker" || evidence[0].Logs != f.tails["c1"] ||
+					evidence[0].ExitCode == nil || *evidence[0].ExitCode != 1 || evidence[1].Role != "web" || evidence[1].Logs != f.tails["c2"] {
+					t.Fatalf("missing exit evidence: %+v", evidence)
+				}
+				if reason != tc.want {
+					t.Fatalf("reason %q, want %q", reason, tc.want)
+				}
+			})
+		})
 	}
 }
