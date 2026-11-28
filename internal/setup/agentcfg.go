@@ -198,13 +198,11 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	var local []byte
-	if s.Opts.KeyFile != "" {
-		if local, err = readKeyFile(s.Opts.KeyFile); err != nil {
-			return "", "", err
-		}
-		defer clear(local)
+	if s.suppliedKeyErr != nil {
+		return "", "", s.suppliedKeyErr
 	}
+	local := s.suppliedKey
+	defer func() { clear(s.suppliedKey); s.suppliedKey = nil }()
 	if pf.KeyExists {
 		if !strings.HasPrefix(pf.KeyStat, "32 ") {
 			return "", "", fmt.Errorf("%s is not 32 bytes; setup does not replace a key", keyPath)

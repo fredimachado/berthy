@@ -52,9 +52,9 @@ expect_contains "server starts on v9.1.0" "$server_ver" "berthy v9.1.0"
 out=$("$CLI900" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:7710" --manifest-dir "$RUN/no-downgrade-empty" --config "$cfg" --json 2>"$private/older.stderr"); code=$?
 expect_code "older CLI refuses to downgrade" 1 "$code"
 if [ "$code" -ne 1 ]; then setup_failure "$private/older.stderr"; fi
-expect_contains "binary step names the newer agent" "$out" "the server runs berthy v9.1.0, newer than this CLI (v9.0.0): upgrade this CLI, or pass --binary to install another build"
-if ! jq -e '[.steps[] | select(.step == "binary" and .status == "failed")] | length == 1' <<<"$out" >/dev/null; then
-  fail "binary step failed" "missing failed binary step"
+expect_contains "check step names the newer agent" "$out" "the server runs berthy v9.1.0, newer than this CLI (v9.0.0): upgrade this CLI, or pass --binary to install another build"
+if ! jq -e '[.steps[] | select(.step == "check" and .status == "failed")] | length == 1' <<<"$out" >/dev/null; then
+  fail "check step failed" "missing failed check step"
   setup_failure "$private/older.stderr"
 fi
 unset out

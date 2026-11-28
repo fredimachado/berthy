@@ -69,6 +69,8 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 	}
 	s.stdins = append(s.stdins, in)
 	switch {
+	case strings.Contains(script, "# setup listen port"):
+		return setup.Result{Stdout: []byte("free\n")}, nil
 	case strings.Contains(script, "# key copy"):
 		if s.keyAnswer != nil {
 			return s.keyAnswer(ctx, in)

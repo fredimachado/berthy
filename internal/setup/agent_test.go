@@ -66,6 +66,8 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	f.calls = append(f.calls, call{script, in})
 	hash := func(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 	switch {
+	case strings.Contains(script, "# setup listen port"):
+		return Result{Stdout: []byte("free\n")}, nil
 	case strings.Contains(script, "# key copy"):
 		if f.keyAnswer != nil {
 			return f.keyAnswer(ctx, in)
@@ -673,7 +675,11 @@ func TestKeyStep(t *testing.T) {
 			})
 			var got []StepResult
 			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"key", keyStep}}, func(r StepResult) { got = append(got, r) })
-			r := stepOf(t, got, "key")
+			step := "key"
+			if tc.name == "key-file of the wrong size" {
+				step = "check"
+			}
+			r := stepOf(t, got, step)
 			if r.Status != tc.status || (tc.err != "" && r.Detail != tc.err) {
 				t.Fatalf("key = %+v", r)
 			}
@@ -1082,7 +1088,11 @@ func TestBinaryStep(t *testing.T) {
 			s := agentSession(t, f, x86, false, tc.opts)
 			var got []StepResult
 			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
-			r := stepOf(t, got, "binary")
+			step := "binary"
+			if tc.status == StatusFailed {
+				step = "check"
+			}
+			r := stepOf(t, got, step)
 			if r.Status != tc.status || !strings.HasPrefix(r.Detail, tc.detail) {
 				t.Fatalf("binary = %+v", r)
 			}
@@ -1131,7 +1141,11 @@ func TestBinaryStep(t *testing.T) {
 			})
 			var got []StepResult
 			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
-			r := stepOf(t, got, "binary")
+			step := "check"
+			if dry {
+				step = "binary"
+			}
+			r := stepOf(t, got, step)
 			if r.Status != StatusFailed || !strings.Contains(r.Detail, "ssh: connection lost") {
 				t.Fatalf("binary = %+v", r)
 			}
@@ -1157,7 +1171,11 @@ func TestBinaryStep(t *testing.T) {
 			})
 			var got []StepResult
 			Run(context.Background(), s, []Step{{"connect", connectStep}, {"check", checkStep}, {"binary", binaryStep}}, func(r StepResult) { got = append(got, r) })
-			r := stepOf(t, got, "binary")
+			step := "check"
+			if dry {
+				step = "binary"
+			}
+			r := stepOf(t, got, step)
 			if r.Status != StatusFailed || !strings.Contains(r.Detail, "reading the agent version") {
 				t.Fatalf("binary = %+v", r)
 			}
@@ -1179,7 +1197,7 @@ func TestReleaseDownloadChecksTheChecksum(t *testing.T) {
 		o.Build = Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true}
 	})
 	runSteps(s)
-	c, ok := f.find("checksums.txt")
+	c, ok := f.find("sha256sum -c")
 	if !ok {
 		t.Fatal("no download script")
 	}

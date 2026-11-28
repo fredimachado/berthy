@@ -188,9 +188,9 @@ You need:
 berthy setup -e prod --host ops@10.0.0.5 --listen 10.0.0.5:7710 --dry-run
 ```
 
-`--dry-run` connects and runs every check. It prints what would change and changes nothing on the server: no package, no service, no setting, no temporary file. A step that would change something reports `would_change`. The last line says how many steps would change.
+`--dry-run` connects and reports the planned changes. It changes nothing on the server: no package, no service, no setting, no temporary file. Live setup checks release availability when it needs a download and checks whether the listen address is occupied when it needs that address, both before provisioning. A step that would change something reports `would_change`. The last line says how many steps would change.
 
-To see the commands behind each step, add `--verbose`. Setup prints the commands it runs on standard error, each with its exit status, and in a dry run it also prints the commands a real run would send for each step that would change something, marked `not run: dry run`. The token and the encryption key never appear in that output.
+To see the commands behind each step, add `--verbose`. Setup prints the commands it runs on standard error, each with its exit status, and in a dry run it also prints the commands a real run would send for each step that would change something, marked `not run: dry run`. The preview also lists the applicable release availability and listen address probes with that marker. The token and the encryption key never appear in that output.
 
 #### Run it
 
@@ -215,7 +215,7 @@ The steps run in this order. Each one checks first and only acts when something 
 | Step | What it does |
 | --- | --- |
 | `connect` | Connects over SSH, or locally, and finds out whether it is root or can `sudo`. |
-| `check` | Linux with systemd, a supported CPU, and `--listen` is an address assigned to this server. The desired configuration must not conflict with another hosted environment. |
+| `check` | Confirms Linux with systemd, a supported CPU and an assigned listen address, and checks the desired configuration for conflicts. Before provisioning, live setup also refuses an unusable binary source, an unavailable required release, an invalid supplied key or an occupied listen address. |
 | `docker` | Confirms Docker Engine is installed (version 25 or newer), enabled at boot and running. Installs it with Docker's official script when it is missing (unless `--no-install-docker`), and starts it when it is stopped. A Docker you did not install is never upgraded or reconfigured. |
 | `swarm` | Turns on Swarm with your private address as the advertise address, with the management port on that address only. A server that already is a manager keeps its Swarm. A worker in another Swarm stops the run. |
 | `network` | Creates the attachable overlay network for this hosted environment (`todo-prod` by default, or the name in the manifest), unless it exists. An existing network that is not an attachable overlay stops the run. |

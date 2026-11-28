@@ -161,18 +161,18 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// binaryStep puts the agent binary this CLI wants next to the live one, as berthy.new, and checks its SHA-256. The service
-// step swaps it in. A server that already has that binary is left alone.
-func binaryStep(ctx context.Context, s *Session) (string, string, error) {
-	f, err := s.facts(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	arch := goArch(f.Arch)
+type binaryPlan struct {
+	src       *binarySource
+	installed bool
+	script    string
+}
+
+func (s *Session) prepareBinary(ctx context.Context, f *Facts, arch string) (binaryPlan, error) {
 	src, err := s.source(arch)
 	if err != nil {
-		return "", "", err
+		return binaryPlan{}, err
 	}
+	plan := binaryPlan{src: src}
 	if f.BinSHA != "" {
 		same := false
 		if src.local != "" {
@@ -180,48 +180,98 @@ func binaryStep(ctx context.Context, s *Session) (string, string, error) {
 		} else {
 			server, err := s.serverVersion(ctx)
 			if err != nil {
-				return "", "", err
+				return plan, err
 			}
 			same = server == src.version
 		}
 		if same {
-			return StatusOK, installedText(src), nil
+			plan.installed = true
+			return plan, nil
 		}
-		// --binary has no version and stays the explicit override; a non-release
-		// (dev) version on either side leaves Compare ok=false and skips this.
 		if src.version != "" {
 			server, err := s.serverVersion(ctx)
 			if err != nil {
-				return "", "", err
+				return plan, err
 			}
 			if c, ok := version.Compare(server, src.version); ok && c > 0 {
-				return "", "", fmt.Errorf("the server runs berthy %s, newer than this CLI (%s): upgrade this CLI, or pass --binary to install another build", server, src.version)
+				return plan, fmt.Errorf("the server runs berthy %s, newer than this CLI (%s): upgrade this CLI, or pass --binary to install another build", server, src.version)
 			}
 		}
+	}
+	if src.local != "" {
+		plan.script = uploadScript()
+		return plan, nil
+	}
+	fetch, err := fetchTool(f)
+	if err != nil {
+		if s.DryRun {
+			return plan, nil
+		}
+		return plan, err
+	}
+	asset := "berthy-linux-" + arch
+	if err := s.checkRelease(ctx, src, asset, fetch); err != nil {
+		return plan, err
+	}
+	plan.script = downloadScript(src.url, asset, fetch)
+	return plan, nil
+}
+
+func (s *Session) checkRelease(ctx context.Context, src *binarySource, asset, fetch string) error {
+	for _, name := range []string{asset, "checksums.txt"} {
+		url := shellQuote(src.url + "/" + name)
+		script := "curl -fsSLI " + url + " >/dev/null 2>&1"
+		if fetch == "wget" {
+			script = "wget --no-hsts -q --spider " + url + " >/dev/null 2>&1"
+		}
+		if s.DryRun {
+			s.Log.Would(script)
+			continue
+		}
+		res, err := s.R.Run(ctx, script, nil)
+		if err != nil {
+			return fmt.Errorf("checking release %s asset %s: %w", src.version, name, err)
+		}
+		if res.Code != 0 {
+			return fmt.Errorf("cannot fetch release %s asset %s", src.version, name)
+		}
+	}
+	return nil
+}
+
+// binaryStep stages the prepared binary for activation.
+func binaryStep(ctx context.Context, s *Session) (string, string, error) {
+	if s.binaryErr != nil {
+		return "", "", s.binaryErr
+	}
+	f, err := s.facts(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	plan := s.binary
+	src := plan.src
+	if plan.installed {
+		return StatusOK, installedText(src), nil
 	}
 	verb := "install"
 	if f.BinSHA != "" {
 		verb = "replace the agent binary with"
 	}
-	script, cmdErr := binaryScript(f, src, arch)
 	if s.DryRun {
 		s.staged.Binary = true
-		if cmdErr == nil {
-			s.Log.Would(script)
+		if plan.script != "" {
+			s.Log.Would(plan.script)
 		}
 		return StatusWouldChange, "would " + verb + " " + src.desc, nil
 	}
-	if cmdErr != nil {
-		return "", "", cmdErr
-	}
 	var detail string
 	if src.local != "" {
-		if err := uploadBinary(ctx, s, src, script); err != nil {
+		if err := uploadBinary(ctx, s, src, plan.script); err != nil {
 			return "", "", err
 		}
 		detail = "uploaded " + src.desc + ", sha256 " + shortSHA(src.sha)
 	} else {
-		if err := downloadBinary(ctx, s, src, script); err != nil {
+		if err := downloadBinary(ctx, s, src, plan.script); err != nil {
 			return "", "", err
 		}
 		detail = "downloaded " + src.desc + " and verified its checksum"
@@ -254,19 +304,6 @@ func fetchTool(f *Facts) (string, error) {
 		return "wget", nil
 	}
 	return "", errors.New("neither curl nor wget is available on the server to download the release: pass --binary")
-}
-
-// binaryScript is the script that puts the agent binary of src next to the live one: the upload, or the download of a release.
-// It fails when the server cannot download a release.
-func binaryScript(f *Facts, src *binarySource, arch string) (string, error) {
-	if src.local != "" {
-		return uploadScript(), nil
-	}
-	fetch, err := fetchTool(f)
-	if err != nil {
-		return "", err
-	}
-	return downloadScript(src.url, "berthy-linux-"+arch, fetch), nil
 }
 
 // uploadBinary streams the local file through the runner's standard input into berthy.new, and compares its SHA-256 with the
