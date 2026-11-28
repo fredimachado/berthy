@@ -278,7 +278,7 @@ func (w *Monitoring) manifestChecks(ctx context.Context, m manifest.Manifest) ([
 		alerts := *m.Alerts
 		for _, ch := range alertChannels(ctx, w.cfg, w.store, alerts) {
 			out = append(out, monitor.AlertSecretCheck(ch.name, func(ctx context.Context) (bool, string) {
-				return alertChannelStatus(ctx, w.cfg, w.store, alerts, ch.name)
+				return alertChannelStatus(alertChannels(ctx, w.cfg, w.store, alerts), ch.name)
 			}))
 		}
 	}
@@ -596,7 +596,7 @@ func monitoringChecks(ctx context.Context, c Config, s *state.Store, e *engine.E
 	wg.Wait()
 	if m.Alerts != nil {
 		for _, ch := range alertChannels(ctx, c, s, *m.Alerts) {
-			ok, detail := alertChannelStatus(ctx, c, s, *m.Alerts, ch.name)
+			ok, detail := alertChannelStatus(alertChannels(ctx, c, s, *m.Alerts), ch.name)
 			out = append(out, api.Check{Name: ch.name, OK: ok, Detail: detail})
 		}
 	}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,9 +61,8 @@ func (c *Cluster) ChannelChecks(ctx context.Context) []api.Check {
 	if c.alerts == nil || c.alerts.Telegram == nil && c.alerts.Webhook == nil {
 		return []api.Check{{Name: "cluster_alerts", Detail: "no cluster alert channel: host problems alert nobody; run berthy setup --cluster-alerts FILE"}}
 	}
-	alerts := c.alerts.manifestAlerts()
 	checks := make([]api.Check, 0, 2)
-	for _, channel := range alertChannels(ctx, c.alertConfig, c.store, alerts) {
+	for _, channel := range c.publicAlertChannels(ctx) {
 		detail := channel.okDetail
 		if channel.err != nil {
 			detail = channel.err.Error()
@@ -70,6 +70,18 @@ func (c *Cluster) ChannelChecks(ctx context.Context) []api.Check {
 		checks = append(checks, api.Check{Name: "cluster_" + channel.name, OK: channel.err == nil, Detail: detail})
 	}
 	return checks
+}
+
+// publicAlertChannels keeps server credential names out of the environment's read API and monitor detail.
+func (c *Cluster) publicAlertChannels(ctx context.Context) []alertChannel {
+	channels := alertChannels(ctx, c.alertConfig, c.store, c.alerts.manifestAlerts())
+	for i := range channels {
+		var named namedAlertCredentialError
+		if errors.As(channels[i].err, &named) {
+			channels[i].err = errors.New(named.public)
+		}
+	}
+	return channels
 }
 
 type clusterCheckRow struct {
@@ -137,10 +149,9 @@ func (c *Cluster) checks(ctx context.Context) []monitor.Check {
 	out = append(out, monitor.MemoryCheck(samples))
 	out = append(out, hostChecks(c.shared.Engine, c.alertConfig.Listen)...)
 	if c.alerts != nil {
-		alerts := c.alerts.manifestAlerts()
-		for _, channel := range alertChannels(ctx, c.alertConfig, c.store, alerts) {
+		for _, channel := range c.publicAlertChannels(ctx) {
 			out = append(out, monitor.AlertSecretCheck(channel.name, func(ctx context.Context) (bool, string) {
-				return alertChannelStatus(ctx, c.alertConfig, c.store, alerts, channel.name)
+				return alertChannelStatus(c.publicAlertChannels(ctx), channel.name)
 			}))
 		}
 	}

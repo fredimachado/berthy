@@ -11,10 +11,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/api"
 	"berthy/internal/manifest"
+	"berthy/internal/monitor"
 	"berthy/internal/scope"
 	"berthy/internal/state"
 )
@@ -108,6 +110,57 @@ func TestClusterCheckRowsDistinguishHostAndChannel(t *testing.T) {
 	var ordinary []map[string]any
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &ordinary) != nil || len(ordinary) != 1 || ordinary[0]["name"] != "probe:env" {
 		t.Errorf("environment checks: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestClusterReadPathsHideMalformedCredentialNames(t *testing.T) {
+	const urlName, headersName = "SERVER_PRIVATE_URL", "SERVER_PRIVATE_HEADERS"
+	for _, tc := range []struct {
+		name, url, headers, detail string
+	}{
+		{"url", "bad-fixture-url", "X-Test=value", "webhook url secret is not an http or https URL"},
+		{"headers", "http://fixture.example.test", "bad-fixture-headers", "webhook headers secret is malformed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				_, f, ids, readers := clusterRouteFile(t)
+				f.Cluster.Alerts = &ClusterAlerts{Webhook: &manifest.Webhook{URLSecret: urlName, HeadersSecret: headersName}}
+				h := openClusterRouteHost(t, Shared{}, f)
+				ctx := context.Background()
+				for name, value := range map[string]string{urlName: tc.url, headersName: tc.headers} {
+					if err := h.cluster.store.PutSecret(ctx, state.Actor{ID: "setup"}, state.SecretInfo{Name: name}, []byte(value)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				h.cluster.Start(ctx)
+				synctest.Wait()
+				for i, id := range ids {
+					doctor := serve(h, "GET", id.APIPath()+"doctor", readers[i], "")
+					var diagnosis struct{ Checks []api.Check }
+					if doctor.Code != 200 || json.Unmarshal(doctor.Body.Bytes(), &diagnosis) != nil {
+						t.Fatalf("doctor: %d %s", doctor.Code, doctor.Body.String())
+					}
+					check, found := findCheck(diagnosis.Checks, "cluster_webhook")
+					if !found || check.OK || check.Critical || check.Detail != tc.detail {
+						t.Errorf("doctor webhook = %+v, want noncritical %q", check, tc.detail)
+					}
+					reply := serve(h, "GET", id.APIPath()+"cluster/checks", readers[i], "")
+					var rows []clusterCheckRow
+					if reply.Code != 200 || json.Unmarshal(reply.Body.Bytes(), &rows) != nil {
+						t.Fatalf("cluster checks: %d %s", reply.Code, reply.Body.String())
+					}
+					var webhook clusterCheckRow
+					for _, row := range rows {
+						if row.Name == "webhook" {
+							webhook = row
+						}
+					}
+					if webhook.State != monitor.Warning || webhook.Detail != tc.detail {
+						t.Errorf("persisted webhook = %+v, want warning %q", webhook, tc.detail)
+					}
+				}
+			})
+		})
 	}
 }
 

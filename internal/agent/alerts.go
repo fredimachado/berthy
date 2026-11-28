@@ -70,8 +70,8 @@ func alertNotifiers(ctx context.Context, c Config, s *state.Store, a manifest.Al
 }
 
 // alertChannelStatus tells the doctor and the monitor whether the channel's secrets are usable, with the detail to show.
-func alertChannelStatus(ctx context.Context, c Config, s *state.Store, a manifest.Alerts, name string) (bool, string) {
-	for _, ch := range alertChannels(ctx, c, s, a) {
+func alertChannelStatus(channels []alertChannel, name string) (bool, string) {
+	for _, ch := range channels {
 		if ch.name != name {
 			continue
 		}
@@ -82,6 +82,14 @@ func alertChannelStatus(ctx context.Context, c Config, s *state.Store, a manifes
 	}
 	return false, "not configured"
 }
+
+// namedAlertCredentialError carries a fixed diagnostic for readers outside the credential's scope.
+type namedAlertCredentialError struct {
+	error
+	public string
+}
+
+func (e namedAlertCredentialError) Unwrap() error { return e.error }
 
 // brokenChannel is a channel whose secrets cannot be used. Every delivery fails with the reason.
 type brokenChannel struct {
@@ -111,7 +119,10 @@ func urlSecret(ctx context.Context, s *state.Store, channel, name string) (strin
 		return "", fmt.Errorf("%s url secret missing", channel)
 	}
 	if u, err := url.Parse(string(raw)); err != nil || u.Hostname() == "" || u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("%s url secret %s is not an http or https URL", channel, name)
+		return "", namedAlertCredentialError{
+			error:  fmt.Errorf("%s url secret %s is not an http or https URL", channel, name),
+			public: channel + " url secret is not an http or https URL",
+		}
 	}
 	return string(raw), nil
 }
@@ -140,7 +151,10 @@ func webhookOf(ctx context.Context, c Config, s *state.Store, w manifest.Webhook
 		}
 		headers, err := telemetry.ParseHeaders(string(value))
 		if err != nil {
-			return nil, fmt.Errorf("webhook headers secret %s is malformed: %w", w.HeadersSecret, err)
+			return nil, namedAlertCredentialError{
+				error:  fmt.Errorf("webhook headers secret %s is malformed: %w", w.HeadersSecret, err),
+				public: "webhook headers secret is malformed",
+			}
 		}
 		out.Headers = headers
 	}
