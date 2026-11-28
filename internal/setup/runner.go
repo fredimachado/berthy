@@ -11,6 +11,7 @@ import (
 	"io"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -211,36 +212,37 @@ type Login struct {
 	Sudo bool
 }
 
-// Connect probes the login: it finds out which account the runner connects as and whether that is root. Any other account
-// must be able to run sudo without a password. When it can, sudo is applied to every script that follows.
+const loginScript = `uid=$(id -u) || exit 1
+user=$(id -un) || exit 1
+if [ "$uid" != 0 ]; then
+    sudo -n true || exit 10
+fi
+printf '%s\n%s\n' "$uid" "$user"
+`
+
+// Connect selects whether subsequent scripts require sudo after one login probe.
 func Connect(ctx context.Context, r Runner) (Login, error) {
-	res, err := r.Run(ctx, "id -u; id -un", nil)
+	res, err := r.Run(ctx, loginScript, nil)
 	if err != nil {
 		return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
+	}
+	if res.Code == 10 {
+		return Login{}, errors.New("the account must be root or able to run sudo without a password")
 	}
 	if res.Code != 0 {
 		return Login{}, fmt.Errorf("could not run commands on %s: %s", r.Target(), failureText(res))
 	}
-	words := strings.Fields(string(res.Stdout))
-	if len(words) < 1 {
+	lines := strings.Split(strings.TrimSuffix(string(res.Stdout), "\n"), "\n")
+	if len(lines) != 2 || lines[0] == "" || strings.Trim(lines[0], "0123456789") != "" || lines[1] == "" || len(strings.Fields(lines[1])) != 1 || strings.Fields(lines[1])[0] != lines[1] || clean(lines[1]) != lines[1] {
 		return Login{}, fmt.Errorf("could not tell which account runs on %s", r.Target())
 	}
-	login := Login{User: "root"}
-	if len(words) > 1 {
-		login.User = clean(words[1])
+	uid, err := strconv.ParseUint(lines[0], 10, 64)
+	if err != nil {
+		return Login{}, fmt.Errorf("could not tell which account runs on %s", r.Target())
 	}
-	if words[0] != "0" {
-		res, err = r.Run(ctx, "sudo -n true", nil)
-		if err != nil {
-			return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
-		}
-		if res.Code != 0 {
-			return Login{}, errors.New("the account must be root or able to run sudo without a password")
-		}
-		login.Sudo = true
-	}
-	if s, ok := r.(SudoSetter); ok {
-		s.SetSudo(login.Sudo)
+	login := Login{User: lines[1], Sudo: uid != 0}
+	if setter, ok := r.(SudoSetter); ok {
+		setter.SetSudo(login.Sudo)
 	}
 	return login, nil
 }

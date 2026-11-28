@@ -65,7 +65,7 @@ func (r *removalRunner) Run(_ context.Context, script string, stdin io.Reader) (
 		return b
 	}
 	switch {
-	case script == "id -u; id -un":
+	case script == loginScript:
 		return result("0\nroot\n")
 	case strings.HasPrefix(script, "# inspect removal configuration\n"):
 		return result("present\n")

@@ -74,7 +74,7 @@ func (s *setupServer) Run(ctx context.Context, script string, stdin io.Reader) (
 		}
 		answer, err := keywrap.Wrap(in, s.key)
 		return setup.Result{Stdout: answer}, err
-	case script == "id -u; id -un":
+	case strings.Contains(script, "uid=$(id -u)"):
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
 		out := s.nextProbe()

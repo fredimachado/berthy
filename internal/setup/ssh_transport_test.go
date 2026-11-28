@@ -82,6 +82,22 @@ func TestSudoProbeConnectionFailure(t *testing.T) {
 	}
 }
 
+func TestRootLoginNeverExecutesSudo(t *testing.T) {
+	dir, tools := shellFixture(t)
+	shellTool(t, tools, "id", `case "$1" in -u) echo 0;; -un) echo root;; *) exit 1;; esac`)
+	shellTool(t, tools, "sudo", `echo called > "$SUDO_MARKER"; exit 1`)
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SUDO_MARKER", filepath.Join(dir, "sudo-called"))
+	r := fakeSSH(t, `for arg do last=$arg; done; exec /bin/sh -c "$last"`)
+	login, err := Connect(context.Background(), r)
+	if err != nil || login.User != "root" || login.Sudo || r.sudo {
+		t.Fatalf("login=%+v err=%v", login, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sudo-called")); !os.IsNotExist(err) {
+		t.Fatalf("sudo executed or stat failed: %v", err)
+	}
+}
+
 func TestRestartConnectionFailureLeavesRecoveryToServer(t *testing.T) {
 	for _, staged := range []Staged{{Config: true}, {}} {
 		t.Run(map[bool]string{true: "armed", false: "unarmed"}[staged.Config], func(t *testing.T) {

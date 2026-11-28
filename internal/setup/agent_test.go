@@ -72,7 +72,7 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 		}
 		answer, err := keywrap.Wrap(in, f.key)
 		return Result{Stdout: answer}, err
-	case script == "id -u; id -un":
+	case script == loginScript:
 		return Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
 		out := strings.Join(f.probe, "\n")
@@ -534,7 +534,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 		t.Errorf("key detail = %q", d)
 	}
 	for _, sc := range f.scripts() {
-		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
+		if sc != loginScript && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			t.Errorf("a dry run sent %q", sc)
 		}
 	}

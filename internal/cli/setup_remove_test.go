@@ -64,7 +64,7 @@ func (r *setupRemovalFixture) Run(_ context.Context, script string, stdin io.Rea
 		return b
 	}
 	switch {
-	case script == "id -u; id -un":
+	case strings.Contains(script, "uid=$(id -u)"):
 		return answer("0\nroot\n")
 	case strings.HasPrefix(script, "# inspect removal configuration\n"):
 		return answer("present\n")
