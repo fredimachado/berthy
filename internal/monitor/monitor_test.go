@@ -45,6 +45,7 @@ type scripted struct {
 func (c *scripted) Name() string            { return c.name }
 func (c *scripted) Interval() time.Duration { return c.interval }
 func (c *scripted) Failures() int           { return c.failures }
+func (c *scripted) Successes() int          { return 1 }
 func (c *scripted) set(st, detail string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

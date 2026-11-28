@@ -1,7 +1,7 @@
 // Package monitor runs the agent's health checks on their intervals and records what they find. A check reports ok,
 // warning, critical or unknown. The stored state of a check changes only after it has reported a non-ok result the
-// configured number of times in a row, and an ok result recovers it at once. An alert goes out when the stored state
-// changes, with reminders while a check keeps failing. Unknown never alerts.
+// configured number of times in a row. A failing state recovers after the check's configured number of consecutive ok
+// results. An alert goes out when the stored state changes, with reminders while a check keeps failing. Unknown never alerts.
 package monitor
 
 import (
@@ -55,6 +55,8 @@ type Check interface {
 	Interval() time.Duration
 	// Failures is how many non-ok results in a row change the stored state. Unknown results count too, but never alert.
 	Failures() int
+	// Successes is how many consecutive ok results recover a warning or critical state.
+	Successes() int
 	Run(ctx context.Context) Result
 }
 
@@ -189,6 +191,7 @@ type tracker struct {
 	cur      state.CheckState
 	dirty    bool // cur has changed and has not been stored yet
 	streak   int  // non-ok results in a row
+	okStreak int  // consecutive ok results while warning or critical
 	running  bool
 	last     time.Time // when the last run started
 	failedAt time.Time // when the last alert attempt failed; zero after one succeeds
@@ -380,8 +383,8 @@ func (m *Monitor) execute(ctx context.Context, c Check) (res Result) {
 
 // apply moves the stored state of t toward the result. It reports false when t was removed while its check ran.
 //
-// An ok result sets the state at once. Any other result, unknown included, counts toward a streak, and the state takes
-// the result's state once the streak reaches the check's failure limit. Before that the state stays as it was.
+// A warning or critical state recovers after the check's success limit; other states become ok at once. Any non-ok
+// result, unknown included, counts toward the failure limit. Before either limit the state stays as it was.
 func (m *Monitor) apply(ctx context.Context, t *tracker, res Result, now time.Time) bool {
 	res = normalize(res)
 	m.mu.Lock()
@@ -394,8 +397,15 @@ func (m *Monitor) apply(ctx context.Context, t *tracker, res Result, now time.Ti
 	next.Name = t.name
 	if res.State == OK {
 		t.streak = 0
-		next.State = OK
+		if prev.State == Warning || prev.State == Critical {
+			t.okStreak++
+		}
+		if (prev.State != Warning && prev.State != Critical) || t.okStreak >= t.check.Successes() {
+			next.State = OK
+			t.okStreak = 0
+		}
 	} else {
+		t.okStreak = 0
 		t.streak++
 		if t.streak >= t.check.Failures() {
 			next.State = res.State

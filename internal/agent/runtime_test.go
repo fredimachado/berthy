@@ -125,6 +125,7 @@ type runtimeCheck struct{}
 func (runtimeCheck) Name() string            { return "runtime-test" }
 func (runtimeCheck) Interval() time.Duration { return time.Hour }
 func (runtimeCheck) Failures() int           { return 1 }
+func (runtimeCheck) Successes() int          { return 1 }
 func (runtimeCheck) Run(context.Context) monitor.Result {
 	return monitor.Result{State: monitor.Warning}
 }

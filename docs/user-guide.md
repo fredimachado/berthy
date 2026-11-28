@@ -1967,7 +1967,7 @@ Berthy checks three kinds of things.
 | **Probe** | An HTTP, TCP or service check the agent runs on a schedule. | Alert. |
 | **Built-in condition** | Disk space, Docker disk, memory, restart loops, apps that are down, overdue backups, silent peers, an unhealthy tunnel, a credential that is refused or about to expire. | Alert. |
 
-A check changes state after it fails the configured number of times in a row. One success recovers it at once. Unknown results never alert.
+A check changes state after it fails the configured number of times in a row. Disk, Docker disk, and memory checks recover after ten consecutive passing checks, normally about five minutes. One success recovers other checks at once. Unknown results never alert.
 
 #### Probes
 

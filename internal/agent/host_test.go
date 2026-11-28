@@ -528,6 +528,7 @@ type hostCheck struct{}
 func (hostCheck) Name() string            { return "host-test" }
 func (hostCheck) Interval() time.Duration { return time.Hour }
 func (hostCheck) Failures() int           { return 1 }
+func (hostCheck) Successes() int          { return 1 }
 func (hostCheck) Run(context.Context) monitor.Result {
 	return monitor.Result{State: monitor.Warning}
 }
