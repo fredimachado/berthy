@@ -60,13 +60,9 @@ func TestConfirmDeployTerminal(t *testing.T) {
 				if n, err := unix.Poll(fds, 0); err != nil || n != 1 || fds[0].Revents&unix.POLLIN == 0 {
 					t.Fatalf("next line unavailable: n=%d events=%v err=%v", n, fds[0].Revents, err)
 				}
-				fd := int(tty.Fd())
-				if err := unix.SetNonblock(fd, true); err != nil {
-					t.Fatal(err)
-				}
-				var next [5]byte
-				if n, err := unix.Read(fd, next[:]); err != nil || n != len(next) || string(next[:]) != "next\n" {
-					t.Fatalf("next=%q n=%d err=%v", next, n, err)
+				next := make([]byte, len("next\n"))
+				if _, err := io.ReadFull(tty, next); err != nil || string(next) != "next\n" {
+					t.Fatalf("next=%q err=%v", next, err)
 				}
 			}
 		})
@@ -108,13 +104,9 @@ func TestConfirmDeployCanonicalQuotedEnter(t *testing.T) {
 	if got.ok || got.err != nil {
 		t.Errorf("quoted Enter: ok=%v err=%v", got.ok, got.err)
 	}
-	fd := int(master.Fd())
-	if err := unix.SetNonblock(fd, true); err != nil {
-		t.Fatal(err)
-	}
 	transcript := make([]byte, len("y\r\n"))
-	if n, err := unix.Read(fd, transcript); err != nil || n != len(transcript) || string(transcript) != "y\r\n" {
-		t.Errorf("transcript = %q n=%d err=%v", transcript, n, err)
+	if _, err := io.ReadFull(master, transcript); err != nil || string(transcript) != "y\r\n" {
+		t.Errorf("transcript = %q err=%v", transcript, err)
 	}
 	after, err := term.GetState(tty.Fd())
 	if err != nil || !reflect.DeepEqual(before, after) {
