@@ -351,3 +351,19 @@ func TestRedactRecordsJoinsSecretAcrossTimestampedFrames(t *testing.T) {
 		t.Fatal("secret or filler differs")
 	}
 }
+
+func TestDaemonErrorCutRedactsSecretPrefix(t *testing.T) {
+	secret := "distinct-secret-value"
+	label := "Docker daemon error: "
+	partial := "distinct-secret"
+	filler := strings.Repeat("x", logs.MaxLineBytes-len(label)-len(partial))
+	wire := dockerFrame(3, []byte(filler+secret+"\n"))
+	rows, err := logs.Tail(context.Background(), framedLogSource(wire), []logs.Identity{{ContainerID: "a"}}, logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := redactRecords(rows, []string{secret}, nil)
+	if len(got) != 1 || got[0].Message != label+filler+"[REDACTED]"+logs.TruncationMarker {
+		t.Fatal("daemon error exposes a secret fragment or loses its prefix")
+	}
+}
