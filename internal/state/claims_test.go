@@ -51,7 +51,7 @@ func TestAStateOfVersion18GetsTheClaimsTable(t *testing.T) {
 	}
 	defer s.Close()
 	var version int
-	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("version: %d, %v", version, err)
 	}
 	if err := s.AddClaims(context.Background(), []Claim{{Kind: ClaimNetwork, Name: "net"}}); err != nil {

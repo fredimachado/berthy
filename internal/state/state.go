@@ -329,6 +329,9 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	}
 	defer tx.Rollback()
 	op, err := operationQuery(tx.QueryRowContext(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, a.RequestID))
+	if errors.Is(err, sql.ErrNoRows) {
+		op, err = retiredOperation(tx.QueryRowContext(ctx, retiredOperationSelection+`a.retired_request_id=?`, s.env, a.RequestID))
+	}
 	if err == nil {
 		if op.ActorID != a.ActorID || op.RequestHash != a.RequestHash {
 			return Operation{}, false, ErrConflict
@@ -348,6 +351,9 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 			return Operation{}, false, ErrConflict
 		}
 	}
+	if err := s.retryHistoryCleanup(ctx, tx); err != nil {
+		return Operation{}, false, err
+	}
 	id, err := randomID()
 	if err != nil {
 		return Operation{}, false, err
@@ -364,7 +370,7 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 	if err = eventTx(ctx, tx, id, "accepted", json.RawMessage(`{}`)); err != nil {
 		return Operation{}, false, err
 	}
-	if err = auditTx(ctx, tx, s.env, id, a, "accepted"); err != nil {
+	if err = auditTxAt(ctx, tx, s.env, id, a, "accepted", started); err != nil {
 		return Operation{}, false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -385,6 +391,9 @@ func operationQuery(row interface{ Scan(...any) error }) (Operation, error) {
 // AdmissionForRequest finds an existing admission and enforces request idempotency.
 func (s *Store) AdmissionForRequest(ctx context.Context, requestID, actorID string, hash [32]byte) (Operation, error) {
 	op, err := operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND request_id=?`, s.env, requestID))
+	if errors.Is(err, sql.ErrNoRows) {
+		op, err = retiredOperation(s.queryRow(ctx, retiredOperationSelection+`a.retired_request_id=?`, s.env, requestID))
+	}
 	if err != nil {
 		return Operation{}, err
 	}
@@ -394,7 +403,11 @@ func (s *Store) AdmissionForRequest(ctx context.Context, requestID, actorID stri
 	return op, nil
 }
 func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
-	return operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
+	op, err := operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND id=?`, s.env, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return retiredOperation(s.queryRow(ctx, retiredOperationSelection+`a.operation_id=?`, s.env, id))
+	}
+	return op, err
 }
 func (s *Store) Active(ctx context.Context) (Operation, error) {
 	return operationQuery(s.queryRow(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o JOIN locks l ON l.operation_id=o.id WHERE l.environment=?`, s.env))
@@ -417,7 +430,11 @@ func optionalEventTx(ctx context.Context, tx *sql.Tx, id string, e Event) error 
 	return nil
 }
 func auditTx(ctx context.Context, tx *sql.Tx, env, id string, a Admission, outcome string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO audit(environment,operation_id,actor_id,actor_name,remote,action,outcome,created) VALUES(?,?,?,?,?,?,?,?)`, env, id, a.ActorID, a.ActorName, a.Remote, a.Kind, outcome, now())
+	return auditTxAt(ctx, tx, env, id, a, outcome, now())
+}
+
+func auditTxAt(ctx context.Context, tx *sql.Tx, env, id string, a Admission, outcome string, created int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO audit(environment,operation_id,actor_id,actor_name,remote,action,outcome,created) VALUES(?,?,?,?,?,?,?,?)`, env, id, a.ActorID, a.ActorName, a.Remote, a.Kind, outcome, created)
 	return err
 }
 func owned(ctx context.Context, tx *sql.Tx, env, id string) error {
@@ -711,12 +728,13 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if err = auditTx(ctx, tx, s.env, id, op.Admission, o.State); err != nil {
 		return err
 	}
-	if o.State != "recovery_required" {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
-			return err
-		}
+	if o.State == "recovery_required" {
+		return tx.Commit()
 	}
-	return tx.Commit()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
+		return err
+	}
+	return s.commitWithHistory(ctx, tx, op.App)
 }
 
 // ResolveRecovery finishes an operation stuck in recovery_required as failed and releases its lock.
@@ -735,8 +753,8 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	var st string
-	if err = tx.QueryRowContext(ctx, `SELECT state FROM operations WHERE environment=? AND id=?`, s.env, id).Scan(&st); err != nil {
+	var st, app string
+	if err = tx.QueryRowContext(ctx, `SELECT state,app FROM operations WHERE environment=? AND id=?`, s.env, id).Scan(&st, &app); err != nil {
 		return err
 	}
 	if st != "recovery_required" {
@@ -759,7 +777,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return s.commitWithHistory(ctx, tx, app)
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 	rows, err := s.query(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)
@@ -782,7 +800,7 @@ func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 
 // LatestMigration returns the newest finished deploy of app that recorded a schema state.
 func (s *Store) LatestMigration(ctx context.Context, app string) (Operation, error) {
-	return operationQuery(s.queryRow(ctx, `SELECT o.id,o.request_id,o.actor_id,o.actor_name,o.remote,o.kind,o.app,o.commit_sha,o.request_hash,o.public_request,o.state,o.started,o.error,o.schema_before,o.schema_after,o.reason,o.modified,o.no_return FROM operations o WHERE o.environment=? AND o.app=? AND o.kind='deploy' AND o.schema_before<>'' AND o.state IN ('succeeded','failed','rolled_back','interrupted') ORDER BY o.started DESC, o.rowid DESC LIMIT 1`, s.env, app))
+	return operationQuery(s.queryRow(ctx, `SELECT id,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after,reason,modified,no_return FROM operations WHERE environment=? AND app=? AND `+latestMigrationSelection, s.env, app))
 }
 func (s *Store) PutSecret(ctx context.Context, actor Actor, info SecretInfo, value []byte) error {
 	if actor.ID == "" {
@@ -1159,7 +1177,7 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid limit")
 	}
-	rows, err := s.query(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created,COALESCE(o.public_request,'{}') FROM audit a LEFT JOIN operations o ON o.environment=a.environment AND o.id=a.operation_id WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
+	rows, err := s.query(ctx, `SELECT a.operation_id,a.actor_id,a.actor_name,a.remote,a.action,a.outcome,a.created,COALESCE(o.public_request,'{}'),a.retired_tag FROM audit a LEFT JOIN operations o ON o.environment=a.environment AND o.id=a.operation_id WHERE a.environment=? ORDER BY a.id DESC LIMIT ?`, s.env, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,16 +1187,17 @@ func (s *Store) AuditLog(ctx context.Context, limit int) ([]Audit, error) {
 		var a Audit
 		var ms int64
 		var public []byte
-		if err = rows.Scan(&a.OperationID, &a.ActorID, &a.ActorName, &a.Remote, &a.Action, &a.Outcome, &ms, &public); err != nil {
+		var retired sql.NullString
+		if err = rows.Scan(&a.OperationID, &a.ActorID, &a.ActorName, &a.Remote, &a.Action, &a.Outcome, &ms, &public, &retired); err != nil {
 			return nil, err
 		}
-		var selection struct {
-			Tag string `json:"version_tag"`
-		}
-		if err := json.Unmarshal(public, &selection); err != nil {
+		a.Tag, err = publicRequestTag(public)
+		if err != nil {
 			return nil, err
 		}
-		a.Tag = selection.Tag
+		if retired.Valid {
+			a.Tag = retired.String
+		}
 		a.Time = time.UnixMilli(ms).UTC()
 		out = append(out, a)
 	}

@@ -73,7 +73,7 @@ func (c *Controller) ResolveRecovery(ctx context.Context, actor Actor, id, reaso
 	if errors.Is(err, state.ErrConflict) {
 		return RecoveryReport{}, errNotRecovering
 	}
-	if err != nil {
+	if err := c.reportHistoryMaintenance(op.ID, err); err != nil {
 		return RecoveryReport{}, err
 	}
 	report.Resolved = true

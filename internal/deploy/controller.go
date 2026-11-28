@@ -208,6 +208,8 @@ type Controller struct {
 	runs   map[string]*opRun
 	// Observer hears every operation start and end. Nil: nobody is told.
 	Observer Observer
+	// ReportMaintenance reports history cleanup failures after an operation commits.
+	ReportMaintenance func(string)
 	// Reacher opens a connection to a role's port on the shared network, for the check at the end of a deploy. Nil: the
 	// deploy does not check the network.
 	Reacher Reacher

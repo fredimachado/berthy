@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,7 @@ func TestUpgradeVersionOne(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, err = upgraded.AcquiredImages(context.Background()); err != nil {
@@ -179,7 +180,7 @@ func TestUpgradeVersionTwelveAddsReleaseTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	history, err := upgraded.History(ctx, "app")
@@ -192,7 +193,7 @@ func TestUpgradeVersionTwelveAddsReleaseTag(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	defer again.Close()
-	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err = again.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("second open migration: %d %v", version, err)
 	}
 }
@@ -237,7 +238,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 	}
 	defer upgraded.Close()
 	var version int
-	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 19 {
+	if err = upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("migration: %d %v", version, err)
 	}
 	if _, value, err := upgraded.Secret(ctx, "KEPT"); err != nil || string(value) != "kept-value" {
@@ -257,7 +258,7 @@ func TestUpgradeVersionThreeAddsIngressTables(t *testing.T) {
 
 func TestUnknownSchemaVersionIsRefused(t *testing.T) {
 	s, dir, key := testStore(t)
-	if _, err := s.db.Exec(`PRAGMA user_version=20`); err != nil {
+	if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, schemaVersion+1)); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

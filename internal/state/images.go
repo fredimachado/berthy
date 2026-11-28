@@ -94,9 +94,6 @@ func (s *Store) CompletedOneOffs(ctx context.Context) ([]CompletedOneOff, error)
 	if err != nil {
 		return nil, err
 	}
-	if exists, err := s.historyTableAvailable(ctx, "prune_oneoffs"); err != nil || !exists {
-		return out, err
-	}
 	rows, err = s.query(ctx, `SELECT operation_id,id,name,role FROM prune_oneoffs WHERE environment=? ORDER BY operation_id,id`, s.env)
 	if err != nil {
 		return nil, err
@@ -150,9 +147,6 @@ func (s *Store) readCompletedOneOffs(rows *sql.Rows) ([]CompletedOneOff, error) 
 
 // ForgetCompletedOneOff acknowledges a container that Docker confirmed is absent.
 func (s *Store) ForgetCompletedOneOff(ctx context.Context, h CompletedOneOff) error {
-	if exists, err := s.historyTableAvailable(ctx, "prune_oneoffs"); err != nil || !exists {
-		return err
-	}
 	_, err := s.exec(ctx, `DELETE FROM prune_oneoffs WHERE environment=? AND id=? AND operation_id=? AND name=? AND role=?`, s.env, h.ID, h.OperationID, h.Name, h.Role)
 	return err
 }
@@ -165,7 +159,15 @@ type HistoryOperation struct {
 }
 
 func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperation, error) {
-	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations WHERE environment=? AND app=? AND state IN ('failed','rolled_back','interrupted') ORDER BY started DESC,id DESC`, s.env, app)
+	keep, err := releaseRetention(s.queryRow(ctx, retentionRelease, s.env, app), app)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.query(ctx, `SELECT id,kind,app,commit_sha,state,started,schema_before,schema_after,reason,modified,public_request FROM operations o
+		WHERE id IN (SELECT id FROM operations WHERE environment=?1 AND app=?2 AND state IN `+terminalStates+` ORDER BY started DESC,rowid DESC LIMIT ?3)
+		AND state IN ('failed','rolled_back','interrupted')
+		AND NOT EXISTS(SELECT 1 FROM audit WHERE environment=o.environment AND operation_id=o.id AND retired_request_id IS NOT NULL)
+		ORDER BY started DESC,rowid DESC`, s.env, app, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -178,13 +180,10 @@ func (s *Store) DeployHistory(ctx context.Context, app string) ([]HistoryOperati
 		if err = rows.Scan(&o.OperationID, &o.Kind, &o.App, &o.Commit, &o.State, &ms, &o.SchemaBefore, &o.SchemaAfter, &o.Reason, &o.Modified, &public); err != nil {
 			return nil, err
 		}
-		var selection struct {
-			Tag string `json:"version_tag"`
-		}
-		if err := json.Unmarshal(public, &selection); err != nil {
+		o.Tag, err = publicRequestTag(public)
+		if err != nil {
 			return nil, err
 		}
-		o.Tag = selection.Tag
 		o.Started = time.UnixMilli(ms).UTC()
 		out = append(out, o)
 	}

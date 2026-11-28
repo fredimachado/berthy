@@ -813,9 +813,6 @@ func TestRetainedImagesIsTheRuleOfPrune(t *testing.T) {
 		t.Fatalf("retained %v", refs)
 	}
 	t.Run("stored releases", func(t *testing.T) {
-		if os.Getenv("BERTHY_TEST_HISTORY_EVICTION") != "1" {
-			t.Skip("physical eviction is enabled in slice 3")
-		}
 		db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
 		if err != nil {
 			t.Fatal(err)

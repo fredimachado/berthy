@@ -51,6 +51,7 @@ var schemaSteps = [...]schemaStep{
 	17: {apply: schema17},
 	18: {apply: schema18},
 	19: {}, // Claims are created by the unconditional bootstrap DDL.
+	20: {apply: schema20},
 }
 
 const schemaVersion = len(schemaSteps) - 1

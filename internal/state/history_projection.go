@@ -15,16 +15,6 @@ const (
 	factTemplate = "template"
 )
 
-// historyTableAvailable lets the readers run before the schema 20 step is registered.
-func (s *Store) historyTableAvailable(ctx context.Context, table string) (bool, error) {
-	if schemaVersion >= 20 {
-		return true, nil
-	}
-	var exists bool
-	err := s.queryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)`, table).Scan(&exists)
-	return exists, err
-}
-
 func (s *Store) rememberRelease(ctx context.Context, tx *sql.Tx, r Release) error {
 	m, err := manifest.DecodeRelease(r.Manifest, r.App == manifest.ConnectorAppName)
 	if err != nil {
@@ -59,9 +49,6 @@ func (s *Store) rememberRelease(ctx context.Context, tx *sql.Tx, r Release) erro
 }
 
 func (s *Store) historicalFacts(ctx context.Context, app, kind string) ([]string, error) {
-	if exists, err := s.historyTableAvailable(ctx, "release_facts"); err != nil || !exists {
-		return nil, err
-	}
 	rows, err := s.query(ctx, `SELECT value FROM release_facts WHERE environment=? AND app=? AND kind=? ORDER BY value`, s.env, app, kind)
 	if err != nil {
 		return nil, err
@@ -92,9 +79,6 @@ func (s *Store) HistoricalTemplates(ctx context.Context) ([]string, error) {
 
 // HistoricalSecretReader returns the first app in lexical order, or an empty string if none read name.
 func (s *Store) HistoricalSecretReader(ctx context.Context, name string) (string, error) {
-	if exists, err := s.historyTableAvailable(ctx, "release_facts"); err != nil || !exists {
-		return "", err
-	}
 	var app string
 	err := s.queryRow(ctx, `SELECT app FROM release_facts WHERE environment=? AND kind='secret' AND value=? ORDER BY app LIMIT 1`, s.env, name).Scan(&app)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -104,9 +88,6 @@ func (s *Store) HistoricalSecretReader(ctx context.Context, name string) (string
 }
 
 func (s *Store) HistoricalComposeTargets(ctx context.Context, project string) ([]Claim, error) {
-	if exists, err := s.historyTableAvailable(ctx, "compose_down_targets"); err != nil || !exists {
-		return nil, err
-	}
 	rows, err := s.query(ctx, `SELECT kind,name FROM compose_down_targets WHERE environment=? AND project=? ORDER BY kind,name`, s.env, project)
 	if err != nil {
 		return nil, err

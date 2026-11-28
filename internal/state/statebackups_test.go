@@ -77,7 +77,7 @@ func TestSnapshotOpensWithTheSameKeyAndHoldsNoKeyOrPlaintext(t *testing.T) {
 	if _, value, err := copied.Secret(ctx, "DB_PASSWORD"); err != nil || string(value) != "plaintext-secret-value" {
 		t.Fatalf("secret in the snapshot: %q %v", value, err)
 	}
-	if version, err := copied.SchemaVersion(ctx); err != nil || version != 19 {
+	if version, err := copied.SchemaVersion(ctx); err != nil || version != schemaVersion {
 		t.Fatalf("schema version %d %v", version, err)
 	}
 }
@@ -188,7 +188,7 @@ func TestSchemaTenUpgradesToElevenWithTheStateBackupTable(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer upgraded.Close()
-	if version, err := upgraded.SchemaVersion(context.Background()); err != nil || version != 19 {
+	if version, err := upgraded.SchemaVersion(context.Background()); err != nil || version != schemaVersion {
 		t.Fatalf("version after upgrade: %d %v", version, err)
 	}
 	if _, err = upgraded.StartStateBackup(context.Background(), StateBackupRun{Trigger: "manual", Started: time.Now(), Key: "x.db"}); err != nil {
