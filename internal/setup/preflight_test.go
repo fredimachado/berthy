@@ -1,0 +1,130 @@
+package setup
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSetupRejectsUnusableInputsBeforeProvisioning(t *testing.T) {
+	exe := elfFile(t, emX86)
+	for _, tc := range []struct {
+		name, detail string
+		dry          bool
+		opts         func(*Options)
+		noTools      bool
+	}{
+		{"dev", "development build", false, func(o *Options) { o.Build = Build{OS: "darwin", Arch: "arm64"} }, false},
+		{"no downloader", "neither curl nor wget", false, func(o *Options) { o.Build = Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true} }, true},
+		{"missing key", "cannot read --key-file", false, func(o *Options) { o.KeyFile = filepath.Join(t.TempDir(), "missing") }, false},
+		{"short key", "--key-file must hold exactly 32 bytes", false, func(o *Options) { o.KeyFile = writeKey(t, []byte("short")) }, false},
+		{"dry no downloader", "would install v1.2.3", true, func(o *Options) { o.Build = Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true} }, true},
+		{"dry short key", "--key-file must hold exactly 32 bytes", true, func(o *Options) { o.KeyFile = writeKey(t, []byte("short")) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := freshAgentServer(t)
+			if tc.noTools {
+				f.probe = without(f.probe, "curl=", "wget=")
+			}
+			s := agentSession(t, f, exe, tc.dry, tc.opts)
+			got, ok := runSteps(s)
+			if tc.dry {
+				if stepOf(t, got, "check").Status != StatusOK {
+					t.Fatalf("%+v", got)
+				}
+				if tc.noTools {
+					r := stepOf(t, got, "binary")
+					if r.Status != StatusWouldChange || r.Detail != tc.detail {
+						t.Fatalf("%+v", got)
+					}
+					stepOf(t, got, "key")
+					return
+				}
+				r := lastResult(got)
+				if ok || r.Step != "key" || r.Detail != tc.detail {
+					t.Fatalf("%+v", got)
+				}
+				return
+			}
+			if ok || statuses(got) != "connect=ok check=failed" || !strings.Contains(lastResult(got).Detail, tc.detail) {
+				t.Errorf("got %+v", got)
+			}
+			for _, c := range f.calls {
+				if agentChange(c.script) {
+					t.Errorf("provisioned: %s", c.script)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupUsesTheKeyReadAtCheck(t *testing.T) {
+	exe := elfFile(t, emX86)
+	f := freshAgentServer(t)
+	key := keyBytes()
+	file := writeKey(t, key)
+	s := agentSession(t, f, exe, false, func(o *Options) { o.KeyFile = file })
+	var got []StepResult
+	ok := Run(context.Background(), s, Steps(), func(r StepResult) {
+		got = append(got, r)
+		if r.Step == "check" && r.Status == StatusOK {
+			if err := os.Remove(file); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	c, found := f.find("cat > \"$tmp\"")
+	if !ok || !found || !bytes.Equal(c.stdin, key) {
+		t.Fatalf("got %+v, uploaded=%v", got, found)
+	}
+}
+
+type releaseFailure struct {
+	*agentFake
+	asset string
+}
+
+func (f *releaseFailure) Run(ctx context.Context, script string, in io.Reader) (Result, error) {
+	if strings.Contains(script, f.asset) {
+		f.calls = append(f.calls, call{script: script})
+		return Result{Code: 1}, nil
+	}
+	return f.agentFake.Run(ctx, script, in)
+}
+func TestSetupChecksBothReleaseAssetsBeforeProvisioning(t *testing.T) {
+	exe := elfFile(t, emX86)
+	for _, tool := range []string{"curl", "wget"} {
+		for _, asset := range []string{"berthy-linux-amd64", "checksums.txt"} {
+			t.Run(tool+"/"+asset, func(t *testing.T) {
+				f := freshAgentServer(t)
+				f.probe = without(f.probe, "curl=", "wget=")
+				f.probe = with(f.probe, tool+"=/usr/bin/"+tool)
+				runner := &releaseFailure{agentFake: f, asset: asset}
+				s := agentSession(t, runner, exe, false, func(o *Options) { o.Build = Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true} })
+				got, ok := runSteps(s)
+				if ok || statuses(got) != "connect=ok check=failed" || !strings.Contains(lastResult(got).Detail, asset) {
+					t.Errorf("got %+v", got)
+				}
+				for _, c := range f.calls {
+					if agentChange(c.script) {
+						t.Errorf("provisioned: %s", c.script)
+					}
+				}
+			})
+		}
+	}
+	t.Run("installed without downloader", func(t *testing.T) {
+		f := setUpAgent(t, exe)
+		f.probe = without(f.probe, "curl=", "wget=")
+		f.version = "berthy v1.2.3 linux/amd64\n"
+		s := agentSession(t, f, exe, false, func(o *Options) { o.Build = Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true} })
+		got, ok := runSteps(s)
+		if !ok || stepOf(t, got, "binary").Status != StatusOK || f.ran("checksums.txt") {
+			t.Fatalf("%+v", got)
+		}
+	})
+}
