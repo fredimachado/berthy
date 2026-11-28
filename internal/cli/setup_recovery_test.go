@@ -52,7 +52,7 @@ func (s *setupUncertainServer) Run(ctx context.Context, script string, stdin io.
 			s.cancel()
 			return setup.Result{}, context.Canceled
 		}
-		return setup.Result{Code: 255}, nil
+		return setup.Result{}, &setup.SSHTransportError{Target: s.Target()}
 	}
 	if strings.HasPrefix(s.mode, "rollback") && strings.Contains(script, "systemctl restart berthy") {
 		s.restarts++
@@ -64,7 +64,7 @@ func (s *setupUncertainServer) Run(ctx context.Context, script string, stdin io.
 	if strings.HasPrefix(s.mode, "rollback") && script == "/bin/sh /run/berthy-activation-guard.sh no yes now" {
 		switch s.mode {
 		case "rollback 255":
-			return setup.Result{Code: 255}, nil
+			return setup.Result{}, &setup.SSHTransportError{Target: s.Target()}
 		case "rollback error":
 			return setup.Result{}, errors.New("rollback transport lost")
 		case "rollback complete":

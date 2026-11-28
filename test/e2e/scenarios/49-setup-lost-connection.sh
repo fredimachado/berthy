@@ -85,7 +85,7 @@ export SSH_STATE="$private/state"
 cat > "$FS_HOME/bin/ssh" <<'SH'
 #!/bin/sh
 if [ -f "$SSH_STATE.dropped" ]; then
- case "$*" in *journalctl*) echo journal >> "$SSH_STATE.calls";; *"$GUARD_STATE"*) echo guard >> "$SSH_STATE.calls";; *berthy-activation-guard.sh*) echo guard >> "$SSH_STATE.calls";; *) echo other >> "$SSH_STATE.calls";; esac
+ case "$*" in *journalctl*) echo journal >> "$SSH_STATE.calls";; *berthy-activation-guard.sh*) echo guard >> "$SSH_STATE.calls";; *) echo other >> "$SSH_STATE.calls";; esac
  exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
 fi
 if [ -f "$SSH_STATE.swapped" ]; then
@@ -99,8 +99,8 @@ out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen
 expect_code "upgrade loses connection" 1 "$code"
 if [ "$code" -ne 1 ]; then setup_failure "$private/upgrade.stderr"; fi
 if [ ! -f "$SSH_STATE.dropped" ] || [ -f "$SSH_STATE.wrong" ]; then fail "restart connection dropped" "unexpected SSH call order"; fi
-if [ -f "$SSH_STATE.calls" ]; then echo "follow-up calls: $(cat "$SSH_STATE.calls" | tr '\n' ' ')"; fi
-if [[ $out == *"setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"* ]]; then pass "guard reported"; else fail "guard reported" "missing guard description"; setup_failure "$private/upgrade.stderr"; fi
+if [ ! -s "$SSH_STATE.calls" ]; then pass "no follow-up SSH calls"; else fail "no follow-up SSH calls" "$(cat "$SSH_STATE.calls")"; fi
+if jq -e --arg target "ops@$server" '.steps[] | select(.status == "failed" and (.detail | contains("SSH connection to " + $target + " failed")) and (.detail | contains("puts the previous agent back")))' <<<"$out" >/dev/null; then pass "connection failure and guard reported"; else fail "connection failure and guard reported" "missing diagnosis"; setup_failure "$private/upgrade.stderr"; fi
 unset out
 rm -f "$SSH_STATE.dropped"
 deadline=$((SECONDS+300))
@@ -113,5 +113,7 @@ while :; do
 done
 current=$(d exec "$server" sha256sum /usr/local/bin/berthy) || exit 1
 expect_eq "previous binary restored" "$old" "$current"
+state=$(d exec "$server" cat /run/berthy-activation-guard.state) || exit 1
+expect_eq "guard recorded restoration" "restored" "$state"
 if d exec "$server" systemctl restart berthy && d exec "$server" sh -c 'i=0; while [ "$i" -lt 30 ]; do curl -fsS http://"$1":7710/healthz >/dev/null && exit 0; sleep 1; i=$((i+1)); done; exit 1' sh "$ip"; then pass "restored agent answers"; else fail "restored agent answers" "health check failed"; fi
 finish

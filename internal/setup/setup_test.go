@@ -271,7 +271,7 @@ func TestSudoRefusedFailsConnect(t *testing.T) {
 type deadServer struct{ fakeServer }
 
 func (d *deadServer) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
-	return Result{Stderr: []byte("ssh: connect to host s1 port 22: Connection refused\n"), Code: 255}, nil
+	return Result{}, &SSHTransportError{Target: d.Target(), reason: ": Connection refused"}
 }
 
 func TestConnectFailureNamesTheCause(t *testing.T) {
@@ -590,13 +590,13 @@ func TestRemoteCommandAndSSHArgs(t *testing.T) {
 		t.Errorf("remoteCommand = %q", got)
 	}
 	args := sshArgs("ops@s1", true, "id -u")
-	want := []string{"-o", "BatchMode=yes", "-T", "--", "ops@s1", `sudo -n sh -c 'id -u'`}
+	want := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-T", "--", "ops@s1", `sudo -n sh -c 'id -u'`}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("sshArgs = %q", args)
 	}
 	// The destination is always after "--", and the script never becomes an argument of its own.
 	args = sshArgs("s1", false, "x; --version")
-	if len(args) != 6 || args[3] != "--" || args[4] != "s1" {
+	if len(args) != 12 || args[9] != "--" || args[10] != "s1" {
 		t.Errorf("sshArgs = %q", args)
 	}
 }

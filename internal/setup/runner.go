@@ -20,7 +20,7 @@ import (
 // Runner runs shell scripts as root on the server being set up.
 type Runner interface {
 	// Run runs script with sh as root (through sudo -n when the login is not root). stdin, when not nil, is the script's
-	// standard input, for uploads. It returns the exit code; err is only for a runner that could not run at all.
+	// standard input, for uploads. It returns the exit code for a completed script; err reports a runner or transport failure.
 	Run(ctx context.Context, script string, stdin io.Reader) (Result, error)
 	// Target is what the output calls the server: "ops@s1", or "this server" for --local.
 	Target() string
@@ -62,7 +62,7 @@ func remoteCommand(sudo bool, script string) string {
 // sshArgs is the argument list of the ssh process for a script on dest. The destination follows "--", so it can never be an
 // option, and BatchMode keeps ssh from ever asking for a password.
 func sshArgs(dest string, sudo bool, script string) []string {
-	return []string{"-o", "BatchMode=yes", "-T", "--", dest, remoteCommand(sudo, script)}
+	return []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-T", "--", dest, remoteCommand(sudo, script)}
 }
 
 // localArgs is the command and arguments that run a script on this server: sh -c directly for root, sudo -n sh -c otherwise.
@@ -98,18 +98,45 @@ func (r *SSH) Target() string { return r.Dest }
 
 func (r *SSH) SetSudo(v bool) { r.sudo = v }
 
+// SSHTransportError reports a failed SSH connection without exposing remote output.
+type SSHTransportError struct {
+	Target string
+	reason string
+}
+
+func (e *SSHTransportError) Error() string {
+	return "SSH connection to " + e.Target + " failed" + e.reason
+}
+
 func (r *SSH) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
-	if !sshhost.Valid(r.Dest) {
-		return Result{}, fmt.Errorf("invalid host %q", r.Dest)
-	}
-	return runProcess(ctx, r.Program, sshArgs(r.Dest, r.sudo, script), stdin)
+	return r.run(ctx, r.sudo, script, stdin)
 }
 
 func (r *SSH) runSSHLogin(ctx context.Context, script string) (Result, error) {
+	return r.run(ctx, false, script, nil)
+}
+
+func (r *SSH) run(ctx context.Context, sudo bool, script string, stdin io.Reader) (Result, error) {
 	if !sshhost.Valid(r.Dest) {
 		return Result{}, fmt.Errorf("invalid host %q: use USER@SERVER or SERVER", r.Dest)
 	}
-	return runProcess(ctx, r.Program, sshArgs(r.Dest, false, script), nil)
+	res, err := runProcess(ctx, r.Program, sshArgs(r.Dest, sudo, script), stdin)
+	if err != nil {
+		return res, err
+	}
+	if res.Code != 255 {
+		return res, nil
+	}
+	reason := ""
+	switch {
+	case strings.Contains(string(res.Stderr), "Host key verification failed"):
+		reason = ": Host key verification failed; connect once with ssh " + r.Dest + " to check and accept the server's host key"
+	case strings.Contains(string(res.Stderr), "Connection refused"):
+		reason = ": Connection refused"
+	case strings.Contains(string(res.Stderr), "Connection timed out") || strings.Contains(string(res.Stderr), "Operation timed out"):
+		reason = ": Connection timed out"
+	}
+	return Result{}, &SSHTransportError{Target: r.Dest, reason: reason}
 }
 
 // Local runs scripts on this server: sh -c directly when it runs as root, sudo -n sh -c otherwise.
@@ -192,7 +219,7 @@ func Connect(ctx context.Context, r Runner) (Login, error) {
 		return Login{}, fmt.Errorf("could not run commands on %s: %w", r.Target(), err)
 	}
 	if res.Code != 0 {
-		return Login{}, fmt.Errorf("could not run commands on %s: %s%s", r.Target(), failureText(res), hostKeyHint(r, res))
+		return Login{}, fmt.Errorf("could not run commands on %s: %s", r.Target(), failureText(res))
 	}
 	words := strings.Fields(string(res.Stdout))
 	if len(words) < 1 {
@@ -216,15 +243,6 @@ func Connect(ctx context.Context, r Runner) (Login, error) {
 		s.SetSudo(login.Sudo)
 	}
 	return login, nil
-}
-
-// hostKeyHint says what to do when ssh refused an unknown or changed host key. BatchMode never asks, which is right, but the
-// person needs to know how to accept the key.
-func hostKeyHint(r Runner, res Result) string {
-	if !strings.Contains(string(res.Stderr), "Host key verification failed") {
-		return ""
-	}
-	return "; connect once with ssh " + r.Target() + " to check and accept the server's host key"
 }
 
 // failureText is the last line a failed script printed to stderr, or to stdout when stderr is empty, or its exit code.
