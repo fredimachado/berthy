@@ -3,12 +3,13 @@
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
+APP="logs64-$PROJECT-$ENVN"
 
 write_manifest <<YML
 project: $PROJECT
 network: $NETWORK
 apps:
-  web:
+  $APP:
     kind: image
     image: $REG/e2e/web
     env:
@@ -25,9 +26,9 @@ apps:
 YML
 printf 'LEFTdistinctSECRET-RIGHTdistinctSECRET' | adm secret set JOBSECRET >"$RUN/secret-result" 2>&1
 expect_code "set mapped secret" 0 "$?" "$(cat "$RUN/secret-result")"
-out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
+out=$(adm deploy "$APP" --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy web" 0 "$code" "$out"
-container=$(d ps -q --filter status=running --filter "label=com.docker.swarm.service.name=$PROJECT-$ENVN-web-main" | head -n 1)
+container=$(d ps -q --filter status=running --filter "label=com.docker.swarm.service.name=$PROJECT-$ENVN-$APP-main" | head -n 1)
 if [ -z "$container" ]; then fail "find web container" "no running task"; finish; fi
 python3 - "$RUN" <<'PY'
 import pathlib, sys
@@ -43,7 +44,7 @@ expect_code "write fixture logs" 0 "$?"
 seen_after() { d logs "$container" 2>/dev/null | grep -qF 'long-after-64'; }
 wait_for "Docker records the final sentinel" seen_after
 expect_code "Docker records the final sentinel" 0 "$?"
-adm logs web --tail 1000 --json >"$RUN/logs.json" 2>"$RUN/logs.err"; code=$?
+adm logs "$APP" --tail 1000 --json >"$RUN/logs.json" 2>"$RUN/logs.err"; code=$?
 expect_code "logs returns the long line and later evidence" 0 "$code" "$(cat "$RUN/logs.err")"
 if [ "$code" -eq 0 ]; then
   if python3 - "$RUN" <<'PY'
@@ -65,19 +66,16 @@ PY
 fi
 
 mkdir -p "$LOG/tui-long-logs"
-cat > "$LOG/tui-long-logs/script.json" <<'JSON'
+cat > "$LOG/tui-long-logs/script.json" <<JSON
 [
-  {"wait_text": "Logs", "timeout": "20s"},
-  {"keys": ["2"]},
-  {"wait_text": "web", "timeout": "20s"},
+  {"wait_text": "$APP", "timeout": "20s"},
   {"keys": ["/"]},
-  {"type": "web"},
-  {"wait_text": "Filter: web", "timeout": "20s"},
-  {"snapshot": "picker"},
+  {"type": "$APP"},
+  {"wait_text": "/ $APP", "timeout": "20s"},
   {"keys": ["enter"]},
-  {"keys": ["end"]},
-  {"keys": ["enter"]},
-  {"wait_text": "Logs → web", "timeout": "20s"},
+  {"wait_text": "filter: $APP", "timeout": "20s"},
+  {"keys": ["l"]},
+  {"wait_text": "Logs → $APP", "timeout": "20s"},
   {"wait_text": "long-after-64", "timeout": "30s"},
   {"snapshot": "logs"},
   {"keys": ["q"]}
@@ -91,7 +89,7 @@ cat >> "$MAN/berthy.yml" <<'YML'
       pre_deploy:
         - run: ["sh", "-c", "head -c 307200 /dev/zero | tr '[:cntrl:]' x; echo; echo diagnostic-after-64; exit 1"]
 YML
-out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
+out=$(adm deploy "$APP" --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "failing hook fails deploy" 1 "$code" "$out"
 id=$(printf '%s\n' "$out" | grep -oE '\b[0-9a-f]{32}\b' | head -n 1)
 if [ -z "$id" ]; then fail "capture failed operation" "$out"; finish; fi
