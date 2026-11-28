@@ -262,15 +262,22 @@ func TestMaintenanceFailureReportsCommittedRestartOnce(t *testing.T) {
 	if intents, err := c.Store.Intents(ctx, old); err != nil || len(intents) != 1 {
 		t.Fatalf("failed maintenance did not preserve old evidence: %v, %v", intents, err)
 	}
+	later := admitAndDrain(t, c, Request{RequestID: "later", Kind: "restart", App: "app"})
+	if later.State != "succeeded" || len(obs.ended) != 2 || obs.ended[1].OperationID != later.ID || len(*maintenance) != 2 || !strings.Contains((*maintenance)[1], later.ID) {
+		t.Fatalf("persistent maintenance failure: restart %s, ends %v, reports %v", later.State, obs.ended, *maintenance)
+	}
 	if _, err := db.Exec(`DROP TRIGGER fail_retention`); err != nil {
 		t.Fatal(err)
 	}
 	fresh := admitRetentionFixture(t, c.Store, "fresh", "restart", "app")
-	if intents, err := c.Store.Intents(ctx, old); err != nil || len(intents) != 0 {
-		t.Fatalf("fresh admission did not retry pending cleanup: %v, %v", intents, err)
+	if intents, err := c.Store.Intents(ctx, old); err != nil || len(intents) != 1 {
+		t.Fatalf("admission changed pending evidence: %v, %v", intents, err)
 	}
 	finishRetentionFixture(t, c.Store, fresh, state.Outcome{State: "succeeded"})
-	if len(obs.ended) != 1 || len(*maintenance) != 1 {
+	if intents, err := c.Store.Intents(ctx, old); err != nil || len(intents) != 0 {
+		t.Fatalf("terminal write did not retry pending cleanup: %v, %v", intents, err)
+	}
+	if len(obs.ended) != 2 || len(*maintenance) != 2 {
 		t.Fatalf("duplicate reporting: %v, %v", obs.ended, *maintenance)
 	}
 }

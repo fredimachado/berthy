@@ -131,6 +131,60 @@ func (f *approvalFixture) noOperation() {
 	}
 }
 
+func TestApprovalKeepsRollbackTargetWhileHistoryCleanupIsPending(t *testing.T) {
+	f := newApprovalFixture(t, true, nil)
+	ctx := t.Context()
+	t.Cleanup(func() {
+		if err := f.ctrl.Drain(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	f.ctrl.Engine = gateEngine{service: true}
+	seedGateRelease(t, f.s, "target", apRunDigest)
+	target, err := f.s.Applied(ctx, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGateRelease(t, f.s, "current", apRunDigest)
+	db, err := sql.Open("sqlite", filepath.Join(f.dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER fail_retention BEFORE DELETE ON releases BEGIN SELECT RAISE(ABORT,'fixture cleanup error'); END`); err != nil {
+		t.Fatal(err)
+	}
+	later, _, err := f.s.Admit(ctx, state.Admission{RequestID: "lower-retain", ActorID: "seed", Kind: "deploy", App: "api", PublicRequest: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := strings.Replace(apManifestSource, `"roles":`, `"deploy":{"retain":1},"roles":`, 1)
+	if err := f.s.Finish(ctx, later.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "api", Digest: apRunDigest, Manifest: json.RawMessage(raw)}}); !errors.As(err, new(*state.CommittedMaintenanceError)) {
+		t.Fatalf("lowering retention did not leave cleanup pending: %v", err)
+	}
+	h := f.hold("POST", "/rollback", apAgentDeploy, fmt.Sprintf(`{"app":"api","target_release":%d,"request_id":"pending-rollback"}`, target.ID))
+	if _, err := db.Exec(`DROP TRIGGER fail_retention`); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call("POST", "/approvals/"+h.ID+"/approve", apAdminToken, "")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("approval = %d %s", w.Code, w.Body.String())
+	}
+	var accepted struct {
+		ID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil || accepted.ID == "" {
+		t.Fatalf("approval response = %s, error %v", w.Body.String(), err)
+	}
+	if err := f.ctrl.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The gate engine fails image inspection. Reaching it proves the worker could still resolve the approved release.
+	if op, err := f.s.Operation(ctx, accepted.ID); err != nil || op.Err != "image inspection failed" {
+		t.Fatalf("rollback outcome = %q, error %v, want worker to reach image inspection", op.Err, err)
+	}
+}
+
 func TestApprovalFailsWhenRollbackTargetAgesOut(t *testing.T) {
 	f := newApprovalFixture(t, true, nil)
 	ctx := t.Context()

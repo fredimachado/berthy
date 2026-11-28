@@ -351,9 +351,6 @@ func (s *Store) Admit(ctx context.Context, a Admission) (Operation, bool, error)
 			return Operation{}, false, ErrConflict
 		}
 	}
-	if err := s.retryHistoryCleanup(ctx, tx); err != nil {
-		return Operation{}, false, err
-	}
 	id, err := randomID()
 	if err != nil {
 		return Operation{}, false, err
@@ -734,7 +731,7 @@ func (s *Store) Finish(ctx context.Context, id string, o Outcome) error {
 	if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
 		return err
 	}
-	return s.commitWithHistory(ctx, tx, op.App)
+	return s.commitWithHistory(ctx, tx, op.App, true)
 }
 
 // ResolveRecovery finishes an operation stuck in recovery_required as failed and releases its lock.
@@ -777,7 +774,7 @@ func (s *Store) ResolveRecovery(ctx context.Context, actor Actor, id, reason str
 	if _, err = tx.ExecContext(ctx, `DELETE FROM locks WHERE environment=? AND operation_id=?`, s.env, id); err != nil {
 		return err
 	}
-	return s.commitWithHistory(ctx, tx, app)
+	return s.commitWithHistory(ctx, tx, app, false)
 }
 func (s *Store) History(ctx context.Context, app string) ([]Release, error) {
 	rows, err := s.query(ctx, `SELECT id,app,digest,commit_sha,manifest,created,operation_id,schema_before,schema_after,tag,modified FROM releases WHERE environment=? AND (?='' OR app=?) ORDER BY id DESC`, s.env, app, app)

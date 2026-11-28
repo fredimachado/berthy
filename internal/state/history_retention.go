@@ -48,21 +48,24 @@ func historyPendingPrefix(env string) string {
 	return "history_pending:" + hex.EncodeToString([]byte(env)) + ":"
 }
 
-func (s *Store) commitWithHistory(ctx context.Context, tx *sql.Tx, app string) error {
-	if _, err := tx.ExecContext(ctx, `SAVEPOINT trim_history`); err != nil {
-		return err
-	}
-	maintenance := s.trimHistory(ctx, tx, s.env, app)
-	if maintenance != nil {
-		if _, err := tx.ExecContext(ctx, `ROLLBACK TO trim_history`); err != nil {
-			return errors.Join(maintenance, err)
+func (s *Store) commitWithHistory(ctx context.Context, tx *sql.Tx, app string, retryPending bool) error {
+	apps := []string{app}
+	var maintenance error
+	if retryPending {
+		pending, err := historyStrings(tx.QueryContext(ctx, `SELECT CAST(value AS TEXT) FROM metadata WHERE name GLOB ? ORDER BY name`, historyPendingPrefix(s.env)+"*"))
+		maintenance = err
+		for _, old := range pending {
+			if old != app {
+				apps = append(apps, old)
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(name,value) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value`, historyPendingPrefix(s.env)+app, []byte(app)); err != nil {
-			return errors.Join(maintenance, err)
-		}
 	}
-	if _, err := tx.ExecContext(ctx, `RELEASE trim_history`); err != nil {
-		return err
+	for _, bucket := range apps {
+		pending, err := s.cleanHistoryBucket(ctx, tx, bucket)
+		if err != nil {
+			return err
+		}
+		maintenance = errors.Join(maintenance, pending)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -73,21 +76,26 @@ func (s *Store) commitWithHistory(ctx context.Context, tx *sql.Tx, app string) e
 	return nil
 }
 
-func (s *Store) retryHistoryCleanup(ctx context.Context, tx *sql.Tx) error {
-	prefix := historyPendingPrefix(s.env)
-	apps, err := historyStrings(tx.QueryContext(ctx, `SELECT CAST(value AS TEXT) FROM metadata WHERE name GLOB ? ORDER BY name`, prefix+"*"))
-	if err != nil {
-		return err
+// A bucket has its own savepoint so broken evidence cannot block cleanup for another app.
+func (s *Store) cleanHistoryBucket(ctx context.Context, tx *sql.Tx, app string) (maintenance, err error) {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT trim_history`); err != nil {
+		return nil, err
 	}
-	for _, app := range apps {
-		if err := s.trimHistory(ctx, tx, s.env, app); err != nil {
-			return err
+	key := historyPendingPrefix(s.env) + app
+	maintenance = s.trimHistory(ctx, tx, s.env, app)
+	if maintenance == nil {
+		_, maintenance = tx.ExecContext(ctx, `DELETE FROM metadata WHERE name=?`, key)
+	}
+	if maintenance != nil {
+		if _, err := tx.ExecContext(ctx, `ROLLBACK TO trim_history`); err != nil {
+			return nil, errors.Join(maintenance, err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM metadata WHERE name=?`, prefix+app); err != nil {
-			return err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(name,value) VALUES(?,?) ON CONFLICT(name) DO NOTHING`, key, []byte(app)); err != nil {
+			return nil, errors.Join(maintenance, err)
 		}
 	}
-	return nil
+	_, err = tx.ExecContext(ctx, `RELEASE trim_history`)
+	return maintenance, err
 }
 
 func historyStrings(rows *sql.Rows, err error) ([]string, error) {
