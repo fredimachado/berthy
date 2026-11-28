@@ -84,7 +84,10 @@ if d exec "$server" curl -fsS "http://$ip:7710/healthz" >/dev/null; then pass "c
 export SSH_STATE="$private/state"
 cat > "$FS_HOME/bin/ssh" <<'SH'
 #!/bin/sh
-if [ -f "$SSH_STATE.dropped" ]; then exit 255; fi
+if [ -f "$SSH_STATE.dropped" ]; then
+ case "$*" in *journalctl*) echo journal >> "$SSH_STATE.calls";; *"$GUARD_STATE"*) echo guard >> "$SSH_STATE.calls";; *berthy-activation-guard.sh*) echo guard >> "$SSH_STATE.calls";; *) echo other >> "$SSH_STATE.calls";; esac
+ exec /usr/bin/ssh -F "$FS_HOME/.ssh/config" "$@"
+fi
 if [ -f "$SSH_STATE.swapped" ]; then
  case "$*" in *'systemctl restart berthy'*) touch "$SSH_STATE.dropped"; exit 255;; *) touch "$SSH_STATE.wrong"; exit 255;; esac
 fi
@@ -96,6 +99,7 @@ out=$("$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen
 expect_code "upgrade loses connection" 1 "$code"
 if [ "$code" -ne 1 ]; then setup_failure "$private/upgrade.stderr"; fi
 if [ ! -f "$SSH_STATE.dropped" ] || [ -f "$SSH_STATE.wrong" ]; then fail "restart connection dropped" "unexpected SSH call order"; fi
+if [ -f "$SSH_STATE.calls" ]; then echo "follow-up calls: $(cat "$SSH_STATE.calls" | tr '\n' ' ')"; fi
 if [[ $out == *"setup may have started recovery; the server finishes it if it started, and the timer decides otherwise"* ]]; then pass "guard reported"; else fail "guard reported" "missing guard description"; setup_failure "$private/upgrade.stderr"; fi
 unset out
 rm -f "$SSH_STATE.dropped"
