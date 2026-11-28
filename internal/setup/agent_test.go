@@ -1258,6 +1258,27 @@ func TestUnitIsExactlyTheFileInTheRepository(t *testing.T) {
 	if len(systemd.Unit) == 0 || !bytes.Contains(unitContent(), []byte("ExecStart=/usr/local/bin/berthy agent --config /etc/berthy/agent.json")) {
 		t.Fatal("the unit is not the agent's")
 	}
+	section := ""
+	want := map[string]string{"StartLimitIntervalSec": "Unit=0", "Restart": "Service=always", "RestartSec": "Service=5"}
+	counts := make(map[string]int)
+	for _, line := range strings.Split(string(unitContent()), "\n") {
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.Trim(line, "[]")
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if expected, found := want[key]; ok && found {
+			counts[key]++
+			if got := section + "=" + value; got != expected {
+				t.Errorf("%s = %s, want %s", key, got, expected)
+			}
+		}
+	}
+	for key := range want {
+		if counts[key] != 1 {
+			t.Errorf("%s occurs %d times, want once", key, counts[key])
+		}
+	}
 }
 
 func TestServiceStep(t *testing.T) {
