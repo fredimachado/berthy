@@ -290,16 +290,17 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
-	allowance := serviceCleanupAllowance
-	if n > 0 {
-		budget, err := uptimeReplacementBudget(m.Apps[req.App], b.Role, live.Spec, n)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: "operation preflight failed"}
-		}
-		allowance, err = addStartupAllowance(allowance, budget)
-		if err != nil {
-			return state.Outcome{State: "failed", Err: "operation preflight failed"}
-		}
+	var replacement replacementSpec
+	if json.Unmarshal(live.Spec, &replacement) != nil || replacement.Mode.Replicated == nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
+	budget, err := replacementBudget(m.Apps[req.App], replacement.Mode.Replicated.Replicas, n, replacement.parallelism())
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
+	allowance, err := addStartupAllowance(serviceCleanupAllowance, budget)
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, allowance)
 	defer cancel()

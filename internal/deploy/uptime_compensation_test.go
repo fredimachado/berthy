@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 type uptimeRestoreEngine struct {
 	boundFake
 	restoredAt map[string]time.Time
+	ready      map[string][]time.Duration
 	restored   []string
 	deadline   time.Time
 }
@@ -71,14 +73,117 @@ func (f *uptimeRestoreEngine) InspectContainerHealth(_ context.Context, containe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	service, slot, _ := strings.Cut(strings.TrimPrefix(container, "c-"), "/")
-	timeToHealth := 3 * time.Minute
-	if n, err := strconv.Atoi(slot); err == nil {
+	n, timeToHealth := 1, 3*time.Minute
+	if slot != "" {
+		var err error
+		n, err = strconv.Atoi(slot)
+		if err != nil || n < 1 {
+			return "", errors.New("unexpected replica slot")
+		}
 		timeToHealth = time.Duration(n) * (3*time.Minute + time.Second)
+	}
+	if ready := f.ready[service]; len(ready) != 0 {
+		if n > len(ready) {
+			return "", errors.New("unexpected replica slot")
+		}
+		timeToHealth = ready[n-1]
 	}
 	if at, ok := f.restoredAt[service]; ok && time.Since(at) < timeToHealth {
 		return "starting", nil
 	}
 	return "healthy", nil
+}
+
+func TestCompensationAllowsAllTouchedCommandHealthRoles(t *testing.T) {
+	s := openStore(t)
+	f := &uptimeRestoreEngine{
+		restoredAt: map[string]time.Time{},
+		ready: map[string][]time.Duration{
+			"aux": {50 * time.Second, 50 * time.Second, 50 * time.Second, 50 * time.Second},
+			"web": {50 * time.Second, 50 * time.Second, 100 * time.Second},
+		},
+	}
+	c := &Controller{Store: s, Engine: f, Environment: "test", rolloutHold: zeroTestRolloutHold()}
+	prior, candidate := dockerManifest(nil), dockerManifest(nil)
+	one, three, four := 1, 3, 4
+	for _, tc := range []struct {
+		m       manifest.Manifest
+		timeout string
+		aux     *int
+	}{
+		{prior, "60s", &four}, {candidate, "10s", &one},
+	} {
+		app := tc.m.Apps["web"]
+		app.Deploy.DeployTimeout = tc.timeout
+		withStartAttempts(1)(&app)
+		main := app.Roles["web"]
+		main.Replicas = &three
+		app.Roles["web"] = main
+		aux := main
+		aux.Replicas = tc.aux
+		app.Roles["aux"] = aux
+		tc.m.Apps["web"] = app
+	}
+	bindings := []state.Binding{
+		{App: "web", Role: "aux", Name: prior.ServiceName("test", "web", "aux"), ServiceID: "aux"},
+		boundBinding(prior.ServiceName("test", "web", "web"), "web"),
+	}
+	old := seedUptimeRelease(t, s, prior, bindings...)
+	before := make(map[string]json.RawMessage)
+	oldImage := "docker.io/example/web@" + digestOfLetter("a")
+	for _, b := range bindings {
+		spec, err := serviceSpec("test", "proj", "web", b.Role, b.Name, old.ID, "net", oldImage, func(v string) string { return v },
+			nil, prior.Apps["web"].Roles[b.Role], "start-first", "1s", nil, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Role == "web" {
+			prefix, update, found := strings.Cut(string(spec), `"UpdateConfig":`)
+			if !found || !strings.Contains(update, `"Parallelism":1`) {
+				t.Fatal("predecessor spec lacks serial update config")
+			}
+			spec = json.RawMessage(prefix + `"UpdateConfig":` + strings.Replace(update, `"Parallelism":1`, `"Parallelism":2`, 1))
+		}
+		before[b.Role] = spec
+		f.add(b.ServiceID, spec)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op := runUptimeRequest(t, c, Request{RequestID: "command-health-candidate", App: "web", Version: digestOfLetter("b"), Manifest: candidate})
+		// Two cleanup allowances and three startup windows: two for web and one for aux.
+		if want := 7 * time.Minute; f.deadline.Sub(f.restoredAt["web"]) != want {
+			t.Errorf("shared restore allowance %s, want %s", f.deadline.Sub(f.restoredAt["web"]), want)
+		}
+		if op.State != "rolled_back" {
+			t.Fatalf("state %s, error %q, restored %v", op.State, op.Err, f.restored)
+		}
+		if !slices.Equal(f.restored, []string{"web", "aux"}) ||
+			f.restoredAt["aux"].Sub(f.restoredAt["web"]) != 100*time.Second ||
+			time.Since(f.restoredAt["web"]) != 150*time.Second {
+			t.Fatalf("restore order %v, aux started at +%s, finished at +%s", f.restored,
+				f.restoredAt["aux"].Sub(f.restoredAt["web"]), time.Since(f.restoredAt["web"]))
+		}
+		intents, err := s.Intents(ctx, op.ID)
+		if err != nil || len(intents) != 2 || intents[0].Role != "aux" || intents[0].Phase != "verified" {
+			t.Fatalf("candidate intents do not show aux verification before web failed: %v", err)
+		}
+		for _, b := range bindings {
+			live, err := f.InspectService(ctx, b.ServiceID)
+			if err != nil || !sameSpec(live.Spec, before[b.Role]) {
+				t.Fatalf("%s predecessor spec not restored: %v", b.Role, err)
+			}
+			if err := healthyOnce(ctx, f, b.ServiceID, old.ID, *prior.Apps["web"].Roles[b.Role].Replicas); err != nil {
+				t.Fatalf("%s predecessor not healthy: %v", b.Role, err)
+			}
+		}
+		applied, err := s.Applied(ctx, "web")
+		if err != nil || applied.Digest != oldImage {
+			t.Fatalf("applied digest %q, error %v", applied.Digest, err)
+		}
+		if _, err := s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("lock: %v", err)
+		}
+	})
 }
 
 func TestStopFirstRestoresLongUptimePredecessor(t *testing.T) {
@@ -137,8 +242,8 @@ func TestStopFirstRestoresLongUptimePredecessor(t *testing.T) {
 			if len(roles) > 1 && f.restoredAt["aux"].Sub(f.restoredAt["web"]) < 3*time.Minute {
 				t.Fatal("second restore did not wait for its predecessor")
 			}
-			if tc.auxReplicas == 3 && f.deadline.Sub(f.restoredAt["web"]) != 22*time.Minute {
-				t.Fatalf("shared restore allowance %s, want 22m", f.deadline.Sub(f.restoredAt["web"]))
+			if tc.auxReplicas == 3 && f.deadline.Sub(f.restoredAt["web"]) != 24*time.Minute {
+				t.Fatalf("shared restore allowance %s, want 24m", f.deadline.Sub(f.restoredAt["web"]))
 			}
 			ctx := context.Background()
 			applied, err := s.Applied(ctx, "web")

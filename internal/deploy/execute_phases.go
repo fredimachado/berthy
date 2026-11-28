@@ -136,9 +136,17 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 	req := d.prepared.Request
 	app := req.Manifest.Apps[req.App]
 	r := app.Roles[role]
-	recoveryAllowance := serviceCleanupAllowance
+	replicas := 1
+	if r.Replicas != nil {
+		replicas = *r.Replicas
+	}
+	var recoveryAllowance time.Duration
 	if len(d.work) > 0 {
 		recoveryAllowance = d.work[len(d.work)-1].recoveryAllowance
+	}
+	recoveryAllowance, e := addStartupAllowance(recoveryAllowance, serviceCleanupAllowance)
+	if e != nil {
+		return false
 	}
 	spec, e := c.releaseRoleSpec(d.prepared, img, role, d.opID)
 	if e != nil {
@@ -190,15 +198,15 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 				}
 			}
 			var previous struct {
+				replacementSpec
 				TaskTemplate struct {
 					ContainerSpec struct {
 						Labels map[string]string
 						Image  string
 					}
 				}
-				Mode struct{ Replicated *struct{ Replicas int } }
 			}
-			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil {
+			if json.Unmarshal(live.Spec, &previous) != nil || previous.Mode.Replicated == nil || previous.Mode.Replicated.Replicas < 0 {
 				d.outcome.Err = "prior service health cannot be verified"
 				return false
 			}
@@ -212,7 +220,7 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 					priorApp := applied.Apps[req.App]
 					d.predecessor = &priorApp
 				}
-				startup, err := uptimeReplacementBudget(*d.predecessor, role, live.Spec, previous.Mode.Replicated.Replicas)
+				startup, err := replacementBudget(*d.predecessor, replicas, previous.Mode.Replicated.Replicas, previous.parallelism())
 				if err != nil {
 					return false
 				}
@@ -251,10 +259,6 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 			d.outcome.Err = "service name is unavailable"
 			return false
 		}
-	}
-	replicas := 1
-	if r.Replicas != nil {
-		replicas = *r.Replicas
 	}
 	d.work = append(d.work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	return true

@@ -38,6 +38,7 @@ begin_app() {
 }
 
 manifest() {
+  local timeout=${2:-75s}
   cat <<YML
 project: $PROJECT
 network: $NETWORK
@@ -46,7 +47,8 @@ apps:
     kind: image
     image: $repo
     deploy:
-      deploy_timeout: 75s
+      deploy_timeout: $timeout
+      start_attempts: 1
     roles:
       main:
         replicas: 4
@@ -67,6 +69,17 @@ YML
           test: ["CMD", "true"]
           interval: 2s
           timeout: 2s
+YML
+  fi
+  if [ "$#" -ge 3 ]; then
+    cat <<YML
+      sentinel:
+        replicas: 1
+        health:
+          test: ["CMD", "$3"]
+          interval: 1s
+          timeout: 2s
+          retries: 1
 YML
   fi
 }
@@ -167,10 +180,92 @@ run_drain() {
   expect_contains 'deploy lock is free after drain' "$(adm lock status --json 2>&1)" '"locked": false'
 }
 
+live_generation() {
+  d service inspect --format '{{index .Spec.TaskTemplate.ContainerSpec.Labels "berthy.operation"}}' "$1"
+}
+
+assert_image_slots() {
+  local name=$1 digest=$2 count=$3 service running slots= generation
+  service="$PROJECT-$ENVN-$app-$name"
+  generation=$(live_generation "$service")
+  expect_eq "$name desired replicas" "$count" "$(d service inspect --format '{{.Spec.Mode.Replicated.Replicas}}' "$service")"
+  running=$(d ps -q --filter "label=com.docker.swarm.service.name=$service")
+  if [ -n "$running" ] && [ -n "$generation" ]; then
+    slots=$(d inspect $running | jq -r --arg image "$repo@$digest" --arg gen "$generation" \
+      '.[] | select(.Config.Image == $image and .Config.Labels["berthy.operation"] == $gen and .State.Running and .State.Health.Status == "healthy") | .Config.Labels["com.docker.swarm.task.name"] | split(".")[1]' | sort -u)
+  fi
+  expect_eq "$name running healthy slots of the applied generation" "$count" "$(grep -cE '^[1-9][0-9]*$' <<<"$slots")"
+}
+
+seed_slow() {
+  local out code
+  manifest slow 180s "$@" | write_manifest
+  out=$(adm deploy "$app" --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
+  expect_code 'seed four slow v1 replicas' 0 "$code" "$out"
+  if [ "$code" -ne 0 ]; then finish; fi
+  expect_eq 'slow predecessor digest' "$repo@$WEB_V1_DIGEST" "$(applied)"
+}
+
+run_runtime() {
+  local kind count out code service before after
+  local -a args
+  app="runtime-$nonce"
+  service="$PROJECT-$ENVN-$app-main"
+  begin_app main
+  seed_slow
+  for kind in "$@"; do
+    before=$(live_generation "$service")
+    args=("$kind" "$app")
+    count=4
+    if [ "$kind" = scale ]; then
+      count=5
+      args+=(--replicas "$count")
+    fi
+    out=$(adm "${args[@]}" 2>&1); code=$?
+    printf '%s\n' "$out" >"$LOG/$kind-operation.out"
+    expect_code "$kind waits for the replacement batches" 0 "$code" "$out"
+    d service ps --no-trunc "$service" >"$LOG/$kind-tasks.txt"
+    adm lock status --json >"$LOG/$kind-lock.json" 2>&1
+    expect_contains "$kind releases the lock" "$(cat "$LOG/$kind-lock.json")" '"locked": false'
+    if [ "$code" -ne 0 ]; then finish; fi
+    after=$(live_generation "$service")
+    if [ -z "$after" ] || [ "$before" = "$after" ]; then fail "$kind starts a new task generation" "$before -> $after"; fi
+    assert_image_slots main "$WEB_V1_DIGEST" "$count"
+  done
+}
+
+run_compensation() {
+  local out code service sentinel previous
+  app="compensation-$nonce"
+  begin_app main sentinel
+  seed_slow true
+  service="$PROJECT-$ENVN-$app-main"
+  sentinel="$PROJECT-$ENVN-$app-sentinel"
+  previous=$(live_generation "$service")
+
+  manifest fast 75s false | write_manifest
+  out=$(adm deploy "$app" --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
+  printf '%s\n' "$out" >"$LOG/compensation-operation.out"
+  expect_code 'unhealthy candidate exits 1' 1 "$code" "$out"
+  expect_contains 'later role exhausted its start attempts' "$out" 'gave up after 1 failed starts'
+  expect_contains 'candidate rolled back' "$out" 'state: rolled_back'
+  expect_eq 'predecessor digest remains applied' "$repo@$WEB_V1_DIGEST" "$(applied)"
+  d service ps --no-trunc "$service" >"$LOG/compensation-main-tasks.txt"
+  d service ps --no-trunc "$sentinel" >"$LOG/compensation-sentinel-tasks.txt"
+  adm lock status --json >"$LOG/compensation-lock.json" 2>&1
+  expect_contains 'compensation releases the lock' "$(cat "$LOG/compensation-lock.json")" '"locked": false'
+  expect_eq 'prior main generation was restored' "$previous" "$(live_generation "$service")"
+  assert_image_slots main "$WEB_V1_DIGEST" 4
+  assert_image_slots sentinel "$WEB_V1_DIGEST" 1
+}
+
 case ${BERTHY_E2E_ROLLOUT_CASE:-all} in
-  all) run_progress; run_drain ;;
+  all) run_progress; run_drain; run_runtime restart scale; run_compensation ;;
   progress) run_progress ;;
   drain) run_drain ;;
+  restart) run_runtime restart ;;
+  scale) run_runtime scale ;;
+  compensation) run_compensation ;;
   *) fail 'choose rollout case' "$BERTHY_E2E_ROLLOUT_CASE" ;;
 esac
 finish

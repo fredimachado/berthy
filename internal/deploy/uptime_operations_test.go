@@ -112,6 +112,58 @@ func TestUptimeRestartAllowsAllReplacementBatches(t *testing.T) {
 	}
 }
 
+func TestCommandHealthOperationsAllowReplacementBatches(t *testing.T) {
+	for _, tc := range []struct {
+		kind  string
+		ready []time.Duration
+	}{
+		{"restart", []time.Duration{45 * time.Second, 90 * time.Second, 135 * time.Second}},
+		{"scale", []time.Duration{45 * time.Second, 90 * time.Second, 135 * time.Second, 45 * time.Second}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			s := openStore(t)
+			m := dockerManifest(nil)
+			app := m.Apps["web"]
+			app.Deploy.DeployTimeout = "60s"
+			role := app.Roles["web"]
+			three, target := 3, len(tc.ready)
+			role.Replicas = &three
+			app.Roles["web"] = role
+			m.Apps["web"] = app
+			prior := seedUptimeRelease(t, s, m, boundBinding("existing", "id"))
+			spec, err := serviceSpec("test", "proj", "web", "web", "existing", prior.ID, "net",
+				"docker.io/example/web@"+digestOfLetter("a"), func(v string) string { return v }, nil, role, "start-first", "1s", nil, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &uptimeRuntimeEngine{runtimeEngine: runtimeEngine{Engine: &boundFake{}, store: s, spec: spec}, replicaStarts: tc.ready}
+			c := &Controller{Store: s, Engine: f, Environment: "test"}
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				start := time.Now()
+				op, out := finishUptimeOperation(t, ctx, c, f, Request{Kind: tc.kind, App: "web", Replicas: &target})
+				want := start.Add(5 * time.Minute)
+				if out.State != "succeeded" || !f.deadline.Equal(want) {
+					t.Fatalf("%s %s (%s), deadline +%s, want succeeded with deadline +5m", tc.kind, out.State, out.Err, f.deadline.Sub(start))
+				}
+				var live struct {
+					Mode struct{ Replicated struct{ Replicas int } }
+				}
+				if err := json.Unmarshal(f.spec, &live); err != nil || live.Mode.Replicated.Replicas != target {
+					t.Fatalf("replicas %d, want %d: %v", live.Mode.Replicated.Replicas, target, err)
+				}
+				intents, err := s.Intents(ctx, op.ID)
+				if err != nil || len(intents) != 1 || !intents[0].Deadline.Equal(f.deadline) {
+					t.Fatalf("journal deadline does not match operation deadline: %v", err)
+				}
+				if _, err := s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("lock: %v", err)
+				}
+			})
+		})
+	}
+}
+
 func (f *uptimeRuntimeEngine) InspectContainer(context.Context, string) (engine.ContainerSnapshot, error) {
 	return engine.ContainerSnapshot{ID: "container", Running: true, Labels: map[string]string{"berthy.operation": f.generation()}}, nil
 }
