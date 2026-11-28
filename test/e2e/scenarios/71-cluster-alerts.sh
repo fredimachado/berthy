@@ -58,11 +58,11 @@ setup_on() {
 setup_pair() {
   local project=$1 token variable
   if ! setup_on "$project" --listen "$ip:7710" --config "$cfg" --binary "$BIN" --no-install-docker \
-    </dev/null > "$private/setup.json" 2> "$private/setup.stderr"; then
-    jq -r '.steps[]? | select(.status == "failed") | .step' "$private/setup.json" >&2
+    </dev/null > "$private/setup-$project.json" 2> "$private/setup-$project.stderr"; then
+    jq -r '.steps[]? | select(.status == "failed") | .step' "$private/setup-$project.json" >&2
     die "could not set up $project/$ENVN"
   fi
-  token=$(jq -er '.token | strings' "$private/setup.json")
+  token=$(jq -er '.token | strings' "$private/setup-$project.json")
   variable=$(jq -er --arg p "$project" --arg e "$ENVN" '.projects[$p].environments[$e].token_env | strings' "$cfg")
   export "$variable=$token"
 }
@@ -188,6 +188,7 @@ jq --arg url "http://$TG_LISTEN" '.telegram_api_url = $url' "$private/agent.json
   inside sh -ec 'cd /etc/berthy; cp -p agent.json agent.json.new; cat > agent.json.new; mv agent.json.new agent.json'
 inside sh -ec 'umask 077; cat > /root/fixture-cluster; chmod 700 /root/fixture-cluster' < "$CLUSTER_BIN"
 inside systemctl restart berthy
+wait_for "agent API after installing the Telegram endpoint" cli "$PROJECT" agent-info --json
 hostname=$(cli "$PROJECT" agent-info --json | jq -er '.hostname | select(length > 0)')
 marker_checked() {
   cli "$1" checks --cluster --json | jq -e --arg marker "$marker" --arg host "$hostname" '
@@ -231,10 +232,6 @@ alerts:
     url_secret: ALERT_WEBHOOK_URL
 YML
   cli "$project" apply --manifest-dir "$dir" >/dev/null
-  local out
-  out=$(cli "$project" alerts test)
-  expect_contains "$project/$ENVN test alert reaches Telegram" "$out" 'telegram: ok'
-  expect_contains "$project/$ENVN test alert reaches the webhook" "$out" 'webhook: ok'
 }
 enable_environment_alerts "$PROJECT" "$first_chat" "$first_hook"
 enable_environment_alerts "$peer" "$second_chat" "$second_hook"
@@ -311,9 +308,24 @@ for pair in "$first_chat:$first_hook" "$second_chat:$second_hook"; do
     "$(hook_requests | jq -e --arg path "$hook" --arg marker "$marker" '
       [.[] | select(.method == "POST" and .path == $path) | .body | fromjson |
         select(.name == "public_ports" and .state == "warning" and (.detail | contains($marker)))] | length')"
-  expect_eq "environment Telegram $chat receives its test only once" 1 "$(telegram_count "$chat" "$ENVN test alert from berthy" '')"
-  expect_eq "environment webhook $hook receives its test only once" 1 "$(webhook_count "$hook" test ok '' '')"
 done
+test_alert() {
+  local project=$1 out
+  out=$(cli "$project" alerts test)
+  expect_contains "$project/$ENVN test alert reaches Telegram" "$out" 'telegram: ok'
+  expect_contains "$project/$ENVN test alert reaches the webhook" "$out" 'webhook: ok'
+}
+expect_environment_tests() {
+  local chat=$1 hook=$2 count=$3
+  expect_eq "environment Telegram $chat has $count test alerts" "$count" "$(telegram_count "$chat" "$ENVN test alert from berthy" '')"
+  expect_eq "environment webhook $hook has $count test alerts" "$count" "$(webhook_count "$hook" test ok '' '')"
+}
+test_alert "$PROJECT"
+expect_environment_tests "$first_chat" "$first_hook" 1
+expect_environment_tests "$second_chat" "$second_hook" 0
+test_alert "$peer"
+expect_environment_tests "$first_chat" "$first_hook" 1
+expect_environment_tests "$second_chat" "$second_hook" 1
 expect_eq "server Telegram receives no environment test alerts" 0 "$(telegram_count "$server_chat" 'test alert from berthy' '')"
 expect_eq "server webhook receives no environment test alerts" 0 \
   "$(hook_requests | jq -e --arg path "$server_hook" '[.[] | select(.method == "POST" and .path == $path) | .body | fromjson | select(.kind == "test")] | length')"
@@ -363,6 +375,7 @@ inside systemctl start berthy
 wait_for "reboot recovery delivery and checkpoint" server_delivered reboot_required ok ' recovered' ''
 expect_server_delivery reboot_required warning ': ' ''
 expect_server_delivery reboot_required ok ' recovered' ''
+expect_server_delivery public_ports warning ': ' "$marker"
 for chat in "$first_chat" "$second_chat"; do
   expect_eq "environment Telegram $chat receives no reboot alert" 0 "$(telegram_count "$chat" ' reboot_required' '')"
 done
@@ -377,7 +390,7 @@ jq -e 'any(.next_steps[]; . == "host problems alert nobody yet: run setup again 
   "$private/cluster-setup.json" >/dev/null || die "setup did not report that delivery is disabled"
 doctor_cluster '.checks | any(.name == "cluster_alerts" and (.ok | not) and (.critical | not) and (.detail | contains("--cluster-alerts FILE")))'
 inside journalctl -u berthy --no-pager > "$private/agent.log" 2> "$private/agent-log.stderr"
-check_credentials_hidden "$private/setup.json" "$private/setup.stderr" "$private/agent.log" "$private/agent-log.stderr"
+check_credentials_hidden "$private"/setup-*.json "$private"/setup-*.stderr "$private/agent.log" "$private/agent-log.stderr"
 pass "setup output and agent logs keep fixture credentials private"
 
 if cleanup; then
