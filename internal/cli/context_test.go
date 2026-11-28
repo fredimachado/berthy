@@ -219,16 +219,35 @@ func TestContextCommandsContactNoAgent(t *testing.T) {
 	}
 }
 
-func TestContextListOfAMissingFilePrintsNothing(t *testing.T) {
+func TestContextListReportsNoContexts(t *testing.T) {
 	isolatedUserConfig(t)
-	cfg := filepath.Join(t.TempDir(), "missing.json")
-	code, out, errs := runCLI("context", "list", "--config", cfg)
-	if code != 0 || out != "" || errs != "" {
-		t.Fatalf("missing: exit %d stdout %q stderr %q", code, out, errs)
+	t.Setenv("BERTHY_TOKEN_STORE", "none")
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(empty, []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	code, out, errs = runCLI("context", "list", "--config", cfg, "--json")
-	if code != 0 || out != "" || errs != "" {
-		t.Fatalf("missing json: exit %d stdout %q stderr %q", code, out, errs)
+	missing := filepath.Join(dir, "missing.json")
+	for _, cfg := range []string{empty, missing} {
+		for _, tc := range []struct {
+			name string
+			json bool
+			want string
+		}{
+			{name: "human", want: "no contexts configured\n"},
+			{name: "json", json: true, want: "[]\n"},
+		} {
+			t.Run(filepath.Base(cfg)+"/"+tc.name, func(t *testing.T) {
+				args := []string{"context", "list", "--config", cfg}
+				if tc.json {
+					args = append(args, "--json")
+				}
+				code, out, errs := runCLI(args...)
+				if code != 0 || errs != "" || out != tc.want {
+					t.Fatalf("exit %d stdout %q stderr %q, want %q", code, out, errs, tc.want)
+				}
+			})
+		}
 	}
 }
 
