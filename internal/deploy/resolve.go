@@ -69,11 +69,11 @@ func (c *Controller) ResolveRecovery(ctx context.Context, actor Actor, id, reaso
 	if dryRun {
 		return report, nil
 	}
-	err = c.Store.ResolveRecovery(ctx, state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}, op.ID, reason)
+	err = c.reportHistoryMaintenance(op.ID, c.Store.ResolveRecovery(ctx, state.Actor{ID: actor.ID, Name: actor.Name, Remote: actor.Remote}, op.ID, reason))
 	if errors.Is(err, state.ErrConflict) {
 		return RecoveryReport{}, errNotRecovering
 	}
-	if err := c.reportHistoryMaintenance(op.ID, err); err != nil {
+	if err != nil {
 		return RecoveryReport{}, err
 	}
 	report.Resolved = true

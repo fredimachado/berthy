@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -158,8 +160,16 @@ func TestDeployFieldPreviewIsOptIn(t *testing.T) {
 	}
 	t.Run("unreadable applied manifest", func(t *testing.T) {
 		f := newApprovalFixture(t, false, nil)
-		recordPreviewRelease(t, f.s, "invalid", []byte(`{"apps":[]}`))
 		body := deployBodyWith(t, true)
+		id := recordPreviewRelease(t, f.s, "initial", previewManifest(t, []byte(body)))
+		db, err := sql.Open("sqlite", filepath.Join(f.dir, "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(`UPDATE releases SET manifest=? WHERE id=?`, []byte(`{"apps":[]}`), id); err != nil {
+			t.Fatal(err)
+		}
 		ordinary := f.call("POST", "/deploys", apDeployToken, body)
 		if ordinary.Code != http.StatusOK || strings.Contains(ordinary.Body.String(), `"diff"`) {
 			t.Fatalf("ordinary preview: %d %s", ordinary.Code, ordinary.Body.String())
