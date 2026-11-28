@@ -371,9 +371,11 @@ func TestAgentRefusalIsAToolErrorWithItsMessage(t *testing.T) {
 }
 
 func TestAgentUnreachableIsAToolError(t *testing.T) {
-	dead, _ := url.Parse(dialtest.HangUp(t))
-	res := call(t, connect(t, testConfig(dead, t.TempDir())), "list_resources", nil)
-	if !res.IsError || !strings.Contains(text(t, res), "agent connection failed") {
+	dead, _ := url.Parse("http://" + dialtest.Refused)
+	cfg := testConfig(dead, t.TempDir())
+	cfg.HTTP = dialtest.Client()
+	res := call(t, connect(t, cfg), "list_resources", nil)
+	if !res.IsError || text(t, res) != "agent connection failed at "+dialtest.Refused+": connection refused\n" {
 		t.Fatalf("%v %q", res.IsError, text(t, res))
 	}
 }

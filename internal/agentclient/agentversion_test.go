@@ -2,12 +2,14 @@ package agentclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"berthy/internal/dialtest"
@@ -208,7 +210,7 @@ func TestAgentProtectionRequiresUnambiguousScopedCapability(t *testing.T) {
 	t.Run("transport", func(t *testing.T) {
 		u, _ := url.Parse("http://" + dialtest.Refused)
 		got, err := AgentProtection(context.Background(), dialtest.Client(), &Target{Project: "demo", Env: "prod", Base: u, Prefix: prefix, Token: token})
-		if got != ProtectionUnknown || err == nil {
+		if got != ProtectionUnknown || !errors.Is(err, syscall.ECONNREFUSED) {
 			t.Fatalf("got %v, %v", got, err)
 		}
 	})

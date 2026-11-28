@@ -108,7 +108,7 @@ func TestGuideRequestErrorAfterProgressClear(t *testing.T) {
 				}
 				once.Do(func() { close(gate) })
 				synctest.Wait()
-				diagnostic := "agent connection failed\n"
+				diagnostic := "agent connection failed at agent.invalid:80: fixture failure\n"
 				if failure == "body" {
 					diagnostic = "invalid agent response\n"
 				}
