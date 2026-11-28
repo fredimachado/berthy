@@ -14,7 +14,7 @@ const bootstrapSchema = `
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, environment TEXT NOT NULL, request_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, remote TEXT NOT NULL, kind TEXT NOT NULL, app TEXT NOT NULL, commit_sha TEXT NOT NULL, request_hash BLOB NOT NULL, public_request BLOB NOT NULL, state TEXT NOT NULL, started INTEGER NOT NULL, error TEXT NOT NULL, schema_before TEXT NOT NULL, schema_after TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', modified INTEGER NOT NULL DEFAULT 0, no_return TEXT NOT NULL DEFAULT '', UNIQUE(environment,request_id));
  CREATE TABLE IF NOT EXISTS locks (environment TEXT PRIMARY KEY, operation_id TEXT REFERENCES operations(id), holder TEXT NOT NULL, reason TEXT NOT NULL, acquired INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL REFERENCES operations(id), kind TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS intents (operation_id TEXT NOT NULL REFERENCES operations(id), ordinal INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, service_id TEXT NOT NULL, generation TEXT NOT NULL, seen_version INTEGER NOT NULL, deadline INTEGER NOT NULL, before_sealed BLOB, desired_sealed BLOB NOT NULL, phase TEXT NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(operation_id,ordinal));
+ CREATE TABLE IF NOT EXISTS intents (operation_id TEXT NOT NULL REFERENCES operations(id), ordinal INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, service_id TEXT NOT NULL, generation TEXT NOT NULL, seen_version INTEGER NOT NULL, deadline INTEGER NOT NULL, before_sealed BLOB, desired_sealed BLOB NOT NULL, phase TEXT NOT NULL, receipt BLOB NOT NULL, uptime INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(operation_id,ordinal));
  CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY AUTOINCREMENT, environment TEXT NOT NULL, app TEXT NOT NULL, digest TEXT NOT NULL, commit_sha TEXT NOT NULL, manifest BLOB NOT NULL, created INTEGER NOT NULL, modified INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS applied (environment TEXT NOT NULL, app TEXT NOT NULL, release_id INTEGER NOT NULL REFERENCES releases(id), PRIMARY KEY(environment,app));
  CREATE TABLE IF NOT EXISTS bindings (environment TEXT NOT NULL, app TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL UNIQUE, service_id TEXT NOT NULL UNIQUE, PRIMARY KEY(environment,app,role));
@@ -52,6 +52,7 @@ var schemaSteps = [...]schemaStep{
 	18: {apply: schema18},
 	19: {}, // Claims are created by the unconditional bootstrap DDL.
 	20: {apply: schema20},
+	21: {apply: schema21, existingOnly: true},
 }
 
 const schemaVersion = len(schemaSteps) - 1
@@ -220,5 +221,15 @@ func schema20(tx *sql.Tx) error {
 		CREATE INDEX IF NOT EXISTS events_operation ON events(operation_id);
 		CREATE INDEX IF NOT EXISTS releases_app_id ON releases(environment,app,id);
 		CREATE INDEX IF NOT EXISTS operations_app_started ON operations(environment,app,started);`)
+	return err
+}
+
+func schema21(tx *sql.Tx) error {
+	// Intents written before schema 21 have no recorded candidate uptime threshold.
+	var has int
+	err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('intents') WHERE name='uptime'`).Scan(&has)
+	if err == nil && has == 0 {
+		_, err = tx.Exec(`ALTER TABLE intents ADD COLUMN uptime INTEGER NOT NULL DEFAULT 0`)
+	}
 	return err
 }

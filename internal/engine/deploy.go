@@ -408,6 +408,7 @@ type HealthProbe struct {
 // ContainerDiagnosis is what Docker knows about why a container is not running or not healthy.
 type ContainerDiagnosis struct {
 	State     string
+	Running   bool
 	ExitCode  int
 	OOMKilled bool
 	Error     string
@@ -429,6 +430,7 @@ func (e *Engine) DiagnoseContainer(ctx context.Context, id string) (ContainerDia
 	var x struct {
 		State struct {
 			Status, Error string
+			Running       bool
 			ExitCode      int
 			OOMKilled     bool
 			Health        *struct {
@@ -444,7 +446,7 @@ func (e *Engine) DiagnoseContainer(ctx context.Context, id string) (ContainerDia
 	if err = e.jsonRequest(ctx, "GET", "/containers/"+p+"/json", nil, nil, &x); err != nil {
 		return ContainerDiagnosis{}, err
 	}
-	d := ContainerDiagnosis{State: x.State.Status, ExitCode: x.State.ExitCode, OOMKilled: x.State.OOMKilled, Error: x.State.Error}
+	d := ContainerDiagnosis{State: x.State.Status, Running: x.State.Running, ExitCode: x.State.ExitCode, OOMKilled: x.State.OOMKilled, Error: x.State.Error}
 	if x.State.Health != nil {
 		d.Health = x.State.Health.Status
 		log := x.State.Health.Log

@@ -111,14 +111,14 @@ func addNote(d *Diagnostic, note string) {
 	}
 }
 
-// inspectInto adds what Docker knows about the container to d and reports whether it could be read.
-func inspectInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact func(string) string) {
+// inspectInto adds the container evidence and reports whether the same inspect showed a running, healthy container.
+func inspectInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact func(string) string) bool {
 	callCtx, cancel := context.WithTimeout(ctx, diagnosticCallTimeout)
 	diag, err := de.DiagnoseContainer(callCtx, d.Container)
 	cancel()
 	if err != nil {
 		addNote(d, "container unavailable")
-		return
+		return false
 	}
 	if diag.OOMKilled {
 		d.OOMKilled = true
@@ -131,6 +131,9 @@ func inspectInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact
 	}
 	switch diag.State {
 	case "exited", "dead":
+		if d.State == "running" || d.State == "starting" {
+			d.State = diag.State
+		}
 		code := diag.ExitCode
 		d.ExitCode = &code
 	}
@@ -139,6 +142,7 @@ func inspectInto(ctx context.Context, de diagnosticEngine, d *Diagnostic, redact
 		probe.Output = redact(probe.Output)
 		d.HealthLog = append(d.HealthLog, probe)
 	}
+	return diag.Running && diag.Health == "healthy"
 }
 
 // logsInto adds the container's last lines to d, redacted.
@@ -171,7 +175,7 @@ func (c *Controller) captureRollout(ctx context.Context, opID string, work []rol
 	de, _ := c.Engine.(diagnosticEngine)
 	var out []Diagnostic
 	for _, w := range work {
-		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, w.uptime, de, redact, redactable)...)
+		out = append(out, c.captureRole(ctx, opID, w.intent.Role, w.intent.Name, w.intent.ServiceID, w.intent.Uptime, de, redact, redactable)...)
 	}
 	return capDiagnostics(out)
 }
@@ -231,8 +235,8 @@ func (c *Controller) captureRole(ctx context.Context, opID, role, name, serviceI
 			d.ExitCode = &code
 		}
 		if t.ContainerID != "" && de != nil {
-			inspectInto(ctx, de, &d, redact)
-			if uptime == 0 && t.State == "running" && d.Health == "healthy" {
+			healthy := inspectInto(ctx, de, &d, redact)
+			if uptime == 0 && t.State == "running" && healthy {
 				continue
 			}
 			logsInto(ctx, de, &d, redact, redactable)

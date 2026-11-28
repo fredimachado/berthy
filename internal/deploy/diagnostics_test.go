@@ -288,7 +288,7 @@ func TestUpdatedRoleThatNeverBecameHealthyRecordsItsHealthLog(t *testing.T) {
 	probe := func(sec int) engine.HealthProbe {
 		return engine.HealthProbe{Start: time.Date(2026, 11, 16, 10, 0, sec, 0, time.UTC), ExitCode: 1, Output: "cannot connect to hunter2-secret@db"}
 	}
-	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
+	f.diagnose = map[string]engine.ContainerDiagnosis{"c-good": {State: "running", Running: true, Health: "healthy"}, "c-bad": {State: "running", Health: "starting", HealthLog: []engine.HealthProbe{probe(1), probe(2), probe(3)}}}
 	f.tails = map[string]string{"c-bad": "2026-11-16T10:00:01Z stdout waiting for the database\n"}
 	c, s := diagController(t, f)
 	if err := s.PutSecret(context.Background(), state.Actor{ID: "admin"}, state.SecretInfo{Name: "DB_PASSWORD"}, []byte("hunter2-secret")); err != nil {
@@ -895,13 +895,111 @@ func TestRolloutFailureOmitsReadyUptimeSibling(t *testing.T) {
 		f.diagnose[ready.ContainerID] = engine.ContainerDiagnosis{State: "running", Health: "none"}
 		f.tails = map[string]string{ready.ContainerID: "worker running", failed.ContainerID: "worker exited"}
 		work := []roleWork{
-			{intent: state.Intent{Role: "ready", Name: "ready", ServiceID: ready.ServiceID}, uptime: threshold},
-			{intent: state.Intent{Role: "failed", Name: "failed", ServiceID: failed.ServiceID}, uptime: threshold},
+			{intent: state.Intent{Role: "ready", Name: "ready", ServiceID: ready.ServiceID, Uptime: threshold}},
+			{intent: state.Intent{Role: "failed", Name: "failed", ServiceID: failed.ServiceID, Uptime: threshold}},
 		}
 		reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
 		evidence := storedDiagnostics(t, s, op.ID)
 		if reason != "role failed: task exited with code 1" || len(evidence) != 1 || evidence[0].Role != "failed" ||
 			f.callIndex("Diagnose:"+ready.ContainerID) != -1 || f.callIndex("LogTail:"+ready.ContainerID) != -1 {
+			t.Fatalf("reason %q, evidence %+v, calls %v", reason, evidence, f.calls)
+		}
+	})
+}
+
+type interruptedDiagnosticsEngine struct {
+	*boundFake
+	diagnostics *diagFake
+	tasks       map[string][]engine.ServiceTask
+}
+
+func (f *interruptedDiagnosticsEngine) ServiceTasks(_ context.Context, id string) ([]engine.ServiceTask, error) {
+	return f.tasks[id], nil
+}
+func (f *interruptedDiagnosticsEngine) DiagnoseContainer(ctx context.Context, id string) (engine.ContainerDiagnosis, error) {
+	return f.diagnostics.DiagnoseContainer(ctx, id)
+}
+func (f *interruptedDiagnosticsEngine) LogTail(ctx context.Context, id string, lines, maxBytes int) (string, bool, error) {
+	return f.diagnostics.LogTail(ctx, id, lines, maxBytes)
+}
+
+func TestInterruptedRolloutOmitsReadyUptimeSibling(t *testing.T) {
+	s := openStore(t)
+	docker := &interruptedDiagnosticsEngine{boundFake: &boundFake{}, diagnostics: newDiagFake()}
+	c := Controller{Engine: docker, Store: s, Environment: "test"}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "interrupted", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := uptimeManifest("20s", "1m")
+		m.Apps["web"].Roles["worker"] = m.Apps["web"].Roles["web"]
+		req := Request{App: "web", Manifest: m}
+		d := deployRun{opID: op.ID, prepared: preparedPlan{Request: req}}
+		for ordinal, role := range []string{"worker", "web"} {
+			if !c.planRoleWork(ctx, &d, engine.Image{}, nil, ordinal, role) {
+				t.Fatalf("plan %s: %s", role, d.outcome.Err)
+			}
+			intent := d.work[ordinal].intent
+			if err := s.RecordIntent(ctx, op.ID, intent); err != nil {
+				t.Fatal(err)
+			}
+			docker.add(role, intent.Desired)
+			receipt := json.RawMessage(fmt.Sprintf(`{"id":%q,"spec":%s}`, role, intent.Desired))
+			phase := "observed"
+			if role == "worker" {
+				phase = "verified"
+			}
+			if err := s.MarkStep(ctx, op.ID, ordinal, phase, receipt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		worker := runningTask("worker", op.ID)
+		worker.RunningSince = time.Now().Add(-20 * time.Second)
+		failed := failedTasks(op.ID, 1)[0]
+		docker.tasks = map[string][]engine.ServiceTask{
+			"worker": onService("worker", worker),
+			"web":    onService("web", failed),
+		}
+		logs := docker.diagnostics
+		logs.diagnose = exitedContainers(1, "none")
+		logs.diagnose[worker.ContainerID] = engine.ContainerDiagnosis{State: "running", Health: "none"}
+		logs.tails = map[string]string{worker.ContainerID: "worker running", failed.ContainerID: "failed sibling output"}
+
+		if err := c.Recover(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Operation(ctx, op.ID)
+		evidence := storedDiagnostics(t, s, op.ID)
+		if err != nil || got.State != "interrupted" || got.Reason != "role web: task exited with code 1" ||
+			len(evidence) != 1 || evidence[0].Role != "web" || evidence[0].Logs != "failed sibling output" ||
+			logs.callIndex("LogTail:"+failed.ContainerID) < 0 || logs.callIndex("LogTail:"+worker.ContainerID) >= 0 {
+			t.Fatalf("recovery %s reason %q (%v), evidence %+v, calls %v", got.State, got.Reason, err, evidence, logs.calls)
+		}
+	})
+}
+
+func TestRolloutDiagnosticsKeepExitedContainerWithRetainedHealth(t *testing.T) {
+	f := newDiagFake()
+	c, s := diagController(t, f)
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		op, _, err := s.Admit(ctx, state.Admission{RequestID: "retained-health", ActorID: "a", Kind: "deploy", App: "web", PublicRequest: json.RawMessage("{}")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.spec = json.RawMessage(fmt.Sprintf(`{"TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":%q}}}}`, op.ID))
+		task := runningTask("web", op.ID)
+		f.tasksFor = func(_, _ string) []engine.ServiceTask { return onService("id", task) }
+		f.diagnose = map[string]engine.ContainerDiagnosis{task.ContainerID: {State: "exited", Health: "healthy", ExitCode: 1}}
+		f.tails = map[string]string{task.ContainerID: "exited after passing its check"}
+
+		work := []roleWork{{intent: state.Intent{Role: "web", Name: "web", ServiceID: "id"}}}
+		reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
+		evidence := storedDiagnostics(t, s, op.ID)
+		if reason != "role web: task exited with code 1" || len(evidence) != 1 || evidence[0].Logs != f.tails[task.ContainerID] ||
+			evidence[0].ExitCode == nil || *evidence[0].ExitCode != 1 {
 			t.Fatalf("reason %q, evidence %+v, calls %v", reason, evidence, f.calls)
 		}
 	})

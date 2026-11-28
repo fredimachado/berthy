@@ -15,7 +15,6 @@ import (
 type roleWork struct {
 	intent   state.Intent
 	replicas int
-	uptime   time.Duration
 	// Recovery allowance if this role and every earlier role in the rollout need to be unwound.
 	recoveryAllowance time.Duration
 }

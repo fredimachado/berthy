@@ -203,3 +203,39 @@ func TestReasonSurvivesTheFinishThatFollowsRecovery(t *testing.T) {
 		t.Fatalf("operation %s reason %q: %v", got.State, got.Reason, err)
 	}
 }
+
+func TestUpgradeVersion20AddsIntentUptime(t *testing.T) {
+	s, dir, key := testStore(t)
+	ctx := context.Background()
+	op, _, err := s.Admit(ctx, Admission{RequestID: "interrupted", ActorID: "a", Kind: "deploy", PublicRequest: []byte("{}")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecordIntent(ctx, op.ID, Intent{Kind: "create", Role: "worker", Desired: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	var has int
+	if err = s.db.QueryRow("SELECT count(*) FROM pragma_table_info('intents') WHERE name='uptime'").Scan(&has); err != nil {
+		t.Fatal(err)
+	}
+	if has != 0 {
+		if _, err = s.db.Exec("ALTER TABLE intents DROP COLUMN uptime"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.db.Exec("PRAGMA user_version=20"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(dir, key, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var uptime int64
+	if err = upgraded.db.QueryRow("SELECT uptime FROM intents WHERE operation_id=?", op.ID).Scan(&uptime); err != nil || uptime != 0 {
+		t.Fatalf("old intent uptime = %d, %v, want 0", uptime, err)
+	}
+}

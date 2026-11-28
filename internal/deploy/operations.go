@@ -305,11 +305,11 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	ctx, cancel := context.WithTimeout(ctx, allowance)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	i := state.Intent{Ordinal: 1, Kind: "update", Role: b.Role, Name: b.Name, ServiceID: b.ServiceID, SeenVersion: live.Version, Generation: op.ID, Deadline: deadline, Before: live.Spec, Desired: desired}
+	i := state.Intent{Ordinal: 1, Kind: "update", Role: b.Role, Name: b.Name, ServiceID: b.ServiceID, SeenVersion: live.Version, Generation: op.ID, Deadline: deadline, Before: live.Spec, Desired: desired, Uptime: uptime}
 	if err = applyIntent(ctx, c.Store, c.Engine, op.ID, i, auth); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service update requires recovery"}
 	}
-	if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{uptime: uptime}, rolloutTiming{}); err != nil {
+	if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{uptime: i.Uptime}, rolloutTiming{}); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service health requires recovery"}
 	}
 	if err = waitDrain(ctx, c.Engine, b.ServiceID, op.ID); err != nil {

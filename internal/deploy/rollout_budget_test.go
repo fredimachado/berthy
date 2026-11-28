@@ -231,7 +231,7 @@ func (f *budgetEngine) InspectContainerHealth(ctx context.Context, id string) (s
 }
 
 func (f *budgetEngine) DiagnoseContainer(context.Context, string) (engine.ContainerDiagnosis, error) {
-	return engine.ContainerDiagnosis{State: "running", Health: "healthy"}, nil
+	return engine.ContainerDiagnosis{State: "running", Running: true, Health: "healthy"}, nil
 }
 
 func (f *budgetEngine) LogTail(context.Context, string, int, int) (string, bool, error) {
@@ -713,7 +713,7 @@ func TestDeployUnwindsAHealthyTaskThatThenFails(t *testing.T) {
 			f := newDiagFake()
 			f.diagnose = map[string]engine.ContainerDiagnosis{
 				"c-bad":  {State: "exited", ExitCode: 1, Health: "healthy"},
-				"c-good": {State: "running", Health: "healthy"},
+				"c-good": {State: "running", Running: true, Health: "healthy"},
 			}
 			f.tails = map[string]string{"c-bad": "candidate exited"}
 			var firstCandidate time.Time

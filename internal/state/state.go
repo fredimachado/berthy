@@ -69,6 +69,8 @@ type Intent struct {
 	Before, Desired                         json.RawMessage
 	Phase                                   string
 	Receipt                                 json.RawMessage
+	// Uptime is the candidate task age required by this service intent. Zero selects Docker health.
+	Uptime time.Duration
 	// NoReturn, when set, makes recording this step the operation's crossing of its point of no return, with this reason. The
 	// first reason an operation records stays.
 	NoReturn string
@@ -443,7 +445,7 @@ func owned(ctx context.Context, tx *sql.Tx, env, id string) error {
 	return err
 }
 func (s *Store) RecordIntent(ctx context.Context, id string, i Intent) error {
-	if i.Ordinal < 0 || !validJSON(i.Desired) || (len(i.Before) > 0 && !validJSON(i.Before)) {
+	if i.Ordinal < 0 || i.Uptime < 0 || !validJSON(i.Desired) || (len(i.Before) > 0 && !validJSON(i.Before)) {
 		return errors.New("invalid intent")
 	}
 	before, err := s.seal(intentRecord(id, i.Ordinal, "before"), i.Before)
@@ -474,7 +476,7 @@ func (s *Store) recordIntent(ctx context.Context, id string, i Intent, before, d
 	if err = owned(ctx, tx, s.env, id); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO intents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", receipt)
+	_, err = tx.ExecContext(ctx, `INSERT INTO intents(operation_id,ordinal,kind,role,name,service_id,generation,seen_version,deadline,before_sealed,desired_sealed,phase,receipt,uptime) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i.Ordinal, i.Kind, i.Role, i.Name, i.ServiceID, i.Generation, i.SeenVersion, i.Deadline.UnixMilli(), before, desired, "intent", receipt, int64(i.Uptime))
 	if err != nil {
 		return err
 	}
@@ -531,7 +533,7 @@ func (s *Store) markStep(ctx context.Context, id string, ordinal int, phase stri
 	return tx.Commit()
 }
 func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
-	rows, err := s.query(ctx, `SELECT i.ordinal,i.kind,i.role,i.name,i.service_id,i.generation,i.seen_version,i.deadline,i.before_sealed,i.desired_sealed,i.phase,i.receipt FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.id=? ORDER BY i.ordinal`, s.env, id)
+	rows, err := s.query(ctx, `SELECT i.ordinal,i.kind,i.role,i.name,i.service_id,i.generation,i.seen_version,i.deadline,i.before_sealed,i.desired_sealed,i.phase,i.receipt,i.uptime FROM intents i JOIN operations o ON o.id=i.operation_id WHERE o.environment=? AND o.id=? ORDER BY i.ordinal`, s.env, id)
 	if err != nil {
 		return nil, err
 	}
@@ -541,7 +543,7 @@ func (s *Store) Intents(ctx context.Context, id string) ([]Intent, error) {
 		var i Intent
 		var before, desired []byte
 		var deadline int64
-		if err = rows.Scan(&i.Ordinal, &i.Kind, &i.Role, &i.Name, &i.ServiceID, &i.Generation, &i.SeenVersion, &deadline, &before, &desired, &i.Phase, &i.Receipt); err != nil {
+		if err = rows.Scan(&i.Ordinal, &i.Kind, &i.Role, &i.Name, &i.ServiceID, &i.Generation, &i.SeenVersion, &deadline, &before, &desired, &i.Phase, &i.Receipt, &i.Uptime); err != nil {
 			return nil, err
 		}
 		i.Deadline = time.UnixMilli(deadline).UTC()

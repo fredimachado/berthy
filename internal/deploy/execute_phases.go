@@ -261,7 +261,8 @@ func (c *Controller) planRoleWork(ctx context.Context, d *deployRun, img engine.
 			return false
 		}
 	}
-	d.work = append(d.work, roleWork{intent: intent, replicas: replicas, uptime: uptime, recoveryAllowance: recoveryAllowance})
+	intent.Uptime = uptime
+	d.work = append(d.work, roleWork{intent: intent, replicas: replicas, recoveryAllowance: recoveryAllowance})
 	return true
 }
 
@@ -310,7 +311,7 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 		w.intent.Deadline = timing.cutoff
 		rollCtx, stopRoll := interruptible(ctx)
 		id := w.intent.ServiceID
-		starts := startBudget{limit: attempts, uptime: w.uptime}
+		starts := startBudget{limit: attempts, uptime: w.intent.Uptime}
 		var e error
 		if w.intent.Kind == "create" {
 			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
