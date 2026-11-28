@@ -240,7 +240,7 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo-prod
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared /var/lib/berthy, prepared the cluster state directory and key
+✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared the cluster state directory and key
 ✓ token       created an admin token named admin
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
