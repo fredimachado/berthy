@@ -75,6 +75,14 @@ func (f *finalCheckEngine) ServiceTasks(ctx context.Context, id string) ([]engin
 	return f.budgetEngine.ServiceTasks(ctx, id)
 }
 
+func (f *finalCheckEngine) InspectContainerHealth(ctx context.Context, id string) (string, error) {
+	if f.fault == "unhealthy" && f.allVerified(ctx) {
+		f.triggered = true
+		return "unhealthy", nil
+	}
+	return f.budgetEngine.InspectContainerHealth(ctx, id)
+}
+
 func (f *finalCheckEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
 	if f.triggered && f.foreign {
 		f.foreignMutations++
@@ -176,7 +184,7 @@ func assertFinalFault(t *testing.T, f *finalCheckEngine, s *state.Store, op stat
 
 func TestFinalRolloutFailureUnwindsVerifiedRoles(t *testing.T) {
 	for _, kind := range []string{"create", "update"} {
-		for _, fault := range []string{"inspect", "health", "drain"} {
+		for _, fault := range []string{"inspect", "health", "drain", "unhealthy"} {
 			t.Run(kind+"/"+fault, func(t *testing.T) {
 				c, s, f := finalFixture(t, fault, 1)
 				m := webManifest(testDeployTimeout, nil)

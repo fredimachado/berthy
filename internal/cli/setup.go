@@ -83,164 +83,60 @@ func runSetup(args []string, out, errout io.Writer) int {
 }
 
 func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writer) int {
-	fset := flag.NewFlagSet("setup", flag.ContinueOnError)
-	fset.SetOutput(errout)
-	fset.Usage = func() { fmt.Fprintln(errout, setupUsage) }
-	env := fset.String("e", "", "environment")
-	remove := fset.Bool("remove", false, "remove a hosted environment after its apps have been destroyed")
-	purge := fset.Bool("purge", false, "delete this removal's state instead of archiving it")
-	project := fset.String("project", "", "project name")
-	host := fset.String("host", "", "USER@SERVER to set up over ssh")
-	server := fset.String("server", "", "NAME of the manifest server to set up")
-	local := fset.Bool("local", false, "set up the server this command runs on")
-	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run unless the manifest gives the server's address")
-	network := fset.String("network", "", "the shared network, when there is no manifest")
-	protected := fset.Bool("protected", false, "mark the environment as protected, when there is no manifest")
-	dir := fset.String("manifest-dir", manifest.DefaultDir(), "directory of the manifest")
-	binary := fset.String("binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
-	keyFile := fset.String("key-file", "", "a saved encryption key to install, when rebuilding a server")
-	newToken := fset.Bool("new-token", false, "add another admin token")
-	showToken := fset.Bool("show-token", false, "print the admin token as well as saving it")
-	cliConfig := fset.String("config", "", "the CLI configuration to add the environment to (by default the one the CLI finds)")
-	noInstall := fset.Bool("no-install-docker", false, "stop when Docker is missing instead of installing it")
-	dry := fset.Bool("dry-run", false, "check and report what would change, without changing anything")
-	asJSON := fset.Bool("json", false, "report as JSON")
-	verbose := fset.Bool("verbose", false, "print each command setup sends and its exit status on standard error; with --dry-run, the commands a real run would send")
-	if err := fset.Parse(args); err != nil {
+	f, from, ok := parseSetupFlags(args, errout)
+	if !ok {
 		return 2
 	}
-	envGiven, keyFileGiven, hostGiven, serverGiven, purgeGiven := false, false, false, false, false
-	var installOnly string
-	fset.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "e":
-			envGiven = true
-		case "key-file":
-			keyFileGiven = true
-		case "host":
-			hostGiven = true
-		case "server":
-			serverGiven = true
-		case "purge":
-			purgeGiven = true
-		}
-		switch f.Name {
-		case "listen", "network", "protected", "binary", "key-file", "new-token", "show-token", "no-install-docker":
-			if installOnly == "" {
-				installOnly = f.Name
-			}
-		}
-	})
-	resolvedEnv, envFromVariable := agentclient.EnvironmentName(*env, envGiven)
-	*env = resolvedEnv
-	usage := func(format string, a ...any) int {
-		printRefusal(errout, fmt.Sprintf(format, a...), !*asJSON)
-		fmt.Fprintln(errout, setupUsage)
-		return 2
-	}
-	chosen := 0
-	if hostGiven {
-		chosen++
-	}
-	if serverGiven {
-		chosen++
-	}
-	if *local {
-		chosen++
-	}
-	switch {
-	case fset.NArg() != 0:
-		return usage("setup takes no arguments")
-	case purgeGiven && !*remove:
-		return usage("--purge requires --remove")
-	case *remove && installOnly != "":
-		return usage("--%s cannot be used with --remove", installOnly)
-	case *env == "":
-		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
-	case !scope.ValidEnvironment(*env):
-		if envFromVariable {
-			return usage("BERTHY_ENV is not a valid environment")
-		}
-		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
-	case chosen > 1:
-		return usage("use only one of --host, --server and --local")
-	case hostGiven && !sshhost.Valid(*host):
-		return usage("invalid --host %q: use USER@SERVER or SERVER", *host)
-	}
-	// The agent's address is needed on a first run only; the server's own configuration has it afterwards.
-	var ip net.IP
-	var port int
-	if *listen != "" {
-		var err error
-		if ip, port, err = setup.ParseListen(*listen); err != nil {
-			return usage("%v", err)
-		}
-	}
-	from, err := setupSettings(*dir, *env, *project, *network, *protected)
-	if err != nil {
-		return usage("%v", err)
-	}
-	var defaultListen net.IP
-	if !*local && !hostGiven {
-		dest, err := setupDestination(from.manifest, *env, *server, serverGiven)
-		if err != nil {
-			return usage("%v", err)
-		}
-		*host = dest.SSH
-		if dest.Address != "" {
-			defaultListen = net.ParseIP(dest.Address)
-		}
-	}
-	where := "on " + *host
-	if *local {
+	where := "on " + f.host
+	if f.local {
 		where = "on this server"
 	}
-	printBanner(errout, scope.ID{Project: from.project, Environment: *env}, where, envFromVariable, !*asJSON)
+	printBanner(errout, scope.ID{Project: from.project, Environment: f.env}, where, f.envFromVariable, !f.asJSON)
 	var preflightErr error
 	var steps []setup.Step
-	opts := setup.Options{Local: *local, Env: *env, Project: from.project, CLIConfig: *cliConfig}
-	if *remove {
-		steps = setup.RemovalSteps(*purge)
+	opts := setup.Options{Local: f.local, Env: f.env, Project: from.project, CLIConfig: f.config}
+	if f.remove {
+		steps = setup.RemovalSteps(f.purge)
 	} else {
 		steps = setup.Steps()
-		preflightErr = checkSetupTokenEnv(from.project, *env, *cliConfig)
-		if !*local {
+		preflightErr = checkSetupTokenEnv(from.project, f.env, f.config)
+		if !f.local {
 			if h, err := KeyHome(); err == nil && filepath.IsAbs(h) {
 				opts.KeyHome = h
 			}
 		}
 		opts.NewWrapKey = setupNewWrapKey
 		opts.Network, opts.Protected = from.network, from.protected
-		opts.ListenIP, opts.ListenPort, opts.DefaultListenIP = ip, port, defaultListen
-		opts.Binary, opts.KeyFile, opts.NewToken, opts.NoInstallDocker = *binary, *keyFile, *newToken, *noInstall
+		opts.ListenIP, opts.ListenPort, opts.DefaultListenIP = f.listenIP, f.listenPort, f.defaultListenIP
+		opts.Binary, opts.KeyFile, opts.NewToken, opts.NoInstallDocker = f.binary, f.keyFile, f.newToken, f.noInstall
 		opts.Build, opts.ReleaseURL, opts.Doctor = setupBuild(), os.Getenv("BERTHY_RELEASE_URL"), setupDoctor
 		opts.Tokens = agentclient.Tokens(ctx)
 	}
 
-	report := setupReport{Project: from.project, Environment: *env, Target: *host, DryRun: *dry, Remove: *remove, Steps: []setup.StepResult{}}
-	if *local {
+	report := setupReport{Project: from.project, Environment: f.env, Target: f.host, DryRun: f.dry, Remove: f.remove, Steps: []setup.StepResult{}}
+	if f.local {
 		report.Target = "this server"
 	}
-	progress := newProgressLine(errout, !*asJSON && !*verbose && stderrTerminal(errout))
-	words := !*verbose && stderrTerminal(out)
+	progress := newProgressLine(errout, !f.asJSON && !f.verbose && stderrTerminal(errout))
+	words := !f.verbose && stderrTerminal(out)
 	opts.StepStarted = progress.Start
 	show := func(r setup.StepResult) {
 		report.Steps = append(report.Steps, r)
-		if !*asJSON {
+		if !f.asJSON {
 			progress.Finish(out, r, words)
 		}
 	}
 	var session *setup.Session
 	if preflightErr != nil {
 		show(setup.StepResult{Step: "check", Status: setup.StatusFailed, Detail: terminalSafe(preflightErr.Error())})
-	} else if runner, err := newSetupRunner(*host, *local); err != nil {
+	} else if runner, err := newSetupRunner(f.host, f.local); err != nil {
 		show(setup.StepResult{Step: "connect", Status: setup.StatusFailed, Detail: terminalSafe(err.Error())})
 	} else {
 		report.Target = runner.Target()
-		session = &setup.Session{R: runner, Opts: opts, DryRun: *dry}
-		if *verbose {
+		session = &setup.Session{R: runner, Opts: opts, DryRun: f.dry}
+		if f.verbose {
 			// The log prints to standard error as the run goes; the report reads the same log for each step's commands.
-			logStyle := styleFor(errout, !*asJSON)
+			logStyle := styleFor(errout, !f.asJSON)
 			session.Log = setup.NewStyledCommandLog(errout, setup.CommandLogStyle{
 				Prompt: func(v string) string { return logStyle.paint(toneAccent, v) },
 				Exit: func(code int, v string) string {
@@ -255,40 +151,40 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		report.OK = setup.Run(ctx, session, steps, show)
 	}
 	progress.Close()
+	return writeSetupReport(ctx, f, from, report, session, out, errout)
+}
+
+func writeSetupReport(ctx context.Context, f setupFlags, from setupFrom, report setupReport, session *setup.Session, out, errout io.Writer) int {
 	// A failed run also shows an uncertain token because the server may have kept its configuration.
-	if !*remove && session != nil && session.Token != "" && (session.TokenLive && (!session.TokenStored || *showToken) || !report.OK && session.TokenUncertain) {
+	if !f.remove && session != nil && session.Token != "" && (session.TokenLive && (!session.TokenStored || f.showToken) || !report.OK && session.TokenUncertain) {
 		report.Token = session.Token
 	}
-	if !*remove && session != nil {
+	if !f.remove && session != nil {
 		report.TokenStored = session.TokenStored
-		if report.OK && !*dry {
+		if report.OK && !f.dry {
 			report.KeyCopy = session.KeyCopyPath
 		}
 	}
 	manifestDir := ""
-	if !*remove && report.OK && !*dry {
-		fset.Visit(func(f *flag.Flag) {
-			if f.Name == "manifest-dir" {
-				manifestDir = *dir
-			}
-		})
+	if !f.remove && report.OK && !f.dry && f.dirGiven {
+		manifestDir = f.dir
 	}
 	var secretStep secretsStep
-	if !*remove && from.manifest != nil {
+	if !f.remove && from.manifest != nil {
 		secretStep.declared = len(from.manifest.Secrets) > 0
 	}
-	if !*asJSON {
+	if !f.asJSON {
 		fmt.Fprintln(out, setupSummary(report, styleFor(out, true)))
 		if report.Token != "" {
-			fmt.Fprintf(out, "\nadmin token for %s (%s): %s\n", terminalSafe(from.project+"/"+*env), styleFor(out, true).paint(toneWarning, "shown once, store it now"), report.Token)
+			fmt.Fprintf(out, "\nadmin token for %s (%s): %s\n", terminalSafe(from.project+"/"+f.env), styleFor(out, true).paint(toneWarning, "shown once, store it now"), report.Token)
 		}
-		if !*remove && report.OK && !*dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
+		if !f.remove && report.OK && !f.dry && ctx.Err() == nil && from.manifest != nil && session.AdminToken() != "" {
 			if read, ok := hiddenInput(); ok {
-				id := scope.ID{Project: from.project, Environment: *env}
+				id := scope.ID{Project: from.project, Environment: f.env}
 				base, _ := url.Parse(session.AgentURL())
 				target := &agentclient.Target{Project: id.Project, Env: id.Environment, Base: base, Prefix: id.APIPath(), Token: session.AdminToken()}
 				fmt.Fprintln(out, "\nsecrets:")
-				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, *dir, *env, func() ([]byte, error) { return read(ctx) }, out, errout)
+				unmet, result := guideSecrets(ctx, agentclient.NewHTTPClient(), target, from.manifest, f.dir, f.env, func() ([]byte, error) { return read(ctx) }, out, errout)
 				secretStep.guided = result == guideDone
 				for _, need := range unmet {
 					secretStep.unmet = append(secretStep.unmet, need.Name)
@@ -296,10 +192,10 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 			}
 		}
 	}
-	if !*remove && report.OK && !*dry {
-		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: *env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, keyFileGiven: keyFileGiven, envFromVariable: envFromVariable, newToken: *newToken, config: *cliConfig, local: *local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
+	if !f.remove && report.OK && !f.dry {
+		report.NextSteps = setupNextSteps(nextSteps{id: scope.ID{Project: from.project, Environment: f.env}, keyCopy: report.KeyCopy, keyUnsettled: session.KeyUnsettled, keyFileGiven: f.keyFileGiven, envFromVariable: f.envFromVariable, newToken: f.newToken, config: f.config, local: f.local, tokenEnv: session.TokenEnv, storeToken: report.Token != "" && !session.TokenStored, ingress: from.ingress, manifestDir: manifestDir, secrets: secretStep, inferProject: from.manifest != nil})
 	}
-	if *asJSON {
+	if f.asJSON {
 		// Keep characters in next steps readable.
 		enc := json.NewEncoder(out)
 		enc.SetEscapeHTML(false)
@@ -320,6 +216,126 @@ func runSetupWithContext(ctx context.Context, args []string, out, errout io.Writ
 		return 1
 	}
 	return 0
+}
+
+type setupFlags struct {
+	env, host, dir, binary, keyFile, config                     string
+	local, newToken, showToken, noInstall, dry, asJSON, verbose bool
+	remove, purge                                               bool
+	envFromVariable, keyFileGiven, dirGiven                     bool
+	listenIP, defaultListenIP                                   net.IP
+	listenPort                                                  int
+}
+
+func parseSetupFlags(args []string, errout io.Writer) (setupFlags, setupFrom, bool) {
+	var f setupFlags
+	fset := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fset.SetOutput(errout)
+	fset.Usage = func() { fmt.Fprintln(errout, setupUsage) }
+	fset.StringVar(&f.env, "e", "", "environment")
+	fset.BoolVar(&f.remove, "remove", false, "remove a hosted environment after its apps have been destroyed")
+	fset.BoolVar(&f.purge, "purge", false, "delete this removal's state instead of archiving it")
+	project := fset.String("project", "", "project name")
+	fset.StringVar(&f.host, "host", "", "USER@SERVER to set up over ssh")
+	server := fset.String("server", "", "NAME of the manifest server to set up")
+	fset.BoolVar(&f.local, "local", false, "set up the server this command runs on")
+	listen := fset.String("listen", "", "ADDRESS:PORT the agent listens on; needed on the first run unless the manifest gives the server's address")
+	network := fset.String("network", "", "the shared network, when there is no manifest")
+	protected := fset.Bool("protected", false, "mark the environment as protected, when there is no manifest")
+	fset.StringVar(&f.dir, "manifest-dir", manifest.DefaultDir(), "directory of the manifest")
+	fset.StringVar(&f.binary, "binary", "", "a Linux build of Berthy to install instead of the release that matches this CLI")
+	fset.StringVar(&f.keyFile, "key-file", "", "a saved encryption key to install, when rebuilding a server")
+	fset.BoolVar(&f.newToken, "new-token", false, "add another admin token")
+	fset.BoolVar(&f.showToken, "show-token", false, "print the admin token as well as saving it")
+	fset.StringVar(&f.config, "config", "", "the CLI configuration to add the environment to (by default the one the CLI finds)")
+	fset.BoolVar(&f.noInstall, "no-install-docker", false, "stop when Docker is missing instead of installing it")
+	fset.BoolVar(&f.dry, "dry-run", false, "check and report what would change, without changing anything")
+	fset.BoolVar(&f.asJSON, "json", false, "report as JSON")
+	fset.BoolVar(&f.verbose, "verbose", false, "print each command setup sends and its exit status on standard error; with --dry-run, the commands a real run would send")
+	if err := fset.Parse(args); err != nil {
+		return setupFlags{}, setupFrom{}, false
+	}
+	var envGiven, hostGiven, serverGiven, purgeGiven bool
+	var installOnly string
+	fset.Visit(func(present *flag.Flag) {
+		switch present.Name {
+		case "e":
+			envGiven = true
+		case "key-file":
+			f.keyFileGiven = true
+		case "manifest-dir":
+			f.dirGiven = true
+		case "host":
+			hostGiven = true
+		case "server":
+			serverGiven = true
+		case "purge":
+			purgeGiven = true
+		}
+		switch present.Name {
+		case "listen", "network", "protected", "binary", "key-file", "new-token", "show-token", "no-install-docker":
+			if installOnly == "" {
+				installOnly = present.Name
+			}
+		}
+	})
+	f.env, f.envFromVariable = agentclient.EnvironmentName(f.env, envGiven)
+	usage := func(format string, a ...any) (setupFlags, setupFrom, bool) {
+		printRefusal(errout, fmt.Sprintf(format, a...), !f.asJSON)
+		fmt.Fprintln(errout, setupUsage)
+		return setupFlags{}, setupFrom{}, false
+	}
+	chosen := 0
+	if hostGiven {
+		chosen++
+	}
+	if serverGiven {
+		chosen++
+	}
+	if f.local {
+		chosen++
+	}
+	switch {
+	case fset.NArg() != 0:
+		return usage("setup takes no arguments")
+	case purgeGiven && !f.remove:
+		return usage("--purge requires --remove")
+	case f.remove && installOnly != "":
+		return usage("--%s cannot be used with --remove", installOnly)
+	case f.env == "":
+		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
+	case !scope.ValidEnvironment(f.env):
+		if f.envFromVariable {
+			return usage("BERTHY_ENV is not a valid environment")
+		}
+		return usage("setup needs -e ENV: lowercase letters, digits and dashes")
+	case chosen > 1:
+		return usage("use only one of --host, --server and --local")
+	case hostGiven && !sshhost.Valid(f.host):
+		return usage("invalid --host %q: use USER@SERVER or SERVER", f.host)
+	}
+	// The agent's address is needed on a first run only; the server's own configuration has it afterwards.
+	if *listen != "" {
+		var err error
+		if f.listenIP, f.listenPort, err = setup.ParseListen(*listen); err != nil {
+			return usage("%v", err)
+		}
+	}
+	from, err := setupSettings(f.dir, f.env, *project, *network, *protected)
+	if err != nil {
+		return usage("%v", err)
+	}
+	if !f.local && !hostGiven {
+		dest, err := setupDestination(from.manifest, f.env, *server, serverGiven)
+		if err != nil {
+			return usage("%v", err)
+		}
+		f.host = dest.SSH
+		if dest.Address != "" {
+			f.defaultListenIP = net.ParseIP(dest.Address)
+		}
+	}
+	return f, from, true
 }
 
 func checkSetupTokenEnv(project, env, config string) error {
