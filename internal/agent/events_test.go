@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -266,24 +267,24 @@ func TestDeployWakesMonitorAfterDockerEventRebuilds(t *testing.T) {
 		defer func() { cancel(); <-eventsDone }()
 		synctest.Wait()
 
-		rebuilds := 0
+		var rebuilds atomic.Int32
 		w.mon.Checks = func(ctx context.Context) []monitor.Check {
-			rebuilds++
+			rebuilds.Add(1)
 			return w.checks(ctx)
 		}
 		monitorDone := make(chan struct{})
 		go func() { defer close(monitorDone); w.mon.Run(ctx) }()
 		defer func() { cancel(); <-monitorDone }()
 		synctest.Wait()
-		if rebuilds != 1 {
-			t.Fatalf("initial rebuild count = %d, want 1", rebuilds)
+		if got := rebuilds.Load(); got != 1 {
+			t.Fatalf("initial rebuild count = %d, want 1", got)
 		}
 		start := time.Now()
 		// Drain the follow-up and pass the kick gap before allowing the deploy to commit.
 		<-time.After(10 * time.Second)
 		synctest.Wait()
-		if rebuilds != 2 {
-			t.Fatalf("rebuild count after Docker events = %d, want 2", rebuilds)
+		if got := rebuilds.Load(); got != 2 {
+			t.Fatalf("rebuild count after Docker events = %d, want 2", got)
 		}
 		names := func() []string {
 			t.Helper()
