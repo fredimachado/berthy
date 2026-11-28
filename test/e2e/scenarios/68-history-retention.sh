@@ -6,6 +6,10 @@ set -uo pipefail
 
 svc="$PROJECT-$ENVN-web-main"
 image="$REG/e2e/web@$WEB_V1_DIGEST"
+fixture_value=history-retention-probe-value
+fixture_secret=HISTORY_FIXTURE_SECRET
+set_fixture_secret() { printf '%s' "$fixture_value" | adm secret set "$fixture_secret" >/dev/null 2>&1; }
+
 applied_id() {
   printf 'Authorization: Bearer %s\n' "$BERTHY_ADMIN_TOKEN" |
     curl_local --fail --header @- "http://$AGENT_LISTEN/v1/projects/$PROJECT/environments/$ENVN/applied/web" |
@@ -16,9 +20,66 @@ revision() {
   service_spec "$svc" | jq -er '.TaskTemplate.ContainerSpec.Env[] | select(startswith("REVISION=")) | ltrimstr("REVISION=")'
 }
 
+hook_ids() {
+  d ps -aq --no-trunc --filter "label=berthy.project=$PROJECT" --filter "label=berthy.environment=$ENVN" \
+    --filter 'label=berthy.app=web' --filter 'label=berthy.oneoff=pre_hook'
+}
+
+check_historical_evidence() {
+  local cid out code empty hooks
+  # Managed logs select active Swarm tasks. Feed the canary to the current task on stdin so the fixture value stays out of argv.
+  cid=$(d ps -q --filter "label=com.docker.swarm.service.name=$svc")
+  printf 'history-probe %s\n' "$fixture_value" | d exec -i "$cid" sh -c 'cat > /proc/1/fd/1' >/dev/null 2>&1
+  expect_code "write a log record using the retired mapping's fixture value" 0 "$?"
+  out=$(adm logs image:web --grep '^history-probe ' 2>&1); code=$?
+  expect_code "read the managed logs after revision three" 0 "$code"
+  if [[ $out == *'history-probe [REDACTED]'* && $out != *"$fixture_value"* ]]; then
+    pass "managed logs redact the value from the first release's mapping"
+  else
+    fail "managed logs redact the value from the first release's mapping" "redacted probe missing or fixture value exposed"
+  fi
+
+  adm secret rm "$fixture_secret" >/dev/null 2>&1
+  expect_code "remove the fixture secret" 0 "$?"
+  check_fixture_secret_absent
+  empty=$(mktemp -d "$RUN/empty-manifest.XXXXXX")
+  out=$(adm secret generate "$fixture_secret" --manifest-dir "$empty" 2>&1); code=$?
+  rmdir "$empty"
+  expect_code "refuse named generation from an empty manifest directory" 1 "$code"
+  if [[ $out == *"app web was deployed here and may hold the value of $fixture_secret"* ]]; then
+    pass "generation names the historical reader"
+  else
+    fail "generation names the historical reader" "historical-reader diagnostic missing"
+  fi
+  check_fixture_secret_absent
+  set_fixture_secret
+  expect_code "restore the fixture secret for the rollback checks" 0 "$?"
+
+  adm prune >/dev/null 2>&1
+  expect_code "prune the journaled pre-deploy hook" 0 "$?"
+  if hooks=$(hook_ids) && [[ -n $first_hook && -z $hooks ]]; then
+    pass "the journaled pre-deploy hook is gone"
+  else
+    fail "the journaled pre-deploy hook is gone" "missing initial hook identity or a hook is still present"
+  fi
+}
+
+check_fixture_secret_absent() {
+  local listed
+  if listed=$(adm secret list 2>&1) && [[ $listed != *"$fixture_secret"* ]]; then
+    pass "the fixture secret is absent"
+  else
+    fail "the fixture secret is absent" "secret list failed or still names the fixture"
+  fi
+}
+
+set_fixture_secret
+expect_code "store a fixture secret before the first deploy" 0 "$?"
 ids=()
+first_hook=""
 for rev in {1..7}; do
-  write_manifest <<YML
+  {
+    cat <<YML
 project: $PROJECT
 network: $NETWORK
 apps:
@@ -38,14 +99,33 @@ apps:
       plain:
         REVISION: "$rev"
 YML
+    if [[ $rev == 1 ]]; then
+      cat <<YML
+      secret:
+        - HISTORY_OLD_VAR: $fixture_secret
+    hooks:
+      pre_deploy:
+        - run: ["true"]
+YML
+    fi
+  } | write_manifest
   out=$(adm deploy web --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
-  expect_code "deploy revision $rev" 0 "$code" "$out"
+  expect_code "deploy revision $rev" 0 "$code" "${out//"$fixture_value"/[REDACTED]}"
   if ! id=$(applied_id) || [[ ! $id =~ ^[1-9][0-9]*$ ]]; then
     fail "read the applied release for revision $rev" "invalid release ID '$id'"
     finish
     exit 1
   fi
   ids+=("$id")
+  if [[ $rev == 1 ]]; then
+    if first_hook=$(hook_ids) && [[ $first_hook =~ ^[0-9a-f]{64}$ ]]; then
+      pass "the first release left a journaled hook container"
+    else
+      fail "the first release left a journaled hook container" "expected exactly one hook ID"
+    fi
+  elif [[ $rev == 3 ]]; then
+    check_historical_evidence
+  fi
 done
 
 out=$(adm history web 2>&1); code=$?
@@ -58,6 +138,7 @@ expect_eq "rollback restores revision six in the Swarm service" 6 "$(revision)"
 before=$(applied_id)
 
 out=$(adm rollback web --to "${ids[0]}" 2>&1); code=$?
+out=${out//"$fixture_value"/[REDACTED]}
 expect_code "refuse rollback to release ${ids[0]}" 1 "$code" "$out"
 expect_contains "explain the retained history boundary" "$out" "rollback release is outside retained history; choose a release from berthy history"
 expect_eq "refusal preserves the applied release" "$before" "$(applied_id)"
