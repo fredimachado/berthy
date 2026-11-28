@@ -12,6 +12,7 @@ import (
 
 	"berthy/internal/deploy"
 	"berthy/internal/monitor"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 	"berthy/internal/telemetry"
 )
@@ -53,7 +54,7 @@ func (r *Reports) Wait() { r.wg.Wait() }
 
 // OperationStarted queues the start record of an operation.
 func (r *Reports) OperationStarted(_ context.Context, e deploy.OperationEvent) {
-	r.logs.Emit(operationRecord(e, e.Started, e.Kind+" started"))
+	r.logs.Emit(operationRecord(r.cfg.ID(), e, e.Started, e.Kind+" started"))
 }
 
 // OperationEnded queues the end record of an operation and, for a deploy or rollback the policy lets through, sends the
@@ -64,7 +65,7 @@ func (r *Reports) OperationEnded(_ context.Context, e deploy.OperationEvent) {
 	if r.wakeAppChecks != nil && (e.Kind == "deploy" || e.Kind == "rollback") && e.State != "recovery_required" {
 		r.wakeAppChecks()
 	}
-	r.logs.Emit(operationRecord(e, e.Ended, e.Kind+" "+strings.ReplaceAll(e.State, "_", " ")))
+	r.logs.Emit(operationRecord(r.cfg.ID(), e, e.Ended, e.Kind+" "+strings.ReplaceAll(e.State, "_", " ")))
 	if !alertableKind(e) {
 		return
 	}
@@ -99,7 +100,7 @@ func (r *Reports) alert(e deploy.OperationEvent) {
 		return
 	}
 	// The failure names the channel, never its URL or token.
-	if err := notifiers.Notify(ctx, deployAlert(e)); err != nil {
+	if err := notifiers.Notify(ctx, deployAlert(r.cfg.ID(), e)); err != nil {
 		r.logf("deploy alert not sent: " + err.Error())
 	}
 }
@@ -137,12 +138,12 @@ func wantsDeployAlert(deploys string, e deploy.OperationEvent) bool {
 
 // deployAlert is the alert of a finished deploy or rollback: the fields a webhook gets, and the text Telegram gets. The detail
 // is the public reason for a failure, and the version for a success.
-func deployAlert(e deploy.OperationEvent) monitor.Alert {
+func deployAlert(id scope.ID, e deploy.OperationEvent) monitor.Alert {
 	detail := oneLine(e.Version)
 	if e.State != "succeeded" {
 		detail = deployReason(e)
 	}
-	return monitor.Alert{Environment: oneLine(e.Environment), Kind: "deploy", Name: oneLine(e.App), State: e.State, Detail: detail, Since: e.Ended, Text: deployAlertText(e)}
+	return monitor.Alert{Project: id.Project, Environment: id.Environment, Kind: "deploy", Name: oneLine(e.App), State: e.State, Detail: detail, Since: e.Ended, Text: deployAlertText(id, e)}
 }
 
 // deployReason is the public reason a deploy or rollback did not succeed, or empty.
@@ -157,9 +158,9 @@ func deployReason(e deploy.OperationEvent) string {
 // deployAlertText is the message of a finished deploy or rollback: the environment, the app and its version, who asked, and
 // how long it took, and for a failure the public reason and the command that shows the operation's evidence. It holds no
 // output of the application, only the reason the deploy package wrote.
-func deployAlertText(e deploy.OperationEvent) string {
+func deployAlertText(id scope.ID, e deploy.OperationEvent) string {
 	version := oneLine(e.Version)
-	head := fmt.Sprintf("%s: %s", oneLine(e.Environment), oneLine(e.App))
+	head := fmt.Sprintf("%s: %s", oneLine(id.String()), oneLine(e.App))
 	tail := fmt.Sprintf("by %s in %s", oneLine(e.Actor), e.Ended.Sub(e.Started).Round(time.Second))
 	rollback := e.Kind == "rollback"
 	if e.State == "succeeded" {
@@ -190,7 +191,7 @@ func deployAlertText(e deploy.OperationEvent) string {
 	if reason != "" {
 		line += ": " + reason
 	}
-	return fmt.Sprintf("%s\n%s\nberthy diagnostics %s -e %s", line, tail, oneLine(e.OperationID), oneLine(e.Environment))
+	return fmt.Sprintf("%s\n%s\nberthy diagnostics %s -e %s --project %s", line, tail, oneLine(e.OperationID), oneLine(id.Environment), oneLine(id.Project))
 }
 
 // oneLine turns every control character into a space, so a name cannot add a line to a message.
@@ -204,14 +205,15 @@ func oneLine(s string) string {
 }
 
 // operationRecord is the log record of one operation start or end. Attributes whose value is unknown are left out.
-func operationRecord(e deploy.OperationEvent, at time.Time, body string) telemetry.LogRecord {
+func operationRecord(id scope.ID, e deploy.OperationEvent, at time.Time, body string) telemetry.LogRecord {
 	rec := telemetry.LogRecord{Time: at, Severity: telemetry.SeverityInfo, Body: body}
 	switch e.State {
 	case "failed", "rolled_back", "interrupted", "recovery_required":
 		rec.Severity = telemetry.SeverityWarn
 	}
 	for _, a := range [][2]string{
-		{"berthy.environment", e.Environment},
+		{scope.LabelProject, id.Project},
+		{scope.LabelEnvironment, id.Environment},
 		{"berthy.app", e.App},
 		{"berthy.operation.id", e.OperationID},
 		{"berthy.operation.kind", e.Kind},

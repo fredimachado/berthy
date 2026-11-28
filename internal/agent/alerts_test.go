@@ -136,7 +136,7 @@ func TestAFailedDeployIsOnePostAndOneTelegramMessage(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, call.body[k], v)
 		}
 	}
-	if call.body["text"] != deployAlertText(failedDeploy()) {
+	if call.body["text"] != deployAlertText(monitoringConfig("").ID(), failedDeploy()) {
 		t.Errorf("the webhook text is not the Telegram text: %v", call.body["text"])
 	}
 }

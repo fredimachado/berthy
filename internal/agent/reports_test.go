@@ -19,6 +19,7 @@ import (
 
 	"berthy/internal/deploy"
 	"berthy/internal/manifest"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -125,7 +126,7 @@ func TestADeployReportNamesTheProject(t *testing.T) {
 	} {
 		e := failed
 		tc.mutate(&e)
-		if got := deployAlertText(e); got != tc.want {
+		if got := deployAlertText(scope.ID{Project: "demo", Environment: "lab"}, e); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, tc.want)
 		}
 	}
@@ -186,7 +187,7 @@ func TestDeployReportsPolicies(t *testing.T) {
 	}{
 		{`,"deploys":"failed"`, []deploy.OperationEvent{succeededDeploy()}, nil},
 		{`,"deploys":"all"`, []deploy.OperationEvent{succeededDeploy()}, []string{"✅ demo/lab: api v1.4.2 deployed by ci in 48s"}},
-		{`,"deploys":"all"`, []deploy.OperationEvent{failedDeploy()}, []string{deployAlertText(failedDeploy())}},
+		{`,"deploys":"all"`, []deploy.OperationEvent{failedDeploy()}, []string{deployAlertText(scope.ID{Project: "demo", Environment: "lab"}, failedDeploy())}},
 		{`,"deploys":"none"`, []deploy.OperationEvent{succeededDeploy(), failedDeploy()}, nil},
 	} {
 		tg := newReportsTelegram(t)
