@@ -1467,7 +1467,7 @@ Each line is the time in UTC, the source and the message. The source is the role
 2026-11-17T02:07:51Z web.f77449eeec32 [stderr] panic: something
 ```
 
-`--json` prints the records as JSON instead. A line longer than 256 KiB is cut and ends with ` …[truncated]`; later lines still appear. The limit includes Docker's timestamp and its separating space.
+`--json` prints the records as JSON instead. A line longer than 256 KiB is cut and ends with ` …[truncated]`; later lines still appear. The limit includes Docker's timestamp and its separating space. A Docker daemon error appears as a stderr record for its source; logs from other sources continue.
 
 | Flag | Meaning |
 | --- | --- |

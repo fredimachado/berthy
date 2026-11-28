@@ -246,7 +246,7 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			if err != nil {
 				return fmt.Errorf("truncated log frame header: %w", err)
 			}
-			if (h[0] != 1 && h[0] != 2) || h[1] != 0 || h[2] != 0 || h[3] != 0 {
+			if (h[0] != 1 && h[0] != 2 && h[0] != 3) || h[1] != 0 || h[2] != 0 || h[3] != 0 {
 				return errors.New("invalid log frame header")
 			}
 			n := binary.BigEndian.Uint32(h[4:])
@@ -259,6 +259,20 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			}
 			if len(data) != int(n) {
 				return fmt.Errorf("truncated log frame: %w", io.ErrUnexpectedEOF)
+			}
+			if h[0] == 3 {
+				const origin = "Docker daemon error: "
+				message := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+				truncated := len(message) > MaxLineBytes-len(origin)
+				if truncated {
+					message = message[:MaxLineBytes-len(origin)] + TruncationMarker
+				}
+				message = origin + message
+				ts := time.Now().UTC()
+				if (!opts.Since.IsZero() && ts.Before(opts.Since)) || (opts.Grep != nil && !opts.Grep.MatchString(message)) {
+					return nil
+				}
+				return emit(Record{Identity: id, Timestamp: ts, Stream: "stderr", Message: message, Truncated: truncated})
 			}
 			p := pending[h[0]]
 			if at := bytes.IndexByte(p.prefix, ' '); at >= 0 && bytes.HasPrefix(data, p.prefix[:at+1]) {
