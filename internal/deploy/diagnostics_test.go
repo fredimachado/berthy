@@ -1007,12 +1007,15 @@ func TestRolloutDiagnosticsKeepExitedContainerWithRetainedHealth(t *testing.T) {
 
 func TestRolloutFailureKeepsHistoryWithoutBlamingRecoveredRole(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		slot uint64
-		want string
+		name   string
+		slot   uint64
+		gaveUp *errStartAttempts
+		want   string
 	}{
-		{"full coverage", 7, "role web: task exited with code 1"},
-		{"only one distinct slot", 2, "role worker: task exited with code 1; role web: task exited with code 1"},
+		{"full coverage", 7, nil, "role web: task exited with code 1"},
+		{"only one distinct slot", 2, nil, "role worker: task exited with code 1; role web: task exited with code 1"},
+		{"attempts exhausted with full coverage", 7, &errStartAttempts{Role: "worker", Failed: 1, Limit: 1},
+			"role worker: task exited with code 1 (gave up after 1 failed starts); role web: task exited with code 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDiagFake()
@@ -1041,7 +1044,11 @@ func TestRolloutFailureKeepsHistoryWithoutBlamingRecoveredRole(t *testing.T) {
 					{intent: state.Intent{Role: "web", Name: "web", ServiceID: "web", Uptime: threshold, Desired: json.RawMessage(`{"Mode":{"Replicated":{"Replicas":1}}}`)}, replicas: 1},
 				}
 
-				reason := c.recordRolloutFailure(ctx, op.ID, work, "rollout failed", nil)
+				fallback := "rollout failed"
+				if tc.gaveUp != nil {
+					fallback = rolloutFallback(tc.gaveUp)
+				}
+				reason := c.recordRolloutFailure(ctx, op.ID, work, fallback, tc.gaveUp)
 				evidence := storedDiagnostics(t, s, op.ID)
 				if len(evidence) != 2 || evidence[0].Role != "worker" || evidence[0].Logs != f.tails["c1"] ||
 					evidence[0].ExitCode == nil || *evidence[0].ExitCode != 1 || evidence[1].Role != "web" || evidence[1].Logs != f.tails["c2"] {

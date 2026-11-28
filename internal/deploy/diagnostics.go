@@ -317,6 +317,8 @@ func (c *Controller) recordRolloutFailure(ctx context.Context, opID string, work
 	defer cancel()
 	d, ready := c.captureRollout(capCtx, opID, work)
 	if gaveUp != nil {
+		// Attempt exhaustion takes precedence over ready coverage in waitHealthy.
+		delete(ready, gaveUp.Role)
 		for i := range d {
 			if d[i].Kind == "task" && d[i].Role == gaveUp.Role {
 				d[i].GaveUpAfter = gaveUp.Limit
