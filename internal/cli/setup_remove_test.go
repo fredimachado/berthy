@@ -27,6 +27,7 @@ type setupRemovalFixture struct {
 	restarts, dockerRequests        int
 	dockerActive, attached          bool
 	applied, failRestart, failState bool
+	stageTransport, stageRefusal    bool
 }
 
 func newSetupRemovalFixture(t *testing.T) (*setupRemovalFixture, string) {
@@ -63,7 +64,7 @@ func (r *setupRemovalFixture) Run(_ context.Context, script string, stdin io.Rea
 		return b
 	}
 	switch {
-	case script == "id -u; id -un":
+	case strings.Contains(script, "uid=$(id -u)"):
 		return answer("0\nroot\n")
 	case strings.HasPrefix(script, "# inspect removal configuration\n"):
 		return answer("present\n")
@@ -106,6 +107,12 @@ func (r *setupRemovalFixture) Run(_ context.Context, script string, stdin io.Rea
 		r.record = read()
 		return answer("")
 	case strings.Contains(script, "cat > /etc/berthy/agent.json.new"):
+		if r.stageTransport {
+			return setup.Result{}, &setup.SSHTransportError{Target: r.target}
+		}
+		if r.stageRefusal {
+			return setup.Result{Code: 1, Stderr: []byte("private-marker")}, nil
+		}
 		r.writes = append(r.writes, "stage")
 		r.staged = read()
 		return answer("")
@@ -342,6 +349,35 @@ func TestSetupRemoveReportsRemovalWithoutInstallAdvice(t *testing.T) {
 			}
 			if store.Calls() != 0 {
 				t.Fatalf("removal contacted the credential store %d times", store.Calls())
+			}
+		})
+	}
+}
+
+func TestRemovalConfigWriteReportsSSHFailure(t *testing.T) {
+	for _, transport := range []bool{true, false} {
+		t.Run(map[bool]string{true: "connection", false: "script refusal"}[transport], func(t *testing.T) {
+			r, cfg := newSetupRemovalFixture(t)
+			r.stageTransport = transport
+			r.stageRefusal = !transport
+			useSetupRemovalFixture(t, r)
+			code, out, diag := runSetupCmd("--remove", "--host", "ops@s1", "--project", "alpha", "-e", "dev", "--manifest-dir", t.TempDir(), "--config", cfg, "--json")
+			report := removalReport(t, out)
+			var step setup.StepResult
+			for _, s := range report.Steps {
+				if s.Step == "config" {
+					step = s
+				}
+				if s.Step == "service" {
+					t.Fatal("service ran after config failure")
+				}
+			}
+			want := "could not stage /etc/berthy/agent.json"
+			if transport {
+				want = "SSH connection to ops@s1 failed"
+			}
+			if code != 1 || step.Status != setup.StatusFailed || !strings.Contains(step.Detail, want) || strings.Contains(out+diag, "private-marker") || r.record == nil || slices.Contains(r.writes, "probe") || slices.Contains(r.writes, "swap") || r.restarts != 0 {
+				t.Fatalf("exit=%d step=%+v writes=%v restarts=%d output=%q stderr=%q", code, step, r.writes, r.restarts, out, diag)
 			}
 		})
 	}

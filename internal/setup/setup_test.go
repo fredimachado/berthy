@@ -41,13 +41,11 @@ func (f *fakeServer) SetSudo(v bool) { f.sudoSet = v }
 func (f *fakeServer) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
 	f.scripts = append(f.scripts, script)
 	switch {
-	case script == "id -u; id -un":
-		return Result{Stdout: []byte(f.uid + "\n" + f.user + "\n")}, nil
-	case script == "sudo -n true":
-		if f.sudoOK {
-			return Result{}, nil
+	case script == loginScript:
+		if f.uid != "0" && !f.sudoOK {
+			return Result{Stderr: []byte("sudo: a password is required\n"), Code: 10}, nil
 		}
-		return Result{Stderr: []byte("sudo: a password is required\n"), Code: 1}, nil
+		return Result{Stdout: []byte(f.uid + "\n" + f.user + "\n")}, nil
 	case strings.Contains(script, "echo \"os=$(uname"):
 		return Result{Stdout: []byte(strings.Join(f.probe, "\n") + "\n")}, nil
 	}
@@ -229,13 +227,44 @@ func TestSetUpServerChangesNothing(t *testing.T) {
 	}
 }
 
+func TestConnectUsesOneLoginProbe(t *testing.T) {
+	f := newServer(setUpServer())
+	login, err := Connect(context.Background(), f)
+	if err != nil || login.User != "ops" || !login.Sudo || !f.sudoSet || len(f.scripts) != 1 {
+		t.Fatalf("login=%+v err=%v sudo=%t calls=%d", login, err, f.sudoSet, len(f.scripts))
+	}
+}
+
+func TestConnectRejectsMalformedLogin(t *testing.T) {
+	for _, output := range []string{"", "1000\n", "oops\nops\n", "1000\nops\nextra\n", "1000\nops user\n"} {
+		t.Run(fmt.Sprintf("%q", output), func(t *testing.T) {
+			r := &loginAnswer{output: output}
+			_, err := Connect(context.Background(), r)
+			if err == nil || r.sudoSet {
+				t.Fatalf("output=%q err=%v sudo=%t", output, err, r.sudoSet)
+			}
+		})
+	}
+}
+
+type loginAnswer struct {
+	output  string
+	sudoSet bool
+}
+
+func (*loginAnswer) Target() string { return "s1" }
+func (r *loginAnswer) Run(context.Context, string, io.Reader) (Result, error) {
+	return Result{Stdout: []byte(r.output)}, nil
+}
+func (r *loginAnswer) SetSudo(bool) { r.sudoSet = true }
+
 func TestRootLoginUsesNoSudo(t *testing.T) {
 	f := &fakeServer{uid: "0", user: "root", probe: setUpServer()}
 	got, ok := runAll(t, f, false)
 	if !ok || got[0].Detail != "ops@s1" {
 		t.Fatalf("ok=%v connect = %+v", ok, got[0])
 	}
-	if f.sudoSet || f.ranAny("sudo -n true") {
+	if f.sudoSet {
 		t.Fatalf("root login asked for sudo")
 	}
 }
@@ -271,7 +300,7 @@ func TestSudoRefusedFailsConnect(t *testing.T) {
 type deadServer struct{ fakeServer }
 
 func (d *deadServer) Run(ctx context.Context, script string, stdin io.Reader) (Result, error) {
-	return Result{Stderr: []byte("ssh: connect to host s1 port 22: Connection refused\n"), Code: 255}, nil
+	return Result{}, &SSHTransportError{Target: d.Target(), reason: ": Connection refused"}
 }
 
 func TestConnectFailureNamesTheCause(t *testing.T) {
@@ -447,7 +476,7 @@ func assertOnlyReads(t *testing.T, f *fakeServer) {
 	t.Helper()
 	for _, s := range f.scripts {
 		switch {
-		case s == "id -u; id -un", s == "sudo -n true", strings.Contains(s, "uname -s"):
+		case s == loginScript, strings.Contains(s, "uname -s"):
 		default:
 			t.Errorf("a dry run sent %q", s)
 		}
@@ -590,13 +619,13 @@ func TestRemoteCommandAndSSHArgs(t *testing.T) {
 		t.Errorf("remoteCommand = %q", got)
 	}
 	args := sshArgs("ops@s1", true, "id -u")
-	want := []string{"-o", "BatchMode=yes", "-T", "--", "ops@s1", `sudo -n sh -c 'id -u'`}
+	want := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-T", "--", "ops@s1", `sudo -n sh -c 'id -u'`}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("sshArgs = %q", args)
 	}
 	// The destination is always after "--", and the script never becomes an argument of its own.
 	args = sshArgs("s1", false, "x; --version")
-	if len(args) != 6 || args[3] != "--" || args[4] != "s1" {
+	if len(args) != 12 || args[9] != "--" || args[10] != "s1" {
 		t.Errorf("sshArgs = %q", args)
 	}
 }

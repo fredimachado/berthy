@@ -45,7 +45,14 @@ func removeLocalContext(ctx context.Context, s *Session) (string, string, error)
 	if !ok {
 		return StatusOK, id.String() + " has no local CLI entry", nil
 	}
-	if !localContextMatches(s.Opts, entry.URL) || (!s.Opts.Local && !verifiedSSHAddress(ctx, s.R, s.Opts.ListenIP)) {
+	matches := localContextMatches(s.Opts, entry.URL)
+	if matches && !s.Opts.Local {
+		matches, err = verifiedSSHAddress(ctx, s.R, s.Opts.ListenIP)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if !matches {
 		verb := "kept"
 		if s.DryRun {
 			verb = "would keep"
@@ -68,30 +75,34 @@ type sshLoginRunner interface {
 
 var errNoSSHConnection = errors.New("SSH connection addresses are unavailable")
 
-func verifiedSSHAddress(ctx context.Context, r Runner, listen net.IP) bool {
+func verifiedSSHAddress(ctx context.Context, r Runner, listen net.IP) (bool, error) {
 	if listen.IsLoopback() {
-		return false
+		return false, nil
 	}
 	login, ok := r.(sshLoginRunner)
 	if !ok {
-		return false
+		return false, nil
 	}
 	// sshd sets SSH_CONNECTION for the login shell. sudo can drop it.
 	res, err := login.runSSHLogin(ctx, `printf '%s\n' "$SSH_CONNECTION"`)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return false, err
+	}
 	if err != nil || res.Code != 0 || len(res.Stderr) != 0 {
-		return false
+		return false, nil
 	}
 	fields := strings.Fields(string(res.Stdout))
 	if len(fields) != 4 || !net.ParseIP(fields[2]).Equal(listen) {
-		return false
+		return false, nil
 	}
 	client := net.ParseIP(fields[0])
 	if client == nil || client.IsLoopback() {
-		return false
+		return false, nil
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return false
+		return false, nil
 	}
 	// A local listen address can be a port forward. A nonlocal client address can be a jump host.
 	direct := false
@@ -101,11 +112,11 @@ func verifiedSSHAddress(ctx context.Context, r Runner, listen net.IP) bool {
 			continue
 		}
 		if ip.Equal(listen) {
-			return false
+			return false, nil
 		}
 		direct = direct || ip.Equal(client)
 	}
-	return direct
+	return direct, nil
 }
 
 func localContextMatches(opts Options, address string) bool {
@@ -131,6 +142,10 @@ case "$entry" in
 esac
 `
 	res, err := s.R.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return fmt.Errorf("cleanup finished, but deletion of the pending removal record is unconfirmed. Check %s on the server and retry this removal if it remains: %w", removalRecordPath(s.removal.ID), err)
+	}
 	if err != nil || res.Code != 0 || len(res.Stderr) != 0 || len(res.Stdout) != 0 {
 		return errors.New("cleanup finished, but the pending removal record could not be cleared. Retry this removal")
 	}

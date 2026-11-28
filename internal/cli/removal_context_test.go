@@ -26,7 +26,7 @@ func (r *removedContextServer) Run(_ context.Context, script string, input io.Re
 	cfg := `{"listen":"127.0.0.1:7710","environments":[{"project":"peer","environment":"dev","state_dir":"/peer/state","key_file":"/peer/key","tokens":[{"digest":"` +
 		strings.Repeat("a", 64) + `","scope":"admin"}]}]}`
 	switch {
-	case script == "id -u; id -un":
+	case strings.Contains(script, "uid=$(id -u)"):
 		return setup.Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.HasPrefix(script, "# inspect removal configuration\n"):
 		return setup.Result{Stdout: []byte("present\n")}, nil

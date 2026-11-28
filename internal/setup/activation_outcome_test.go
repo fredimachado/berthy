@@ -82,7 +82,7 @@ func (r *uncertainSetupRunner) Run(ctx context.Context, script string, stdin io.
 	}
 	if strings.Contains(script, "mv -f "+configPath+".new "+configPath) {
 		r.swap = true
-		return Result{Code: 255}, nil
+		return Result{}, &SSHTransportError{Target: r.Target()}
 	}
 	return r.agentFake.Run(ctx, script, stdin)
 }
@@ -109,7 +109,7 @@ func (r *outcomeRunner) Run(_ context.Context, script string, _ io.Reader) (Resu
 		case "swap cancelled":
 			return Result{}, context.Canceled
 		case "swap 255":
-			return Result{Code: 255}, nil
+			return Result{}, &SSHTransportError{Target: r.Target()}
 		}
 		if r.stage == "stop error" || r.stage == "stop 255" {
 			return Result{}, nil
@@ -127,7 +127,7 @@ func (r *outcomeRunner) Run(_ context.Context, script string, _ io.Reader) (Resu
 		case "rollback error", "binary rollback error", "stop error", "after rollback":
 			return Result{}, errors.New("transport lost")
 		case "rollback 255", "stop 255":
-			return Result{Code: 255}, nil
+			return Result{}, &SSHTransportError{Target: r.Target()}
 		}
 		if strings.Contains(script, " no no now") {
 			return Result{Stdout: []byte("guard=stopped\n")}, nil

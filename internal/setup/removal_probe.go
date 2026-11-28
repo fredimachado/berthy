@@ -51,6 +51,10 @@ func requireNoAppliedApps(ctx context.Context, r Runner, id scope.ID, stateDir s
 	script := "# check applied apps\nexec setpriv --reuid=berthy --regid=berthy --clear-groups /usr/local/bin/berthy agent has-applied-apps " +
 		shellQuote(id.Project) + " " + shellQuote(id.Environment) + " " + shellQuote(stateDir)
 	res, err := r.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return err
+	}
 	if err == nil && ctx.Err() == nil {
 		switch res.Code {
 		case 0:

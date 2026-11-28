@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"berthy/internal/keycopy"
@@ -57,6 +58,10 @@ func keyCopyStep(ctx context.Context, s *Session) (string, string, error) {
 		return notSaved("the server did not answer in time")
 	}
 	if err != nil {
+		var transport *SSHTransportError
+		if errors.As(err, &transport) {
+			return notSaved(fmt.Sprintf("SSH connection to %s failed", transport.Target))
+		}
 		return notSaved("the server did not hand over the key")
 	}
 	key, err := wrap.Unwrap(res.Stdout)

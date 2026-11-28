@@ -103,12 +103,12 @@ func TestSetupDryRunVerboseListsWhatARealRunSends(t *testing.T) {
 	}
 
 	for _, sc := range dry.scripts {
-		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
+		if !strings.Contains(sc, "uid=$(id -u)") && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			t.Errorf("a dry run sent %q", sc)
 		}
 	}
 	dryLog, realLog := parseVerboseLog(t, dryErr), parseVerboseLog(t, realErr)
-	if !slices.Contains(dryLog.byStep["connect"], "id -u; id -un") || !slices.Contains(dryLog.byStep["check"], probeScriptOf(dryLog.all)) {
+	if loginScriptOf(dryLog.byStep["connect"]) == "" || !slices.Contains(dryLog.byStep["check"], probeScriptOf(dryLog.all)) {
 		t.Errorf("the dry run's log does not list the reads it ran:\n%s", dryErr)
 	}
 	// Every script the real run sends is in the dry run's log.
@@ -134,6 +134,15 @@ func TestSetupDryRunVerboseListsWhatARealRunSends(t *testing.T) {
 	if changing != 11 {
 		t.Fatalf("%d steps would change, want 11:\n%s", changing, dryOut)
 	}
+}
+
+func loginScriptOf(scripts []string) string {
+	for _, script := range scripts {
+		if strings.Contains(script, "uid=$(id -u)") && strings.Contains(script, "sudo -n true") {
+			return script
+		}
+	}
+	return ""
 }
 
 // probeScriptOf is the probe among scripts, or "" when there is none.

@@ -40,6 +40,10 @@ func readRemovalFile(ctx context.Context, r Runner, name, file, owner string) ([
 	script += "case \"$entry\" in *\" $owner 600 1 regular file\") ;; *) exit 1;; esac\n"
 	script += removalReadLimit(`"$file"`) + "cat -- \"$file\"\n"
 	res, err := r.Run(ctx, script, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return nil, err
+	}
 	if err == nil && len(res.Stderr) == 0 {
 		if res.Code == 3 && len(res.Stdout) == 0 {
 			return nil, nil
@@ -114,6 +118,10 @@ func writeRemovalRecord(ctx context.Context, r Runner, rec removal) error {
 		"sync -- \"$tmp\"\nmv -fT -- \"$tmp\" " + shellQuote(file) + "\n" +
 		"sync -- " + shellQuote(agentConfigDir) + "\n"
 	res, err := r.Run(ctx, script, bytes.NewReader(raw))
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return err
+	}
 	if err != nil || res.Code != 0 {
 		return errors.New("could not write the removal record")
 	}

@@ -17,14 +17,14 @@ type removalNetwork struct {
 	used bool
 }
 
-func removalDockerReady(ctx context.Context, r Runner, socket string) bool {
+func removalDockerReady(ctx context.Context, r Runner, socket string) (bool, error) {
 	script := "# verify removal Docker service\nset -eu\n"
 	switch socket {
 	case dockerSocket, "/run/docker.sock":
 		script += "systemctl is-active --quiet docker\n"
 	default:
 		if !removalPathOK(socket) {
-			return false
+			return false, nil
 		}
 		// The listening Unix socket must be open in dockerd itself. A systemd socket alone can start Docker on connect.
 		script += "socket=" + shellQuote(socket) + "\n" + `
@@ -44,26 +44,45 @@ exit 1
 `
 	}
 	res, err := r.Run(ctx, script, nil)
-	return err == nil && res.Code == 0 && len(res.Stderr) == 0 && len(res.Stdout) == 0
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return false, err
+	}
+	return err == nil && res.Code == 0 && len(res.Stderr) == 0 && len(res.Stdout) == 0, nil
 }
 
 func removalDockerCommand(ctx context.Context, r Runner, socket, name string) (string, error) {
 	if socket == "" {
 		socket = dockerSocket
 	}
-	if !removalDockerReady(ctx, r, socket) {
+	ready, err := removalDockerReady(ctx, r, socket)
+	if err != nil {
+		return "", err
+	}
+	if !ready {
 		return "", fmt.Errorf("cannot establish the disposition of network %s because its Docker daemon could not be verified as running", name)
 	}
 	return "timeout 30 docker --host " + shellQuote("unix://"+socket) + " ", nil
 }
 
 func inspectRemovalNetwork(ctx context.Context, r Runner, docker, name string, expected *string) (removalNetwork, error) {
-	read := func(command string) (string, bool) {
+	read := func(command string) (string, error) {
 		res, err := r.Run(ctx, docker+command, nil)
-		return string(res.Stdout), err == nil && res.Code == 0 && len(res.Stderr) == 0 && len(res.Stdout) < maxCaptured
+		var transport *SSHTransportError
+		if errors.As(err, &transport) {
+			return "", err
+		}
+		if err != nil || res.Code != 0 || len(res.Stderr) != 0 || len(res.Stdout) >= maxCaptured {
+			return "", errors.New("invalid Docker response")
+		}
+		return string(res.Stdout), nil
 	}
-	list, ok := read("network ls --no-trunc --filter " + shellQuote("name=^"+name+"$") + " --format '{{.ID}} {{.Name}}'")
-	if !ok {
+	list, err := read("network ls --no-trunc --filter " + shellQuote("name=^"+name+"$") + " --format '{{.ID}} {{.Name}}'")
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return removalNetwork{}, err
+	}
+	if err != nil {
 		return removalNetwork{}, errors.New("cannot verify the configured Docker network")
 	}
 	if list == "" {
@@ -76,13 +95,16 @@ func inspectRemovalNetwork(ctx context.Context, r Runner, docker, name string, e
 	if expected != nil && id != *expected {
 		return removalNetwork{}, fmt.Errorf("the configured Docker network %s changed since this removal started", name)
 	}
-	out, ok := read("network inspect --format '{{json .}}' " + shellQuote(id))
+	out, err := read("network inspect --format '{{json .}}' " + shellQuote(id))
 	var network struct {
 		ID, Name, Scope, Driver string
 		Attachable, Ingress     *bool
 		Containers              json.RawMessage
 	}
-	if !ok || !strings.HasSuffix(out, "\n") || json.Unmarshal([]byte(out), &network) != nil {
+	if errors.As(err, &transport) {
+		return removalNetwork{}, err
+	}
+	if err != nil || !strings.HasSuffix(out, "\n") || json.Unmarshal([]byte(out), &network) != nil {
 		return removalNetwork{}, errors.New("cannot verify the configured Docker network")
 	}
 	if network.ID != id || network.Name != name || network.Scope != "swarm" || network.Driver != "overlay" ||
@@ -99,25 +121,34 @@ func inspectRemovalNetwork(ctx context.Context, r Runner, docker, name string, e
 			return removalNetwork{id: id, used: true}, nil
 		}
 	}
-	containers, ok := read("container ls -aq --no-trunc --filter " + shellQuote("network="+id))
+	containers, err := read("container ls -aq --no-trunc --filter " + shellQuote("network="+id))
 	containerIDs, valid := removalDockerLines(containers, validHexID)
-	if !ok || !valid {
+	if errors.As(err, &transport) {
+		return removalNetwork{}, err
+	}
+	if err != nil || !valid {
 		return removalNetwork{}, errors.New("cannot verify Docker container attachments")
 	}
 	if len(containerIDs) != 0 {
 		return removalNetwork{id: id, used: true}, nil
 	}
-	services, ok := read("service ls -q")
+	services, err := read("service ls -q")
 	serviceIDs, valid := removalDockerLines(services, swarmServiceRef.MatchString)
-	if !ok || !valid {
+	if errors.As(err, &transport) {
+		return removalNetwork{}, err
+	}
+	if err != nil || !valid {
 		return removalNetwork{}, errors.New("cannot verify Docker service references")
 	}
 	const references = `{{.ID}}{{range (index .Spec.TaskTemplate "Networks")}}{{printf " %s" .Target}}{{end}}{{range (index .Spec "Networks")}}{{printf " %s" .Target}}{{end}}{{with (index . "Endpoint")}}{{range (index . "VirtualIPs")}}{{printf " %s" .NetworkID}}{{end}}{{end}}`
 	for _, service := range serviceIDs {
-		out, ok := read("service inspect --format " + shellQuote(references) + " " + shellQuote(service))
+		out, err := read("service inspect --format " + shellQuote(references) + " " + shellQuote(service))
 		line, complete := strings.CutSuffix(out, "\n")
 		fields := strings.Split(line, " ")
-		if !ok || !complete || strings.Contains(line, "\n") || !swarmNetworkID.MatchString(fields[0]) || !strings.HasPrefix(fields[0], service) {
+		if errors.As(err, &transport) {
+			return removalNetwork{}, err
+		}
+		if err != nil || !complete || strings.Contains(line, "\n") || !swarmNetworkID.MatchString(fields[0]) || !strings.HasPrefix(fields[0], service) {
 			return removalNetwork{}, errors.New("cannot verify Docker service references")
 		}
 		for _, ref := range fields[1:] {
@@ -189,6 +220,10 @@ func removeNetworkStep(ctx context.Context, s *Session) (string, string, error) 
 		return StatusWouldChange, "would remove network " + rec.Network + " (" + network.id + ")", nil
 	}
 	res, err := s.R.Run(ctx, command, nil)
+	var transport *SSHTransportError
+	if errors.As(err, &transport) {
+		return "", "", err
+	}
 	if err == nil && res.Code == 0 && len(res.Stderr) == 0 && string(res.Stdout) == network.id+"\n" {
 		return StatusChanged, "removed network " + rec.Network + " (" + network.id + ")", nil
 	}

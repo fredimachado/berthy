@@ -72,7 +72,7 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 		}
 		answer, err := keywrap.Wrap(in, f.key)
 		return Result{Stdout: answer}, err
-	case script == "id -u; id -un":
+	case script == loginScript:
 		return Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
 		out := strings.Join(f.probe, "\n")
@@ -534,7 +534,7 @@ func TestDryRunOfFreshServerSendsOnlyReads(t *testing.T) {
 		t.Errorf("key detail = %q", d)
 	}
 	for _, sc := range f.scripts() {
-		if sc != "id -u; id -un" && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
+		if sc != loginScript && !strings.Contains(sc, "uname -s") && !strings.Contains(sc, "# hosted path probe") {
 			t.Errorf("a dry run sent %q", sc)
 		}
 	}
@@ -1150,7 +1150,7 @@ func TestBinaryStep(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := setUpAgent(t, x86)
-			f.versionCode = 255
+			f.versionErr = &SSHTransportError{Target: "s1"}
 			f.probe = with(without(f.probe, "bin_sha="), "bin_sha="+strings.Repeat("9", 64))
 			s := agentSession(t, f, x86, dry, func(o *Options) {
 				o.Build = Build{OS: "linux", Arch: "amd64", Path: x86, Version: "v1.2.3", Release: true}
@@ -1862,27 +1862,6 @@ func TestHTTPDoctorTellsUnreachableFromRefused(t *testing.T) {
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("err = %v", err)
 	}
-}
-
-func TestHostKeyFailureSaysWhatToDo(t *testing.T) {
-	r := &hostKeyRunner{}
-	_, err := Connect(context.Background(), r)
-	if err == nil || !strings.Contains(err.Error(), "Host key verification failed") ||
-		!strings.Contains(err.Error(), "connect once with ssh ops@s1 to check and accept the server's host key") {
-		t.Fatalf("err = %v", err)
-	}
-	// Other failures get no hint.
-	_, err = Connect(context.Background(), &deadServer{})
-	if err == nil || strings.Contains(err.Error(), "connect once") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-type hostKeyRunner struct{}
-
-func (hostKeyRunner) Target() string { return "ops@s1" }
-func (hostKeyRunner) Run(context.Context, string, io.Reader) (Result, error) {
-	return Result{Stderr: []byte("No ED25519 host key is known for s1.\nHost key verification failed.\n"), Code: 255}, nil
 }
 
 func TestParseFactsOfTheAgent(t *testing.T) {
