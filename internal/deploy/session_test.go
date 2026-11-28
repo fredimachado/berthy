@@ -79,7 +79,7 @@ func execSessionFixture(t *testing.T) (*Controller, *execSessionFake) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(runtimeTestManifest), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	spec := `{"Name":"app-web","TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"gen1"}}}}`
