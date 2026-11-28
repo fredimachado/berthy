@@ -65,6 +65,7 @@ wait_failures() {
     awk -v address="$2" -v limit="$3" '\''
       /[Ss]tart request repeated too quickly/ { print "unexpected start limit"; exit 1 }
       index($0, address) && /cannot assign requested address/ { n++; print "bind failure " n; fflush(); if (n >= limit) exit 0 }
+      END { if (n < limit) exit 1 }
     '\'' <"$dir/journal"
   ' sh "$after" "$late:7710" "$limit"
 }
@@ -77,7 +78,7 @@ grep -Fxq 'Restart=always' <<<"$settings" && grep -Fxq 'RestartUSec=5s' <<<"$set
 pass "setup upgrades the loaded restart policy"
 remote systemctl stop berthy || die "could not stop upgraded service"
 set_late
-new_cursor=$(cursor) || die "could not capture journal cursor"
+new_cursor=$(cursor) && [ -n "$new_cursor" ] || die "could not capture journal cursor"
 remote systemctl start berthy >/dev/null 2>&1 || true
 wait_failures "$new_cursor" 7 || die "retries did not continue"
 remote ip address add "$late/32" dev lo || die "could not assign late address"
