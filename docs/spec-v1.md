@@ -241,7 +241,9 @@ The command check fields are `interval`, `timeout`, `start_period`, `start_inter
 - **Command.** `test` starts with `CMD` or `CMD-SHELL` and succeeds on exit 0. The command runs inside the container and must be present in the image. With the example values, Docker marks a container that never becomes healthy as unhealthy after about 75 to 90 seconds, within one 120-second `deploy_timeout` window. Confirm Swarm support in your Docker version before using `start_interval`.
 - **Uptime.** Set `uptime` alone to a positive duration strictly shorter than `deploy.deploy_timeout`. Berthy sets the service's Docker health check to `["NONE"]` and reads Swarm task state from outside the container. Each required replica slot needs a current-generation task that has been running continuously for the threshold, followed by the rollout confirmation hold and final verification. A replacement starts its own clock.
 
-When switching from a command check in an overlay, clear `test` and any inherited command check options with `null`. Redeploy uptime roles with a supported check before downgrading below uptime support.
+When switching from a command check in an overlay, clear `test` and any inherited command check options with `null`.
+
+A v0.8.0 agent refuses any database schema above 19, including databases upgraded to schema 21 or later. The database upgrade is independent of the role's health check.
 
 During an uptime rollout, a candidate task marked `complete`, `failed`, or `rejected` spends one attempt. The policy includes clean exits during the confirmation hold. The rollout checks the candidate service and generation, and counts each task ID once.
 

@@ -674,7 +674,9 @@ Quote the number in `max-file`, as the example does. A role with `logging` gets 
 
 When switching from a command check in an overlay, set `test: null` and clear any inherited `interval`, `timeout`, `start_period`, `start_interval`, and `retries` with `null`. Run `berthy docs roles` for the available fields and defaults.
 
-Use a command check when you need evidence that the worker is making progress. A candidate that exits early spends a `deploy.start_attempts` attempt even when it exits with code 0. If the attempts run out during an update, Berthy restores the previous release and verifies its workers. Before downgrading to a version without uptime support, redeploy affected roles with a supported check.
+Use a command check when you need evidence that the worker is making progress. A candidate that exits early spends a `deploy.start_attempts` attempt even when it exits with code 0. If the attempts run out during an update, Berthy restores the previous release and verifies its workers.
+
+A v0.8.0 agent refuses any database schema above 19, including databases upgraded to schema 21 or later. The database upgrade is independent of the role's health check.
 
 **Environment.** `env.plain` values live in the manifest and are reviewed like code. `env.secret` lists secrets, and the values live in the agent. Each entry is either a secret's name, which is also the variable the container gets, or a one-key map from the variable to the secret's name:
 
@@ -1759,7 +1761,7 @@ A new version can fail for reasons only its own output explains: a missing setti
 
    For a failed `docker compose up`, look for `compose up` in the diagnostics to see the last lines of stderr with secrets redacted.
 
-   For each role of the new version it shows the newest tasks that have yet to pass readiness (at most 5 per role): Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
+   Berthy skips tasks that are ready when it captures diagnostics and keeps evidence of exited tasks. For each role of the new version, diagnostics show the newest tasks with evidence (at most 5 per role), including Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
 
    After an operation journal expires, its ID still answers status with a compact terminal record. Audit entries and request replay protection survive. Detailed steps and command output can expire with the journal. Diagnostics have their own limit, and an approved `exec` or `run` keeps its output while the approval result is available.
 
