@@ -134,7 +134,8 @@ func (r *SSH) run(ctx context.Context, sudo bool, script string, stdin io.Reader
 		reason = ": Host key verification failed; connect once with ssh " + r.Dest + " to check and accept the server's host key"
 	case strings.Contains(string(res.Stderr), "Connection refused"):
 		reason = ": Connection refused"
-	case strings.Contains(string(res.Stderr), "Connection timed out") || strings.Contains(string(res.Stderr), "Operation timed out"):
+	case strings.Contains(string(res.Stderr), "Connection timed out") || strings.Contains(string(res.Stderr), "Operation timed out") ||
+		strings.Contains(string(res.Stderr), "Timeout, server ") && strings.Contains(string(res.Stderr), " not responding."):
 		reason = ": Connection timed out"
 	}
 	return Result{}, &SSHTransportError{Target: r.Dest, reason: reason}

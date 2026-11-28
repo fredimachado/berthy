@@ -144,7 +144,7 @@ esac
 	res, err := s.R.Run(ctx, script, nil)
 	var transport *SSHTransportError
 	if errors.As(err, &transport) {
-		return fmt.Errorf("cleanup finished, but the pending removal record could not be cleared. Retry this removal: %w", err)
+		return fmt.Errorf("cleanup finished, but deletion of the pending removal record is unconfirmed. Check %s on the server and retry this removal if it remains: %w", removalRecordPath(s.removal.ID), err)
 	}
 	if err != nil || res.Code != 0 || len(res.Stderr) != 0 || len(res.Stdout) != 0 {
 		return errors.New("cleanup finished, but the pending removal record could not be cleared. Retry this removal")

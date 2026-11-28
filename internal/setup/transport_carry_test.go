@@ -28,9 +28,6 @@ func (r *transportInjection) Run(ctx context.Context, script string, in io.Reade
 	if r.match == "service inspect" && strings.Contains(script, "service ls -q") {
 		return Result{Stdout: []byte("wcxk9hlk7pka26iwkly94laa0\n")}, nil
 	}
-	if r.match == "never" && strings.Contains(script, "# clear removal record") {
-		return Result{}, nil
-	}
 	if strings.Contains(script, r.match) {
 		return Result{Stdout: []byte("private-secret"), Stderr: []byte("private-secret")}, &SSHTransportError{Target: "ops@s1"}
 	}
@@ -157,12 +154,13 @@ func TestRemovalReportsSSHFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		base.record = []byte("pending")
+		base.stateClean, base.networkGone = true, true
 		r := &transportInjection{Runner: base, match: "never"}
 		s := &Session{R: r, Opts: opts, removal: &removal{ID: scope.ID{Project: "alpha", Environment: "dev"}, Activated: true}}
 		_, _, err := removeCLIConfigStep(context.Background(), s)
 		after, readErr := os.ReadFile(opts.CLIConfig)
-		if err == nil || !strings.Contains(err.Error(), "SSH connection to ops@s1 failed") || !bytes.Equal(before, after) || readErr != nil || string(base.record) != "pending" {
-			t.Fatalf("err=%v config=%q record=%q", err, after, base.record)
+		if err == nil || !strings.Contains(err.Error(), "SSH connection to ops@s1 failed") || !bytes.Equal(before, after) || readErr != nil || string(base.record) != "pending" || len(r.calls) != 1 || r.calls[0] != "login" {
+			t.Fatalf("err=%v config=%q record=%q calls=%v", err, after, base.record, r.calls)
 		}
 	})
 	for _, mode := range []string{"orphan", "previous"} {
@@ -205,4 +203,30 @@ func TestRemovalReportsSSHFailure(t *testing.T) {
 		})
 	}
 
+}
+
+// clearThenLoseRunner models a deletion that completed before the response was lost.
+type clearThenLoseRunner struct{ *removalRunner }
+
+func (r *clearThenLoseRunner) Run(ctx context.Context, script string, in io.Reader) (Result, error) {
+	res, err := r.removalRunner.Run(ctx, script, in)
+	if strings.HasPrefix(script, "# clear removal record\n") && err == nil {
+		return Result{}, &SSHTransportError{Target: "ops@s1"}
+	}
+	return res, err
+}
+
+func TestRemovalRecordDeletionResponseLost(t *testing.T) {
+	base, opts := newRemovalRunner(t)
+	opts.Local = true
+	base.record = []byte("pending")
+	base.stateClean, base.networkGone = true, true
+	r := &clearThenLoseRunner{base}
+	id := scope.ID{Project: "alpha", Environment: "dev"}
+	s := &Session{R: r, Opts: opts, removal: &removal{ID: id, Activated: true}}
+	_, _, err := removeCLIConfigStep(context.Background(), s)
+	var transport *SSHTransportError
+	if !errors.As(err, &transport) || base.record != nil || !strings.Contains(err.Error(), "unconfirmed") || !strings.Contains(err.Error(), removalRecordPath(id)) || !strings.Contains(err.Error(), "retry") || !strings.Contains(err.Error(), "if it remains") {
+		t.Fatalf("err=%v record=%q mutations=%v", err, base.record, base.mutations)
+	}
 }

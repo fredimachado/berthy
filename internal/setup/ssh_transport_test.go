@@ -74,6 +74,15 @@ func TestSSHHostKeyAndRefusal(t *testing.T) {
 	}
 }
 
+func TestSSHKeepaliveTimeoutUsesSafeDiagnostic(t *testing.T) {
+	r := fakeSSH(t, `echo 'Timeout, server private-server not responding. private-secret' >&2; echo private-stdout; exit 255`)
+	res, err := r.Run(context.Background(), "id", nil)
+	var transport *SSHTransportError
+	if !errors.As(err, &transport) || err.Error() != "SSH connection to ops@s1 failed: Connection timed out" || len(res.Stdout) != 0 || len(res.Stderr) != 0 || res.Code != 0 {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
 func TestSudoProbeConnectionFailure(t *testing.T) {
 	r := fakeSSH(t, `case "$*" in *"sudo -n true"*) exit 255;; *) printf '1000\nops\n';; esac`)
 	_, err := Connect(context.Background(), r)
