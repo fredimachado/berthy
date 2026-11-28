@@ -224,13 +224,23 @@ wait_for() {
   return 1
 }
 
-# write_agent_config: writes $RUN/agent.json from the fragments in $RUN/environments.d/*.json, one hosted environment each, in
-# name order. The agent's own settings are the fixture's. The file is private, as the agent requires.
+prepare_cluster_fixture() (
+  umask 077
+  set -o noclobber
+  mkdir -p "$1/state" && head -c 32 /dev/urandom > "$1/key"
+)
+
+# write_agent_config keeps the cluster block and writes the hosted fragments in name order.
 write_agent_config() {
-  local f sep=
+  local f sep= cluster
+  if [ -f "$RUN/agent.json" ]; then
+    cluster=$(jq -ce '.cluster' "$RUN/agent.json") || return 1
+  else
+    cluster=$(jq -cn --arg dir "$RUN/cluster" '{state_dir: ($dir + "/state"), key_file: ($dir + "/key")}') || return 1
+  fi
   {
-    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"environments":[' \
-      "$AGENT_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN"
+    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"cluster":%s,"environments":[' \
+      "$AGENT_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN" "$cluster"
     for f in "$RUN"/environments.d/*.json; do
       [ -f "$f" ] || continue
       printf '%s' "$sep"
@@ -415,10 +425,11 @@ start_agent2() {
   printf "export %s='%s'\n" "$var" "$token" >> "$RUN/env.sh" || return 1
   export "$var=$token"
   (umask 077 && mkdir -p "$RUN/state2" && head -c 32 /dev/urandom > "$RUN/state2.key" && chmod 600 "$RUN/state2.key") || return 1
+  prepare_cluster_fixture "$RUN/cluster2" || return 1
   create_environment_network "$network" || return 1
   {
-    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"environments":[' \
-      "$AGENT2_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN"
+    printf '{"listen":"%s","docker_socket":"%s","telegram_api_url":"http://%s","compose_command":["%s"],"cluster":{"state_dir":"%s","key_file":"%s"},"environments":[' \
+      "$AGENT2_LISTEN" "$SOCK" "$TG_LISTEN" "$COMPOSE_BIN" "$RUN/cluster2/state" "$RUN/cluster2/key"
     printf '{"project":"%s","environment":"%s","state_dir":"%s","key_file":"%s","network":"%s","tokens":[%s]}' \
       "$PROJECT" "$env" "$RUN/state2" "$RUN/state2.key" "$network" "$entry"
     printf ']}\n'

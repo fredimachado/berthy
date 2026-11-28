@@ -57,7 +57,7 @@ func TestAgentTokenPrintsTheContextAddLineWithoutTheToken(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "agent.json")
 	digest := strings.Repeat("a", 64)
-	body := fmt.Sprintf(`{"listen":"10.9.8.7:7710","docker_socket":"/var/run/docker.sock","environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
+	body := fmt.Sprintf(`{"listen":"10.9.8.7:7710","docker_socket":"/var/run/docker.sock","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
 		filepath.ToSlash(dir), filepath.ToSlash(dir), digest)
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestAgentTokenQuotesAnIPv6ListenURL(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "agent.json")
 	digest := strings.Repeat("a", 64)
-	body := fmt.Sprintf(`{"listen":"[fd00::1]:7710","docker_socket":"/var/run/docker.sock","environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
+	body := fmt.Sprintf(`{"listen":"[fd00::1]:7710","docker_socket":"/var/run/docker.sock","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[{"project":"demo","environment":"lab","state_dir":"%s/state","key_file":"%s/key","tokens":[{"digest":%q,"scope":"read"}]}]}`,
 		filepath.ToSlash(dir), filepath.ToSlash(dir), digest)
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

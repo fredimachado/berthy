@@ -213,13 +213,47 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 	} else if local == nil && pf.StateDB {
 		return "", "", fmt.Errorf("%s has state but no key: pass --key-file with the saved key", stateDir)
 	}
-
-	// The directories, and the owner and mode of what is there.
-	var fix, did []string
-	if rootNeedsRepair(f.DataDirStat, true) {
-		fix = append(fix, "install -d -o berthy -g berthy -m 0700 "+dataDir)
-		did = append(did, "prepared "+dataDir)
+	cluster := s.clusterConfig()
+	cf, err := probePaths(ctx, s.R, cluster.StateDir, cluster.KeyFile)
+	if err != nil {
+		return "", "", fmt.Errorf("reading cluster paths: %w", err)
 	}
+	if cf.KeyExists && !strings.HasPrefix(cf.KeyStat, "32 ") {
+		return "", "", fmt.Errorf("%s is not 32 bytes; restore the matching cluster key", cluster.KeyFile)
+	}
+	if !cf.KeyExists && cf.StateDB {
+		return "", "", fmt.Errorf("%s has state but no key: restore the matching cluster key at %s", cluster.StateDir, cluster.KeyFile)
+	}
+
+	fix, did := keyPreparation(pf, stateDir, keyPath, local != nil)
+	if rootNeedsRepair(f.DataDirStat, true) {
+		fix = append([]string{"install -d -o berthy -g berthy -m 0700 " + dataDir}, fix...)
+		did = append([]string{"prepared " + dataDir}, did...)
+	}
+	clusterFix, clusterDid := keyPreparation(cf, cluster.StateDir, cluster.KeyFile, false)
+	if len(did) == 0 && len(clusterDid) == 0 {
+		return StatusOK, "the key and the state directory are in place", nil
+	}
+	var upload []byte
+	if !pf.KeyExists {
+		upload = local
+	}
+	if err := s.prepareKey(ctx, fix, upload); err != nil {
+		return "", "", err
+	}
+	if err := s.prepareKey(ctx, clusterFix, nil); err != nil {
+		return "", "", fmt.Errorf("cluster: %w", err)
+	}
+	if len(clusterDid) > 0 {
+		did = append(did, "prepared the cluster state directory and key")
+	}
+	if s.DryRun {
+		return StatusWouldChange, "would " + wouldText(did), nil
+	}
+	return StatusChanged, strings.Join(did, ", "), nil
+}
+
+func keyPreparation(pf PathFacts, stateDir, keyPath string, upload bool) (fix, did []string) {
 	keyDir := path.Dir(keyPath)
 	for _, dir := range managedParents(stateDir, keyPath) {
 		if dir == stateDir {
@@ -243,42 +277,46 @@ func keyStep(ctx context.Context, s *Session) (string, string, error) {
 		fix = append(fix, "find "+shellQuote(stateDir)+" -type f -user root -exec chown berthy:berthy {} +")
 		did = append(did, "gave the state to berthy")
 	}
-	var stdin io.Reader
 	switch {
 	case pf.KeyExists:
 		if !strings.HasSuffix(pf.KeyStat, " "+wantPrivate) {
 			fix = append(fix, "chown berthy:berthy "+shellQuote(keyPath), "chmod 0600 "+shellQuote(keyPath))
 			did = append(did, "fixed the owner and mode of the key")
 		}
-	case local != nil:
+	case upload:
 		fix = append(fix, keyUploadScript(keyPath))
 		did = append(did, "installed the key from --key-file")
-		stdin = bytes.NewReader(local)
 	default:
 		fix = append(fix, keyGenerateScript(keyPath))
 		did = append(did, "generated an encryption key on the server")
 	}
-	if len(did) == 0 {
-		return StatusOK, "the key and the state directory are in place", nil
+	return fix, did
+}
+
+func (s *Session) prepareKey(ctx context.Context, fix []string, upload []byte) error {
+	if len(fix) == 0 {
+		return nil
 	}
 	script := "set -e\numask 077\n" + strings.Join(fix, "\n") + "\n"
 	if s.DryRun {
 		s.Log.Would(script)
-		return StatusWouldChange, "would " + wouldText(did), nil
+		return nil
+	}
+	var stdin io.Reader
+	if upload != nil {
+		stdin = bytes.NewReader(upload)
 	}
 	res, err := s.R.Run(ctx, script, stdin)
 	if err != nil {
-		return "", "", fmt.Errorf("preparing the key and the state directory: %w", err)
+		return fmt.Errorf("preparing the key and the state directory: %w", err)
 	}
 	if res.Code != 0 {
-		return "", "", fmt.Errorf("preparing the key and the state directory: %s", failureText(res))
+		return fmt.Errorf("preparing the key and the state directory: %s", failureText(res))
 	}
-	if local != nil && !pf.KeyExists {
-		if got := firstField(res.Stdout); got != sha256Hex(local) {
-			return "", "", errors.New("the key on the server does not match --key-file after the upload")
-		}
+	if upload != nil && firstField(res.Stdout) != sha256Hex(upload) {
+		return errors.New("the key on the server does not match --key-file after the upload")
 	}
-	return StatusChanged, strings.Join(did, ", "), nil
+	return nil
 }
 
 // wouldText turns what a step did into what it would do: "prepared X, generated Y" becomes "prepare X, generate Y".
@@ -404,6 +442,18 @@ func (s *Session) paths() (string, string) {
 // KeyFile is the selected environment's key on the server.
 func (s *Session) KeyFile() string { _, key := s.paths(); return key }
 
+func clusterPaths() (stateDir, keyFile string) {
+	return dataDir + "/cluster/state", dataDir + "/cluster/key"
+}
+
+func (s *Session) clusterConfig() agent.ClusterConfig {
+	if s.existing != nil {
+		return s.existing.Cluster
+	}
+	stateDir, keyFile := clusterPaths()
+	return agent.ClusterConfig{StateDir: stateDir, KeyFile: keyFile}
+}
+
 // desiredFile keeps every other hosted environment and updates this one.
 func (s *Session) desiredFile(f *Facts) (agent.File, error) {
 	var file agent.File
@@ -411,6 +461,7 @@ func (s *Session) desiredFile(f *Facts) (agent.File, error) {
 		file = *s.existing
 		file.Environments = slices.Clone(s.existing.Environments)
 	}
+	file.Cluster = s.clusterConfig()
 	if file.Listen == "" {
 		file.Listen = s.Opts.listen()
 	}

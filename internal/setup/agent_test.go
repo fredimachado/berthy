@@ -77,6 +77,13 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	case script == loginScript:
 		return Result{Stdout: []byte("0\nroot\n")}, nil
 	case strings.Contains(script, "# hosted path probe"):
+		clusterDir, _ := clusterPaths()
+		if strings.Contains(script, "s="+shellQuote(clusterDir)) {
+			if f.config == "" {
+				return Result{}, nil
+			}
+			return Result{Stdout: []byte("state_dir_stat=" + wantPrivateDir + "\nstate_db=yes\nkey_stat=32 " + wantPrivate + "\nparent_0=" + wantPrivateDir + "\n")}, nil
+		}
 		out := strings.Join(f.probe, "\n")
 		if strings.Contains(out, "state_dir_stat=") && !strings.Contains(out, "parent_0=") {
 			out += "\nparent_0=root:berthy 750\nparent_1=root:berthy 750\nparent_2=berthy:berthy 700"
@@ -219,7 +226,9 @@ func existingConfig(t *testing.T, mod func(*agent.Config)) (string, agent.Config
 	if mod != nil {
 		mod(&c)
 	}
-	b, err := marshalConfig(agent.File{Listen: c.Listen, DockerSocket: c.DockerSocket, CloudflareAPIURL: c.CloudflareAPIURL, TelegramAPIURL: c.TelegramAPIURL, ComposeCommand: c.ComposeCommand, ApprovalTTL: c.ApprovalTTL, Environments: []agent.Hosted{{Project: "shop", Environment: c.Environment, StateDir: c.StateDir, KeyFile: c.KeyFile, Network: c.Network, Protected: c.Protected, Tokens: c.Tokens}}})
+	clusterDir, clusterKey := clusterPaths()
+	b, err := marshalConfig(agent.File{Listen: c.Listen, DockerSocket: c.DockerSocket, CloudflareAPIURL: c.CloudflareAPIURL, TelegramAPIURL: c.TelegramAPIURL, ComposeCommand: c.ComposeCommand, ApprovalTTL: c.ApprovalTTL,
+		Cluster: agent.ClusterConfig{StateDir: clusterDir, KeyFile: clusterKey}, Environments: []agent.Hosted{{Project: "shop", Environment: c.Environment, StateDir: c.StateDir, KeyFile: c.KeyFile, Network: c.Network, Protected: c.Protected, Tokens: c.Tokens}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +345,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 	assertNoToken(t, f, got, s.Token)
 
 	// The changes come in this order.
+	_, clusterKey := clusterPaths()
 	var order []string
 	for _, c := range f.calls {
 		switch {
@@ -343,6 +353,8 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 			order = append(order, "user")
 		case strings.Contains(c.script, "cat > "+binPath+".new"):
 			order = append(order, "upload")
+		case strings.Contains(c.script, "head -c 32 /dev/urandom") && strings.Contains(c.script, shellQuote(clusterKey)):
+			order = append(order, "cluster-key")
 		case strings.Contains(c.script, "head -c 32 /dev/urandom"):
 			order = append(order, "key")
 		case strings.Contains(c.script, "cat > "+configPath+".new"):
@@ -357,7 +369,7 @@ func TestFreshServerSetsUpTheAgent(t *testing.T) {
 			order = append(order, "restart")
 		}
 	}
-	if strings.Join(order, " ") != "user upload key config unit enable swap restart" {
+	if strings.Join(order, " ") != "user upload key cluster-key config unit enable swap restart" {
 		t.Fatalf("order = %v", order)
 	}
 

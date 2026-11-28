@@ -221,9 +221,9 @@ The steps run in this order. Each one checks first and only acts when something 
 | `network` | Creates the attachable overlay network for this hosted environment (`todo-prod` by default, or the name in the manifest), unless it exists. An existing network that is not an attachable overlay stops the run. |
 | `user` | Creates the `berthy` system user and adds it to the `docker` group. |
 | `binary` | Installs the Berthy binary as `/usr/local/bin/berthy` (see "Where the binary comes from"). |
-| `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and makes the encryption key `/var/lib/berthy/environments/todo/prod/key`. It never replaces an existing key. |
+| `key` | Prepares `/var/lib/berthy/environments/todo/prod/state` and its encryption key at `/var/lib/berthy/environments/todo/prod/key`. It also prepares `/var/lib/berthy/cluster/state` and its independent key at `/var/lib/berthy/cluster/key`. Setup preserves existing keys. |
 | `token` | Creates the first `admin` token. The agent keeps only its digest. |
-| `config` | Writes `/etc/berthy/agent.json`. It sets the environment, the listen address, `docker_socket` (`/var/run/docker.sock`), the state directory and key file, `protected` and `network`, and the tokens. |
+| `config` | Writes `/etc/berthy/agent.json`. It sets the listen address, `docker_socket` (`/var/run/docker.sock`), the cluster paths, and the hosted environment's state directory, key file, `protected` setting, network and tokens. |
 | `service` | Installs, enables and starts `berthy.service`, and waits until the agent answers. |
 | `cli_config` | Adds the environment to the CLI configuration file: the one `--config` names, or else the one the CLI finds (see [How to read the commands](#how-to-read-the-commands)). Without any location it is skipped, with a hint of the entry to add yourself. |
 | `cli_token` | Saves the new admin token in this machine's credential store, or shows it when the save is unavailable or unconfirmed. |
@@ -240,7 +240,7 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo-prod
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server
+✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared the cluster state directory and key
 ✓ token       created an admin token named admin
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
@@ -3327,6 +3327,7 @@ The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` wr
 | `compose_command` | no | The Compose command as a list. Default `["docker", "compose"]`. The Compose plugin must be installed system-wide, or this must name a standalone Compose binary. |
 | `cloudflare_api_url` | no | Overrides the Cloudflare API base URL. `https`, or `http` on a loopback host. For tests. |
 | `telegram_api_url` | no | Overrides the Telegram Bot API base URL. Same rule. For tests. |
+| `cluster` | yes | The server's `state_dir` and `key_file`. Setup uses `/var/lib/berthy/cluster/state` and `/var/lib/berthy/cluster/key`. These paths must be separate from all hosted state directories, keys and key rotation files. |
 | `environments` | yes, at least one | List of hosted environments. Each entry is below. A (project, environment) pair, a `state_dir`, a `key_file` and a `network` each appear once in the file. |
 
 Each entry of `environments`:
@@ -3348,6 +3349,10 @@ Example (the digest is a placeholder):
   "listen": "10.0.0.5:7710",
   "docker_socket": "/var/run/docker.sock",
   "approval_ttl": "15m",
+  "cluster": {
+    "state_dir": "/var/lib/berthy/cluster/state",
+    "key_file": "/var/lib/berthy/cluster/key"
+  },
   "environments": [
     {
       "project": "todo",

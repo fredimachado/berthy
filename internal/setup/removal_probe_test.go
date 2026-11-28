@@ -11,7 +11,7 @@ import (
 )
 
 func TestWithoutHostedPreservesEveryOtherByte(t *testing.T) {
-	const pre = "{\r\n \"listen\" : \"127.0.0.1:7710\", \"environments\":[\n  "
+	const pre = "{\r\n \"listen\" : \"127.0.0.1:7710\", \"cluster\":{\"state_dir\":\"/var/lib/berthy/cluster/state\",\"key_file\":\"/var/lib/berthy/cluster/key\"}, \"environments\":[\n  "
 	const post = "\n ], \"compose_command\" : [\"docker\",\"com\\u0070ose\"]}\n"
 	first := removalHostedJSON("alpha", "dev", "/custom/one", "1")
 	middle := strings.ReplaceAll(removalHostedJSON("beta", "dev", "/custom/two", "2"), ",", " ,\n   ")
@@ -40,7 +40,7 @@ func TestWithoutHostedPreservesEveryOtherByte(t *testing.T) {
 }
 
 func TestWithoutHostedRefusesUnknownLastAndAmbiguousInput(t *testing.T) {
-	const pre = `{"listen":"127.0.0.1:7710","environments":[`
+	const pre = `{"listen":"127.0.0.1:7710","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[`
 	first := removalHostedJSON("alpha", "dev", "/one", "1")
 	middle := removalHostedJSON("beta", "dev", "/two", "2")
 	raw := pre + first + "," + middle + "]}"

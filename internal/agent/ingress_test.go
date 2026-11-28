@@ -206,7 +206,7 @@ func TestLoadFileRejectsPlainHTTPCloudflareURL(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agent.json")
 		body := func(url string) []byte {
-			return []byte(`{"listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","environments":[{"project":"demo","environment":"lab","state_dir":"/s","key_file":"/k","tokens":[{"digest":"` + Digest("bty.demo.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}]}`)
+			return []byte(`{"listen":"127.0.0.1:9999","docker_socket":"/var/run/docker.sock","cloudflare_api_url":"` + url + `","cluster":{"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},"environments":[{"project":"demo","environment":"lab","state_dir":"/s","key_file":"/k","tokens":[{"digest":"` + Digest("bty.demo.lab."+strings.Repeat("a", 64)) + `","scope":"read"}]}]}`)
 		}
 		if err := os.WriteFile(path, body("http://example.com"), 0600); err != nil {
 			t.Fatal(err)

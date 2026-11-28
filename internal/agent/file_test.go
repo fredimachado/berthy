@@ -15,6 +15,7 @@ func TestParseFileReadsTwoEnvironmentsOfOneProjectAndOneOfAnother(t *testing.T) 
 	b := []byte(`{
 		"listen": "127.0.0.1:9999",
 		"docker_socket": "/var/run/docker.sock",
+		"cluster": {"state_dir":"/var/lib/berthy/cluster/state","key_file":"/var/lib/berthy/cluster/key"},
 		"environments": [
 			{"project":"shop","environment":"prod","state_dir":"/var/lib/berthy/shop-prod","key_file":"/etc/berthy/shop-prod.key","protected":true,"network":"shop-prod","tokens":[{"digest":"` + d1 + `","scope":"admin"}]},
 			{"project":"shop","environment":"dev","state_dir":"/var/lib/berthy/shop-dev","key_file":"/etc/berthy/shop-dev.key","network":"shop-dev","tokens":[{"digest":"` + d2 + `","scope":"admin"}]},
@@ -197,6 +198,7 @@ func testFile(envs ...Hosted) File {
 	return File{
 		Listen:       "127.0.0.1:9999",
 		DockerSocket: "/var/run/docker.sock",
+		Cluster:      ClusterConfig{StateDir: "/var/lib/berthy/cluster/state", KeyFile: "/var/lib/berthy/cluster/key"},
 		Environments: envs,
 	}
 }

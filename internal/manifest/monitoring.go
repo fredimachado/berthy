@@ -246,22 +246,41 @@ func (m *Manifest) checkServiceProbe(p *Problems, name string, s ServiceProbe) {
 
 // check validates the alert settings that every channel shares, then each channel that is set.
 func (a Alerts) check(p *Problems) {
-	if !duration(a.Reminder, true) {
-		p.add("alerts.reminder", "alerts: reminder must be a duration such as 4h, or 0s to disable")
-	}
+	a.checkReminder(p)
 	switch a.Deploys {
 	case "", deploysFailed, deploysAll, deploysNone:
 	default:
 		p.add("alerts.deploys", "alerts: deploys must be failed, all or none")
 	}
+	a.checkDestinations(p)
+	if a.Heartbeat != nil {
+		checkHeartbeat(p, *a.Heartbeat)
+	}
+}
+
+// CheckAlertChannels validates reminder and destination settings shared with server alerts.
+func CheckAlertChannels(a Alerts) error {
+	var p Problems
+	a.checkReminder(&p)
+	a.checkDestinations(&p)
+	if len(p) > 0 {
+		return p
+	}
+	return nil
+}
+
+func (a Alerts) checkReminder(p *Problems) {
+	if !duration(a.Reminder, true) {
+		p.add("alerts.reminder", "alerts: reminder must be a duration such as 4h, or 0s to disable")
+	}
+}
+
+func (a Alerts) checkDestinations(p *Problems) {
 	if a.Telegram != nil {
 		checkTelegram(p, *a.Telegram)
 	}
 	if a.Webhook != nil {
 		checkWebhook(p, *a.Webhook)
-	}
-	if a.Heartbeat != nil {
-		checkHeartbeat(p, *a.Heartbeat)
 	}
 }
 

@@ -19,6 +19,20 @@ cd "$E2E_ROOT" || exit 1
 
 SECOND=$PROJECT-two # the same environment name in another project
 THIRD=${ENVN}b      # another environment of the first project
+cluster_db=$RUN/cluster/state/state.db
+
+cluster_owner() {
+  python3 - "$cluster_db" <<'PY'
+import sqlite3, sys
+
+with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:
+    rows = dict(db.execute("SELECT name, CAST(value AS TEXT) FROM metadata WHERE name IN ('project', 'environment')"))
+print(rows["project"] + "/" + rows["environment"])
+PY
+}
+
+expect_eq "the harness agent claims its cluster database" '(cluster)/cluster' "$(cluster_owner)"
+cluster_identity=$(stat -c '%d:%i' "$cluster_db") || finish
 
 # status URL TOKEN: the HTTP status of a GET with that bearer token.
 status() { curl_local -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $2" "$1"; }
@@ -29,12 +43,12 @@ api() { printf 'http://%s/v1/projects/%s/environments/%s/' "$AGENT_LISTEN" "$1" 
 # entry_of PROJECT ENV: the token entry of that environment's fragment of agent.json.
 entry_of() { sed -n 's/.*"tokens":\[\(.*\)\]}$/\1/p' "$RUN/environments.d/$1-$2.json"; }
 
-# refused NAME WANT_TEXT: starts the agent on the agent.json that is written now and expects it to exit at once, non-zero, with
+# refused NAME WANT_TEXT [CONFIG]: starts the agent on the given configuration and expects it to exit at once, non-zero, with
 # WANT_TEXT in its log. The agent must not start, so it is stopped after 30 seconds if it does.
 refused() {
   local code out
   : > "$RUN/refused.log"
-  timeout 30 "$BIN" agent --config "$RUN/agent.json" > "$RUN/refused.log" 2>&1; code=$?
+  timeout 30 "$BIN" agent --config "${3:-$RUN/agent.json}" > "$RUN/refused.log" 2>&1; code=$?
   cat "$RUN/refused.log" >> "$LOG/agent.log"
   out=$(head -n 5 "$RUN/refused.log")
   if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then pass "$1: the agent exits non-zero"; else fail "$1: the agent exits non-zero" "exit $code"; fi
@@ -62,6 +76,8 @@ add_environment "$SECOND" "$ENVN"; code=$?
 expect_code "add $SECOND/$ENVN" 0 "$code"
 add_environment "$PROJECT" "$THIRD"; code=$?
 expect_code "add $PROJECT/$THIRD" 0 "$code"
+expect_eq "adding environments reopens the same cluster database" "$cluster_identity" "$(stat -c '%d:%i' "$cluster_db")"
+expect_eq "the cluster database retains its owner" '(cluster)/cluster' "$(cluster_owner)"
 ids=("$PROJECT $ENVN" "$SECOND $ENVN" "$PROJECT $THIRD")
 v2=$(env_var "$SECOND" "$ENVN")
 v3=$(env_var "$PROJECT" "$THIRD")
@@ -95,9 +111,8 @@ restore() {
 
 # 5. An agent.json of an earlier release, with a top-level environment, is refused.
 printf '{"environment":"%s","listen":"%s","docker_socket":"%s","state_dir":"%s","key_file":"%s","tokens":[%s]}\n' \
-  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$(entry_of "$PROJECT" "$ENVN")" > "$RUN/agent.json" && chmod 600 "$RUN/agent.json"
-refused "an earlier layout" "layout of an earlier Berthy release"
-restore || exit 1
+  "$ENVN" "$AGENT_LISTEN" "$SOCK" "$RUN/state" "$RUN/state.key" "$(entry_of "$PROJECT" "$ENVN")" > "$RUN/earlier.json" && chmod 600 "$RUN/earlier.json"
+refused "an earlier layout" "layout of an earlier Berthy release" "$RUN/earlier.json"
 
 # 6. A state directory used twice. Then a claimed state, copied to a new path with a copy of its key, is given to another
 #    project and to another environment of its own project.

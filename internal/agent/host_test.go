@@ -40,7 +40,12 @@ func hostToken(id scope.ID, digit string) string {
 func hostedFile(t *testing.T, ids ...scope.ID) (Shared, File) {
 	t.Helper()
 	root := t.TempDir()
-	f := File{Listen: "127.0.0.1:19500"}
+	f := File{Listen: "127.0.0.1:19500", Cluster: ClusterConfig{StateDir: filepath.Join(root, "cluster-state"), KeyFile: filepath.Join(root, "cluster-key")}}
+	clusterKey := make([]byte, 32)
+	clusterKey[0] = 1
+	if err := os.WriteFile(f.Cluster.KeyFile, clusterKey, 0600); err != nil {
+		t.Fatal(err)
+	}
 	for n, id := range ids {
 		dir := filepath.Join(root, id.Project+"-"+id.Environment)
 		if err := os.Mkdir(dir, 0700); err != nil {

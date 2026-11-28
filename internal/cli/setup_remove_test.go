@@ -32,7 +32,7 @@ type setupRemovalFixture struct {
 
 func newSetupRemovalFixture(t *testing.T) (*setupRemovalFixture, string) {
 	t.Helper()
-	f := agent.File{Listen: "127.0.0.1:7710", Environments: []agent.Hosted{
+	f := agent.File{Listen: "127.0.0.1:7710", Cluster: agent.ClusterConfig{StateDir: "/var/lib/berthy/cluster/state", KeyFile: "/var/lib/berthy/cluster/key"}, Environments: []agent.Hosted{
 		{Project: "alpha", Environment: "dev", StateDir: "/custom/target/state", KeyFile: "/custom/target/key", Network: "alpha-dev",
 			Tokens: []agent.Token{{Digest: strings.Repeat("a", 64), Scope: "admin"}}},
 		{Project: "peer", Environment: "dev", StateDir: "/peer/state", KeyFile: "/peer/key",
