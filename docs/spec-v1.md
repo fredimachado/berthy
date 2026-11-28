@@ -1154,7 +1154,7 @@ alerts:
     interval: 1m                            # default 1m, at least 10s
 ```
 
-- A check changes state after it has failed the configured number of times in a row. One success recovers it at once. Unknown results never alert.
+- A check changes state after it has failed the configured number of times in a row. Disk, Docker disk, and memory checks recover after ten consecutive passing checks, normally about five minutes. One success recovers other checks at once. Unknown results never alert.
 - A service probe runs in the overlay helper. When the helper is not running, or the service cannot be named, the probe is unknown and its detail gives the reason. Its timeout is from 1s to 25s.
 - Each peer is asked for `/healthz` every 30 seconds with a 5-second timeout, and is critical after three misses. `/healthz` needs no token and answers `{"ok":true}` and nothing else.
 - Built-in conditions always run: disk and Docker disk (warning from 80%, critical from 90%), memory (warning below 10% available, critical below 5%), restart loops of the apps Berthy manages (three restarts of one replica, or three Swarm tasks that failed or were rejected, within 10 minutes, or an out-of-memory kill; shutdowns, such as a rolling update's old tasks, do not count; unmanaged Swarm services and Compose projects are not checked), and the tunnel when managed ingress is set up.

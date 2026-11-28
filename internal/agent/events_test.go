@@ -190,6 +190,7 @@ type eventWakeCheck struct{ ran chan struct{} }
 func (c eventWakeCheck) Name() string            { return "down:shop-lab-db/db" }
 func (c eventWakeCheck) Interval() time.Duration { return time.Hour }
 func (c eventWakeCheck) Failures() int           { return 1 }
+func (c eventWakeCheck) Successes() int          { return 1 }
 func (c eventWakeCheck) Run(context.Context) monitor.Result {
 	c.ran <- struct{}{}
 	return monitor.Result{State: monitor.OK}

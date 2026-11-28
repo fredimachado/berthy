@@ -16,10 +16,11 @@ import (
 
 // Func is a Check whose run is a function.
 type Func struct {
-	name     string
-	interval time.Duration
-	failures int
-	run      func(context.Context) Result
+	name      string
+	interval  time.Duration
+	failures  int
+	successes int
+	run       func(context.Context) Result
 }
 
 // NewFunc returns a check named name that runs run every interval. failures is how many non-ok results in a row change
@@ -28,12 +29,17 @@ func NewFunc(name string, interval time.Duration, failures int, run func(context
 	if failures < 1 {
 		failures = 1
 	}
-	return Func{name: name, interval: interval, failures: failures, run: run}
+	return Func{name: name, interval: interval, failures: failures, successes: 1, run: run}
+}
+
+func newPressureCheck(name string, run func(context.Context) Result) Check {
+	return Func{name: name, interval: 30 * time.Second, failures: 1, successes: 10, run: run}
 }
 
 func (f Func) Name() string            { return f.name }
 func (f Func) Interval() time.Duration { return f.interval }
 func (f Func) Failures() int           { return f.failures }
+func (f Func) Successes() int          { return f.successes }
 func (f Func) Run(ctx context.Context) Result {
 	return f.run(ctx)
 }
@@ -193,7 +199,7 @@ func DiskCheck(samples Samples, mount string, dockerData bool) Check {
 	if dockerData {
 		label = " (Docker data)"
 	}
-	return NewFunc("disk:"+mount, 30*time.Second, 1, func(context.Context) Result {
+	return newPressureCheck("disk:"+mount, func(context.Context) Result {
 		return diskResult(samples, mount, label)
 	})
 }
@@ -201,7 +207,7 @@ func DiskCheck(samples Samples, mount string, dockerData bool) Check {
 // DockerDiskCheck returns the check of the mount that holds Docker's data root, named docker_disk. mount is that
 // mount's path (see MountFor), or empty when it is not known yet, in which case the check reports unknown.
 func DockerDiskCheck(samples Samples, mount string) Check {
-	return NewFunc("docker_disk", 30*time.Second, 1, func(context.Context) Result {
+	return newPressureCheck("docker_disk", func(context.Context) Result {
 		if mount == "" {
 			return Result{State: Unknown, Detail: "Docker data root unknown"}
 		}
@@ -286,7 +292,7 @@ func usedPercent(m metrics.Mount) (float64, bool) {
 
 // MemoryCheck returns the check of host memory, named memory.
 func MemoryCheck(samples Samples) Check {
-	return NewFunc("memory", 30*time.Second, 1, func(context.Context) Result {
+	return newPressureCheck("memory", func(context.Context) Result {
 		s, ok := samples()
 		if !ok {
 			return Result{State: Unknown, Detail: "no host sample yet"}
