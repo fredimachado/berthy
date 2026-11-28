@@ -9,6 +9,14 @@ import (
 	"berthy/internal/manifest"
 )
 
+func appliedRoleUptime(app manifest.App, role string, spec json.RawMessage) (time.Duration, error) {
+	r, ok := app.Roles[role]
+	if !ok {
+		return 0, errors.New("applied role unavailable")
+	}
+	return retainedUptime(r.Health, spec)
+}
+
 // retainedUptime requires both a threshold and an explicit Docker health override in the retained spec.
 func retainedUptime(health *manifest.Health, spec json.RawMessage) (time.Duration, error) {
 	threshold, err := health.UptimeThreshold()

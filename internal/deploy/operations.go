@@ -282,6 +282,10 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "operation preflight failed"}
 	}
+	uptime, err := appliedRoleUptime(m.Apps[req.App], b.Role, live.Spec)
+	if err != nil {
+		return state.Outcome{State: "failed", Err: "operation preflight failed"}
+	}
 	auth, err := c.operationAuth(ctx, req.App, live.Spec)
 	if err != nil {
 		return state.Outcome{State: "failed", Err: "operation preflight failed"}
@@ -305,7 +309,7 @@ func (c *Controller) runOperation(ctx context.Context, op state.Operation, actor
 	if err = applyIntent(ctx, c.Store, c.Engine, op.ID, i, auth); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service update requires recovery"}
 	}
-	if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{}, rolloutTiming{}); err != nil {
+	if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, op.ID, n, startBudget{uptime: uptime}, rolloutTiming{}); err != nil {
 		return state.Outcome{State: "recovery_required", Err: "service health requires recovery"}
 	}
 	if err = waitDrain(ctx, c.Engine, b.ServiceID, op.ID); err != nil {
@@ -330,6 +334,10 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 	if len(bindings) == 0 {
 		return errors.New("managed app unavailable")
 	}
+	m, _, err := c.appliedCompose(ctx, app)
+	if err != nil {
+		return err
+	}
 	matched := false
 	for _, b := range bindings {
 		if role != "" && b.Role != role {
@@ -350,6 +358,10 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 		if json.Unmarshal(live.Spec, &v) != nil || v.Name != b.Name || v.Mode.Replicated == nil || v.Mode.Replicated.Replicas < 0 {
 			return errors.New("invalid bound service")
 		}
+		uptime, err := appliedRoleUptime(m.Apps[app], b.Role, live.Spec)
+		if err != nil {
+			return err
+		}
 		if v.Mode.Replicated.Replicas == 0 {
 			// A role stopped by scale --replicas 0 has no replicas to wait for; it is ready at once.
 			continue
@@ -358,7 +370,7 @@ func (c *Controller) Wait(ctx context.Context, app, role string) error {
 		if generation == "" {
 			return errors.New("service generation unavailable")
 		}
-		if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas, startBudget{}, rolloutTiming{}); err != nil {
+		if _, err = waitHealthy(ctx, c.Engine, b.ServiceID, generation, v.Mode.Replicated.Replicas, startBudget{uptime: uptime}, rolloutTiming{}); err != nil {
 			return err
 		}
 	}
@@ -691,11 +703,16 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, strin
 	if generation == "" {
 		return "", "", errors.New("generation unavailable")
 	}
+	uptime, err := appliedRoleUptime(m.Apps[req.App], b.Role, live.Spec)
+	if err != nil {
+		return "", "", err
+	}
 	tasks, err := c.Engine.ServiceTasks(ctx, b.ServiceID)
 	if err != nil {
 		return "", "", errors.New("task inspection failed")
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Slot < tasks[j].Slot })
+	now := time.Now()
 	for _, task := range tasks {
 		if task.ServiceID != b.ServiceID || task.State != "running" || task.DesiredState != "running" || task.Labels["berthy.operation"] != generation || task.ContainerID == "" {
 			continue
@@ -704,8 +721,7 @@ func (c *Controller) execTarget(ctx context.Context, req Request) (string, strin
 		if err != nil || !container.Running || container.ID != task.ContainerID || container.Labels["berthy.operation"] != generation {
 			continue
 		}
-		health, err := c.Engine.InspectContainerHealth(ctx, task.ContainerID)
-		if err == nil && health == "healthy" {
+		if ready, _ := taskReady(ctx, c.Engine, task, uptime, now); ready {
 			return task.ContainerID, b.Name, nil
 		}
 	}

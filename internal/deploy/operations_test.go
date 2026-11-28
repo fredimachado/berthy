@@ -90,6 +90,8 @@ func TestRuntimeRejectsAServiceOfAnotherProject(t *testing.T) {
 	}
 }
 
+const runtimeTestManifest = `{"apps":{"app":{"kind":"image","roles":{"web":{}}}}}`
+
 type runtimeEngine struct {
 	Engine
 	store   *state.Store
@@ -143,7 +145,7 @@ func TestRestartJournalAndRecoveryLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+			if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(runtimeTestManifest), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
 				t.Fatal(err)
 			}
 			op, _, err := s.Admit(ctx, state.Admission{RequestID: "restart", ActorID: "a", Kind: "restart", App: "app", PublicRequest: []byte(`{}`)})
@@ -193,7 +195,7 @@ func TestRestartRefusesAServiceOfAnotherProjectThanTheAppliedRelease(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			applied, err := json.Marshal(manifest.Manifest{Project: "shop"})
+			applied, err := json.Marshal(manifest.Manifest{Project: "shop", Apps: map[string]manifest.App{"app": {Kind: "image", Roles: map[string]manifest.Role{"web": {}}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -229,7 +231,7 @@ func TestScaleToZeroStopsTheRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(runtimeTestManifest), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "scale", ActorID: "a", Kind: "scale", App: "app", PublicRequest: []byte(`{}`)})
@@ -286,7 +288,7 @@ func TestExecStoresRedactedOutputPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
+	if err = s.Finish(ctx, first.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(runtimeTestManifest), Bindings: []state.Binding{{App: "app", Role: "web", Name: "app-web", ServiceID: "id"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	op, _, err := s.Admit(ctx, state.Admission{RequestID: "exec", ActorID: "a", Kind: "exec", App: "app", PublicRequest: []byte(`{}`)})
@@ -584,7 +586,7 @@ func TestWaitWithoutRoleChecksAllBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings := []state.Binding{{App: "app", Role: "a", Name: "one", ServiceID: "id"}, {App: "app", Role: "b", Name: "two", ServiceID: "id2"}}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: bindings}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{"apps":{"app":{"kind":"image","roles":{"a":{},"b":{}}}}}`), Bindings: bindings}}); err != nil {
 		t.Fatal(err)
 	}
 	fake := &runtimeEngine{op: "generation", spec: []byte(`{"Name":"one","TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"generation"}}},"Mode":{"Replicated":{"Replicas":1}}}`)}
@@ -606,7 +608,7 @@ func waitFixture(t *testing.T) *state.Store {
 		t.Fatal(err)
 	}
 	bindings := []state.Binding{{App: "app", Role: "web", Name: "one", ServiceID: "id"}}
-	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(`{}`), Bindings: bindings}}); err != nil {
+	if err = s.Finish(ctx, op.ID, state.Outcome{State: "succeeded", Release: &state.Release{App: "app", Manifest: []byte(runtimeTestManifest), Bindings: bindings}}); err != nil {
 		t.Fatal(err)
 	}
 	return s
