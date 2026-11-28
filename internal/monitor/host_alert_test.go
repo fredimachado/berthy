@@ -13,13 +13,16 @@ import (
 
 func TestHostAlertNamesServerOnBothChannels(t *testing.T) {
 	for _, tc := range []struct{ name, env, server, check, detail, text string }{
-		{"environment", "lab", "", "probe:site", "HTTP 503", "🟠 lab probe:site: HTTP 503"},
+		{"environment", "lab", "", "probe:site", "HTTP 503", "🟠 demo/lab probe:site: HTTP 503"},
 		{"server", "", "hills", "public_ports", "published port", "🟠 server hills public_ports: published port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t, openStore(t))
 			r.m.Env = tc.env
 			r.m.Server = tc.server
+			if tc.server != "" {
+				r.m.Project = ""
+			}
 			ch := &scripted{name: tc.check, interval: time.Minute, failures: 1}
 			ch.set(Warning, tc.detail)
 			r.checks = []Check{ch}
@@ -61,6 +64,8 @@ func TestHostAlertNamesServerOnBothChannels(t *testing.T) {
 			}
 			if tc.server != "" {
 				want["server"] = tc.server
+			} else {
+				want["project"] = "demo"
 			}
 			var got map[string]string
 			if err := json.Unmarshal(readBody(hook.last), &got); err != nil || !reflect.DeepEqual(got, want) {

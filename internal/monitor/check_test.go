@@ -384,7 +384,7 @@ func TestRestartNotifiedWarningStaysAcrossAnAgentRestart(t *testing.T) {
 	w.Observe(base.Add(2*time.Minute), inventory(ref, "db", "c1", 3, false), nil)
 	r.now = base.Add(2 * time.Minute)
 	r.step(0)
-	expectMessages(t, r.notifier.messages(), "🟠 lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
 	if got := r.stored("restarts:shop/db"); got.State != Warning || got.NotifiedState != Warning {
 		t.Fatalf("state before restart: %+v", got)
 	}
@@ -396,7 +396,7 @@ func TestRestartNotifiedWarningStaysAcrossAnAgentRestart(t *testing.T) {
 	r.checks = []Check{w.Check(ref, "db")}
 	w.Observe(r.now, inventory(ref, "db", "c1", 40, false), nil)
 	r.step(time.Minute)
-	expectMessages(t, r.notifier.messages(), "🟠 lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab restarts:shop/db: a replica restarted 3 times in 10 minutes")
 	if got := r.stored("restarts:shop/db"); got.State != Unknown || got.Detail != "watching restarts since agent start" {
 		t.Fatalf("state after the restart: %+v", got)
 	}

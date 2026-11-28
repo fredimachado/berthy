@@ -44,7 +44,7 @@ func TestHostChecksRecoverAfterTenConsecutivePasses(t *testing.T) {
 				if initial.State != severity || initial.Detail != detail {
 					t.Fatalf("first failure: %+v", initial)
 				}
-				alert := fmt.Sprintf("%s lab %s: %s", icon, name, detail)
+				alert := fmt.Sprintf("%s demo/lab %s: %s", icon, name, detail)
 				expectMessages(t, r.notifier.messages(), alert)
 				assertHeld := func() {
 					t.Helper()
@@ -82,7 +82,7 @@ func TestHostChecksRecoverAfterTenConsecutivePasses(t *testing.T) {
 				if got.State != OK || got.Detail != tc.passDetail || !got.Since.Equal(r.now) || !got.Since.After(initial.Since) {
 					t.Fatalf("tenth pass: %+v", got)
 				}
-				recovery := fmt.Sprintf("✅ lab %s recovered", name)
+				recovery := fmt.Sprintf("✅ demo/lab %s recovered", name)
 				expectMessages(t, r.notifier.messages(), alert, recovery)
 				r.step(30 * time.Second)
 				expectMessages(t, r.notifier.messages(), alert, recovery)
@@ -114,5 +114,5 @@ func TestDiskMountsRecoverIndependently(t *testing.T) {
 	if got := r.stored("disk:/b"); got.State != Warning || got.Detail != initialB.Detail || !got.Since.Equal(initialB.Since) {
 		t.Fatalf("second mount: %+v", got)
 	}
-	expectMessages(t, r.notifier.messages(), "🟠 lab disk:/a: 80.1% used", "🟠 lab disk:/b: 80.1% used", "✅ lab disk:/a recovered")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab disk:/a: 80.1% used", "🟠 demo/lab disk:/b: 80.1% used", "✅ demo/lab disk:/a recovered")
 }

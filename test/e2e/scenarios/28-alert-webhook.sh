@@ -319,6 +319,14 @@ project: $peer
 alerts:
   webhook:
     url_secret: ALERT_WEBHOOK_URL
+apps:
+  web:
+    kind: image
+    image: $REG/e2e/web
+    roles:
+      main:
+        health:
+          test: ["CMD", "true"]
 YML
 out=$(printf '%s' "http://$HOOK_LISTEN$hook_path" | env_cmd "$peer" "$ENVN" secret set ALERT_WEBHOOK_URL 2>&1); code=$?
 expect_code "set peer webhook URL" 0 "$code" "$out"

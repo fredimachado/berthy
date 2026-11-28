@@ -115,9 +115,10 @@ func newRig(t *testing.T, store *state.Store) *rig {
 // attach builds a monitor on the rig's store. A second call models a restart of the agent.
 func (r *rig) attach() {
 	r.m = &Monitor{
-		Env:   "lab",
-		Store: r.store,
-		Now:   func() time.Time { return r.now },
+		Project: "demo",
+		Env:     "lab",
+		Store:   r.store,
+		Now:     func() time.Time { return r.now },
 		Checks: func(context.Context) []Check {
 			return append([]Check(nil), r.checks...)
 		},
@@ -173,21 +174,21 @@ func TestThresholdEscalationAndRecovery(t *testing.T) {
 	if got := r.stored("probe:site"); got.State != Warning || got.NotifiedState != Warning || got.Detail != "HTTP 429" {
 		t.Fatalf("threshold reached but state is %+v", got)
 	}
-	expectMessages(t, r.notifier.messages(), "🟠 lab probe:site: HTTP 429")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429")
 
 	// A critical result in the same streak takes the state at once: the streak has already met the threshold.
 	c.set(Critical, "HTTP 503")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🟠 lab probe:site: HTTP 429", "🔴 lab probe:site: HTTP 503")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429", "🔴 demo/lab probe:site: HTTP 503")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🟠 lab probe:site: HTTP 429", "🔴 lab probe:site: HTTP 503")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429", "🔴 demo/lab probe:site: HTTP 503")
 
 	c.set(OK, "HTTP 200")
 	r.step(30 * time.Second)
 	if got := r.stored("probe:site"); got.State != OK || got.NotifiedState != OK {
 		t.Fatalf("recovery not recorded: %+v", got)
 	}
-	expectMessages(t, r.notifier.messages(), "🟠 lab probe:site: HTTP 429", "🔴 lab probe:site: HTTP 503", "✅ lab probe:site recovered")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429", "🔴 demo/lab probe:site: HTTP 503", "✅ demo/lab probe:site recovered")
 
 	// After recovery a new failure needs the whole threshold again.
 	c.set(Critical, "timeout")
@@ -197,7 +198,7 @@ func TestThresholdEscalationAndRecovery(t *testing.T) {
 		t.Fatalf("failure below the threshold after recovery changed the state: %+v", got)
 	}
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🟠 lab probe:site: HTTP 429", "🔴 lab probe:site: HTTP 503", "✅ lab probe:site recovered", "🔴 lab probe:site: timeout")
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429", "🔴 demo/lab probe:site: HTTP 503", "✅ demo/lab probe:site recovered", "🔴 demo/lab probe:site: timeout")
 }
 
 func TestWarningsBelowThresholdNeverAlert(t *testing.T) {
@@ -242,16 +243,16 @@ func TestUnknownNeverAlerts(t *testing.T) {
 	}
 	c.set(Critical, "tunnel down")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab tunnel: tunnel down")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab tunnel: tunnel down")
 	c.set(Unknown, "Cloudflare unavailable")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab tunnel: tunnel down")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab tunnel: tunnel down")
 	if got := r.stored("tunnel"); got.State != Unknown || got.NotifiedState != Critical {
 		t.Fatalf("unknown after a notified failure: %+v", got)
 	}
 	c.set(OK, "tunnel healthy")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab tunnel: tunnel down", "✅ lab tunnel recovered")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab tunnel: tunnel down", "✅ demo/lab tunnel recovered")
 }
 
 func TestReminderCadenceAndDisable(t *testing.T) {
@@ -261,19 +262,19 @@ func TestReminderCadenceAndDisable(t *testing.T) {
 	r.reminder = time.Hour
 	c.set(Critical, "96.0% used")
 	r.step(0)
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab disk:/: 96.0% used")
 	for i := 0; i < 119; i++ { // 59.5 minutes after the alert
 		r.step(30 * time.Second)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab disk:/: 96.0% used")
 	r.step(30 * time.Second) // one hour after the alert
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab disk:/: 96.0% used", "🔁 demo/lab still failing: disk:/: 96.0% used")
 	for i := 0; i < 119; i++ {
 		r.step(30 * time.Second)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab disk:/: 96.0% used", "🔁 demo/lab still failing: disk:/: 96.0% used")
 	r.step(30 * time.Second) // one hour after the first reminder
-	expectMessages(t, r.notifier.messages(), "🔴 lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used", "🔁 still failing: lab disk:/: 96.0% used")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab disk:/: 96.0% used", "🔁 demo/lab still failing: disk:/: 96.0% used", "🔁 demo/lab still failing: disk:/: 96.0% used")
 
 	r.reminder = 0
 	before := len(r.notifier.messages())
@@ -316,7 +317,7 @@ func TestFailedSendIsRetriedAndStateAdvances(t *testing.T) {
 		t.Fatalf("retry before the next 30 seconds: %d attempts", r.notifier.attempts)
 	}
 	r.step(time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:api: connection refused")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:api: connection refused")
 	if got := r.stored("probe:api"); got.NotifiedState != Critical {
 		t.Fatalf("delivered alert not recorded: %+v", got)
 	}
@@ -326,6 +327,26 @@ func TestFailedSendIsRetriedAndStateAdvances(t *testing.T) {
 	}
 	if len(r.logs) != 1 || !strings.Contains(r.logs[0], "probe:api") {
 		t.Fatalf("log lines: %q", r.logs)
+	}
+}
+
+func TestAlertTextNamesProjectAndEnvironment(t *testing.T) {
+	r := newRig(t, openStore(t))
+	r.reminder = time.Hour
+	c := &scripted{name: "probe:site", interval: time.Second, failures: 1}
+	r.checks = []Check{c}
+	c.set(Warning, "HTTP 429")
+	r.step(0)
+	c.set(Critical, "HTTP 503")
+	r.step(time.Second)
+	r.step(time.Hour)
+	c.set(OK, "HTTP 200")
+	r.step(time.Second)
+	expectMessages(t, r.notifier.messages(), "🟠 demo/lab probe:site: HTTP 429", "🔴 demo/lab probe:site: HTTP 503", "🔁 demo/lab still failing: probe:site: HTTP 503", "✅ demo/lab probe:site recovered")
+	for _, a := range r.notifier.alerts {
+		if a.Project != "demo" || a.Environment != "lab" {
+			t.Fatalf("identity: %+v", a)
+		}
 	}
 }
 
@@ -344,13 +365,13 @@ func TestAlertCarriesTheCheckAsFields(t *testing.T) {
 		t.Fatalf("alerts: %+v", r.notifier.alerts)
 	}
 	first, reminder, recovered := r.notifier.alerts[0], r.notifier.alerts[1], r.notifier.alerts[2]
-	if first != (Alert{Environment: "lab", Kind: "check", Name: "probe:site", State: Critical, Detail: "HTTP 503", Since: failedAt, Text: "🔴 lab probe:site: HTTP 503"}) {
+	if first != (Alert{Project: "demo", Environment: "lab", Kind: "check", Name: "probe:site", State: Critical, Detail: "HTTP 503", Since: failedAt, Text: "🔴 demo/lab probe:site: HTTP 503"}) {
 		t.Fatalf("first alert %+v", first)
 	}
-	if reminder.State != Critical || reminder.Kind != "check" || reminder.Since != failedAt || reminder.Text != "🔁 still failing: lab probe:site: HTTP 503" {
+	if reminder.State != Critical || reminder.Kind != "check" || reminder.Since != failedAt || reminder.Text != "🔁 demo/lab still failing: probe:site: HTTP 503" {
 		t.Fatalf("reminder %+v", reminder)
 	}
-	if recovered.State != OK || recovered.Detail != "HTTP 200" || recovered.Text != "✅ lab probe:site recovered" {
+	if recovered.State != OK || recovered.Detail != "HTTP 200" || recovered.Text != "✅ demo/lab probe:site recovered" {
 		t.Fatalf("recovery %+v", recovered)
 	}
 }
@@ -401,20 +422,20 @@ func TestRestartDoesNotRealertFailingCheck(t *testing.T) {
 	r.checks = []Check{c}
 	c.set(Critical, "HTTP 503")
 	r.step(0)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:site: HTTP 503")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:site: HTTP 503")
 
 	// The agent restarts: a new monitor reads the stored state, and the check still fails.
 	r.attach()
 	r.step(30 * time.Second)
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:site: HTTP 503")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:site: HTTP 503")
 	if got := r.stored("probe:site"); got.State != Critical || got.NotifiedState != Critical {
 		t.Fatalf("state lost across restart: %+v", got)
 	}
 
 	c.set(OK, "HTTP 200")
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:site: HTTP 503", "✅ lab probe:site recovered")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:site: HTTP 503", "✅ demo/lab probe:site recovered")
 }
 
 func TestRemovedCheckIsDeletedWithoutAlert(t *testing.T) {
@@ -425,12 +446,12 @@ func TestRemovedCheckIsDeletedWithoutAlert(t *testing.T) {
 	gone.set(Critical, "HTTP 500")
 	kept.set(OK, "HTTP 200")
 	r.step(0)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:old: HTTP 500")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:old: HTTP 500")
 
 	r.checks = []Check{kept}
 	r.step(time.Minute)
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab probe:old: HTTP 500")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab probe:old: HTTP 500")
 	checks, err := r.m.Snapshot(context.Background())
 	if err != nil || len(checks) != 1 || checks[0].Name != "probe:new" {
 		t.Fatalf("snapshot after removal: %+v %v", checks, err)
@@ -528,17 +549,17 @@ func TestSnapshotIsSortedByName(t *testing.T) {
 
 func TestMessagesStayWithinTelegramLimits(t *testing.T) {
 	long := strings.Repeat("é", 3000)
-	text := message("lab", "probe:"+long, state.CheckState{State: Critical, Detail: long}, false)
+	text := message(Alert{Project: "demo", Environment: "lab", Name: "probe:" + long, State: Critical, Detail: long}, false)
 	if len(text) > maxMessage || !strings.HasSuffix(text, "...") {
 		t.Fatalf("message length %d", len(text))
 	}
-	if !strings.HasPrefix(text, "🔴 lab probe:") {
+	if !strings.HasPrefix(text, "🔴 demo/lab probe:") {
 		t.Fatalf("message prefix: %q", text[:20])
 	}
-	if got := message("lab", "disk:/", state.CheckState{State: OK}, false); got != "✅ lab disk:/ recovered" {
+	if got := message(Alert{Project: "demo", Environment: "lab", Name: "disk:/", State: OK}, false); got != "✅ demo/lab disk:/ recovered" {
 		t.Fatalf("recovery text: %q", got)
 	}
-	if got := message("lab", "disk:/", state.CheckState{State: Warning, Detail: "81.0% used"}, false); got != "🟠 lab disk:/: 81.0% used" {
+	if got := message(Alert{Project: "demo", Environment: "lab", Name: "disk:/", State: Warning, Detail: "81.0% used"}, false); got != "🟠 demo/lab disk:/: 81.0% used" {
 		t.Fatalf("warning text: %q", got)
 	}
 }

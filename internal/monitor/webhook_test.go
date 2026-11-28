@@ -21,17 +21,18 @@ const secretURLPath = "/hooks/s3cr3t-token-value"
 
 func sampleAlert() Alert {
 	return Alert{
+		Project:     "demo",
 		Environment: "lab",
 		Kind:        "check",
 		Name:        "probe:site",
 		State:       Critical,
 		Detail:      "HTTP 503",
 		Since:       time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC),
-		Text:        "🔴 lab probe:site: HTTP 503",
+		Text:        "🔴 demo/lab probe:site: HTTP 503",
 	}
 }
 
-func TestWebhookPostsTheAlertAsJSON(t *testing.T) {
+func TestWebhookBodyCarriesTheProject(t *testing.T) {
 	var mu sync.Mutex
 	var req *http.Request
 	var body []byte
@@ -60,8 +61,8 @@ func TestWebhookPostsTheAlertAsJSON(t *testing.T) {
 		t.Fatalf("body %q: %v", body, err)
 	}
 	want := map[string]any{
-		"environment": "lab", "kind": "check", "name": "probe:site", "state": "critical", "detail": "HTTP 503",
-		"since": "2026-11-16T10:00:00Z", "text": "🔴 lab probe:site: HTTP 503",
+		"project": "demo", "environment": "lab", "kind": "check", "name": "probe:site", "state": "critical", "detail": "HTTP 503",
+		"since": "2026-11-16T10:00:00Z", "text": "🔴 demo/lab probe:site: HTTP 503",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("fields %v, want %v", got, want)

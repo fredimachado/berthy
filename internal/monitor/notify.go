@@ -5,11 +5,14 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"berthy/internal/scope"
 )
 
 // Alert reports a check or the end of a deploy. Text is the line Telegram sends, ready to show. No field holds application
 // output or a secret value.
 type Alert struct {
+	Project     string
 	Environment string
 	Server      string
 	Kind        string // "check" or "deploy"
@@ -24,6 +27,9 @@ type Alert struct {
 func (a Alert) Subject() string {
 	if a.Server != "" {
 		return "server " + a.Server
+	}
+	if a.Project != "" {
+		return (scope.ID{Project: a.Project, Environment: a.Environment}).String()
 	}
 	return a.Environment
 }
