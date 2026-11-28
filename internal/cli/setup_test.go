@@ -436,7 +436,8 @@ func TestSetupTextOutputOfASetUpServer(t *testing.T) {
 		"\nnext steps:\n" +
 		"  1. " + setupNextSteps(nextSteps{id: scope.ID{Project: "shop", Environment: "p5"}, config: "", local: false, tokenEnv: "BERTHY_SHOP_P5_TOKEN", storeToken: false, ingress: false, manifestDir: dir})[0] + "\n" +
 		"  2. set the secrets the manifest names: berthy secret set NAME -e p5 --manifest-dir " + shellWord(dir) + "\n" +
-		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --manifest-dir " + shellWord(dir) + " --version REF)\n"
+		"  3. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e p5 --manifest-dir " + shellWord(dir) + " --version APP=REF (or one app: berthy deploy APP -e p5 --manifest-dir " + shellWord(dir) + " --version REF)\n" +
+		"  4. host problems alert nobody yet: run setup again with --cluster-alerts FILE\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}
@@ -552,7 +553,7 @@ func TestSetupJSONHasTheTokenAndTheNextSteps(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 4 || len(got.Steps) != 15 {
+	if !got.OK || !strings.HasPrefix(got.Token, "bty.shop.p5.") || strings.Count(out, got.Token) != 1 || len(got.NextSteps) != 5 || len(got.Steps) != 15 {
 		t.Fatalf("report = %+v", got)
 	}
 	if !strings.Contains(got.NextSteps[0], "run the same berthy setup command again") {

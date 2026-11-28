@@ -403,6 +403,8 @@ Run from the application's repository, setup reads these values from the merged 
 | `--protected` | Mark the environment as protected, when the directory has no manifest |
 | `--manifest-dir <dir>` | Read from this exact directory. By default, look for `./berthy.yml` first, then `./.berthy/berthy.yml`. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it |
+| `--cluster-alerts FILE\|none` | Replace the server's Telegram and webhook settings from a YAML mapping of `reminder`, `telegram` and `webhook`, or clear them with `none`. Omitting the flag preserves them. |
+| `--cluster-secret NAME` | Write one server alert credential through privileged setup. The value comes from hidden input or a pipe. Setup stops the agent, writes the credential, and starts and verifies the service again. |
 | `--remove` | Unhost one pair after its applied apps have been destroyed |
 | `--purge` | Delete that removal's state directory instead of archiving it. Requires `--remove`. |
 | `--dry-run`, `--json` | Report what would change without changing it; report as JSON |
@@ -421,6 +423,7 @@ Run from the application's repository, setup reads these values from the merged 
 | Agent configuration | `/etc/berthy/agent.json`, owned by `berthy`, mode 0600 (the agent refuses a configuration that group or others can access); the previous one as `agent.json.prev` after a change |
 | State of one hosted environment | `/var/lib/berthy/environments/<project>/<environment>/state`, owned by `berthy`, mode 0700 |
 | Encryption key of one hosted environment | `/var/lib/berthy/environments/<project>/<environment>/key`, 32 bytes, owned by `berthy`, mode 0600 |
+| Cluster state and independent key | `/var/lib/berthy/cluster/state` (0700) and `/var/lib/berthy/cluster/key` (0600), owned by `berthy` |
 | Service | `/etc/systemd/system/berthy.service`, the file the repository ships as `deploy/systemd/berthy.service`, running as the `berthy` user in the `docker` group |
 
 The agent's configuration names the listen address, the Docker socket, and an `environments` list. Each entry is one hosted environment: `project`, `environment`, `state_dir`, `key_file`, `protected`, `tokens`, and `network` (the overlay network its apps join). Every hosted environment has state and a key. Setup writes `network` from the manifest, or defaults it to `<project>-<environment>`. `doctor` checks the network the entry names, and when it names none, the network of the environment's settings. With neither, the check is left out, as on a fresh hosted environment before its first deploy. The agent's version is in its `agent` check and in `GET /v1/projects/<project>/environments/<env>/agent`. A capable agent always includes `effective_protected` on that response. It is a JSON boolean when the effective policy is known, and explicit `null` when it cannot be determined. A legacy response omits the field. `protected` keeps its configured-only meaning.

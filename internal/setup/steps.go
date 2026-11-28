@@ -52,9 +52,11 @@ type Options struct {
 	ListenPort  int
 	// DefaultListenIP is the manifest's address for the server being set up, or nil. A first install listens on
 	// DefaultListenIP:DefaultListenPort when --listen is not given.
-	DefaultListenIP net.IP
-	Protected       bool
-	NoInstallDocker bool
+	DefaultListenIP    net.IP
+	Protected          bool
+	NoInstallDocker    bool
+	ClusterAlertsGiven bool
+	ClusterAlerts      *agent.ClusterAlerts
 
 	Binary     string // --binary: the Linux build of Berthy to install instead of this CLI or the release
 	KeyFile    string // --key-file: the saved encryption key to install

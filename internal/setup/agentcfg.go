@@ -447,11 +447,36 @@ func clusterPaths() (stateDir, keyFile string) {
 }
 
 func (s *Session) clusterConfig() agent.ClusterConfig {
+	var cfg agent.ClusterConfig
 	if s.existing != nil {
-		return s.existing.Cluster
+		cfg = s.existing.Cluster
+	} else {
+		cfg.StateDir, cfg.KeyFile = clusterPaths()
 	}
-	stateDir, keyFile := clusterPaths()
-	return agent.ClusterConfig{StateDir: stateDir, KeyFile: keyFile}
+	if s.Opts.ClusterAlertsGiven {
+		cfg.Alerts = s.Opts.ClusterAlerts
+	}
+	return cfg
+}
+
+// ClusterAlertSecretNames lists the distinct credentials of the desired server alert destinations.
+func (s *Session) ClusterAlertSecretNames() []string {
+	alerts := s.clusterConfig().Alerts
+	if alerts == nil {
+		return nil
+	}
+	var names []string
+	if alerts.Telegram != nil {
+		names = append(names, alerts.Telegram.BotTokenSecret)
+	}
+	if alerts.Webhook != nil {
+		names = append(names, alerts.Webhook.URLSecret)
+		if alerts.Webhook.HeadersSecret != "" {
+			names = append(names, alerts.Webhook.HeadersSecret)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 // desiredFile keeps every other hosted environment and updates this one.

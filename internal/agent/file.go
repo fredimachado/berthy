@@ -45,6 +45,9 @@ func (a ClusterAlerts) manifestAlerts() manifest.Alerts {
 	return manifest.Alerts{Reminder: a.Reminder, Telegram: a.Telegram, Webhook: a.Webhook}
 }
 
+// Validate checks the server alert settings using the manifest's channel rules.
+func (a ClusterAlerts) Validate() error { return manifest.CheckAlertChannels(a.manifestAlerts()) }
+
 // Hosted is one hosted environment of agent.json.
 type Hosted struct {
 	Project     string  `json:"project"`
@@ -121,7 +124,7 @@ func (f File) Validate() error {
 		return errors.New("cluster needs state_dir and key_file")
 	}
 	if f.Cluster.Alerts != nil {
-		if err := manifest.CheckAlertChannels(f.Cluster.Alerts.manifestAlerts()); err != nil {
+		if err := f.Cluster.Alerts.Validate(); err != nil {
 			return fmt.Errorf("cluster: %w", err)
 		}
 	}

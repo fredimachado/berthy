@@ -258,6 +258,7 @@ next steps:
   3. set the secrets the manifest names: berthy secret set NAME -e prod --config /home/me/.config/berthy/config.json
   4. apply the managed ingress: berthy ingress apply -e prod --config /home/me/.config/berthy/config.json
   5. deploy every app in depends_on order, with --version APP=REF for each image app: berthy deploy -e prod --config /home/me/.config/berthy/config.json --version APP=REF (or one app: berthy deploy APP -e prod --config /home/me/.config/berthy/config.json --version REF)
+  6. host problems alert nobody yet: run setup again with --cluster-alerts FILE
 ```
 
 This sample is a non-terminal run with no credential store, so the token comes **after** the step lines. When the store confirms the save, setup prints the token only if you pass `--show-token`. An unconfirmed save may still finish later, so setup shows the token to avoid losing it. Setup prints the next steps only after a successful run that is not a dry run. The ingress item appears only when the manifest declares managed ingress. The next steps name `--config` only when you gave it to setup. Without it, the commands find the CLI configuration on their own. The post-setup secret, ingress and deploy commands name `--project` only when setup ran without a manifest. With one, each of those commands reads the project from `berthy.yml` in the directory you run it from, or in `--manifest-dir`. A `--local` key-copy handoff still names `--project` even when a manifest supplied the project. Relative `--manifest-dir` and `--config` resolve from the directory where you ran setup, so return there before the other commands. When the key copy could not be saved, `cli_key` says `not saved` with the reason and the first next step says what to do instead. The exit code stays 0. (The sample above is from a run on a test server, shortened where its details differ.)
@@ -381,6 +382,8 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--network <name>` | The shared network, when the directory has no manifest. |
 | `--protected` | Mark the environment as protected, when the directory has no manifest. |
 | `--no-install-docker` | Stop if Docker is missing instead of installing it. |
+| `--cluster-alerts FILE\|none` | Replace the server's alert destinations from YAML, or clear them with `none`. Omitting the flag keeps the saved settings. |
+| `--cluster-secret NAME` | Write one server alert credential on an installed agent. This maintenance command uses the setup host selector and briefly stops and starts `berthy.service`. |
 | `--remove` | Remove one hosted environment after destroying its applied apps. The server must still host another environment. |
 | `--purge` | Delete the removed environment's state instead of archiving it. Requires `--remove`. |
 | `--dry-run` | Check and report what would change, without changing anything. |
@@ -392,6 +395,25 @@ The overlay merges `servers` by name. Define the entries in the overlay when eac
 | `--show-token` | Print the newly created admin token as well as saving it. |
 
 If the directory has a manifest, setup reads the project, `network`, `protected` and the server's SSH destination (`servers`) from the merged manifest of the environment. A `--project` or `--network` flag that disagrees with the manifest is an error. With no `berthy.yml` and no `--project`, setup stops and asks for `--project NAME`. Without a manifest or `--network`, the network defaults to `<project>-<environment>`.
+
+Server alert destinations use a YAML file with the same reminder, Telegram and webhook fields as manifest alerts. The file holds secret names. Set each value separately through SSH or `--local` as an operator who can run setup with root privileges. An agent API token has no access to server alert credentials.
+
+```yaml
+reminder: 4h
+telegram:
+  bot_token_secret: SERVER_TELEGRAM_TOKEN
+  chat_id: "-12345678"
+webhook:
+  url_secret: SERVER_WEBHOOK_URL
+```
+
+```sh
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-secret SERVER_TELEGRAM_TOKEN
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-secret SERVER_WEBHOOK_URL
+berthy setup -e prod --project todo --host ops@10.0.0.5 --cluster-alerts server-alerts.yml
+```
+
+Each `--cluster-secret` command reads one hidden or piped value and can preload or replace a credential. It starts the agent again and verifies startup. Hosted workloads keep running during the service interruption. Add `--dry-run` to preview the operation without reading a value. `--cluster-alerts none` clears the destinations and keeps the cluster state and key.
 
 #### What setup leaves on the server
 
@@ -3045,7 +3067,7 @@ Flags that belong to one command only: `--revert-schema` (`rollback`), `--commit
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, or add or remove one hosted environment over SSH or on the server. Exit 0 all steps fine, 1 a step failed or the manifest could not be loaded (before setup starts), 2 wrong command line (usage). Run one setup at a time against a server. |
+| `setup` | `-e`, `--project`, `--host`, `--server`, `--local`, `--listen` (first run; optional when setup picks the server from the manifest and it has `address`), `--config`, `--manifest-dir`, `--network`, `--protected`, `--no-install-docker`, `--dry-run`, `--json`, `--verbose`, `--binary`, `--key-file`, `--new-token`, `--show-token`, `--cluster-alerts FILE\|none`, `--cluster-secret NAME`, `--remove`, `--purge` (with `--remove`) | Prepare a server, install or upgrade the agent, manage hosted environments, and configure server alerts over SSH or on the server. Exit 0 when setup succeeds, 1 when a step fails or the manifest could not be loaded before setup starts, 2 for invalid command-line usage. Run one setup at a time against a server. |
 | `context add` | `--project`, `-e`, `--url`, `--token-env`, `--save-token`, `--config` | Add or replace one environment of one project in the CLI configuration. Prints `added`, `updated`, or `already`. With `--save-token`, reads the token and saves it in the credential store. Needs no agent. |
 | `context list` | `--config`, `--json` | One row per context: project, environment, URL, token variable, `yes` or `no` for whether the variable is set, and `stored`, `not stored`, or `unknown` for the stored token. Never a token. With no entries, or a missing file, prints `no contexts configured`; with `--json`, `[]`. |
 | `context remove` | `--project`, `-e`, `--config`, `--delete-token` | Remove one context from the CLI configuration. `--delete-token` deletes its stored token first. |
@@ -3327,7 +3349,7 @@ The agent reads one JSON file, `/etc/berthy/agent.json`, which `berthy setup` wr
 | `compose_command` | no | The Compose command as a list. Default `["docker", "compose"]`. The Compose plugin must be installed system-wide, or this must name a standalone Compose binary. |
 | `cloudflare_api_url` | no | Overrides the Cloudflare API base URL. `https`, or `http` on a loopback host. For tests. |
 | `telegram_api_url` | no | Overrides the Telegram Bot API base URL. Same rule. For tests. |
-| `cluster` | yes | The server's `state_dir` and `key_file`. Setup uses `/var/lib/berthy/cluster/state` and `/var/lib/berthy/cluster/key`. These paths must be separate from all hosted state directories, keys and key rotation files. |
+| `cluster` | yes | The server's `state_dir` and `key_file` plus optional `alerts`. Setup uses `/var/lib/berthy/cluster/state` and `/var/lib/berthy/cluster/key`. These paths must be separate from all hosted state directories, keys and key rotation files. |
 | `environments` | yes, at least one | List of hosted environments. Each entry is below. A (project, environment) pair, a `state_dir`, a `key_file` and a `network` each appear once in the file. |
 
 Each entry of `environments`:

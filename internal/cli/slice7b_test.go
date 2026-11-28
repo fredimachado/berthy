@@ -37,7 +37,9 @@ func TestUsageStyleAfterModeResolution(t *testing.T) {
 		want := "flag provided but not defined: -bad\n" +
 			"usage: berthy setup -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME] [--listen ADDRESS:PORT] [--network NAME] [--protected]\n" +
 			"                    [--manifest-dir DIR] [--binary PATH] [--key-file PATH] [--new-token] [--show-token] [--config PATH]\n" +
-			"                    [--no-install-docker] [--dry-run] [--json] [--verbose]\n" +
+			"                    [--no-install-docker] [--cluster-alerts FILE|none] [--dry-run] [--json] [--verbose]\n" +
+			"       berthy setup --cluster-secret NAME -e ENV [--host USER@SERVER | --server NAME | --local]\n" +
+			"                    [--project NAME] [--manifest-dir DIR] [--dry-run] [--json] [--verbose]\n" +
 			"       berthy setup --remove -e ENV [--host USER@SERVER | --server NAME | --local] [--project NAME]\n" +
 			"                    [--manifest-dir DIR] [--config PATH] [--purge] [--dry-run] [--json] [--verbose]\n"
 		if code != 2 || errs.String() != want {

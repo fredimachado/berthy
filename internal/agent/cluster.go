@@ -8,6 +8,11 @@ import (
 	"berthy/internal/state"
 )
 
+const (
+	ClusterProject     = "(cluster)"
+	ClusterEnvironment = "cluster"
+)
+
 // Cluster owns the agent's server state and alert configuration.
 type Cluster struct {
 	store    *state.Store
@@ -22,12 +27,12 @@ func OpenCluster(sh Shared, f File) (*Cluster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read server hostname: %w", err)
 	}
-	s, err := state.Open(f.Cluster.StateDir, f.Cluster.KeyFile, "cluster")
+	s, err := state.Open(f.Cluster.StateDir, f.Cluster.KeyFile, ClusterEnvironment)
 	if err != nil {
 		return nil, fmt.Errorf("open cluster state: %w", err)
 	}
 	cluster := &Cluster{store: s, alerts: f.Cluster.Alerts, hostname: hostname, shared: sh}
-	if err := s.Claim(context.Background(), "(cluster)"); err != nil {
+	if err := s.Claim(context.Background(), ClusterProject); err != nil {
 		cluster.Close()
 		return nil, fmt.Errorf("claim cluster state: %w", err)
 	}

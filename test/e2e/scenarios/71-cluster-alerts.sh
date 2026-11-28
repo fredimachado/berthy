@@ -51,10 +51,13 @@ ssh -M -S "$tunnel" -fNT -o BatchMode=yes -o ExitOnForwardFailure=yes \
 
 peer="$PROJECT-two"
 cfg="$private/cli.json"
+setup_on() {
+  local project=$1; shift
+  "$BIN" setup --project "$project" -e "$ENVN" --host "ops@$server" --manifest-dir "$private/empty" --json "$@"
+}
 setup_pair() {
   local project=$1 token variable
-  if ! "$BIN" setup --project "$project" -e "$ENVN" --host "ops@$server" --listen "$ip:7710" \
-    --config "$cfg" --manifest-dir "$private/empty" --binary "$BIN" --no-install-docker --json \
+  if ! setup_on "$project" --listen "$ip:7710" --config "$cfg" --binary "$BIN" --no-install-docker \
     </dev/null > "$private/setup.json" 2> "$private/setup.stderr"; then
     jq -r '.steps[]? | select(.status == "failed") | .step' "$private/setup.json" >&2
     die "could not set up $project/$ENVN"
@@ -66,6 +69,74 @@ setup_pair() {
 cli() { local project=$1; shift; "$BIN" "$@" --project "$project" -e "$ENVN" --config "$cfg"; }
 setup_pair "$PROJECT"
 setup_pair "$peer"
+
+first_chat=101 second_chat=102 server_chat=103
+first_hook="/hooks/$PROJECT/$ENVN" second_hook="/hooks/$peer/$ENVN" server_hook="/hooks/$PROJECT/$ENVN/server"
+cluster_dir=/var/lib/berthy/cluster
+cluster_identity() { inside stat -c '%d:%i' "$cluster_dir/state/state.db" "$cluster_dir/key"; }
+# docker exec -i would otherwise read the credential intended for setup.
+invocation() { inside systemctl show -p InvocationID --value berthy </dev/null; }
+check_both() {
+  local project
+  for project in "$PROJECT" "$peer"; do
+    cli "$project" agent-info --json |
+      jq -e --arg p "$project" --arg e "$ENVN" '.project == $p and .environment == $e' >/dev/null || die "$project/$ENVN did not answer"
+  done
+}
+cluster_layout() { inside cat /etc/berthy/agent.json | jq -ec '.cluster'; }
+cluster_before=$(cluster_identity)
+expect_eq "setup creates private cluster state and key" $'700 berthy:berthy\n600 berthy:berthy' \
+  "$(inside stat -c '%a %U:%G' "$cluster_dir/state" "$cluster_dir/key")"
+for project in "$PROJECT" "$peer"; do
+  code=0
+  inside cmp -s "$cluster_dir/key" "/var/lib/berthy/environments/$project/$ENVN/key" || code=$?
+  expect_eq "the cluster key differs from $project/$ENVN's key" 1 "$code"
+done
+expect_eq "fresh setup has no server destinations" false "$(cluster_layout | jq 'has("alerts")')"
+check_both
+
+cluster_setup() {
+  local what=$1; shift
+  local before
+  before=$(invocation)
+  if ! setup_on "$PROJECT" "$@" > "$private/cluster-setup.json" 2> "$private/cluster-setup.stderr"; then
+    jq -r '.steps[]? | select(.status == "failed") | .step' "$private/cluster-setup.json" >&2
+    die "$what failed"
+  fi
+  check_both
+  if [ "$what" != 'omit destination flags' ]; then
+    [ "$(invocation)" != "$before" ] || die "$what did not start a new agent invocation"
+  fi
+  [ "$(cluster_identity)" = "$cluster_before" ] || die "$what changed the cluster database or key"
+  pass "$what keeps the cluster database and key"
+  pass "$what leaves both environments serving"
+}
+cluster_setup 'preload the Telegram credential' --cluster-secret SERVER_TG < "$RUN/tg-token"
+printf 'http://%s%s-preload\r\n' "$HOOK_LISTEN" "$server_hook" |
+  cluster_setup 'preload the webhook credential' --cluster-secret SERVER_HOOK
+expect_eq "preloading credentials leaves destinations disabled" false "$(cluster_layout | jq 'has("alerts")')"
+cat > "$private/cluster.yml" <<YML
+reminder: 0s
+telegram:
+  bot_token_secret: SERVER_TG
+  chat_id: "$server_chat"
+webhook:
+  url_secret: SERVER_HOOK
+YML
+cluster_setup 'enable server destinations' --config "$cfg" --cluster-alerts "$private/cluster.yml" </dev/null
+destinations=$(cluster_layout | jq -ec '.alerts | select(.reminder == "0s" and .telegram.bot_token_secret == "SERVER_TG" and .webhook.url_secret == "SERVER_HOOK")')
+expect_eq "setup installs the server chat" "$server_chat" "$(jq -r '.telegram.chat_id' <<< "$destinations")"
+jq -e '[.next_steps[] | select(contains("--cluster-secret")) | split(" ")[-1]] == ["SERVER_HOOK", "SERVER_TG"]' \
+  "$private/cluster-setup.json" >/dev/null || die "setup did not report both server credential commands"
+printf 'http://%s%s\r\n' "$HOOK_LISTEN" "$server_hook" |
+  cluster_setup 'replace the webhook credential' --cluster-secret SERVER_HOOK
+cluster_setup 'omit destination flags' --config "$cfg" </dev/null
+expect_eq "omitting destination flags preserves the channels" "$destinations" "$(cluster_layout | jq -ec '.alerts')"
+cluster_setup 'clear server destinations' --config "$cfg" --cluster-alerts none </dev/null
+expect_eq "none clears the destinations" false "$(cluster_layout | jq 'has("alerts")')"
+jq -e 'any(.next_steps[]; . == "host problems alert nobody yet: run setup again with --cluster-alerts FILE")' \
+  "$private/cluster-setup.json" >/dev/null || die "setup did not report that delivery is disabled"
+[ "$E2E_FAILS" -eq 0 ] || finish
 
 public_ports_detail() {
   cli "$1" checks --json | jq -er '.[] | select(.name == "public_ports") | .detail | select(length > 0)'
@@ -92,8 +163,6 @@ for project in "$PROJECT" "$peer"; do
   wait_for "public_ports sees the marker for $project/$ENVN" marker_checked "$project" || exit 1
 done
 
-first_chat=101 second_chat=102 server_chat=103
-first_hook="/hooks/$PROJECT/$ENVN" second_hook="/hooks/$peer/$ENVN" server_hook="/hooks/$PROJECT/$ENVN/server"
 enable_environment_alerts() {
   local project=$1 chat=$2 hook=$3 dir="$private/$1"
   mkdir "$dir"
