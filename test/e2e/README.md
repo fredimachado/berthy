@@ -14,7 +14,8 @@ From inside WSL:
 
     bash /mnt/d/code/berthy/test/e2e/run.sh 00-smoke
 
-CI runs the harness in six shards on every pull request and push to `main`. Run one shard locally against the
+CI runs the harness in six shards for relevant changes on ready (non-draft) pull requests and on every push to `main`.
+Run one shard locally against the
 configured fixture with `mapfile -t scenarios < <(bash test/e2e/shard.sh 1 6); bash test/e2e/run.sh "${scenarios[@]}"`.
 `durations.txt` records seconds between scenario starts in Actions run 46096508758, including fixture setup; the last
 scenario in each shard ends at the summary. Missing scenarios use the median duration. The shard script assigns the

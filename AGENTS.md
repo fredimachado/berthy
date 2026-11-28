@@ -12,7 +12,8 @@
 ## Before and after a push
 
 - Require the `CI result` check in branch protection; it includes all selected CI jobs.
-- CI runs the e2e harness in shards on every pull request and push to `main`.
+- CI runs the e2e harness in shards for relevant changes on ready (non-draft)
+  pull requests and on every push to `main`.
 
 - CI runs the tests on Linux, macOS and Windows. Run `go test ./...` on Windows
   as well as Linux before pushing.
