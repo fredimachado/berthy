@@ -93,8 +93,8 @@ func TestServiceTasksReportsRunningSince(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tasks, err := tasksEngine(t, body).ServiceTasks(ctx, "svc1")
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(tasks) != 9 {
+		t.Fatalf("tasks: %d %v", len(tasks), err)
 	}
 	for _, task := range tasks {
 		switch task.ID {

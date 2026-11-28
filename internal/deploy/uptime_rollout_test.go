@@ -60,9 +60,11 @@ func TestUptimeRolloutCanRecoverBelowLimit(t *testing.T) {
 		const hold = 5 * time.Second
 		const threshold = 2 * time.Second
 		var exitObserved time.Time
+		initial := runningTask("initial", "op")
+		initial.RunningSince = time.Now().Add(-threshold)
 		e := uptimeHealthSequence{&seqHealth{step: func(poll int) []engine.ServiceTask {
 			if poll < 3 {
-				return []engine.ServiceTask{runningTask("initial", "op")}
+				return []engine.ServiceTask{initial}
 			}
 			if exitObserved.IsZero() {
 				exitObserved = time.Now()
@@ -109,9 +111,11 @@ func TestUptimeWaitRequiresEveryReplicaToReachThreshold(t *testing.T) {
 		younger.Slot, younger.RunningSince = 7, now.Add(-threshold+125*time.Millisecond)
 		unknown := runningTask("unknown", "op")
 		unknown.Slot, unknown.Timestamp = 7, older.RunningSince
+		unidentified := older
+		unidentified.Slot, unidentified.ID = 7, ""
 		old := older
 		old.Slot, old.Labels = 7, map[string]string{"berthy.operation": "previous"}
-		probe := healthFake{tasks: []engine.ServiceTask{older, younger, unknown, old}, status: "none"}
+		probe := healthFake{tasks: []engine.ServiceTask{older, younger, unknown, unidentified, old}, status: "none"}
 		ctx, cancel := context.WithTimeout(context.Background(), threshold)
 		defer cancel()
 		done := make(chan error, 1)

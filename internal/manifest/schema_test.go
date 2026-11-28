@@ -272,8 +272,14 @@ func TestUptimeHealthSchemaAlternatives(t *testing.T) {
 		required = append(required, branch[0])
 	}
 	slices.Sort(required)
-	if got := health["oneOf"].([]any)[1].(map[string]any)["maxProperties"]; got != float64(1) {
+	forms := health["oneOf"].([]any)
+	if got := forms[1].(map[string]any)["maxProperties"]; got != float64(1) {
 		t.Errorf("uptime maxProperties = %v, want 1", got)
+	}
+	command := forms[0].(map[string]any)
+	constraint, _ := command["not"].(map[string]any)
+	if excluded, _ := constraint["required"].([]any); len(excluded) != 1 || excluded[0] != "uptime" {
+		t.Errorf("command branch accepts uptime: %v", command)
 	}
 	if !slices.Equal(required, []string{"test", "uptime"}) {
 		t.Fatalf("health alternatives = %v, want test and uptime", required)

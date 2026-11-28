@@ -1759,7 +1759,7 @@ A new version can fail for reasons only its own output explains: a missing setti
 
    For a failed `docker compose up`, look for `compose up` in the diagnostics to see the last lines of stderr with secrets redacted.
 
-   For each role of the new version it shows the newest tasks (at most 5 per role): Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
+   For each role of the new version it shows the newest tasks that have yet to pass readiness (at most 5 per role): Swarm state and error, exit code, whether the container was killed for lack of memory, the health state and the last five health-check results, and the last 200 lines of its output. A failed hook or migration leaves the same for its container. Secret values are replaced by `[redacted]`. The evidence of the newest 50 operations is kept, at most 1 MiB each. It needs a `deploy` token, not `read`, because application output can hold personal data.
 
    After an operation journal expires, its ID still answers status with a compact terminal record. Audit entries and request replay protection survive. Detailed steps and command output can expire with the journal. Diagnostics have their own limit, and an approved `exec` or `run` keeps its output while the approval result is available.
 

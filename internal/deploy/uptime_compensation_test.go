@@ -154,7 +154,12 @@ func TestCompensationAllowsAllTouchedCommandHealthRoles(t *testing.T) {
 		{App: "web", Role: "aux", Name: prior.ServiceName("test", "web", "aux"), ServiceID: "aux"},
 		boundBinding(prior.ServiceName("test", "web", "web"), "web"),
 	}
-	old := seedUptimeRelease(t, s, prior, bindings...)
+	appliedManifest := prior.Defaulted()
+	// Adoption records the requested uptime policy and keeps the live command check. A later restart adds a generation.
+	appliedAux := appliedManifest.Apps["web"].Roles["aux"]
+	appliedAux.Health = uptimeManifest("20s", "60s").Apps["web"].Roles["web"].Health
+	appliedManifest.Apps["web"].Roles["aux"] = appliedAux
+	old := seedUptimeRelease(t, s, appliedManifest, bindings...)
 	before := make(map[string]json.RawMessage)
 	oldImage := "docker.io/example/web@" + digestOfLetter("a")
 	for _, b := range bindings {
