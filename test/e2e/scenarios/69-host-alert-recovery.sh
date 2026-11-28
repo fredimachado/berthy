@@ -34,7 +34,7 @@ write_memory() {
 existing=$(d ps -aq --no-trunc --filter "name=^/${name}\$") || exit 1
 [ -z "$existing" ] || { fail "create memory agent" "container name already exists"; finish; }
 stop_agent
-jq '.cluster.alerts = {reminder: "1ms", webhook: {url_secret: "ALERT_WEBHOOK_URL"}}' "$RUN/agent.json" > "$RUN/agent.json.new" &&
+(umask 077; jq '.cluster.alerts = {reminder: "1ms", webhook: {url_secret: "ALERT_WEBHOOK_URL"}}' "$RUN/agent.json" > "$RUN/agent.json.new") &&
   mv -f "$RUN/agent.json.new" "$RUN/agent.json" || exit 1
 printf 'http://%s/memory' "$HOOK_LISTEN" | "$CLUSTER_BIN" secret "$RUN/agent.json" ALERT_WEBHOOK_URL || exit 1
 write_memory 99 || exit 1
