@@ -101,6 +101,7 @@ with sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True) as db:
 agent_stopped() { ! owned "$RUN/agent.pid" "$BIN"; }
 finish_senders() {
   local pid
+  owned "$RUN/agent.pid" "$BIN" || return 1
   pid=$(cat "$RUN/agent.pid") || return 1
   kill -TERM "$pid" || return 1
   wait_for "agent shutdown" agent_stopped || return 1
@@ -186,7 +187,7 @@ else
 fi
 wait_posts deploy 1 20 >/dev/null
 wait_for "failed deploy Telegram alert" message_received "web v2 (failed|rolled back):" || fail "the failed deploy Telegram alert arrives" "timed out"
-finish_senders || fail "the agent drains the failed deploy alert" "shutdown failed"
+finish_senders || { fail "the agent drains the failed deploy alert" "shutdown failed"; finish; }
 expect_eq "a failed deploy is one POST of kind deploy" 1 "$(posts deploy | jq 'length')"
 body=$(posts deploy | jq -c '.[0]')
 echo "  deploy alert: $body"
@@ -210,7 +211,7 @@ out=$(adm deploy web --version v2 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v2 with deploys: all" 0 "$code" "$out"
 wait_posts deploy 1 20 >/dev/null
 wait_for "successful deploy Telegram alert" message_received "web v2 deployed" || fail "the successful deploy Telegram alert arrives" "timed out"
-finish_senders || fail "the agent drains the successful deploy alert" "shutdown failed"
+finish_senders || { fail "the agent drains the successful deploy alert" "shutdown failed"; finish; }
 expect_eq "deploys: all sends the success as one POST" 1 "$(posts deploy | jq 'length')"
 expect_tg_count "deploys: all sends the success as one Telegram message" 1 "web v2 deployed"
 expect_eq "the success POST says succeeded" succeeded "$(posts deploy | jq -r '.[0].state')"
