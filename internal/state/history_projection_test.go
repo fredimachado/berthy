@@ -44,6 +44,10 @@ func TestHistorySchemaToleratesExistingObjects(t *testing.T) {
 			('audit_retired_request','audit_retired_release','audit_operation','releases_app_id','operations_app_started','release_facts_secret_reader')`).Scan(&indexes); err != nil || indexes != 6 {
 			t.Fatalf("history has %d supporting indexes, error %v", indexes, err)
 		}
+		var eventIndex string
+		if err := tx.QueryRow(`SELECT name FROM pragma_index_info('events_operation') WHERE seqno=0`).Scan(&eventIndex); err != nil || eventIndex != "operation_id" {
+			t.Fatalf("events lookup index starts with %q, error %v", eventIndex, err)
+		}
 	}
 }
 
@@ -126,24 +130,23 @@ func TestHistoryProjectsEligibleOperationReceipts(t *testing.T) {
 	if err := s.Finish(ctx, op.ID, Outcome{State: "interrupted"}); err != nil {
 		t.Fatal(err)
 	}
+	latest := retentionAdmit(t, s, Admission{RequestID: "latest", ActorID: "admin", Kind: "remove", App: "api", PublicRequest: []byte(`{}`)})
+	retentionFinish(t, s, latest, Outcome{State: "succeeded"})
 	tx, err := s.begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := schema20(tx); err != nil {
-		t.Fatal(err)
-	}
 	for range 2 {
-		if err := s.rememberOperationReceipts(ctx, tx, op.ID); err != nil {
+		if err := s.trimOperations(ctx, tx, s.env, "api", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM intents WHERE operation_id=?`, op.ID); err != nil {
-		t.Fatal(err)
-	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+	if n := counted(t, s, `SELECT count(*) FROM intents WHERE operation_id=?`, op.ID); n != 0 {
+		t.Fatalf("operation still has %d intents", n)
 	}
 	hooks, err := s.CompletedOneOffs(ctx)
 	if want := []CompletedOneOff{{OperationID: op.ID, ID: "hook", Name: "hook-name", Role: "pre_hook"}}; err != nil || !slices.Equal(hooks, want) {

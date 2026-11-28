@@ -104,8 +104,8 @@ func (s *Store) HistoricalComposeTargets(ctx context.Context, project string) ([
 	return claims, rows.Err()
 }
 
-func (s *Store) rememberOperationReceipts(ctx context.Context, tx *sql.Tx, id string) error {
-	rows, err := tx.QueryContext(ctx, completedOneOffsQuery+` AND o.id=? ORDER BY i.ordinal`, s.env, id)
+func (s *Store) rememberOperationReceipts(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, completedOneOffsQuery+` AND i.operation_id IN (SELECT id FROM retiring_operations WHERE NOT archived) ORDER BY i.operation_id,i.ordinal`, s.env)
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func (s *Store) rememberOperationReceipts(ctx context.Context, tx *sql.Tx, id st
 			return err
 		}
 	}
-	targets, err := s.readComposeTargets(ctx, tx, id)
+	targets, err := s.readComposeTargets(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -132,9 +132,9 @@ func (s *Store) rememberOperationReceipts(ctx context.Context, tx *sql.Tx, id st
 	return nil
 }
 
-func (s *Store) readComposeTargets(ctx context.Context, tx *sql.Tx, id string) (map[string][]Claim, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT ordinal,name,receipt FROM intents i JOIN operations o ON o.id=i.operation_id
-		WHERE o.environment=? AND i.operation_id=? AND i.kind='compose_down'`, s.env, id)
+func (s *Store) readComposeTargets(ctx context.Context, tx *sql.Tx) (map[string][]Claim, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT i.operation_id,i.ordinal,i.name,i.receipt FROM intents i
+		WHERE i.operation_id IN (SELECT id FROM retiring_operations WHERE NOT archived) AND i.kind='compose_down'`)
 	if err != nil {
 		return nil, err
 	}
@@ -142,9 +142,9 @@ func (s *Store) readComposeTargets(ctx context.Context, tx *sql.Tx, id string) (
 	byProject := map[string][]Claim{}
 	for rows.Next() {
 		var ordinal int
-		var project string
+		var id, project string
 		var sealed []byte
-		if err := rows.Scan(&ordinal, &project, &sealed); err != nil {
+		if err := rows.Scan(&id, &ordinal, &project, &sealed); err != nil {
 			return nil, err
 		}
 		plain, err := s.openFor(s.env, intentRecord(id, ordinal, "receipt"), sealed)

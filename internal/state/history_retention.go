@@ -13,7 +13,8 @@ import (
 
 const terminalStates = `('succeeded','failed','rolled_back','interrupted')`
 
-const latestMigrationSelection = `kind='deploy' AND schema_before<>'' AND state IN ` + terminalStates + ` ORDER BY started DESC,rowid DESC LIMIT 1`
+const recordedMigration = `kind='deploy' AND schema_before<>'' AND state IN ` + terminalStates
+const latestMigrationSelection = recordedMigration + ` ORDER BY started DESC,rowid DESC LIMIT 1`
 
 const retentionRelease = `SELECT manifest FROM releases WHERE id=COALESCE(
 	(SELECT release_id FROM applied WHERE environment=?1 AND app=?2),
@@ -122,33 +123,7 @@ func (s *Store) trimHistory(ctx context.Context, tx *sql.Tx, env, app string) er
 	if err := s.trimReleases(ctx, tx, env, app, keep); err != nil {
 		return err
 	}
-	// Previously trimmed headers may have lost their last reason to stay, even in another app.
-	prior, err := historyStrings(tx.QueryContext(ctx, `SELECT id FROM operations o
-		WHERE environment=? AND state IN `+terminalStates+`
-		AND NOT EXISTS(SELECT 1 FROM locks WHERE operation_id=o.id)
-		AND EXISTS(SELECT 1 FROM audit WHERE environment=o.environment AND operation_id=o.id AND retired_request_id IS NOT NULL)`, env))
-	if err != nil {
-		return err
-	}
-	for _, id := range prior {
-		if err := s.trimOperationDetails(ctx, tx, env, id); err != nil {
-			return err
-		}
-	}
-	victims, err := historyStrings(tx.QueryContext(ctx, `SELECT id FROM (
-		SELECT id FROM operations o WHERE environment=? AND app=? AND state IN `+terminalStates+`
-		AND NOT EXISTS(SELECT 1 FROM locks WHERE operation_id=o.id)
-		ORDER BY started DESC,rowid DESC LIMIT -1 OFFSET ?
-	) AS old WHERE NOT EXISTS(SELECT 1 FROM audit WHERE environment=? AND operation_id=old.id AND retired_request_id IS NOT NULL)`, env, app, keep, env))
-	if err != nil {
-		return err
-	}
-	for _, id := range victims {
-		if err := s.retireOperation(ctx, tx, env, id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.trimOperations(ctx, tx, env, app, keep)
 }
 
 func (s *Store) trimReleases(ctx context.Context, tx *sql.Tx, env, app string, keep int) error {
@@ -236,54 +211,4 @@ func retiredOperation(row interface{ Scan(...any) error }) (Operation, error) {
 		op.State, op.Err = "failed", "recovery resolved by admin"
 	}
 	return op, nil
-}
-
-func (s *Store) retireOperation(ctx context.Context, tx *sql.Tx, env, id string) error {
-	var requestID, app string
-	var hash, public []byte
-	if err := tx.QueryRowContext(ctx, `SELECT request_id,request_hash,app,public_request FROM operations WHERE environment=? AND id=?`, env, id).Scan(&requestID, &hash, &app, &public); err != nil {
-		return err
-	}
-	tag, err := publicRequestTag(public)
-	if err != nil {
-		return err
-	}
-	if err := s.rememberOperationReceipts(ctx, tx, id); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE audit SET retired_request_id=?,retired_request_hash=?,retired_app=? WHERE environment=? AND operation_id=? AND outcome='accepted'`, requestID, hash, app, env, id)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return errors.Join(err, errors.New("operation acceptance audit row unavailable"))
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE audit SET retired_tag=? WHERE environment=? AND operation_id=?`, tag, env, id); err != nil {
-		return err
-	}
-	return s.trimOperationDetails(ctx, tx, env, id)
-}
-
-func (s *Store) trimOperationDetails(ctx context.Context, tx *sql.Tx, env, id string) error {
-	var release, migration, diagnostic, approval, latest bool
-	err := tx.QueryRowContext(ctx, `SELECT
-		EXISTS(SELECT 1 FROM releases WHERE environment=o.environment AND app=o.app AND operation_id=o.id),
-		o.id IS (SELECT id FROM operations WHERE environment=o.environment AND app=o.app AND `+latestMigrationSelection+`),
-		EXISTS(SELECT 1 FROM diagnostics WHERE operation_id=o.id),
-		EXISTS(SELECT 1 FROM approvals WHERE environment=o.environment AND status NOT IN ('pending','expired') AND result='operation '||o.id),
-		o.id IS (SELECT id FROM operations WHERE environment=o.environment AND app=o.app AND kind=o.kind AND state IN `+terminalStates+` ORDER BY started DESC,rowid DESC LIMIT 1)
-		FROM operations o WHERE o.environment=? AND o.id=?`, env, id).Scan(&release, &migration, &diagnostic, &approval, &latest)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM intents WHERE operation_id=? AND NOT ((? AND kind='compose_source') OR (? AND kind='schema_source') OR (? AND kind='exec' AND (SELECT kind FROM operations WHERE id=?) IN ('exec','run')))`, id, release, migration, approval, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE operation_id=? AND id<>COALESCE((SELECT MAX(id) FROM events WHERE ? AND operation_id=? AND kind IN `+terminalStates+`),0)`, id, latest, id); err != nil {
-		return err
-	}
-	if !release && !migration && !diagnostic && !approval && !latest {
-		_, err = tx.ExecContext(ctx, `DELETE FROM operations WHERE environment=? AND id=?`, env, id)
-	}
-	return err
 }

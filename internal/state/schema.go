@@ -217,6 +217,7 @@ func schema20(tx *sql.Tx) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS audit_retired_request ON audit(environment,retired_request_id) WHERE retired_request_id IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS audit_retired_release ON audit(environment,retired_app,retired_release_id) WHERE retired_release_id IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS audit_operation ON audit(environment,operation_id);
+		CREATE INDEX IF NOT EXISTS events_operation ON events(operation_id);
 		CREATE INDEX IF NOT EXISTS releases_app_id ON releases(environment,app,id);
 		CREATE INDEX IF NOT EXISTS operations_app_started ON operations(environment,app,started);`)
 	return err

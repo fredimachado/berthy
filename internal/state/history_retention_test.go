@@ -27,13 +27,49 @@ func retentionFinish(t *testing.T, s *Store, op Operation, out Outcome) {
 	}
 }
 
-func counted(t *testing.T, s *Store, query string, args ...any) int {
+func counted(t testing.TB, s *Store, query string, args ...any) int {
 	t.Helper()
 	var n int
 	if err := s.db.QueryRowContext(t.Context(), query, args...).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func BenchmarkFinishWithLegacyOperationHistory(b *testing.B) {
+	for range b.N {
+		b.StopTimer()
+		s, _, _ := testStore(b)
+		ctx := b.Context()
+		if _, err := s.db.ExecContext(ctx, `
+			WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000)
+			INSERT INTO operations(id,environment,request_id,actor_id,actor_name,remote,kind,app,commit_sha,request_hash,public_request,state,started,error,schema_before,schema_after)
+			SELECT 'old-'||i,'test','req-'||i,'actor','','','deploy','api','',zeroblob(32),CAST('{}' AS BLOB),'failed',i,'','','' FROM n;
+			WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<25)
+			INSERT INTO events(operation_id,kind,data,created)
+			SELECT o.id,CASE WHEN i=25 THEN 'failed' ELSE 'step' END,CAST('{}' AS BLOB),o.started FROM operations o CROSS JOIN n;
+			INSERT INTO audit(environment,operation_id,actor_id,actor_name,remote,action,outcome,created)
+			SELECT environment,id,actor_id,actor_name,remote,kind,'accepted',started FROM operations
+			UNION ALL SELECT environment,id,actor_id,actor_name,remote,kind,state,started FROM operations`); err != nil {
+			b.Fatal(err)
+		}
+		op, _, err := s.Admit(ctx, Admission{RequestID: "next", ActorID: "actor", Kind: "deploy", App: "api", PublicRequest: []byte(`{}`)})
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		err = s.Finish(ctx, op.ID, Outcome{State: "failed"})
+		b.StopTimer()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if n := counted(b, s, `SELECT count(*) FROM operations`); n != 5 {
+			b.Fatalf("retained %d operations, want 5", n)
+		}
+		if n := counted(b, s, `SELECT count(*) FROM events`); n != 102 {
+			b.Fatalf("retained %d events, want 102", n)
+		}
+	}
 }
 
 func TestHistoryKeepsNewestReleasesAndApplied(t *testing.T) {
