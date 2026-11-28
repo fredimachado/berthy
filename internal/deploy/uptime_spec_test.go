@@ -239,3 +239,37 @@ func seedUptimeRelease(t *testing.T, s *state.Store, m manifest.Manifest, bindin
 	}
 	return prior
 }
+
+func TestUptimeRoleDisablesDockerHealthcheck(t *testing.T) {
+	role := uptimeManifest("20s", "1m").Apps["web"].Roles["web"]
+	for _, tc := range []struct {
+		name        string
+		imageHealth json.RawMessage
+		volumes     []string
+		mounts      string
+	}{
+		{name: "no image check"},
+		{name: "image check", imageHealth: json.RawMessage(`{"Test":["CMD","false"]}`)},
+		{name: "named volume", volumes: []string{"data:/.berthy"}, mounts: `[{"Type":"volume","Source":"data","Target":"/.berthy"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role.Volumes = tc.volumes
+			spec, err := serviceSpec("test", "proj", "web", "worker", "service", "operation", "net", "image", func(s string) string { return s }, nil, role, "start-first", "1s", tc.imageHealth, "", fixtureProbeSource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored struct {
+				TaskTemplate struct {
+					ContainerSpec struct{ Mounts, Healthcheck json.RawMessage }
+				}
+			}
+			if err := json.Unmarshal(storedAsDocker(spec), &stored); err != nil {
+				t.Fatal(err)
+			}
+			container := stored.TaskTemplate.ContainerSpec
+			if !sameSpec(container.Healthcheck, json.RawMessage(`{"Test":["NONE"]}`)) || (tc.mounts == "" && len(container.Mounts) != 0) || (tc.mounts != "" && !sameSpec(container.Mounts, json.RawMessage(tc.mounts))) {
+				t.Fatalf("stored health %s, mounts %s, want disabled health and %s", container.Healthcheck, container.Mounts, tc.mounts)
+			}
+		})
+	}
+}

@@ -166,3 +166,30 @@ func TestUptimeHealthReservesMountDirectory(t *testing.T) {
 		})
 	}
 }
+
+func TestUptimeHealthThresholdAndCommandOptions(t *testing.T) {
+	for _, tc := range []struct{ health, timeout, field string }{
+		{"{uptime: 19.999s}", "20s", ""},
+		{"{uptime: 20s}", "20s", ".uptime"},
+		{"{uptime: 1s, interval: 1s}", "20s", ".interval"},
+		{"{uptime: 1s, timeout: 1s}", "20s", ".timeout"},
+		{"{uptime: 1s, start_period: 1s}", "20s", ".start_period"},
+		{"{uptime: 1s, start_interval: 1s}", "20s", ".start_interval"},
+		{"{uptime: 1s, retries: 1}", "20s", ".retries"},
+	} {
+		t.Run(tc.health, func(t *testing.T) {
+			m, err := loadWorkerHealth(t, "        health: "+tc.health, tc.timeout)
+			if tc.field != "" {
+				requireHealthProblem(t, err, workerPath+".health"+tc.field, "")
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := m.Apps["api"].Roles["worker"].Health
+			if h.Timeout != "" || h.Retries != nil {
+				t.Fatalf("unexpected command defaults: %+v", h)
+			}
+		})
+	}
+}

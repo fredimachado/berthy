@@ -192,13 +192,12 @@ healthy_container() {
 }
 
 check_service() {
-  local step=$1 interval=$2 grace=$3
+  local step=$1 id
   d service inspect "$service" >"$LOG/uptime-$step-service.json"
-  jq -e --arg src "$BIN" --argjson interval "$interval" --argjson grace "$grace" '.[0].Spec.TaskTemplate.ContainerSpec |
-    .Mounts == [{Type:"bind",Source:$src,Target:"/.berthy/berthy",ReadOnly:true}] and
-    .Healthcheck.Test == ["CMD","/.berthy/berthy","probe","uptime","20s"] and
-    .Healthcheck.Interval == $interval and (.Healthcheck.StartPeriod // 0) == $grace and
-    (.Healthcheck | has("StartInterval") | not)' "$LOG/uptime-$step-service.json" >/dev/null
+  id=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$service" | head -n 1)
+  d inspect "$id" >"$LOG/uptime-$step-task.json"
+  jq -e '.[0].Spec.TaskTemplate.ContainerSpec |
+    (.Mounts // []) == [] and .Healthcheck == {Test:["NONE"]}' "$LOG/uptime-$step-service.json" >/dev/null
 }
 
 check_healthy() {
@@ -206,7 +205,7 @@ check_healthy() {
   expect_code "$step deploy succeeds" 0 "$code" "$out"
   expect_contains "$step has terminal success" "$out" 'state: succeeded'
   if [ "$E2E_FAILS" -ne 0 ] || [ -z "$operation" ]; then die "$step records a successful operation"; fi
-  check_service "$step" "$interval" "$grace" || die "$step service has the generated check and bind"
+  check_service "$step" "$interval" "$grace" || die "$step service disables Docker health and has no mounts"
   id=$(healthy_container "$repo@$wanted" "$operation") || die "$step has a healthy task for the new generation"
   d inspect "$id" >"$LOG/uptime-$step-task.json"
   if ! jq -e --arg src "$BIN" --argjson interval "$interval" --argjson grace "$grace" '.[0] |
