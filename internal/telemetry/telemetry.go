@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 
 	"berthy/internal/metrics"
+	"berthy/internal/scope"
 	"berthy/internal/state"
 )
 
@@ -41,6 +42,8 @@ const (
 // Exporter sends the agent's samples and check states to an OpenTelemetry backend. Config returns the endpoint and headers
 // to export to, and a nil config turns the export off. Run applies the configuration and exports until its context ends.
 type Exporter struct {
+	// Project becomes the berthy.project resource attribute.
+	Project string
 	// Env is the environment name, which becomes the deployment.environment.name resource attribute.
 	Env string
 	// Collector supplies the host and container samples. Nil leaves them out.
@@ -146,6 +149,7 @@ func (e *Exporter) start(ctx context.Context, cfg Config) (*pipeline, error) {
 	host, _ := os.Hostname() //nolint:errcheck // Hostname is optional metadata on the exported metrics.
 	res := resource.NewSchemaless(
 		attribute.String("service.name", serviceName),
+		attribute.String(scope.LabelProject, e.Project),
 		attribute.String("deployment.environment.name", e.Env),
 		attribute.String("host.name", host),
 	)

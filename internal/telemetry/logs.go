@@ -18,6 +18,8 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
+
+	"berthy/internal/scope"
 )
 
 const (
@@ -63,6 +65,8 @@ type LogRecord struct {
 // every batch, so a change of endpoint is followed at once; a nil config, or no Config function, drops the record. The zero
 // value is ready to use, and records emitted before Run starts are kept, up to the queue's size.
 type Logs struct {
+	// Project becomes the berthy.project resource attribute.
+	Project string
 	// Env is the environment name, which becomes the deployment.environment.name resource attribute.
 	Env string
 	// Config returns the export settings. It is the function the metrics exporter uses.
@@ -198,6 +202,7 @@ func (l *Logs) request(batch []LogRecord) *collogspb.ExportLogsServiceRequest {
 	return &collogspb.ExportLogsServiceRequest{ResourceLogs: []*logspb.ResourceLogs{{
 		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
 			attrValue(String("service.name", serviceName)),
+			attrValue(String(scope.LabelProject, l.Project)),
 			attrValue(String("deployment.environment.name", l.Env)),
 			attrValue(String("host.name", host)),
 		}},

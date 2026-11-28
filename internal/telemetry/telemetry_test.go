@@ -386,7 +386,7 @@ func fixedConfig(cfg *Config) func(context.Context) (*Config, error) {
 
 func TestTheResourceHasTheProject(t *testing.T) {
 	rc := newReceiver(t)
-	e := &Exporter{Env: "lab", Collector: testCollector(t), Checks: testChecks}
+	e := &Exporter{Project: "demo", Env: "lab", Collector: testCollector(t), Checks: testChecks}
 	p, err := e.start(t.Context(), Config{Endpoint: rc.srv.URL})
 	if err != nil {
 		t.Fatal(err)

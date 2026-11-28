@@ -39,9 +39,10 @@ func NewReports(c Config, s *state.Store, log func(string)) *Reports {
 		store: s,
 		log:   log,
 		logs: &telemetry.Logs{
-			Env:    c.Environment,
-			Config: func(ctx context.Context) (*telemetry.Config, error) { return telemetryConfig(ctx, s) },
-			Log:    log,
+			Project: c.Project,
+			Env:     c.Environment,
+			Config:  func(ctx context.Context) (*telemetry.Config, error) { return telemetryConfig(ctx, s) },
+			Log:     log,
 		},
 	}
 }

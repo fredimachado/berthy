@@ -126,7 +126,7 @@ func sampleRecord(body string) LogRecord {
 func TestLogsPostsProtobufRecordsWithHeadersAndResource(t *testing.T) {
 	rc := newLogReceiver(t)
 	cfg := &Config{Endpoint: rc.srv.URL, Headers: map[string]string{"authorization": "Bearer TEST-ONLY-2"}}
-	l := &Logs{Env: "lab", Config: fixedConfig(cfg)}
+	l := &Logs{Project: "demo", Env: "lab", Config: fixedConfig(cfg)}
 	l.Emit(sampleRecord("deploy started"))
 	l.Emit(LogRecord{Time: time.Date(2026, 11, 18, 10, 0, 48, 0, time.UTC), Severity: SeverityInfo, Body: "deploy succeeded"})
 	ctx, cancel := context.WithCancel(context.Background())

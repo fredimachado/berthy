@@ -29,6 +29,7 @@ func NewTelemetry(c Config, col *metrics.Collector, d *deploy.Controller, log fu
 	}
 	s := d.Store
 	return &telemetry.Exporter{
+		Project:   c.Project,
 		Env:       c.Environment,
 		Collector: col,
 		Checks:    s.Checks,

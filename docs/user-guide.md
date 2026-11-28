@@ -2078,9 +2078,9 @@ berthy secret set ALERT_WEBHOOK_URL -e prod
 berthy alerts test -e prod
 ```
 
-`alerts test` sends a test message to each of the selected environment's configured channels and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
+`alerts test` sends a test message to each of the selected environment's configured channels and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder. Hosted alerts name the project and environment immediately after the symbol. For example, a reminder reads `🔁 todo/prod still failing: probe:site: HTTP 503`, and a test reads `🧪 todo/prod test alert from berthy`.
 
-Manifest alerts cover this environment's probes, apps and other environment checks. The agent evaluates host checks once and delivers host warnings and recoveries through the server-level destinations set by setup. Host alert text starts with the severity symbol and `server HOSTNAME`. Without a server destination, the agent still records host checks and `doctor` reports that host problems alert nobody.
+Manifest alerts cover this environment's probes, apps and other environment checks. The agent evaluates host checks once and delivers host warnings and recoveries through the server-level destinations set by setup. Host alert text starts with the severity symbol and `server HOSTNAME`; a reminder starts `🔁 still failing: server HOSTNAME`. Without a server destination, the agent still records host checks and `doctor` reports that host problems alert nobody.
 
 ##### The webhook
 
@@ -2088,18 +2088,20 @@ The webhook gets one `POST` of a small JSON document for each alert, with `Conte
 
 ```json
 {
+  "project": "todo",
   "environment": "prod",
   "kind": "check",
   "name": "probe:site",
   "state": "critical",
   "detail": "HTTP 503",
   "since": "2026-11-19T10:00:00Z",
-  "text": "🔴 prod probe:site: HTTP 503"
+  "text": "🔴 todo/prod probe:site: HTTP 503"
 }
 ```
 
 | Field | Meaning |
 | --- | --- |
+| `project` | The project of a hosted alert, deploy report or test alert. Omitted for a server alert. |
 | `environment` | The selected environment for an environment alert, deploy report or test alert. Empty for a server alert. |
 | `server` | The agent's hostname for a server alert. Omitted for environment alerts. |
 | `kind` | `check` for a check, `deploy` for a deploy or rollback. A test alert says `test`. |
@@ -2142,17 +2144,17 @@ A check is not the only thing that sends a message. Nobody hears about a deploy 
 | `all` | the same, and `succeeded` |
 | `none` | never |
 
-A message names the environment, the app, the tag (or the short digest), who asked (the name of the token) and how long it took. A failure also gives the reason Berthy recorded, the same line `berthy history` shows, and the command to run next. It never holds output of your application. A message goes out in the background, so a channel that is down never delays a deploy.
+A message names the project and environment, the app, the tag (or the short digest), who asked (the name of the token) and how long it took. A failure also gives the reason Berthy recorded, the same line `berthy history` shows, and the command to run next. It never holds output of your application. A message goes out in the background, so a channel that is down never delays a deploy.
 
 ```
-✅ prod: api v1.4.2 deployed by ci in 48s
+✅ todo/prod: api v1.4.2 deployed by ci in 48s
 
-🔴 prod: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)
+🔴 todo/prod: api v1.4.3 rolled back: role web: container never became healthy (last check: exit 1)
 by ci in 48s
-berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod
+berthy diagnostics 4f2c0a8e19b64d37a1c5e90b7d3f6a21 -e prod --project todo
 ```
 
-`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback and after an agent restart, the alert settings the environment stores, which a rollback never changes. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If a channel cannot be reached, the agent logs it and the deploy is not affected.
+`rolled back` here means the new version failed and the previous one runs again. A rollback you ask for reads `✅ todo/prod: api rolled back to v1.0.1 by ci in 12s`. Which manifest decides: for a deploy, the one you just sent, so the first deploy of an app can alert too; for a rollback and after an agent restart, the alert settings the environment stores, which a rollback never changes. Only deploys and rollbacks send these messages, once each. An operation that stopped as `recovery_required` and is closed later with `recovery resolve` is not sent again. If a channel cannot be reached, the agent logs it and the deploy is not affected.
 
 #### Built-in conditions
 
@@ -2185,9 +2187,9 @@ checks:
 Telegram sends these alerts for them, and a recovery alert once the registry password is replaced:
 
 ```text
-🔴 prod registry:ghcr.io: refused: ghcr.io does not let it pull acme/todo-api: run berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
-🟠 prod cloudflare_token: expires in 5d (2026-11-23): replace it with berthy secret set CLOUDFLARE_API_TOKEN -e prod
-✅ prod registry:ghcr.io recovered
+🔴 todo/prod registry:ghcr.io: refused: ghcr.io does not let it pull acme/todo-api: run berthy secret set GHCR_TOKEN --registry ghcr.io -e prod
+🟠 todo/prod cloudflare_token: expires in 5d (2026-11-23): replace it with berthy secret set CLOUDFLARE_API_TOKEN -e prod
+✅ todo/prod registry:ghcr.io recovered
 ```
 
 `ingress_tunnel` in `doctor` says `unavailable`, and `ingress status` shows Cloudflare as `unavailable`, both when Cloudflare refuses the token and when Cloudflare cannot be reached. `cloudflare_token` tells the two apart: `refused: ...` means replace the token, and `could not be asked: ...` means Cloudflare could not be reached.
@@ -2195,7 +2197,7 @@ Telegram sends these alerts for them, and a recovery alert once the registry pas
 A token with an expiry has a check too, named `token:<name>` (`berthy checks` lists it). It warns 14 days before the token expires, and keeps warning after it has expired, until you revoke it:
 
 ```text
-🟠 prod token:ci: token ci expires in 13d (2027-02-16): create a new one with berthy token create
+🟠 todo/prod token:ci: token ci expires in 13d (2027-02-16): create a new one with berthy token create
 ```
 
 Make the new token, give it to CI, then `berthy token revoke` the old one.
@@ -2259,7 +2261,9 @@ telemetry:
 
 `headers_secret` names a secret that holds request headers in the standard `OTEL_EXPORTER_OTLP_HEADERS` form (`name=value,name=value`), for backends that need authorization. The agent runs on the host, so the endpoint must be an address the host can reach, such as a port published on a private address. A Docker service name does not resolve there. `doctor` shows a `telemetry` check.
 
-With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the environment's settings, so the deploy that first turns telemetry on sends its end record only.
+Metrics and logs both carry the resource attributes `service.name=berthy-agent`, `berthy.project`, `deployment.environment.name` (the bare environment name), and `host.name`.
+
+With an endpoint, the agent also sends two log records for every operation, of every kind: one when it starts and one when it ends. They go to `<otlp_endpoint>/v1/logs` with the same headers. A record has the body `deploy started` or `deploy succeeded` (`<kind> <state>`), and the attributes `berthy.project`, `berthy.environment`, `berthy.app`, `berthy.operation.id`, `berthy.operation.kind`, `berthy.version`, `berthy.image.digest`, `berthy.operation.state` and `berthy.actor`; the end record adds `berthy.operation.duration_ms`. An end that is not a success has the severity WARN. A value that is not known, such as the version of a restart, is left out. Records never wait for the backend: they are queued, and dropped, with a line in the agent's log, when the backend does not answer. The endpoint is read from the environment's settings, so the deploy that first turns telemetry on sends its end record only.
 
 ---
 
@@ -3305,7 +3309,7 @@ A probe has exactly one of `http`, `tcp` and `service`.
 | `telegram` | map | none | Alerts to one Telegram chat. |
 | `telegram.bot_token_secret` | secret name | required | The secret that holds the bot token. |
 | `telegram.chat_id` | string | required | A numeric chat ID, or `@channel_name`. Quote it. |
-| `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
+| `webhook` | map | none | Alerts as an HTTP POST of a small JSON document: `project`, `environment`, `kind` (`check` or `deploy`), `name`, `state`, `detail`, `since` and `text`, the line Telegram would get. It holds no application output and no secret value. |
 | `webhook.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. The URL is often the credential, so it is never in the manifest. |
 | `heartbeat` | map | none | Dead man's switch: the agent sends one `GET` to a URL every `interval` while it runs and Docker answers, with a 5-second timeout and no retries. A service that watches for the pings raises the alarm when they stop. `berthy checks` and `doctor` show a `heartbeat` entry with the time of the last accepted ping. It is `unknown` when the URL cannot be reached, and it never alerts. |
 | `heartbeat.url_secret` | secret name | required | The secret that holds the URL, an `http` or `https` URL with a host. A 2xx answer counts as accepted. |
