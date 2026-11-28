@@ -8,6 +8,8 @@ owner="$FIXTURE_ID.$nonce"
 app="uptime-$nonce"
 service="$PROJECT-$ENVN-$app-worker"
 sibling="$PROJECT-$ENVN-$app-z-fail"
+adopted_app="$app-adopted"
+adopted_service="$PROJECT-$ENVN-$adopted_app-worker"
 repo="$REG/$PROJECT-$ENVN-$app"
 work=$(mktemp -d "$RUN/uptime.XXXXXX")
 events_pid=
@@ -33,9 +35,12 @@ cleanup() {
   local code=$? current ref label name
   stop_events
   if [ -n "$service_attempted" ]; then
-    for name in "$service" "$sibling"; do
-      current=$(d service inspect "$name" 2>/dev/null | jq -r --arg project "$PROJECT" --arg env "$ENVN" --arg app "$app" --arg repo "$repo@" \
-        '.[0] | select(.Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and .Spec.Labels["berthy.app"] == $app and (.Spec.TaskTemplate.ContainerSpec.Image | startswith($repo))) | .ID' || true)
+    for name in "$service" "$sibling" "$adopted_service"; do
+      current=$(d service inspect "$name" 2>/dev/null | jq -r --arg project "$PROJECT" --arg env "$ENVN" --arg app "$app" --arg adopted "$adopted_app" --arg owner "$owner" --arg repo "$repo@" \
+        '.[0] | select((.Spec.TaskTemplate.ContainerSpec.Image | startswith($repo)) and
+          (.Spec.Labels["berthy.e2e.uptime"] == $owner or
+           (.Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and
+            (.Spec.Labels["berthy.app"] == $app or .Spec.Labels["berthy.app"] == $adopted)))) | .ID' || true)
       if [ -n "$current" ]; then
         d service rm "$current" >/dev/null || code=1
       fi
@@ -56,14 +61,15 @@ trap cleanup EXIT
 
 services=$(d service ls --format '{{.Name}}') || die 'list existing services'
 images=$(d images --no-trunc --digests --format '{{.Repository}}') || die 'list existing images'
-if grep -Fxq "$service" <<<"$services" || grep -Fxq "$sibling" <<<"$services" || grep -Fxq "$repo" <<<"$images"; then
-  die 'fixture names are available' "$service or $repo already exists"
+if grep -Fxq "$service" <<<"$services" || grep -Fxq "$sibling" <<<"$services" || grep -Fxq "$adopted_service" <<<"$services" || grep -Fxq "$repo" <<<"$images"; then
+  die 'fixture names are available' "$service, $sibling, $adopted_service, or $repo already exists"
 fi
 
 cat >"$work/worker.go" <<'GO'
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -76,6 +82,11 @@ func main() {
 		behavior = os.Args[1]
 	}
 	switch behavior {
+	case "exec":
+		fmt.Println("uptime exec ok")
+		return
+	case "check-health":
+		return
 	case "fail-health":
 		os.Exit(1)
 	case "0":
@@ -94,15 +105,17 @@ CGO_ENABLED=0 "$GO" build -o "$work/worker" "$work/worker.go"
 tar -C "$work" -cf "$work/worker.tar" worker
 
 build_image() {
-  local version=$1 behavior=$2 ref="$repo:$1" pinned
+  local version=$1 behavior=$2 ref="$repo:$1" pinned check
   refs+=("$ref")
-  if [ "$version" = final ]; then
-    DOCKER_BUILDKIT=0 d build --network none -t "$ref" -f - "$work" >"$LOG/uptime-build-final.log" <<DOCKERFILE
+  if [[ "$version" = final || "$version" = adopted ]]; then
+    check=check-health
+    if [ "$version" = final ]; then check=fail-health; fi
+    DOCKER_BUILDKIT=0 d build --network none -t "$ref" -f - "$work" >"$LOG/uptime-build-$version.log" <<DOCKERFILE
 FROM scratch
 COPY worker /worker
 LABEL berthy.e2e.uptime=$owner berthy.e2e.version=$version
 ENTRYPOINT ["/worker"]
-HEALTHCHECK --interval=1s --retries=1 CMD ["/worker","fail-health"]
+HEALTHCHECK --interval=1s --retries=1 CMD ["/worker","$check"]
 DOCKERFILE
   else
     d import --change 'ENTRYPOINT ["/worker"]' --change "ENV WORKER_EXIT=$behavior" \
@@ -116,12 +129,12 @@ DOCKERFILE
 }
 
 manifest() {
-  local health=$1 budget=${2:-90s}
+  local health=$1 budget=${2:-90s} target_app=${3:-$app} bound=${4:-}
   cat <<YML
 project: $PROJECT
 network: $NETWORK
 apps:
-  $app:
+  $target_app:
     kind: image
     image: $repo
     deploy:
@@ -131,6 +144,8 @@ apps:
       worker:
         replicas: 1
 YML
+  if [ -n "$bound" ]; then printf '        service: %s
+' "$bound"; fi
   if [ -n "$health" ]; then printf '        health: %s\n' "$health"; fi
 }
 
@@ -179,15 +194,20 @@ if grep -Fxq "$service" <<<"$services"; then die 'invalid health options leave n
 pass 'invalid health options leave no service'
 if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 
-deploy_worker() {
-  local step=$1 wanted=$2 since
+watch_worker() {
+  local step=$1 name=$2 since
   since=$(date -u +'%Y-%m-%dT%H:%M:%S.%NZ')
   DOCKER_CONFIG="$E2E_ROOT/docker-config" "$DOCKER_BIN" --host "unix://$SOCK" events --since "$since" \
-    --filter type=container --filter "label=com.docker.swarm.service.name=$service" --format '{{json .}}' \
+    --filter type=container --filter "label=com.docker.swarm.service.name=$name" --format '{{json .}}' \
     >"$LOG/uptime-$step-events.jsonl" &
   events_pid=$!
+}
+
+deploy_worker() {
+  local step=$1 wanted=$2 target_app=${3:-$app} name=${4:-$service}
+  watch_worker "$step" "$name"
   code=0
-  out=$(adm deploy "$app" --version "$wanted" --manifest-dir "$MAN" 2>&1) || code=$?
+  out=$(adm deploy "$target_app" --version "$wanted" --manifest-dir "$MAN" 2>&1) || code=$?
   terminal=$(date +%s%N)
   stop_events
   printf '%s\n' "$out" >"$LOG/uptime-$step-deploy.txt"
@@ -195,8 +215,8 @@ deploy_worker() {
 }
 
 running_container() {
-  local image=$1 generation=${2:-} ids id inspect
-  ids=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$service") || return 1
+  local image=$1 generation=${2:-} name=${3:-$service} ids id inspect
+  ids=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$name") || return 1
   for id in $ids; do
     inspect=$(d inspect "$id" 2>/dev/null) || continue
     if jq -e --arg img "$image" --arg gen "$generation" '.[0] |
@@ -210,12 +230,12 @@ running_container() {
 }
 
 check_healthy() {
-  local step=$1 wanted=$2 id
+  local step=$1 wanted=$2 name=${3:-$service} id
   expect_code "$step deploy succeeds" 0 "$code" "$out"
   expect_contains "$step has terminal success" "$out" 'state: succeeded'
   if [ "$E2E_FAILS" -ne 0 ] || [ -z "$operation" ]; then die "$step records a successful operation"; fi
-  id=$(running_container "$repo@$wanted" "$operation") || die "$step has a running task for the new generation"
-  d service inspect "$service" >"$LOG/uptime-$step-service.json"
+  id=$(running_container "$repo@$wanted" "$operation" "$name") || die "$step has a running task for the new generation"
+  d service inspect "$name" >"$LOG/uptime-$step-service.json"
   d inspect "$id" >"$LOG/uptime-$step-task.json"
   jq -e '.[0].Spec.TaskTemplate.ContainerSpec |
     (.Mounts // []) == [] and .Healthcheck == {Test:["NONE"]}' "$LOG/uptime-$step-service.json" >/dev/null ||
@@ -323,6 +343,41 @@ d image inspect "$repo:final" | jq -e '.[0].Config.Healthcheck.Test == ["CMD","/
 check_healthy final "$final"
 expect_eq 'the final surviving digest is applied' "$repo@$final" "$(applied)"
 
+check_runtime_slots() {
+  local step=$1 count=$2 generation ids task_ids specs stamp started
+  local -a containers tasks
+  expect_contains "$step succeeds" "$out" 'state: succeeded'
+  generation=$(awk '/^id: / {print $2}' <<<"$out")
+  [ -n "$generation" ] || die "$step records an operation"
+  ids=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$service" --filter "label=berthy.operation=$generation")
+  [ -n "$ids" ] || die "$step has replacement containers"
+  mapfile -t containers <<<"$ids"
+  task_ids=$(d inspect "${containers[@]}" | jq -er '.[] | select(.State.Running and .Config.Healthcheck.Test == ["NONE"] and (.State | has("Health") | not)) | .Config.Labels["com.docker.swarm.task.id"]')
+  mapfile -t tasks <<<"$task_ids"
+  specs=$(d inspect --type task "${tasks[@]}")
+  jq -e --argjson count "$count" '(map(.Slot) | sort) == [range(1; $count+1)] and
+    all(.[]; .DesiredState == "running" and .Status.State == "running")' <<<"$specs" >/dev/null ||
+    die "$step has $count running replacement slots" "$specs"
+  while IFS= read -r stamp; do
+    started=$(date -u -d "$stamp" +%s%N)
+    if (( terminal - started < 20000000000 )); then
+      die "$step waits for each replacement to meet the uptime threshold" "$stamp / $terminal"
+    fi
+  done < <(jq -r '.[].Status.Timestamp' <<<"$specs")
+  pass "$step completed with $count replacement slot(s) past the uptime threshold"
+}
+
+out=$(adm restart "$app" 2>&1) || die 'restart of uptime worker succeeds' "$out"
+terminal=$(date +%s%N)
+check_runtime_slots restart 1
+out=$(adm scale "$app" --replicas 2 2>&1) || die 'scale of uptime worker succeeds' "$out"
+terminal=$(date +%s%N)
+check_runtime_slots scale 2
+out=$(adm wait "$app" --timeout 30s 2>&1) || die 'wait of uptime workers succeeds' "$out"
+pass 'wait verifies both uptime workers'
+out=$(adm exec "$app" -- /worker exec 2>&1) || die 'exec in an uptime worker succeeds' "$out"
+expect_contains 'shell-free exec prints its response' "$out" 'uptime exec ok'
+
 {
   manifest "$default"
   cat <<YML
@@ -345,5 +400,52 @@ jq -e '.diagnostics | length > 0 and all(.[]; .role == "z-fail") and
   any(.[]; .kind == "task" and .exit_code == 1)' "$LOG/uptime-sibling-diagnostics.json" >/dev/null ||
   die 'stored diagnostics identify only the exited sibling' "$LOG/uptime-sibling-diagnostics.json"
 pass 'printed reason and stored diagnostics name only the failing sibling'
+
+build_image adopted stay
+adopted_digest=$digest
+out=$(d service create --detach --no-resolve-image --name "$adopted_service" --network "$NETWORK" \
+  --label "berthy.e2e.uptime=$owner" "$repo@$adopted_digest" 2>&1) ||
+  die 'create command-checked worker to adopt' "$out"
+adoptable_worker_healthy() {
+  local ids
+  ids=$(d ps -q --filter "label=com.docker.swarm.service.name=$adopted_service" --filter health=healthy) &&
+    [ -n "$ids" ]
+}
+wait_for 'worker for adoption becomes Docker healthy' adoptable_worker_healthy ||
+  die 'worker for adoption becomes Docker healthy'
+before_spec=$(d service inspect -f '{{json .Spec}}' "$adopted_service")
+
+manifest "$default" 90s "$adopted_app" "$adopted_service" | write_manifest
+out=$(adm deploy "$adopted_app" --adopt --version "$adopted_digest" --manifest-dir "$MAN" 2>&1) ||
+  die 'adopt command-checked worker with an uptime manifest' "$out"
+expect_contains 'adoption succeeds' "$out" 'state: succeeded'
+expect_eq 'adoption preserves the live spec' "$before_spec" "$(d service inspect -f '{{json .Spec}}' "$adopted_service")"
+
+watch_worker adopted-restart "$adopted_service"
+out=$(adm restart "$adopted_app" 2>&1) || die 'restart of adopted worker succeeds' "$out"
+terminal=$(date +%s%N)
+stop_events
+expect_contains 'adopted restart succeeds' "$out" 'state: succeeded'
+operation=$(awk '/^id: / {print $2}' <<<"$out")
+[ -n "$operation" ] || die 'adopted restart records an operation'
+id=$(running_container "$repo@$adopted_digest" "$operation" "$adopted_service") ||
+  die 'adopted restart creates a replacement'
+d inspect "$id" | jq -e '.[0] | .Config.Healthcheck.Test == ["CMD","/worker","check-health"] and
+  .State.Health.Status == "healthy"' >/dev/null || die 'adopted replacement keeps the Docker check'
+if ! python3 - "$LOG/uptime-adopted-restart-events.jsonl" "$id" "$terminal" <<'PY'; then
+import json, sys
+
+path, container, terminal = sys.argv[1:]
+with open(path) as stream:
+    events = [json.loads(line) for line in stream]
+healthy = next(e["timeNano"] for e in events if e["Actor"]["ID"] == container and e["Action"] == "health_status: healthy")
+assert healthy < int(terminal), (healthy, terminal)
+PY
+  die 'adopted restart waits for Docker health before returning'
+fi
+pass 'adopted restart kept the Docker command check and waited for health'
+
+deploy_worker adopted-first-deploy "$final" "$adopted_app" "$adopted_service"
+check_healthy adopted-first-deploy "$final" "$adopted_service"
 
 finish
