@@ -7,11 +7,11 @@ export PATH=/usr/bin:/bin
 export BERTHY_TOKEN_STORE=none
 unset BERTHY_ENV
 
-GO=/var/tmp/berthy-phase1/go/bin/go
-DOCKER_BIN=/var/tmp/berthy-phase1/bin/docker
-SOCK=/var/tmp/berthy-phase2/docker.sock
+GO=${GO:-/var/tmp/berthy-phase1/go/bin/go}
+DOCKER_BIN=${DOCKER_BIN:-/var/tmp/berthy-phase1/bin/docker}
+SOCK=${SOCK:-/var/tmp/berthy-phase2/docker.sock}
 # The standalone Compose v2 CLI of the fixture, which the agent runs as its compose_command.
-COMPOSE_BIN=/var/tmp/berthy-phase1/cli-plugins/docker-compose
+COMPOSE_BIN=${COMPOSE_BIN:-/var/tmp/berthy-phase1/cli-plugins/docker-compose}
 
 E2E_ROOT=${E2E_ROOT:-$HOME/berthy-e2e/harness}
 FIXTURE_ID=$(printf '%s' "$(realpath -m "$E2E_ROOT")" | sha256sum | cut -d' ' -f1)

@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
 
 permissions:
@@ -15,7 +16,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.classify.outputs.go }}
+      e2e: ${{ steps.classify.outputs.e2e }}
+      harness: ${{ steps.classify.outputs.harness }}
+      actions: ${{ steps.classify.outputs.actions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --no-renames --name-only "$BASE...$HEAD" > "$RUNNER_TEMP/changed-files"
+            flags=$(bash test/e2e/changes.sh < "$RUNNER_TEMP/changed-files")
+          else
+            flags='go=true e2e=true harness=true actions=true'
+          fi
+          for flag in $flags; do echo "$flag" >> "$GITHUB_OUTPUT"; done
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     name: Format, vet and lint
     runs-on: ubuntu-latest
     steps:
@@ -63,6 +93,8 @@ jobs:
           done
 
   tests:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +125,8 @@ jobs:
         run: go test -count=1 ./...
 
   build:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     name: Static release builds
     runs-on: ubuntu-latest
     steps:
@@ -122,6 +156,8 @@ jobs:
           file "$RUNNER_TEMP/berthy" | tee /dev/stderr | grep -q 'statically linked'
 
   harness:
+    needs: changes
+    if: needs.changes.outputs.harness == 'true'
     name: Verification harness
     runs-on: ubuntu-latest
     steps:
@@ -130,7 +166,16 @@ jobs:
           persist-credentials: false
 
       - name: Check shell scripts
-        run: shellcheck test/phase1/*.sh
+        run: shellcheck test/phase1/*.sh test/e2e/shard.sh test/e2e/tests/shard.sh test/e2e/ci-prepare.sh test/e2e/tests/ci-prepare.sh test/e2e/changes.sh test/e2e/tests/changes.sh
+
+      - name: Check change classification
+        run: bash test/e2e/tests/changes.sh
+
+      - name: Check fakeserver build selection
+        run: bash test/e2e/tests/ci-prepare.sh
+
+      - name: Check e2e shard coverage
+        run: bash test/e2e/tests/shard.sh
 
       - name: Ingress report classifier
         run: python3 test/phase1/ingress-report-test.py
@@ -138,7 +183,64 @@ jobs:
       - name: Ingress script ignores an inherited Docker context
         run: bash test/phase1/ingress-context-test.sh
 
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    env:
+      PROJECT: shop
+      ENVN: stage
+    name: ${{ format('End-to-end ({0}/{1})', matrix.shard, strategy.job-total) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare the fixture
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          {
+            echo "GO=$(command -v go)"
+            echo "DOCKER_BIN=$(command -v docker)"
+            echo "SOCK=/var/run/docker.sock"
+            echo "COMPOSE_BIN=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')"
+          } >> "$GITHUB_ENV"
+          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" "$SHARDS")
+          test "${#scenarios[@]}" -gt 0
+          DOCKER_BIN=$(command -v docker) SOCK=/var/run/docker.sock bash test/e2e/ci-prepare.sh "${scenarios[@]}"
+
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" "$SHARDS")
+          test "${#scenarios[@]}" -gt 0
+          bash test/e2e/run.sh "${scenarios[@]}"
+
+      - name: Keep the scenario logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-logs-${{ matrix.shard }}
+          path: ~/berthy-e2e/harness/runs
+
   lint-actions:
+    needs: changes
+    if: needs.changes.outputs.actions == 'true'
     name: GitHub Actions audit
     runs-on: ubuntu-latest
     steps:
@@ -153,3 +255,15 @@ jobs:
         uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           advanced-security: false
+
+  result:
+    name: CI result
+    needs: [changes, lint, tests, build, harness, e2e, lint-actions]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '.changes.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<< "$RESULTS"
