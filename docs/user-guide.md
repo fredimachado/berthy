@@ -1526,7 +1526,7 @@ berthy stats -e prod --since 5m # the last 5 minutes (at most 1h)
 berthy df    -e prod
 ```
 
-`stats` shows CPU, memory, swap, load, network and disk I/O for the server, and CPU, memory against limit, block and network I/O and restarts for each container. The agent samples every 10 seconds and keeps the last hour in memory. `df` shows disk space per mount and what Docker's images, containers, volumes and build cache use.
+`stats` shows CPU, memory, swap, load, network and disk I/O for the server, and CPU, memory against limit, block and network I/O and restarts for each container. The agent samples every 10 seconds and keeps the last hour in memory. `df` shows disk space per mount and what Docker's images, containers, volumes and build cache use. Both commands include each mount's total and free inode counts as `inodes_total` and `inodes_free`, including zero values.
 
 #### History
 

@@ -23,9 +23,11 @@ type DockerReader interface {
 	Stats(context.Context, string) (RawContainer, error)
 }
 type Mount struct {
-	Path      string `json:"path"`
-	Total     uint64 `json:"total"`
-	Available uint64 `json:"available"`
+	Path        string `json:"path"`
+	Total       uint64 `json:"total"`
+	Available   uint64 `json:"available"`
+	InodesTotal uint64 `json:"inodes_total"`
+	InodesFree  uint64 `json:"inodes_free"`
 }
 type Host struct {
 	CPUPercent      *float64  `json:"cpu_percent"`

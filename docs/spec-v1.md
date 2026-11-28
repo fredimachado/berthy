@@ -1081,7 +1081,7 @@ The agent shows what is happening now and raises alerts. History is kept by an O
 
 | Scope | Metrics | Read from |
 | --- | --- | --- |
-| Server | CPU, memory, swap, load, disk space per mount, disk I/O, network I/O | The kernel's `/proc` and filesystem stats |
+| Server | CPU, memory, swap, load, disk space and total and free inode counts per mount, disk I/O, network I/O | The kernel's `/proc` and filesystem stats |
 | Docker | Disk used by images, containers, volumes and build cache | The Docker API |
 | Container | CPU, memory against its limit, block I/O, network I/O, restarts, out-of-memory kills | Control groups and the Docker API |
 

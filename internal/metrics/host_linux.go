@@ -392,7 +392,7 @@ func statMounts(entries []mountEntry, d time.Duration) (mounts []Mount, failures
 			defer wg.Done()
 			st, err := statfsTimeout(e.Path, d)
 			results[i].err = err
-			results[i].m = Mount{e.Path, st.Blocks * uint64(st.Bsize), st.Bavail * uint64(st.Bsize)}
+			results[i].m = Mount{Path: e.Path, Total: st.Blocks * uint64(st.Bsize), Available: st.Bavail * uint64(st.Bsize), InodesTotal: st.Files, InodesFree: st.Ffree}
 		}()
 	}
 	wg.Wait()
