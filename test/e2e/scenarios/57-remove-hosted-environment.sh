@@ -108,7 +108,6 @@ check test "$code" -eq 1
 jq -r '.steps[] | select(.status == "failed") | .detail' "$private/dropped.json" >&2
 check jq -e --arg target "ops@$server" 'any(.steps[]; .step == "check" and .status == "failed" and (.detail | contains("SSH connection to " + $target + " failed")))' "$private/dropped.json"
 check agent_info "$PROJECT"
-rm -f "$FS_HOME/bin/ssh"
 
 if ! remove --dry-run --json > "$private/initial.json" 2> "$private/initial.stderr"; then
   fail "preview hosted removal" "$(sed -n '1p' "$private/initial.stderr")"

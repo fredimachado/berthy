@@ -71,7 +71,6 @@ check test "$code" -eq 0
 jq -r '.steps[] | select(.step == "cli_key") | .detail' <<<"$out" >&2
 check jq -e --arg target "ops@$server_a" '(.key_copy == null) and any(.steps[]; .step == "cli_key" and .status == "skipped" and (.detail | contains("SSH connection to " + $target + " failed")))' <<<"$out"
 check test -z "$(find "$FS_HOME/.berthy" -type f -print -quit)"
-rm -f "$FS_HOME/bin/ssh"
 out=$("${setup[@]}" </dev/null 2>/dev/null); code=$?
 label="repaired setup"
 check test "$code" -eq 0
