@@ -671,7 +671,7 @@ Quote the number in `max-file`, as the example does. A role with `logging` gets 
 - Use `test` for a command that runs inside the container and returns exit 0 when healthy. Start the list with `CMD` or `CMD-SHELL`. The image must contain the command (`curl` here).
 - Use `health: {uptime: 20s}` for a worker that should keep PID 1 alive for at least 20 seconds. Berthy supplies the executable for this check. Keep named volume mounts outside `/.berthy`. When switching from a command check in an overlay, set `test: null` alongside `uptime`.
 
-The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fit inside the app's shared `deploy_timeout`. Run `berthy docs roles` for all health check fields and defaults.
+The default uptime check runs about 100 ms after the threshold, with zero grace. If you configure a shorter `interval`, the default grace covers the threshold plus 100 ms. Omit `start_interval` for uptime, or set it equal to `interval`. The first eligible poll must fall strictly within one `deploy_timeout` progress window. Run `berthy docs roles` for all health check fields and defaults.
 
 An uptime check measures survival of PID 1. Use a command check when you need evidence that the worker is making progress. An early exit spends a `deploy.start_attempts` attempt even when the worker exits with code 0. If the attempts run out during an update, Berthy restores the previous release.
 
@@ -734,15 +734,17 @@ services:
 
 | Key | Meaning | Default |
 | --- | --- | --- |
-| `deploy_timeout` | The shared startup budget for the new version's roles to become healthy. | `120s` |
-| `drain_timeout` | How long the old version has to finish requests in flight. It is also the Swarm stop grace period. | `30s` |
+| `deploy_timeout` | How long an image rollout waits for the next gain in healthy replicas. A new high count and moving to the next role after verification each start a fresh window. | `120s` |
+| `drain_timeout` | Swarm's stop grace period for requests in flight. After Berthy confirms candidate health, it allows this duration plus 15 seconds for Swarm to complete the update and the old tasks to drain. | `30s` |
 | `start_attempts` | How many failed task starts a rollout tolerates before it gives up (1 to 10). | `3` |
 | `retain` | How many deploys' images are kept, so a rollback needs no pull. At least 1. | `5` |
 | `verify` | Whether the deploy checks, at its end, that each role's port and hostnames answer. A failed check warns and never fails the deploy. | `true` |
 
-With the example values, a container that never becomes healthy is marked unhealthy after about 75 to 90 seconds, inside the 120-second `deploy_timeout`.
+With the example values, Docker marks a container that never becomes healthy as unhealthy after about 75 to 90 seconds, within one 120-second progress window.
 
-The roles share this startup budget. Each must first be observed healthy before its current cutoff, then stay covered by running, healthy containers at every observation for five seconds. A hold can restart only while startup time remains; lost coverage after the cutoff fails the role. A completed hold adds those five seconds to the next role's cutoff; unused verification grace does not add startup time. The role's hard deadline is its cutoff plus five seconds for the hold and 15 seconds for confirmation, native update completion and draining. Final verification has a separate deadline: 15 seconds after the later of the remaining startup cutoff and the last role's completion.
+Each role gets a full `deploy_timeout` when it starts, including the time to record and apply the service change and inspect the result. Only a new high count of distinct healthy replica slots of the new version renews that window. Once all replicas are healthy, they must stay healthy at each observation for five seconds. The confirmation poll must begin at or after the end of the hold and finish by the last startup cutoff plus five seconds and 15 seconds of grace. If the hold resets, the role has until the last startup cutoff to regain coverage.
+
+For an update, confirmation starts a separate `drain_timeout` plus 15 seconds for Swarm to finish the update, old tasks to drain, and Berthy to record the role as verified. Berthy records a newly created role as verified by its confirmation deadline. After verification, the next role starts with a full window. After the last role, the final service, health, and drain checks and the record of the switch share a fresh `deploy_timeout` plus 15 seconds.
 
 #### Hooks and migrations
 
@@ -912,7 +914,7 @@ berthy config show -e prod
 berthy config show -e prod --json
 ```
 
-Defaults are filled in, so the output shows `deploy_timeout: 120s`, `retain: 5` and so on.
+Defaults are filled in, so the output shows `deploy_timeout: 120s` for the image rollout progress window, `retain: 5` and so on.
 
 To see where each value comes from, add `--origin`. It prints one line per value, with the file and line that set it, or `default` for a value that no file sets:
 
@@ -1380,8 +1382,8 @@ A deploy verifies the new version before recording the switch. If a rollout fail
 2. **Check.** Validates the manifest. Confirms every secret has a value. Pulls the image by digest. On a protected path the request already carries a digest. On an unprotected path the agent may still resolve a tag here.
 3. **Pre-deploy hooks.** Runs them in order. A failure stops the deploy with nothing changed.
 4. **Migrations.** Runs `version`, then `apply`, then `version` again (see step 6).
-5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. Each role must first be observed healthy within the shared `deploy_timeout` startup budget, then remain covered by running, healthy containers at each observation for five seconds. Lost coverage, an unreadable observation that prevents confirming coverage, or a newly observed failed start restarts the hold. Docker's health-check `start_period` controls when failed probes count toward the container's unhealthy status. Berthy counts failed starts during the hold too, and gives up as soon as they reach `start_attempts` (3 by default).
-6. **Switch and drain.** Swarm switches traffic and gives the old version a stop signal and `drain_timeout` to finish requests in flight. The role's extended deadline covers confirmation, native update completion and draining. Once every role is verified, Berthy checks the live services, health and drain again under a separate final deadline before recording the switch.
+5. **Start new.** Starts the new version *beside* the old one, or after the old one has stopped for a role that mounts a read-write volume, so two versions never write the volume at once. Each role starts with its own `deploy_timeout`. A new high count of healthy candidate replica slots renews the window. Full coverage starts the five-second hold. Lost coverage, an unreadable observation that prevents confirming coverage, or a newly observed failed start resets the hold. Docker's health-check `start_period` controls when failed probes count toward the container's unhealthy status. Berthy counts failed starts during the hold too, and gives up as soon as they reach `start_attempts` (3 by default).
+6. **Switch and drain.** Swarm switches traffic and gives the old version a stop signal and `drain_timeout` to finish requests in flight. Once Berthy confirms candidate health after the hold, it allows a separate `drain_timeout` plus 15 seconds for Swarm to complete the update, old tasks to drain, and the role to be recorded as verified. After the last role is verified, Berthy checks the live services, health and drain again and records the switch within a fresh `deploy_timeout` plus 15 seconds.
 7. **Publish.** With managed ingress, updates the app's routes and DNS records. A failure here is reported and the command exits non-zero, but the new version stays running.
 8. **Post-deploy hooks.** Runs them in order. A failure is reported, but does not undo the deploy.
 9. **Reachability.** For each role with a `port`, checks that the port answers on the shared network, and for each of its `hostnames` that the hostname answers from outside. A check that fails only warns. See "Reachability checks" below.
@@ -3130,8 +3132,8 @@ The manifest is `berthy.yml` plus `berthy.<env>.yml`. Unknown keys are errors. "
 | `env.template` | both | map | none | Variables whose value is built from secrets. The agent fills a template in when it deploys. The manifest and the release keep the template, and the filled value is a secret: it is redacted like one. A variable is in one of `plain`, `secret` and `template`. Names that start with `BERTHY_` are reserved. |
 | `env.template.<VAR>` | both | string | none | The variable's template: text with `${NAME}` where the value of the secret NAME goes, such as `postgres://app:${DB_PASSWORD}@db:5432/app`. `$$` writes one `$`, and any other `$` is an error. There are no defaults, no nesting and no references to variables. A reference cannot ask for URL encoding: the hex value `berthy secret generate` makes by default needs none, but a password with `@` or `/` does, so use one that has none. |
 | `deploy` | image | map | none | How a rollout of a new version runs. |
-| `deploy.deploy_timeout` | image | duration | `120s` | The longest a new version may take to become healthy. |
-| `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. |
+| `deploy.deploy_timeout` | image | duration | `120s` | Maximum time an image rollout waits for another replica of the new version to become healthy. Each increase in healthy replicas and each verified role starts a fresh window. Only a new high count of distinct healthy replicas renews the current role's window. |
+| `deploy.drain_timeout` | image | duration | `30s` | Time the old version gets to finish its requests. Once Berthy confirms the new replicas are healthy, it allows this duration plus 15 seconds for Swarm to complete the update and the old tasks to drain. |
 | `deploy.start_attempts` | image | integer | `3` | Failed task starts that a rollout tolerates before it gives up, from 1 to 10. |
 | `deploy.order` | image | string | none | How an update replaces each role's old version. `start-first` starts the new one beside the old one. `stop-first` stops the old one before the new one starts, so two versions never write a volume at once. Empty: `stop-first` for a role that mounts a read-write volume, and `start-first` for any other role. `config validate` warns about `start-first` on a role with a read-write volume, and about more than one replica of one. One of `start-first`, `stop-first`. |
 | `deploy.verify` | image | boolean | `true` | Whether a deploy checks, once the new version serves, that each role with a `port` answers on the shared network and that each of its `hostnames` answers from outside. A check that fails only warns: the deploy still succeeds. `false` turns both off. |
@@ -3155,7 +3157,7 @@ Roles belong to image apps.
 | `port` | integer | none | The port the role listens on, from 0 to 65535. Needed for `hostnames`. |
 | `health` | map | the image's | The container health check. Set exactly one of `test` and `uptime`. A new version must pass its check before it takes traffic. |
 | `health.test` | list | none | The command, as a list that starts with `CMD` or `CMD-SHELL`. Exit code 0 means healthy. The image must contain the command. |
-| `health.uptime` | duration | none | For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fit before `deploy.deploy_timeout`. The probe reserves `/.berthy` and its descendants as mount targets. |
+| `health.uptime` | duration | none | For image app roles. How long PID 1 must stay alive, as a positive duration such as `20s`. The first eligible check must fall strictly within one `deploy.deploy_timeout` progress window. The probe reserves `/.berthy` and its descendants as mount targets. |
 | `health.interval` | duration | 30s for test | Time between checks. For uptime it must be at least `1ms` and defaults to uptime plus `100ms`. |
 | `health.timeout` | duration | `30s` | The longest one check may take. For uptime it must be at least `1ms`. |
 | `health.start_period` | duration | 0s for test | Grace time after the container starts. Failures in it do not count. For uptime, the default is `0s` when the interval covers uptime plus `100ms`. A shorter interval defaults the grace to that sum. An explicit zero requires the interval to cover that sum, and a positive grace must cover it itself. |

@@ -126,8 +126,8 @@ Unit tests for the tools: `go test ./test/fakecloudflare ./test/fakecloudflared 
 
 - [ ] API token: Cloudflare Tunnel edit on the account, and DNS edit limited to the zones that hold the hostnames.
   `ingress apply --dry-run` passes the token check.
-- [ ] `ingress apply` creates the remotely managed tunnel `<project>-<env>`, and the connector runs. Its `tunnel ready`
-  check passes within the 180-second deploy timeout with the real image digest.
+- [ ] `ingress apply` creates the remotely managed tunnel `<project>-<env>`, and the connector runs. Its first successful
+  `tunnel ready` check falls within the connector's 180-second `deploy_timeout` progress window with the real image digest.
 - [ ] A deploy with a new hostname: the route appears in the tunnel configuration, the proxied CNAME
   `<tunnel id>.cfargotunnel.com` exists with the managed comment, and `curl https://<hostname>/` answers through Cloudflare.
 - [ ] Conflict on a real record: a hand-made A record for a test hostname makes the deploy refuse with
