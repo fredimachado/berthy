@@ -363,7 +363,7 @@ func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token,
 	resp, err := agentclient.Send(ctx, client, "GET", u.String(), token, nil)
 	if err != nil {
 		progress.Close()
-		fmt.Fprintln(errout, "agent connection failed")
+		printAgentRequestError(out, errout, agentclient.Target{Base: u, Token: token}, err, jsonOutput)
 		return 1
 	}
 	defer resp.Body.Close()
