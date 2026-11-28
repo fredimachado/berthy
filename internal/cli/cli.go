@@ -339,11 +339,21 @@ func runIn(args []string, out, errout io.Writer, dir string, intent *aliasIntent
 		}
 		u.RawQuery = q.Encode()
 	}
-	client := http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 20 * time.Second}, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	if watch || follow {
+	return runReadRequest(ctx, newReadClient(cmd, watch || follow), &u, token, cmd, watch || follow, jsonOutput, out, errout)
+}
+
+// newReadClient is the HTTP client for a read command. Doctor uses the agent's check budget; streaming reads keep headers
+// bounded with no total limit; other reads keep a 10-second total and a 20-second wait for headers.
+func newReadClient(cmd string, stream bool) *http.Client {
+	client := agentclient.NewHTTPClient()
+	if cmd == "doctor" {
+		return agentclient.WithTimeout(client, agent.DoctorRequestTimeout)
+	}
+	client.Timeout = 10 * time.Second
+	if stream {
 		client.Timeout = 0
 	}
-	return runReadRequest(ctx, &client, &u, token, cmd, watch || follow, jsonOutput, out, errout)
+	return client
 }
 
 func runReadRequest(ctx context.Context, client *http.Client, u *url.URL, token, cmd string, stream, jsonOutput bool, out, errout io.Writer) int {

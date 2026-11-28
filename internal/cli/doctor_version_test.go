@@ -1,14 +1,23 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"berthy/internal/agent"
+	"berthy/internal/api"
 	"berthy/internal/version"
 )
 
@@ -177,4 +186,93 @@ func TestDoctorJSONKeepsItsShapeAndSendsTheNoteToStderr(t *testing.T) {
 	if strings.Contains(out.String(), "note:") || errout.String() != "note: the agent runs v0.9.0, this CLI is v1.0.0; berthy setup upgrades the agent\n" {
 		t.Fatalf("stdout %q stderr %q", out.String(), errout.String())
 	}
+}
+
+func TestReadClientTimeouts(t *testing.T) {
+	if agent.DoctorRequestTimeout <= 0 {
+		t.Fatalf("DoctorRequestTimeout = %s", agent.DoctorRequestTimeout)
+	}
+	for _, tc := range []struct {
+		name, cmd                  string
+		stream                     bool
+		total, responseHeader      time.Duration
+	}{
+		{"doctor", "doctor", false, agent.DoctorRequestTimeout, agent.DoctorRequestTimeout},
+		{"ps", "ps", false, 10 * time.Second, 20 * time.Second},
+		{"logs --follow", "logs", true, 0, 20 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newReadClient(tc.cmd, tc.stream)
+			if client.Timeout != tc.total {
+				t.Errorf("Timeout = %s, want %s", client.Timeout, tc.total)
+			}
+			got := client.Transport.(*http.Transport).ResponseHeaderTimeout
+			if got != tc.responseHeader {
+				t.Errorf("ResponseHeaderTimeout = %s, want %s", got, tc.responseHeader)
+			}
+		})
+	}
+}
+
+// TestDoctorReceivesSlowTunnelWarning checks that a doctor report that takes longer than the old 10-second read limit
+// still reaches the CLI: 9 seconds for a degraded tunnel, 4 for Compose and 8 for later checks before headers.
+func TestDoctorReceivesSlowTunnelWarning(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientConn, peerConn := net.Pipe()
+		defer clientConn.Close()
+		defer peerConn.Close()
+
+		peerErr := make(chan error, 1)
+		go func() {
+			var err error
+			defer func() { peerErr <- err }()
+			req, readErr := http.ReadRequest(bufio.NewReader(peerConn))
+			if readErr != nil {
+				err = readErr
+				return
+			}
+			io.Copy(io.Discard, req.Body)
+			req.Body.Close()
+			time.Sleep(9 * time.Second)
+			time.Sleep(4 * time.Second)
+			time.Sleep(8 * time.Second)
+			body := []byte(`{"checks":[{"name":"ingress_tunnel","ok":false,"critical":false,"detail":"unavailable"},{"name":"compose","ok":true,"critical":false,"detail":"v2.29.0"}]}`)
+			resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Type: application/json\r\n\r\n%s", len(body), body)
+			_, err = io.WriteString(peerConn, resp)
+		}()
+
+		client := newReadClient("doctor", false)
+		client.Transport.(*http.Transport).DialContext = func(context.Context, string, string) (net.Conn, error) {
+			return clientConn, nil
+		}
+		u, err := url.Parse("http://127.0.0.1:9/doctor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out, errout bytes.Buffer
+		code := runReadRequest(context.Background(), client, u, "token", "doctor", false, true, &out, &errout)
+		clientConn.Close()
+		peerConn.Close()
+		<-peerErr
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q, stdout %q", code, errout.String(), out.String())
+		}
+		var report struct {
+			Checks []api.Check `json:"checks"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatalf("decode stdout: %v (%q)", err, out.String())
+		}
+		if len(report.Checks) < 2 {
+			t.Fatalf("checks: %+v", report.Checks)
+		}
+		tunnel, compose := report.Checks[0], report.Checks[1]
+		if tunnel.Name != "ingress_tunnel" || tunnel.OK || tunnel.Critical || tunnel.Detail != "unavailable" {
+			t.Fatalf("tunnel check: %+v", tunnel)
+		}
+		if compose.Name != "compose" || !compose.OK || compose.Detail != "v2.29.0" {
+			t.Fatalf("compose check: %+v", compose)
+		}
+	})
 }
