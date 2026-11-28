@@ -1127,3 +1127,37 @@ func TestPruningKeepsTheImageOfABackupContainer(t *testing.T) {
 		t.Fatalf("the unused old image was kept: %v", f.removed)
 	}
 }
+
+func TestPublishedPort(t *testing.T) {
+	loopback := engine.PortBinding{HostIP: "127.0.0.1", HostPort: "32769"}
+	cases := []struct {
+		name  string
+		ports map[string][]engine.PortBinding
+		want  string
+		ok    bool
+	}{
+		{"one binding", map[string][]engine.PortBinding{helperPortKey: {loopback}}, "32769", true},
+		{"docker 28 duplicate identical pair", map[string][]engine.PortBinding{helperPortKey: {loopback, loopback}}, "32769", true},
+		{"different host ports", map[string][]engine.PortBinding{helperPortKey: {
+			{HostIP: "127.0.0.1", HostPort: "32769"},
+			{HostIP: "127.0.0.1", HostPort: "32770"},
+		}}, "", false},
+		{"duplicate with 0.0.0.0", map[string][]engine.PortBinding{helperPortKey: {
+			loopback,
+			{HostIP: "0.0.0.0", HostPort: "32769"},
+		}}, "", false},
+		{"extra exposed port", map[string][]engine.PortBinding{
+			helperPortKey: {loopback},
+			"8080/tcp":    {{HostIP: "127.0.0.1", HostPort: "8080"}},
+		}, "", false},
+		{"empty", map[string][]engine.PortBinding{}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := publishedPort(engine.ContainerDetail{Ports: tc.ports})
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("got %q %v, want %q %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
