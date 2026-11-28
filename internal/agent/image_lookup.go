@@ -1,11 +1,10 @@
 package agent
 
 import (
-	"berthy/internal/api"
-	"berthy/internal/deploy"
-	"berthy/internal/manifest"
 	"encoding/json"
-	"net/http"
+
+	"berthy/internal/api"
+	"berthy/internal/manifest"
 )
 
 // imageTagsLookup is an image lookup without a tag; tags rejects that field.
@@ -14,29 +13,30 @@ type imageTagsLookup struct {
 	App      string            `json:"app"`
 }
 
-func serveImageLookup(w http.ResponseWriter, r *http.Request, d *deploy.Controller, action string) {
-	var q api.ImageLookup
-	if action == "tags" {
-		var tags imageTagsLookup
-		if decodeBody(w, r, &tags) != nil {
-			writeError(w, 400, "bad_request", "invalid request")
-			return
-		}
-		q = api.ImageLookup{Manifest: tags.Manifest, App: tags.App}
-	} else if decodeBody(w, r, &q) != nil {
+func (rt *routeRuntime) handleImageResolve(call routeCall, read readRouteBody[api.ImageLookup]) {
+	w := call.w
+	q, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
-	if action == "resolve" {
-		result, err := d.ResolveTag(r.Context(), q)
-		if err != nil {
-			writeError(w, 400, "lookup_failed", "image lookup failed")
-			return
-		}
-		json.NewEncoder(w).Encode(result)
+	result, err := rt.d.ResolveTag(call.r.Context(), q)
+	if err != nil {
+		writeError(w, 400, "lookup_failed", "image lookup failed")
 		return
 	}
-	result, err := d.ImageTags(r.Context(), q)
+	json.NewEncoder(w).Encode(result)
+}
+
+func (rt *routeRuntime) handleImageTags(call routeCall, read readRouteBody[imageTagsLookup]) {
+	w := call.w
+	tags, err := read()
+	if err != nil {
+		writeError(w, 400, "bad_request", "invalid request")
+		return
+	}
+	q := api.ImageLookup{Manifest: tags.Manifest, App: tags.App}
+	result, err := rt.d.ImageTags(call.r.Context(), q)
 	if err != nil {
 		writeError(w, 400, "lookup_failed", "image lookup failed")
 		return

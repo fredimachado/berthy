@@ -327,68 +327,92 @@ func backupError(w http.ResponseWriter, err error) {
 	}
 }
 
-// serveBackups answers the backup routes: the list of backups in storage, the runs of a backup, and a manual run. rest is the
-// path after the environment, and the caller has checked the method and the scope.
-func serveBackups(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.Controller, b *Backups, actor state.Actor) {
-	ctx := r.Context()
-	if b == nil {
+func (rt *routeRuntime) requireBackups(w http.ResponseWriter) bool {
+	if rt.backups == nil {
 		writeError(w, 503, "backups_unavailable", "backups unavailable")
+		return false
+	}
+	return true
+}
+
+func (rt *routeRuntime) handleBackups(call routeCall) {
+	w, r := call.w, call.r
+	if !rt.requireBackups(w) {
 		return
 	}
-	if len(rest) == 1 {
-		recorded, err := recordedManifest(ctx, d.Store)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		entries, err := b.Runner.List(ctx, recorded, r.URL.Query().Get("backup"))
-		if err != nil {
-			backupError(w, err)
-			return
-		}
-		json.NewEncoder(w).Encode(entries)
-		return
-	}
-	m, err := runningManifest(ctx, d.Store)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	ctx, d, b := r.Context(), rt.d, rt.backups
+	recorded, err := recordedManifest(ctx, d.Store)
+	if err != nil {
 		writeError(w, 503, "state_unavailable", "state unavailable")
 		return
 	}
-	switch {
-	case rest[2] == "runs":
-		limit := 20
-		if v := r.URL.Query().Get("limit"); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 1 || n > 100 {
-				writeError(w, 400, "bad_request", "invalid limit")
-				return
-			}
-			limit = n
-		}
-		runs, err := d.Store.BackupRuns(ctx, rest[1], limit)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		if _, known := m.Backups[rest[1]]; len(runs) == 0 && !known {
-			writeError(w, 404, "not_found", "not found")
-			return
-		}
-		out := make([]api.BackupRun, 0, len(runs))
-		for _, run := range runs {
-			out = append(out, backupRunStatus(run))
-		}
-		json.NewEncoder(w).Encode(out)
-	default:
-		p, err := b.Runner.Begin(ctx, m, rest[1], "manual")
-		if err != nil {
-			backupError(w, err)
-			return
-		}
-		b.start(p, actor, rest[1])
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]int64{"backup_run_id": p.ID()})
+	entries, err := b.Runner.List(ctx, recorded, r.URL.Query().Get("backup"))
+	if err != nil {
+		backupError(w, err)
+		return
 	}
+	json.NewEncoder(w).Encode(entries)
+}
+
+func (rt *routeRuntime) backupManifest(call routeCall) (manifest.Manifest, bool) {
+	if !rt.requireBackups(call.w) {
+		return manifest.Manifest{}, false
+	}
+	m, err := runningManifest(call.r.Context(), rt.d.Store)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(call.w, 503, "state_unavailable", "state unavailable")
+		return manifest.Manifest{}, false
+	}
+	return m, true
+}
+
+func (rt *routeRuntime) handleBackupRuns(call routeCall) {
+	w, r, rest := call.w, call.r, call.rest
+	m, ok := rt.backupManifest(call)
+	if !ok {
+		return
+	}
+	ctx, d := r.Context(), rt.d
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			writeError(w, 400, "bad_request", "invalid limit")
+			return
+		}
+		limit = n
+	}
+	runs, err := d.Store.BackupRuns(ctx, rest[1], limit)
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	if _, known := m.Backups[rest[1]]; len(runs) == 0 && !known {
+		writeError(w, 404, "not_found", "not found")
+		return
+	}
+	out := make([]api.BackupRun, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, backupRunStatus(run))
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleBackupRun(call routeCall) {
+	w, ctx, rest := call.w, call.r.Context(), call.rest
+	m, ok := rt.backupManifest(call)
+	if !ok {
+		return
+	}
+	b, actor := rt.backups, call.stateActor()
+	p, err := b.Runner.Begin(ctx, m, rest[1], "manual")
+	if err != nil {
+		backupError(w, err)
+		return
+	}
+	b.start(p, actor, rest[1])
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]int64{"backup_run_id": p.ID()})
 }
 
 func backupRunStatus(r state.BackupRun) api.BackupRun {

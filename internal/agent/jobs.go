@@ -124,118 +124,130 @@ func jobCheck(store *state.Store, name string, sched schedule.Schedule, firstSee
 	})
 }
 
-// serveJobs answers the job routes: the list of jobs, one job's runs, the output kept of a failed run, and an on-demand run. rest is the path after the
-// environment, and the caller has checked the method and the scope.
-func serveJobs(w http.ResponseWriter, r *http.Request, rest []string, d *deploy.Controller, sched *jobs.Scheduler, actor state.Actor) {
-	ctx := r.Context()
-	switch {
-	case len(rest) == 1:
-		m, err := runningManifest(ctx, d.Store)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		list, err := jobs.Statuses(ctx, d.Store, m, "", time.Now())
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		json.NewEncoder(w).Encode(list)
-	case rest[2] == "runs":
-		limit := 20
-		if v := r.URL.Query().Get("limit"); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 1 || n > 100 {
-				writeError(w, 400, "bad_request", "invalid limit")
-				return
-			}
-			limit = n
-		}
-		runs, err := d.Store.JobRuns(ctx, rest[1], limit)
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		if len(runs) == 0 {
-			// A job with no runs is known only through the manifest.
-			if m, err := runningManifest(ctx, d.Store); err != nil {
-				writeError(w, 404, "not_found", "not found")
-				return
-			} else if _, ok := m.Jobs[rest[1]]; !ok {
-				writeError(w, 404, "not_found", "not found")
-				return
-			}
-		}
-		out := make([]api.JobRun, 0, len(runs))
-		for _, run := range runs {
-			out = append(out, jobs.RunStatus(run))
-		}
-		json.NewEncoder(w).Encode(out)
-	case rest[2] == "logs":
-		var id int64
-		if v := r.URL.Query().Get("run"); v != "" {
-			n, err := strconv.ParseInt(v, 10, 64)
-			if err != nil || n < 1 {
-				writeError(w, 400, "bad_request", "invalid run")
-				return
-			}
-			id = n
-		}
-		run, output, err := d.Store.JobOutput(ctx, rest[1], id)
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, 404, "not_found", "no output kept")
-			return
-		}
-		if err != nil {
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		logs := api.JobLogs{Job: run.Job, RunID: run.ID, Status: run.Status, Detail: run.Detail, Output: output}
-		if !run.Finished.IsZero() {
-			logs.Finished = &run.Finished
-		}
-		json.NewEncoder(w).Encode(logs)
-	case rest[2] == "cancel":
-		if sched == nil {
-			writeError(w, 503, "jobs_unavailable", "jobs unavailable")
-			return
-		}
-		// A job has at most one run at a time, so its name says which run to stop.
-		err := sched.Cancel(ctx, rest[1], actor.Name)
-		switch {
-		case errors.Is(err, jobs.ErrUnknownJob):
-			writeError(w, 404, "not_found", "not found")
-			return
-		case errors.Is(err, jobs.ErrJobNotRunning):
-			_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "refused")
-			writeError(w, 409, "cancel_refused", "job is not running")
-			return
-		case err != nil:
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "accepted")
-		json.NewEncoder(w).Encode(map[string]any{"job": rest[1], "accepted": true})
-	default:
-		if sched == nil {
-			writeError(w, 503, "jobs_unavailable", "jobs unavailable")
-			return
-		}
-		id, err := sched.Start(ctx, rest[1], "manual")
-		switch {
-		case errors.Is(err, jobs.ErrUnknownJob):
-			writeError(w, 404, "not_found", "not found")
-			return
-		case errors.Is(err, jobs.ErrJobRunning):
-			writeError(w, 409, "conflict", "job is already running")
-			return
-		case err != nil:
-			writeError(w, 503, "state_unavailable", "state unavailable")
-			return
-		}
-		// The run itself is audited as the job; this records who asked for it.
-		_ = d.Store.RecordAudit(ctx, actor, "job_start:"+rest[1], "started")
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]int64{"run_id": id})
+func (rt *routeRuntime) handleJobs(call routeCall) {
+	w, ctx := call.w, call.r.Context()
+	d := rt.d
+	m, err := runningManifest(ctx, d.Store)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
 	}
+	list, err := jobs.Statuses(ctx, d.Store, m, "", time.Now())
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func (rt *routeRuntime) handleJobRuns(call routeCall) {
+	w, r, rest := call.w, call.r, call.rest
+	ctx, d := r.Context(), rt.d
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			writeError(w, 400, "bad_request", "invalid limit")
+			return
+		}
+		limit = n
+	}
+	runs, err := d.Store.JobRuns(ctx, rest[1], limit)
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	if len(runs) == 0 {
+		// A job with no runs is known only through the manifest.
+		if m, err := runningManifest(ctx, d.Store); err != nil {
+			writeError(w, 404, "not_found", "not found")
+			return
+		} else if _, ok := m.Jobs[rest[1]]; !ok {
+			writeError(w, 404, "not_found", "not found")
+			return
+		}
+	}
+	out := make([]api.JobRun, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, jobs.RunStatus(run))
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (rt *routeRuntime) handleJobLogs(call routeCall) {
+	w, r, rest := call.w, call.r, call.rest
+	ctx, d := r.Context(), rt.d
+	var id int64
+	if v := r.URL.Query().Get("run"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			writeError(w, 400, "bad_request", "invalid run")
+			return
+		}
+		id = n
+	}
+	run, output, err := d.Store.JobOutput(ctx, rest[1], id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, 404, "not_found", "no output kept")
+		return
+	}
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	logs := api.JobLogs{Job: run.Job, RunID: run.ID, Status: run.Status, Detail: run.Detail, Output: output}
+	if !run.Finished.IsZero() {
+		logs.Finished = &run.Finished
+	}
+	json.NewEncoder(w).Encode(logs)
+}
+
+func (rt *routeRuntime) handleJobCancel(call routeCall) {
+	w, ctx, rest := call.w, call.r.Context(), call.rest
+	d, sched, actor := rt.d, rt.sched, call.stateActor()
+	if sched == nil {
+		writeError(w, 503, "jobs_unavailable", "jobs unavailable")
+		return
+	}
+	// A job has at most one run at a time, so its name says which run to stop.
+	err := sched.Cancel(ctx, rest[1], actor.Name)
+	switch {
+	case errors.Is(err, jobs.ErrUnknownJob):
+		writeError(w, 404, "not_found", "not found")
+		return
+	case errors.Is(err, jobs.ErrJobNotRunning):
+		_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "refused")
+		writeError(w, 409, "cancel_refused", "job is not running")
+		return
+	case err != nil:
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	_ = d.Store.RecordAudit(ctx, actor, "job_cancel:"+rest[1], "accepted")
+	json.NewEncoder(w).Encode(map[string]any{"job": rest[1], "accepted": true})
+}
+
+func (rt *routeRuntime) handleJobRun(call routeCall) {
+	w, ctx, rest := call.w, call.r.Context(), call.rest
+	d, sched, actor := rt.d, rt.sched, call.stateActor()
+	if sched == nil {
+		writeError(w, 503, "jobs_unavailable", "jobs unavailable")
+		return
+	}
+	id, err := sched.Start(ctx, rest[1], "manual")
+	switch {
+	case errors.Is(err, jobs.ErrUnknownJob):
+		writeError(w, 404, "not_found", "not found")
+		return
+	case errors.Is(err, jobs.ErrJobRunning):
+		writeError(w, 409, "conflict", "job is already running")
+		return
+	case err != nil:
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	// The run itself is audited as the job; this records who asked for it.
+	_ = d.Store.RecordAudit(ctx, actor, "job_start:"+rest[1], "started")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]int64{"run_id": id})
 }

@@ -266,252 +266,254 @@ func storeOf(d *deploy.Controller) *state.Store {
 // handlerWithTokens is handlerWithState with the tokens the agent authenticates against, which the deployment routes share.
 // The handler sees the path after the environment, as mount gives it.
 func handlerWithTokens(c Config, e *engine.Engine, collector *metrics.Collector, deployment *deploy.Controller, tel *telemetry.Exporter, tokens *tokenSource, lim *limits, keep func() func(map[string]string) bool) http.Handler {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rt := &routeRuntime{c: c, e: e, collector: collector, d: deployment, tel: tel, tokens: tokens, lim: lim, keep: keep}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := restOf(r.URL.Path)
-		if r.Method != "GET" {
+		rt.serveRead(routeCall{w: w, r: r, rest: rest, row: findEnvRoute(rest, r.Method, false)})
+	})
+}
+
+func (rt *routeRuntime) serveRead(call routeCall) {
+	isReadRoute := call.row != nil && call.row.lane == legacyReadRoute
+	required := "read"
+	if isReadRoute {
+		required = call.row.scope
+	}
+	authorize(rt.tokens, required, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isReadRoute {
+			writeError(w, 404, "not_found", "not found")
+			return
+		}
+		if r.Method != call.row.method {
 			writeError(w, 405, "method_not_allowed", "method not allowed")
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		var result any
-		var err error
-		switch {
-		case len(rest) == 3 && rest[0] == "apps" && rest[2] == "logs":
-			serveLogs(w, r, e, rest[1], deployment, lim)
-			return
-		case len(rest) == 1 && rest[0] == "stats":
-			if r.URL.Query().Get("watch") == "1" && collector != nil {
-				streamStats(w, r, collector, lim, keep)
-				return
-			}
-			if collector == nil {
-				writeError(w, 503, "sample_not_ready", "sample not ready")
-				return
-			} else if value := r.URL.Query().Get("since"); value != "" {
-				d, parseErr := time.ParseDuration(value)
-				if parseErr != nil || d <= 0 || d > time.Hour {
-					writeError(w, 400, "bad_request", "invalid since duration")
-					return
-				}
-				samples := collector.Since(d)
-				filter := snapshotKeep(keep)
-				for i := range samples {
-					samples[i] = samples[i].Only(filter)
-				}
-				result = samples
-			} else {
-				var ready bool
-				var sample metrics.Sample
-				sample, ready = collector.Latest()
-				if !ready {
-					writeError(w, 503, "sample_not_ready", "sample not ready")
-					return
-				}
-				result = sample.Only(snapshotKeep(keep))
-			}
-		case len(rest) == 1 && rest[0] == "agent":
-			host, _ := os.Hostname()
-			result = map[string]any{"project": c.Project, "environment": c.Environment, "hostname": host, "protected": c.Protected, "version": version.String()}
-			var effective any
-			if c.Protected || (deployment != nil && deployment.Protected) {
-				effective = true
-			} else if deployment != nil && deployment.Store != nil {
-				if value, err := deployment.EffectiveProtected(ctx); err == nil {
-					effective = value
-				}
-			}
-			result.(map[string]any)["effective_protected"] = effective
-		case len(rest) == 1 && rest[0] == "apps":
-			if e == nil {
-				err = fmt.Errorf("Docker unavailable")
-			} else {
-				var apps []api.App
-				apps, err = appInventory(ctx, e, deployment)
-				// ps shows how old each app's backups are.
-				for i := range apps {
-					apps[i].Backups = appBackups(ctx, deployment, apps[i], time.Now())
-				}
-				result = apps
-			}
-		case len(rest) == 2 && rest[0] == "apps":
-			if e == nil {
-				err = fmt.Errorf("Docker unavailable")
-			} else {
-				var apps []api.App
-				apps, err = appInventory(ctx, e, deployment)
-				if err == nil {
-					var code int
-					var app api.App
-					app, code = engine.Select(apps, rest[1])
-					result = app
-					if code == 200 {
-						app.Jobs = appJobs(ctx, deployment, app, time.Now())
-						app.Backups = appBackups(ctx, deployment, app, time.Now())
-						app.Drift, app.Scaled = appDrift(ctx, deployment, app)
-						result = app
-					}
-					if code != 200 {
-						message := http.StatusText(code)
-						if code == 409 {
-							message = "ambiguous app; use image:" + rest[1] + ", swarm:" + rest[1] + " or compose:" + rest[1]
-						}
-						writeError(w, code, strings.ToLower(strings.ReplaceAll(http.StatusText(code), " ", "_")), message)
-						return
-					}
-				}
-			}
-		case len(rest) == 1 && rest[0] == "df":
-			disk, diskErr := hostDisk()
-			var d dockerDisk
-			var dockerErr error
-			if e == nil {
-				dockerErr = fmt.Errorf("docker unavailable")
-			} else {
-				dockerErr = e.Get(ctx, "/system/df", &d)
-			}
-			status := "available"
-			if dockerErr != nil {
-				status = "unavailable"
-			}
-			hostStatus := diskStatus(disk, diskErr)
-			result = map[string]any{"host": disk, "host_status": hostStatus, "docker": d, "docker_status": status}
-			if diskErr != nil {
-				result.(map[string]any)["host_error"] = diskErr.Error()
-			}
+		call.readCtx = ctx
+		call.row.handle(rt, call)
+	})).ServeHTTP(call.w, call.r)
+}
 
-		case len(rest) == 1 && rest[0] == "doctor":
-			host, _ := os.Hostname()
-			checks := []api.Check{{Name: "agent", OK: true, Critical: true, Detail: version.String()}, {Name: "host", OK: host != "", Critical: true, Detail: host}}
-			mounts, _ := hostDisk()
-			checks = append(checks, rootDiskCheck(mounts))
-			var dockerVersion struct {
-				APIVersion    string
-				MinAPIVersion string
+func (rt *routeRuntime) handleAgent(call routeCall) {
+	c, deployment := rt.c, rt.d
+	host, _ := os.Hostname()
+	var effective any
+	if c.Protected || (deployment != nil && deployment.Protected) {
+		effective = true
+	} else if deployment != nil && deployment.Store != nil {
+		if value, err := deployment.EffectiveProtected(call.readCtx); err == nil {
+			effective = value
+		}
+	}
+	writeReadResult(call.w, map[string]any{"project": c.Project, "environment": c.Environment, "hostname": host,
+		"protected": c.Protected, "version": version.String(), "effective_protected": effective}, nil)
+}
+
+func (rt *routeRuntime) handleApps(call routeCall) {
+	if rt.e == nil {
+		writeReadResult(call.w, nil, fmt.Errorf("Docker unavailable"))
+		return
+	}
+	apps, err := appInventory(call.readCtx, rt.e, rt.d)
+	// ps shows how old each app's backups are.
+	for i := range apps {
+		apps[i].Backups = appBackups(call.readCtx, rt.d, apps[i], time.Now())
+	}
+	writeReadResult(call.w, apps, err)
+}
+
+func (rt *routeRuntime) handleApp(call routeCall) {
+	w, ctx, name := call.w, call.readCtx, call.rest[1]
+	if rt.e == nil {
+		writeReadResult(w, nil, fmt.Errorf("Docker unavailable"))
+		return
+	}
+	apps, err := appInventory(ctx, rt.e, rt.d)
+	if err != nil {
+		writeReadResult(w, nil, err)
+		return
+	}
+	app, code := engine.Select(apps, name)
+	if code != 200 {
+		message := http.StatusText(code)
+		if code == 409 {
+			message = "ambiguous app; use image:" + name + ", swarm:" + name + " or compose:" + name
+		}
+		writeError(w, code, strings.ToLower(strings.ReplaceAll(http.StatusText(code), " ", "_")), message)
+		return
+	}
+	app.Jobs = appJobs(ctx, rt.d, app, time.Now())
+	app.Backups = appBackups(ctx, rt.d, app, time.Now())
+	app.Drift, app.Scaled = appDrift(ctx, rt.d, app)
+	writeReadResult(w, app, nil)
+}
+
+func (rt *routeRuntime) handleAppLogs(call routeCall) {
+	serveLogs(call.w, call.r, rt.e, call.rest[1], rt.d, rt.lim)
+}
+
+func (rt *routeRuntime) handleStats(call routeCall) {
+	w, r := call.w, call.r
+	var result any
+	if r.URL.Query().Get("watch") == "1" && rt.collector != nil {
+		streamStats(w, r, rt.collector, rt.lim, rt.keep)
+		return
+	}
+	if rt.collector == nil {
+		writeError(w, 503, "sample_not_ready", "sample not ready")
+		return
+	} else if value := r.URL.Query().Get("since"); value != "" {
+		d, parseErr := time.ParseDuration(value)
+		if parseErr != nil || d <= 0 || d > time.Hour {
+			writeError(w, 400, "bad_request", "invalid since duration")
+			return
+		}
+		samples := rt.collector.Since(d)
+		filter := snapshotKeep(rt.keep)
+		for i := range samples {
+			samples[i] = samples[i].Only(filter)
+		}
+		result = samples
+	} else {
+		var ready bool
+		var sample metrics.Sample
+		sample, ready = rt.collector.Latest()
+		if !ready {
+			writeError(w, 503, "sample_not_ready", "sample not ready")
+			return
+		}
+		result = sample.Only(snapshotKeep(rt.keep))
+	}
+	writeReadResult(w, result, nil)
+}
+
+func (rt *routeRuntime) handleDF(call routeCall) {
+	ctx, e := call.readCtx, rt.e
+	disk, diskErr := hostDisk()
+	var d dockerDisk
+	var dockerErr error
+	if e == nil {
+		dockerErr = fmt.Errorf("docker unavailable")
+	} else {
+		dockerErr = e.Get(ctx, "/system/df", &d)
+	}
+	status := "available"
+	if dockerErr != nil {
+		status = "unavailable"
+	}
+	hostStatus := diskStatus(disk, diskErr)
+	result := map[string]any{"host": disk, "host_status": hostStatus, "docker": d, "docker_status": status}
+	if diskErr != nil {
+		result["host_error"] = diskErr.Error()
+	}
+	writeReadResult(call.w, result, nil)
+}
+
+func (rt *routeRuntime) handleDoctor(call routeCall) {
+	w, r, ctx := call.w, call.r, call.readCtx
+	c, e, deployment, tel := rt.c, rt.e, rt.d, rt.tel
+	var err error
+	host, _ := os.Hostname()
+	checks := []api.Check{{Name: "agent", OK: true, Critical: true, Detail: version.String()}, {Name: "host", OK: host != "", Critical: true, Detail: host}}
+	mounts, _ := hostDisk()
+	checks = append(checks, rootDiskCheck(mounts))
+	var dockerVersion struct {
+		APIVersion    string
+		MinAPIVersion string
+	}
+	if e == nil {
+		err = fmt.Errorf("Docker unavailable")
+	} else {
+		err = e.Get(ctx, "/version", &dockerVersion)
+	}
+	if err != nil {
+		checks = append(checks, api.Check{Name: "docker", Critical: true, Detail: "unavailable"})
+	} else {
+		checks = append(checks, api.Check{Name: "docker", OK: true, Critical: true, Detail: "available"})
+		compatible := compareVersion(dockerVersion.MinAPIVersion, "1.44") <= 0 && compareVersion(dockerVersion.APIVersion, "1.44") >= 0
+		checks = append(checks, api.Check{Name: "docker_api", OK: compatible, Critical: true, Detail: dockerVersion.MinAPIVersion + " - " + dockerVersion.APIVersion})
+		if compatible {
+			var info struct {
+				Swarm struct {
+					ControlAvailable bool
+					LocalNodeState   string
+				}
 			}
-			if e == nil {
-				err = fmt.Errorf("Docker unavailable")
+			if infoErr := e.Get(ctx, "/info", &info); infoErr != nil {
+				checks = append(checks, api.Check{Name: "swarm_manager", Critical: true, Detail: "unavailable"})
 			} else {
-				err = e.Get(ctx, "/version", &dockerVersion)
-			}
-			if err != nil {
-				checks = append(checks, api.Check{Name: "docker", Critical: true, Detail: "unavailable"})
-				err = nil
-			} else {
-				checks = append(checks, api.Check{Name: "docker", OK: true, Critical: true, Detail: "available"})
-				compatible := compareVersion(dockerVersion.MinAPIVersion, "1.44") <= 0 && compareVersion(dockerVersion.APIVersion, "1.44") >= 0
-				checks = append(checks, api.Check{Name: "docker_api", OK: compatible, Critical: true, Detail: dockerVersion.MinAPIVersion + " - " + dockerVersion.APIVersion})
-				if compatible {
-					var info struct {
-						Swarm struct {
-							ControlAvailable bool
-							LocalNodeState   string
-						}
-					}
-					if infoErr := e.Get(ctx, "/info", &info); infoErr != nil {
-						checks = append(checks, api.Check{Name: "swarm_manager", Critical: true, Detail: "unavailable"})
-					} else {
-						checks = append(checks, api.Check{Name: "swarm_manager", OK: info.Swarm.ControlAvailable, Critical: true, Detail: info.Swarm.LocalNodeState})
-					}
-				}
-			}
-			if netName, ok := doctorNetwork(ctx, c, deployment); ok {
-				checks = append(checks, networkCheck(ctx, e, netName))
-			}
-			// The credential questions run while the tunnel and Compose checks do, so the doctor takes no longer for them.
-			var credentials chan []api.Check
-			if deployment != nil && deployment.Store != nil {
-				credentials = make(chan []api.Check, 1)
-				go func() { credentials <- credentialDoctorChecks(r.Context(), c, deployment.Store, time.Now()) }()
-			}
-			if deployment != nil {
-				ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
-				configured, status := deployment.TunnelHealth(ingressCtx)
-				cancelIngress()
-				if configured {
-					checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
-				}
-				composeCtx, cancelCompose := context.WithTimeout(r.Context(), 5*time.Second)
-				composeVersion, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
-				cancelCompose()
-				if composeErr != nil {
-					checks = append(checks, api.Check{Name: "compose", Detail: "unavailable"})
-				} else {
-					checks = append(checks, api.Check{Name: "compose", OK: true, Detail: composeVersion})
-				}
-			}
-			if credentials != nil {
-				checks = append(checks, <-credentials...)
-			}
-			if deployment != nil && deployment.Store != nil {
-				checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
-				if check, ok := stateKeyCheck(deployment.Store); ok {
-					checks = append(checks, check)
-				}
-				checks = append(checks, monitoringChecks(r.Context(), c, deployment.Store, e, c.Environment)...)
-				checks = append(checks, driftDoctorChecks(r.Context(), deployment)...)
-				if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
-					logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
-					if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
-						checks = append(checks, check)
-					}
-					cancelLog()
-				}
-			}
-			if tel != nil {
-				if check, ok := telemetryDoctorCheck(tel, time.Now()); ok {
-					checks = append(checks, check)
-				}
-			}
-			checks = append(checks, hostDoctorChecks(r.Context(), e, c.Listen)...)
-			if c.startupChecks != nil {
-				for _, check := range c.startupChecks() {
-					if !check.OK {
-						checks = append(checks, check)
-					}
-				}
-			}
-			result = map[string]any{"checks": checks}
-		default:
-			writeError(w, 404, "not_found", "not found")
-			return
-		}
-		if err != nil {
-			code := dockerErrorCode(err)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": strings.ReplaceAll(code, "_", " ")})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(result)
-	})
-	// Every route the router accepts requires read scope, so one authorizer is built once.
-	readAuthorized := authorize(tokens, "read", handler)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		rest := restOf(r.URL.Path)
-		routed := false
-		if len(rest) == 1 {
-			switch rest[0] {
-			case "agent", "apps", "df", "doctor", "stats":
-				routed = true
+				checks = append(checks, api.Check{Name: "swarm_manager", OK: info.Swarm.ControlAvailable, Critical: true, Detail: info.Swarm.LocalNodeState})
 			}
 		}
-		if len(rest) == 2 && rest[0] == "apps" {
-			routed = true
+	}
+	if netName, ok := doctorNetwork(ctx, c, deployment); ok {
+		checks = append(checks, networkCheck(ctx, e, netName))
+	}
+	// The credential questions run while the tunnel and Compose checks do, so the doctor takes no longer for them.
+	var credentials chan []api.Check
+	if deployment != nil && deployment.Store != nil {
+		credentials = make(chan []api.Check, 1)
+		go func() { credentials <- credentialDoctorChecks(r.Context(), c, deployment.Store, time.Now()) }()
+	}
+	if deployment != nil {
+		ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
+		configured, status := deployment.TunnelHealth(ingressCtx)
+		cancelIngress()
+		if configured {
+			checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
 		}
-		if len(rest) == 3 && rest[0] == "apps" && rest[2] == "logs" {
-			routed = true
+		composeCtx, cancelCompose := context.WithTimeout(r.Context(), 5*time.Second)
+		composeVersion, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
+		cancelCompose()
+		if composeErr != nil {
+			checks = append(checks, api.Check{Name: "compose", Detail: "unavailable"})
+		} else {
+			checks = append(checks, api.Check{Name: "compose", OK: true, Detail: composeVersion})
 		}
-		if !routed {
-			// Whether a path is a route is for a client with a token to learn: without one the answer is a hosted environment's
-			// 401 for every path, as refuseOutside gives for an environment that is not hosted.
-			authorize(tokens, "read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writeError(w, 404, "not_found", "not found")
-			})).ServeHTTP(w, r)
-			return
+	}
+	if credentials != nil {
+		checks = append(checks, <-credentials...)
+	}
+	if deployment != nil && deployment.Store != nil {
+		checks = append(checks, lockCheck(ctx, deployment.Store, time.Now()))
+		if check, ok := stateKeyCheck(deployment.Store); ok {
+			checks = append(checks, check)
 		}
-		readAuthorized.ServeHTTP(w, r)
-	})
+		checks = append(checks, monitoringChecks(r.Context(), c, deployment.Store, e, c.Environment)...)
+		checks = append(checks, driftDoctorChecks(r.Context(), deployment)...)
+		if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
+			logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
+			if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
+				checks = append(checks, check)
+			}
+			cancelLog()
+		}
+	}
+	if tel != nil {
+		if check, ok := telemetryDoctorCheck(tel, time.Now()); ok {
+			checks = append(checks, check)
+		}
+	}
+	checks = append(checks, hostDoctorChecks(r.Context(), e, c.Listen)...)
+	if c.startupChecks != nil {
+		for _, check := range c.startupChecks() {
+			if !check.OK {
+				checks = append(checks, check)
+			}
+		}
+	}
+	writeReadResult(w, map[string]any{"checks": checks}, nil)
+}
+
+func writeReadResult(w http.ResponseWriter, result any, err error) {
+	if err != nil {
+		code := dockerErrorCode(err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": strings.ReplaceAll(code, "_", " ")})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 type dockerDisk struct {

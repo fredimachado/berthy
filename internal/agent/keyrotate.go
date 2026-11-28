@@ -3,29 +3,21 @@ package agent
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	"berthy/internal/api"
-	"berthy/internal/deploy"
 	"berthy/internal/state"
 )
 
-// isKeyRotation reports whether rest is the route that replaces the state key.
-func isKeyRotation(rest []string) bool {
-	return len(rest) == 2 && rest[0] == "key" && rest[1] == "rotate"
-}
-
 // serveKeyRotate replaces the key the state is sealed with, or with dry_run reports what it would do. The answer names the
 // keys by ID and never shows one.
-func serveKeyRotate(w http.ResponseWriter, r *http.Request, d *deploy.Controller, actor state.Actor) {
-	var req struct {
-		DryRun bool `json:"dry_run"`
-	}
-	if decodeBody(w, r, &req) != nil {
+func (rt *routeRuntime) serveKeyRotate(call routeCall, read readRouteBody[dryRunBody]) {
+	w := call.w
+	req, err := read()
+	if err != nil {
 		writeError(w, 400, "bad_request", "invalid request")
 		return
 	}
-	rep, err := d.Store.RotateKey(r.Context(), actor, req.DryRun)
+	rep, err := rt.d.Store.RotateKey(call.r.Context(), call.stateActor(), req.DryRun)
 	switch {
 	case errors.Is(err, state.ErrConflict):
 		writeError(w, 409, "conflict", "the state key cannot be rotated while an operation runs or the deploy lock is held")
