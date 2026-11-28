@@ -139,7 +139,7 @@ func (r *rig) newScheduler(store *state.Store, exec Runner) *Scheduler {
 // settle steps the scheduler at the current time and waits for the runs it started.
 func (r *rig) settle(ctx context.Context) {
 	r.sched.step(ctx)
-	r.sched.wait()
+	r.sched.Wait()
 }
 
 func (r *rig) runs(t *testing.T, job string) []state.JobRun {
@@ -211,7 +211,7 @@ func TestAJobRunsOncePerMinute(t *testing.T) {
 	r.settle(ctx)
 	r.settle(ctx) // the same minute again
 	r.sched.step(ctx)
-	r.sched.wait()
+	r.sched.Wait()
 	if n := r.exec.count(); n != 1 {
 		t.Fatalf("runs in the first minute: %d", n)
 	}
@@ -273,8 +273,8 @@ func TestTwoSchedulersOnOneStoreRunAnOccurrenceOnce(t *testing.T) {
 	second := r.newScheduler(r.store, secondExec)
 	r.sched.step(ctx)
 	second.step(ctx)
-	r.sched.wait()
-	second.wait()
+	r.sched.Wait()
+	second.Wait()
 	if total := r.exec.count() + secondExec.count(); total != 1 {
 		t.Fatalf("occurrence ran %d times", total)
 	}
@@ -302,7 +302,7 @@ func TestAStillRunningJobIsSkippedAtTheNextOccurrence(t *testing.T) {
 		t.Fatalf("runs while the first still runs: %+v", runs)
 	}
 	close(release)
-	r.sched.wait()
+	r.sched.Wait()
 	if n := r.exec.count(); n != 1 {
 		t.Fatalf("the skipped occurrence ran: %d", n)
 	}
@@ -488,7 +488,7 @@ func TestStartRunsOnDemand(t *testing.T) {
 		t.Fatal("started a run with the schedule trigger")
 	}
 	close(release)
-	r.sched.wait()
+	r.sched.Wait()
 	runs := r.runs(t, "manual")
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Status != "succeeded" || runs[0].Trigger != "manual" || !runs[0].Scheduled.IsZero() {
 		t.Fatalf("runs: %+v", runs)
@@ -498,7 +498,7 @@ func TestStartRunsOnDemand(t *testing.T) {
 	if _, err = r.sched.Start(ctx, "manual", "backup"); err != nil {
 		t.Fatalf("start again: %v", err)
 	}
-	r.sched.wait()
+	r.sched.Wait()
 	if runs = r.runs(t, "manual"); len(runs) != 2 || runs[0].Trigger != "backup" {
 		t.Fatalf("runs: %+v", runs)
 	}
@@ -520,7 +520,7 @@ func TestStartOfAJobWhoseScheduledRunIsInProgressIsRefused(t *testing.T) {
 		t.Fatalf("start during a scheduled run: %v", err)
 	}
 	close(release)
-	r.sched.wait()
+	r.sched.Wait()
 }
 
 func TestRunAndWaitReturnsTheFinishedRun(t *testing.T) {
@@ -681,7 +681,7 @@ func TestRunHeldKeepsTheJobMarkedRunningUntilReleased(t *testing.T) {
 	}
 	// A scheduled occurrence while the job is held is skipped and never runs.
 	r.sched.step(ctx)
-	r.sched.wait()
+	r.sched.Wait()
 	runs := r.runs(t, "tick")
 	if len(runs) != 2 || runs[0].Status != "skipped" || runs[0].Trigger != "schedule" || runs[0].Detail != "previous run still running" {
 		t.Fatalf("occurrence while held: %+v", runs)
