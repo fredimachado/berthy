@@ -91,6 +91,20 @@ wait_posts() {
   posts "$1" | jq 'length'
 }
 
+# Count only the alert under test, but show all received texts when it fails.
+tg_count() { tg_messages | jq --arg text "$1" '[.[] | select(.text | test($text))] | length'; }
+expect_tg_count() {
+  local messages count
+  messages=$(tg_messages)
+  count=$(printf '%s' "$messages" | jq --arg text "$3" '[.[] | select(.text | test($text))] | length')
+  if [ "$count" = "$2" ]; then
+    pass "$1"
+  else
+    fail "$1" "want '$2', got '$count'; received texts:"
+    printf '%s\n' "$messages" | jq -r '.[].text'
+  fi
+}
+
 out=$(adm secret set TELEGRAM_BOT_TOKEN < "$RUN/tg-token" 2>&1); code=$?
 expect_code "secret TELEGRAM_BOT_TOKEN is set" 0 "$code" "$out"
 out=$(printf '%s' "http://$HOOK_LISTEN$hook_path" | adm secret set ALERT_WEBHOOK_URL 2>&1); code=$?
@@ -117,8 +131,8 @@ expect_eq "the POST goes to the path of the URL secret" "$hook_path" "$(printf '
 expect_eq "the POST carries the header of the headers secret" "$hook_header" "$(printf '%s' "$req" | jq -r '.headers.Authorization[0]')"
 expect_eq "the POST is JSON" application/json "$(printf '%s' "$req" | jq -r '.headers["Content-Type"][0]')"
 expect_eq "the test alert says kind test" test "$(printf '%s' "$req" | jq -r '.body | fromjson | .kind')"
-expect_eq "the test alert gives the same text as Telegram" "$(tg_messages | jq -r '.[0].text')" "$(printf '%s' "$req" | jq -r '.body | fromjson | .text')"
-expect_eq "Telegram got one message" 1 "$(tg_messages | jq 'length')"
+expect_eq "the test alert gives the same text as Telegram" "$(tg_messages | jq -r '[.[] | select(.text | contains("test alert from berthy"))][0].text')" "$(printf '%s' "$req" | jq -r '.body | fromjson | .text')"
+expect_tg_count "Telegram got one test alert" 1 "test alert from berthy"
 
 # 2. A failing probe is one POST and one Telegram message. The monitor reads the manifest every minute, so this takes a while.
 tg_reset
@@ -134,8 +148,8 @@ case $(printf '%s' "$body" | jq -r '.since') in
   20??-??-??T*Z) pass "the POST gives the time the state began" ;;
   *) fail "the POST gives the time the state began" "got $(printf '%s' "$body" | jq -r '.since')" ;;
 esac
-expect_eq "the probe is one Telegram message too" 1 "$(tg_messages | jq 'length')"
-expect_eq "the webhook text is the Telegram text" "$(tg_messages | jq -r '.[0].text')" "$(printf '%s' "$body" | jq -r '.text')"
+expect_tg_count "the probe is one Telegram message too" 1 "probe:broken"
+expect_eq "the webhook text is the Telegram text" "$(tg_messages | jq -r '[.[] | select(.text | contains("probe:broken"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
 expect_contains "the text says which check failed" "$(printf '%s' "$body" | jq -r '.text')" "probe:broken"
 
 # 3. A deploy that fails is one POST of kind deploy and one Telegram message.
@@ -163,8 +177,8 @@ case $(printf '%s' "$body" | jq -r '.state') in
 esac
 expect_contains "the deploy POST gives the reason" "$(printf '%s' "$body" | jq -r '.detail')" "healthy"
 expect_contains "the deploy text names the version" "$(printf '%s' "$body" | jq -r '.text')" "v2"
-expect_eq "the failed deploy is one Telegram message" 1 "$(tg_messages | jq '[.[] | select(.text | contains("berthy diagnostics"))] | length')"
-expect_eq "the webhook text is the Telegram text of the deploy" "$(tg_messages | jq -r '[.[] | select(.text | contains("berthy diagnostics"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
+expect_tg_count "the failed deploy is one Telegram message" 1 "web v2 (failed|rolled back):"
+expect_eq "the webhook text is the Telegram text of the deploy" "$(tg_messages | jq -r '[.[] | select(.text | test("web v2 (failed|rolled back):"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
 
 # 4. alerts.deploys: all sends the success to both channels too.
 tg_reset
@@ -205,11 +219,11 @@ echo "  heartbeat detail: $detail"
 expect_contains "the detail says the ping failed" "$detail" "ping failed: unreachable"
 expect_contains "the detail keeps the time of the last accepted ping" "$detail" "last ping accepted at 20"
 sleep 30
-expect_eq "an unknown heartbeat never alerts" 0 "$(tg_messages | jq '[.[] | select(.text | contains("heartbeat"))] | length')"
+expect_tg_count "an unknown heartbeat never alerts" 0 "heartbeat"
 expect_eq "the heartbeat check is still unknown, not worse" unknown "$(beat_state state)"
 start_hook || fail "the fake webhook restarts" "it did not answer"
 if wait_beat_state ok 60; then pass "the heartbeat check recovers when the URL answers again"; else fail "the heartbeat check recovers when the URL answers again" "state $(beat_state state)"; fi
-expect_eq "recovery sends no message either" 0 "$(tg_messages | jq '[.[] | select(.text | contains("heartbeat"))] | length')"
+expect_tg_count "recovery sends no message either" 0 "heartbeat"
 
 # 4d. Stopping the agent stops the pings.
 stop_agent
@@ -229,10 +243,10 @@ elapsed=$((SECONDS - start))
 expect_code "a failing deploy with the webhook down still ends the same way" 1 "$code" "$out"
 if [ "$elapsed" -lt 60 ]; then pass "the deploy did not wait for the webhook (${elapsed}s)"; else fail "the deploy did not wait for the webhook" "took ${elapsed}s"; fi
 for i in $(seq 1 40); do
-  [ "$(tg_messages | jq 'length')" -ge 1 ] && grep -q 'deploy alert not sent' "$LOG/agent.log" && break
+  [ "$(tg_count "web v1 (failed|rolled back):")" -ge 1 ] && grep -q 'deploy alert not sent' "$LOG/agent.log" && break
   sleep 0.25
 done
-expect_eq "Telegram still gets the message" 1 "$(tg_messages | jq 'length')"
+expect_tg_count "Telegram still gets the message" 1 "web v1 (failed|rolled back):"
 line=$(grep 'deploy alert not sent' "$LOG/agent.log" | tail -n 1)
 echo "  log line: $line"
 expect_contains "the agent logs the webhook failure" "$line" "webhook: webhook unavailable"
