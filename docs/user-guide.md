@@ -230,7 +230,7 @@ The steps run in this order. Each one checks first and only acts when something 
 | `verify` | Runs `doctor` on the new agent (see below). |
 | `cli_key` | Saves a copy of the encryption key on this machine, in `~/.berthy/keys` (see [Save three things](#save-three-things)). With `--local` it is skipped. |
 
-Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This is a real first run, on a test server with another environment name and address. The names are the guide's (`prod`, `ops@10.0.0.5`, `10.0.0.5:7710`, network `todo-prod`), and the details are what setup prints:
+Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to change) and `changed`, `·` for `would_change` (dry run), `–` for `skipped` and `✖` for `failed`. This example shows a first run for `todo/prod` on `ops@10.0.0.5` with the network `todo-prod`. The server lacks an update notifier, and its only warning is that no server alert channel is configured.
 
 ```text
 ✓ connect     ops@10.0.0.5 (sudo)
@@ -240,13 +240,13 @@ Every step ends with one status, shown as a glyph: `✓` for `ok` (nothing to ch
 ✓ network     created network todo-prod
 ✓ user        created the berthy user, added it to the docker group
 ✓ binary      uploaded this CLI (v0.1.0-me), sha256 58eb0c5853b3
-✓ key         prepared /var/lib/berthy, prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared the cluster state directory and key
+✓ key         prepared /var/lib/berthy/environments, prepared /var/lib/berthy/environments/todo, prepared /var/lib/berthy/environments/todo/prod, prepared /var/lib/berthy/environments/todo/prod/state, generated an encryption key on the server, prepared /var/lib/berthy, prepared the cluster state directory and key
 ✓ token       created an admin token named admin
 ✓ config      created /etc/berthy/agent.json (listen 10.0.0.5:7710, 1 environment)
 ✓ service     installed, enabled and started berthy.service
 ✓ cli_config  wrote prod at http://10.0.0.5:7710 to config.json (token in $BERTHY_TODO_PROD_TOKEN)
 – cli_token   no credential store on this machine: the token is shown below; set it in $BERTHY_TODO_PROD_TOKEN
-✓ verify      agent v0.1.0-me, 9 of 9 checks ok
+✓ verify      agent v0.1.0-me, 10 of 11 checks ok (not ok: cluster_alerts: no cluster alert channel: host problems alert nobody; run berthy setup --cluster-alerts FILE)
 ✓ cli_key     saved a copy of the encryption key in /home/me/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key
 setup of todo/prod on ops@10.0.0.5: done
 
@@ -271,7 +271,7 @@ A **second run** keeps the existing token and shows no new token. With a stored 
 ✓ binary      this CLI (v0.1.0-me) is installed
 ✓ token       the tokens of /etc/berthy/agent.json are kept
 ✓ cli_token   the admin token is in the Secret Service
-✓ verify      agent v0.1.0-me, 9 of 9 checks ok
+✓ verify      agent v0.1.0-me, 10 of 11 checks ok (not ok: cluster_alerts: no cluster alert channel: host problems alert nobody; run berthy setup --cluster-alerts FILE)
 ✓ cli_key     the copy of the encryption key is in /home/me/.berthy/keys/berthy.todo.prod.91c0aa11bb22cc33.key
 ```
 
