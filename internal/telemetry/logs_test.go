@@ -126,11 +126,12 @@ func sampleRecord(body string) LogRecord {
 func TestLogsPostsProtobufRecordsWithHeadersAndResource(t *testing.T) {
 	rc := newLogReceiver(t)
 	cfg := &Config{Endpoint: rc.srv.URL, Headers: map[string]string{"authorization": "Bearer TEST-ONLY-2"}}
-	l := &Logs{Env: "lab", Config: fixedConfig(cfg)}
+	l := &Logs{Project: "demo", Env: "lab", Config: fixedConfig(cfg)}
 	l.Emit(sampleRecord("deploy started"))
 	l.Emit(LogRecord{Time: time.Date(2026, 11, 18, 10, 0, 48, 0, time.UTC), Severity: SeverityInfo, Body: "deploy succeeded"})
-	startLogs(t, l)
-	waitFor(t, "two log records", func() bool { return len(rc.records()) == 2 })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	l.Run(ctx)
 
 	req := rc.first()
 	if got := req.header.Get("Authorization"); got != "Bearer TEST-ONLY-2" {
@@ -143,7 +144,7 @@ func TestLogsPostsProtobufRecordsWithHeadersAndResource(t *testing.T) {
 	for _, kv := range req.request.GetResourceLogs()[0].GetResource().GetAttributes() {
 		resource[kv.GetKey()] = kv.GetValue().GetStringValue()
 	}
-	if resource["service.name"] != "berthy-agent" || resource["deployment.environment.name"] != "lab" || resource["host.name"] == "" {
+	if resource["berthy.project"] != "demo" || resource["service.name"] != "berthy-agent" || resource["deployment.environment.name"] != "lab" || resource["host.name"] == "" {
 		t.Fatalf("resource %v", resource)
 	}
 	recs := rc.records()

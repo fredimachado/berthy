@@ -69,7 +69,7 @@ func NewMonitoring(c Config, e *engine.Engine, d *deploy.Controller, log func(st
 	w := &Monitoring{cfg: c, store: d.Store, engine: e, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.ID(), e, log)}
 	w.composeServices = w.projectServices
 	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers, Client: c.outboundHTTP()}
-	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
+	w.mon = &monitor.Monitor{Project: c.Project, Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
 	return w
 }
 

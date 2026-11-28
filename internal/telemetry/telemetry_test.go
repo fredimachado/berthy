@@ -384,6 +384,23 @@ func fixedConfig(cfg *Config) func(context.Context) (*Config, error) {
 	return func(context.Context) (*Config, error) { return cfg, nil }
 }
 
+func TestTheResourceHasTheProject(t *testing.T) {
+	rc := newReceiver(t)
+	e := &Exporter{Project: "demo", Env: "lab", Collector: testCollector(t), Checks: testChecks}
+	p, err := e.start(t.Context(), Config{Endpoint: rc.srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.stop(p) })
+	if err := e.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, resource := decodeRequests(rc.snapshot())
+	if resource["berthy.project"] != "demo" || resource["deployment.environment.name"] != "lab" {
+		t.Fatalf("resource %v", resource)
+	}
+}
+
 func TestExportDeliversMetricsWithHeaders(t *testing.T) {
 	rc := newReceiver(t)
 	cfg := &Config{Endpoint: rc.srv.URL, Headers: map[string]string{"authorization": "Bearer TEST-ONLY-1"}}

@@ -185,8 +185,8 @@ func sendTestAlert(ctx context.Context, c Config, s *state.Store) ([]channelResu
 	if len(notifiers) == 0 {
 		return nil, errAlertsNotConfigured
 	}
-	text := fmt.Sprintf("🧪 %s test alert from berthy", c.Environment)
-	alert := monitor.Alert{Environment: c.Environment, Kind: "test", Name: "test", State: monitor.OK, Detail: "test alert from berthy", Since: time.Now().UTC(), Text: text}
+	text := fmt.Sprintf("🧪 %s test alert from berthy", c.ID().String())
+	alert := monitor.Alert{Project: c.Project, Environment: c.Environment, Kind: "test", Name: "test", State: monitor.OK, Detail: "test alert from berthy", Since: time.Now().UTC(), Text: text}
 	results := make([]channelResult, len(notifiers))
 	var wg sync.WaitGroup
 	for i, n := range notifiers {

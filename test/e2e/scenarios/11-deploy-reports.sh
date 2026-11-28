@@ -95,11 +95,17 @@ fail_id=$(operation_id "$out")
 expect_eq "a failed deploy sends exactly one message" 1 "$(wait_messages 1)"
 text=$(tg_messages | jq -r '.[0].text // ""')
 echo "  message: $(printf '%s' "$text" | tr '\n' '|')"
-expect_contains "the message names the environment and the app" "$text" "$ENVN: web"
+case "$text" in
+  "🔴 $PROJECT/$ENVN: web"*) pass "the message names the project, environment and app" ;;
+  *) fail "the message names the project, environment and app" "$text" ;;
+esac
 expect_contains "the message names the version" "$text" "v1"
 expect_contains "the message names who asked" "$text" "by admin"
 expect_contains "the message says the deploy did not succeed" "$text" "🔴"
-expect_contains "the message gives the diagnostics command" "$text" "berthy diagnostics $fail_id -e $ENVN"
+expect_eq "the message gives the exact diagnostics command" "berthy diagnostics $fail_id -e $ENVN --project $PROJECT" "$(printf '%s\n' "$text" | tail -n 1)"
+diag=$("$BIN" diagnostics "$fail_id" -e "$ENVN" --project "$PROJECT" --config "$RUN/admin.json" 2>&1); code=$?
+expect_code "the diagnostics command opens the failed operation" 0 "$code" "$diag"
+expect_contains "diagnostics identify the failed operation" "$diag" "operation: $fail_id"
 expect_not_contains "the message holds no application output" "$text" "Traceback"
 expect_eq "the message goes to the configured chat" 1 "$(tg_messages | jq -r '.[0].chat_id')"
 
@@ -112,7 +118,7 @@ all_id=$(operation_id "$out")
 expect_eq "deploys: all sends one message for a success" 1 "$(wait_messages 1)"
 text=$(tg_messages | jq -r '.[0].text // ""')
 echo "  message: $(printf '%s' "$text" | tr '\n' '|')"
-expect_contains "the success message" "$text" "✅ $ENVN: web v2 deployed by admin in "
+expect_contains "the success message" "$text" "✅ $PROJECT/$ENVN: web v2 deployed by admin in "
 
 # deploys: none sends nothing, even for a failure, and the request's manifest decides over the one applied before.
 tg_reset
@@ -123,6 +129,8 @@ expect_eq "deploys: none sends no message" 0 "$(wait_messages 1)"
 
 # Telemetry: two records for each operation, of every kind.
 wait_records "$ok_id" 2
+expect_eq "the telemetry resource names the project" "$PROJECT" "$(jq -r '.resource_attributes["berthy.project"]' "$RUN/otlp-summary.json")"
+expect_eq "the telemetry resource names the environment" "$ENVN" "$(jq -r '.resource_attributes["deployment.environment.name"]' "$RUN/otlp-summary.json")"
 records=$(log_records "$ok_id")
 expect_eq "the successful deploy has a start record and an end record" 2 "$(printf '%s\n' "$records" | wc -l)"
 start=$(printf '%s\n' "$records" | jq -c 'select(.body == "deploy started")')
@@ -132,6 +140,7 @@ echo "  end:   $end"
 expect_eq "the start record says running" running "$(printf '%s' "$start" | jq -r '.attributes["berthy.operation.state"]')"
 expect_eq "the end record says succeeded" succeeded "$(printf '%s' "$end" | jq -r '.attributes["berthy.operation.state"]')"
 for rec in "$start" "$end"; do
+  expect_eq "a record names the project" "$PROJECT" "$(printf '%s' "$rec" | jq -r '.attributes["berthy.project"]')"
   expect_eq "a record names the environment" "$ENVN" "$(printf '%s' "$rec" | jq -r '.attributes["berthy.environment"]')"
   expect_eq "a record names the app" web "$(printf '%s' "$rec" | jq -r '.attributes["berthy.app"]')"
   expect_eq "a record names the kind" deploy "$(printf '%s' "$rec" | jq -r '.attributes["berthy.operation.kind"]')"
@@ -144,6 +153,7 @@ case $(printf '%s' "$end" | jq -r '.attributes["berthy.operation.duration_ms"]')
 esac
 expect_eq "the failed deploy has two records too" 2 "$(wait_records "$fail_id" 2; log_records "$fail_id" | wc -l)"
 echo "  failed records: $(log_records "$fail_id" | paste -sd' ' -)"
+expect_eq "both failed deploy records name their identity" 2 "$(log_records "$fail_id" | jq -s --arg p "$PROJECT" --arg e "$ENVN" '[.[] | select(.attributes["berthy.project"] == $p and .attributes["berthy.environment"] == $e)] | length')"
 expect_eq "a failed end is a warning" WARN "$(log_records "$fail_id" | jq -r 'select(.body != "deploy started") | .severity')"
 
 out=$(adm restart web 2>&1); code=$?
@@ -151,6 +161,7 @@ expect_code "restart" 0 "$code" "$out"
 restart_id=$(operation_id "$out")
 wait_records "$restart_id" 2
 expect_eq "a restart has two records as well" "restart succeeded,restart started" "$(log_records "$restart_id" | jq -r '.body' | sort -r | paste -sd, -)"
+expect_eq "both restart records name their identity" 2 "$(log_records "$restart_id" | jq -s --arg p "$PROJECT" --arg e "$ENVN" '[.[] | select(.attributes["berthy.project"] == $p and .attributes["berthy.environment"] == $e)] | length')"
 sleep 1
 expect_eq "the restart sent no message" 0 "$(message_count)"
 

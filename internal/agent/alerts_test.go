@@ -120,8 +120,11 @@ func TestAFailedDeployIsOnePostAndOneTelegramMessage(t *testing.T) {
 	if call.method != http.MethodPost || call.path != hookPath || call.header.Get("Content-Type") != "application/json" || call.header.Get("Authorization") != "Bearer hook-secret-value" {
 		t.Fatalf("request %s %s %v", call.method, call.path, call.header)
 	}
+	if !strings.HasPrefix(texts[0], "🔴 demo/lab: api") || !strings.HasSuffix(texts[0], "\nberthy diagnostics op123 -e lab --project demo") {
+		t.Errorf("report text %q", texts[0])
+	}
 	want := map[string]any{
-		"environment": "prod", "kind": "deploy", "name": "api", "state": "rolled_back",
+		"project": "demo", "environment": "lab", "kind": "deploy", "name": "api", "state": "rolled_back",
 		"detail": "role web: container never became healthy (last check: exit 1)",
 		"since":  "2026-11-18T10:00:48Z", "text": texts[0],
 	}
@@ -133,7 +136,7 @@ func TestAFailedDeployIsOnePostAndOneTelegramMessage(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, call.body[k], v)
 		}
 	}
-	if call.body["text"] != deployAlertText(failedDeploy()) {
+	if call.body["text"] != deployAlertText(monitoringConfig("").ID(), failedDeploy()) {
 		t.Errorf("the webhook text is not the Telegram text: %v", call.body["text"])
 	}
 }
@@ -246,10 +249,10 @@ func TestAFailingProbeIsOnePostAndOneTelegramMessage(t *testing.T) {
 		t.Fatalf("telegram %q, webhook %d calls", texts, len(calls))
 	}
 	body := calls[0].body
-	if body["kind"] != "check" || body["name"] != "probe:site" || body["state"] != "critical" || body["environment"] != "lab" || body["text"] != texts[0] || body["since"] == nil {
+	if body["kind"] != "check" || body["name"] != "probe:site" || body["state"] != "critical" || body["environment"] != "lab" || body["project"] != "demo" || body["text"] != texts[0] || body["since"] == nil {
 		t.Fatalf("body %v", body)
 	}
-	if !strings.HasPrefix(texts[0], "🔴 lab probe:site: ") {
+	if !strings.HasPrefix(texts[0], "🔴 demo/lab probe:site: ") {
 		t.Fatalf("text %q", texts[0])
 	}
 	mu.Lock()
@@ -303,11 +306,11 @@ func TestAlertsTestReportsEachChannel(t *testing.T) {
 	if code != http.StatusOK || len(channels) != 2 || channels[0]["channel"] != "telegram" || channels[0]["ok"] != true || channels[1]["channel"] != "webhook" || channels[1]["ok"] != true {
 		t.Fatalf("both channels: %d %v", code, channels)
 	}
-	if texts := tg.texts(); len(texts) != 1 || texts[0] != "🧪 lab test alert from berthy" {
+	if texts := tg.texts(); len(texts) != 1 || texts[0] != "🧪 demo/lab test alert from berthy" {
 		t.Fatalf("telegram %q", texts)
 	}
 	calls := hook.received()
-	if len(calls) != 1 || calls[0].body["text"] != "🧪 lab test alert from berthy" || calls[0].body["kind"] != "test" || calls[0].body["environment"] != "lab" {
+	if len(calls) != 1 || calls[0].body["text"] != "🧪 demo/lab test alert from berthy" || calls[0].body["kind"] != "test" || calls[0].body["environment"] != "lab" || calls[0].body["project"] != "demo" {
 		t.Fatalf("webhook %+v", calls)
 	}
 

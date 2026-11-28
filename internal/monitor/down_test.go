@@ -212,15 +212,15 @@ func TestDownAlertsOnceAndRecovers(t *testing.T) {
 		r.step(30 * time.Second)
 		w.Observe(r.now, stopped, nil)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: container exited for 2m")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: container exited for 2m")
 
 	// Still down: nothing more is sent without reminders.
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: container exited for 2m")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: container exited for 2m")
 
 	w.Observe(r.now, running, nil)
 	r.step(30 * time.Second)
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: container exited for 2m", "✅ lab down:e2e-db/side recovered")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: container exited for 2m", "✅ demo/lab down:e2e-db/side recovered")
 }
 
 func TestDownSaysTheExitCodeAndSkipsFinishedOneShots(t *testing.T) {
@@ -254,7 +254,7 @@ func TestDownNotifiedFailureStaysCriticalAcrossAnAgentRestart(t *testing.T) {
 		r.step(30 * time.Second)
 		w.Observe(r.now, stopped, nil)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: exited with code 137 for 2m")
 
 	// The agent restarts: a new monitor reads the stored states, and a new watch has seen nothing yet. The service is still
 	// down, so for two minutes the check is unknown. That sends no recovered message, and the critical state that was
@@ -266,7 +266,7 @@ func TestDownNotifiedFailureStaysCriticalAcrossAnAgentRestart(t *testing.T) {
 		w.Observe(r.now, stopped, nil)
 		r.step(30 * time.Second)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: exited with code 137 for 2m")
 	if got := r.stored("down:e2e-db/side"); got.State != Unknown {
 		t.Fatalf("state after the restart: %+v, want unknown while confirming", got)
 	}
@@ -277,5 +277,5 @@ func TestDownNotifiedFailureStaysCriticalAcrossAnAgentRestart(t *testing.T) {
 	if got := r.stored("down:e2e-db/side"); got.State != Critical {
 		t.Fatalf("state after the restart and two minutes: %+v", got)
 	}
-	expectMessages(t, r.notifier.messages(), "🔴 lab down:e2e-db/side: exited with code 137 for 2m")
+	expectMessages(t, r.notifier.messages(), "🔴 demo/lab down:e2e-db/side: exited with code 137 for 2m")
 }
