@@ -62,8 +62,9 @@ type Check interface {
 
 // Monitor runs the checks that Checks returns and records their states in Store. Its fields are set before Run.
 type Monitor struct {
-	Env   string
-	Store *state.Store
+	Env    string
+	Server string
+	Store  *state.Store
 	// Checks returns the checks to run. It is called every minute. A nil result means the configuration could not be
 	// read: the current checks keep running and the call is retried soon.
 	Checks func(ctx context.Context) []Check
@@ -467,7 +468,7 @@ func (m *Monitor) notify(ctx context.Context, t *tracker, now time.Time) {
 		return
 	}
 	var partial *DeliveryError
-	err = n.Notify(nctx, alertOf(m.Env, t.name, cur, reminding))
+	err = n.Notify(nctx, alertOf(m.Env, m.Server, t.name, cur, reminding))
 	if err != nil && !errors.As(err, &partial) {
 		m.alertFailed(t, now, err.Error())
 		return
@@ -555,22 +556,24 @@ func normalize(r Result) Result {
 }
 
 // alertOf is the alert for a stored state of a check. reminding selects the text sent again while a check keeps failing.
-func alertOf(env, name string, c state.CheckState, reminding bool) Alert {
-	return Alert{Environment: env, Kind: "check", Name: name, State: c.State, Detail: c.Detail, Since: c.Since, Text: message(env, name, c, reminding)}
+func alertOf(env, server, name string, c state.CheckState, reminding bool) Alert {
+	a := Alert{Environment: env, Server: server, Kind: "check", Name: name, State: c.State, Detail: c.Detail, Since: c.Since}
+	a.Text = message(a.Subject(), name, c, reminding)
+	return a
 }
 
 // message is the alert for a stored state. reminding selects the text sent again while a check keeps failing.
-func message(env, name string, c state.CheckState, reminding bool) string {
+func message(subject, name string, c state.CheckState, reminding bool) string {
 	var text string
 	switch {
 	case c.State == OK:
-		text = fmt.Sprintf("✅ %s %s recovered", env, name)
+		text = fmt.Sprintf("✅ %s %s recovered", subject, name)
 	case reminding:
-		text = fmt.Sprintf("🔁 still failing: %s %s: %s", env, name, c.Detail)
+		text = fmt.Sprintf("🔁 still failing: %s %s: %s", subject, name, c.Detail)
 	case c.State == Critical:
-		text = fmt.Sprintf("🔴 %s %s: %s", env, name, c.Detail)
+		text = fmt.Sprintf("🔴 %s %s: %s", subject, name, c.Detail)
 	default:
-		text = fmt.Sprintf("🟠 %s %s: %s", env, name, c.Detail)
+		text = fmt.Sprintf("🟠 %s %s: %s", subject, name, c.Detail)
 	}
 	return truncate(text, maxMessage)
 }

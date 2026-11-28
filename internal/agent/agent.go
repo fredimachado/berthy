@@ -65,6 +65,9 @@ type Config struct {
 	dial monitor.DialFunc
 	// startupChecks reads the host's startup result. A standalone environment has no host result.
 	startupChecks func() []api.Check
+	// Hosted environments get read access to the cluster's readiness and persisted checks.
+	clusterChecks    func(context.Context) []api.Check
+	clusterCheckRows func(context.Context) ([]clusterCheckRow, error)
 }
 
 // outboundHTTP returns the HTTP client for those services: nil, which is each package's default, unless a test set dial.
@@ -498,6 +501,9 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 		}
 	}
 	checks = append(checks, hostDoctorChecks(r.Context(), e, c.Listen)...)
+	if c.clusterChecks != nil {
+		checks = append(checks, c.clusterChecks(r.Context())...)
+	}
 	if c.startupChecks != nil {
 		for _, check := range c.startupChecks() {
 			if !check.OK {

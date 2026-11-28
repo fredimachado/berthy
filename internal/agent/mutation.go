@@ -316,6 +316,20 @@ func (rt *routeRuntime) handleChecks(call routeCall) {
 	json.NewEncoder(w).Encode(out) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
 }
 
+func (rt *routeRuntime) handleClusterChecks(call routeCall) {
+	w := call.w
+	if rt.c.clusterCheckRows == nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	rows, err := rt.c.clusterCheckRows(call.r.Context())
+	if err != nil {
+		writeError(w, 503, "state_unavailable", "state unavailable")
+		return
+	}
+	json.NewEncoder(w).Encode(rows) //nolint:errcheck // This final HTTP response has no remaining error-reporting channel.
+}
+
 func (rt *routeRuntime) handleAlertsTest(call routeCall) {
 	w, ctx, c, d := call.w, call.r.Context(), rt.c, rt.d
 	sa := call.stateActor()

@@ -45,6 +45,7 @@ func (Webhook) Channel() string { return "webhook" }
 // webhookBody is the JSON document of an alert.
 type webhookBody struct {
 	Environment string     `json:"environment"`
+	Server      string     `json:"server,omitempty"`
 	Kind        string     `json:"kind"`
 	Name        string     `json:"name"`
 	State       string     `json:"state"`
@@ -55,7 +56,7 @@ type webhookBody struct {
 
 // Notify posts the alert as JSON. Any status from 200 to 299 counts as delivered.
 func (w *Webhook) Notify(ctx context.Context, a Alert) error {
-	body := webhookBody{Environment: a.Environment, Kind: a.Kind, Name: a.Name, State: a.State, Detail: a.Detail, Text: a.Text}
+	body := webhookBody{Environment: a.Environment, Server: a.Server, Kind: a.Kind, Name: a.Name, State: a.State, Detail: a.Detail, Text: a.Text}
 	if !a.Since.IsZero() {
 		since := a.Since.UTC()
 		body.Since = &since

@@ -95,6 +95,53 @@ done
 expect_eq "fresh setup has no server destinations" false "$(cluster_layout | jq 'has("alerts")')"
 check_both
 
+cluster_request() {
+  local method=$1 path=$2 token=$3
+  printf 'Authorization: Bearer %s\n' "$token" |
+    curl_local -X "$method" --header @- -o "$private/cluster-response.json" -w '%{http_code}' "http://$ip:7710$path"
+}
+first_scope="/v1/projects/$PROJECT/environments/$ENVN"
+second_scope="/v1/projects/$peer/environments/$ENVN"
+first_reader=$(cli "$PROJECT" token create cluster-reader --scope read --json | jq -er '.token')
+second_reader=$(cli "$peer" token create cluster-reader --scope read --json | jq -er '.token')
+expect_eq "the first project's read token can read cluster checks" 200 \
+  "$(cluster_request GET "$first_scope/cluster/checks" "$first_reader")"
+if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
+first_rows=$(jq -ec 'select(type == "array")' "$private/cluster-response.json")
+expect_eq "the second project's read token can read cluster checks" 200 \
+  "$(cluster_request GET "$second_scope/cluster/checks" "$second_reader")"
+expect_eq "both scoped reads return the same cluster rows" "$first_rows" \
+  "$(jq -ec 'select(type == "array")' "$private/cluster-response.json")"
+expect_eq "a cluster read refuses the other project's token" 401 \
+  "$(cluster_request GET "$second_scope/cluster/checks" "$first_reader")"
+expect_eq "cluster checks refuse POST" 405 \
+  "$(cluster_request POST "$first_scope/cluster/checks" "$first_reader")"
+
+admin_env=$(jq -er --arg p "$PROJECT" --arg e "$ENVN" '.projects[$p].environments[$e].token_env' "$cfg")
+for prefix in "$first_scope/cluster" /v1/cluster; do
+  while read -r method path; do
+    expect_eq "admin cannot $method $prefix/$path" 404 \
+      "$(cluster_request "$method" "$prefix/$path" "${!admin_env}")"
+  done <<'REQUESTS'
+GET secrets
+POST secrets
+DELETE secrets/SERVER_TG
+PUT settings
+POST alerts/test
+REQUESTS
+done
+unset first_reader second_reader
+
+doctor_cluster() {
+  local project
+  for project in "$PROJECT" "$peer"; do
+    cli "$project" doctor --json | jq -e "$1" >/dev/null || die "unexpected host or cluster readiness for $project/$ENVN"
+    pass "$project/$ENVN doctor retains live host checks and reports cluster readiness"
+  done
+}
+doctor_cluster '.checks | any(.name == "public_ports" and (.critical | not)) and
+  any(.name == "cluster_alerts" and (.ok | not) and (.critical | not) and (.detail | contains("--cluster-alerts FILE")))'
+
 cluster_setup() {
   local what=$1; shift
   local before
@@ -126,6 +173,9 @@ YML
 cluster_setup 'enable server destinations' --config "$cfg" --cluster-alerts "$private/cluster.yml" </dev/null
 destinations=$(cluster_layout | jq -ec '.alerts | select(.reminder == "0s" and .telegram.bot_token_secret == "SERVER_TG" and .webhook.url_secret == "SERVER_HOOK")')
 expect_eq "setup installs the server chat" "$server_chat" "$(jq -r '.telegram.chat_id' <<< "$destinations")"
+doctor_cluster '.checks | any(.name == "public_ports" and (.critical | not)) and
+  any(.name == "cluster_telegram" and .ok and (.critical | not)) and
+  any(.name == "cluster_webhook" and .ok and (.critical | not))'
 jq -e '[.next_steps[] | select(contains("--cluster-secret")) | split(" ")[-1]] == ["SERVER_HOOK", "SERVER_TG"]' \
   "$private/cluster-setup.json" >/dev/null || die "setup did not report both server credential commands"
 printf 'http://%s%s\r\n' "$HOOK_LISTEN" "$server_hook" |

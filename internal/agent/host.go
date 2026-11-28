@@ -51,6 +51,8 @@ func Open(sh Shared, f File) (*Host, error) {
 		id := c.ID()
 		h.ids = append(h.ids, id)
 		c.startupChecks = h.startupChecks
+		c.clusterChecks = cluster.ChannelChecks
+		c.clusterCheckRows = cluster.CheckRows
 		r, err := OpenRuntime(sh, c)
 		if err != nil {
 			h.fail(c, nil, stateOpenReason(err), err)
