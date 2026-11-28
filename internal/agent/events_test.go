@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"berthy/internal/deploy"
@@ -183,6 +186,142 @@ func TestADieEventAsksForAReadOfTheInventory(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	d.push(dieEvent)
 	waitUntil(t, "the die event to ask for a read", w.readNow.Load)
+}
+
+type monitorDeployEngine struct {
+	finalReasonEngine
+	created chan struct{}
+	finish  <-chan struct{}
+}
+
+func (e *monitorDeployEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
+	id, err := e.finalReasonEngine.CreateService(ctx, spec, auth)
+	close(e.created)
+	<-e.finish
+	return id, err
+}
+
+func (e *monitorDeployEngine) InspectService(context.Context, string) (engine.ServiceSnapshot, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.spec == nil {
+		return engine.ServiceSnapshot{}, &engine.StatusError{Code: 404}
+	}
+	return engine.ServiceSnapshot{ID: "id", Spec: slices.Clone(e.spec)}, nil
+}
+
+func TestDeployWakesMonitorAfterDockerEventRebuilds(t *testing.T) {
+	docker := newDownFakeWithService(t, "shop-lab-web-main", "id")
+	sh, cfg := runtimeConfig(t)
+	sh.Engine, cfg.Project = docker.eng, "shop"
+	cfg.ComposeCommand = []string{"/nonexistent/berthy-test-compose"}
+	r, err := OpenRuntime(sh, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	c, w := r.deployment, r.monitoring
+	const raw = `{"project":"shop","network":"shop","apps":{
+		"db":{"kind":"compose","file":"compose.yml"},
+		"web":{"kind":"image","image":"example/web","roles":{"main":{"health":{"test":["CMD","true"]}}}}
+	}}`
+	recordAppRelease(t, c.Store, "already-deployed", "db", raw)
+	m, err := manifest.DecodeRelease([]byte(raw), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		created, finish := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(finish) })
+		c.Engine = &monitorDeployEngine{created: created, finish: finish}
+		defer func() {
+			cancel()
+			release()
+			if err := c.Drain(context.Background()); err != nil {
+				t.Error(err)
+			}
+			r.reports.Wait()
+		}()
+		op, _, err := c.Admit(ctx, deploy.Actor{ID: "ci", Admin: true}, deploy.Request{
+			RequestID: "first-web-deploy", App: "web", Version: "sha256:" + strings.Repeat("a", 64), Manifest: *m,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case <-created:
+		default:
+			t.Fatal("deploy did not create web's service")
+		}
+
+		events := make(chan engine.Event, 3)
+		events <- engine.Event{Type: "service", Action: "create"}
+		events <- engine.Event{Type: "container", Action: "start"}
+		events <- engine.Event{Type: "container", Action: "health_status", Detail: "healthy"}
+		eventsDone := make(chan struct{})
+		go func() { defer close(eventsDone); w.followEvents(ctx, events) }()
+		defer func() { cancel(); <-eventsDone }()
+		synctest.Wait()
+
+		rebuilds := 0
+		w.mon.Checks = func(ctx context.Context) []monitor.Check {
+			rebuilds++
+			return w.checks(ctx)
+		}
+		monitorDone := make(chan struct{})
+		go func() { defer close(monitorDone); w.mon.Run(ctx) }()
+		defer func() { cancel(); <-monitorDone }()
+		synctest.Wait()
+		if rebuilds != 1 {
+			t.Fatalf("initial rebuild count = %d, want 1", rebuilds)
+		}
+		start := time.Now()
+		// Drain the follow-up and pass the kick gap before allowing the deploy to commit.
+		<-time.After(10 * time.Second)
+		synctest.Wait()
+		if rebuilds != 2 {
+			t.Fatalf("rebuild count after Docker events = %d, want 2", rebuilds)
+		}
+		names := func() []string {
+			t.Helper()
+			checks, err := c.Store.Checks(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, check := range checks {
+				out = append(out, check.Name)
+			}
+			return out
+		}
+		want := []string{"drift:web", "down:web/main", "restarts:web/main"}
+		before := names()
+		if !slices.Contains(before, "drift:db") || !slices.Contains(before, "down:shop-lab-db/db") ||
+			slices.ContainsFunc(before, func(name string) bool { return slices.Contains(want, name) }) {
+			t.Fatalf("checks before web commits = %v, want db checks and no web checks", before)
+		}
+		release()
+		if err := c.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		committed, err := c.Store.Operation(ctx, op.ID)
+		if err != nil || committed.State != "succeeded" {
+			t.Fatalf("deploy state = %q, error = %q, read error = %v", committed.State, committed.Err, err)
+		}
+		synctest.Wait()
+		if time.Since(start) >= time.Minute {
+			t.Fatal("test reached the periodic rebuild")
+		}
+		after := names()
+		for _, name := range want {
+			if !slices.Contains(after, name) {
+				t.Errorf("missing %s after web committed with no further Docker events; checks = %v", name, after)
+			}
+		}
+	})
 }
 
 type eventWakeCheck struct{ ran chan struct{} }

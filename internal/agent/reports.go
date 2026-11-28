@@ -26,6 +26,8 @@ type Reports struct {
 	logs  *telemetry.Logs
 	log   func(string)
 	wg    sync.WaitGroup
+
+	wakeAppChecks func()
 }
 
 // NewReports returns the observer of an agent with state. log receives operational messages, which never contain a secret; it
@@ -58,6 +60,10 @@ func (r *Reports) OperationStarted(_ context.Context, e deploy.OperationEvent) {
 // message. An operation that already ended as recovery_required and is decided later has its second end recorded and not
 // alerted: the channel heard of the failure when it first ended.
 func (r *Reports) OperationEnded(_ context.Context, e deploy.OperationEvent) {
+	// Docker may have sent all its events before the applied release and bindings were committed.
+	if r.wakeAppChecks != nil && (e.Kind == "deploy" || e.Kind == "rollback") && e.State != "recovery_required" {
+		r.wakeAppChecks()
+	}
 	r.logs.Emit(operationRecord(e, e.Ended, e.Kind+" "+strings.ReplaceAll(e.State, "_", " ")))
 	if !alertableKind(e) {
 		return
