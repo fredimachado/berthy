@@ -191,7 +191,7 @@ func TestAlertTestSendsThroughTelegramAndAuditsEveryAttempt(t *testing.T) {
 		t.Fatalf("send: %d %s", w.Code, w.Body.String())
 	}
 	mu.Lock()
-	if len(sent) != 1 || sent[0].Get("chat_id") != "-1001234567890" || sent[0].Get("text") != "🧪 lab test alert from berthy" {
+	if len(sent) != 1 || sent[0].Get("chat_id") != "-1001234567890" || sent[0].Get("text") != "🧪 demo/lab test alert from berthy" {
 		t.Fatalf("sent: %v", sent)
 	}
 	mu.Unlock()

@@ -105,7 +105,7 @@ if [ "$elapsed" -ge 119 ]; then pass "the check turned critical after the two-mi
 expect_eq "one critical alert reaches the chat" "1" "$(wait_messages "🔴" 1 30)"
 text=$(tg_messages | jq -r --arg c "$check" '[.[] | select(.text | contains($c))][0].text // ""')
 echo "  message: $(printf '%s' "$text" | tr '\n' '|')"
-expect_contains "the alert names the environment and the check" "$text" "$ENVN $check"
+expect_contains "the alert names the environment and the check" "$text" "$PROJECT/$ENVN $check"
 expect_contains "the alert gives the exit code of the stopped container" "$text" "exited with code 137 for "
 expect_contains "the alert is critical" "$text" "🔴"
 
@@ -117,7 +117,7 @@ d start "$cid" >/dev/null 2>&1
 if wait_state "$check" ok 150; then pass "the down check reads ok again once the container runs"; else fail "the down check reads ok again once the container runs" "$(adm checks 2>&1)"; fi
 expect_eq "the recovery reaches the chat" "1" "$(wait_messages "recovered" 1 30)"
 text=$(tg_messages | jq -r --arg c "$check" '[.[] | select(.text | contains($c) and contains("recovered"))][0].text // ""')
-expect_contains "the recovery names the environment and the check" "$text" "✅ $ENVN $check recovered"
+expect_contains "the recovery names the environment and the check" "$text" "✅ $PROJECT/$ENVN $check recovered"
 
 # A restart and a deploy of the image app change its containers: neither raises a down alert, and its own check stays ok.
 before=$(down_messages "")

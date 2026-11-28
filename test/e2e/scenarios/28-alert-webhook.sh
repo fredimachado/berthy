@@ -141,6 +141,11 @@ wait_for "probe alert completion" probe_notified || fail "the probe alert comple
 expect_eq "a failing probe is one POST" 1 "$(posts check probe:broken | jq 'length')"
 body=$(posts check probe:broken | jq -c '.[0]')
 echo "  probe alert: $body"
+expect_eq "the POST names the project" "$PROJECT" "$(printf '%s' "$body" | jq -r '.project')"
+case $(printf '%s' "$body" | jq -r '.text') in
+  "🔴 $PROJECT/$ENVN probe:broken: "*) pass "the probe text names its identity" ;;
+  *) fail "the probe text names its identity" "got $(printf '%s' "$body" | jq -r '.text')" ;;
+esac
 expect_eq "the POST names the environment" "$ENVN" "$(printf '%s' "$body" | jq -r '.environment')"
 expect_eq "the POST names the check" probe:broken "$(printf '%s' "$body" | jq -r '.name')"
 expect_eq "the POST gives the state" critical "$(printf '%s' "$body" | jq -r '.state')"
@@ -163,6 +168,10 @@ expect_contains "alerts test reports the webhook" "$out" "webhook: ok"
 requests=$(hook_requests | jq -c '[.[] | select(.method == "POST") | select((.body | fromjson? | .kind) == "test")]')
 expect_eq "the test alert is one POST" 1 "$(printf '%s' "$requests" | jq 'length')"
 req=$(printf '%s' "$requests" | jq -c '.[0]')
+first_test=$(printf '%s' "$req" | jq -c '.body | fromjson')
+expect_eq "the test alert names the project" "$PROJECT" "$(printf '%s' "$first_test" | jq -r '.project')"
+expect_eq "the test alert names the environment" "$ENVN" "$(printf '%s' "$first_test" | jq -r '.environment')"
+expect_eq "the test alert text names its identity" "🧪 $PROJECT/$ENVN test alert from berthy" "$(printf '%s' "$first_test" | jq -r '.text')"
 expect_eq "the test alert uses POST" POST "$(printf '%s' "$req" | jq -r '.method')"
 expect_eq "the POST goes to the path of the URL secret" "$hook_path" "$(printf '%s' "$req" | jq -r '.path')"
 expect_eq "the POST carries the header of the headers secret" "$hook_header" "$(printf '%s' "$req" | jq -r '.headers.Authorization[0]')"
@@ -301,5 +310,27 @@ for secret in "s3cr3t-e2e-token" "s3cr3t-e2e-beat-token" "e2e-hook-header-value"
   expect_not_contains "checks holds no secret" "$checks" "$secret"
   expect_not_contains "doctor holds no secret" "$out$out2$out3$doc" "$secret"
 done
+
+# Both projects send test alerts to the same destination with the same environment name.
+peer="$PROJECT-two"
+add_environment "$peer" "$ENVN" || exit 1
+cat > "$(env_dir "$peer" "$ENVN")/berthy.yml" <<YML
+project: $peer
+alerts:
+  webhook:
+    url_secret: ALERT_WEBHOOK_URL
+YML
+out=$(printf '%s' "http://$HOOK_LISTEN$hook_path" | env_cmd "$peer" "$ENVN" secret set ALERT_WEBHOOK_URL 2>&1); code=$?
+expect_code "set peer webhook URL" 0 "$code" "$out"
+out=$(env_cmd "$peer" "$ENVN" apply --manifest-dir "$(env_dir "$peer" "$ENVN")" 2>&1); code=$?
+expect_code "apply peer settings" 0 "$code" "$out"
+hook_reset
+out=$(env_cmd "$peer" "$ENVN" alerts test 2>&1); code=$?
+expect_code "send peer test alert" 0 "$code" "$out"
+peer_test=$(posts test | jq -c '.[0]')
+expect_eq "first test names its project" "$PROJECT" "$(printf '%s' "$first_test" | jq -r '.project')"
+expect_eq "peer test names its project" "$peer" "$(printf '%s' "$peer_test" | jq -r '.project')"
+expect_eq "both tests name the same environment" "$(printf '%s' "$first_test" | jq -r '.environment')" "$(printf '%s' "$peer_test" | jq -r '.environment')"
+expect_eq "peer test names the environment" "$ENVN" "$(printf '%s' "$peer_test" | jq -r '.environment')"
 
 finish
