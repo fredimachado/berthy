@@ -131,3 +131,14 @@ func (r recording) SetSudo(v bool) {
 		s.SetSudo(v)
 	}
 }
+
+func (r recording) runSSHLogin(ctx context.Context, script string) (Result, error) {
+	login, ok := r.Runner.(sshLoginRunner)
+	if !ok {
+		return Result{}, errNoSSHConnection
+	}
+	r.log.sending(script)
+	res, err := login.runSSHLogin(ctx, script)
+	r.log.exited(res, err)
+	return res, err
+}

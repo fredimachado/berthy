@@ -57,6 +57,10 @@ func (s *Store) CheckOwner(ctx context.Context, project string) error {
 		return err
 	}
 	defer tx.Rollback()
+	return checkOwner(ctx, tx, project, s.env)
+}
+
+func checkOwner(ctx context.Context, tx *sql.Tx, project, environment string) error {
 	haveProject, projectOK, err := metadataString(ctx, tx, "project")
 	if err != nil {
 		return err
@@ -68,10 +72,10 @@ func (s *Store) CheckOwner(ctx context.Context, project string) error {
 	if !projectOK || !envOK {
 		return ErrNoOwner
 	}
-	if haveProject == project && haveEnv == s.env {
+	if haveProject == project && haveEnv == environment {
 		return nil
 	}
-	return &OwnerError{Have: haveProject + "/" + haveEnv, Want: project + "/" + s.env}
+	return &OwnerError{Have: haveProject + "/" + haveEnv, Want: project + "/" + environment}
 }
 
 func metadataString(ctx context.Context, tx *sql.Tx, name string) (string, bool, error) {

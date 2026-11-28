@@ -612,23 +612,31 @@ func configStep(ctx context.Context, s *Session) (string, string, error) {
 	if s.existing == nil {
 		verb = "create"
 	}
-	script := configWriteScript()
-	if !s.DryRun {
-		res, err := s.R.Run(ctx, script, bytes.NewReader(want))
-		if err != nil {
-			return "", "", fmt.Errorf("writing %s: %w", configPath, err)
-		}
-		if res.Code != 0 {
-			return "", "", fmt.Errorf("writing %s: %s", configPath, failureText(res))
-		}
+	if err := s.stageConfig(ctx, want); err != nil {
+		return "", "", err
 	}
 	s.staged.Config = true
 	if s.hosted() == nil {
 		s.staged.Added = &scope.ID{Project: s.Opts.Project, Environment: s.Opts.Env}
 	}
 	if s.DryRun {
-		s.Log.Would(script)
 		return StatusWouldChange, "would " + verb + " " + summary, nil
 	}
 	return StatusChanged, verb + "d " + summary, nil
+}
+
+func (s *Session) stageConfig(ctx context.Context, want []byte) error {
+	script := configWriteScript()
+	if s.DryRun {
+		s.Log.Would(script)
+	} else {
+		res, err := s.R.Run(ctx, script, bytes.NewReader(want))
+		if err != nil {
+			return fmt.Errorf("writing %s: %w", configPath, err)
+		}
+		if res.Code != 0 {
+			return fmt.Errorf("writing %s: %s", configPath, failureText(res))
+		}
+	}
+	return nil
 }

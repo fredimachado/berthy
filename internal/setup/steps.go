@@ -143,14 +143,17 @@ type Session struct {
 	// it runs.
 	dockerStopped bool
 
-	existing    *agent.File // the server's agent configuration, when there is one
-	existingRaw []byte
-	configRead  bool
-	newToken    *agent.Token
-	hostedCount int    // environments in the desired configuration
-	staged      Staged // what this run staged for the service step
-	unitChanged bool
-	serverVer   *string // the version the agent binary on the server reports; "" when it says none
+	existing         *agent.File // the server's agent configuration, when there is one
+	existingRaw      []byte
+	configRead       bool
+	newToken         *agent.Token
+	hostedCount      int    // environments in the desired configuration
+	staged           Staged // what this run staged for the service step
+	removal          *removal
+	removalCandidate []byte // nil when the removal's candidate is already live
+	removalNetwork   *removalNetwork
+	unitChanged      bool
+	serverVer        *string // the version the agent binary on the server reports; "" when it says none
 	// listenFromManifest is set when resolveListen took DefaultListenIP because there was no --listen and no agent config.
 	listenFromManifest bool
 }
