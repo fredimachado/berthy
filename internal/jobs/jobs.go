@@ -113,7 +113,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.mu.Lock()
 	s.base = ctx
 	s.mu.Unlock()
-	defer s.wait()
+	defer s.Wait()
 	if n, err := s.Store.AbandonRunningJobs(ctx); err != nil {
 		s.logf("jobs: cannot fail interrupted runs: %v", err)
 	} else if n > 0 {
@@ -135,8 +135,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// wait blocks until the runs in progress have ended.
-func (s *Scheduler) wait() { s.wg.Wait() }
+// Wait blocks until the runs in progress have ended and recorded their outcome, including the audit entry.
+func (s *Scheduler) Wait() { s.wg.Wait() }
 
 // step handles the current minute if it has not been handled yet.
 func (s *Scheduler) step(ctx context.Context) {

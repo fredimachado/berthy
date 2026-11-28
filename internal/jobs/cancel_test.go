@@ -33,7 +33,7 @@ func TestCancelStopsARunningJobAndRecordsWhoCancelledIt(t *testing.T) {
 	if err = r.sched.Cancel(context.Background(), "slow", "tok"); err != nil {
 		t.Fatal(err)
 	}
-	r.sched.wait()
+	r.sched.Wait()
 	runs := r.runs(t, "slow")
 	if len(runs) != 1 || runs[0].ID != id || runs[0].Status != "failed" || runs[0].Detail != "cancelled by tok" || runs[0].Container != "container-1" {
 		t.Fatalf("runs: %+v", runs)
@@ -46,7 +46,7 @@ func TestCancelStopsARunningJobAndRecordsWhoCancelledIt(t *testing.T) {
 	if _, err = r.sched.Start(context.Background(), "slow", "manual"); err != nil {
 		t.Fatalf("start again: %v", err)
 	}
-	r.sched.wait()
+	r.sched.Wait()
 }
 
 func TestCancelStopsAScheduledRunToo(t *testing.T) {
@@ -58,7 +58,7 @@ func TestCancelStopsAScheduledRunToo(t *testing.T) {
 	if err := r.sched.Cancel(context.Background(), "tick", "tok"); err != nil {
 		t.Fatal(err)
 	}
-	r.sched.wait()
+	r.sched.Wait()
 	if runs := r.runs(t, "tick"); len(runs) != 1 || runs[0].Status != "failed" || runs[0].Detail != "cancelled by tok" {
 		t.Fatalf("runs: %+v", runs)
 	}
@@ -94,7 +94,7 @@ func TestACancelDoesNotRewriteARunThatSucceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(release)
-	r.sched.wait()
+	r.sched.Wait()
 	if runs := r.runs(t, "slow"); len(runs) != 1 || runs[0].Status != "succeeded" {
 		t.Fatalf("runs: %+v", runs)
 	}
@@ -114,7 +114,7 @@ func TestCancelWaitsForNothingAndTheRunEndsPromptly(t *testing.T) {
 	if err := r.sched.Cancel(context.Background(), "slow", "tok"); err != nil {
 		t.Fatal(err)
 	}
-	r.sched.wait()
+	r.sched.Wait()
 	if time.Since(begin) > 5*time.Second {
 		t.Fatal("the cancel took long")
 	}

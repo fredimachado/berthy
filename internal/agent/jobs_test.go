@@ -543,7 +543,8 @@ func TestJobRunNeedsDeployScopeAndRunsInTheBackground(t *testing.T) {
 	ctx := context.Background()
 	recordRelease(t, s, "release-jobs", jobsManifest)
 	exec := &blockingExec{release: make(chan struct{}), started: make(chan struct{}, 2)}
-	h := jobsHandler(t, s, exec)
+	sched := jobScheduler(s, exec)
+	h := NewDeploymentHandlerWithJobs(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, nil, sched)
 	path := "/v1/projects/demo/environments/lab/jobs/tick/run"
 	if w := serveRequest(t, h, http.MethodPost, path, monitoringToken("a")); w.Code != http.StatusForbidden {
 		t.Fatalf("read token: %d", w.Code)
@@ -573,18 +574,12 @@ func TestJobRunNeedsDeployScopeAndRunsInTheBackground(t *testing.T) {
 		t.Fatalf("running run: %+v", runs)
 	}
 	close(exec.release)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if runs, _ = s.JobRuns(ctx, "tick", 5); runs[0].Status != "running" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run did not finish")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if runs[0].Status != "succeeded" {
-		t.Fatalf("finished run: %+v", runs[0])
+	// Drain the background run the way agent shutdown does: Wait returns only after the
+	// finished status and its job_run audit entry are both recorded.
+	sched.Wait()
+	runs, _ = s.JobRuns(ctx, "tick", 5)
+	if len(runs) != 1 || runs[0].Status != "succeeded" {
+		t.Fatalf("finished run: %+v", runs)
 	}
 	// The audit log names who asked, and the job as the caller of the run itself.
 	rows, err := s.AuditLog(ctx, 10)
