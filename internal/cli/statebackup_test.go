@@ -188,7 +188,16 @@ func TestStateRestoreRebuildsTheStateAndPrintsWhatItHolds(t *testing.T) {
 	if code := Run(stateRestoreArgs(endpoint, object, out, keyPath), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d, err %q", code, stderr.String())
 	}
-	for _, want := range []string{"environment: prod", "schema: 19", "secrets: 1", "DB_PASSWORD"} {
+	restored, err := state.Open(out, keyPath, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	version, err := restored.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"environment: prod", fmt.Sprintf("schema: %d", version), "secrets: 1", "DB_PASSWORD"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout.String())
 		}

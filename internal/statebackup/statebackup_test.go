@@ -208,7 +208,11 @@ func TestASnapshotIsUploadedWithItsSidecarAndNoKeyOrPlaintext(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(body)
-	if sc.Format != SidecarFormat || sc.Project != "demo" || sc.Environment != "prod" || sc.SchemaVersion != 19 || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
+	version, err := g.store.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Format != SidecarFormat || sc.Project != "demo" || sc.Environment != "prod" || sc.SchemaVersion != version || sc.Size != int64(len(body)) || sc.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sidecar %+v for %d bytes", sc, len(body))
 	}
 	if run.Size != sc.Size || run.SHA256 != sc.SHA256 {
@@ -391,7 +395,11 @@ func TestRestoreRebuildsTheStateFromStorageWithTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if rep.Environment != "prod" || rep.SchemaVersion != 19 || !slices.Equal(rep.Secrets, []string{"DB_PASSWORD"}) || rep.Path != filepath.Join(out, "state.db") {
+	version, err := g.store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Environment != "prod" || rep.SchemaVersion != version || !slices.Equal(rep.Secrets, []string{"DB_PASSWORD"}) || rep.Path != filepath.Join(out, "state.db") {
 		t.Fatalf("report: %+v", rep)
 	}
 	if runtime.GOOS != "windows" {
