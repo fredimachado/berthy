@@ -145,7 +145,7 @@ jobs:
     env:
       PROJECT: shop
       ENVN: stage
-    name: ${{ format('End-to-end ({0}/6)', matrix.shard) }}
+    name: ${{ format('End-to-end ({0}/{1})', matrix.shard, strategy.job-total) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -174,8 +174,9 @@ jobs:
       - name: Run shard
         env:
           SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
         run: |
-          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" 6)
+          mapfile -t scenarios < <(bash test/e2e/shard.sh "$SHARD" "$SHARDS")
           test "${#scenarios[@]}" -gt 0
           bash test/e2e/run.sh "${scenarios[@]}"
 
