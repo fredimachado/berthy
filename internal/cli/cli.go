@@ -718,6 +718,7 @@ func printLogLines(out, errout io.Writer, body []byte) int {
 
 func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOutput bool) int {
 	failed := false
+	printedStats := false
 	s := styleFor(out, !jsonOutput)
 	err := agentclient.ReadEvents(ctx, r, func(event, payload string) error {
 		switch event {
@@ -762,7 +763,11 @@ func readStream(ctx context.Context, r io.Reader, out, errout io.Writer, jsonOut
 			}
 			fmt.Fprintln(out, compact.String())
 		} else {
-			printStyledText(out, v, "", styleFor(out, true), shapeStats)
+			if printedStats {
+				fmt.Fprintln(out)
+			}
+			printStyledText(out, v, "", s, shapeStats)
+			printedStats = true
 		}
 		return nil
 	})
