@@ -294,26 +294,20 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 	app := req.Manifest.Apps[req.App]
 	attempts := app.Deploy.StartAttemptLimit()
 	hold := c.monitorHold()
-	startupDeadline := time.Now().Add(d.budget)
 	for n, w := range d.work {
-		if !time.Now().Before(startupDeadline) {
-			c.unwindDeploy(ctx, d, errors.New("service health deadline exceeded"), d.work[:n])
-			return false
-		}
-		w.intent.Deadline = startupDeadline.Add(rolloutAllowance(hold))
-		roleCtx, stopRole := context.WithDeadline(ctx, w.intent.Deadline)
-		rollCtx, stopRoll := interruptible(roleCtx)
+		timing := rolloutTiming{window: d.budget, cutoff: time.Now().Add(d.budget), hold: hold}
+		w.intent.Deadline = timing.cutoff
+		rollCtx, stopRoll := interruptible(ctx)
 		id := w.intent.ServiceID
 		health := app.Roles[w.intent.Role].Health
 		starts := startBudget{limit: attempts, countComplete: health != nil && health.Uptime != nil}
 		var e error
 		if w.intent.Kind == "create" {
-			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+			id, e = createRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
 		} else {
-			e = updateRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, hold)
+			e = updateRole(rollCtx, c.Store, c.Engine, d.opID, w.intent, d.prepared.Auth, w.replicas, starts, timing)
 		}
 		stopRoll()
-		stopRole()
 		if e != nil {
 			touched := n + 1
 			var before beforeServiceMutation
@@ -323,17 +317,12 @@ func (c *Controller) rollDeployRoles(ctx context.Context, d *deployRun) bool {
 			c.unwindDeploy(ctx, d, e, d.work[:touched])
 			return false
 		}
-		startupDeadline = startupDeadline.Add(hold)
 		d.bindings = append(d.bindings, state.Binding{App: req.App, Role: w.intent.Role, Name: w.intent.Name, ServiceID: id})
 	}
-	deadline := startupDeadline
+	d.deadline = time.Now().Add(d.budget)
 	if hold > 0 {
-		if now := time.Now(); now.After(deadline) {
-			deadline = now
-		}
-		deadline = deadline.Add(rolloutVerificationGrace)
+		d.deadline = d.deadline.Add(rolloutVerificationGrace)
 	}
-	d.deadline = deadline
 	return true
 }
 

@@ -94,15 +94,14 @@ func TestBarrierDeadlinePersistsRecoveryRequired(t *testing.T) {
 
 type lateFirstRoleEngine struct {
 	*budgetEngine
-	delayed bool
+	confirmationEnded time.Time
 }
 
 func (f *lateFirstRoleEngine) InspectContainerHealth(ctx context.Context, id string) (string, error) {
-	if id == "c-new-1" && !f.delayed && time.Since(f.start) >= 5*time.Second {
-		f.delayed = true
-		if err := waitFakeUntil(ctx, f.start.Add(16*time.Second)); err != nil {
-			return "", err
-		}
+	if id == "c-new-1" && f.confirmationEnded.IsZero() && time.Since(f.start) >= 5*time.Second {
+		<-ctx.Done()
+		f.confirmationEnded = time.Now()
+		return "", ctx.Err()
 	}
 	return f.budgetEngine.InspectContainerHealth(ctx, id)
 }
@@ -130,10 +129,12 @@ func TestUnwindIgnoresUntouchedUpdate(t *testing.T) {
 	f := &lateFirstRoleEngine{budgetEngine: base}
 	c := &Controller{Store: s, Engine: f, Environment: "test"}
 	synctest.Test(t, func(t *testing.T) {
-		c.execute(ctx, op, Actor{ID: "a", Admin: true}, Request{RequestID: "mixed-cutoff", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
+		runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		c.execute(runCtx, op, Actor{ID: "a", Admin: true}, Request{RequestID: "mixed-cutoff", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
 	})
-	if !f.delayed {
-		t.Fatal("first role did not reach slow confirmation")
+	if f.confirmationEnded.IsZero() || f.confirmationEnded.Sub(f.start) != 30*time.Second {
+		t.Fatalf("confirmation ended at %v, want 30s after startup", f.confirmationEnded.Sub(f.start))
 	}
 	if base.updates != 0 {
 		t.Fatalf("untouched role was updated %d times", base.updates)

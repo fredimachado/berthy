@@ -46,11 +46,13 @@ func TestStartupReadCannotOutliveTheCutoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				cutoff := time.Now().Add(10 * time.Second)
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				done, exited := make(chan error, 1), make(chan struct{})
 				go func() {
 					defer close(exited)
-					done <- waitHealthy(ctx, cutoffReader{tc.block, tc.late}, "s", "op", 1, startBudget{limit: 1}, 5*time.Second)
+					_, err := waitHealthy(ctx, cutoffReader{tc.block, tc.late}, "s", "op", 1, startBudget{limit: 1}, rolloutTiming{cutoff: cutoff, hold: rolloutMonitor})
+					done <- err
 				}()
 				defer func() { cancel(); <-exited }()
 				synctest.Wait()
@@ -93,6 +95,7 @@ func TestExpiredStartupPreventsServiceMutation(t *testing.T) {
 	for _, kind := range []string{"create", "update"} {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				cutoff := time.Now().Add(10 * time.Second)
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				before := json.RawMessage(`{"Name":"svc","version":"old"}`)
 				desired := json.RawMessage(`{"Name":"svc","version":"new"}`)
@@ -102,11 +105,11 @@ func TestExpiredStartupPreventsServiceMutation(t *testing.T) {
 				go func() {
 					defer close(exited)
 					if kind == "create" {
-						_, err := createRole(ctx, &slowIntentJournal{}, &m.mutationFake, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
+						_, err := createRole(ctx, &slowIntentJournal{}, &m.mutationFake, "op", i, nil, 1, startBudget{limit: 1}, rolloutTiming{cutoff: cutoff, hold: rolloutMonitor})
 						done <- err
 						return
 					}
-					done <- updateRole(ctx, &journalFake{}, m, "op", i, nil, 1, startBudget{limit: 1}, 5*time.Second)
+					done <- updateRole(ctx, &journalFake{}, m, "op", i, nil, 1, startBudget{limit: 1}, rolloutTiming{cutoff: cutoff, hold: rolloutMonitor})
 				}()
 				defer func() { cancel(); <-exited }()
 				synctest.Wait()

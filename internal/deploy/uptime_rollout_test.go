@@ -32,7 +32,7 @@ func TestUptimeRolloutCountsDistinctCleanExits(t *testing.T) {
 		}}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2, countComplete: true}, 5*time.Second)
+		_, err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2, countComplete: true}, rolloutTiming{hold: rolloutMonitor})
 		var gaveUp *errStartAttempts
 		if !errors.As(err, &gaveUp) || gaveUp.Failed != 2 || gaveUp.Limit != 2 || e.polls != 4 {
 			t.Fatalf("error %v after %d polls, want two distinct failed starts at poll 4", err, e.polls)
@@ -55,7 +55,7 @@ func TestUptimeRolloutCanRecoverBelowLimit(t *testing.T) {
 		}}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2, countComplete: true}, hold); err != nil {
+		if _, err := waitHealthy(ctx, e, "s", "op", 1, startBudget{limit: 2, countComplete: true}, rolloutTiming{hold: hold}); err != nil {
 			t.Fatal(err)
 		}
 		if exitObserved.IsZero() || time.Since(exitObserved) != hold {
@@ -70,11 +70,11 @@ func TestCommandHealthRetainsExistingCompletionPolicy(t *testing.T) {
 		completed := []engine.ServiceTask{running, failedTask("one", "complete", "op"), failedTask("two", "complete", "op")}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := waitHealthy(ctx, healthFake{tasks: completed, status: "healthy"}, "s", "op", 1, startBudget{limit: 2}, 5*time.Second); err != nil {
+		if _, err := waitHealthy(ctx, healthFake{tasks: completed, status: "healthy"}, "s", "op", 1, startBudget{limit: 2}, rolloutTiming{hold: rolloutMonitor}); err != nil {
 			t.Fatalf("command check counted clean exits: %v", err)
 		}
 		failed := append(completed, failedTask("three", "failed", "op"), failedTask("four", "rejected", "op"))
-		err := waitHealthy(ctx, healthFake{tasks: failed, status: "healthy"}, "s", "op", 1, startBudget{limit: 2}, 5*time.Second)
+		_, err := waitHealthy(ctx, healthFake{tasks: failed, status: "healthy"}, "s", "op", 1, startBudget{limit: 2}, rolloutTiming{hold: rolloutMonitor})
 		var gaveUp *errStartAttempts
 		if !errors.As(err, &gaveUp) || gaveUp.Failed != 2 || gaveUp.Limit != 2 {
 			t.Fatalf("error %v, want the failed and rejected tasks to exhaust the budget", err)

@@ -73,13 +73,13 @@ attempted=1
 out=$(adm deploy "$app" --version "$WEB_V1_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
 expect_code 'deploy four fast v1 replicas' 0 "$code" "$out"
 if [ "$code" -ne 0 ]; then finish; fi
-expect_eq 'v1 applied digest' "$WEB_V1_DIGEST" "$(applied)"
+expect_eq 'v1 applied digest' "$repo@$WEB_V1_DIGEST" "$(applied)"
 
 manifest slow | write_manifest
 out=$(adm deploy "$app" --version "$WEB_V2_DIGEST" --manifest-dir "$MAN" 2>&1); code=$?
 printf '%s\n' "$out" >"$LOG/progress-deploy.out"
 expect_code 'serial deploy of four slow v2 replicas' 0 "$code" "$out"
-expect_eq 'v2 applied digest' "$WEB_V2_DIGEST" "$(applied)"
+expect_eq 'v2 applied digest' "$repo@$WEB_V2_DIGEST" "$(applied)"
 expect_eq 'serial Swarm update' 1 "$(d service inspect --format '{{.Spec.UpdateConfig.Parallelism}}' "$service")"
 d service ps --no-trunc "$service" >"$LOG/progress-tasks.txt"
 running=$(d ps -q --filter "label=com.docker.swarm.service.name=$service")

@@ -115,7 +115,7 @@ func TestRolloutRejectsAStoppedContainerAtConfirmation(t *testing.T) {
 		done, exited := make(chan error, 1), make(chan struct{})
 		go func() {
 			defer close(exited)
-			_, err := createRole(ctx, j, f, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: spec}, nil, 1, startBudget{limit: 1}, 5*time.Second)
+			_, err := createRole(ctx, j, f, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: spec}, nil, 1, startBudget{limit: 1}, rolloutTiming{hold: rolloutMonitor})
 			done <- err
 		}()
 		defer func() { cancel(); <-exited }()

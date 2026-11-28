@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -17,6 +18,8 @@ import (
 
 type budgetEngine struct {
 	*boundFake
+	samples                                   map[string][]healthSample
+	healthStopped                             time.Time
 	start                                     time.Time
 	secondReady                               time.Duration
 	dropAfter                                 time.Duration
@@ -30,6 +33,12 @@ type budgetEngine struct {
 	healthyAt                                 time.Time
 	begin, finished                           time.Time
 	updates                                   int
+}
+
+type healthSample struct {
+	after      time.Duration
+	slots      int
+	oldReplica bool
 }
 
 func (f *budgetEngine) CreateService(ctx context.Context, spec json.RawMessage, auth *engine.RegistryAuth) (string, error) {
@@ -121,11 +130,52 @@ func (f *budgetEngine) ServiceTasks(ctx context.Context, id string) ([]engine.Se
 	if err != nil {
 		return nil, err
 	}
+	if samples := f.samples[id]; len(samples) > 0 && f.healthStopped.IsZero() {
+		start := f.start
+		if id == "new-2" {
+			start = f.secondStarted
+		}
+		sample := samples[0]
+		if err := waitFakeUntil(ctx, start.Add(sample.after)); err != nil {
+			f.healthStopped = time.Now()
+			return nil, err
+		}
+		if len(samples) > 1 {
+			f.samples[id] = samples[1:]
+		}
+		tasks, err := f.boundFake.ServiceTasks(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		candidate := tasks[0]
+		tasks = tasks[:0]
+		for slot := 1; slot <= sample.slots; slot++ {
+			task := candidate
+			task.Slot = uint64(slot)
+			task.ID = id + "-" + strconv.Itoa(slot)
+			task.ContainerID = "c-" + task.ID
+			tasks = append(tasks, task)
+		}
+		if sample.oldReplica {
+			candidate.ID = id + "-duplicate"
+			candidate.ContainerID = "c-" + candidate.ID
+			tasks = append(tasks, candidate) // A second task for slot 1 adds no coverage.
+			candidate.ID = id + "-previous"
+			candidate.ContainerID = "c-" + candidate.ID
+			candidate.Slot = uint64(sample.slots + 1)
+			candidate.Labels = map[string]string{"berthy.operation": "previous"}
+			tasks = append(tasks, candidate)
+		}
+		return tasks, nil
+	}
 	if strings.HasSuffix(specName(live.Spec), "-b") {
 		if f.never {
 			return nil, nil
 		}
-		if f.dropAfter > 0 && time.Since(f.start) >= f.dropAfter {
+		if f.dropAfter > 0 && time.Since(f.start) >= f.secondReady+rolloutMonitor {
+			if err := waitFakeUntil(ctx, f.start.Add(f.dropAfter)); err != nil {
+				return nil, err
+			}
 			if f.lostAt.IsZero() {
 				f.lostAt = time.Now()
 			}
@@ -193,7 +243,7 @@ func budgetDeploy(t *testing.T, f *budgetEngine, s *state.Store, req Request) (s
 	}
 	c := &Controller{Store: s, Engine: f, Environment: "test"}
 	synctest.Test(t, func(t *testing.T) {
-		runCtx, cancel := context.WithCancel(ctx)
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		done := make(chan struct{})
 		f.begin = time.Now()
 		go func() {
@@ -202,6 +252,7 @@ func budgetDeploy(t *testing.T, f *budgetEngine, s *state.Store, req Request) (s
 			f.finished = time.Now()
 		}()
 		defer func() { cancel(); <-done }()
+		synctest.Wait()
 		<-done
 	})
 	op, err = s.Operation(ctx, op.ID)
@@ -223,6 +274,160 @@ func requireBudgetStarted(t *testing.T, f *budgetEngine, op state.Operation) {
 		}
 		t.Fatalf("rollout fixture did not reach mutation: state=%s error=%q reason=%q", op.State, op.Err, op.Reason)
 	}
+}
+
+func progressManifest(replicas int, twoRoles bool) manifest.Manifest {
+	m := budgetManifest()
+	app := m.Apps["web"]
+	app.Deploy.DeployTimeout = "60s"
+	role := app.Roles["a"]
+	role.Replicas = &replicas
+	app.Roles["a"] = role
+	if !twoRoles {
+		delete(app.Roles, "b")
+	}
+	m.Apps["web"] = app
+	return m
+}
+
+func fourReplicaProgress(last healthSample) []healthSample {
+	return []healthSample{
+		{after: 40 * time.Second, slots: 1},
+		{after: 80 * time.Second, slots: 2},
+		{after: 120 * time.Second, slots: 3},
+		last,
+	}
+}
+
+func requireProgressOutcome(t *testing.T, s *state.Store, f *budgetEngine, op state.Operation, want string) {
+	t.Helper()
+	if op.State != want {
+		t.Fatalf("operation %s, want %s: %s", op.State, want, op.Reason)
+	}
+	ctx := context.Background()
+	applied, err := s.Applied(ctx, "web")
+	if want == "succeeded" {
+		if err != nil || applied.Digest != "docker.io/example/web@"+digestOfLetter("a") || applied.OperationID != op.ID {
+			t.Fatalf("applied digest=%q, operation=%q, err=%v", applied.Digest, applied.OperationID, err)
+		}
+	} else {
+		if op.Reason != "deploy deadline exceeded before the task was healthy" || len(f.services) != 0 || !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("failed rollout reason=%q, services=%d, applied=%+v, err=%v", op.Reason, len(f.services), applied, err)
+		}
+	}
+	if _, err := s.Lock(ctx); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("lock after rollout: %v", err)
+	}
+}
+
+func TestDeployRenewsDeadlineForHealthyReplicas(t *testing.T) {
+	for _, tc := range []struct {
+		name, state string
+		last        healthSample
+		end         time.Duration
+	}{
+		{"four healthy", "succeeded", healthSample{after: 160 * time.Second, slots: 4}, 165 * time.Second},
+		{"fourth stalls", "failed", healthSample{after: time.Hour}, 180 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openStore(t)
+			f := &budgetEngine{boundFake: &boundFake{}, samples: map[string][]healthSample{"new-1": fourReplicaProgress(tc.last)}}
+			op, _ := budgetDeploy(t, f, s, Request{RequestID: "replica-progress", App: "web", Version: digestOfLetter("a"), Manifest: progressManifest(4, false)})
+			ended := f.finished
+			if !f.healthStopped.IsZero() {
+				ended = f.healthStopped
+			}
+			if got := ended.Sub(f.start); got != tc.end {
+				t.Errorf("rollout wait ended at %v, want %v", got, tc.end)
+			}
+			requireProgressOutcome(t, s, f, op, tc.state)
+		})
+	}
+}
+
+func TestDeployRenewsDeadlineOnlyForMoreCoverage(t *testing.T) {
+	s := openStore(t)
+	f := &budgetEngine{boundFake: &boundFake{}, samples: map[string][]healthSample{"new-1": {
+		{after: 40 * time.Second, slots: 1},
+		{after: 45 * time.Second, slots: 1},
+		{after: 50 * time.Second, slots: 1, oldReplica: true},
+		{after: 55 * time.Second},
+		{after: 57 * time.Second, slots: 1},
+		{after: time.Hour},
+	}}}
+	op, _ := budgetDeploy(t, f, s, Request{RequestID: "coverage-progress", App: "web", Version: digestOfLetter("a"), Manifest: progressManifest(4, false)})
+	if got := f.healthStopped.Sub(f.start); got != 100*time.Second {
+		t.Errorf("health wait expired at %v, want 100s", got)
+	}
+	requireProgressOutcome(t, s, f, op, "failed")
+}
+
+func TestVerifiedRoleStartsTheNextProgressWindow(t *testing.T) {
+	s := openStore(t)
+	firstHealthy := []healthSample{{after: 40 * time.Second, slots: 1}}
+	f := &budgetEngine{boundFake: &boundFake{}, samples: map[string][]healthSample{"new-1": firstHealthy, "new-2": firstHealthy}}
+	op, intents := budgetDeploy(t, f, s, Request{RequestID: "role-progress", App: "web", Version: digestOfLetter("a"), Manifest: progressManifest(1, true)})
+	if got := f.secondStarted.Sub(f.start); got != 45*time.Second {
+		t.Errorf("second role started at %v, want 45s", got)
+	}
+	if !f.healthStopped.IsZero() {
+		t.Errorf("second role health wait expired at %v", f.healthStopped.Sub(f.start))
+	}
+	requireProgressOutcome(t, s, f, op, "succeeded")
+	verified := map[string]bool{}
+	for _, intent := range intents {
+		if intent.Phase == "verified" {
+			verified[intent.Role] = true
+		}
+	}
+	if !verified["a"] || !verified["b"] {
+		t.Fatalf("verified roles = %v, want a and b", verified)
+	}
+}
+
+type verifiedDeadlineJournal struct {
+	journalFake
+	started, deadline time.Time
+	phase             string
+	events            []state.Event
+}
+
+func (j *verifiedDeadlineJournal) MarkStep(ctx context.Context, op string, ordinal int, phase string, receipt json.RawMessage, events ...state.Event) error {
+	if phase == "verified" {
+		j.started, j.phase, j.events = time.Now(), phase, events
+		j.deadline, _ = ctx.Deadline()
+		return ctx.Err()
+	}
+	return j.journalFake.MarkStep(ctx, op, ordinal, phase, receipt, events...)
+}
+
+func TestCreateRoleWritesVerifiedWithRenewedDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		f := &budgetEngine{boundFake: &boundFake{}, samples: map[string][]healthSample{
+			"new-1": fourReplicaProgress(healthSample{after: 160 * time.Second, slots: 4}),
+		}}
+		j := &verifiedDeadlineJournal{}
+		spec := json.RawMessage(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Labels":{"berthy.operation":"op"}}}}`)
+		timing := rolloutTiming{window: time.Minute, cutoff: start.Add(time.Minute), hold: rolloutMonitor}
+		_, err := createRole(ctx, j, f, "op", state.Intent{Kind: "create", Role: "web", Name: "svc", Generation: "op", Desired: spec}, nil, 4, startBudget{}, timing)
+		synctest.Wait()
+		if err != nil {
+			t.Fatalf("create failed before verified write at %v: %v", time.Since(start), err)
+		}
+		if got := j.started.Sub(start); got != 165*time.Second {
+			t.Errorf("verified write started at %v, want 165s", got)
+		}
+		if want := start.Add(240 * time.Second); !j.deadline.Equal(want) {
+			t.Errorf("verified write deadline = %v, want %v", j.deadline, want)
+		}
+		ready := rolloutMilestone("web", "ready")
+		if j.phase != "verified" || len(j.events) != 1 || j.events[0].Kind != ready.Kind || string(j.events[0].Data) != string(ready.Data) {
+			t.Fatalf("journal phase %q with events %+v, want verified with ready milestone", j.phase, j.events)
+		}
+	})
 }
 
 func TestRolloutDoesNotBankUnusedGrace(t *testing.T) {
@@ -252,9 +457,9 @@ func TestRolloutDoesNotBankUnusedGrace(t *testing.T) {
 	})
 	t.Run("native completion", func(t *testing.T) {
 		s := openStore(t)
-		f := &budgetEngine{boundFake: &boundFake{}, nativeSlow: true}
+		f := &budgetEngine{boundFake: &boundFake{}, nativeSlow: true, secondReady: 27 * time.Second}
 		seedBudgetUpdate(t, s, f)
-		op, intents := budgetDeploy(t, f, s, Request{RequestID: "native", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
+		op, _ := budgetDeploy(t, f, s, Request{RequestID: "native", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
 		requireBudgetStarted(t, f, op)
 		if !f.updated {
 			t.Fatal("first role did not update")
@@ -268,13 +473,11 @@ func TestRolloutDoesNotBankUnusedGrace(t *testing.T) {
 		if op.State != "rolled_back" {
 			t.Fatalf("operation state %s", op.State)
 		}
-		if len(f.createdSpecs()) != 0 {
-			t.Fatalf("created %d later roles", len(f.createdSpecs()))
+		if got := f.secondStarted.Sub(f.start); got != 16*time.Second {
+			t.Fatalf("second role started at %v, want 16s", got)
 		}
-		for _, i := range intents {
-			if i.Role == "b" {
-				t.Fatalf("recorded later role intent: %+v", i)
-			}
+		if got := f.secondStopped.Sub(f.secondStarted); got != 10*time.Second {
+			t.Fatalf("second role startup lasted %v, want 10s", got)
 		}
 	})
 }
@@ -300,7 +503,7 @@ func TestDeployReservesMonitorTimeForEachRole(t *testing.T) {
 				deadlines[i.Role] = i.Deadline
 			}
 		}
-		for role, want := range map[string]time.Duration{"a": 30 * time.Second, "b": 35 * time.Second, "barrier": 37 * time.Second} {
+		for role, want := range map[string]time.Duration{"a": 10 * time.Second, "b": 15 * time.Second, "barrier": 47 * time.Second} {
 			if got := deadlines[role].Sub(f.start); got != want {
 				t.Errorf("%s deadline %v, want %v", role, got, want)
 			}
@@ -335,17 +538,20 @@ func TestDeployReservesMonitorTimeForEachRole(t *testing.T) {
 	})
 	t.Run("coverage lost after startup cutoff", func(t *testing.T) {
 		s := openStore(t)
-		f := &budgetEngine{boundFake: &boundFake{}, secondReady: 14500 * time.Millisecond, dropAfter: 15500 * time.Millisecond}
+		f := &budgetEngine{boundFake: &boundFake{}, secondReady: 14500 * time.Millisecond, dropAfter: 25500 * time.Millisecond}
 		op, _ := budgetDeploy(t, f, s, Request{RequestID: "lost", App: "web", Version: digestOfLetter("a"), Manifest: budgetManifest()})
 		requireBudgetStarted(t, f, op)
 		if op.State != "failed" || op.Reason != "deploy deadline exceeded before the task was healthy" {
 			t.Fatalf("operation %s %q", op.State, op.Reason)
 		}
 		if f.lostAt.IsZero() && !f.secondStopped.IsZero() {
-			t.Fatalf("startup read stopped at %v before coverage loss at 15.5s", f.secondStopped.Sub(f.start))
+			t.Fatalf("startup read stopped at %v before coverage loss at 25.5s", f.secondStopped.Sub(f.start))
 		}
-		if got := f.lostAt.Sub(f.start); got != 15500*time.Millisecond {
+		if got := f.lostAt.Sub(f.start); got != f.dropAfter {
 			t.Fatalf("coverage lost at %v", got)
+		}
+		if !f.finished.Equal(f.lostAt) {
+			t.Fatalf("rollout continued until %v after losing coverage at %v", f.finished.Sub(f.start), f.lostAt.Sub(f.start))
 		}
 		if len(f.services) != 0 {
 			t.Fatalf("services remain after compensation: %d", len(f.services))
@@ -387,7 +593,7 @@ func TestNativeCompletionUsesTheExtendedRoleDeadline(t *testing.T) {
 			}
 			var barrier bool
 			for _, i := range intents {
-				if i.Role == "a" && i.Deadline.Sub(f.start) != 30*time.Second {
+				if i.Role == "a" && i.Deadline.Sub(f.start) != 10*time.Second {
 					t.Errorf("role deadline = %v", i.Deadline.Sub(f.start))
 				}
 				if i.Kind == "barrier" {

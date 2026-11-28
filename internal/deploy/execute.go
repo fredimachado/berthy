@@ -343,7 +343,7 @@ func (c *Controller) restoreUpdate(ctx context.Context, app string, i state.Inte
 		return err
 	}
 	// Restoring is not a rollout of a new version: it has no attempt limit.
-	err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, 0)
+	_, err = waitHealthy(ctx, c.Engine, i.ServiceID, generation, before.Mode.Replicated.Replicas, startBudget{}, rolloutTiming{})
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errors.New(compensationHealth)
 	}
