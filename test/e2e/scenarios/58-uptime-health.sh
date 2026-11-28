@@ -7,6 +7,7 @@ nonce=$(openssl rand -hex 6)
 owner="$FIXTURE_ID.$nonce"
 app="uptime-$nonce"
 service="$PROJECT-$ENVN-$app-worker"
+sibling="$PROJECT-$ENVN-$app-z-fail"
 repo="$REG/$PROJECT-$ENVN-$app"
 work=$(mktemp -d "$RUN/uptime.XXXXXX")
 events_pid=
@@ -29,15 +30,17 @@ owned_tasks_gone() {
 }
 
 cleanup() {
-  local code=$? current ref label
+  local code=$? current ref label name
   stop_events
   if [ -n "$service_attempted" ]; then
-    current=$(d service inspect "$service" 2>/dev/null | jq -r --arg project "$PROJECT" --arg env "$ENVN" --arg app "$app" --arg repo "$repo@" \
-      '.[0] | select(.Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and .Spec.Labels["berthy.app"] == $app and (.Spec.TaskTemplate.ContainerSpec.Image | startswith($repo))) | .ID' || true)
-    if [ -n "$current" ]; then
-      d service rm "$current" >/dev/null || code=1
-      wait_for "uptime fixture containers removed" owned_tasks_gone || code=1
-    fi
+    for name in "$service" "$sibling"; do
+      current=$(d service inspect "$name" 2>/dev/null | jq -r --arg project "$PROJECT" --arg env "$ENVN" --arg app "$app" --arg repo "$repo@" \
+        '.[0] | select(.Spec.Labels["berthy.project"] == $project and .Spec.Labels["berthy.environment"] == $env and .Spec.Labels["berthy.app"] == $app and (.Spec.TaskTemplate.ContainerSpec.Image | startswith($repo))) | .ID' || true)
+      if [ -n "$current" ]; then
+        d service rm "$current" >/dev/null || code=1
+      fi
+    done
+    wait_for "uptime fixture containers removed" owned_tasks_gone || code=1
   fi
   for ref in "${refs[@]}"; do
     label=$(d image inspect -f '{{index .Config.Labels "berthy.e2e.uptime"}}' "$ref" 2>/dev/null || true)
@@ -53,7 +56,7 @@ trap cleanup EXIT
 
 services=$(d service ls --format '{{.Name}}') || die 'list existing services'
 images=$(d images --no-trunc --digests --format '{{.Repository}}') || die 'list existing images'
-if grep -Fxq "$service" <<<"$services" || grep -Fxq "$repo" <<<"$images"; then
+if grep -Fxq "$service" <<<"$services" || grep -Fxq "$sibling" <<<"$services" || grep -Fxq "$repo" <<<"$images"; then
   die 'fixture names are available' "$service or $repo already exists"
 fi
 
@@ -68,7 +71,13 @@ import (
 )
 
 func main() {
-	switch os.Getenv("WORKER_EXIT") {
+	behavior := os.Getenv("WORKER_EXIT")
+	if len(os.Args) == 2 {
+		behavior = os.Args[1]
+	}
+	switch behavior {
+	case "fail-health":
+		os.Exit(1)
 	case "0":
 		<-time.After(5 * time.Second)
 		os.Exit(0)
@@ -87,8 +96,18 @@ tar -C "$work" -cf "$work/worker.tar" worker
 build_image() {
   local version=$1 behavior=$2 ref="$repo:$1" pinned
   refs+=("$ref")
-  d import --change 'ENTRYPOINT ["/worker"]' --change "ENV WORKER_EXIT=$behavior" \
-    --change "LABEL berthy.e2e.uptime=$owner berthy.e2e.version=$version" "$work/worker.tar" "$ref" >/dev/null
+  if [ "$version" = final ]; then
+    DOCKER_BUILDKIT=0 d build --network none -t "$ref" -f - "$work" >"$LOG/uptime-build-final.log" <<DOCKERFILE
+FROM scratch
+COPY worker /worker
+LABEL berthy.e2e.uptime=$owner berthy.e2e.version=$version
+ENTRYPOINT ["/worker"]
+HEALTHCHECK --interval=1s --retries=1 CMD ["/worker","fail-health"]
+DOCKERFILE
+  else
+    d import --change 'ENTRYPOINT ["/worker"]' --change "ENV WORKER_EXIT=$behavior" \
+      --change "LABEL berthy.e2e.uptime=$owner berthy.e2e.version=$version" "$work/worker.tar" "$ref" >/dev/null
+  fi
   d push "$ref" >"$LOG/uptime-push-$version.log"
   pinned=$(d image inspect "$ref" | jq -er --arg prefix "$repo@" '.[0].RepoDigests[] | select(startswith($prefix))')
   [[ $pinned == "$repo@sha256:"* ]]
@@ -144,21 +163,20 @@ if [ "$(printf '%s\n' "$good" "$nonzero" "$clean" "$final" | sort -u | wc -l)" -
 fi
 
 default='{uptime: 20s}'
-portable='{uptime: 20s, interval: 3s, start_period: 30s}'
 manifest '{uptime: 20s, interval: 1h, start_interval: 2s}' 30s | write_manifest
 code=0
 out=$("$BIN" config validate -e "$ENVN" --manifest-dir "$MAN" 2>&1) || code=$?
 printf '%s\n' "$out" >"$LOG/uptime-incompatible-validate.txt"
-expect_code 'validation rejects unequal startup interval' 1 "$code" "$out"
+expect_code 'validation rejects a command option with uptime' 1 "$code" "$out"
 expect_contains 'validation names health.start_interval' "$out" 'health.start_interval'
 code=0
 out=$(adm deploy "$app" --version "$good" --manifest-dir "$MAN" 2>&1) || code=$?
 printf '%s\n' "$out" >"$LOG/uptime-incompatible.txt"
-expect_code 'unequal startup interval is refused' 1 "$code" "$out"
-expect_contains 'deploy explains why startup intervals must match' "$out" 'start_interval must equal interval or be omitted'
+expect_code 'command options with uptime are refused' 1 "$code" "$out"
+expect_contains 'deploy explains that startup interval requires a command' "$out" 'start_interval is only allowed with health.test'
 services=$(d service ls --format '{{.Name}}') || die 'list services after incompatible plan'
-if grep -Fxq "$service" <<<"$services"; then die 'incompatible timing leaves no service'; fi
-pass 'incompatible timing leaves no service'
+if grep -Fxq "$service" <<<"$services"; then die 'invalid health options leave no service'; fi
+pass 'invalid health options leave no service'
 if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 
 deploy_worker() {
@@ -176,13 +194,13 @@ deploy_worker() {
   operation=$(awk '/^id: / {print $2}' <<<"$out")
 }
 
-healthy_container() {
+running_container() {
   local image=$1 generation=${2:-} ids id inspect
   ids=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$service") || return 1
   for id in $ids; do
     inspect=$(d inspect "$id" 2>/dev/null) || continue
     if jq -e --arg img "$image" --arg gen "$generation" '.[0] |
-      .Config.Image == $img and .State.Running and .State.Health.Status == "healthy" and
+      .Config.Image == $img and .State.Running and
       ($gen == "" or .Config.Labels["berthy.operation"] == $gen)' <<<"$inspect" >/dev/null; then
       printf '%s\n' "$id"
       return 0
@@ -191,56 +209,43 @@ healthy_container() {
   return 1
 }
 
-check_service() {
-  local step=$1 id
-  d service inspect "$service" >"$LOG/uptime-$step-service.json"
-  id=$(d ps -q --no-trunc --filter "label=com.docker.swarm.service.name=$service" | head -n 1)
-  d inspect "$id" >"$LOG/uptime-$step-task.json"
-  jq -e '.[0].Spec.TaskTemplate.ContainerSpec |
-    (.Mounts // []) == [] and .Healthcheck == {Test:["NONE"]}' "$LOG/uptime-$step-service.json" >/dev/null
-}
-
 check_healthy() {
-  local step=$1 wanted=$2 interval=$3 grace=$4 id
+  local step=$1 wanted=$2 id
   expect_code "$step deploy succeeds" 0 "$code" "$out"
   expect_contains "$step has terminal success" "$out" 'state: succeeded'
   if [ "$E2E_FAILS" -ne 0 ] || [ -z "$operation" ]; then die "$step records a successful operation"; fi
-  check_service "$step" "$interval" "$grace" || die "$step service disables Docker health and has no mounts"
-  id=$(healthy_container "$repo@$wanted" "$operation") || die "$step has a healthy task for the new generation"
+  id=$(running_container "$repo@$wanted" "$operation") || die "$step has a running task for the new generation"
+  d service inspect "$service" >"$LOG/uptime-$step-service.json"
   d inspect "$id" >"$LOG/uptime-$step-task.json"
-  if ! jq -e --arg src "$BIN" --argjson interval "$interval" --argjson grace "$grace" '.[0] |
-    .Config.Healthcheck.Test == ["CMD","/.berthy/berthy","probe","uptime","20s"] and
-    .Config.Healthcheck.Interval == $interval and (.Config.Healthcheck.StartPeriod // 0) == $grace and
-    (.Config.Healthcheck.StartInterval // 0) == 0 and
-    any(.Mounts[]; .Type == "bind" and .Source == $src and .Destination == "/.berthy/berthy" and .RW == false) and
-    any(.State.Health.Log[]; .ExitCode == 0 and .Output == "")' "$LOG/uptime-$step-task.json" >/dev/null; then
-    die "$step task uses the expected check, timing, and read-only bind" "$LOG/uptime-$step-task.json"
-  fi
-  if ! python3 - "$LOG/uptime-$step-events.jsonl" "$id" "$repo@$wanted" "$terminal" "$step" <<'PY'; then
-import json, sys
+  jq -e '.[0].Spec.TaskTemplate.ContainerSpec |
+    (.Mounts // []) == [] and .Healthcheck == {Test:["NONE"]}' "$LOG/uptime-$step-service.json" >/dev/null ||
+    die "$step service disables Docker health and has no mounts"
+  jq -e '.[0] | .Config.Healthcheck.Test == ["NONE"] and (.State | has("Health") | not) and
+    (.Mounts // []) == []' "$LOG/uptime-$step-task.json" >/dev/null ||
+    die "$step running container has no Docker health or mounts" "$LOG/uptime-$step-task.json"
+  if ! python3 - "$LOG/uptime-$step-events.jsonl" "$id" "$repo@$wanted" "$RUN/state/state.db" "$operation" "$terminal" "$step" <<'PYCODE'; then
+import json, sqlite3, sys
 
-path, container, image, terminal, step = sys.argv[1:]
+path, container, image, db, operation, terminal, step = sys.argv[1:]
 with open(path) as stream:
     events = [json.loads(line) for line in stream]
 matching = [e for e in events if e["Actor"]["ID"] == container and e["Actor"]["Attributes"].get("image") == image]
 started = next(e["timeNano"] for e in matching if e["Action"] == "start")
-healthy = next(e["timeNano"] for e in matching if e["Action"] == "health_status: healthy")
-terminal = int(terminal)
-assert healthy - started >= 20_000_000_000 and terminal > healthy, (started, healthy, terminal)
-print(f"{step}: start to first healthy {(healthy-started)/1e9:.3f}s, start to terminal success {(terminal-started)/1e9:.3f}s")
-PY
-    die "$step first health follows the threshold and precedes terminal success"
+with sqlite3.connect("file:" + db + "?mode=ro", uri=True) as conn:
+    rows = conn.execute("SELECT kind, data, created FROM events WHERE operation_id=? ORDER BY id", (operation,)).fetchall()
+ready = next(created for kind, data, created in rows if kind == "rollout" and json.loads(data) == {"role": "worker", "status": "ready"})
+succeeded = next(created for kind, _, created in rows if kind == "succeeded")
+assert ready - started // 1_000_000 >= 20_000 and ready <= succeeded <= int(terminal) // 1_000_000, (started, ready, succeeded, terminal)
+print(f"{step}: start to ready {(ready*1_000_000-started)/1e9:.3f}s, start to success {(succeeded*1_000_000-started)/1e9:.3f}s")
+PYCODE
+    die "$step readiness follows the threshold and precedes terminal success"
   fi
-  pass "$step task configuration and first healthy event match"
+  pass "$step task runs without Docker health and Berthy recorded readiness"
 }
 
 manifest "$default" | write_manifest
 deploy_worker default "$good"
-check_healthy default "$good" 20100000000 0
-
-manifest "$portable" | write_manifest
-deploy_worker portable "$good"
-check_healthy portable "$good" 3000000000 30000000000
+check_healthy default "$good"
 
 applied() {
   python3 - "$RUN/state/state.db" "$ENVN" "$app" <<'PY'
@@ -254,8 +259,7 @@ PY
 }
 
 check_early_exit() {
-  local step=$1 wanted=$2 exit_code=$3 task_state=$4 previous live
-  previous=$(healthy_container "$repo@$good") || die "$step starts with a healthy predecessor"
+  local step=$1 wanted=$2 exit_code=$3 task_state=$4 live id task status started finished
   manifest "$default" | write_manifest
   deploy_worker "$step" "$wanted"
   expect_code "$step deploy exits 1" 1 "$code" "$out"
@@ -263,10 +267,10 @@ check_early_exit() {
   expect_contains "$step deploy exhausts two starts" "$out" 'gave up after 2 failed starts'
   d service ps --no-trunc --format '{{json .}}' "$service" >"$LOG/uptime-$step-tasks.jsonl"
   if ! python3 - "$LOG/uptime-$step-events.jsonl" "$LOG/uptime-$step-tasks.jsonl" \
-    "$repo@$wanted" "$previous" "$exit_code" "$task_state" "$terminal" <<'PY'; then
+    "$repo@$wanted" "$exit_code" "$task_state" "$terminal" <<'PY'; then
 import json, sys
 
-events_path, tasks_path, image, previous, exit_code, state, terminal = sys.argv[1:]
+events_path, tasks_path, image, exit_code, state, terminal = sys.argv[1:]
 with open(events_path) as stream:
     events = [json.loads(line) for line in stream]
 with open(tasks_path) as stream:
@@ -276,22 +280,35 @@ exits = [e for e in candidate if e["Action"] == "die" and e["Actor"]["Attributes
 exit_ids = {e["Actor"]["Attributes"]["com.docker.swarm.task.id"] for e in exits}
 observed = {t["ID"] for t in tasks if t["Image"] == image and t["CurrentState"].split()[0] == state}
 assert len(observed & exit_ids) >= 2, (observed, exit_ids)
-assert not any(e["Action"] == "health_status: healthy" for e in candidate)
 starts = {e["Actor"]["ID"]: e["timeNano"] for e in candidate if e["Action"] == "start"}
 first, second = sorted(exits, key=lambda e: e["timeNano"])[:2]
-assert not any(e["Actor"]["ID"] == previous and e["Action"] in ("die", "stop", "destroy") and
-               e["timeNano"] <= first["timeNano"] for e in events), "predecessor disappeared during the first start-first attempt"
 elapsed = [(e["timeNano"] - starts[e["Actor"]["ID"]]) / 1e9 for e in (first, second)]
 print(f"exit {exit_code}: first two candidates exited after {elapsed[0]:.3f}s and {elapsed[1]:.3f}s, start to terminal rollback {(int(terminal)-min(starts.values()))/1e9:.3f}s")
-print(f"exit {exit_code}: {len(observed & exit_ids)} retained {state} tasks match exit events, {len(exit_ids)} exit events total, no candidate became healthy")
+assert all(0 <= age < 20 for age in elapsed), elapsed
+print(f"exit {exit_code}: {len(observed & exit_ids)} retained {state} tasks match exit events")
 PY
-    die "$step candidates spent attempts while the predecessor was available" "$LOG/uptime-$step-events.jsonl"
+    die "$step candidates spent two distinct start attempts" "$LOG/uptime-$step-events.jsonl"
   fi
   expect_eq "$step previous digest remains applied" "$repo@$good" "$(applied)"
   live=$(d service inspect -f '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "$service")
   expect_eq "$step previous live digest restored" "$repo@$good" "$live"
-  healthy_container "$repo@$good" >/dev/null || die "$step previous worker is running and healthy"
-  pass "$step previous worker is running and healthy"
+  id=$(running_container "$repo@$good") || die "$step previous worker is running"
+  task=$(d inspect -f '{{index .Config.Labels "com.docker.swarm.task.id"}}' "$id")
+  status=$(d inspect --type task "$task" | jq -er '.[0] | select(.DesiredState == "running" and .Status.State == "running") | .Status.Timestamp')
+  started=$(date -u -d "$status" +%s%N)
+  finished=$(python3 - "$RUN/state/state.db" "$operation" <<'PYCODE'
+import sqlite3, sys
+
+db, operation = sys.argv[1:]
+with sqlite3.connect("file:" + db + "?mode=ro", uri=True) as conn:
+    row = conn.execute("SELECT created FROM events WHERE operation_id=? AND kind='rolled_back'", (operation,)).fetchone()
+    print(row[0])
+PYCODE
+  )
+  if (( finished - started / 1000000 < 20000 )); then
+    die "$step predecessor met its uptime threshold before rollback completed" "$status / $finished"
+  fi
+  pass "$step previous worker met its threshold before rollback completed"
   expect_contains "$step deploy lock is free" "$(adm lock status --json 2>&1)" '"locked": false'
   if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 }
@@ -301,7 +318,32 @@ check_early_exit clean "$clean" 0 Complete
 
 manifest "$default" | write_manifest
 deploy_worker final "$final"
-check_healthy final "$final" 20100000000 0
+d image inspect "$repo:final" | jq -e '.[0].Config.Healthcheck.Test == ["CMD","/worker","fail-health"]' >/dev/null ||
+  die 'final image declares a failing Docker check'
+check_healthy final "$final"
 expect_eq 'the final surviving digest is applied' "$repo@$final" "$(applied)"
+
+{
+  manifest "$default"
+  cat <<YML
+      z-fail:
+        health: $default
+        command: ["1"]
+YML
+} | write_manifest
+deploy_worker sibling "$good"
+expect_code 'failing sibling deploy exits 1' 1 "$code" "$out"
+expect_contains 'failing sibling rolls back' "$out" 'state: rolled_back'
+expect_contains 'printed reason identifies the exited sibling' "$out" 'reason: role z-fail: task exited with code 1'
+if grep -q '^reason: .*role worker:' <<<"$out"; then
+  die 'printed reason omits the ready worker' "$out"
+fi
+[ -n "$operation" ] || die 'failing sibling operation has an ID'
+adm diagnostics "$operation" --json >"$LOG/uptime-sibling-diagnostics.json" ||
+  die 'read diagnostics for failing sibling'
+jq -e '.diagnostics | length > 0 and all(.[]; .role == "z-fail") and
+  any(.[]; .kind == "task" and .exit_code == 1)' "$LOG/uptime-sibling-diagnostics.json" >/dev/null ||
+  die 'stored diagnostics identify only the exited sibling' "$LOG/uptime-sibling-diagnostics.json"
+pass 'printed reason and stored diagnostics name only the failing sibling'
 
 finish
