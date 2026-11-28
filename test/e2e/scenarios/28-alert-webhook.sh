@@ -60,8 +60,8 @@ apps:
 YML
 }
 
-# posts KIND: the JSON bodies of the webhook's POSTs of that kind, as a JSON array.
-posts() { hook_requests | jq -c --arg k "$1" '[.[] | select(.method == "POST") | .body | fromjson | select(.kind == $k)]'; }
+# posts KIND [NAME]: the JSON bodies of matching webhook POSTs, as a JSON array.
+posts() { hook_requests | jq -c --arg k "$1" --arg n "${2:-}" '[.[] | select(.method == "POST") | .body | fromjson | select(.kind == $k and ($n == "" or .name == $n))]'; }
 
 # beats: how many GETs of the heartbeat the fake webhook has recorded.
 beats() { hook_requests | jq "[.[] | select(.method == \"GET\" and .path == \"$beat_path\")] | length"; }
@@ -84,15 +84,16 @@ wait_beat_state() {
 wait_posts() {
   local i
   for i in $(seq 1 $(($3 * 4))); do
-    [ "$(posts "$1" | jq 'length')" -ge "$2" ] && break
+    [ "$(posts "$1" "${4:-}" | jq 'length')" -ge "$2" ] && break
     sleep 0.25
   done
   sleep 3
-  posts "$1" | jq 'length'
+  posts "$1" "${4:-}" | jq 'length'
 }
 
 # Count only the alert under test, but show all received texts when it fails.
 tg_count() { tg_messages | jq --arg text "$1" '[.[] | select(.text | test($text))] | length'; }
+probe_message_received() { [ "$(tg_count "probe:broken")" -ge 1 ]; }
 expect_tg_count() {
   local messages count
   messages=$(tg_messages)
@@ -114,11 +115,30 @@ expect_code "secret ALERT_WEBHOOK_HEADERS is set" 0 "$code" "$out"
 out=$(printf '%s' "http://$HOOK_LISTEN$beat_path" | adm secret set HEARTBEAT_URL 2>&1); code=$?
 expect_code "secret HEARTBEAT_URL is set" 0 "$code" "$out"
 
+tg_reset
+hook_reset
 alerts_manifest failed true | write_manifest
 out=$(adm deploy web --version v1 --manifest-dir "$MAN" 2>&1); code=$?
 expect_code "deploy v1" 0 "$code" "$out"
 
-# 1. alerts test sends to every channel and reports each.
+# 1. A failing probe is one POST and one Telegram message. The monitor reads the manifest every minute, so this takes a while.
+expect_eq "a failing probe is one POST" 1 "$(wait_posts check 1 120 probe:broken)"
+body=$(posts check probe:broken | jq -c '.[0]')
+echo "  probe alert: $body"
+expect_eq "the POST names the environment" "$ENVN" "$(printf '%s' "$body" | jq -r '.environment')"
+expect_eq "the POST names the check" probe:broken "$(printf '%s' "$body" | jq -r '.name')"
+expect_eq "the POST gives the state" critical "$(printf '%s' "$body" | jq -r '.state')"
+expect_contains "the POST gives the detail" "$(printf '%s' "$body" | jq -r '.detail')" "refused"
+case $(printf '%s' "$body" | jq -r '.since') in
+  20??-??-??T*Z) pass "the POST gives the time the state began" ;;
+  *) fail "the POST gives the time the state began" "got $(printf '%s' "$body" | jq -r '.since')" ;;
+esac
+wait_for "probe Telegram alert" probe_message_received || fail "the probe Telegram alert arrives" "timed out"
+expect_tg_count "the probe is one Telegram message too" 1 "probe:broken"
+expect_eq "the webhook text is the Telegram text" "$(tg_messages | jq -r '[.[] | select(.text | contains("probe:broken"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
+expect_contains "the text says which check failed" "$(printf '%s' "$body" | jq -r '.text')" "probe:broken"
+
+# 2. alerts test sends to every channel and reports each.
 tg_reset
 hook_reset
 out=$(adm alerts test 2>&1); code=$?
@@ -133,24 +153,6 @@ expect_eq "the POST is JSON" application/json "$(printf '%s' "$req" | jq -r '.he
 expect_eq "the test alert says kind test" test "$(printf '%s' "$req" | jq -r '.body | fromjson | .kind')"
 expect_eq "the test alert gives the same text as Telegram" "$(tg_messages | jq -r '[.[] | select(.text | contains("test alert from berthy"))][0].text')" "$(printf '%s' "$req" | jq -r '.body | fromjson | .text')"
 expect_tg_count "Telegram got one test alert" 1 "test alert from berthy"
-
-# 2. A failing probe is one POST and one Telegram message. The monitor reads the manifest every minute, so this takes a while.
-tg_reset
-hook_reset
-expect_eq "a failing probe is one POST" 1 "$(wait_posts check 1 120)"
-body=$(posts check | jq -c '.[0]')
-echo "  probe alert: $body"
-expect_eq "the POST names the environment" "$ENVN" "$(printf '%s' "$body" | jq -r '.environment')"
-expect_eq "the POST names the check" probe:broken "$(printf '%s' "$body" | jq -r '.name')"
-expect_eq "the POST gives the state" critical "$(printf '%s' "$body" | jq -r '.state')"
-expect_contains "the POST gives the detail" "$(printf '%s' "$body" | jq -r '.detail')" "refused"
-case $(printf '%s' "$body" | jq -r '.since') in
-  20??-??-??T*Z) pass "the POST gives the time the state began" ;;
-  *) fail "the POST gives the time the state began" "got $(printf '%s' "$body" | jq -r '.since')" ;;
-esac
-expect_tg_count "the probe is one Telegram message too" 1 "probe:broken"
-expect_eq "the webhook text is the Telegram text" "$(tg_messages | jq -r '[.[] | select(.text | contains("probe:broken"))][0].text')" "$(printf '%s' "$body" | jq -r '.text')"
-expect_contains "the text says which check failed" "$(printf '%s' "$body" | jq -r '.text')" "probe:broken"
 
 # 3. A deploy that fails is one POST of kind deploy and one Telegram message.
 tg_reset
