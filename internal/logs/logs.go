@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const TruncationMarker = " …[truncated]"
+
 const (
 	MaxSources    = 64
 	MaxTail       = 1000
@@ -34,6 +36,7 @@ type Record struct {
 	Timestamp time.Time `json:"timestamp"`
 	Stream    string    `json:"stream"`
 	Message   string    `json:"message"`
+	Truncated bool      `json:"-"`
 }
 type OpenOptions struct {
 	Tail   int

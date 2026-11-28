@@ -230,6 +230,26 @@ func TestRedactionBeforeFiltering(t *testing.T) {
 	}
 }
 
+func TestRedactRecordsProtectsTheCutBeforeGrep(t *testing.T) {
+	secrets := []string{"complete-secret", "partial-secret"}
+	rows := []logs.Record{
+		{Message: "complete-secret useful partial" + logs.TruncationMarker, Truncated: true},
+		{Message: "ordinary partial" + logs.TruncationMarker},
+	}
+	got := redactRecords(rows, secrets, nil)
+	if len(got) != 2 || got[0].Message != "[REDACTED] useful [REDACTED]"+logs.TruncationMarker || got[1].Message != rows[1].Message {
+		t.Fatalf("unexpected messages: %+v", got)
+	}
+	got = redactRecords(rows[:1], secrets, regexp.MustCompile("partial"))
+	if len(got) != 0 {
+		t.Fatalf("grep matched a secret fragment: %+v", got)
+	}
+	got = redactRecords(rows[:1], secrets, regexp.MustCompile(`\[truncated\]`))
+	if len(got) != 1 || got[0].Message != "[REDACTED] useful [REDACTED]"+logs.TruncationMarker {
+		t.Fatalf("grep missed the safe marked record: %+v", got)
+	}
+}
+
 type fakeManagedLogs struct {
 	service engine.ServiceSnapshot
 	env     []string

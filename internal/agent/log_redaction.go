@@ -150,9 +150,14 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 func redactRecords(rows []logs.Record, secrets []string, re *regexp.Regexp) []logs.Record {
 	out := make([]logs.Record, 0, len(rows))
 	for _, r := range rows {
-		for _, s := range secrets {
-			if s != "" {
-				r.Message = strings.ReplaceAll(r.Message, s, "[REDACTED]")
+		if r.Truncated && len(secrets) > 0 {
+			prefix := strings.TrimSuffix(r.Message, logs.TruncationMarker)
+			r.Message = redactCutPrefix(prefix, secrets) + logs.TruncationMarker
+		} else {
+			for _, s := range secrets {
+				if s != "" {
+					r.Message = strings.ReplaceAll(r.Message, s, "[REDACTED]")
+				}
 			}
 		}
 		if re == nil || re.MatchString(r.Message) {
@@ -160,4 +165,32 @@ func redactRecords(rows []logs.Record, secrets []string, re *regexp.Regexp) []lo
 		}
 	}
 	return out
+}
+
+func redactCutPrefix(prefix string, secrets []string) string {
+	var out strings.Builder
+	coveredUntil := 0
+	for i := 0; i < len(prefix); i++ {
+		end := coveredUntil
+		for _, secret := range secrets {
+			if secret == "" {
+				continue
+			}
+			remaining := prefix[i:]
+			if strings.HasPrefix(remaining, secret) {
+				end = max(end, i+len(secret))
+			} else if len(remaining) < len(secret) && strings.HasPrefix(secret, remaining) {
+				end = len(prefix)
+			}
+		}
+		if end > i {
+			if i >= coveredUntil {
+				out.WriteString("[REDACTED]")
+			}
+			coveredUntil = end
+		} else {
+			out.WriteByte(prefix[i])
+		}
+	}
+	return out.String()
 }
