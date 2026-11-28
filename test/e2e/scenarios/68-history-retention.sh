@@ -132,6 +132,26 @@ out=$(adm history web 2>&1); code=$?
 expect_code "read release history" 0 "$code" "$out"
 expect_eq "history lists exactly releases seven and six" "${ids[6]}"$'\n'"${ids[5]}" "$(sed -n 's/^id: //p' <<<"$out")"
 
+out=$(python3 - "$RUN/state/state.db" "$RUN/history-check.db" "$ENVN" <<'PY'
+from contextlib import closing
+import sqlite3
+import sys
+
+source, snapshot, environment = sys.argv[1:]
+with closing(sqlite3.connect('file:' + source + '?mode=ro', uri=True)) as db:
+    with closing(sqlite3.connect(snapshot)) as copy:
+        db.backup(copy)
+with closing(sqlite3.connect('file:' + snapshot + '?mode=ro', uri=True)) as copy:
+    print(*[row[0] for row in copy.execute(
+        'SELECT id FROM releases WHERE environment=? AND app=? ORDER BY id DESC', (environment, 'web'))], sep='\n')
+    print(copy.execute('SELECT count(*) FROM operations WHERE environment=? AND app=?', (environment, 'web')).fetchone()[0])
+    print(len(copy.execute('PRAGMA foreign_key_check').fetchall()))
+PY
+); code=$?
+expect_code "read a closed copy of the fixture database" 0 "$code"
+expect_eq "database keeps two release rows and two app operations with valid foreign keys" "${ids[6]}"$'\n'"${ids[5]}"$'\n2\n0' "$out"
+rm -f -- "$RUN/history-check.db"
+
 out=$(adm rollback web --to "${ids[5]}" 2>&1); code=$?
 expect_code "roll back to release ${ids[5]}" 0 "$code" "$out"
 expect_eq "rollback restores revision six in the Swarm service" 6 "$(revision)"
