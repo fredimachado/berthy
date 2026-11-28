@@ -38,6 +38,16 @@ expect_code "missing key rejected" 1 "$code"
 if jq -e '(.steps | length == 2) and .steps[0].step == "connect" and .steps[0].status == "ok" and .steps[1].step == "check" and .steps[1].status == "failed" and .steps[1].detail == "cannot read --key-file"' "$private/result.json" >/dev/null; then pass "missing key fails at check"; else fail "missing key fails at check" "unexpected steps"; jq -r '.steps[] | "\(.step)=\(.status) \(.detail)"' "$private/result.json"; fi
 baseline >"$private/after"
 if cmp -s "$private/before" "$private/after"; then pass "server baseline unchanged"; else fail "server baseline unchanged" "server changed"; diff -u "$private/before" "$private/after" || :; fi
+# SSH itself occupies port 22. A refused setup must leave the fixture unchanged.
+ssh -o BatchMode=yes -T -- "ops@$server" true || die "SSH is unavailable"
+baseline >"$private/port.before"
+"$BIN" setup -e "$ENVN" --project "$PROJECT" --host "ops@$server" --listen "$ip:22" --manifest-dir "$RUN/setup-preflight-empty" --config "$private/config.json" --binary "$BIN" --json </dev/null >"$private/port.json" 2>"$private/port.err"; code=$?
+expect_code "occupied listen address rejected" 1 "$code"
+if jq -e --arg endpoint "$ip:22" '(.steps | length == 2) and .steps[0].step == "connect" and .steps[0].status == "ok" and .steps[1].step == "check" and .steps[1].status == "failed" and (.steps[1].detail | contains($endpoint))' "$private/port.json" >/dev/null; then pass "occupied listen address fails at check"; else fail "occupied listen address fails at check" "unexpected steps"; jq -r '.steps[] | "\(.step)=\(.status) \(.detail)"' "$private/port.json"; fi
+baseline >"$private/port.after"
+if cmp -s "$private/port.before" "$private/port.after"; then pass "occupied listen address leaves server unchanged"; else fail "occupied listen address leaves server unchanged" "server changed"; diff -u "$private/port.before" "$private/port.after" || :; fi
+ssh -o BatchMode=yes -T -- "ops@$server" true || die "SSH became unavailable"
+if [ "$E2E_FAILS" -ne 0 ]; then finish; fi
 # Report a foreign architecture without changing the real executable.
 remote sh -ec 'mv /usr/bin/uname /usr/bin/uname.real; cat > /usr/bin/uname <<"EOF"
 #!/bin/sh
@@ -67,4 +77,7 @@ remote sh -ec 'mv -f /usr/bin/uname.real /usr/bin/uname' || die "cannot restore 
 "$BIN" "${base_args[@]}" --binary "$BIN" </dev/null >"$private/success.json" 2>"$private/success.err"; code=$?
 expect_code "native setup succeeds" 0 "$code"
 if [ "$code" -ne 0 ]; then jq -r '.steps[]? | "\(.step)=\(.status) \(.detail)"' "$private/success.json"; fi
+"$BIN" "${base_args[@]}" --binary "$BIN" </dev/null >"$private/rerun.json" 2>"$private/rerun.err"; code=$?
+expect_code "setup rerun succeeds with running agent" 0 "$code"
+if [ "$code" -ne 0 ]; then jq -r '.steps[]? | "\(.step)=\(.status) \(.detail)"' "$private/rerun.json"; fi
 finish

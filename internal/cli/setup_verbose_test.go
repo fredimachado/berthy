@@ -108,6 +108,19 @@ func TestSetupDryRunVerboseListsWhatARealRunSends(t *testing.T) {
 		}
 	}
 	dryLog, realLog := parseVerboseLog(t, dryErr), parseVerboseLog(t, realErr)
+	foundPort := false
+	for i, sc := range dryLog.all {
+		if strings.Contains(sc, "# setup listen port") {
+			foundPort = true
+			if dryLog.statuses[i] != "not run: dry run" {
+				t.Errorf("listen probe status = %q", dryLog.statuses[i])
+			}
+		}
+	}
+	if !foundPort || dry.ran("# setup listen port") || !real.ran("# setup listen port") {
+		t.Errorf("listen probe: logged=%v dry sent=%v live sent=%v", foundPort, dry.ran("# setup listen port"), real.ran("# setup listen port"))
+	}
+
 	if loginScriptOf(dryLog.byStep["connect"]) == "" || !slices.Contains(dryLog.byStep["check"], probeScriptOf(dryLog.all)) {
 		t.Errorf("the dry run's log does not list the reads it ran:\n%s", dryErr)
 	}
@@ -583,5 +596,30 @@ func TestSetupEarlyFailureUsesStepResultFormat(t *testing.T) {
 				t.Fatalf("JSON report: %q", plainJSON)
 			}
 		})
+	}
+}
+
+func TestSetupDryRunVerboseListsReleaseProbes(t *testing.T) {
+	dry := freshNoDocker(t, "ops@s1")
+	setupBuild = func() setup.Build { return setup.Build{OS: "windows", Arch: "amd64", Version: "v1.2.3", Release: true} }
+	withSetupRunner(t, dry)
+	code, _, stderr := runSetupCmd(setupArgs(t, "--dry-run", "--verbose")...)
+	if code != 0 {
+		t.Fatalf("dry run exit %d: %s", code, stderr)
+	}
+	log := parseVerboseLog(t, stderr)
+	for _, asset := range []string{"berthy-linux-amd64", "checksums.txt"} {
+		found := false
+		for i, sc := range log.all {
+			if strings.Contains(sc, "curl -fsSLI") && strings.Contains(sc, asset) {
+				found = true
+				if log.statuses[i] != "not run: dry run" {
+					t.Errorf("%s status = %q", asset, log.statuses[i])
+				}
+			}
+		}
+		if !found || dry.ran("curl -fsSLI") {
+			t.Errorf("release probe %s: logged=%v, sent=%v", asset, found, dry.ran("curl -fsSLI"))
+		}
 	}
 }
