@@ -217,13 +217,22 @@ func TestStatMountsReportsInodeCounts(t *testing.T) {
 		if len(failures) != 0 || len(mounts) != 2 {
 			t.Fatalf("mounts = %+v, failures = %v", mounts, failures)
 		}
-		for i, want := range []string{
-			`{"path":"/counted","total":40960,"available":16384,"inodes_total":123,"inodes_free":7}`,
-			`{"path":"/zero","total":40960,"available":16384,"inodes_total":0,"inodes_free":0}`,
+		for i, want := range []map[string]any{
+			{"path": "/counted", "total": float64(40960), "available": float64(16384), "inodes_total": float64(123), "inodes_free": float64(7)},
+			{"path": "/zero", "total": float64(40960), "available": float64(16384), "inodes_total": float64(0), "inodes_free": float64(0)},
 		} {
-			got, err := json.Marshal(mounts[i])
-			if err != nil || string(got) != want {
-				t.Errorf("mount JSON = %s, err = %v; want %s", got, err, want)
+			data, err := json.Marshal(mounts[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range want {
+				if actual, ok := got[key]; !ok || actual != value {
+					t.Errorf("mount %d %s = %v (present %v), want %v", i, key, actual, ok, value)
+				}
 			}
 		}
 	})

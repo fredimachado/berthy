@@ -3,7 +3,9 @@
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 
-for tool in mkfs.ext4 mount umount mountpoint findmnt losetup truncate stat python3 sudo; do
+mkfs_ext4=$(PATH=/usr/sbin:/sbin:/usr/bin:/bin command -v mkfs.ext4) || { echo 'prerequisite missing: mkfs.ext4' >&2; exit 1; }
+losetup=$(PATH=/usr/sbin:/sbin:/usr/bin:/bin command -v losetup) || { echo 'prerequisite missing: losetup' >&2; exit 1; }
+for tool in mount umount mountpoint findmnt truncate stat python3 sudo; do
   command -v "$tool" >/dev/null || { echo "prerequisite missing: $tool" >&2; exit 1; }
 done
 sudo -n true || { echo 'prerequisite: noninteractive sudo is required' >&2; exit 1; }
@@ -23,14 +25,14 @@ expect_code 'apply telemetry settings' 0 "$code" "$out"
 [ "$code" -eq 0 ] || finish
 stop_agent || { fail 'stop agent' 'could not stop agent'; finish; }
 
-fixture=$(mktemp -d "$RUN/${PROJECT}-${ENVN}-inodes.XXXXXXXX") || exit 1
+fixture=$(mktemp -d "/tmp/${PROJECT}-${ENVN}-inodes.XXXXXXXX") || exit 1
 image="$fixture/disk.img"
 mountdir="$fixture/mount"
 cleanup() {
   local source backing
   if mountpoint -q "$mountdir"; then
     source=$(findmnt -n -o SOURCE --target "$mountdir") || return 1
-    backing=$(sudo -n losetup -n -O BACK-FILE "$source") || return 1
+    backing=$(sudo -n "$losetup" -n -O BACK-FILE "$source") || return 1
     [ "$backing" = "$image" ] || { echo "refusing to unmount foreign source: $source ($backing)" >&2; return 1; }
     sudo -n umount "$mountdir" || return 1
   fi
@@ -38,13 +40,13 @@ cleanup() {
   [ ! -d "$mountdir" ] || rmdir "$mountdir" || return 1
   rmdir "$fixture"
 }
-trap 'cleanup || echo "fixture cleanup failed: $fixture" >&2' EXIT
+trap 'cleanup || { echo "fixture cleanup failed; left at $fixture" >&2; exit 1; }' EXIT
 mkdir "$mountdir" || exit 1
 truncate -s 2G "$image" || exit 1
-mkfs.ext4 -q -F -N 1024 "$image" || exit 1
+"$mkfs_ext4" -q -F -N 1024 "$image" || exit 1
 sudo -n mount -o loop "$image" "$mountdir" || exit 1
 source=$(findmnt -n -o SOURCE --target "$mountdir") || exit 1
-backing=$(sudo -n losetup -n -O BACK-FILE "$source") || exit 1
+backing=$(sudo -n "$losetup" -n -O BACK-FILE "$source") || exit 1
 [ "$backing" = "$image" ] || { echo "mounted source is not the owned image: $backing" >&2; exit 1; }
 sudo -n mkdir "$mountdir/files" || exit 1
 sudo -n chown "$(id -u):$(id -g)" "$mountdir/files" || exit 1
