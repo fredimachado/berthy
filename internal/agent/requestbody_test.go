@@ -403,9 +403,10 @@ func TestRequestBodyDeadline(t *testing.T) {
 				served := make(chan error, 1)
 				go func() { served <- server.Serve(listener) }()
 				type result struct {
-					status int
-					body   string
-					err    error
+					status     int
+					body       string
+					err        error
+					cleanClose bool
 				}
 				answer := make(chan result, 1)
 				go func() {
@@ -414,7 +415,12 @@ func TestRequestBodyDeadline(t *testing.T) {
 						answer <- result{err: err}
 						return
 					}
-					resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+					reader := bufio.NewReader(client)
+					if _, err := reader.Peek(1); err != nil {
+						answer <- result{err: err, cleanClose: err == io.EOF}
+						return
+					}
+					resp, err := http.ReadResponse(reader, nil)
 					if err != nil {
 						answer <- result{err: err}
 						return
@@ -453,7 +459,7 @@ func TestRequestBodyDeadline(t *testing.T) {
 				select {
 				case got := <-answer:
 					answer <- got
-					if got.err != io.EOF && (got.err != nil || got.status != http.StatusBadRequest || strings.TrimSpace(got.body) != `{"code":"bad_request","message":"invalid request"}`) {
+					if !got.cleanClose && (got.err != nil || got.status != http.StatusBadRequest || strings.TrimSpace(got.body) != `{"code":"bad_request","message":"invalid request"}`) {
 						t.Fatalf("client response: %+v", got)
 					}
 				default:

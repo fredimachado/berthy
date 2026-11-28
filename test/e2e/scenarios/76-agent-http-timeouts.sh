@@ -47,10 +47,10 @@ def observe(p, marker, timeout=60):
                 raise AssertionError(f'stream ended: {buffers[key.data]!r}')
             buffers[key.data] += data
 
-def log(marker):
+def log(marker, timeout):
     environ = dict(os.environ, DOCKER_CONFIG=docker_config)
     subprocess.run([docker, '--host', 'unix://' + sock, 'exec', '-i', container,
-                    'sh', '-c', 'cat > /proc/1/fd/1'], input=marker + b'\n', env=environ, check=True)
+                    'sh', '-c', 'cat > /proc/1/fd/1'], input=marker + b'\n', env=environ, check=True, timeout=timeout)
 
 def interrupted(signum, frame):
     raise SystemExit(f'interrupted by signal {signum}')
@@ -67,9 +67,12 @@ try:
     # Repeat the write until the subscription has reached Docker.
     end = time.monotonic() + 60
     while b'first-marker-76' not in buffers[follow]:
-        log(b'first-marker-76')
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError('log follow readiness timed out')
+        log(b'first-marker-76', remaining)
         try:
-            observe(follow, b'first-marker-76', timeout=1)
+            observe(follow, b'first-marker-76', timeout=min(1, end - time.monotonic()))
         except AssertionError:
             if follow.poll() is not None or time.monotonic() >= end:
                 raise
@@ -94,7 +97,7 @@ try:
     session.stdin.close()
     selector.unregister(session.stdout)
     assert session.wait(timeout=60) == 7, 'session exit status changed'
-    log(b'second-marker-76')
+    log(b'second-marker-76', 60)
     observe(follow, b'second-marker-76')
     print(f'idle EOF after {elapsed:.3f}s; original session and log stream survived')
 finally:
