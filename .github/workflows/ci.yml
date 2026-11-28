@@ -165,10 +165,12 @@ jobs:
 
       - name: Prepare the fixture
         run: |
-          echo "GO=$(command -v go)" >> "$GITHUB_ENV"
-          echo "DOCKER_BIN=$(command -v docker)" >> "$GITHUB_ENV"
-          echo "SOCK=/var/run/docker.sock" >> "$GITHUB_ENV"
-          echo "COMPOSE_BIN=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')" >> "$GITHUB_ENV"
+          {
+            echo "GO=$(command -v go)"
+            echo "DOCKER_BIN=$(command -v docker)"
+            echo "SOCK=/var/run/docker.sock"
+            echo "COMPOSE_BIN=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')"
+          } >> "$GITHUB_ENV"
           DOCKER_BIN=$(command -v docker) SOCK=/var/run/docker.sock bash test/e2e/ci-prepare.sh
 
       - name: Run shard
