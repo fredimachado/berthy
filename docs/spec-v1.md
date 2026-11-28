@@ -544,7 +544,7 @@ An image deploy verifies the new version before recording the switch. A failure 
 6. **Publish.** With managed ingress, update the app's routes and DNS records to match its `hostnames`. A failure is reported and the command exits non-zero, but the new version stays running.
 7. **Post-deploy hooks.** Run them in order. A failure is reported but does not undo the deploy.
 8. **Reachability.** For each role with a `port`, open a TCP connection to `<service>:<port>` from the overlay helper, and for each hostname that the publish step served, make HTTPS requests to it from the agent (see "Reachability checks" below). A check that fails only warns.
-9. **Record and tidy.** Write the deploy record, prune old images, release the lock.
+9. **Record and tidy.** Write the deploy record, trim release and operation history, and release the lock. `prune` removes eligible images and stopped hooks.
 
 If the rollout or a final inspection, health or drain check fails before the barrier, the agent attempts to restore the previous digest or remove services created by a first deploy. It records a confirmed cleanup as failed or rolled back; unconfirmed ownership or cleanup leaves `recovery_required` and the lock held. Whether anyone is told depends on `alerts.deploys` (see Alerts): by default a failed deploy sends one message on every alert channel.
 
@@ -557,6 +557,7 @@ A new version can fail to start for reasons only its own output explains: a miss
 - **Redaction and storage.** Every managed secret value is replaced by `[redacted]` in the output and health-check results before they are stored. The evidence is encrypted in the state file like the other private records. The evidence of the newest 50 operations that have any is kept; older evidence is deleted. Containers of finished migration steps and of commands that timed out stay until `berthy prune` removes them, which is safe because the evidence already holds their output.
 - When `docker compose up` fails, its diagnostic keeps the newest 200 lines of stderr, up to 64 KiB, with managed secrets, filled sensitive templates and bearer tokens for the environment redacted.
 - **Reading it.** `berthy diagnostics <operation id> -e <env>` prints it for a person, and `--json` prints it for an agent; the id is in the output of the failed command and in `berthy history`. The API serves it at `GET /v1/projects/<project>/environments/<env>/operations/<id>/diagnostics`. It needs the `deploy` scope, not `read`: application output can hold personal data that a read-only token should not see. An operation without evidence answers 404.
+- **After journal expiry.** The operation ID still returns a compact terminal status and matches idempotent retries. Audit attribution and decisions survive. Detailed events, service specs and command output can expire. Diagnostics keep their own window, and an approved `exec` or `run` keeps its output receipt while the approval result is available.
 
 ### Deploy lock
 
@@ -741,7 +742,7 @@ An image app that sets nothing else runs with these Swarm settings.
 
 ### Rollback
 
-`berthy rollback <app> -e <env>` redeploys the previous recorded digest with the manifest saved at that deploy. `--to <release id>` picks an older one: the `id` column of `berthy history`, not an operation id. Secrets stay at their current values. The app comes back with its own part of that manifest: its roles, hooks, jobs, backups and service probes. The environment's settings, such as the alerts, the peers and the other probes, stay as they are; the old manifest does not apply them.
+`berthy rollback <app> -e <env>` redeploys the previous retained digest with its saved manifest. `--to <release id>` selects an ID from `berthy history`. An ID that expired from the app's history is refused with `rollback release is outside retained history; choose a release from berthy history`. The applied release and workload stay in place on refusal. Secrets stay at their current values. A successful rollback restores the app's roles, hooks, jobs, backups and service probes. Environment settings such as alerts, peers and other probes keep their current values.
 
 ### Applying environment settings
 
@@ -755,10 +756,10 @@ An image app that sets nothing else runs with these Swarm settings.
 
 ### Retain and prune
 
-- The agent keeps the images of the last `retain` deploys per app (default 5), so rollback needs no pull.
-- After each successful deploy it removes older images, stopped containers and unused layers.
-- It never removes volumes.
-- An app that was removed with `berthy remove` has no applied release, so none of its releases protects an image any more; its images are removed at the next prune. Its release history stays.
+- The agent keeps the newest `deploy.retain` release IDs per app (default 5) and the applied release if it falls outside that window. Multiple releases of the same digest count separately. A removed app keeps bounded release history and protects no image.
+- Full terminal operation journals have a separate window of the same size. Terminal operations for an app with no release and operations without an app use 5. Running operations and recovery journals survive. The agent keeps specific evidence needed for retained Compose releases, the latest migration, diagnostics, approvals and operational lookups. `history` shows failures from the full operation window.
+- The applied release sets the limit. For a removed app the newest release sets it. A terminal write applies the limits to that app's history, including records from before an agent upgrade.
+- `prune` removes acquired images unused by containers and services and unneeded by retained releases of applied apps. It also removes stopped one-off containers with a matching journal identity. It leaves volumes alone.
 
 ### Compose app deploy
 
@@ -884,7 +885,7 @@ The plan of an image deploy, a Compose deploy and a rollback has a `diff`: what 
 - **Variables.** A variable is plain, from a secret or a template. A plain variable that is added or removed shows as `+ NAME (plain)` or `- NAME (plain)`, and one whose value changes shows both values, cut at 60 characters. A secret variable shows its name and the name of its secret (`~ DATABASE_URL now from secret API_DATABASE_URL`), a template variable its name and its template text, which names secrets and holds no value. A change of the value stored under a secret name is not in the manifests, so it is not in the diff.
 - **Lines.** `Lines()` of the diff is the text of the CLI, the TUI and the MCP server: the area, padded to 8 characters or the longest area, and the change. `new app` and `no changes: the same release would be recorded` stand for the first deploy and for no difference.
 - **Approvals.** The diff is part of the plan, so a held request stores it and `approve` plans again and compares: a release recorded since the request changes the diff, and then nothing runs. What a person read is what runs.
-- **Two releases.** `GET /v1/projects/<project>/environments/<env>/history/<app>/diff?release=<id>[&base=<id>]` (`read`) answers the diff of release `release` against `base`, or against the release before it. Both must be releases of the app, or the agent refuses with `release <id> is not a release of app <app>`. `berthy history <app> --diff <id> [<id>]` calls it.
+- **Two releases.** `GET /v1/projects/<project>/environments/<env>/history/<app>/diff?release=<id>[&base=<id>]` (`read`) compares `release` against `base`, or against the release before it. An explicit ID outside the app's retained releases gives `release <id> is not a release of app <app>`. If the implicit predecessor expired, the agent reports `previous release is outside retained history`. If the app had no predecessor, the diff is `new app`. `berthy history <app> --diff <id> [<id>]` calls it.
 
 ## Interfaces
 
