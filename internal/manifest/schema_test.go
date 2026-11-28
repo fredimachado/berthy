@@ -265,22 +265,25 @@ func TestUptimeHealthSchemaAlternatives(t *testing.T) {
 	forms, _ := health["oneOf"].([]any)
 	var required []string
 	for _, form := range forms {
-		branch := stringsOf(form.(map[string]any)["required"])
+		props := form.(map[string]any)
+		branch := stringsOf(props["required"])
 		if len(branch) != 1 {
 			t.Fatalf("health branch should require exactly one field: %v", form)
+		}
+		switch branch[0] {
+		case "test":
+			constraint, _ := props["not"].(map[string]any)
+			if excluded := stringsOf(constraint["required"]); !slices.Equal(excluded, []string{"uptime"}) {
+				t.Errorf("command branch accepts uptime: %v", form)
+			}
+		case "uptime":
+			if got := props["maxProperties"]; got != float64(1) {
+				t.Errorf("uptime maxProperties = %v, want 1", got)
+			}
 		}
 		required = append(required, branch[0])
 	}
 	slices.Sort(required)
-	forms := health["oneOf"].([]any)
-	if got := forms[1].(map[string]any)["maxProperties"]; got != float64(1) {
-		t.Errorf("uptime maxProperties = %v, want 1", got)
-	}
-	command := forms[0].(map[string]any)
-	constraint, _ := command["not"].(map[string]any)
-	if excluded, _ := constraint["required"].([]any); len(excluded) != 1 || excluded[0] != "uptime" {
-		t.Errorf("command branch accepts uptime: %v", command)
-	}
 	if !slices.Equal(required, []string{"test", "uptime"}) {
 		t.Fatalf("health alternatives = %v, want test and uptime", required)
 	}
