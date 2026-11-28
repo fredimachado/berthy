@@ -697,7 +697,7 @@ func peerDoctorCheck(ctx context.Context, name, base string, states map[string]s
 		c.Detail = st.Detail
 		return c
 	}
-	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, doctorPeerTimeout)
 	defer cancel()
 	res := monitor.ProbePeer(pctx, base, 3*time.Second, dial)
 	c.OK = res.State == monitor.OK

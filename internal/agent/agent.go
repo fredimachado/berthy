@@ -288,7 +288,7 @@ func (rt *routeRuntime) serveRead(call routeCall) {
 			writeError(w, 405, "method_not_allowed", "method not allowed")
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
 		defer cancel()
 		call.readCtx = ctx
 		call.row.handle(rt, call)
@@ -457,13 +457,13 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 		go func() { credentials <- credentialDoctorChecks(r.Context(), c, deployment.Store, time.Now()) }()
 	}
 	if deployment != nil {
-		ingressCtx, cancelIngress := context.WithTimeout(r.Context(), 10*time.Second)
+		ingressCtx, cancelIngress := context.WithTimeout(r.Context(), doctorIngressTimeout)
 		configured, status := deployment.TunnelHealth(ingressCtx)
 		cancelIngress()
 		if configured {
 			checks = append(checks, api.Check{Name: "ingress_tunnel", OK: status == "healthy", Detail: status})
 		}
-		composeCtx, cancelCompose := context.WithTimeout(r.Context(), 5*time.Second)
+		composeCtx, cancelCompose := context.WithTimeout(r.Context(), doctorComposeTimeout)
 		composeVersion, composeErr := engine.Compose{Command: c.composeCommand(), Host: dockerHost(c.DockerSocket)}.Version(composeCtx, c.StateDir)
 		cancelCompose()
 		if composeErr != nil {
@@ -483,7 +483,7 @@ func (rt *routeRuntime) handleDoctor(call routeCall) {
 		checks = append(checks, monitoringChecks(r.Context(), c, deployment.Store, e, c.Environment)...)
 		checks = append(checks, driftDoctorChecks(r.Context(), deployment)...)
 		if m, mErr := runningManifest(r.Context(), deployment.Store); mErr == nil {
-			logCtx, cancelLog := context.WithTimeout(r.Context(), 10*time.Second)
+			logCtx, cancelLog := context.WithTimeout(r.Context(), doctorLogTimeout)
 			if check, ok := composeLogCheck(logCtx, deployment, e, m); ok {
 				checks = append(checks, check)
 			}
