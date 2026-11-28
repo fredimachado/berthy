@@ -193,9 +193,9 @@ func TestReadClientTimeouts(t *testing.T) {
 		t.Fatalf("DoctorRequestTimeout = %s", agent.DoctorRequestTimeout)
 	}
 	for _, tc := range []struct {
-		name, cmd                  string
-		stream                     bool
-		total, responseHeader      time.Duration
+		name, cmd             string
+		stream                bool
+		total, responseHeader time.Duration
 	}{
 		{"doctor", "doctor", false, agent.DoctorRequestTimeout, agent.DoctorRequestTimeout},
 		{"ps", "ps", false, 10 * time.Second, 20 * time.Second},
