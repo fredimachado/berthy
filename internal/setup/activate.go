@@ -397,13 +397,9 @@ func guardScript(bin, cfg string, staged Staged, listen string, secs int) string
 	}
 	s.WriteString("exec 9>" + guardLock + "\nflock 9 || exit 1\n" + stateHelpers() + reason + stateCheck(true, report))
 	s.WriteString("up() { (\n" + restartScriptWithoutGuard(listen, secs) + "); }\n")
-	candidate := "up"
-	if staged.Added != nil {
-		s.WriteString("candidate_up() { (\n" + restartScriptWithGuard(listen, secs, false, staged.Added) + "); }\n")
-		candidate = "candidate_up"
-	}
+	s.WriteString("candidate_up() { (\n" + restartScriptForCandidate(listen, secs, staged.Added) + "); }\n")
 	s.WriteString("result() { set_state \"$1\" || exit 1; systemctl stop " + guardUnit + ".timer >/dev/null 2>&1 || true; printf 'guard=%s\\n' \"$1\"; " + report + "}\n")
-	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ]" + pending + " && " + candidate + " >/dev/null 2>&1; then result kept; exit 0; fi\n")
+	s.WriteString("if [ \"$state\" = pending ] && [ \"${3:-}\" != now ]" + pending + " && candidate_up >/dev/null 2>&1; then result kept; exit 0; fi\n")
 	s.WriteString("set_state recovering || exit 1\n")
 	s.WriteString("if [ \"$1\" != yes ] && [ \"$2\" != yes ]; then if systemctl stop berthy >/dev/null 2>&1; then result stopped; exit 0; else result stop-failed; exit 1; fi; fi\n")
 	if staged.Binary {
@@ -452,6 +448,14 @@ func restartScriptWithoutGuard(listen string, secs int) string {
 }
 
 func restartScriptWithGuard(listen string, secs int, guarded bool, added *scope.ID) string {
+	return restartScriptWithCandidateLimit(listen, secs, guarded, added, false)
+}
+
+func restartScriptForCandidate(listen string, secs int, added *scope.ID) string {
+	return restartScriptWithCandidateLimit(listen, secs, false, added, true)
+}
+
+func restartScriptWithCandidateLimit(listen string, secs int, guarded bool, added *scope.ID, candidate bool) string {
 	success := "exit 0"
 	prefix := ""
 	reason, report := "", ""
@@ -464,12 +468,23 @@ func restartScriptWithGuard(listen string, secs int, guarded bool, added *scope.
 	} else {
 		prefix = reason
 	}
-	wait := waitScriptOnSuccess(guardProbePath, listen, secs, success)
+	probe := healthProbeCommand(listen, `"${probe}s"`)
 	if added != nil {
 		prefix += candidateProbe(listen, *added)
 		prefix += "old_invocation=$(systemctl show --property=InvocationID --value berthy 2>/dev/null) || exit 1\n"
-		wait = "probe_bin=" + shellQuote(guardProbePath) + "\n" + waitScriptWithProbe("candidate_health \"$probe\"", secs, success)
+		probe = `candidate_health "$probe"`
 	}
+	if candidate {
+		// Bound repeated failed starts without limiting boot-time retries.
+		prefix += "guard_health() {\n  if " + probe + "; then return 0; fi\n" +
+			"  restarts=$(systemctl show --property=NRestarts --value berthy) || exit 1\n" +
+			"  case \"$restarts\" in ''|*[!0-9]*) return 1;; esac\n" +
+			"  if [ \"$restarts\" -ge 5 ]; then\n" +
+			"    substate=$(systemctl show --property=SubState --value berthy) || exit 1\n" +
+			"    [ \"$substate\" != auto-restart ] || exit 1\n  fi\n  return 1\n}\n"
+		probe = "guard_health"
+	}
+	wait := "probe_bin=" + shellQuote(guardProbePath) + "\n" + waitScriptWithProbe(probe, secs, success)
 	return prefix + "systemctl reset-failed berthy >/dev/null 2>&1 || true\n" +
 		"systemctl restart berthy >/dev/null 2>&1 || exit 1\n" + wait
 }

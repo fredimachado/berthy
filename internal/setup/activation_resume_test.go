@@ -54,6 +54,49 @@ func (f resumeFixture) runInput(t *testing.T, script string, input io.Reader, ar
 	calls, _ := os.ReadFile(f.calls)
 	return code, string(out), strings.TrimSpace(string(state)), string(calls)
 }
+func TestGuardRollsBackAnAgentThatKeepsRestarting(t *testing.T) {
+	f := newResumeFixture(t, "pending")
+	shellTool(t, f.tools, "systemctl", `
+case "$1" in
+  show)
+    case "$2" in
+      --property=ActiveState) echo activating ;;
+      --property=NRestarts) if [ -f "$CALLS.restarts" ]; then cat "$CALLS.restarts"; else echo 0; fi ;;
+      --property=SubState) echo auto-restart ;;
+    esac ;;
+esac`)
+	shellTool(t, f.tools, "berthy.setup-probe", `
+if [ "$(cat "$BIN")" = old-bin ]; then exit 0; fi
+n=0; [ ! -f "$CALLS.restarts" ] || n=$(cat "$CALLS.restarts")
+echo $((n+1)) > "$CALLS.restarts"
+`+expireProbe)
+	code, out, state, _ := f.run(t, guardScript(f.bin, f.cfg, Staged{Binary: true}, "x", 20), "yes", "no")
+	count, _ := os.ReadFile(f.calls + ".restarts")
+	if code != 0 || state != "restored" || string(count) != "5\n" {
+		t.Fatalf("code=%d output=%q state=%q unsuccessful starts=%q, want rollback after five", code, out, state, count)
+	}
+}
+
+func TestGuardKeepsSlowOrRecoveredAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name, systemctl, probe string
+	}{
+		{"slow startup", `case "$2" in --property=ActiveState) echo activating;; --property=NRestarts) echo 0;; esac`, `n=$(date +%s); [ "$n" -ge 45 ]`},
+		{"answers after restarts", `case "$2" in --property=ActiveState) echo active;; --property=NRestarts) echo 5;; esac`, `exit 0`},
+		{"slow after restarts", `case "$2" in --property=ActiveState) echo active;; --property=NRestarts) echo 5;; --property=SubState) echo running;; esac`, `n=$(date +%s); [ "$n" -ge 45 ]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newResumeFixture(t, "pending")
+			shellTool(t, f.tools, "systemctl", tc.systemctl)
+			shellTool(t, f.tools, "berthy.setup-probe", tc.probe)
+			code, out, state, _ := f.run(t, guardScript(f.bin, f.cfg, Staged{Binary: true}, "x", 90), "yes", "no")
+			if code != 0 || state != "kept" {
+				t.Fatalf("code=%d output=%q state=%q, want healthy candidate kept", code, out, state)
+			}
+		})
+	}
+}
+
 func TestGuardStopsTimerAfterRecordingResult(t *testing.T) {
 	f := newResumeFixture(t, "pending")
 	code, out, state, calls := f.run(t, guardScript(f.bin, f.cfg, Staged{Binary: true, Config: true}, "x", 1), "yes", "yes", "now")
