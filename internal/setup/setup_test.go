@@ -52,6 +52,9 @@ func (f *fakeServer) Run(ctx context.Context, script string, stdin io.Reader) (R
 	if f.failOn != "" && strings.Contains(script, f.failOn) {
 		return Result{Stdout: []byte(f.installTail), Stderr: []byte(f.failMessage), Code: 1}, nil
 	}
+	if strings.Contains(script, "# setup listen port") {
+		return Result{Stdout: []byte("free\n")}, nil
+	}
 	return Result{}, nil
 }
 

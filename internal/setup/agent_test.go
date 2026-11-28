@@ -66,6 +66,8 @@ func (f *agentFake) Run(ctx context.Context, script string, stdin io.Reader) (Re
 	f.calls = append(f.calls, call{script, in})
 	hash := func(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 	switch {
+	case strings.Contains(script, "# setup listen port"):
+		return Result{Stdout: []byte("free\n")}, nil
 	case strings.Contains(script, "# key copy"):
 		if f.keyAnswer != nil {
 			return f.keyAnswer(ctx, in)

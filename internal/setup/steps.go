@@ -322,6 +322,9 @@ func checkStep(ctx context.Context, s *Session) (string, string, error) {
 			return "", "", s.suppliedKeyErr
 		}
 	}
+	if err := s.checkListenPort(ctx, f); err != nil {
+		return "", "", err
+	}
 	return StatusOK, fmt.Sprintf("linux %s, systemd, %s assigned", arch, s.Opts.ListenIP), nil
 }
 
