@@ -365,7 +365,7 @@ func TestSetupClusterSecretWritesOnlyTheClaimedStore(t *testing.T) {
 	if code := Run([]string{"agent", "setup-cluster-secret", "not a name"}, &out, &diag); code != 2 || !strings.Contains(diag.String(), "setup-cluster-secret: expected one valid secret name") {
 		t.Fatalf("cluster writer dispatch: exit %d, %s", code, diag.String())
 	}
-	if err := writeSetupClusterSecret(ctx, cluster, "HOOK", []byte(value)); err != nil {
+	if err := agent.WriteClusterSecret(ctx, cluster, "HOOK", []byte(value)); err != nil {
 		t.Fatal(err)
 	}
 	c = open(cluster.StateDir, cluster.KeyFile, "cluster")
@@ -392,7 +392,7 @@ func TestSetupClusterSecretWritesOnlyTheClaimedStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	var owner *state.OwnerError
-	if err := writeSetupClusterSecret(ctx, agent.ClusterConfig{StateDir: env.StateDir, KeyFile: env.KeyFile}, "HOOK", []byte(value)); !errors.As(err, &owner) {
+	if err := agent.WriteClusterSecret(ctx, agent.ClusterConfig{StateDir: env.StateDir, KeyFile: env.KeyFile}, "HOOK", []byte(value)); !errors.As(err, &owner) {
 		t.Fatalf("credential writer accepted an environment-owned store: %v", err)
 	}
 	s = open(env.StateDir, env.KeyFile, env.Environment)

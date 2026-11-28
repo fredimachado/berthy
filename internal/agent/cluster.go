@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"berthy/internal/api"
+	"berthy/internal/metrics"
+	"berthy/internal/monitor"
 	"berthy/internal/state"
 )
 
@@ -22,6 +25,11 @@ type Cluster struct {
 	alertConfig Config
 	hostname    string
 	shared      Shared
+	samples     monitor.Samples
+	root        string
+	mon         *monitor.Monitor
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
 // OpenCluster opens and claims the server state of a validated file.
@@ -35,7 +43,10 @@ func OpenCluster(sh Shared, f File) (*Cluster, error) {
 		return nil, fmt.Errorf("open cluster state: %w", err)
 	}
 	cluster := &Cluster{
-		store: s, alerts: f.Cluster.Alerts, alertConfig: Config{TelegramAPIURL: f.TelegramAPIURL}, hostname: hostname, shared: sh,
+		store: s, alerts: f.Cluster.Alerts, alertConfig: Config{TelegramAPIURL: f.TelegramAPIURL, Listen: f.Listen}, hostname: hostname, shared: sh,
+	}
+	if sh.Collector != nil {
+		cluster.samples = sh.Collector.Latest
 	}
 	if err := s.Claim(context.Background(), ClusterProject); err != nil {
 		cluster.Close()
@@ -51,14 +62,12 @@ func (c *Cluster) ChannelChecks(ctx context.Context) []api.Check {
 	}
 	alerts := c.alerts.manifestAlerts()
 	checks := make([]api.Check, 0, 2)
-	for _, channel := range []struct {
-		name       string
-		configured bool
-	}{{"telegram", alerts.Telegram != nil}, {"webhook", alerts.Webhook != nil}} {
-		if channel.configured {
-			ok, detail := alertChannelStatus(ctx, c.alertConfig, c.store, alerts, channel.name)
-			checks = append(checks, api.Check{Name: "cluster_" + channel.name, OK: ok, Detail: detail})
+	for _, channel := range alertChannels(ctx, c.alertConfig, c.store, alerts) {
+		detail := channel.okDetail
+		if channel.err != nil {
+			detail = channel.err.Error()
 		}
+		checks = append(checks, api.Check{Name: "cluster_" + channel.name, OK: channel.err == nil, Detail: detail})
 	}
 	return checks
 }
@@ -88,9 +97,106 @@ func (c *Cluster) CheckRows(ctx context.Context) ([]clusterCheckRow, error) {
 	return out, nil
 }
 
-// Close releases the cluster store.
+// Start runs the server monitor until the host shuts down.
+func (c *Cluster) Start(ctx context.Context) {
+	if c == nil || c.done != nil {
+		return
+	}
+	ctx, c.cancel = context.WithCancel(ctx)
+	c.done = make(chan struct{})
+	c.mon = &monitor.Monitor{Server: c.hostname, Store: c.store, Checks: c.checks, Notifier: c.notifier, Log: c.shared.Log}
+	go func() {
+		defer close(c.done)
+		c.mon.Run(ctx)
+	}()
+}
+
+func (c *Cluster) checks(ctx context.Context) []monitor.Check {
+	samples := c.samples
+	if samples == nil {
+		samples = func() (metrics.Sample, bool) { return metrics.Sample{}, false }
+	}
+	sample, ok := samples()
+	if !ok && c.samples != nil {
+		return nil // The monitor retries once the collector can name the disks.
+	}
+	var mounts []string
+	for _, mount := range sample.Host.Mounts {
+		mounts = append(mounts, mount.Path)
+	}
+	root := c.dockerDataRoot(ctx)
+	holder := monitor.MountFor(root, mounts)
+	var out []monitor.Check
+	for _, path := range monitor.DiskMounts(sample.Host.Mounts, root) {
+		out = append(out, monitor.DiskCheck(samples, path, path == holder))
+	}
+	// Once Docker reports its data root, its mount's disk check carries the Docker label.
+	if root == "" {
+		out = append(out, monitor.DockerDiskCheck(samples, ""))
+	}
+	out = append(out, monitor.MemoryCheck(samples))
+	out = append(out, hostChecks(c.shared.Engine, c.alertConfig.Listen)...)
+	if c.alerts != nil {
+		alerts := c.alerts.manifestAlerts()
+		for _, channel := range alertChannels(ctx, c.alertConfig, c.store, alerts) {
+			out = append(out, monitor.AlertSecretCheck(channel.name, func(ctx context.Context) (bool, string) {
+				return alertChannelStatus(ctx, c.alertConfig, c.store, alerts, channel.name)
+			}))
+		}
+	}
+	return out
+}
+
+// WriteClusterSecret is the setup credential writer. The service must be stopped to release the store.
+func WriteClusterSecret(ctx context.Context, c ClusterConfig, name string, value []byte) error {
+	if _, err := os.Stat(filepath.Join(c.StateDir, "state.db")); err != nil {
+		return err
+	}
+	s, err := state.Open(c.StateDir, c.KeyFile, ClusterEnvironment)
+	if err != nil {
+		return err
+	}
+	defer s.Close() // Release the owner lock before systemd starts the service.
+	if err := s.CheckOwner(ctx, ClusterProject); err != nil {
+		return err
+	}
+	return s.PutSecret(ctx, state.Actor{ID: "setup", Name: "setup"}, state.SecretInfo{Name: name}, value)
+}
+
+func (c *Cluster) dockerDataRoot(ctx context.Context) string {
+	if c.root != "" || c.shared.Engine == nil {
+		return c.root
+	}
+	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var info struct {
+		DockerRootDir string
+	}
+	if err := c.shared.Engine.Get(dctx, "/info", &info); err == nil {
+		c.root = info.DockerRootDir
+	}
+	return c.root
+}
+
+func (c *Cluster) notifier(ctx context.Context) (monitor.Notifier, time.Duration, error) {
+	if c.alerts == nil {
+		return nil, 0, nil
+	}
+	alerts := c.alerts.manifestAlerts()
+	notifiers := alertNotifiers(ctx, c.alertConfig, c.store, alerts)
+	if len(notifiers) == 0 {
+		return nil, 0, nil
+	}
+	return notifiers, alerts.ReminderInterval(), nil
+}
+
+// Close stops the monitor before releasing its store.
 func (c *Cluster) Close() {
 	if c != nil {
+		if c.done != nil {
+			c.cancel()
+			<-c.done
+		}
 		_ = c.store.Close() // No further operation can use the store during shutdown.
 	}
 }

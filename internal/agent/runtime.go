@@ -61,7 +61,7 @@ func OpenRuntime(sh Shared, c Config) (*Runtime, error) {
 	}
 	d.Log = sh.Log
 	r := &Runtime{Config: c, log: sh.Log, deployment: d}
-	r.monitoring = NewMonitoring(c, sh.Engine, sh.Collector, d, sh.Log)
+	r.monitoring = NewMonitoring(c, sh.Engine, d, sh.Log)
 	r.reports = NewReports(c, d.Store, sh.Log)
 	r.reports.wakeAppChecks = func() { r.monitoring.wakeChecks("drift:", "down:", "restarts:") }
 	// The observer is set before recovery, so an operation that recovery ends is reported too.

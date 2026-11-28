@@ -318,6 +318,7 @@ func (h *Host) Start(ctx context.Context) error {
 	for _, entry := range ready {
 		entry.r.startWorkers(entry.ctx)
 	}
+	h.cluster.Start(ctx)
 	return nil
 }
 

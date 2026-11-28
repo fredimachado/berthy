@@ -34,4 +34,5 @@ build_to "$S3_BIN" ./test/fakes3 || exit 1
 build_to "$TUI_BIN" ./test/tuidriver || exit 1
 build_to "$MCP_BIN" ./test/mcpdriver || exit 1
 build_to "$NAMES_BIN" ./test/e2e/fixture-names || exit 1
+CGO_ENABLED=0 build_to "$CLUSTER_BIN" ./test/e2e/fixture-cluster || exit 1
 "$BIN" version

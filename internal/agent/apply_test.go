@@ -60,7 +60,7 @@ func TestApplyChangesAProbeWithoutADeploy(t *testing.T) {
 	ctx := context.Background()
 	recordRelease(t, f.s, "first", twoAppManifest("* * * * *", "0 * * * *", "1"))
 	releasesBefore, _ := f.s.History(ctx, "")
-	w := NewMonitoring(monitoringConfig(""), nil, nil, f.ctrl, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, f.ctrl, func(string) {})
 	if checkNames(ctx, w)["probe:site"] {
 		t.Fatal("the probe exists before it was applied")
 	}

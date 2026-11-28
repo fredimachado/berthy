@@ -475,7 +475,7 @@ To delete an OS-stored token too, run `berthy context remove --project todo -e p
 
 #### Alerts about the server
 
-Host checks (disk, memory, Docker, public ports, reboot) run inside every hosted environment's monitor. Each environment evaluates them independently and sends any resulting alerts to its configured Telegram and webhook channels. A startup failure produces a critical `hosted:<project>/<environment>` alert from each running environment with an alert channel. After repair and restart, the same check sends recovery. Most alert and telemetry records identify the environment without its project. Server-level alert channels and project names in those records are planned in #55 and #56.
+One monitor per agent checks the server's disk, memory, Docker storage, public ports and reboot status. Configure the server's channels using [setup](#the-other-setup-options). Read its stored host checks with `berthy checks --cluster -e prod` from any environment on the server. Each running environment still sends its own critical `hosted:<project>/<environment>` alert for an environment that failed to start, and a recovery after repair and restart.
 
 #### Another laptop
 
@@ -548,6 +548,8 @@ The agent's checks are:
 | telemetry | The OTLP exporter, when configured. |
 
 A backup, a credential, an alert or a host warning in trouble does not make `doctor` exit non-zero: that is an alert, not a fault of the agent. The two host checks change nothing on the server. The firewall and the packages stay with your provisioning.
+
+`doctor` evaluates public ports and reboot status live. It also checks whether the server's configured alert credentials are usable, or tells you to run `berthy setup --cluster-alerts FILE` if the server has no destinations. `checks --cluster` shows the last stored results of the monitor.
 
 `berthy agent-info` prints the environment, the host name, whether the agent is protected, and its version. A capable agent also reports `effective_protected` (configured or sticky protection). A legacy agent omits that field.
 
@@ -1565,14 +1567,15 @@ berthy audit -e prod
 
 | Command | Shows |
 | --- | --- |
-| `berthy checks` | The stored state of every probe and built-in condition, and since when. |
+| `berthy checks` | The stored state of the selected environment's probes and conditions, and since when. |
 | `berthy jobs` | Every scheduled or on-demand job and its last run. |
 | `berthy lock status` | Whether the deploy lock is held, by whom and why. |
 | `berthy backup list` | The backups in object storage. |
 | `berthy ingress status` | The tunnel, its connectors, hostnames and DNS records. |
 | `berthy approvals` | Changes waiting for a person. |
 | `berthy agent-info` | Environment, host, protected flag and version. |
-| `berthy doctor` | The agent's own health checks. |
+| `berthy checks --cluster` | Stored host checks for the server that hosts the selected environment. |
+| `berthy doctor` | Live diagnosis of the agent, server and selected environment. |
 
 ---
 
@@ -2075,9 +2078,9 @@ berthy secret set ALERT_WEBHOOK_URL -e prod
 berthy alerts test -e prod
 ```
 
-`alerts test` sends a test message to every configured channel and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
+`alerts test` sends a test message to each of the selected environment's configured channels and prints one line for each, `telegram: ok` or `webhook: failed: webhook returned HTTP 502`. It exits 1 when any channel failed. It needs a `deploy` token and has no dry run: it refuses `--dry-run`. An alert goes out when a check **changes state**. Its first symbol says which way: a red circle for critical, an orange one for warning, a green check for recovered, and a repeat arrow for a reminder ("still failing").
 
-Host checks (disk, memory, Docker, public ports, reboot) are evaluated by this environment's monitor like every other check. Any resulting alerts go to all of this environment's configured channels; with none configured, nothing is sent. Alerts, deploy reports, the webhook body and telemetry name the environment only, not the project. Server-level alert channels, and naming the project, are planned: #55, #56.
+Manifest alerts cover this environment's probes, apps and other environment checks. The agent evaluates host checks once and delivers host warnings and recoveries through the server-level destinations set by setup. Host alert text starts with the severity symbol and `server HOSTNAME`. Without a server destination, the agent still records host checks and `doctor` reports that host problems alert nobody.
 
 ##### The webhook
 
@@ -2097,7 +2100,8 @@ The webhook gets one `POST` of a small JSON document for each alert, with `Conte
 
 | Field | Meaning |
 | --- | --- |
-| `environment` | The environment that sent the alert. |
+| `environment` | The selected environment for an environment alert, deploy report or test alert. |
+| `server` | The agent's hostname for a server alert, in place of `environment`. |
 | `kind` | `check` for a check, `deploy` for a deploy or rollback. A test alert says `test`. |
 | `name` | The check, such as `probe:site`, or the app of a deploy. |
 | `state` | The state of the check (`critical`, `warning`, `ok`), or how the deploy ended (`failed`, `rolled_back`, `interrupted`, `recovery_required`, `succeeded`). |
@@ -3000,7 +3004,7 @@ Scope is the least token that may run the command. `read` < `deploy` < `admin`.
 | `history <app>` | read | `--diff <release id> [<other release id>]` | Releases and failed deploys, with reasons and operation ids. With `--diff`, what a release changes compared with another. |
 | `wait <app>` | read | `--healthy`, `--role <name>`, `--timeout <duration up to 10m>` | Block until the app is healthy. Exit 0 when it is. |
 | `doctor` | read | | The agent's own checks. Exit 1 when a critical one fails. |
-| `checks` | read | | Stored state of every probe and built-in condition. |
+| `checks` | read | `--cluster`, `--json` | Stored checks for the selected environment. `--cluster` shows the server's stored checks and their hostname. |
 | `jobs` | read | | Every job, its schedule, next occurrence and last run. |
 | `audit` | read | | The last 100 changes: who, what, when, outcome. |
 | `agent-info` | read | | Environment, host, protected flag, agent version. |

@@ -152,9 +152,11 @@ cluster_setup() {
   local before
   before=$(invocation)
   if ! setup_on "$PROJECT" "$@" > "$private/cluster-setup.json" 2> "$private/cluster-setup.stderr"; then
+    check_credentials_hidden "$private/cluster-setup.json" "$private/cluster-setup.stderr"
     jq -r '.steps[]? | select(.status == "failed") | .step' "$private/cluster-setup.json" >&2
     die "$what failed"
   fi
+  check_credentials_hidden "$private/cluster-setup.json" "$private/cluster-setup.stderr"
   check_both
   if [ "$what" != 'omit destination flags' ]; then
     [ "$(invocation)" != "$before" ] || die "$what did not start a new agent invocation"
@@ -163,42 +165,15 @@ cluster_setup() {
   pass "$what keeps the cluster database and key"
   pass "$what leaves both environments serving"
 }
-cluster_setup 'preload the Telegram credential' --cluster-secret SERVER_TG < "$RUN/tg-token"
-printf 'http://%s%s-preload\r\n' "$HOOK_LISTEN" "$server_hook" |
-  cluster_setup 'preload the webhook credential' --cluster-secret SERVER_HOOK
-expect_eq "preloading credentials leaves destinations disabled" false "$(cluster_layout | jq 'has("alerts")')"
-cat > "$private/cluster.yml" <<YML
-reminder: 0s
-telegram:
-  bot_token_secret: SERVER_TG
-  chat_id: "$server_chat"
-webhook:
-  url_secret: SERVER_HOOK
-YML
-cluster_setup 'enable server destinations' --config "$cfg" --cluster-alerts "$private/cluster.yml" </dev/null
-destinations=$(cluster_layout | jq -ec '.alerts | select(.reminder == "0s" and .telegram.bot_token_secret == "SERVER_TG" and .webhook.url_secret == "SERVER_HOOK")')
-expect_eq "setup installs the server chat" "$server_chat" "$(jq -r '.telegram.chat_id' <<< "$destinations")"
-doctor_cluster '.checks | any(.name == "public_ports" and (.critical | not)) and
-  any(.name == "cluster_telegram" and .ok and (.critical | not)) and
-  any(.name == "cluster_webhook" and .ok and (.critical | not))'
-jq -e '[.next_steps[] | select(contains("--cluster-secret")) | split(" ")[-1]] == ["SERVER_HOOK", "SERVER_TG"]' \
-  "$private/cluster-setup.json" >/dev/null || die "setup did not report both server credential commands"
-printf 'http://%s%s\r\n' "$HOOK_LISTEN" "$server_hook" |
-  cluster_setup 'replace the webhook credential' --cluster-secret SERVER_HOOK
-cluster_setup 'omit destination flags' --config "$cfg" </dev/null
-expect_eq "omitting destination flags preserves the channels" "$destinations" "$(cluster_layout | jq -ec '.alerts')"
-cluster_setup 'clear server destinations' --config "$cfg" --cluster-alerts none </dev/null
-expect_eq "none clears the destinations" false "$(cluster_layout | jq 'has("alerts")')"
-jq -e 'any(.next_steps[]; . == "host problems alert nobody yet: run setup again with --cluster-alerts FILE")' \
-  "$private/cluster-setup.json" >/dev/null || die "setup did not report that delivery is disabled"
-[ "$E2E_FAILS" -eq 0 ] || finish
-
-public_ports_detail() {
-  cli "$1" checks --json | jq -er '.[] | select(.name == "public_ports") | .detail | select(length > 0)'
+{
+  tr -d '\r\n' < "$RUN/tg-token"; printf '\n'
+  printf 'http://%s%s\n' "$HOOK_LISTEN" "$server_hook" "$HOOK_LISTEN" "$first_hook" "$HOOK_LISTEN" "$second_hook"
+} > "$private/credential-patterns"
+check_credentials_hidden() {
+  if grep -Fq -f "$private/credential-patterns" -- "$@"; then
+    die "setup output or agent logs exposed a fixture credential"
+  fi
 }
-for project in "$PROJECT" "$peer"; do
-  wait_for "initial public_ports for $project/$ENVN" public_ports_detail "$project" || exit 1
-done
 
 marker_name="$PROJECT-$ENVN-public-port"
 inside docker run -d --name "$marker_name" --label "berthy.fakeserver.owner=$FS_OWNER" \
@@ -211,11 +186,20 @@ echo "  marker port: $port"
 inside cat /etc/berthy/agent.json > "$private/agent.json"
 jq --arg url "http://$TG_LISTEN" '.telegram_api_url = $url' "$private/agent.json" |
   inside sh -ec 'cd /etc/berthy; cp -p agent.json agent.json.new; cat > agent.json.new; mv agent.json.new agent.json'
+inside sh -ec 'umask 077; cat > /root/fixture-cluster; chmod 700 /root/fixture-cluster' < "$CLUSTER_BIN"
 inside systemctl restart berthy
-# Both monitors must see the marker on this start, while delivery is still disabled.
-marker_checked() { public_ports_detail "$1" | grep -F -- "$marker" >/dev/null; }
+hostname=$(cli "$PROJECT" agent-info --json | jq -er '.hostname | select(length > 0)')
+marker_checked() {
+  cli "$1" checks --cluster --json | jq -e --arg marker "$marker" --arg host "$hostname" '
+    any(.[]; .name == "public_ports" and .server == $host and .state == "warning" and (.detail | contains($marker)))'
+}
 for project in "$PROJECT" "$peer"; do
-  wait_for "public_ports sees the marker for $project/$ENVN" marker_checked "$project" || exit 1
+  wait_for "public_ports sees the marker for $project/$ENVN" marker_checked "$project"
+  expect_eq "$project/$ENVN agent-info names the server" "$hostname" "$(cli "$project" agent-info --json | jq -er '.hostname')"
+  cli "$project" doctor --json | jq -e --arg host "$hostname" --arg marker "$marker" '
+    any(.checks[]; .name == "host" and .detail == $host) and
+    any(.checks[]; .name == "public_ports" and (.critical | not) and (.detail | contains($marker)))' >/dev/null
+  pass "$project/$ENVN live doctor and stored cluster checks identify the same server and marker"
 done
 
 enable_environment_alerts() {
@@ -229,6 +213,15 @@ network: $project-$ENVN
 probes:
   scope-$chat:
     tcp: $TG_LISTEN
+YML
+  if [ "$project" = "$PROJECT" ]; then
+    cat >> "$dir/berthy.yml" <<'YML'
+  failed:
+    tcp: 127.0.0.1:1
+    failures: 1
+YML
+  fi
+  cat >> "$dir/berthy.yml" <<YML
 alerts:
   reminder: 0s
   telegram:
@@ -246,11 +239,36 @@ YML
 enable_environment_alerts "$PROJECT" "$first_chat" "$first_hook"
 enable_environment_alerts "$peer" "$second_chat" "$second_hook"
 [ "$E2E_FAILS" -eq 0 ] || finish
-inside systemctl restart berthy
+cluster_setup 'preload the Telegram credential' --cluster-secret SERVER_TG < "$RUN/tg-token"
+printf 'http://%s%s-preload\r\n' "$HOOK_LISTEN" "$server_hook" |
+  cluster_setup 'preload the webhook credential' --cluster-secret SERVER_HOOK
+printf 'http://%s%s\r\n' "$HOOK_LISTEN" "$server_hook" |
+  cluster_setup 'replace the webhook credential' --cluster-secret SERVER_HOOK
+expect_eq "preloading credentials leaves destinations disabled" false "$(cluster_layout | jq 'has("alerts")')"
+cat > "$private/cluster.yml" <<YML
+reminder: 0s
+telegram:
+  bot_token_secret: SERVER_TG
+  chat_id: "$server_chat"
+webhook:
+  url_secret: SERVER_HOOK
+YML
+cluster_setup 'enable server destinations' --config "$cfg" --cluster-alerts "$private/cluster.yml" </dev/null
+destinations=$(cluster_layout | jq -ec '.alerts | select(.reminder == "0s" and .telegram.bot_token_secret == "SERVER_TG" and .webhook.url_secret == "SERVER_HOOK")')
+expect_eq "setup installs the server chat" "$server_chat" "$(jq -r '.telegram.chat_id' <<< "$destinations")"
+doctor_cluster '.checks | any(.name == "public_ports" and (.critical | not)) and
+  any(.name == "cluster_telegram" and .ok and (.critical | not)) and
+  any(.name == "cluster_webhook" and .ok and (.critical | not))'
+jq -e '[.next_steps[] | select(contains("--cluster-secret")) | split(" ")[-1]] == ["SERVER_HOOK", "SERVER_TG"]' \
+  "$private/cluster-setup.json" >/dev/null || die "setup did not report both server credential commands"
+cluster_setup 'omit destination flags' --config "$cfg" </dev/null
+expect_eq "omitting destination flags preserves the channels" "$destinations" "$(cluster_layout | jq -ec '.alerts')"
 
 has_own_probe() {
   cli "$1" checks --json | jq -e --arg own "probe:scope-$2" --arg other "probe:scope-$3" '
-    any(.[]; .name == $own and .state == "ok") and all(.[]; .name != $other and (has("server") | not))' >/dev/null
+    any(.[]; .name == $own and .state == "ok") and
+    all(.[]; .name != $other and (has("server") | not) and
+      (.name | test("^(disk:|memory$|docker_disk$|public_ports$|reboot_required$)") | not))' >/dev/null
 }
 for pair in "$PROJECT:$first_chat:$second_chat" "$peer:$second_chat:$first_chat"; do
   IFS=: read -r project own other <<< "$pair"
@@ -258,29 +276,109 @@ for pair in "$PROJECT:$first_chat:$second_chat" "$peer:$second_chat:$first_chat"
   pass "$project/$ENVN ordinary checks show its own probe"
 done
 
-telegram_warnings() {
-  tg_messages | jq -e --arg chat "$1" --arg marker "$marker" '
-    [.[] | select(.chat_id == $chat and (.text | startswith("🟠 ") and contains(" public_ports: ") and contains($marker)))] | length'
+telegram_count() {
+  tg_messages | jq -e --arg chat "$1" --arg text "$2" --arg detail "$3" '
+    [.[] | select(.chat_id == $chat and (.text | contains($text) and contains($detail)))] | length'
 }
-webhook_warnings() {
-  hook_requests | jq -e --arg path "$1" --arg marker "$marker" '
+webhook_count() {
+  hook_requests | jq -e --arg path "$1" --arg name "$2" --arg state "$3" --arg detail "$4" \
+    --arg host "$5" --arg env "$ENVN" '
     [.[] | select(.method == "POST" and .path == $path) | .body | fromjson |
-      select(.kind == "check" and .name == "public_ports" and .state == "warning" and (.detail | contains($marker)))] | length'
+      select(.name == $name and .state == $state and (.detail | contains($detail))) |
+      select(if $name == "test" then .kind == "test" else .kind == "check" end) |
+      select(if $host == "" then .environment == $env and (has("server") | not)
+        else .server == $host and (has("environment") | not) end)] | length'
 }
-marker_delivered() {
-  [ "$(telegram_warnings "$server_chat")" -ge 1 ] && [ "$(webhook_warnings "$server_hook")" -ge 1 ] || {
-    [ "$(telegram_warnings "$first_chat")" -ge 1 ] && [ "$(webhook_warnings "$first_hook")" -ge 1 ] &&
-      [ "$(telegram_warnings "$second_chat")" -ge 1 ] && [ "$(webhook_warnings "$second_hook")" -ge 1 ]
-  }
+notified() { inside /root/fixture-cluster notified "$cluster_dir/state/state.db" "$1" "$2" </dev/null; }
+server_delivered() {
+  local name=$1 state=$2 text=$3 detail=$4
+  [ "$(telegram_count "$server_chat" "server $hostname $name$text" "$detail")" -ge 1 ] &&
+    [ "$(webhook_count "$server_hook" "$name" "$state" "$detail" "$hostname")" -ge 1 ] &&
+    notified "$name" "$state"
 }
-if ! wait_for "public_ports warning delivery" marker_delivered; then
-  fail "public_ports warning delivery" "the receivers did not record the marker warning on both channels"
-fi
+expect_server_delivery() {
+  local name=$1 state=$2 text=$3 detail=$4
+  expect_eq "server Telegram $name $state" 1 "$(telegram_count "$server_chat" "server $hostname $name$text" "$detail")"
+  expect_eq "server webhook $name $state" 1 "$(webhook_count "$server_hook" "$name" "$state" "$detail" "$hostname")"
+}
 
-expect_eq "$PROJECT/$ENVN Telegram host warnings" 0 "$(telegram_warnings "$first_chat")"
-expect_eq "$PROJECT/$ENVN webhook host warnings" 0 "$(webhook_warnings "$first_hook")"
-expect_eq "$peer/$ENVN Telegram host warnings" 0 "$(telegram_warnings "$second_chat")"
-expect_eq "$peer/$ENVN webhook host warnings" 0 "$(webhook_warnings "$second_hook")"
+wait_for "public_ports marker delivery and checkpoint" server_delivered public_ports warning ': ' "$marker"
+expect_server_delivery public_ports warning ': ' "$marker"
+for pair in "$first_chat:$first_hook" "$second_chat:$second_hook"; do
+  IFS=: read -r chat hook <<< "$pair"
+  expect_eq "environment Telegram $chat has no host marker warning" 0 "$(telegram_count "$chat" ' public_ports: ' "$marker")"
+  expect_eq "environment webhook $hook has no host marker warning" 0 \
+    "$(hook_requests | jq -e --arg path "$hook" --arg marker "$marker" '
+      [.[] | select(.method == "POST" and .path == $path) | .body | fromjson |
+        select(.name == "public_ports" and .state == "warning" and (.detail | contains($marker)))] | length')"
+  expect_eq "environment Telegram $chat receives its test only once" 1 "$(telegram_count "$chat" "$ENVN test alert from berthy" '')"
+  expect_eq "environment webhook $hook receives its test only once" 1 "$(webhook_count "$hook" test ok '' '')"
+done
+expect_eq "server Telegram receives no environment test alerts" 0 "$(telegram_count "$server_chat" 'test alert from berthy' '')"
+expect_eq "server webhook receives no environment test alerts" 0 \
+  "$(hook_requests | jq -e --arg path "$server_hook" '[.[] | select(.method == "POST" and .path == $path) | .body | fromjson | select(.kind == "test")] | length')"
+
+failed_probe_delivered() {
+  [ "$(telegram_count "$first_chat" "$ENVN probe:failed: " '')" -ge 1 ] &&
+    [ "$(webhook_count "$first_hook" probe:failed critical '' '')" -ge 1 ]
+}
+wait_for "first environment's failing probe reaches both destinations" failed_probe_delivered
+expect_eq "first environment receives one failed probe on Telegram" 1 "$(telegram_count "$first_chat" "$ENVN probe:failed: " '')"
+expect_eq "first environment receives one failed probe on its webhook" 1 "$(webhook_count "$first_hook" probe:failed critical '' '')"
+for chat in "$second_chat" "$server_chat"; do
+  expect_eq "Telegram $chat receives no failed probe" 0 "$(telegram_count "$chat" ' probe:failed: ' '')"
+done
+for hook in "$second_hook" "$server_hook"; do
+  expect_eq "webhook $hook receives no failed probe" 0 \
+    "$(hook_requests | jq -e --arg path "$hook" '[.[] | select(.method == "POST" and .path == $path) | .body | fromjson | select(.name == "probe:failed")] | length')"
+done
+
+reboot_marker() {
+  inside sh -ec 'mkdir -p /usr/share/update-notifier; touch /var/run/reboot-required; printf "%s\n" "$1" > /var/run/reboot-required.pkgs' sh "$1" </dev/null
+}
+reboot_detail() {
+  cli "$1" checks --cluster --json |
+    jq -e --arg host "$hostname" --arg package "$2" 'any(.[]; .server == $host and .name == "reboot_required" and
+      .state == "warning" and (.detail | contains($package)))'
+}
+
+inside systemctl stop berthy
+reboot_marker "$PROJECT-before"
+inside systemctl start berthy
+wait_for "reboot warning delivery and checkpoint" server_delivered reboot_required warning ': ' "$PROJECT-before"
+
+inside systemctl stop berthy
+reboot_marker "$PROJECT-after"
+inside systemctl start berthy
+for project in "$PROJECT" "$peer"; do
+  wait_for "fresh reboot detail for $project/$ENVN" reboot_detail "$project" "$PROJECT-after"
+  pass "$project/$ENVN sees the changed reboot detail after restart"
+done
+notified reboot_required warning
+expect_server_delivery reboot_required warning ': ' ''
+
+inside systemctl stop berthy
+inside rm -f /var/run/reboot-required /var/run/reboot-required.pkgs
+inside systemctl start berthy
+wait_for "reboot recovery delivery and checkpoint" server_delivered reboot_required ok ' recovered' ''
+expect_server_delivery reboot_required warning ': ' ''
+expect_server_delivery reboot_required ok ' recovered' ''
+for chat in "$first_chat" "$second_chat"; do
+  expect_eq "environment Telegram $chat receives no reboot alert" 0 "$(telegram_count "$chat" ' reboot_required' '')"
+done
+expect_eq "environment webhooks receive no reboot alert" 0 \
+  "$(hook_requests | jq -e --arg first "$first_hook" --arg second "$second_hook" '
+    [.[] | select(.method == "POST" and (.path == $first or .path == $second)) | .body | fromjson |
+      select(.name == "reboot_required")] | length')"
+
+cluster_setup 'clear server destinations' --config "$cfg" --cluster-alerts none </dev/null
+expect_eq "none clears the destinations" false "$(cluster_layout | jq 'has("alerts")')"
+jq -e 'any(.next_steps[]; . == "host problems alert nobody yet: run setup again with --cluster-alerts FILE")' \
+  "$private/cluster-setup.json" >/dev/null || die "setup did not report that delivery is disabled"
+doctor_cluster '.checks | any(.name == "cluster_alerts" and (.ok | not) and (.critical | not) and (.detail | contains("--cluster-alerts FILE")))'
+inside journalctl -u berthy --no-pager > "$private/agent.log" 2> "$private/agent-log.stderr"
+check_credentials_hidden "$private/setup.json" "$private/setup.stderr" "$private/agent.log" "$private/agent-log.stderr"
+pass "setup output and agent logs keep fixture credentials private"
 
 if cleanup; then
   started=0

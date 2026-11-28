@@ -17,7 +17,6 @@ import (
 	"berthy/internal/deploy"
 	"berthy/internal/engine"
 	"berthy/internal/manifest"
-	"berthy/internal/metrics"
 	"berthy/internal/monitor"
 	"berthy/internal/scope"
 	"berthy/internal/state"
@@ -33,14 +32,13 @@ type jobScheduleSighting struct {
 // conditions, and their states are stored in the agent's state. Monitoring needs state, so NewMonitoring returns nil
 // without it.
 type Monitoring struct {
-	cfg     Config
-	store   *state.Store
-	engine  *engine.Engine
-	metrics *metrics.Collector
-	deploy  *deploy.Controller
-	watch   *monitor.RestartWatch
-	down    *monitor.DownWatch
-	mon     *monitor.Monitor
+	cfg    Config
+	store  *state.Store
+	engine *engine.Engine
+	deploy *deploy.Controller
+	watch  *monitor.RestartWatch
+	down   *monitor.DownWatch
+	mon    *monitor.Monitor
 	// helper runs the service probes from the overlay network. It is never nil.
 	helper *helperManager
 	// composeServices lists the services of a Compose project that have containers.
@@ -52,8 +50,6 @@ type Monitoring struct {
 	// or the last read failed.
 	read    *inventoryRead
 	readNow atomic.Bool
-	// root is Docker's data root once Docker has reported it. Only the monitor's goroutine uses it.
-	root string
 	// seen is when each backup was first in the manifest, and now is the clock of the backup checks. stateSeen is the same for
 	// the state backup.
 	seen         backupSeen
@@ -66,11 +62,11 @@ type Monitoring struct {
 
 // NewMonitoring returns the monitoring of an agent with state, or nil for an agent without state. log receives
 // operational messages, which never contain secrets.
-func NewMonitoring(c Config, e *engine.Engine, col *metrics.Collector, d *deploy.Controller, log func(string)) *Monitoring {
+func NewMonitoring(c Config, e *engine.Engine, d *deploy.Controller, log func(string)) *Monitoring {
 	if d == nil || d.Store == nil {
 		return nil
 	}
-	w := &Monitoring{cfg: c, store: d.Store, engine: e, metrics: col, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.ID(), e, log)}
+	w := &Monitoring{cfg: c, store: d.Store, engine: e, deploy: d, watch: monitor.NewRestartWatch(nil), down: monitor.NewDownWatch(nil), helper: newHelperManager(c.ID(), e, log)}
 	w.composeServices = w.projectServices
 	w.beat = &monitor.Heartbeat{Alive: w.dockerAnswers, Client: c.outboundHTTP()}
 	w.mon = &monitor.Monitor{Env: c.Environment, Store: d.Store, Checks: w.checks, Notifier: w.notifier, Log: log}
@@ -154,13 +150,9 @@ func eventPrefixes(ev engine.Event) []string {
 	return nil
 }
 
-// checks returns the checks that should run now. A nil result keeps the checks that are running, which the monitor does
-// when the manifest cannot be read, or when the first host sample has not been taken yet: the disk checks cannot be
-// named until then, so the monitor asks again soon.
+// checks returns the checks that should run now. A nil result keeps the current checks
+// while state or the manifest cannot be read.
 func (w *Monitoring) checks(ctx context.Context) []monitor.Check {
-	if _, ok := w.samples(); !ok && w.metrics != nil {
-		return nil
-	}
 	m, manifestErr := runningManifest(ctx, w.store)
 	if manifestErr != nil && !errors.Is(manifestErr, sql.ErrNoRows) {
 		return nil
@@ -216,31 +208,9 @@ func hasServiceProbe(probes map[string]manifest.Probe) bool {
 	return false
 }
 
-// builtins returns the conditions that always run: disk and memory from the host sample, Docker's data disk, restart
-// loops and missing replicas of the apps Berthy manages, and the managed tunnel when managed is true. m is the running
-// manifest, or nil.
+// builtins returns the environment's app, startup and managed tunnel checks.
 func (w *Monitoring) builtins(ctx context.Context, managed bool, m *manifest.Manifest) []monitor.Check {
-	sample, ok := w.samples()
-	var mounts []string
-	if ok {
-		for _, mount := range sample.Host.Mounts {
-			mounts = append(mounts, mount.Path)
-		}
-	}
-	root := w.dockerDataRoot(ctx)
-	holder := monitor.MountFor(root, mounts)
-	var out []monitor.Check
-	for _, path := range monitor.DiskMounts(sample.Host.Mounts, root) {
-		out = append(out, monitor.DiskCheck(w.samples, path, path == holder))
-	}
-	// While Docker cannot say where its data is, the Docker check reports unknown. Once it can, the disk check of the
-	// mount that holds the data carries the Docker label, so no separate check is needed.
-	if root == "" {
-		out = append(out, monitor.DockerDiskCheck(w.samples, ""))
-	}
-	out = append(out, monitor.MemoryCheck(w.samples))
-	out = append(out, w.appChecks(ctx, m)...)
-	out = append(out, hostChecks(w.engine, w.cfg.Listen)...)
+	out := append([]monitor.Check{}, w.appChecks(ctx, m)...)
 	if w.cfg.startupChecks != nil {
 		for _, check := range w.cfg.startupChecks() {
 			result := monitor.Result{State: monitor.OK, Detail: check.Detail}
@@ -570,31 +540,6 @@ func (w *Monitoring) inventory(ctx context.Context) ([]api.App, error) {
 	ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return appInventory(ictx, w.engine, w.deploy)
-}
-
-// dockerDataRoot returns the directory Docker keeps its data in, or empty while Docker cannot say. The answer does not
-// change, so the first one is kept.
-func (w *Monitoring) dockerDataRoot(ctx context.Context) string {
-	if w.root != "" || w.engine == nil {
-		return w.root
-	}
-	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var info struct {
-		DockerRootDir string
-	}
-	if err := w.engine.Get(dctx, "/info", &info); err == nil {
-		w.root = info.DockerRootDir
-	}
-	return w.root
-}
-
-// samples returns the latest host sample.
-func (w *Monitoring) samples() (metrics.Sample, bool) {
-	if w.metrics == nil {
-		return metrics.Sample{}, false
-	}
-	return w.metrics.Latest()
 }
 
 // tunnelStatus returns the managed tunnel's status as Cloudflare reports it.

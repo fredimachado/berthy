@@ -24,6 +24,7 @@ S3_BIN=$E2E_ROOT/bin/fakes3
 TUI_BIN=$E2E_ROOT/bin/tuidriver
 MCP_BIN=$E2E_ROOT/bin/mcpdriver
 NAMES_BIN=$E2E_ROOT/bin/fixture-names
+CLUSTER_BIN=$E2E_ROOT/bin/fixture-cluster
 RUN=$E2E_ROOT/run            # agent config, tokens, state, CLI configs, pids
 LOG=$E2E_ROOT/logs
 MAN=$E2E_ROOT/manifest       # manifest dir scenarios deploy from

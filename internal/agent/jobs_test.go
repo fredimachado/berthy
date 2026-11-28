@@ -66,7 +66,7 @@ func TestJobChecksReportTheLastFinishedRun(t *testing.T) {
 	s := openIngressStore(t)
 	ctx := context.Background()
 	recordRelease(t, s, "release-jobs", jobsManifest)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	now := at(10, 0, 30)
 	w.now = func() time.Time { return now }
 	checks := map[string]monitor.Check{}
@@ -161,7 +161,7 @@ func TestJobCheckWarnsForFirstUnhandledSlot(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := tc.handled
-			w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+			w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 			w.now = func() time.Time { return now }
 			var check monitor.Check
 			for _, c := range w.checks(ctx) {
@@ -191,7 +191,7 @@ func TestJobCheckUsesScheduledOccurrencesOfEveryStatus(t *testing.T) {
 	ctx := context.Background()
 	recordRelease(t, s, "release", strings.Replace(jobsManifest, "* * * * *", "*/10 * * * *", 1))
 	now := at(10, 0, 0)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.now = func() time.Time { return now }
 	var check monitor.Check
 	for _, c := range w.checks(ctx) {
@@ -257,7 +257,7 @@ func TestJobCheckRestartsGraceAfterScheduleRedeploy(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := at(8, 5, 0)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.now = func() time.Time { return now }
 	jobCheckFrom := func() monitor.Check {
 		t.Helper()
@@ -306,7 +306,7 @@ func TestJobCheckRestartsGraceAfterTimezoneOnlyApply(t *testing.T) {
 				}
 			}
 			now := at(16, 0, 0)
-			w := NewMonitoring(monitoringConfig(""), nil, nil, f.ctrl, func(string) {})
+			w := NewMonitoring(monitoringConfig(""), nil, f.ctrl, func(string) {})
 			w.now = func() time.Time { return now }
 			get := func(w *Monitoring) monitor.Check {
 				t.Helper()
@@ -331,7 +331,7 @@ func TestJobCheckRestartsGraceAfterTimezoneOnlyApply(t *testing.T) {
 				t.Fatalf("release history changed: %d %d %v", len(before), len(after), err)
 			}
 			check := get(w)
-			fresh := NewMonitoring(monitoringConfig(""), nil, nil, f.ctrl, func(string) {})
+			fresh := NewMonitoring(monitoringConfig(""), nil, f.ctrl, func(string) {})
 			fresh.now = func() time.Time { return now }
 			freshCheck := get(fresh)
 			now = at(18, 30, 0).Add(24 * time.Hour)
@@ -360,7 +360,7 @@ func TestJobCheckKeepsLastGoodRebuildOnInvalidSchedule(t *testing.T) {
 	hourly := strings.Replace(jobsManifest, "* * * * *", "0 * * * *", 1)
 	recordRelease(t, s, "valid", hourly)
 	now := at(12, 5, 0)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.now = func() time.Time { return now }
 	var previous monitor.Check
 	for _, c := range w.checks(ctx) {

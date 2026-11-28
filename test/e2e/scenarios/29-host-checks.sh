@@ -1,7 +1,7 @@
 #!/bin/bash
 # 29-host-checks proves the doctor's host checks on the real host. A container that Berthy does not manage publishes a port on
 # every address, so public_ports warns and names that port, and the doctor still exits 0 with the check not critical. The
-# port leaves the detail once the container is gone. berthy checks lists both host checks. reboot_required reports what the
+# port leaves the detail once the container is gone. berthy checks --cluster lists both host checks. reboot_required reports what the
 # host's own reboot-required file says, and is left out on a host without the update notifier. Nothing is written on the host.
 set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
@@ -60,9 +60,9 @@ else
   expect_not_contains "reboot_required is left out on a host without the update notifier" "$compact" '"name":"reboot_required"'
 fi
 
-# 4. berthy checks lists both host checks, since the monitor records them. The monitor lists a check after its first run, which
+# 4. berthy checks --cluster lists both host checks, since the monitor records them. The monitor lists a check after its first run, which
 # follows its rebuild, so the scenario waits for the list as scenario 18 does.
-listed() { adm checks 2>&1 | grep -q "^$1 "; }
+listed() { adm checks --cluster --json | jq -e --arg name "$1" 'any(.[]; .name == $name)' >/dev/null; }
 
 # wait_listed NAME SECONDS: waits until berthy checks lists NAME.
 wait_listed() {
@@ -75,15 +75,15 @@ wait_listed() {
 }
 
 if wait_listed public_ports 120; then
-  pass "checks lists public_ports"
+  pass "checks --cluster lists public_ports"
 else
-  fail "checks lists public_ports" "$(adm checks 2>&1)"
+  fail "checks --cluster lists public_ports" "$(adm checks --cluster --json 2>&1)"
 fi
 if [ -d /usr/share/update-notifier ]; then
   if wait_listed reboot_required 120; then
-    pass "checks lists reboot_required"
+    pass "checks --cluster lists reboot_required"
   else
-    fail "checks lists reboot_required" "$(adm checks 2>&1)"
+    fail "checks --cluster lists reboot_required" "$(adm checks --cluster --json 2>&1)"
   fi
 fi
 

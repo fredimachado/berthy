@@ -8,14 +8,12 @@ import (
 	"io"
 	"os"
 	"os/user"
-	"path/filepath"
 	"runtime"
 	"strconv"
 
 	"berthy/internal/agent"
 	"berthy/internal/api"
 	"berthy/internal/setup"
-	"berthy/internal/state"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -162,24 +160,9 @@ func runSetupClusterSecretWriter(args []string, stdin io.Reader, errout io.Write
 		return 1
 	}
 	defer clear(value)
-	if err := writeSetupClusterSecret(context.Background(), f.Cluster, args[0], value); err != nil {
+	if err := agent.WriteClusterSecret(context.Background(), f.Cluster, args[0], value); err != nil {
 		fmt.Fprintln(errout, "setup-cluster-secret: cannot store the cluster credential")
 		return 1
 	}
 	return 0
-}
-
-func writeSetupClusterSecret(ctx context.Context, c agent.ClusterConfig, name string, value []byte) error {
-	if _, err := os.Stat(filepath.Join(c.StateDir, "state.db")); err != nil {
-		return err
-	}
-	s, err := state.Open(c.StateDir, c.KeyFile, agent.ClusterEnvironment)
-	if err != nil {
-		return err
-	}
-	defer s.Close() // Release the owner lock before systemd starts the service.
-	if err := s.CheckOwner(ctx, agent.ClusterProject); err != nil {
-		return err
-	}
-	return s.PutSecret(ctx, state.Actor{ID: "setup", Name: "setup"}, state.SecretInfo{Name: name}, value)
 }

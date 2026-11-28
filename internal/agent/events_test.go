@@ -27,7 +27,7 @@ func shopMonitoring(t *testing.T, d *downFake) (*Monitoring, *state.Store) {
 	t.Helper()
 	s := openIngressStore(t)
 	recordBoundRelease(t, s, "rel-shop", shopRelease, []state.Binding{{App: "api", Role: "web", Name: "shop-api-web", ServiceID: "svc-1"}})
-	return NewMonitoring(monitoringConfig(""), d.eng, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {}), s
+	return NewMonitoring(monitoringConfig(""), d.eng, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {}), s
 }
 
 // runHub runs the engine's event hub until the test ends and waits until the feed is open.

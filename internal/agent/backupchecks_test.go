@@ -141,7 +141,7 @@ func TestBackupChecksAreOnePerBackupOfTheDeployedManifest(t *testing.T) {
 		"apps":{"api":{"kind":"image","image":"ghcr.io/acme/api","roles":{"web":{"volumes":["data:/data"]}}},"gone":{"kind":"image","image":"ghcr.io/acme/gone","roles":{"web":{}}}},
 		"destinations":{"offsite":{"type":"s3","bucket":"bkt","access_key_secret":"A","secret_key_secret":"B"}},
 		"backups":{"data":{"app":"api","volume":"data","destination":"offsite","schedule":"0 * * * *"},"manual":{"app":"api","volume":"data","destination":"offsite"},"old":{"app":"gone","volume":"x","destination":"offsite"}}}`)
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	now := time.Now().UTC()
 	w.now = func() time.Time { return time.Now().UTC() }
 	checks := map[string]monitor.Check{}

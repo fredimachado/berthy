@@ -92,7 +92,7 @@ func TestServiceProbeTargetsNameTheOverlayService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	var asked []string
 	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
 	cases := map[string]struct {
@@ -130,7 +130,7 @@ func TestServiceProbeNeedsAComposeServiceNamedWhenThereAreSeveral(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	var asked []string
 	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres", "redis"}, &asked)
 	_, err = w.serviceTarget(context.Background(), *m, manifest.ServiceProbe{App: "db", Port: 5432})
@@ -162,7 +162,7 @@ func TestServiceProbeChecksSendTheirProbeToTheHelper(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "detail": "answered"})
 	}))
 	defer srv.Close()
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.helper.goos = "linux"
 	var asked []string
 	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
@@ -196,7 +196,7 @@ func TestServiceProbeWithoutAHelperIsUnknownWithTheReason(t *testing.T) {
 	s := openIngressStore(t)
 	ctx := context.Background()
 	recordBoundRelease(t, s, "release-probe-targets", probeTargetsManifest, []state.Binding{{App: "api", Role: "web", Name: "lab-api-web", ServiceID: "svc-1"}})
-	w := NewMonitoring(monitoringConfig(""), nil, nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
+	w := NewMonitoring(monitoringConfig(""), nil, &deploy.Controller{Store: s, Environment: "lab"}, func(string) {})
 	w.helper.goos = "linux"
 	var asked []string
 	w.composeServices = projectServicesFake("demo-lab-db", []string{"postgres"}, &asked)
