@@ -7,8 +7,20 @@ set -uo pipefail
 . "$(dirname "$0")/../lib.sh"
 . "$RUN/digests.env"
 
-name="$PROJECT-public-port"
-trap 'd rm -f "$name" >/dev/null 2>&1' EXIT
+name="$PROJECT-$ENVN-public-port"
+owner="$FIXTURE_ID.$(openssl rand -hex 8)"
+owned_container() {
+  d inspect --format '{{.Id}} {{index .Config.Labels "berthy.e2e.fixture"}}' "$name" 2>/dev/null |
+    awk -v owner="$owner" '$2 == owner { print $1 }'
+}
+cleanup() {
+  local id
+  id=$(owned_container) || return 0
+  if [ -n "$id" ]; then
+    d rm -f "$id" >/dev/null || echo "could not remove the public port fixture" >&2
+  fi
+}
+trap cleanup EXIT
 
 # port_busy PORT: true when a socket listens on PORT on any address. It reads the kernel's tables, as the agent does.
 port_busy() {
@@ -32,9 +44,12 @@ if [ -z "$port" ]; then
 fi
 
 # 1. A container outside Berthy publishes the port on every address. Its image is the e2e web image, already in the registry.
-d rm -f "$name" >/dev/null 2>&1
-out=$(d run -d --name "$name" -p "0.0.0.0:$port:80" --entrypoint sleep "$REG/e2e/web@$WEB_V1_DIGEST" 3600 2>&1); code=$?
+existing=$(d ps -aq --no-trunc --filter "name=^/${name}\$") || exit 1
+[ -z "$existing" ] || { fail "create the public port fixture" "container name already exists"; finish; }
+out=$(d run -d --name "$name" --label "berthy.e2e.fixture=$owner" -p "0.0.0.0:$port:80" \
+  --entrypoint sleep "$REG/e2e/web@$WEB_V1_DIGEST" 3600 2>&1); code=$?
 expect_code "start the container that publishes $port on every address" 0 "$code" "$out"
+[ "$code" -eq 0 ] || finish
 wait_for "port $port listening" port_busy "$port"
 
 # 2. The doctor names the port as a warning, and still exits 0.
@@ -88,7 +103,9 @@ if [ -d /usr/share/update-notifier ]; then
 fi
 
 # 5. Once the container is removed, its port is gone from the detail and the doctor still exits 0.
-out=$(d rm -f "$name" 2>&1); code=$?
+id=$(owned_container)
+[ -n "$id" ] || { fail "remove the container" "fixture ownership could not be verified"; finish; }
+out=$(d rm -f "$id" 2>&1); code=$?
 expect_code "remove the container" 0 "$code" "$out"
 wait_for "port $port released" port_free "$port"
 json=$(HOME="$RUN/doctor-no-copy" adm doctor --json 2>"$RUN/doctor-keycopy-stderr"); code=$?
