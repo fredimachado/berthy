@@ -436,14 +436,23 @@ func (c *Controller) composeRemovalTargets(ctx context.Context, project string, 
 			if err := json.Unmarshal(intent.Receipt, &receipt); err != nil {
 				return nil, err
 			}
-			for _, claim := range receipt.Targets {
-				if claim.Kind == state.ClaimNetwork || claim.Kind == state.ClaimComposeProject || (volumes && claim.Kind == state.ClaimVolume) {
-					claims = append(claims, claim)
-				}
-			}
+			claims = append(claims, receipt.Targets...)
 		}
 	}
-	return claims, nil
+	historical, err := c.Store.HistoricalComposeTargets(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	claims = append(claims, historical...)
+	seen := make(map[state.Claim]bool, len(claims))
+	targets := claims[:0]
+	for _, claim := range claims {
+		if !seen[claim] && (claim.Kind == state.ClaimNetwork || claim.Kind == state.ClaimComposeProject || (volumes && claim.Kind == state.ClaimVolume)) {
+			targets = append(targets, claim)
+			seen[claim] = true
+		}
+	}
+	return targets, nil
 }
 
 // removeApp carries out a removal that has been planned and has no blocker. journal numbers the steps it records, so a

@@ -597,7 +597,7 @@ func TestPruneIncludesFinishedMigrationAndTimedOutOneOffs(t *testing.T) {
 	}
 	f := &perContainerPrune{op: op.ID, running: map[string]bool{"c-slow": true}, roles: map[string]string{"c-before": "schema_before", "c-apply": "migration_apply", "c-slow": "pre_hook"}}
 	c := Controller{Store: s, Engine: f, Environment: "stage"}
-	hooks, err := c.prunableHooks(ctx)
+	hooks, err := c.prunableHooks(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}

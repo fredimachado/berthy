@@ -192,3 +192,31 @@ func schema18(tx *sql.Tx) error {
 	}
 	return err
 }
+
+func schema20(tx *sql.Tx) error {
+	for _, column := range []struct{ name, kind string }{
+		{"retired_request_id", "TEXT"}, {"retired_request_hash", "BLOB"}, {"retired_app", "TEXT"},
+		{"retired_tag", "TEXT"}, {"retired_release_id", "INTEGER"},
+	} {
+		var has int
+		if err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('audit') WHERE name=?`, column.name).Scan(&has); err != nil {
+			return err
+		}
+		if has == 0 {
+			if _, err := tx.Exec(`ALTER TABLE audit ADD COLUMN ` + column.name + ` ` + column.kind); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS release_facts (environment TEXT NOT NULL, app TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(environment,app,kind,value));
+		CREATE INDEX IF NOT EXISTS release_facts_secret_reader ON release_facts(environment,value,app) WHERE kind='secret';
+		CREATE TABLE IF NOT EXISTS prune_oneoffs (environment TEXT NOT NULL, operation_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(environment,id));
+		CREATE TABLE IF NOT EXISTS compose_down_targets (environment TEXT NOT NULL, project TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(environment,project,kind,name));
+		CREATE UNIQUE INDEX IF NOT EXISTS audit_retired_request ON audit(environment,retired_request_id) WHERE retired_request_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS audit_retired_release ON audit(environment,retired_app,retired_release_id) WHERE retired_release_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS audit_operation ON audit(environment,operation_id);
+		CREATE INDEX IF NOT EXISTS releases_app_id ON releases(environment,app,id);
+		CREATE INDEX IF NOT EXISTS operations_app_started ON operations(environment,app,started);`)
+	return err
+}

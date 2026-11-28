@@ -183,7 +183,7 @@ func (c *Controller) planOperation(ctx context.Context, actor Actor, req Request
 		if _, err := c.prunePlan(ctx); err != nil {
 			return Plan{}, err
 		}
-		if _, err := c.prunableHooks(ctx); err != nil {
+		if _, err := c.prunableHooks(ctx, false); err != nil {
 			return Plan{}, err
 		}
 		return Plan{}, nil
@@ -436,7 +436,7 @@ func (c *Controller) pruneNowWithForeign(ctx context.Context, foreignImages map[
 	if err != nil {
 		return nil, pruneFailure(err)
 	}
-	hooks, err := c.prunableHooks(ctx)
+	hooks, err := c.prunableHooks(ctx, true)
 	if err != nil {
 		return nil, "hook inventory unavailable"
 	}
@@ -445,17 +445,19 @@ func (c *Controller) pruneNowWithForeign(ctx context.Context, foreignImages map[
 		for _, h := range hooks {
 			container, e := he.InspectContainer(ctx, h.ID)
 			if e != nil {
-				var status *engine.StatusError
-				if errors.As(e, &status) && status.Code == 404 {
+				if !statusIs(e, 404) {
+					return nil, "hook inspection failed"
+				}
+			} else {
+				if !ownedFinishedHook(container, h, c.id()) {
 					continue
 				}
-				return nil, "hook inspection failed"
+				if e = he.RemoveContainer(ctx, h.ID); e != nil && !statusIs(e, 404) {
+					return nil, "hook removal failed"
+				}
 			}
-			if !ownedFinishedHook(container, h, c.id()) {
-				continue
-			}
-			if e = he.RemoveContainer(ctx, h.ID); e != nil {
-				return nil, "hook removal failed"
+			if e = c.Store.ForgetCompletedOneOff(ctx, h); e != nil {
+				return nil, "hook inventory unavailable"
 			}
 		}
 	}
@@ -834,7 +836,7 @@ func ownedFinishedHook(c engine.ContainerSnapshot, h state.CompletedOneOff, id s
 	return !c.Running && c.ID == h.ID && id.Owns(c.Labels) && c.Labels["berthy.operation"] == h.OperationID && c.Labels["berthy.oneoff"] == h.Role
 }
 
-func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff, error) {
+func (c *Controller) prunableHooks(ctx context.Context, acknowledgeMissing bool) ([]state.CompletedOneOff, error) {
 	hooks, err := c.Store.CompletedOneOffs(ctx)
 	if err != nil {
 		return nil, err
@@ -850,8 +852,12 @@ func (c *Controller) prunableHooks(ctx context.Context) ([]state.CompletedOneOff
 	for _, h := range hooks {
 		container, err := e.InspectContainer(ctx, h.ID)
 		if err != nil {
-			var status *engine.StatusError
-			if errors.As(err, &status) && status.Code == 404 {
+			if statusIs(err, 404) {
+				if acknowledgeMissing {
+					if err := c.Store.ForgetCompletedOneOff(ctx, h); err != nil {
+						return nil, err
+					}
+				}
 				continue
 			}
 			return nil, errors.New("hook inspection failed")

@@ -74,6 +74,16 @@ func (c *Controller) redactionValues(ctx context.Context) ([][]byte, error) {
 		return nil, err
 	}
 	seen := map[string]bool{}
+	addTemplate := func(template string) {
+		if seen[template] {
+			return
+		}
+		seen[template] = true
+		vars, err := manifest.Env{Template: map[string]string{"VALUE": template}}.Resolve(get)
+		if err == nil && len(vars) == 1 {
+			values = append(values, []byte(vars[0].Value))
+		}
+	}
 	for _, release := range history {
 		m, e := manifest.DecodeRelease(release.Manifest, release.App == manifest.ConnectorAppName)
 		if e != nil {
@@ -81,17 +91,17 @@ func (c *Controller) redactionValues(ctx context.Context) ([][]byte, error) {
 			continue
 		}
 		for _, app := range m.Apps {
-			for name, template := range app.Env.Template {
-				if seen[template] {
-					continue
-				}
-				seen[template] = true
-				vars, e := manifest.Env{Template: map[string]string{name: template}}.Resolve(get)
-				if e == nil && len(vars) == 1 {
-					values = append(values, []byte(vars[0].Value))
-				}
+			for _, template := range app.Env.Template {
+				addTemplate(template)
 			}
 		}
+	}
+	templates, err := c.Store.HistoricalTemplates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, template := range templates {
+		addTemplate(template)
 	}
 	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	return values, nil

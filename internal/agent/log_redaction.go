@@ -105,6 +105,20 @@ func managedLogSecrets(ctx context.Context, d *deploy.Controller, e managedLogEn
 			variables[name] = true
 		}
 	}
+	historicalNames, err := d.Store.HistoricalSecretNames(ctx, bindingApp)
+	if err != nil {
+		return nil, errors.New("managed configuration unavailable")
+	}
+	for _, name := range historicalNames {
+		secretNames[name] = true
+	}
+	historicalVars, err := d.Store.HistoricalSensitiveVars(ctx, bindingApp)
+	if err != nil {
+		return nil, errors.New("managed configuration unavailable")
+	}
+	for _, name := range historicalVars {
+		variables[name] = true
+	}
 	var values []string
 	add := func(value string) error {
 		if value == "" {
