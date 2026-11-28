@@ -119,10 +119,12 @@ func TestTailBoundsEncodedJSON(t *testing.T) {
 }
 
 func TestLogFrameMissingEntirePayload(t *testing.T) {
-	wire := frame(1, "x")[:8]
-	err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(Record) error { return nil })
-	if !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("missing payload: %v", err)
+	for _, stream := range []byte{1, 3} {
+		wire := frame(stream, "x")[:8]
+		err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(Record) error { return nil })
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("stream %d missing payload: %v", stream, err)
+		}
 	}
 }
 
@@ -183,10 +185,120 @@ func FuzzMultiplexedLogs(f *testing.F) {
 		} else if !errors.Is(err, io.ErrUnexpectedEOF) {
 			t.Fatalf("cut %d: %v", n, err)
 		}
-		for _, bad := range [][]byte{{3, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 0, 0, 0, 0, 0, 0}, {1, 0, 0, 0, 0, 16, 0, 1}} {
+		for _, bad := range [][]byte{{4, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 0, 0, 0, 0, 0, 0}, {1, 0, 0, 0, 0, 16, 0, 1}} {
 			if err := decode(bytes.NewReader(bad), false, id, Options{}, emit); err == nil {
 				t.Fatal("invalid header accepted")
 			}
 		}
 	})
+}
+
+func TestLongLineKeepsPrefixAndNextRecord(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	line := strings.Repeat("abc", 100*1024)
+	id := Identity{Role: "web", Replica: "2", ContainerID: "a"}
+	want := []Record{
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: "before"},
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: line[:MaxLineBytes-len(stamp)] + TruncationMarker, Truncated: true},
+		{Identity: id, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC), Stream: "stdout", Message: "after"},
+	}
+	for _, tc := range []struct {
+		name, wire string
+		tty        bool
+	}{
+		{"single frame", frame(1, stamp+"before\n"+stamp+line+"\n"+stamp+"after\n"), false},
+		{"continuations", frame(1, stamp+"before\n") + frame(1, stamp+line[:100000]) + frame(1, stamp+line[100000:200000]) + frame(1, stamp+line[200000:]+"\n") + frame(1, stamp+"after\n"), false},
+		{"tty", stamp + "before\n" + stamp + line + "\n" + stamp + "after\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakeSource{tty: tc.tty, data: map[string]string{"a": tc.wire}}
+			for _, follow := range []bool{false, true} {
+				var got []Record
+				var err error
+				if follow {
+					err = Follow(context.Background(), f, []Identity{id}, Options{}, func(r Record) error { got = append(got, r); return nil })
+				} else {
+					got, err = Tail(context.Background(), f, []Identity{id}, Options{})
+				}
+				if err != nil {
+					t.Errorf("follow=%v: %v", follow, err)
+					continue
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("follow=%v: records differ", follow)
+				}
+			}
+		})
+	}
+}
+
+func TestLongLineStateBelongsToItsStream(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	long := strings.Repeat("x", MaxLineBytes+10)
+	exact := strings.Repeat("y", MaxLineBytes-len(stamp))
+	wire := frame(1, stamp+long) + frame(2, stamp+"error\n") + frame(1, stamp+"discard\n") + frame(1, stamp+exact[:100]) + frame(1, stamp+exact[100:]+"\n")
+	var got []Record
+	err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(r Record) error { got = append(got, r); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Stream != "stderr" || got[0].Message != "error" || got[1].Message != long[:MaxLineBytes-len(stamp)]+TruncationMarker || !got[1].Truncated || got[2].Message != exact || got[2].Truncated {
+		t.Fatal("stream state or boundary incorrect")
+	}
+}
+
+func TestDaemonErrorIsARecordForOneSource(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	ids := []Identity{{Role: "web", Replica: "1", ContainerID: "a"}, {Role: "worker", Replica: "2", ContainerID: "b"}}
+	f := fakeSource{data: map[string]string{
+		"a": frame(1, stamp+"before\n") + frame(3, "log reader failed\r\n") + frame(1, stamp+"ignored\n"),
+		"b": frame(1, stamp+"healthy\n"),
+	}}
+	for _, follow := range []bool{false, true} {
+		var got []Record
+		var err error
+		if follow {
+			err = Follow(context.Background(), f, ids, Options{}, func(r Record) error { got = append(got, r); return nil })
+		} else {
+			got, err = Tail(context.Background(), f, ids, Options{})
+		}
+		if err != nil {
+			t.Errorf("follow=%v: %v", follow, err)
+			continue
+		}
+		if len(got) != 3 {
+			t.Errorf("follow=%v: got %d records", follow, len(got))
+			continue
+		}
+		seen := map[string]bool{}
+		for _, r := range got {
+			switch r.Message {
+			case "before":
+				seen["before"] = r.Identity == ids[0] && r.Stream == "stdout"
+			case "healthy":
+				seen["healthy"] = r.Identity == ids[1] && r.Stream == "stdout"
+			case "Docker daemon error: log reader failed":
+				seen["error"] = r.Identity == ids[0] && r.Stream == "stderr" && !r.Timestamp.IsZero() && r.Timestamp.Location() == time.UTC
+			}
+		}
+		if !seen["before"] || !seen["healthy"] || !seen["error"] {
+			t.Errorf("follow=%v: %+v", follow, got)
+		}
+	}
+}
+
+func TestDaemonErrorIsBoundedAndFiltered(t *testing.T) {
+	const label = "Docker daemon error: "
+	body := strings.Repeat("x", MaxLineBytes) + "\n"
+	wire := frame(3, body)
+	var rows []Record
+	err := decode(strings.NewReader(wire), false, Identity{}, Options{}, func(r Record) error { rows = append(rows, r); return nil })
+	if err != nil || len(rows) != 1 || !rows[0].Truncated || rows[0].Message != label+body[:MaxLineBytes-len(label)]+TruncationMarker {
+		t.Fatalf("bounded record: count=%d error=%v", len(rows), err)
+	}
+	rows = nil
+	err = decode(strings.NewReader(wire), false, Identity{}, Options{Grep: regexp.MustCompile("no-match")}, func(r Record) error { rows = append(rows, r); return nil })
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("filtered record: count=%d error=%v", len(rows), err)
+	}
 }

@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const TruncationMarker = " …[truncated]"
+
 const (
 	MaxSources    = 64
 	MaxTail       = 1000
@@ -34,6 +36,7 @@ type Record struct {
 	Timestamp time.Time `json:"timestamp"`
 	Stream    string    `json:"stream"`
 	Message   string    `json:"message"`
+	Truncated bool      `json:"-"`
 }
 type OpenOptions struct {
 	Tail   int
@@ -167,25 +170,29 @@ func readAll(ctx context.Context, source Source, ids []Identity, opts Options, f
 	return nil
 }
 
+type pendingLine struct {
+	prefix    []byte
+	truncated bool
+}
+
 func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) error) error {
-	pending := map[byte][]byte{1: nil, 2: nil}
+	pending := map[byte]*pendingLine{1: {}, 2: {}}
 	consume := func(stream byte, data []byte) error {
 		p := pending[stream]
 		for len(data) > 0 {
 			i := bytes.IndexByte(data, '\n')
 			if i < 0 {
-				if len(p)+len(data) > MaxLineBytes {
-					return errors.New("log line exceeds limit")
-				}
-				p = append(p, data...)
+				i = len(data)
+			}
+			keep := min(i, MaxLineBytes-len(p.prefix))
+			p.prefix = append(p.prefix, data[:keep]...)
+			p.truncated = p.truncated || keep < i
+			if i == len(data) {
 				break
 			}
-			if len(p)+i > MaxLineBytes {
-				return errors.New("log line exceeds limit")
-			}
-			p = append(p, data[:i]...)
-			line := string(p)
-			p = nil
+			line := string(p.prefix)
+			truncated := p.truncated
+			*p = pendingLine{}
 			data = data[i+1:]
 			at := strings.IndexByte(line, ' ')
 			if at < 0 {
@@ -196,6 +203,9 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 				return fmt.Errorf("invalid log timestamp: %w", err)
 			}
 			msg := line[at+1:]
+			if truncated {
+				msg += TruncationMarker
+			}
 			if (!opts.Since.IsZero() && ts.Before(opts.Since)) || (opts.Grep != nil && !opts.Grep.MatchString(msg)) {
 				continue
 			}
@@ -203,11 +213,10 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			if stream == 2 {
 				name = "stderr"
 			}
-			if err := emit(Record{Identity: id, Timestamp: ts, Stream: name, Message: msg}); err != nil {
+			if err := emit(Record{Identity: id, Timestamp: ts, Stream: name, Message: msg, Truncated: truncated}); err != nil {
 				return err
 			}
 		}
-		pending[stream] = p
 		return nil
 	}
 	br := bufio.NewReader(r)
@@ -237,7 +246,7 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			if err != nil {
 				return fmt.Errorf("truncated log frame header: %w", err)
 			}
-			if (h[0] != 1 && h[0] != 2) || h[1] != 0 || h[2] != 0 || h[3] != 0 {
+			if (h[0] != 1 && h[0] != 2 && h[0] != 3) || h[1] != 0 || h[2] != 0 || h[3] != 0 {
 				return errors.New("invalid log frame header")
 			}
 			n := binary.BigEndian.Uint32(h[4:])
@@ -251,13 +260,31 @@ func decode(r io.Reader, tty bool, id Identity, opts Options, emit func(Record) 
 			if len(data) != int(n) {
 				return fmt.Errorf("truncated log frame: %w", io.ErrUnexpectedEOF)
 			}
+			if h[0] == 3 {
+				const origin = "Docker daemon error: "
+				message := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+				truncated := len(message) > MaxLineBytes-len(origin)
+				if truncated {
+					message = message[:MaxLineBytes-len(origin)] + TruncationMarker
+				}
+				message = origin + message
+				ts := time.Now().UTC()
+				if (!opts.Since.IsZero() && ts.Before(opts.Since)) || (opts.Grep != nil && !opts.Grep.MatchString(message)) {
+					return nil
+				}
+				return emit(Record{Identity: id, Timestamp: ts, Stream: "stderr", Message: message, Truncated: truncated})
+			}
+			p := pending[h[0]]
+			if at := bytes.IndexByte(p.prefix, ' '); at >= 0 && bytes.HasPrefix(data, p.prefix[:at+1]) {
+				data = data[at+1:]
+			}
 			if err = consume(h[0], data); err != nil {
 				return err
 			}
 		}
 	}
 	for _, stream := range []byte{1, 2} {
-		if len(pending[stream]) > 0 {
+		if len(pending[stream].prefix) > 0 {
 			if err := consume(stream, []byte{'\n'}); err != nil {
 				return err
 			}

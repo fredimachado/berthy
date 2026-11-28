@@ -141,3 +141,38 @@ func TestLogTailInterleavesStreamsAndCapsBytes(t *testing.T) {
 		t.Fatalf("capped tail %q %v: %v", text, truncated, err)
 	}
 }
+
+func TestLogTailKeepsNewerEvidenceAfterLongLine(t *testing.T) {
+	stamp := "2026-11-16T10:00:01Z "
+	body := frame(1, stamp+"before\n"+stamp+strings.Repeat("x", 300<<10)+"\n"+stamp+"after\n")
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/json") {
+			fmt.Fprint(w, `{"Config":{"Tty":false}}`)
+			return
+		}
+		fmt.Fprint(w, body)
+	}))
+	defer s.Close()
+	e := &Engine{client: &http.Client{Transport: rewriteTransport{base: s.URL}}}
+	text, truncated, err := e.LogTail(context.Background(), "c1", 200, 64<<10)
+	if err != nil || !truncated || text != "2026-11-16T10:00:01Z stdout after\n" {
+		t.Fatalf("tail %q truncated %v: %v", text, truncated, err)
+	}
+}
+
+func TestLogTailReportsDockerDaemonError(t *testing.T) {
+	body := frame(3, "log reader failed\n")
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/json") {
+			fmt.Fprint(w, `{"Config":{"Tty":false}}`)
+			return
+		}
+		fmt.Fprint(w, body)
+	}))
+	defer s.Close()
+	e := &Engine{client: &http.Client{Transport: rewriteTransport{base: s.URL}}}
+	text, truncated, err := e.LogTail(context.Background(), "c1", 200, 64<<10)
+	if err != nil || truncated || !strings.Contains(text, " stderr Docker daemon error: log reader failed\n") {
+		t.Fatalf("tail %q truncated %v: %v", text, truncated, err)
+	}
+}

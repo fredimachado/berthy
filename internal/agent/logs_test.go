@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -230,6 +231,26 @@ func TestRedactionBeforeFiltering(t *testing.T) {
 	}
 }
 
+func TestRedactRecordsProtectsTheCutBeforeGrep(t *testing.T) {
+	secrets := []string{"complete-secret", "partial-secret"}
+	rows := []logs.Record{
+		{Message: "complete-secret useful partial" + logs.TruncationMarker, Truncated: true},
+		{Message: "ordinary partial" + logs.TruncationMarker},
+	}
+	got := redactRecords(rows, secrets, nil)
+	if len(got) != 2 || got[0].Message != "[REDACTED] useful [REDACTED]"+logs.TruncationMarker || got[1].Message != rows[1].Message {
+		t.Fatalf("unexpected messages: %+v", got)
+	}
+	got = redactRecords(rows[:1], secrets, regexp.MustCompile("partial"))
+	if len(got) != 0 {
+		t.Fatalf("grep matched a secret fragment: %+v", got)
+	}
+	got = redactRecords(rows[:1], secrets, regexp.MustCompile(`\[truncated\]`))
+	if len(got) != 1 || got[0].Message != "[REDACTED] useful [REDACTED]"+logs.TruncationMarker {
+		t.Fatalf("grep missed the safe marked record: %+v", got)
+	}
+}
+
 type fakeManagedLogs struct {
 	service engine.ServiceSnapshot
 	env     []string
@@ -305,5 +326,44 @@ func TestLogsOfAnotherEnvironmentsServiceAre404(t *testing.T) {
 	serveLogs(w, httptest.NewRequest("GET", "/logs", nil), inventoryDocker(t), "foreign", d, newLimits())
 	if w.Code != 404 {
 		t.Fatalf("logs: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type framedLogSource []byte
+
+func (f framedLogSource) Open(context.Context, string, logs.OpenOptions) (io.ReadCloser, bool, error) {
+	return io.NopCloser(strings.NewReader(string(f))), false, nil
+}
+
+func TestRedactRecordsJoinsSecretAcrossTimestampedFrames(t *testing.T) {
+	stamp := "2026-01-01T00:00:01Z "
+	secret := "distinct-first-distinct-second"
+	half := len(secret) / 2
+	filler := strings.Repeat("x", logs.MaxLineBytes)
+	wire := append(dockerFrame(1, []byte(stamp+"safe "+secret[:half])), dockerFrame(1, []byte(stamp+secret[half:]+filler+"\n"))...)
+	rows, err := logs.Tail(context.Background(), framedLogSource(wire), []logs.Identity{{ContainerID: "a"}}, logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := redactRecords(rows, []string{secret}, nil)
+	want := "safe [REDACTED]" + filler[:logs.MaxLineBytes-len(stamp)-len("safe ")-len(secret)] + logs.TruncationMarker
+	if len(got) != 1 || got[0].Message != want || strings.Contains(got[0].Message, secret[:half]) || strings.Contains(got[0].Message, secret[half:]) {
+		t.Fatal("secret or filler differs")
+	}
+}
+
+func TestDaemonErrorCutRedactsSecretPrefix(t *testing.T) {
+	secret := "distinct-secret-value"
+	label := "Docker daemon error: "
+	partial := "distinct-secret"
+	filler := strings.Repeat("x", logs.MaxLineBytes-len(label)-len(partial))
+	wire := dockerFrame(3, []byte(filler+secret+"\n"))
+	rows, err := logs.Tail(context.Background(), framedLogSource(wire), []logs.Identity{{ContainerID: "a"}}, logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := redactRecords(rows, []string{secret}, nil)
+	if len(got) != 1 || got[0].Message != label+filler+"[REDACTED]"+logs.TruncationMarker {
+		t.Fatal("daemon error exposes a secret fragment or loses its prefix")
 	}
 }
